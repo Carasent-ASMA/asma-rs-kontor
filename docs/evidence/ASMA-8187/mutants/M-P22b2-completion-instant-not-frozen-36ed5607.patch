@@ -1,0 +1,11 @@
+--- a/crates/kontor-store/migrations/0122_core_team_route_succession_receipt_identity.sql
++++ b/crates/kontor-store/migrations/0122_core_team_route_succession_receipt_identity.sql
+@@ -83,7 +83,7 @@
+   -- bound at: a completion time that can be rewritten is not evidence of when
+   -- anything completed.
+   OR (OLD.receipt_id IS NOT NULL AND OLD.receipt_id IS NOT NEW.receipt_id)
+-  OR (OLD.receipted_at IS NOT NULL AND OLD.receipted_at IS NOT NEW.receipted_at)
++  -- MUTANT M-P22b2: the completion instant may be rewritten.
+   -- Pending effects latch forward only.
+   OR (OLD.launch_intent_installed = 1 AND NEW.launch_intent_installed = 0)
+   OR (OLD.seat_binding_observed = 1 AND NEW.seat_binding_observed = 0)

@@ -1,0 +1,151 @@
+{
+  "scope": "Writer verification of local evidence; not independent QA/Audit",
+  "source_head": "831dd7c1dc95a57258c75f5896bff5b76f3830fa",
+  "source_tree": "ae9bcea100575e5bfa295cf57865139b08b9ab70",
+  "source_manifest_sha256": "81c6d5ac5e55c809deb367d47e2b064c2cac6878daf314d63858099d3ca9a239",
+  "all_1142_source_files_exact": true,
+  "combined_checks": 17,
+  "passed_tests": 293,
+  "supplemental_checks": 11,
+  "mutation_ids": [
+    "MUT-001",
+    "MUT-002",
+    "MUT-003",
+    "MUT-004",
+    "MUT-005",
+    "MUT-006",
+    "MUT-007"
+  ],
+  "compiled_behavioral_kills": 7,
+  "baseline_seeded_restored_exits": [
+    0,
+    101,
+    0
+  ],
+  "all_mutated_source_bytes_restored": true,
+  "verified_log_archives": 49,
+  "verified_patch_archives": 7,
+  "historical_census_slots": 55,
+  "all_census_slots_pending": true,
+  "planned_benchmark_cases": 24,
+  "markdown_metadata_and_links_valid": true,
+  "checked_links": [
+    {
+      "document": "docs/evidence/ASMA-8159/README.md",
+      "target": "2026-10-03-01-11-report-combined-integration.md"
+    },
+    {
+      "document": "docs/evidence/ASMA-8159/README.md",
+      "target": "2026-10-03-01-11-report-frozen-docs-join.md"
+    },
+    {
+      "document": "docs/evidence/ASMA-8159/README.md",
+      "target": "2026-10-03-01-11-plan-corpus-census-and-rehearsal.md"
+    },
+    {
+      "document": "docs/evidence/ASMA-8159/README.md",
+      "target": "historical-55-census.csv"
+    },
+    {
+      "document": "docs/evidence/ASMA-8159/README.md",
+      "target": "2026-10-03-01-11-plan-migration-reconciliation.md"
+    },
+    {
+      "document": "docs/evidence/ASMA-8159/README.md",
+      "target": "2026-10-03-01-11-plan-analogue-benchmark.md"
+    },
+    {
+      "document": "docs/evidence/ASMA-8159/README.md",
+      "target": "2026-10-03-01-11-plan-release-readback-and-evidence.md"
+    },
+    {
+      "document": "docs/evidence/ASMA-8159/README.md",
+      "target": "receipts/verification.json"
+    },
+    {
+      "document": "docs/evidence/ASMA-8159/README.md",
+      "target": "receipts/mutations.json"
+    },
+    {
+      "document": "docs/evidence/ASMA-8159/README.md",
+      "target": "receipts/source-manifest.json"
+    },
+    {
+      "document": "docs/evidence/ASMA-8159/README.md",
+      "target": "receipts/ancestry.json"
+    },
+    {
+      "document": "docs/evidence/ASMA-8159/README.md",
+      "target": "receipts/docs-join.json"
+    },
+    {
+      "document": "docs/evidence/ASMA-8159/README.md",
+      "target": "run-verification.py"
+    },
+    {
+      "document": "docs/evidence/ASMA-8159/2026-10-03-01-11-report-frozen-docs-join.md",
+      "target": "receipts/docs-join.json"
+    },
+    {
+      "document": "docs/evidence/ASMA-8159/2026-10-03-01-11-report-combined-integration.md",
+      "target": "README.md"
+    },
+    {
+      "document": "docs/evidence/ASMA-8159/2026-10-03-01-11-report-combined-integration.md",
+      "target": "receipts/provenance.json"
+    },
+    {
+      "document": "docs/evidence/ASMA-8159/2026-10-03-01-11-report-combined-integration.md",
+      "target": "receipts/ancestry.json"
+    },
+    {
+      "document": "docs/evidence/ASMA-8159/2026-10-03-01-11-report-combined-integration.md",
+      "target": "receipts/source-manifest.json"
+    },
+    {
+      "document": "docs/evidence/ASMA-8159/2026-10-03-01-11-report-combined-integration.md",
+      "target": "receipts/final-validation.json"
+    },
+    {
+      "document": "docs/evidence/ASMA-8159/2026-10-03-01-11-report-combined-integration.md",
+      "target": "receipts/verification.json"
+    },
+    {
+      "document": "docs/evidence/ASMA-8159/2026-10-03-01-11-report-combined-integration.md",
+      "target": "receipts/supplemental.json"
+    },
+    {
+      "document": "docs/evidence/ASMA-8159/2026-10-03-01-11-report-combined-integration.md",
+      "target": "receipts/mutations.json"
+    },
+    {
+      "document": "docs/evidence/ASMA-8159/2026-10-03-01-11-report-combined-integration.md",
+      "target": "2026-10-03-01-11-report-frozen-docs-join.md"
+    },
+    {
+      "document": "docs/evidence/ASMA-8159/2026-10-03-01-11-report-combined-integration.md",
+      "target": "2026-10-03-01-11-plan-migration-reconciliation.md"
+    },
+    {
+      "document": "docs/evidence/ASMA-8159/2026-10-03-01-11-report-combined-integration.md",
+      "target": "2026-10-03-01-11-plan-corpus-census-and-rehearsal.md"
+    },
+    {
+      "document": "docs/evidence/ASMA-8159/2026-10-03-01-11-report-combined-integration.md",
+      "target": "2026-10-03-01-11-plan-migration-reconciliation.md"
+    },
+    {
+      "document": "docs/evidence/ASMA-8159/2026-10-03-01-11-report-combined-integration.md",
+      "target": "2026-10-03-01-11-plan-analogue-benchmark.md"
+    },
+    {
+      "document": "docs/evidence/ASMA-8159/2026-10-03-01-11-report-combined-integration.md",
+      "target": "2026-10-03-01-11-plan-release-readback-and-evidence.md"
+    }
+  ],
+  "docs_final_head": "9b5b538c269deca55058f3fdd9efc66ee8046ab9",
+  "docs_final_status": "",
+  "all_evidence_text_whitespace_valid": true,
+  "all_tracked_source_and_inherited_evidence_diffs_empty": true,
+  "prestage_status": "?? .agents/\n?? .asma/\n?? .cursor/\n?? AGENTS.md\n?? CLAUDE.md\n?? docs/evidence/ASMA-8159/\n"
+}

@@ -215,11 +215,27 @@ struct WorldComposition {
     usage_reporter: Option<Arc<dyn ExactProviderUsageReporter>>,
     jira_connectors: Option<kontor_jira::JiraConnectors>,
     quota_signals: Option<String>,
+    memory_cognee: Option<kontor_memory_cognee::Client>,
     /// Start from an empty state root and let the daemon create the Realm.
     created_realm: bool,
 }
 
 impl World {
+    /// Trusted synthetic startup composition through the ordinary client seam.
+    pub(crate) async fn open_with_memory_cognee(client: kontor_memory_cognee::Client) -> Self {
+        Self::compose_with_connector(
+            every_capability(),
+            true,
+            true,
+            false,
+            DEFAULT_CAPACITY,
+            WorldComposition {
+                memory_cognee: Some(client),
+                ..WorldComposition::default()
+            },
+        )
+        .await
+    }
     /// Start a Realm whose runtime declares everything.
     pub(crate) async fn open() -> Self {
         Self::open_with(every_capability()).await
@@ -468,6 +484,9 @@ impl World {
             .with_derived_read_deadline_seconds(1);
         if let Some(connectors) = composition.jira_connectors {
             config = config.with_jira_connectors(connectors);
+        }
+        if let Some(client) = composition.memory_cognee {
+            config = config.with_memory_cognee(client);
         }
         let daemon = match composition.usage_reporter {
             Some(reporter) => {

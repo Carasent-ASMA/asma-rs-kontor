@@ -1,0 +1,44 @@
+{
+  "postPartitionCompileSession": "Expired after user-requested interruption; complete compile-failure log retained.",
+  "readback": [
+    {
+      "status": "rejected",
+      "reason": "write_stdin failed: Unknown process id 68701"
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "eb6422",
+        "wall_time_seconds": 0.000007417,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "126af1",
+        "wall_time_seconds": 0.000032208,
+        "exit_code": 1,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "7f2841",
+        "wall_time_seconds": 0.000005334,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "rejected",
+      "reason": "write_stdin failed: Unknown process id 94534"
+    }
+  ],
+  "finalReplayExitCode": 0
+}

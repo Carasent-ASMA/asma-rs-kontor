@@ -1,0 +1,22 @@
+   Compiling kontor-store v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-store)
+error[E0277]: the trait bound `u64: ToSql` is not satisfied
+   --> crates/kontor-store/tests/attestation_token_metadata.rs:900:306
+    |
+900 | ...)",params![f.node.to_string(),f.scope.project_id.to_string(),n.runtime_kind.as_str(),n.host.as_str(),n.generation,n.native_id.as_str()]).e...
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `ToSql` is not implemented for `u64`
+    |
+    = help: the following other types implement trait `ToSql`:
+              f32
+              f64
+              i16
+              i32
+              i64
+              i8
+              isize
+              u16
+            and 2 others
+    = note: required for the cast from `&u64` to `&dyn ToSql`
+    = note: this error originates in the macro `params` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `kontor-store` (test "attestation_token_metadata") due to 1 previous error

@@ -1,0 +1,138 @@
+{
+  "epic": "ASMA-8278",
+  "kind": "released-124-upgrade-correction-handoff",
+  "author": {
+    "provider": "opencode",
+    "model": "deepseek/deepseek-flash",
+    "effort": "max",
+    "child": "e9d2abec-b9b7-4a13-9742-092ce2032eaa"
+  },
+  "precommit_head": "d0d27332e9581cef368a4e0e2c8ea1a48f552716",
+  "precommit_tree": "9b1430e1494ea8b30df6f682a4001215cbd39b41",
+  "correction_head": "pending; see committed-source-pin.json after the correction commit",
+  "corrections": [
+    "M1: real released-124 upgrade fixture added in migrations.rs test module",
+    "M2: original packet README and conflict-inventory re-attributed; errata added",
+    "C1: inconsistent focused receipt is non-qualifying; full-store supports test pass, combined ced6 alone supports schema_v1 69/69; cause/intermediate edits UNKNOWN."
+  ],
+  "source_delta": {
+    "only": "crates/kontor-store/src/migrations.rs (#[cfg(test)] module)",
+    "equals_d0": "production and generated API inputs byte-equal d0d27332"
+  },
+  "store_suite": {
+    "suites": 40,
+    "passed": 697,
+    "failed": 0,
+    "ignored": 0,
+    "log": "receipts/store-full.log",
+    "exit": 0
+  },
+  "artifacts": [
+    {
+      "path": "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/README.md",
+      "bytes": 6897,
+      "sha256": "0d962dc925c05b3c4f4da107b37003e4a9d5428964b02f12e05e7faa97b2f83d",
+      "git_blob": "11bc33493a89b381968fd4fda6c4ef8481778625"
+    },
+    {
+      "path": "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/clippy.log",
+      "bytes": 1262,
+      "sha256": "5e816f280e8ae45b4850c74e7729828f34ad685ac04862700c4e20b13acdf993",
+      "git_blob": "86476ca286ca6c631267f5368c16ddaa0f5aae2b"
+    },
+    {
+      "path": "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/clippy.meta",
+      "bytes": 193,
+      "sha256": "37f42845667faf9d557ba4c1be33ac56077e86c33bf5282ef8bff3362ec0d59e",
+      "git_blob": "03726a075e159932bd47274ba0eaee732fa5c268"
+    },
+    {
+      "path": "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/committed-source-pin.json",
+      "bytes": 2277,
+      "sha256": "28eaa0c19595b8652e6ff9a88227574cc2d9ad02954e4bbea1783398698e1a82",
+      "git_blob": "e83469ce7b2efc0457cbcf61dc9fff502fabf12a"
+    },
+    {
+      "path": "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/corrected-files-old-and-new.txt",
+      "bytes": 737,
+      "sha256": "eed19d137f0e286feef82194ebe9383958af62291839151fd989f414e68f72a8",
+      "git_blob": "9ea8315ef7fb2a1b1d4d53fe68fd13890329e3be"
+    },
+    {
+      "path": "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/fmt-check.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "git_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    },
+    {
+      "path": "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/fmt-check.meta",
+      "bytes": 154,
+      "sha256": "300b39ee9fd7a78c5f4e06cc61ae51e5b23ff0a02c7ff4ec20019c47d2bf710c",
+      "git_blob": "17ef12c68d84a6f770e51d6479195556a4492e1e"
+    },
+    {
+      "path": "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/new-released-124-test.rs",
+      "bytes": 16417,
+      "sha256": "a2359911d8d9a0b6bb3aac32b50c0e647817a971dcca33b044b698691b5d4d71",
+      "git_blob": "b19db94554598317cfc4cc6904afdfe40794544a"
+    },
+    {
+      "path": "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/precommit-binding.json",
+      "bytes": 3398,
+      "sha256": "4721670c6c94531691eb3649ac43ee048c880bc3846fe936df71624614a0bdc3",
+      "git_blob": "ecd6ccbd266cdb23e0a7250548a2ff08f4900939"
+    },
+    {
+      "path": "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/prior-artifact-preservation.txt",
+      "bytes": 5071,
+      "sha256": "0d5105350c4679ad1a3266f7296325b74e343b1f6b22f65e36328875beb966d5",
+      "git_blob": "0b3728418234996eccbdbf7cb7ad5199059ea1a5"
+    },
+    {
+      "path": "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/released-124-focused.log",
+      "bytes": 603,
+      "sha256": "b0dbed36f9ac8e935d49a46dfbef8ff84b66cb54885b832bcf6a47a5ea9f3e0b",
+      "git_blob": "bdf65822724894a073edaf04ce15437f62c91e66"
+    },
+    {
+      "path": "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/released-124-focused.meta",
+      "bytes": 239,
+      "sha256": "a42806988914587932406216cbdca384005f2422463a8b3a529c3736a8189a5c",
+      "git_blob": "6b779ea93fdd3d0e68a3abaeb98db6cc9c0d90c2"
+    },
+    {
+      "path": "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/released-migrations-byteequal.txt",
+      "bytes": 2397,
+      "sha256": "76a4af910a6e84cb77739c21fd39d12299769e5b8a0ecee2b60e631f98d4106c",
+      "git_blob": "dedfaef22faf13f97a886c13ab95231348ad444f"
+    },
+    {
+      "path": "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/source-equivalence.txt",
+      "bytes": 642,
+      "sha256": "f95ddf3d8b54c78635def199af97c2ff125c289c9a9dfc41f9b69aad74e4d73c",
+      "git_blob": "96d133917e719d100542d117f636e615a2a9e113"
+    },
+    {
+      "path": "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/store-full.log",
+      "bytes": 71054,
+      "sha256": "7e4ce0f0da914dbfd61ab06a19c326ce1045c55f58f174de2591bb90c552537c",
+      "git_blob": "9cef4e62a79b388c4dfd8ee9aa81119609a43bb7"
+    },
+    {
+      "path": "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/store-full.meta",
+      "bytes": 163,
+      "sha256": "1b19c69eb647e53280003b5442ec330ac340732cfbd30e9d7e27384a3c2d5d83",
+      "git_blob": "7144d7a80e6810d1c6964df8a5dd6b8c1e824f80"
+    },
+    {
+      "path": "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/C1-ERRATUM.json",
+      "bytes": 5279,
+      "sha256": "9451c489bbeca4e5d62a1f194712832744a16ecded32b50477c453d5a2730d80",
+      "git_blob": "7b5e53edaecce10eb3104c9430442fec15972263"
+    }
+  ],
+  "artifact_count": 17,
+  "source_pin_supplement": "receipts/committed-source-pin.json",
+  "C1_erratum": "C1-ERRATUM.json",
+  "prior_manifest_sha256": "5234e972635977aabe7018050bc9da44e7f662bea85488fdb93f59922ebbc885"
+}

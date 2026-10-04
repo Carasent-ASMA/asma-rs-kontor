@@ -1,0 +1,22 @@
+diff --git a/crates/kontor-core/src/repository.rs b/crates/kontor-core/src/repository.rs
+index 85200157..4b06b92d 100644
+--- a/crates/kontor-core/src/repository.rs
++++ b/crates/kontor-core/src/repository.rs
+@@ -743,16 +743,7 @@ impl CoreTeamRouteSuccessionReadback {
+     /// # Errors
+     /// Returns the rule that failed, as a stable `&'static str`.
+     pub fn check_internal_consistency(&self) -> Result<(), &'static str> {
+-        if self.grant_subject.subject_digest
+-            != core_team_grant_subject_digest(
+-                self.grant_subject.subject_seat_binding_id,
+-                self.grant_subject.generation,
+-            )
+-        {
+-            return Err(
+-                "the succession readback's grant subject digest is not the one it describes",
+-            );
+-        }
++        // MUTANT M-P21b: the carried grant digest is taken at face value.
+         if self.predecessor.native_id == self.successor.native_id
+             && self.predecessor.generation == self.successor.generation
+         {

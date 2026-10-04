@@ -1,0 +1,272 @@
+# ASMA-8280 direct-mode handoff — gap matrix, MUT-001 site and launch specification
+
+- Date: 2026-09-29
+- Task: ASMA-8280 / TASK-002
+- Author: implement seat `462cd93d-30ec-4ed0-9841-3687612da5e0` (parent TPM `3c52abda-4fd0-4af6-b086-476bc51eb305`)
+- Workspace: `wks_a284b5d96a0ea32b`
+- Branch: `feat/ASMA-8280-share-activated-yaml-policy-across-orchestration-modes` (local, not pushed)
+- Reconciled from HEAD `68de02fcb3458516dba3de4e0449ded2ee4cceb5`. Frozen and not rewritten: implementation `1168c17a`, `2a96a650`, `ec68ec5a`; verification `0eee8f63`; bounded audit `68de02fc`.
+- Slice four is built on accepted `a3bd2f99a5ffa4dcc8bd936550b01b27865f6ba8` and implements the LSA disposition of B-1 and B-2 (plan commit `671d49ca`, section "LSA disposition — direct resolution and roster (2026-09-28)") and G-4. Ancestors `1168c17a`, `2a96a650`, `ec68ec5a`, `0eee8f63`, `68de02fc`, `77722be0`, `b00a3328`, `09e7f5f0` and `a3bd2f99` are unchanged.
+- Slice five is built on accepted `0e04a89ab6f2970c8582effc9f17d431017e3374` (tree `d7d6329d`, parent `8a3365d1`). It implements the decided resolver tier, G-5 (joint Committee allocation on the same local operation, one shared allocator) and the rest of G-4 (explicit eligibility at the governed delivery and consultation boundary). Ancestors `8a3365d1`, `a3bd2f99`, `09e7f5f0`, `b00a3328`, `77722be0`, `68de02fc`, `0eee8f63`, `ec68ec5a`, `2a96a650` and `1168c17a` are unchanged.
+- Slice six is built on accepted `8fa1796827e2a9960c1c25be0623b7ce399974dc` (tree `efe0d5b5`, parent `0e04a89a`), 0 behind `origin/master` `173d399b`. It implements the decided S-1 (registered bundle operations), S-2 (registered proposal) and S-3 (a project Core Team published from a verified bundle through the existing contract). G-3, G-6 root authoring and the asma-cli consumer are not in it. Every accepted ancestor, `8fa17968` included, is unchanged.
+- Slice seven is built on accepted `5662bea6d118ebb23cab598441df5a26a232b0b4` (tree `75d08395`, parent `8fa17968`). It implements G-3 only: one shared, optional fleet launch provenance at the runtime boundary, with what a launch requested kept apart from what its runtime natively observed. G-6 root authoring, the asma-cli consumer, deployment and the supervised qualification are not in it. Every accepted ancestor, `5662bea6` included, is unchanged.
+- The MUT-001 pass (this revision) was run on the exact accepted head `739debaacfb0ace894b36114aaa1eef6835cdfc1` (tree `781e21ec`, parent `5662bea6`), following the `mutation-testing` skill. It adds evidence only; no implementation source changed. The results are under "MUT-001 — performed on `739debaa`" below.
+
+This record is implementation evidence and a handoff. It is not verification, does not
+close TASK-002, and claims no mutation acceptance.
+
+## Slice four — what is now implemented
+
+| Decision | Source | What it does |
+| --- | --- | --- |
+| B-1 shared reader | `crates/kontor-fleet-activation/` (new) | The daemon-free, read-only reader: `FleetActivation` (v1 and v2 records), `Guard` and `read_guarded` (regular file, not group/other-writable, owned by the state root's owner, size limit, same inode, UTF-8), `verify_policy`, `verify_roster`, `verify_manifest`, `verify_bundle`, `load`, `Activated::resolve`, `resolve`. Policy bytes are admitted only through `FleetSnapshot::activated`. It depends on `kontor-core`, `kontor-fleet`, `serde` and `serde_json` only, and writes, caches and falls back to nothing. |
+| B-1 daemon delegation | `crates/kontor-daemon/src/fleet.rs` | `FleetSource::placement`/`policy`, `recorded_activation`, `verify_published` and the `fleet.yml` read all go through the shared reader and its guards. The daemon keeps only its `fleet.yml` rule texts (F-01..F-06), publication, activation, history writes, the atomic pointer replacement, legacy, last-valid, cache, status and decision logs. |
+| B-1 local operation | `crates/kontor-mcp/src/registry.rs`, `dispatch.rs`, `capability.rs`; `crates/kontor-cli/src/main.rs`, `local.rs` | `ToolSpec.execution` is a first-class `Execution::Http { method, path }` or `Execution::Local(LocalOperation)`. `kontor_fleet_policy_resolve` is `Execution::Local(LocalOperation::FleetPolicyResolve)`, read (declared admin in slice four; operator since slice five). MCP's `tools()` lists only routed operations, and `Dispatcher::call` refuses a local operation by class (`Denied::LocalOperation`, `not_found`) before a request exists. It is not in `CLI_ONLY`. The CLI branches on `tool.local()` before `connect()`: same gate, same `kontor_mcp::validate` schema checks, no base URL (refused if given), no credential. |
+| B-2 artifacts | `crates/kontor-fleet-activation/src/lib.rs` | `core-team-history/<core-team-revision-hash>.json` (canonical `CoreTeamRevision`), `orchestration-history/<source-bundle-hash>.json` (canonical `BundleManifest`: `schema_version`, `resolver`, `sources`, `policy_hash`, `policy_schema_version`, `role_catalog{catalog_id, version, content_hash}`, `core_team_revision_hash`). A v2 record names `source_bundle_hash`, `policy_hash`, `policy_schema_version` and `core_team_revision_hash`. Verification order: pointer, manifest (A-11 agreement), policy, roster (C-08 canonical address, L-01/L-02 shape), catalog pin (M-10). |
+| B-2 authoring schema and publisher | `crates/kontor-daemon/src/orchestration.rs` (new) | `orchestration.yml` (`schema_version: 1`, `fleet: fleet.yml`, `core_team: teams/core-team.yml`) and `teams/core-team.yml` (`schema_version`, `version`, `role_catalog` pin, ordered `seats[{role_slot_id, role_code, custom_display_name?, presence, ad_hoc_allowed}]`). `resolve_bundle` checks the pin against the realm catalog's canonical hash (O-04), resolves through `CoreTeamRevision::resolve` (O-05), and requires the declared seats to be the resolved seats exactly, in order, mandatory roles included (O-06). `propose_core_team` / `propose_orchestration` are the explicit authoring generator; nothing at runtime calls them. |
+| B-2 materialization seams | `crates/kontor-daemon/src/fleet.rs` | `FleetSource::publish_bundle` writes policy, roster and manifest immutably (owner-only, temporary file plus rename, existing artifacts re-verified) and reads the bundle back through `verify_bundle`. `FleetSource::activate_bundle` verifies every named artifact, then replaces the one pointer atomically, fenced by `ActivationFence{policy_hash, source_bundle_hash}`; replaying the standing bundle writes nothing. The v1 `activate` is unchanged and still writes the exact four-field v1 record. |
+| B-2 governed consumption | `crates/kontor-daemon/src/applications.rs` `Services::leadership_binding` | Under a v2 activation, a governed leadership launch (materialization, route correction, launch-intent supersession) byte-and-hash-confirms the epic's pinned canonical revision against the selected roster. On a mismatch it is refused `placement_blocked` before any seat or native effect; the pin is not retargeted. Leadership decisions and route evidence add `source_bundle_hash` only under a v2 activation, so v1 rows and preview hashes keep their shape. |
+| G-4 | `crates/kontor-api/src/applications.rs` `CoreTeamSeatRouteRequest`, `FleetEligibilityRequest`; `Services::leadership_choice` | A materialization route names exactly one of `model_route` (admitted or refused, never replaced) and `eligibility`. With `eligibility`, the route is `FleetResolution::select` under that explicit `Eligibility`; the decision records it (`eligibility`) with the exact policy, roster, binding and position. No binding, or nothing eligible, refuses before any seat exists. OpenAPI and console types are regenerated. |
+
+## Slice five — what is now implemented
+
+| Decision | Source | What it does |
+| --- | --- | --- |
+| Resolver tier | `crates/kontor-mcp/src/registry.rs` | `kontor_fleet_policy_resolve` is `CallerTier::Operator`, still `OpKind::Read` and `Execution::Local`. Admin inherits it; observer is refused by the dispatcher's own gate before anything is read. No HTTP fleet policy authority changed, and `KONTOR_TIER` is untouched. |
+| G-5 shared allocator | `crates/kontor-fleet/src/allocation.rs` (new) | `allocate(AllocationDiversity, &[AllocationSlot]) -> JointAllocation`: a pure backtracking search over flattened `AllocationCandidate`s, each carrying the policy vendor and the independence key. Slots in input order, then candidates in the order given (chain and rung order), are the tie-breakers. Under `distinct_vendor_per_reviewer` a reviewer with no key is `vendor_unknown` and no two reviewers share a key; a judge is held only to its own `Eligibility`. The answer is complete, or blocked (`no_eligible_candidate`, `no_distinct_reviewer_vendors`) with no slot selected. Each slot's receipt carries its eligibility, every candidate considered with its reason (`account_unavailable_now`, `vendor_excluded`, `vendor_unknown`, `vendor_held` and `conflicts_with`, `no_complete_allocation`), and the chosen step, sub-step and vendor. |
+| G-5 joint mode | registry `allocation` (declared nested `Object`/`ObjectArray`); `crates/kontor-fleet-activation/src/lib.rs` `Activated::allocate`, `allocate`; `crates/kontor-cli/src/local.rs` | The same operation takes exactly one of `binding_key` (single mode, unchanged `FleetSelection`) and `allocation` (`{diversity: distinct_vendor_per_reviewer, slots: [{slot_id, role: reviewer\|judge, binding_key, unavailable_accounts?, excluded_vendors?}]}`). J-01 refuses both or neither, J-02 top-level eligibility in joint mode, J-03 no slot, J-04 a repeated `slot_id`; the schema refuses unknown fields, roles and rules. The activation is loaded and verified once; every slot is resolved against that snapshot and any unresolvable slot refuses the whole request. The result (`status: 200`) and the `status: 409` `placement_blocked` refusal both carry one `ActivationProvenance` (policy hash and schema, and under v2 the bundle and roster hashes) and each slot's binding, chain, policy exclusions and allocator receipt. |
+| G-5 governed | `crates/kontor-daemon/src/applications.rs` `allocate_committee`, `freeze_committee_model_rungs` | `select_committee_allocation` is removed. Committee admission builds the pure input — the fleet vendor, or without a fleet (and for a route the fleet does not list) the provider family `independence_key` always used — and calls `kontor_fleet::allocate`. The refusal texts are unchanged. Recovery and native-less reroute keep their own single-seat independence checks: they choose one successor with every other seat fixed, and are not whole-Committee allocators. |
+| G-4 translation | `crates/kontor-scheduler/src/headroom.rs` `rung_evidence`, `placement`; `applications.rs` `quota_eligibility`, `place_fleet_routes` | The headroom walk is split into per-rung evidence and one placement decision, and `resolve` is those two with the first admissible rung, so the legacy walk is unchanged. For a fleet-bound seat the exact observation is stated as an `Eligibility` (an alias with no admissible account is unavailable now; `rules.independent_of` supplies `excluded_vendors`), `FleetResolution::select` or `allocate` chooses, and `placement` applies the unchanged near-reset wait and escalation rules to that choice. |
+| G-4 receipts | `crates/kontor-daemon/src/fleet.rs` `FleetDecision.eligibility`; Committee and Advisor `admission`; Committee recovery profile | Every fleet delivery decision line, every fleet-routed Committee slot and Advisor admission, and a fleet-routed Committee seat recovery profile record the exact `Eligibility`. Template-routed admissions and explicitly named caller routes keep their exact shape and walk the unchanged headroom chain. |
+
+## Slice six — what is now implemented
+
+| Decision | Source | What it does |
+| --- | --- | --- |
+| S-1 operations | `crates/kontor-api/src/applications.rs` (`FleetBundle*` DTOs, handlers), `lib.rs` routes; `crates/kontor-mcp/src/registry.rs`; `crates/kontor-daemon/src/applications.rs` `fleet_bundle`, `preview_fleet_bundle`, `publish_fleet_bundle`, `activate_fleet_bundle`, `resolve_fleet_bundle` | Admin, realm-wide `kontor_fleet_bundle_get` (`GET /v1/fleet/bundle`), `_preview`, `_publish` and `_activate` (`POST /v1/fleet/bundle:{preview,publish,activate}`), in the route table, MCP registry and generated CLI. Get and preview are reads; publish and activate are writes. Preview resolves the exact `orchestration`, `fleet` and `core_team` bytes through the one publisher (`orchestration::resolve_bundle`) against the realm catalog revision the Core Team source pins, and its hash binds the bundle identity (the three sources' exact hashes, policy, roster and pin) and that catalog revision. Publish resolves again, requires that preview hash, and writes and verifies the policy, roster and manifest through `FleetSource::publish_bundle`; it selects nothing. Activate names `source_bundle_hash` and `expected_active {policy_hash, source_bundle_hash?}` (absent only when no record stands), and `FleetSource::activate_bundle` verifies every artifact and replaces the one pointer. Get reports `activation_schema_version` 1 or 2, the record, and the manifest a v2 record names. |
+| S-1 idempotency | `crates/kontor-store/migrations/0121_fleet_bundle_operations.sql`, `SCHEMA_VERSION = 121` | The next free migration in the directory is `0121`. It widens the realm binding table's closed operation list to `publish_fleet_bundle` and `activate_fleet_bundle`, keeps the v120 permanence triggers, and each key's fingerprint binds the complete logical request (bundle and preview hash; bundle and exact expected pair). |
+| S-2 proposal | `kontor_fleet_bundle_propose` (`POST /v1/fleet/bundle:propose`); `Services::propose_fleet_bundle` | One registered Admin read over `propose_orchestration` / `propose_core_team`, against the catalog the realm governs Core Teams with. It returns the proposed `orchestration.yml` and `teams/core-team.yml` bytes and the exact catalog id, version and content hash they pin. It writes and activates nothing. It is not a local operation, and there is no `asma` command. |
+| S-3 Core Team from a bundle | `CoreTeamPreviewRequest` / `CoreTeamApplyRequest` `source_bundle_hash`; `Services::core_team_request_seats`, `confirm_bundle_roster` | The existing project Core Team preview and apply take exactly one of `seats` and `source_bundle_hash`. Both steps re-verify the bundle through the shared reader, derive the `CoreTeamSeatSelection`s from its roster, resolve them through the existing `resolve_core_team`, and hold the result to the roster byte for byte. Apply rechecks idempotency, the expected revision and the preview hash (which names the bundle), and publishes through the existing `publish_core_team_revision`. The bundle is in the intent, and so in the receipt, and on the outcome. No epic pin or running seat moves; bundle publication never writes a project. |
+
+## Slice seven — what is now implemented
+
+| Element | Source | What it does |
+| --- | --- | --- |
+| Shared DTO | `crates/kontor-runtime/src/provenance.rs`: `FleetLaunchProvenance`, `LaunchEligibility`, `FleetProvenanceObservation` | One optional value per launch: `policy_hash`, `source_bundle_hash` (only under a schema_version 2 activation), `binding_key`, `chain`, `step`, `sub_step`, `vendor`, and `eligibility`. `eligibility` is the stated `Eligibility` when the policy chose the route, and absent for a caller route the policy only admitted. The observation is a separate type: `not_requested`, `observed {surface, provenance}` or `unsupported {surface, native_id}`. `proves` is true only for an observation read back equal to the request, or when nothing was requested. |
+| Requests | `HostedSeatLaunchRequest.fleet_provenance`; `ConsultationLaunchRequest.fleet_provenance`, beside the unchanged `route_provenance`; `LaunchRequest::with_fleet_provenance` / `fleet_provenance()` (a private field; `LaunchParts` is unchanged); `SlotLaunch.fleet_provenance` | Hosted leadership, delivery and consultation launches carry it. |
+| Outcomes | `LaunchOutcome.fleet_provenance`; `ConsultationLaunchOutcome.fleet_provenance`, which is also the hosted-seat outcome | Each runtime answers with what it observed. No runtime answers with the request. |
+| Paseo native surface (`paseo.agent.labels`) | `crates/kontor-runtime-paseo/src/wire.rs`: `label::FLEET_*`, `fleet_provenance_labels`, `fleet_provenance_from_labels`, `FLEET_PROVENANCE_SURFACE`. Adapter: `consultation_labels`, `hosted_seat_labels`, `launch_admitted`, `observed_fleet_provenance` | The exact labels are `kontor.fleet.policy_hash`, `.source_bundle_hash`, `.binding_key`, `.chain`, `.step`, `.sub_step`, `.vendor` and `.eligibility`; eligibility is compact JSON. They join the exact wanted label set, so the pre-launch census, the create message and the fresh native readback (`verify_agent_placement`, `matches_labels`) all hold the agent to them. The observation is then parsed from the read-back agent's labels, not taken from the request. A readback that lacks or contradicts a label refuses `CorrelationFailed`. Delivery writes them through `paseo agent run --label k=v`, whose value is split on the first `=` only, or through the OpenCode RPC create. Hosted leadership and consultation write them in the `create_agent_request` labels. The OpenCode `route_provenance.evidence_hash` label (`OPERATOR_ACCEPTED_FALLBACK`) is unchanged. Adoption and claim request nothing. |
+| Unsupported surfaces | Codex `codex.exec`, AO `ao.session`; the test double `fake.runtime` | Neither production surface has a native label or metadata surface. A launch that requests provenance is answered `unsupported`, with the native id and the surface. Codex and AO implement only delivery launches. |
+| Daemon mapping | `crates/kontor-daemon/src/applications.rs`: `LeadershipRoute::launch_provenance`, `fleet_launch_provenance`, `launch_eligibility`, `Services::delivery_launch_provenance`, `frozen_fleet_provenance`, `committee_seat_fleet_provenance`, `record_launch_provenance`. `crates/kontor-daemon/src/fleet.rs`: `FleetDecision.chain` and `.source_bundle_hash`, `FleetBinding.source_bundle_hash`, `FleetSource::decision_for`, `FleetSource::record_launch_provenance`, `LaunchProvenanceRecord` | **Leadership:** the `LeadershipRoute` its decision records, at materialization and at route correction. **Delivery:** the last `FleetDecision` recorded under the agent run, used only while it names the launched rung; a succession's decision is recorded under the seat it replaces. The decision now also records `chain` and, under v2, `source_bundle_hash`; rows written before this slice still read, and request nothing. **Advisor:** frozen at invoke as `admission.fleet_provenance`. **Committee:** frozen per slot as `admission.routes[].fleet_provenance`, only for a route the policy's own chain supplied (`source = fleet_configuration`, where `rank` is the chain position). It is read at launch only while the seat still holds the admitted route. **Committee seat recovery:** `recovery_profile.fleet_provenance` when the policy chose the successor's route; a resumed attempt reads it from the profile it prepared. |
+| Record | `<state_root>/fleet-decisions/launches/<subject>.jsonl` | Owner-only and append-only. The subject is the SeatBinding for leadership and consultation, and the AgentRun for delivery. Each line holds `{launch, subject, native_id, requested, observed, proven, recorded_at}`. It is written after the native effect, and only for a launch that requested provenance. A write failure is logged (`fleet.launch_provenance_unrecorded`): the launch is then left without recorded proof, never given invented proof. There is no migration and no API or OpenAPI change. |
+| Tests | Runtime: `only_a_read_back_equal_to_the_request_proves_it`, `the_record_shape_is_stable`. Paseo: `fleet_provenance_round_trips_through_exact_labels`; contract `hosted_leadership_writes_and_reads_back_its_fleet_provenance`, `a_delivery_launch_reads_its_fleet_provenance_back_from_the_agent`, `a_consultation_launch_writes_and_reads_back_its_fleet_provenance`. Codex: `a_codex_launch_reports_requested_fleet_provenance_as_unsupported`. AO: `an_ao_launch_reports_requested_fleet_provenance_as_unsupported`. Daemon: `a_launch_reads_the_decision_recorded_for_its_own_agent_run`, `a_launch_record_keeps_the_request_apart_from_the_observation`. Loopback: `a_fleet_routed_delivery_launch_records_its_provenance_apart_from_the_observation`, plus assertions added to `a_leadership_seat_without_a_caller_route_is_routed_by_the_policy_choice`, `a_leadership_route_correction_is_held_to_the_activated_chain`, `a_fleet_bound_advisor_keeps_its_fleet_provenance_through_materialization` and `a_fleet_bound_committee_seats_reviewers_on_different_vendors` | The Paseo fixtures script the readback independently of the create message, so an observation cannot pass by echoing the request; drifted or missing labels refuse. The loopbacks run on the fake runtime, so each asserts `unsupported` and `proven: false` beside a request equal to the recorded decision or frozen admission. |
+
+## Goal under reconciliation
+
+> Both orchestration modes resolve all required leadership, delivery and consultation
+> slots from the same activated project YAML revision through reused deterministic
+> validation and resolution, with matching provenance, explicit eligibility and no live
+> effect from unactivated edits.
+
+## Gap matrix
+
+`✓` satisfied by committed source and tests; `◐` partly; `✗` absent.
+
+| Goal element | Governed (Kontor) | Direct (Paseo-direct) | Evidence / remaining work |
+| --- | --- | --- | --- |
+| One authoring source (`config/orchestration/`) | ◐ | ◐ | The module schema (`orchestration.yml`, `teams/core-team.yml`), the one publisher `resolve_bundle`, the registered proposal (S-2) and the registered publication and activation (S-1) exist. No root `config/orchestration/` files exist (G-6: ECP checkout only, after schema review). |
+| Registered publication and activation | ✓ | n/a | v1: `/v1/fleet/policy{,:preview,:publish,:activate}`, MCP/CLI `kontor_fleet_policy_*` (`2a96a650`). v2: `/v1/fleet/bundle{,:preview,:publish,:activate,:propose}`, MCP/CLI `kontor_fleet_bundle_*` (slice six). Both write the one pointer through the one activation implementation. |
+| Immutable history, owner-only pointer, fail-closed reading | ✓ | ✓ | One reader: `kontor-fleet-activation` (`read_guarded`, `load`), used by the daemon's placement path and by the CLI's local operation. |
+| Reused deterministic parser, validator and resolver | ✓ | ✓ | `kontor-fleet` is the single implementation; the direct consumer is `kontor fleet-policy-resolve`, which links it through `kontor-fleet-activation`. |
+| Leadership slots (LSA, TPM) | ✓ | ✓ v2 only | Governed: a caller route must be on the bound chain (`ec68ec5a`); with no caller route the policy chooses under explicit eligibility (G-4, materialization); under a v2 activation the pinned revision must be the selected roster byte for byte. Direct: `fleet-policy-resolve --binding-key leadership/<hash>/<slot>` resolves only under a v2 activation whose selected roster has that hash (D-01 under v1, D-02 for another revision). |
+| Delivery slots | ✓ | ✓ | Governed: `declared_delivery_rungs` walks the bound chain under quota evidence and records `fleet-decisions/<team_run_id>.jsonl`. Direct: `fleet-policy-resolve --binding-key team/<template>/<slot>`. |
+| Consultation slots (Advisor, Committee) | ✓ | ✓ | Governed: freeze, recovery and native-less reroute read the verified policy; Committee admission allocates through `kontor_fleet::allocate`. Direct: per-seat resolution of `advisor/…` and `committee/…/<seat>` keys, and joint Committee allocation through the same allocator (`--allocation`). |
+| Policy-chosen route | ✓ | ✓ | `FleetResolution::select`: governed delivery, Advisor and Committee recovery, governed leadership materialization with no caller route, and every direct single resolution. `kontor_fleet::allocate`: governed Committee admission and every direct joint allocation. |
+| Explicit eligibility | ✓ | ✓ | Direct: `--unavailable-accounts`, `--excluded-vendors`, and per slot in `--allocation`. Governed leadership materialization takes an explicit `eligibility`. Governed fleet-bound delivery and consultation state the quota observation as an `Eligibility` before the shared resolver or allocator chooses (`quota_eligibility`). Legacy no-fleet seats and explicit caller routes keep the unchanged headroom walk. |
+| Matching provenance | ✓ records | ✓ | Delivery `FleetDecision` (with `eligibility`, and from slice seven `chain` and `source_bundle_hash`), leadership `LeadershipDecision` (`source_bundle_hash` under v2, `eligibility` for a policy choice), consultation admission `profile_hash` (and `eligibility` and `fleet_provenance` when fleet-routed); direct `FleetSelection` and `JointSelection`. Per launch (slice seven), `fleet-decisions/launches/<subject>.jsonl` keeps the requested `FleetLaunchProvenance` apart from the runtime's observation. Field mapping in the table under "Launch specification". |
+| Fleet provenance on the launch request (leadership, delivery, consultation) | ✓ | ✗ | Slice seven. `HostedSeatLaunchRequest`, `LaunchRequest` and `ConsultationLaunchRequest` carry `fleet_provenance`: policy hash, v2 bundle hash, binding key, chain, step, sub-step, vendor and stated eligibility. It is mapped from the recorded decision or the frozen admission, never re-derived at launch. The consultation `route_provenance` (`source`, `evidence_hash`) is unchanged beside it. Direct: `fleet-policy-resolve` returns the `FleetSelection`, but no direct launch carries it; that is the asma-cli consumer. |
+| Fleet provenance on the launch outcome | ✓ | ✗ | `LaunchOutcome.fleet_provenance` and `ConsultationLaunchOutcome.fleet_provenance` (also the hosted-seat outcome) carry the runtime's own observation. `fleet-decisions/launches/<subject>.jsonl` records it beside the request with `proven`. |
+| Native write and readback: Paseo (`paseo.agent.labels`), all three launch kinds | ✓ fixtures | ✗ | Hosted leadership, delivery and consultation launches write the exact `kontor.fleet.*` labels and report `observed` from the read-back agent; a missing or contradicting label refuses `CorrelationFailed`. This is proved against recorded Paseo fixtures only. No real Paseo launch was performed, so a real daemon's acceptance of these label values is unverified until the supervised qualification. The OpenCode `evidence_hash` readback is unchanged. |
+| Native write and readback: Codex (`codex.exec`) and AO (`ao.session`) delivery | ✗ unsupported | n/a | Neither surface can carry the provenance. Each such launch is recorded as `unsupported` with its native id and surface, and `proven: false`. This acceptance cell stays unmet. |
+| No live effect from unactivated edits | ✓ | ✓ | Slice-one and slice-two loopbacks and the slice-three cross-mode test; slice four: the CLI never reads `fleet.yml` (A-10 with only `fleet.yml` present), and a published but unactivated bundle selects nothing. |
+| Real provider or Paseo launch | ✗ | ✗ | Later supervised effect; specification below. |
+
+### TEST-002 coverage
+
+| TEST-002 clause | Status | Where |
+| --- | --- | --- |
+| Deterministic same-policy resolution | ✓ | `kontor-fleet` `equal_policy_bytes_*`; daemon `a_direct_reader_of_the_activation_chooses_what_placement_chooses`, `an_aligned_bundle_is_published_then_activated_as_one_selection` (governed placement and `kontor_fleet_activation::resolve` agree for every seat class); CLI `an_aligned_bundle_resolves_every_seat_class_without_a_daemon` (the CLI prints the shared reader's selection verbatim); allocator `the_search_backtracks_and_slot_order_breaks_the_tie`, `reviewers_take_distinct_vendors_and_the_judge_is_unconstrained`; joint `a_joint_allocation_resolves_every_slot_from_one_snapshot`, CLI `a_joint_allocation_is_one_snapshot_through_the_shared_allocator` (the CLI prints the shared allocator's answer verbatim); scheduler `the_walk_is_its_evidence_and_its_first_admissible_rung` |
+| All seat classes | ✓ library and CLI, ◐ runtime | LSA, TPM, delivery, committee and advisor keys through the shared reader and the CLI; governed loopbacks from slices one, two and four |
+| Source hashes | ✓ module, ✗ root | `BundleManifest.sources` records the hash of `orchestration.yml`, `fleet.yml` and `teams/core-team.yml` (`the_explicit_proposal_resolves_to_the_exact_mandatory_revision`). No root bundle exists yet (G-6). |
+| Activation boundary | ✓ | `only_the_activated_bytes_are_admitted`, daemon activation and bundle tests, `a_bundle_that_does_not_verify_is_never_activated_and_never_served`, loopbacks |
+| Missing or invalid input | ✓, ◐ two guards | Rule tests V-01..V-33, L-01..L-03, P-07, A-07..A-11, M-07..M-10, C-07..C-08, D-01..D-03, J-01..J-04, O-01..O-06, block result, joint `there_is_no_partial_allocation`, `a_joint_request_that_is_empty_repeated_or_unresolvable_fails_closed`, CLI `a_joint_request_names_one_mode_and_the_declared_shape`; the symlink, writable, oversized and UTF-8 guards (x-01, x-02, x-04, x-06) of the pointer, manifest, policy and roster (`every_named_file_is_read_under_its_own_guard`); CLI `the_local_read_fails_closed_and_never_falls_back`, `the_local_read_keeps_its_tier_its_schema_and_takes_no_base_url`. The owner (x-03) and swapped-file (x-05) guards are implemented but untested for every family: they need a second uid or a race harness. |
+| Old-pin compatibility | ✓ | v1 `fleet.yml` reader unchanged (V-33 applies only to publication); `an_older_roster_revision_keeps_its_own_leadership_binding`; v1 record shape `a_schema_version_1_record_keeps_its_exact_shape`; v1 leadership refused directly (D-01) while v1 delivery resolves; governed epics pinned elsewhere keep their pin (`an_aligned_activation_leads_only_the_epic_pinned_to_its_roster`) |
+| No secret material | ✓ | V-33 `a_published_policy_carries_no_credential_path_or_email`; the selection receipt passes `CanonicalDocument` sensitive-material checks |
+
+## B-1 and B-2 — decided by the LSA, implemented in slice four
+
+The recommendations this section used to carry were decided on 2026-09-28 (plan
+commit `671d49ca`). B-1 took option 1 with one correction: the local operation is a
+first-class execution class of the registry, not a `CLI_ONLY` entry. B-2 took the
+explicit selected roster, not the bootstrap roster: `CoreTeamRevision::resolve(
+SpecVersion::FIRST, <catalog>, &[])` is only the authoring generator. The governed
+`epic_bootstrap_roster` fallback for a project with no published Core Team is
+unchanged; the decision forbids a *direct-mode* runtime fallback, and none exists.
+"What is now implemented" above is the source map.
+
+### Choices made inside the decisions, for review
+
+These are implementation choices this seat made where the decision text was silent.
+Each is reversible and none is presented as a substitute decision.
+
+1. **Local operation tier (decided by the LSA; slice five).** `kontor_fleet_policy_resolve`
+   is declared `operator`. Admin inherits it; an observer is not admitted to actionable
+   placement selection. The CLI enforces it with the dispatcher's own gate before
+   reading. `asma-cli`'s `_run_kontor` already passes `KONTOR_TIER = "operator"`.
+2. **Local answer shape.** Success is the envelope every command prints,
+   `{tool, status: 200, body: FleetSelection}`, so `_run_kontor` reads it unchanged.
+   Nothing eligible is `{status: 409, body: {code: "placement_blocked", message,
+   selection}}` and exit 1, the same class the CLI already gives the daemon's
+   `placement_blocked`. Joint mode answers the same way: `{status: 200, body:
+   JointSelection}`, or `{status: 409, body: {code: "placement_blocked", message,
+   allocation}}`. Verification refusals are the CLI's local refusal document
+   (`dispatched: false`): A-08, A-10, M-07, C-07, D-01 and D-03 as `not_found` (exit
+   6), every other rule as `invalid_request` (exit 2), an I/O failure as
+   `unavailable` (exit 5).
+3. **Activation fence.** The v2 `activate_bundle` fences on the standing record's
+   `(policy_hash, source_bundle_hash)`. The v1 `activate` keeps its policy-hash fence,
+   so a v1 activation can still replace a v2 record when the caller names the
+   standing policy. That drops aligned leadership coverage, visibly (D-01).
+4. **Governed consumption point (S-3 decided; slice six).** The governed path
+   byte-and-hash-confirms at the leadership launch (`leadership_binding`), and a
+   project Core Team can now be published from a bundle through the existing
+   preview and apply (`source_bundle_hash`), which consume the bundle's roster.
+   Because that path resolves at the project's next Core Team version, the result
+   equals the roster only when the bundle was authored at that version against the
+   catalog the realm holds; otherwise the preview refuses rather than publishing a
+   revision the bundle never named. Bundle publication itself never writes a
+   project.
+5. **Bundle consistency.** The publisher does not refuse a policy whose leadership
+   keys name another revision or leave a roster slot unbound. The direct reader
+   refuses those keys at resolution (D-02, D-03). On the governed path the two
+   route forms differ: for a seat the policy does not bind, an explicit caller
+   `model_route` stands unchanged (`leadership_route` answers `None`), and only a
+   route that names `eligibility` instead is refused `placement_blocked`, because
+   `leadership_choice` has no binding to choose from. A publication-time rule is a
+   possible later V-rule.
+6. **G-4 scope.** Only materialization can omit a route. Route correction and
+   launch-intent supersession name a route by contract and still admit only
+   on-chain routes.
+
+## Remaining gaps after slice seven
+
+- **S-1, S-2 and S-3** are implemented in slice six (above). Migration `0121` is a
+  rebase hazard for any branch that also claims the next number.
+- **G-3** is implemented in slice seven (above) on the governed path. What stays unmet:
+  - Codex `codex.exec` and AO `ao.session` delivery launches record `unsupported`. Their acceptance cell stays unmet.
+  - Direct launches carry no provenance. The asma-cli consumer must pass the `FleetSelection` into the Paseo launch and read the labels back.
+  - A real Paseo daemon's acceptance of the `kontor.fleet.*` values is unverified until the supervised qualification. The eligibility value is JSON. `paseo agent update --label` splits values on commas, but no update or adoption path writes these labels.
+  - The launch records are state-root JSONL only. No registered read serves them.
+  - A delivery launch in flight across the upgrade, then recovered by exact labels, will not match an agent created without the fleet labels. It refuses `DeliveryConfirmationUnknown` rather than adopting.
+  - Delivery has loopback coverage on the succession path only. The replace, scheduler-admitted and recovery-capable launch sites use the same `delivery_launch_provenance`, but none has a loopback of its own.
+- **G-4 and G-5** are implemented in slice five (above). What stays outside them:
+  native-less reroute admits only an explicit caller recovery profile, and Committee
+  seat recovery with an explicit profile walks it unchanged. Both are explicit
+  caller-route admission. The governed Committee receipt records per-slot
+  eligibility but not the allocator's full per-candidate receipt; direct joint mode
+  returns the full receipt. That residual is accepted as closed.
+- **G-6: root `config/orchestration/` files.** Prepared only in the ECP checkout,
+  only after this module schema is reviewed, and not activated by being written.
+- **asma-cli consumer** (below), **deployment** of a daemon and CLI build through the
+  owning release workflow, and the **supervised qualification** launch (below). None
+  was performed.
+- **MUT-001** was run on `739debaa` (below): all 12 mutants were killed. Verify and
+  audit have not yet read it back.
+
+## asma-cli handoff (not written; another checkout)
+
+- **Repository:** `_tools/asma-cli` (`/Users/igor/carasent/asma-modules/_tools/asma-cli`), catalog module `asma-cli`. It is changed only in its own isolated task worktree, created by the plan's owner, on the epic-keyed module integration branch, after this schema is reviewed. This seat did not write it.
+- **Owner boundary:** direct-mode input shaping and receipt capture only. No parser, no resolver, no scheduler, no control plane, and no new `asma` command. It extends the existing `asma fleet preflight` report through the existing `kontor_publication._run_kontor`.
+- **Operation contract (implemented):** `kontor --state-root <root> --tier operator fleet-policy-resolve --binding-key <key> [--unavailable-accounts '<JSON array>'] [--excluded-vendors '<JSON array>']`. `<key>` is `team/<template>/<slot>`, `committee/<template>/<seat>`, `advisor/<profile>` or `leadership/<core-team-revision-hash>/<role-slot-id>`, where the hash is the `core_team_revision_hash` of the v2 activation record. The answer is `{tool, status, body}`: `status: 200` with `body` = `FleetSelection` (`provenance{policy_hash, schema_version, binding_key, chain}`, `eligibility`, `selected{rung{provider, model, effort}, step, sub_step, vendor}`, `considered[{route, excluded?}]`, `excluded_by_policy[...]`), or `status: 409` `placement_blocked` with the `selection`, or a local refusal (exit codes under choice 2 above). Store `body` verbatim beside the Paseo readback; never launch on anything but `status: 200`.
+- **Joint contract (implemented):** the same command with `--allocation '<JSON>'` instead of `--binding-key` (exactly one), where the JSON is `{diversity: "distinct_vendor_per_reviewer", slots: [{slot_id, role: "reviewer"|"judge", binding_key, unavailable_accounts?, excluded_vendors?}]}`. The answer is `status: 200` with `body` = `JointSelection` (`provenance{policy_hash, policy_schema_version, source_bundle_hash?, core_team_revision_hash?}`, `diversity`, `slots[{binding_key, chain, excluded_by_policy, slot_id, role, eligibility, selected{rung, step, sub_step, vendor, independence}, considered[{candidate, excluded?, conflicts_with?}], failure?}]`), or `status: 409` `placement_blocked` with the `allocation` and `blocked`. Store it verbatim; launch only on `status: 200`.
+- **Tier:** `operator` (choice 1), which `_run_kontor` already passes.
+- **Candidate source:** `src/asma_cli/fleet_policy.py`, with `resolve_seat(state_root, key, eligibility) -> dict` calling `_run_kontor`. Unavailable accounts come from `fleet_availability` records; excluded vendors come from the implementer's previous receipt.
+
+## MUT-001 — performed on `739debaa`
+
+MUT-001 is "unactivated YAML changes next placement". The activation decision now has
+these sites; mutate each separately:
+
+1. `crates/kontor-fleet/src/lib.rs`, `FleetSnapshot::activated` / `FleetSnapshot::published`. Mutant: drop the content-hash equality (`if ContentHash::of(document.as_bytes()) != *hash { return Err(invalid(P07)); }` becomes unconditional acceptance). Expected killers: `kontor-fleet` `only_the_activated_bytes_are_admitted`; `kontor-fleet-activation` `a_rewritten_or_non_canonical_artifact_fails_closed`; daemon `a_direct_reader_of_the_activation_chooses_what_placement_chooses`, `a_tampered_published_policy_fails_closed_without_falling_back`; loopback `an_activated_policy_places_the_next_seat_and_fails_closed_when_unverifiable`.
+2. `crates/kontor-daemon/src/fleet.rs`, `FleetSource::placement`: the branch that serves `legacy()` only when `fleet-activation.json` is absent. Mutant: serve `legacy()` unconditionally. Expected killers: `an_activated_policy_replaces_fleet_yml_for_placement`, `an_unactivated_edit_or_publication_has_no_live_effect`, `a_bundle_that_does_not_verify_is_never_activated_and_never_served`, loopback `an_activated_policy_places_the_next_seat_and_fails_closed_when_unverifiable`.
+3. `crates/kontor-fleet-activation/src/lib.rs`, `load`: the manifest agreement (A-11) and `verify_contents`. Mutants: accept a disagreeing record; skip the roster or catalog-pin check. Expected killers: `a_record_that_disagrees_with_its_manifest_fails_closed`, `a_missing_named_artifact_fails_closed`, `a_manifest_pinning_another_role_catalog_fails_closed`; CLI `the_local_read_fails_closed_and_never_falls_back`.
+4. `crates/kontor-daemon/src/applications.rs`, `Services::leadership_binding`: the selected-roster confirmation. Mutant: skip it. Expected killer: loopback `an_aligned_activation_leads_only_the_epic_pinned_to_its_roster`.
+5. `crates/kontor-daemon/src/applications.rs`, `place_fleet_routes` and `quota_eligibility`: the translated eligibility. Mutant: select under an empty eligibility. Expected killer: loopback `every_admitted_fleet_placement_is_recorded`.
+6. `crates/kontor-fleet/src/allocation.rs`, `allocate`, and the governed `allocate_committee`: the held-vendor and diversity rules. Mutants: drop the held-key check; map `distinct_provider_per_slot` to `None`. Expected killers: `reviewers_take_distinct_vendors_and_the_judge_is_unconstrained`, `the_search_backtracks_and_slot_order_breaks_the_tie`, daemon `whole_committee_allocation_*`, loopback `a_fleet_bound_committee_seats_reviewers_on_different_vendors`, CLI `a_joint_allocation_is_one_snapshot_through_the_shared_allocator`.
+7. `crates/kontor-daemon/src/applications.rs`, `confirm_bundle_roster` and `resolve_fleet_bundle`: a bundle-sourced Core Team held to its roster, and a publication held to its preview. Mutants: skip the byte-and-hash confirmation; skip the preview-hash comparison. Expected killers: loopback `a_core_team_is_published_from_a_verified_bundle_through_the_existing_contract` (the version-2 preview must refuse), `an_orchestration_bundle_is_published_and_activated_through_registered_operations` (the unseen publication must refuse).
+
+Local preparation checks, which only confirm that the named killers exist:
+
+- Slice three, site 1 on the uncommitted tree (P-07 equality removed). Failed: `kontor-fleet` `only_the_activated_bytes_are_admitted`; daemon `a_tampered_published_policy_fails_closed_without_falling_back` and `a_direct_reader_of_the_activation_chooses_what_placement_chooses`; loopback `an_activated_policy_places_the_next_seat_and_fails_closed_when_unverifiable`, `leadership_materialization_is_resolved_through_the_activated_policy`, `a_committee_allocates_from_the_activated_policy_and_fails_closed`, `an_advisor_freezes_from_the_activated_policy_and_fails_closed`, `a_committee_seat_recovery_fails_closed_on_an_unverifiable_activation` and `a_native_less_consultation_reroute_fails_closed_on_an_unverifiable_activation`.
+- Slice four, site 4 on the uncommitted tree (confirmation short-circuited with `&& false`). Failed: `an_aligned_activation_leads_only_the_epic_pinned_to_its_roster`, which got 200 where it requires 409. The source was restored and touched.
+- Slice five, site 5 on the uncommitted tree (select under `Eligibility::default()`). Failed: `every_admitted_fleet_placement_is_recorded`, whose second takeover was refused (the chosen route had no admissible account). Site 6's governed diversity mapping forced to `None`. Failed: loopback `a_fleet_bound_committee_seats_reviewers_on_different_vendors` and both daemon `whole_committee_allocation_*` tests. Each source was restored and touched.
+- Slice six, site 7 on the uncommitted tree (`confirm_bundle_roster` short-circuited). Failed: `a_core_team_is_published_from_a_verified_bundle_through_the_existing_contract`, whose version-2 preview was admitted (200 where it requires 400). The source was restored and touched.
+
+Those checks were preparation only. The results below supersede them.
+
+### Results on `739debaa` (2026-09-30)
+
+**Head.** `739debaacfb0ace894b36114aaa1eef6835cdfc1`, tree `781e21ec3aab928e939ecb2349c6833ab6640954`, clean.
+
+**Method.** The pass followed the `mutation-testing` skill (`.agents/skills/mutation-testing/SKILL.md` in asma-modules):
+
+- One mutant at a time, each seeded as one anchored edit that had to match exactly once.
+- The claimed killers ran with `cargo test --no-fail-fast`, one package or target per command, sequentially. For site 3 the whole `kontor-fleet-activation` library suite (14 tests) ran, so a killer outside the named ones would show.
+- After each mutant: `git checkout -- <file>` and `touch <file>`. The next mutant was seeded only once `git diff 739debaa` and `git status --porcelain` were both empty.
+- Every failure below is an assertion panic. No mutant failed to compile, and every command ran at least one test.
+
+**Baseline**, clean head, before any mutant: `cargo test --workspace --no-fail-fast` exited 0. 155 test targets ran: 3021 passed, 0 failed, 9 ignored.
+
+**Post-pass**, restored source, after touching every mutated file: every claimed killer and the full activation suite ran again. 32 passed, 0 failed, so no mutant is left in any binary.
+
+| ID | Site | Seed (file:line at `739debaa`) | Killers run | Result |
+| --- | --- | --- | --- | --- |
+| M01 | 1 | `crates/kontor-fleet/src/lib.rs:456`, `FleetSnapshot::published`: the P-07 content-hash equality is dropped. `activated` goes through it. | kontor-fleet `only_the_activated_bytes_are_admitted`; activation `a_rewritten_or_non_canonical_artifact_fails_closed`; daemon `a_direct_reader_of_the_activation_chooses_what_placement_chooses`, `a_tampered_published_policy_fails_closed_without_falling_back`; loopback `an_activated_policy_places_the_next_seat_and_fails_closed_when_unverifiable` | **KILLED** by all 5. Rewritten bytes were admitted; the loopback got 200 where the tampered activation must refuse. |
+| M02 | 2 | `crates/kontor-daemon/src/fleet.rs:392`, `FleetSource::placement`: `if true` serves `legacy()` unconditionally. | daemon `an_activated_policy_replaces_fleet_yml_for_placement`, `an_unactivated_edit_or_publication_has_no_live_effect`, `a_bundle_that_does_not_verify_is_never_activated_and_never_served`; loopback `an_activated_policy_places_the_next_seat_and_fails_closed_when_unverifiable` | **KILLED** by all 4. `fleet.yml`'s hash and route were served instead of the activated policy's. |
+| M03 | 3 | `crates/kontor-fleet-activation/src/lib.rs:506`, `load`: the A-11 record/manifest agreement guard is dropped. | activation library suite; CLI `the_local_read_fails_closed_and_never_falls_back` | **KILLED** by `a_record_that_disagrees_with_its_manifest_fails_closed`, which got `Ok`. The CLI test passed. |
+| M04 | 3 | `:404`, `verify_roster`: the C-08 part of the roster check. `from_stored(&text, hash)` becomes `from_value` of the parsed text, with no canonical or address check. | as M03 | **KILLED** by `a_rewritten_or_non_canonical_artifact_fails_closed`: the rewritten roster was refused as M-10, not C-08. The CLI test passed. |
+| M05 | 3 | `:405`, `verify_roster`: the shape part of the roster check. `LeadershipKey::pinned_slots` (L-01/L-02) is dropped. | as M03 | **KILLED** by `a_canonical_artifact_of_the_wrong_kind_fails_closed`: refused as M-10, not L-01. The CLI test passed. |
+| M06 | 3 | `:535`, `verify_contents`: the M-10 catalog-pin guard is dropped. | as M03 | **KILLED** by `a_manifest_pinning_another_role_catalog_fails_closed`, which got `Ok`. The CLI test passed. |
+| M07 | 4 | `crates/kontor-daemon/src/applications.rs:38819`, `Services::leadership_binding`: `&& false` skips the selected-roster confirmation. | loopback `an_aligned_activation_leads_only_the_epic_pinned_to_its_roster` | **KILLED**: 200 where 409 is required. |
+| M08 | 5 | `applications.rs:15503`, `place_fleet_routes`: it selects under `Eligibility::default()` instead of the translated eligibility. | loopback `every_admitted_fleet_placement_is_recorded` | **KILLED**: 400 where 200 is required. |
+| M09 | 6 | `crates/kontor-fleet/src/allocation.rs:302`, the allocator's `walk`: the held-key check is dropped. | kontor-fleet `reviewers_take_distinct_vendors_and_the_judge_is_unconstrained`, `the_search_backtracks_and_slot_order_breaks_the_tie`; daemon `whole_committee_allocation_*` (2); loopback `a_fleet_bound_committee_seats_reviewers_on_different_vendors`; CLI `a_joint_allocation_is_one_snapshot_through_the_shared_allocator` | **KILLED** by all 6. Reviewers shared a vendor. |
+| M10 | 6 | `applications.rs:15259`, `allocate_committee`: `DistinctProviderPerSlot` maps to `AllocationDiversity::None`. | as M09 | **KILLED** by both daemon `whole_committee_allocation_*` tests and the loopback. The kontor-fleet and CLI tests passed: they never call the governed mapping. |
+| M11 | 7 | `applications.rs:9088`, `confirm_bundle_roster`: `false &&` skips the byte-and-hash confirmation. | loopback `a_core_team_is_published_from_a_verified_bundle_through_the_existing_contract` | **KILLED**: the version-2 preview got 200 where 400 is required. |
+| M12 | 7 | `applications.rs:24638`, `publish_fleet_bundle`: `false &&` skips the comparison with the preview hash that `resolve_fleet_bundle` computes. | loopback `an_orchestration_bundle_is_published_and_activated_through_registered_operations` | **KILLED**: the unseen publication got 200 where 400 is required. |
+
+**Score.** 12 killed of 12 seeded; 0 survived, 0 equivalent.
+
+**Corrections to the site list above.**
+
+- **The CLI test is not a site-3 killer.** `the_local_read_fails_closed_and_never_falls_back` passed against all four site-3 mutants (M03–M06). The activation crate's own tests are the site-3 killers.
+- **Site 3 names the wrong missing-artifact test.** The list names `a_missing_named_artifact_fails_closed`, and it passed against all four site-3 mutants: a missing roster is still refused C-07 by the read. M04 and M05 were killed by `a_rewritten_or_non_canonical_artifact_fails_closed` and `a_canonical_artifact_of_the_wrong_kind_fails_closed`, which the list does not name. In both, the corrupted roster was still refused, by the later M-10 check, so only the exact-rule assertion catches the mutant.
+- **Site 6 has two killer sets.** The kontor-fleet and CLI tests kill only the allocator mutant (M09). The governed mapping (M10) is killed only by the daemon and loopback tests.
+
+**Scope.** MUT-001 covers the activation decision ("unactivated YAML changes next placement"); G-3 launch provenance was not in it. This pass records the evidence for one cell of TASK-002. Verify and audit have not yet read it back, and it does not close TASK-002.
+
+## Launch specification (later supervised effect)
+
+Preconditions: the source is reviewed; the daemon build is deployed through the owning release workflow to a **dedicated qualification realm**. That means its own state root and its own Paseo workspace — never the live `~/.local/state/kontor/asma` realm. No live policy, pin, provider home or credential is migrated; no receipt is fabricated.
+
+1. `kontor --state-root <qual> --tier admin fleet-policy-preview --document "$(cat policy.yml)"`; then `fleet-policy-publish` and `fleet-policy-activate` (expected active hash omitted); then `fleet-policy-get`. Record `policy_hash` H. This is a v1 activation: it covers governed leadership, delivery and consultation and direct delivery and consultation, but not direct leadership (D-01). For an aligned v2 activation instead: `fleet-bundle-propose`; `fleet-bundle-preview` with the three sources; `fleet-bundle-publish` with its preview hash; `fleet-bundle-activate` with `expected-active` naming the standing record; then `fleet-bundle-get`, recording the bundle hash, policy H and roster hash. If a project Core Team is to be the bundle's roster, `core-team-preview` / `core-team-apply` with `source-bundle-hash`.
+2. For each seat class, launch through its existing registered operation and read the effect back. For every class, also capture `fleet-decisions/launches/<subject>.jsonl` (slice seven). On Paseo, `observed` must be read from the native agent's `kontor.fleet.*` labels and `proven` must be true. On Codex or AO, `unsupported` with the native id is the expected answer, and it leaves that cell unmet:
+
+| Seat class | Operation (CLI) | Provenance to capture, all naming H |
+| --- | --- | --- |
+| LSA, TPM | `core-team-materialize` with routes on the bound chain; then `core-team-route-preview` / `core-team-route-apply` | `fleet-decisions/leadership/<seat_binding_id>.jsonl`: `operation, seat_binding_id, occupancy_generation, core_team_revision_hash, role_slot_id, binding_key, fleet_hash, policy_schema_version, chain, step, sub_step, provider, model, effort, vendor`; runtime readback of the native id, generation and observed route |
+| Delivery (for example `implement`) | `team-run-seat-fill` | `fleet-decisions/<team_run_id>.jsonl`: `binding_key, role_slot, fleet_hash, step, sub_step, provider, model, effort, vendor, account_profile_id`; launched route readback |
+| Advisor | `advisor-run-invoke` | run context `admission.source = fleet_configuration`, `admission.profile_hash = H`; seat route readback |
+| Committee reviewers and judge | `committee-run-invoke`; `consultation-seat-recover` | admission `routes[].source`, `routes[].profile_hash = H`, `routes[].eligibility`; distinct reviewer vendors; readback |
+| Direct | `kontor --state-root <qual> --tier operator fleet-policy-resolve --binding-key <key>` or `--allocation <JSON>` (through the asma consumer once it exists), then Paseo `create_agent` with the selected provider, model and effort | `FleetSelection` with `provenance.policy_hash = H`; Paseo readback of provider, model and thinking. Direct leadership keys need the v2 activation above. |
+
+3. Negative cases in the same realm: edit `fleet.yml` and publish an unactivated candidate, and confirm no route changes; rewrite the activated artifact, and confirm every class refuses naming P-07 with no native effect.

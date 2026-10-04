@@ -1,0 +1,64 @@
+--- a/crates/kontor-daemon/src/applications.rs
++++ b/crates/kontor-daemon/src/applications.rs
+@@ -794,6 +794,12 @@
+ /// database never held. Capturing first and mapping afterwards is what keeps
+ /// the answer attributable to a single instant (ASMA-8187 × ASMA-8196).
+ enum CapturedOccupancyChain {
++    /// MUTANT M-COH: the intermediate split state.
++    Split {
++        binding: SeatBinding,
++        history: Vec<StoredHostedTopologySeat>,
++        current: Option<StoredHostedTopologySeat>,
++    },
+     /// The epic has no control plane.
+     NoControlPlane,
+     /// The control plane does not hold this seat.
+@@ -24718,9 +24724,23 @@
+                 let history =
+                     store.list_hosted_topology_seat_history(project_id, seat_binding_id)?;
+                 let current = store.get_hosted_topology_seat(project_id, seat_binding_id)?;
+-                // Still holding the lock. A writer that could commit here would
+-                // split this answer across two database states.
+-                projection_barrier_pause();
++                // MUTANT M-COH: split the acquisition here.
++                Ok(CapturedOccupancyChain::Split {
++                    binding,
++                    history,
++                    current,
++                })
++            })
++            .map_err(|error| self.refuse(&error))?;
++        let captured = if let CapturedOccupancyChain::Split {
++            binding,
++            history,
++            current,
++        } = captured
++        {
++            projection_barrier_pause();
++            state
++                .with_store(|store| -> Result<CapturedOccupancyChain, RepositoryError> {
+                 // One persona per occupancy, by that occupancy's own exact
+                 // generation, read in the same breath as the rows they describe.
+                 let occupancies = history.len().saturating_add(usize::from(current.is_some()));
+@@ -24741,8 +24761,11 @@
+                     personas,
+                     cursor,
+                 })
+-            })
+-            .map_err(|error| self.refuse(&error))?;
++                })
++                .map_err(|error| self.refuse(&error))?
++        } else {
++            captured
++        };
+ 
+         // The membership fence still answers NotFound, not Forbidden: a caller
+         // scoped to one epic learns nothing about whether a seat id exists in
+@@ -24757,6 +24780,7 @@
+                     "this epic's control plane holds no such seat",
+                 ));
+             }
++            CapturedOccupancyChain::Split { .. } => unreachable!("resolved above"),
+             CapturedOccupancyChain::Found {
+                 binding,
+                 history,

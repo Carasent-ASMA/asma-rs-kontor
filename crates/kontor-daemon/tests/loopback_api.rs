@@ -47,6 +47,12 @@ mod replacement_bridges;
 #[path = "loopback/legacy_consultation_reads.rs"]
 mod legacy_consultation_reads;
 
+#[path = "loopback/planning_pair.rs"]
+mod planning_pair;
+
+#[path = "loopback/experience_launch.rs"]
+mod experience_launch;
+
 #[tokio::test]
 async fn open_question_commands_preserve_authority_history_and_completion_blockers() {
     use kontor_core::id::OpenQuestionId;
@@ -220,7 +226,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::{
-    Arc, Mutex,
+    Arc, Barrier, Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::time::Duration;
@@ -231,17 +237,20 @@ use harness::{
     name, secret,
 };
 use kontor_accounts::{KeychainBackend, KeychainFailure, KeychainTarget, UsageReading};
+use kontor_api::error::{ApiError, ApiErrorCode};
 use kontor_api::state::BarrierState;
 use kontor_api::state::RuntimeRegistry;
 use kontor_core::backlog_identity::EpicBacklogCode;
-use kontor_core::consultation::{ConsultationFamily, ConsultationRunId, ConsultationRunState};
+use kontor_core::consultation::{
+    ConsultationFamily, ConsultationRunId, ConsultationRunState, ConsultationSubject,
+};
 use kontor_core::id::{
-    AccountProfileId, AgentRunId, AggregateRevision, BoundedText, CanonicalDocument,
-    CommandReceiptId, ConnectorKey, ContentHash, ExternalId, ExternalIssueTypeKey, ExternalName,
-    ExternalProjectKey, IdempotencyKey, MiniProjectId, ProjectId, ProviderUsageObservationId,
-    QuickSessionId, QuotaObservationProvenanceId, RoleCode, RoleSlotId, RuntimeBindingId,
-    SCHEMA_VERSION, SeatBindingId, SpecVersion, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId,
-    TicketLinkId, Timestamp, TopologyKindKey, TopologyNodeId,
+    AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, BoundedText, CanonicalDocument,
+    CommandReceiptId, CommitteeRunId, ConnectorKey, ContentHash, ExternalId, ExternalIssueTypeKey,
+    ExternalName, ExternalProjectKey, IdempotencyKey, MiniProjectId, ProjectId,
+    ProviderUsageObservationId, QuickSessionId, QuotaObservationProvenanceId, RoleCode, RoleSlotId,
+    RuntimeBindingId, SCHEMA_VERSION, SeatBindingId, SpecVersion, TaskId, TaskWorkflowId,
+    TeamRunId, TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey, TopologyNodeId,
 };
 use kontor_core::quota::{QuotaWindow, QuotaWindowKind};
 use kontor_core::receipt::{AggregateRef, CommandKind, CommandReceiptState};
@@ -251,10 +260,11 @@ use kontor_core::repository::{
     NewMiniProject, NewObservation, NewProject, NewProviderQuotaState, NewProviderUsageObservation,
     NewQuotaObservationProvenance, NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode,
     NewTask, NewTaskWorkflow, NewTeamRun, NewTicketLink, ProjectRepository,
-    ProviderUsageObservation, RealmRepository, RunClosure, RunRepository, RuntimeBinding,
-    SourceDisposition, SpecRepository, StoredCompletionWake, StoredConsultationProfileRevision,
-    StoredEpicCompletion, StoredEpicRoster, StoredPromotion, StoredQuickSession,
-    SuccessionRepository, TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
+    ProviderUsageObservation, RealmRepository, RepositoryError, RunClosure, RunRepository,
+    RuntimeBinding, SourceDisposition, SpecRepository, StoredCompletionWake,
+    StoredConsultationProfileRevision, StoredConsultationRun, StoredEpicCompletion,
+    StoredEpicRoster, StoredPromotion, StoredQuickSession, SuccessionRepository,
+    TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
     TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TicketRepository,
     TopologyRepository, WorkflowRepository,
 };
@@ -432,18 +442,26 @@ async fn periodic_scanner_reopens_done_completion_after_startup() {
     let scanner = world
         .daemon
         .spawn_completion_scanner(std::time::Duration::from_millis(5));
-    for _ in 0..50 {
-        tokio::task::yield_now().await;
-    }
-    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-    let read = Call::get(format!(
-        "/v1/projects/{}/epics/{}/completion",
-        seed.project, seed.epic
-    ))
-    .signed_as(&world, "observer")
-    .send(&world)
-    .await;
-    assert_eq!(read.status, 200, "{}", read.body);
+    // Wait for the observed transition rather than assuming the scanner runs
+    // within 30 ms while the full loopback suite competes for host resources.
+    let read = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let read = Call::get(format!(
+                "/v1/projects/{}/epics/{}/completion",
+                seed.project, seed.epic
+            ))
+            .signed_as(&world, "observer")
+            .send(&world)
+            .await;
+            assert_eq!(read.status, 200, "{}", read.body);
+            if read.json()["phase"]["phase"] == "ticket_gate" {
+                break read;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the periodic scanner reopens completion within the bounded wait");
     assert_eq!(read.json()["phase"]["phase"], "ticket_gate");
     assert_eq!(read.json()["generation"], 2);
     assert_eq!(read.json()["wakes"].as_array().expect("wakes").len(), 1);
@@ -904,6 +922,7 @@ async fn committee_verdict_boundary(root: &str, slug: &str) -> VerdictBoundary {
         .await;
     assert_eq!(epic_read.status, 200, "{}", epic_read.body);
     prepare_fake_provider_headroom(world, &project.to_string()).await;
+    write_fleet(world, &formal_review_fleet_yaml());
     let invoked = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
         &serde_json::json!({
@@ -10563,12 +10582,11 @@ async fn resolving_a_task_context_tracks_approved_memory_and_returns_no_content(
         first.json()["context_pack_id"].is_null(),
         "a preview freezes nothing"
     );
-    // Below the canonical ceiling the whole approved set is carried, and the
-    // selector says so rather than being silently active.
+    // Typed recall is always bounded, even for an empty project.
     assert_eq!(
         first.json()["memory_selection"]["narrowed"],
-        serde_json::json!(false),
-        "a project under the ceiling is never narrowed: {}",
+        serde_json::json!(true),
+        "typed recall selection is active: {}",
         first.body
     );
     assert!(
@@ -10592,10 +10610,12 @@ async fn resolving_a_task_context_tracks_approved_memory_and_returns_no_content(
         .daemon
         .state()
         .with_store(|store| {
-            let document = CanonicalDocument::from_value(&serde_json::json!({
-                "schema_version": 1,
-                "text": "Read the approved project conventions before changing code"
-            }))?;
+            let mut value: serde_json::Value = serde_json::from_str(include_str!(
+                "../../kontor-core/tests/fixtures/experience-v1.json"
+            ))
+            .unwrap();
+            value["future_cues"] = serde_json::json!(["The task"]);
+            let document = CanonicalDocument::from_value(&value)?;
             let provenance = kontor_store::memory::MemoryProvenance {
                 source: "operator".to_owned(),
                 source_id: None,
@@ -10634,10 +10654,12 @@ async fn resolving_a_task_context_tracks_approved_memory_and_returns_no_content(
             .as_array()
             .expect("provenance")
             .iter()
-            .any(|entry| entry["path"] == "/memory/project-conventions/text"
-                && entry["source_id"]
-                    .as_str()
-                    .is_some_and(|source| source.starts_with("memory."))),
+            .any(
+                |entry| entry["path"] == "/memory/project-conventions/lesson"
+                    && entry["source_id"]
+                        .as_str()
+                        .is_some_and(|source| source.starts_with("memory."))
+            ),
         "approved memory is attributable in the Context Pack: {}",
         again.body
     );
@@ -10675,13 +10697,9 @@ async fn resolving_a_task_context_tracks_approved_memory_and_returns_no_content(
 }
 
 #[tokio::test]
-async fn approved_memory_past_the_canonical_ceiling_still_resolves_a_context() {
-    // Each document is individually well within the 1 MiB canonical ceiling;
-    // together they are past it. This is the live shape of ASMA-8234's realm,
-    // where 247 approved items total 1,779,910 bytes and the largest single
-    // document is 531,749 — every item valid, the aggregate not. Before the
-    // selector this resolved to 400 invalid_request / CanonicalDocument, so a
-    // project simply stopped being able to resolve a context at all.
+async fn generic_corpus_past_the_general_ceiling_is_excluded_by_typed_recall() {
+    // Individually valid generic documents exceed the general ceiling together.
+    // Typed recall excludes them without reading a full-corpus prefix.
     const ITEMS: usize = 5;
     const DOCUMENT_BYTES: usize = 250_000;
 
@@ -10743,66 +10761,18 @@ async fn approved_memory_past_the_canonical_ceiling_still_resolves_a_context() {
         .to_owned();
     assert_eq!(hash.len(), 64, "the pack still has a real content digest");
 
-    // The narrowing is stated, never silent.
     let selection = resolved.json()["memory_selection"].clone();
     assert_eq!(selection["narrowed"], serde_json::json!(true));
-    assert_eq!(selection["selector_version"], serde_json::json!(1));
-    assert_eq!(selection["ceiling_bytes"], serde_json::json!(1_048_576u64));
-    let included = selection["included"].as_u64().expect("an included count") as usize;
-    let omitted = selection["omitted"].as_array().expect("omitted").clone();
+    assert_eq!(selection["selector_version"], serde_json::json!(2));
+    assert_eq!(selection["ceiling_bytes"], serde_json::json!(32768));
+    assert_eq!(selection["included"], serde_json::json!(0));
+    assert_eq!(selection["omitted"], serde_json::json!([]));
+    let provenance = resolved.json()["provenance"].as_array().unwrap().clone();
     assert!(
-        (1..ITEMS).contains(&included),
-        "some approved memory is carried and some is not: {}",
-        resolved.body
+        provenance
+            .iter()
+            .all(|entry| !entry["path"].as_str().unwrap().contains("bulk-note-"))
     );
-    assert_eq!(
-        omitted.len(),
-        ITEMS - included,
-        "every approved revision is either carried or named as omitted"
-    );
-
-    // The omitted revisions are the tail of the store's own order, so the choice
-    // is reproducible rather than arbitrary.
-    let omitted_items: Vec<String> = omitted
-        .iter()
-        .map(|entry| entry["item_id"].as_str().expect("an item id").to_owned())
-        .collect();
-    let expected_tail: Vec<String> = (included..ITEMS)
-        .map(|index| format!("bulk-note-{index:02}"))
-        .collect();
-    assert_eq!(
-        omitted_items, expected_tail,
-        "omission follows the deterministic order, taking the tail"
-    );
-    for entry in &omitted {
-        assert!(
-            entry["revision_id"]
-                .as_str()
-                .is_some_and(|id| !id.is_empty()),
-            "an omitted revision is named by its immutable revision id"
-        );
-    }
-
-    // What is carried is attributable, and what is not carried is absent from
-    // the pack rather than half-present in it.
-    let provenance = resolved.json()["provenance"].as_array().expect("p").clone();
-    let paths: Vec<String> = provenance
-        .iter()
-        .map(|entry| entry["path"].as_str().unwrap_or_default().to_owned())
-        .collect();
-    for index in 0..included {
-        let item = format!("bulk-note-{index:02}");
-        assert!(
-            paths.iter().any(|path| path.contains(&item)),
-            "a carried revision is attributable: {item}"
-        );
-    }
-    for item in &omitted_items {
-        assert!(
-            !paths.iter().any(|path| path.contains(item)),
-            "an omitted revision contributes nothing to the pack: {item}"
-        );
-    }
 
     // Same inputs, same bytes — under a fresh key and under the original one.
     let stable = Call::post(&uri, &serde_json::json!({"snapshot": false}))
@@ -22366,12 +22336,14 @@ async fn a_workspace_refusal_is_reported_as_a_placement_fact() {
     .await;
     assert_eq!(refused.status, 422, "{}", refused.body);
     assert_eq!(refused.code(), "unsupported_capability");
-    assert!(
-        refused.json()["rule"]
-            .as_str()
-            .expect("a rule")
-            .contains("workspace"),
-        "the refusal is about placement: {}",
+    // Named exactly rather than by substring. The refusal used to collapse every
+    // workspace condition into one sentence containing "workspace"; now it says
+    // which rule fired, and this pins that instead of re-accepting the generic
+    // wording (ASMA-8190).
+    assert_eq!(
+        refused.json()["rule"],
+        "the requested root is not the canonical task worktree of this plane",
+        "the refusal names the exact workspace rule: {}",
         refused.body
     );
 }
@@ -34183,6 +34155,75 @@ fn fleet_decisions(fixture: &SeatFillWorld) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// Every launch-provenance line one launch subject has recorded (ASMA-8280
+/// G-3): a SeatBinding for leadership and consultation, an AgentRun for
+/// delivery.
+fn launch_provenance_records(world: &World, subject: &str) -> Vec<serde_json::Value> {
+    let path = world
+        .directory
+        .path()
+        .join("fleet-decisions")
+        .join("launches")
+        .join(format!("{subject}.jsonl"));
+    std::fs::read_to_string(path)
+        .map(|text| {
+            text.lines()
+                .map(|line| serde_json::from_str(line).expect("every launch line is JSON"))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The one launch `subject` recorded requested exactly `expected` and was
+/// observed by the fake runtime, which has no native surface for fleet
+/// provenance: unsupported, with the native id the launch produced, and so
+/// not proven. The request is never its own observation.
+fn assert_one_unproven_fleet_launch(
+    world: &World,
+    subject: &str,
+    launch: &str,
+    expected: &serde_json::Value,
+) {
+    let records = launch_provenance_records(world, subject);
+    assert_eq!(records.len(), 1, "{records:?}");
+    let record = &records[0];
+    assert_eq!(record["launch"], launch, "{record}");
+    assert_eq!(record["subject"], subject, "{record}");
+    assert_eq!(&record["requested"], expected, "{record}");
+    let native_id = record["native_id"].as_str().expect("the native id");
+    assert!(!native_id.is_empty(), "{record}");
+    assert_eq!(
+        record["observed"],
+        serde_json::json!({
+            "status": "unsupported",
+            "surface": "fake.runtime",
+            "native_id": native_id,
+        }),
+        "{record}"
+    );
+    assert_eq!(record["proven"], false, "{record}");
+}
+
+/// The fleet launch provenance a recorded decision maps to, in its record
+/// form: the decision's policy, bundle, binding, chain, position, vendor and
+/// eligibility, and nothing else.
+fn provenance_of_decision(decision: &serde_json::Value) -> serde_json::Value {
+    let mut expected = serde_json::json!({
+        "policy_hash": decision["fleet_hash"],
+        "binding_key": decision["binding_key"],
+        "chain": decision["chain"],
+        "step": decision["step"],
+        "sub_step": decision["sub_step"],
+        "vendor": decision["vendor"],
+    });
+    for field in ["source_bundle_hash", "eligibility"] {
+        if let Some(value) = decision.get(field).filter(|value| !value.is_null()) {
+            expected[field] = value.clone();
+        }
+    }
+    expected
+}
+
 /// Record one `(account, provider)` quota state through the supported operator
 /// operation, the way the account-routing tests prepare headroom.
 ///
@@ -34254,6 +34295,68 @@ async fn a_fleet_binding_routes_a_new_seat_without_restart() {
         launched_route(&fixture, successor),
         ("test".to_owned(), "test".to_owned()),
         "the template chain the slot was frozen with"
+    );
+}
+
+/// ASMA-8280 G-3: a fleet-routed delivery launch requests the provenance its
+/// recorded decision names, chain included, and the record keeps that request
+/// apart from what the runtime observed. The fake runtime has no native
+/// surface for it, so the observation is unsupported and proves nothing.
+#[tokio::test]
+async fn a_fleet_routed_delivery_launch_records_its_provenance_apart_from_the_observation() {
+    let fixture = seat_fill_world(true).await;
+    let project = fixture.project.to_string();
+    prepare_fake_provider_headroom_for(&fixture.world, &project, false).await;
+    let binding = fleet_binding_key(&fixture, "implement");
+    let fleet = fleet_yaml(&[&binding], CLAUDE_THEN_CODEX);
+    write_fleet(&fixture.world, &fleet);
+    let predecessor = delivery_member(&fixture, "implement");
+    let replaced = take_over_blocked_seat(
+        &fixture,
+        predecessor.id,
+        "implement",
+        "fleet-launch-provenance",
+    )
+    .await;
+    assert_eq!(replaced.status, 200, "{}", replaced.body);
+    let successor = replaced_successor(&replaced);
+
+    let decisions = fleet_decisions(&fixture);
+    let decision = decisions.last().expect("the placement was recorded");
+    // A succession's decision is recorded under the seat it replaces.
+    assert_eq!(
+        decision["agent_run_id"],
+        predecessor.id.to_string(),
+        "{decision}"
+    );
+    assert_eq!(decision["chain"], "fleet-chain", "{decision}");
+    assert!(
+        decision.get("source_bundle_hash").is_none(),
+        "a schema_version 1 policy names no bundle: {decision}"
+    );
+    let expected = provenance_of_decision(decision);
+    assert_eq!(
+        expected,
+        serde_json::json!({
+            "policy_hash": ContentHash::of(fleet.as_bytes()).as_str(),
+            "binding_key": binding,
+            "chain": "fleet-chain",
+            "step": 1,
+            "sub_step": 1,
+            "vendor": "anthropic",
+            "eligibility": decision["eligibility"],
+        })
+    );
+    assert!(expected["eligibility"].is_object(), "{decision}");
+    assert_one_unproven_fleet_launch(
+        &fixture.world,
+        &successor.to_string(),
+        "delivery",
+        &expected,
+    );
+    assert!(
+        launch_provenance_records(&fixture.world, &predecessor.id.to_string()).is_empty(),
+        "the template-routed predecessor requested no fleet provenance"
     );
 }
 
@@ -34418,6 +34521,99 @@ async fn deleting_fleet_yml_restores_template_routing() {
         fleet_decisions(&fixture).len(),
         1,
         "a template-routed placement records no fleet decision"
+    );
+}
+
+/// Lay out one activated fleet policy as the generated projection does: the
+/// immutable `fleet-history/<hash>.yml` and the owner-only record naming it.
+fn activate_fleet_policy(world: &World, yaml: &str) -> String {
+    let root = world.directory.path();
+    let hash = kontor_core::id::ContentHash::of(yaml.as_bytes()).to_string();
+    let history = root.join("fleet-history");
+    std::fs::create_dir_all(&history).expect("the history directory is created");
+    std::fs::set_permissions(&history, std::fs::Permissions::from_mode(0o700))
+        .expect("the history directory is private");
+    let artifact = history.join(format!("{hash}.yml"));
+    std::fs::write(&artifact, yaml).expect("the policy is published");
+    std::fs::set_permissions(&artifact, std::fs::Permissions::from_mode(0o600))
+        .expect("the published policy is owner-only");
+    let record = root.join("fleet-activation.json");
+    let body = serde_json::json!({
+        "schema_version": 1,
+        "policy_hash": hash,
+        "policy_schema_version": 1,
+        "activated_at": "2026-09-27T00:00:00Z",
+    });
+    std::fs::write(&record, body.to_string()).expect("the activation record is written");
+    std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o600))
+        .expect("the activation record is owner-only");
+    hash
+}
+
+/// ASMA-8280: an activation record selects the one published policy the next
+/// placement reads, so `fleet.yml` saying otherwise changes nothing. Once the
+/// activated bytes stop verifying, the next placement is refused with the
+/// failed check instead of falling back to `fleet.yml` or the template chain.
+#[tokio::test]
+async fn an_activated_policy_places_the_next_seat_and_fails_closed_when_unverifiable() {
+    let fixture = seat_fill_world(true).await;
+    let project = fixture.project.to_string();
+    prepare_fake_provider_headroom_for(&fixture.world, &project, false).await;
+    let binding = fleet_binding_key(&fixture, "implement");
+    write_fleet(&fixture.world, &fleet_yaml(&[&binding], CLAUDE_THEN_CODEX));
+    let hash = activate_fleet_policy(&fixture.world, &fleet_yaml(&[&binding], CODEX_THEN_CLAUDE));
+
+    let predecessor = delivery_member(&fixture, "implement");
+    let first = take_over_blocked_seat(
+        &fixture,
+        predecessor.id,
+        "implement",
+        "fleet-activated-first",
+    )
+    .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let first_successor = replaced_successor(&first);
+    assert_eq!(
+        launched_route(&fixture, first_successor),
+        ("codex-work".to_owned(), "gpt-5.6-sol".to_owned()),
+        "the activated policy's first route, not fleet.yml's"
+    );
+    let decisions = fleet_decisions(&fixture);
+    assert_eq!(decisions.len(), 1, "{decisions:?}");
+    assert_eq!(decisions[0]["fleet_hash"], hash.as_str());
+
+    // Valid YAML under the activated address, but not the activated bytes.
+    let artifact = fixture
+        .world
+        .directory
+        .path()
+        .join("fleet-history")
+        .join(format!("{hash}.yml"));
+    std::fs::write(&artifact, fleet_yaml(&[&binding], CLAUDE_THEN_CODEX))
+        .expect("the published policy is overwritten");
+    std::fs::set_permissions(&artifact, std::fs::Permissions::from_mode(0o600))
+        .expect("the overwrite stays owner-only");
+    let second = take_over_blocked_seat(
+        &fixture,
+        first_successor,
+        "implement",
+        "fleet-activated-second",
+    )
+    .await;
+    assert_ne!(second.status, 200, "{}", second.body);
+    assert!(
+        second
+            .body
+            .contains("a published fleet policy does not hash to its content address"),
+        "the refusal names the failed check: {}",
+        second.body
+    );
+    // The refusal above is what excludes the template chain, which records no
+    // decision; the log excludes a fleet placement on either set of bytes.
+    assert_eq!(
+        fleet_decisions(&fixture).len(),
+        1,
+        "no second fleet placement was recorded"
     );
 }
 
@@ -34602,6 +34798,30 @@ async fn every_admitted_fleet_placement_is_recorded() {
         launched, decided,
         "the log names the exact route each launch was admitted on"
     );
+    // ASMA-8280 G-4: each decision records the explicit eligibility the
+    // shared resolver chose under, translated from the quota observation. The
+    // second takeover saw the first successor's account unavailable, so it
+    // took the next account on the same step.
+    for decision in &decisions {
+        let unavailable = decision["eligibility"]["unavailable_accounts"]
+            .as_array()
+            .unwrap_or_else(|| panic!("the decision records its eligibility: {decision}"));
+        assert!(
+            !unavailable.contains(&decision["provider"]),
+            "a route was chosen on an account its own eligibility names unavailable: {decision}"
+        );
+        assert_eq!(
+            decision["eligibility"]["excluded_vendors"],
+            serde_json::json!([])
+        );
+    }
+    assert!(
+        decisions[1]["eligibility"]["unavailable_accounts"]
+            .as_array()
+            .expect("an eligibility")
+            .contains(&serde_json::json!("claude-personal")),
+        "{decisions:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -34628,7 +34848,8 @@ fn advisor_fleet_key() -> String {
 /// The two `claude-then-*` chains deliberately open on the same vendor (step 1
 /// is the Claude domain) and diverge afterwards, so a reviewer that may not
 /// share its peer's vendor is visibly forced down to its next step.
-/// `cursor-grok` carries a single step, a vendor no template revision names.
+/// `cursor-grok` carries a single step, a vendor no template revision names;
+/// `codex-sol` is the one-step Sol chain a formal fixture binds its judge to.
 fn committee_fleet_yaml(bindings: &[(&str, &str)]) -> String {
     let bindings: String = bindings
         .iter()
@@ -34638,9 +34859,22 @@ fn committee_fleet_yaml(bindings: &[(&str, &str)]) -> String {
         "schema_version: 1\n\
          domains:\n  claude: {{ provider: claude, accounts: [claude-personal, claude-work] }}\n  codex: {{ provider: codex, accounts: [codex-work] }}\n  cursor: {{ provider: cursor, accounts: [cursor] }}\n\
          models:\n  opus: {{ domain: claude, id: claude-opus-5, vendor: anthropic }}\n  sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai }}\n  grok: {{ domain: cursor, id: grok-4.7, vendor: xai }}\n\
-         chains:\n  claude-then-codex:\n    - [opus]\n    - [sol]\n  claude-then-grok:\n    - [opus]\n    - [grok]\n  cursor-grok:\n    - [grok]\n\
+         chains:\n  claude-then-codex:\n    - [opus]\n    - [sol]\n  claude-then-grok:\n    - [opus]\n    - [grok]\n  cursor-grok:\n    - [grok]\n  codex-sol:\n    - [sol]\n\
          bindings:\n{bindings}"
     )
+}
+
+/// The explicit selected fleet a formal Independent Review fixture is admitted
+/// under, now that the pinned template's own routes seat two Claude seats and
+/// the formal protocol allows one (ASMA-8280).
+///
+/// It binds only the judge, to `codex-sol`, so the judge takes `codex-work`
+/// Sol at step 1. Reviewer A keeps the template's `claude-work` Opus route and
+/// reviewer B its Codex Sol route on `codex-work`; this policy names both
+/// makers. Prerequisites: enabled `claude-work` and `codex-work` accounts, as
+/// the fake headroom fixture registers. One Claude seat: reviewer A.
+fn formal_review_fleet_yaml() -> String {
+    committee_fleet_yaml(&[(&committee_fleet_key("judge"), "codex-sol")])
 }
 
 /// One LF-04 `fleet.yml` whose reviewers open on the same provider *family*
@@ -34855,9 +35089,12 @@ async fn a_fleet_bound_committee_seats_reviewers_on_different_vendors() {
     )
     .await;
     let world = &realm.world;
+    // The judge is bound to Sol: the pinned template's judge route is Claude,
+    // and the formal review seats one Claude seat (ASMA-8280).
     let fleet = committee_fleet_yaml(&[
         (&committee_fleet_key("reviewer-a"), "claude-then-codex"),
         (&committee_fleet_key("reviewer-b"), "claude-then-grok"),
+        (&committee_fleet_key("judge"), "codex-sol"),
     ]);
     write_fleet(world, &fleet);
     let fleet_hash = ContentHash::of(fleet.as_bytes());
@@ -34885,6 +35122,18 @@ async fn a_fleet_bound_committee_seats_reviewers_on_different_vendors() {
         .expect("frozen admission routes");
     let reviewer_a = admission_route_for_slot(routes, "reviewer-a");
     let reviewer_b = admission_route_for_slot(routes, "reviewer-b");
+    // ASMA-8280 G-4: a fleet-routed slot records the explicit eligibility the
+    // shared allocator allocated it under.
+    for route in [reviewer_a, reviewer_b] {
+        assert!(
+            route["eligibility"]["unavailable_accounts"].is_array(),
+            "{route}"
+        );
+        assert!(
+            route["eligibility"]["excluded_vendors"].is_array(),
+            "{route}"
+        );
+    }
 
     // Both chains open on step 1 of the Claude domain, so the first-ordered
     // reviewer keeps that step -- a route the pinned template never declares,
@@ -34931,6 +35180,53 @@ async fn a_fleet_bound_committee_seats_reviewers_on_different_vendors() {
         assert_ne!(
             route["profile_hash"], context["template_hash"],
             "the frozen route is the pinned template revision: {route}"
+        );
+    }
+    // ASMA-8280 G-3: each slot froze the provenance of the very route the
+    // allocator gave it -- chain, step, vendor -- and its launch requested
+    // exactly that.
+    let seats = world.daemon.state().with_store(|store| {
+        store
+            .list_consultation_seats(
+                ProjectId::parse(&realm.project).expect("a project id"),
+                ConsultationRunId::Committee(
+                    kontor_core::id::CommitteeRunId::parse(&run).expect("a Committee run id"),
+                ),
+            )
+            .expect("the Committee seats read")
+    });
+    for (route, slot, chain, step, vendor) in [
+        (
+            reviewer_a,
+            "reviewer-a",
+            "claude-then-codex",
+            1,
+            "anthropic",
+        ),
+        (reviewer_b, "reviewer-b", "claude-then-grok", 2, "xai"),
+    ] {
+        assert_eq!(
+            route["fleet_provenance"],
+            serde_json::json!({
+                "policy_hash": fleet_hash.as_str(),
+                "binding_key": committee_fleet_key(slot),
+                "chain": chain,
+                "step": step,
+                "sub_step": 1,
+                "vendor": vendor,
+                "eligibility": route["eligibility"],
+            }),
+            "{route}"
+        );
+        let seat = seats
+            .iter()
+            .find(|seat| seat.role_slot_id.as_str() == slot)
+            .unwrap_or_else(|| panic!("the {slot} seat"));
+        assert_one_unproven_fleet_launch(
+            world,
+            &seat.seat_binding_id.to_string(),
+            "consultation",
+            &route["fleet_provenance"],
         );
     }
 
@@ -35187,6 +35483,12 @@ async fn a_fleet_bound_advisor_keeps_its_fleet_provenance_through_materializatio
         context["admission"]["source"], "fleet_configuration",
         "the run context does not record the fleet as the route's policy: {context}"
     );
+    // ASMA-8280 G-4: the fleet-routed Advisor records the explicit
+    // eligibility its route was chosen under.
+    assert!(
+        context["admission"]["eligibility"]["unavailable_accounts"].is_array(),
+        "{context}"
+    );
     assert_eq!(
         context["admission"]["profile_hash"],
         fleet_hash.as_str(),
@@ -35225,6 +35527,2143 @@ async fn a_fleet_bound_advisor_keeps_its_fleet_provenance_through_materializatio
         Some("fleet_configuration"),
         "materialization launched the seat without the fleet's provenance"
     );
+    // ASMA-8280 G-3: the admission froze the fleet launch provenance with the
+    // choice, and the launch requested exactly that.
+    let frozen = &context["admission"]["fleet_provenance"];
+    assert_eq!(
+        *frozen,
+        serde_json::json!({
+            "policy_hash": fleet_hash.as_str(),
+            "binding_key": advisor_fleet_key(),
+            "chain": "cursor-grok",
+            "step": 1,
+            "sub_step": 1,
+            "vendor": "xai",
+            "eligibility": context["admission"]["eligibility"],
+        }),
+        "{context}"
+    );
+    assert_one_unproven_fleet_launch(world, &binding.to_string(), "consultation", frozen);
+}
+
+/// Overwrite one published policy with valid YAML that is not its own bytes.
+fn tamper_published_policy(world: &World, hash: &str, yaml: &str) {
+    let artifact = world
+        .directory
+        .path()
+        .join("fleet-history")
+        .join(format!("{hash}.yml"));
+    std::fs::write(&artifact, yaml).expect("the published policy is overwritten");
+    std::fs::set_permissions(&artifact, std::fs::Permissions::from_mode(0o600))
+        .expect("the overwrite stays owner-only");
+}
+
+/// ASMA-8280: a Committee allocation reads the activated policy, never
+/// `fleet.yml`, and while the activated bytes do not verify it is refused
+/// before anything is frozen, rather than allocated from `fleet.yml` or the
+/// pinned template.
+#[tokio::test]
+async fn a_committee_allocates_from_the_activated_policy_and_fails_closed() {
+    let realm = consultation_realm(
+        "/tmp/kontor-asma8280-committee-activation",
+        &[("Cursor", "cursor")],
+    )
+    .await;
+    let world = &realm.world;
+    let unactivated =
+        committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "claude-then-codex")]);
+    write_fleet(world, &unactivated);
+    let activated = committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "cursor-grok")]);
+    let hash = activate_fleet_policy(world, &activated);
+
+    tamper_published_policy(world, &hash, &unactivated);
+    let refused = invoke_fleet_committee(
+        &realm,
+        "Activated committee policy",
+        "asma8280-committee-refused",
+    )
+    .await;
+    assert_ne!(refused.status, 200, "{}", refused.body);
+    assert!(
+        refused
+            .body
+            .contains("a published fleet policy does not hash to its content address"),
+        "the refusal names the failed check: {}",
+        refused.body
+    );
+
+    tamper_published_policy(world, &hash, &activated);
+    let invoked = invoke_fleet_committee(
+        &realm,
+        "Activated committee policy",
+        "asma8280-committee-admitted",
+    )
+    .await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let run = invoked.json()["committee_run_id"]
+        .as_str()
+        .expect("a Committee run")
+        .to_owned();
+    let context = frozen_consultation_context(
+        world,
+        &realm.project,
+        ConsultationRunId::Committee(
+            kontor_core::id::CommitteeRunId::parse(&run).expect("a Committee run id"),
+        ),
+    );
+    let routes = context["admission"]["routes"]
+        .as_array()
+        .expect("frozen admission routes");
+    let reviewer_a = admission_route_for_slot(routes, "reviewer-a");
+    assert_eq!(
+        reviewer_a["model_route"]["provider"], "cursor",
+        "{reviewer_a}"
+    );
+    assert_eq!(
+        reviewer_a["model_route"]["model"], "grok-4.7",
+        "{reviewer_a}"
+    );
+    assert_eq!(reviewer_a["source"], "fleet_configuration", "{reviewer_a}");
+    assert_eq!(
+        reviewer_a["profile_hash"],
+        hash.as_str(),
+        "the frozen route names the activated bytes: {reviewer_a}"
+    );
+}
+
+/// Invoke the fixture Advisor once under `key`, reading the epic revision first.
+async fn invoke_activated_advisor(realm: &ConsultationRealm, key: &str) -> Answer {
+    let world = &realm.world;
+    let epic_read = Call::get(format!(
+        "/v1/projects/{}/epics/{}",
+        realm.project, realm.epic
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(epic_read.status, 200, "{}", epic_read.body);
+    Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/advisor-runs:invoke",
+            realm.project, realm.epic
+        ),
+        &serde_json::json!({
+            "profile": {"id": ADVISOR_PROFILE, "version": 1},
+            "topic": "Activated advisor policy",
+            "question": "Which route did the activated policy freeze for this Advisor?",
+            "caller_seat_binding_id": realm.caller,
+            "expected_revision": epic_read.json()["revision"],
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key(key)
+    .send(world)
+    .await
+}
+
+/// ASMA-8280: an Advisor freezes its route from the activated policy and is
+/// refused, not seated on `fleet.yml` or its template chain, while the
+/// activated bytes do not verify.
+#[tokio::test]
+async fn an_advisor_freezes_from_the_activated_policy_and_fails_closed() {
+    let realm = consultation_realm(
+        "/tmp/kontor-asma8280-advisor-activation",
+        &[("Cursor", "cursor")],
+    )
+    .await;
+    let world = &realm.world;
+    let mut advisor = advisor_definition(ADVISOR_PROFILE, 1);
+    advisor["allowed_caller_roles"] = serde_json::json!(["lsa"]);
+    let previewed = Call::post(
+        format!("/v1/projects/{}/advisor-profiles:preview", realm.project),
+        &serde_json::json!({"definition": advisor}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(previewed.status, 200, "{}", previewed.body);
+    let applied = Call::post(
+        format!("/v1/projects/{}/advisor-profiles:apply", realm.project),
+        &serde_json::json!({
+            "definition": advisor,
+            "preview_hash": previewed.json()["preview_hash"],
+            "expected_revision": 1,
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("asma8280-advisor-apply")
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+
+    let unactivated = committee_fleet_yaml(&[(&advisor_fleet_key(), "claude-then-codex")]);
+    write_fleet(world, &unactivated);
+    let activated = committee_fleet_yaml(&[(&advisor_fleet_key(), "cursor-grok")]);
+    let hash = activate_fleet_policy(world, &activated);
+    tamper_published_policy(world, &hash, &unactivated);
+    let refused = invoke_activated_advisor(&realm, "asma8280-advisor-refused").await;
+    assert_ne!(refused.status, 200, "{}", refused.body);
+    assert!(
+        refused
+            .body
+            .contains("a published fleet policy does not hash to its content address"),
+        "the refusal names the failed check: {}",
+        refused.body
+    );
+
+    tamper_published_policy(world, &hash, &activated);
+    let invoked = invoke_activated_advisor(&realm, "asma8280-advisor-admitted").await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let invoked_json = invoked.json();
+    let advisor_run = kontor_core::id::AdvisorRunId::parse(
+        invoked_json["advisor_run_id"]
+            .as_str()
+            .expect("an Advisor run"),
+    )
+    .expect("an Advisor run id");
+    let context = frozen_consultation_context(
+        world,
+        &realm.project,
+        ConsultationRunId::Advisor(advisor_run),
+    );
+    assert_eq!(
+        context["admission"]["source"], "fleet_configuration",
+        "{context}"
+    );
+    assert_eq!(
+        context["admission"]["profile_hash"],
+        hash.as_str(),
+        "the admission block names the activated bytes: {context}"
+    );
+    let seat = &invoked_json["seats"][0];
+    assert_eq!(seat["model_route"]["provider"], "cursor", "{seat}");
+    assert_eq!(seat["model_route"]["model"], "grok-4.7", "{seat}");
+}
+
+// ---------------------------------------------------------------------------
+// ASMA-8280 slice two: the registered fleet policy operations, and leadership
+// seats resolved through the same activated policy as every other seat.
+// ---------------------------------------------------------------------------
+
+/// Preview, publish and activate one policy through the registered operations,
+/// fenced on whatever the Realm reports as active. Returns its content hash.
+async fn activate_through_the_registry(world: &World, yaml: &str, key: &str) -> String {
+    let standing = Call::get("/v1/fleet/policy")
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    assert_eq!(standing.status, 200, "{}", standing.body);
+    let hash = publish_through_the_registry(world, yaml, key).await;
+    let activated = Call::post(
+        "/v1/fleet/policy:activate",
+        &serde_json::json!({
+            "policy_hash": hash,
+            "expected_active_policy_hash": standing.json()["active_policy_hash"],
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("{key}-activate"))
+    .send(world)
+    .await;
+    assert_eq!(activated.status, 200, "{}", activated.body);
+    hash
+}
+
+/// Preview and publish one policy, activating nothing.
+async fn publish_through_the_registry(world: &World, yaml: &str, key: &str) -> String {
+    let previewed = Call::post(
+        "/v1/fleet/policy:preview",
+        &serde_json::json!({"document": yaml}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(previewed.status, 200, "{}", previewed.body);
+    let published = Call::post(
+        "/v1/fleet/policy:publish",
+        &serde_json::json!({
+            "document": yaml,
+            "preview_hash": previewed.json()["preview_hash"],
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("{key}-publish"))
+    .send(world)
+    .await;
+    assert_eq!(published.status, 200, "{}", published.body);
+    published.json()["policy_hash"]
+        .as_str()
+        .expect("the published hash")
+        .to_owned()
+}
+
+/// The leadership keys of an epic's frozen roster, proved exactly as the
+/// daemon proves them: from the canonical revision and each pinned seat.
+fn leadership_keys(
+    world: &World,
+    project: &str,
+    epic: &str,
+) -> BTreeMap<String, kontor_fleet::LeadershipKey> {
+    let stored = world.daemon.state().with_store(|store| {
+        store
+            .get_epic_roster(project_id_of(project), epic_id_of(epic))
+            .expect("the roster reads")
+            .expect("the epic froze a roster")
+    });
+    let roster = kontor_teams::CoreTeamRevision {
+        version: stored.core_team_version,
+        catalog_hash: stored.catalog_hash,
+        seats: serde_json::from_value(stored.seats).expect("the frozen seats read"),
+    };
+    let pinned = roster.canonicalize().expect("the roster canonicalizes");
+    roster
+        .seats
+        .iter()
+        .map(|seat| {
+            (
+                seat.role_slot_id.as_str().to_owned(),
+                kontor_fleet::LeadershipKey::for_pinned_seat(
+                    &pinned,
+                    &seat.role_slot_id,
+                    &seat.role,
+                )
+                .expect("the pinned seat proves its key"),
+            )
+        })
+        .collect()
+}
+
+/// A schema_version 2 policy binding the LSA and TPM slots of one roster.
+fn leadership_policy(lsa: &str, lsa_chain: &str, tpm: &str, tpm_chain: &str) -> String {
+    format!(
+        "schema_version: 2\n\
+         domains:\n  codex: {{ provider: codex, accounts: [codex] }}\n\
+         models:\n  sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [high, xhigh] }}\n\
+         chains:\n  lsa-chain:\n    - [{lsa_chain}]\n  tpm-chain:\n    - [{tpm_chain}]\n\
+         bindings:\n  {lsa}: lsa-chain\n  {tpm}: tpm-chain\n"
+    )
+}
+
+/// Every leadership decision one SeatBinding's log holds, in order.
+fn leadership_decisions(world: &World, binding: &str) -> Vec<serde_json::Value> {
+    let path = world
+        .directory
+        .path()
+        .join("fleet-decisions")
+        .join("leadership")
+        .join(format!("{binding}.jsonl"));
+    std::fs::read_to_string(path)
+        .map(|text| {
+            text.lines()
+                .map(|line| serde_json::from_str(line).expect("every decision line is JSON"))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The shared resolver's own answer for one leadership key and route, read
+/// straight from the activated artifact as a direct-mode reader would.
+fn direct_resolution(
+    world: &World,
+    hash: &str,
+    key: &kontor_fleet::LeadershipKey,
+    route: &ModelRung,
+) -> (kontor_fleet::FleetProvenance, kontor_fleet::FleetRoute) {
+    let artifact = world
+        .directory
+        .path()
+        .join("fleet-history")
+        .join(format!("{hash}.yml"));
+    let bytes = std::fs::read_to_string(artifact).expect("the activated artifact reads");
+    let snapshot =
+        kontor_fleet::FleetSnapshot::parse_policy(&bytes).expect("the activated bytes validate");
+    assert_eq!(
+        snapshot.hash().as_str(),
+        hash,
+        "the artifact is its address"
+    );
+    let resolution = snapshot
+        .resolve_leadership(key)
+        .expect("the activated policy binds the seat");
+    let placed = resolution
+        .route_for(route)
+        .expect("the chain offers the route")
+        .clone();
+    (resolution.provenance, placed)
+}
+
+fn codex_sol(effort: EffortLevel) -> ModelRung {
+    ModelRung {
+        provider: ProviderRef("codex".to_owned()),
+        model: ModelRef("gpt-5.6-sol".to_owned()),
+        effort: Some(effort),
+    }
+}
+
+fn hosted_launches(world: &World) -> usize {
+    world
+        .fake
+        .calls()
+        .into_iter()
+        .filter(|call| {
+            matches!(
+                call,
+                AdapterCall::LaunchHostedSeat(_) | AdapterCall::RetireHostedSeat(_)
+            )
+        })
+        .count()
+}
+
+/// The recorded decision agrees field for field with the shared resolver's own
+/// answer for the same activated bytes, key and route.
+fn assert_decision_is_the_shared_resolution(
+    decision: &serde_json::Value,
+    provenance: &kontor_fleet::FleetProvenance,
+    route: &kontor_fleet::FleetRoute,
+    key: &kontor_fleet::LeadershipKey,
+) {
+    assert_eq!(
+        decision["fleet_hash"],
+        provenance.policy_hash.as_str(),
+        "{decision}"
+    );
+    assert_eq!(
+        decision["policy_schema_version"], provenance.schema_version,
+        "{decision}"
+    );
+    assert_eq!(
+        decision["binding_key"],
+        provenance.binding_key.as_str(),
+        "{decision}"
+    );
+    assert_eq!(decision["binding_key"], key.as_str(), "{decision}");
+    assert_eq!(decision["chain"], provenance.chain.as_str(), "{decision}");
+    assert_eq!(
+        decision["core_team_revision_hash"],
+        key.core_team_revision_hash().as_str(),
+        "{decision}"
+    );
+    assert_eq!(
+        decision["role_slot_id"],
+        key.role_slot_id().as_str(),
+        "{decision}"
+    );
+    assert_eq!(decision["step"], route.step, "{decision}");
+    assert_eq!(decision["sub_step"], route.sub_step, "{decision}");
+    assert_eq!(
+        decision["provider"],
+        route.rung.provider.0.as_str(),
+        "{decision}"
+    );
+    assert_eq!(decision["model"], route.rung.model.0.as_str(), "{decision}");
+    assert_eq!(
+        decision["effort"],
+        route
+            .rung
+            .effort
+            .map(EffortLevel::as_str)
+            .unwrap_or_default(),
+        "{decision}"
+    );
+    assert_eq!(decision["vendor"], route.vendor.as_str(), "{decision}");
+}
+
+/// ASMA-8280: the fleet policy is published and activated through registered
+/// operations. Publication selects nothing, activation is fenced on what the
+/// caller read, and each key names one logical operation.
+#[tokio::test]
+async fn the_fleet_policy_is_published_and_activated_through_registered_operations() {
+    let composed = compose_realm("/tmp/kontor-asma8280-policy-operations").await;
+    let world = &composed.world;
+    let yaml = fleet_yaml(&["team/t/s"], CLAUDE_THEN_CODEX);
+    let other = fleet_yaml(&["team/t/s"], CODEX_THEN_CLAUDE);
+
+    let initial = Call::get("/v1/fleet/policy")
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    assert_eq!(initial.status, 200, "{}", initial.body);
+    assert_eq!(initial.json()["selection"], "fleet_yml");
+    assert!(
+        initial.json().get("activation").is_none(),
+        "{}",
+        initial.body
+    );
+    let operator = Call::get("/v1/fleet/policy")
+        .signed_as(world, "operator")
+        .send(world)
+        .await;
+    assert_eq!(operator.status, 403, "fleet policy is admin configuration");
+
+    let invalid = Call::post(
+        "/v1/fleet/policy:preview",
+        &serde_json::json!({"document": yaml.replacen("team/t/s", "core/lsa", 1)}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(invalid.status, 400, "{}", invalid.body);
+    assert!(
+        invalid.body.contains("a binding key must be"),
+        "{}",
+        invalid.body
+    );
+
+    let previewed = Call::post(
+        "/v1/fleet/policy:preview",
+        &serde_json::json!({"document": yaml}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(previewed.status, 200, "{}", previewed.body);
+    let hash = ContentHash::of(yaml.as_bytes()).to_string();
+    assert_eq!(previewed.json()["policy_hash"], hash.as_str());
+    assert_eq!(previewed.json()["schema_version"], 1);
+
+    let unseen = Call::post(
+        "/v1/fleet/policy:publish",
+        &serde_json::json!({"document": other, "preview_hash": previewed.json()["preview_hash"]}),
+    )
+    .signed_as(world, "admin")
+    .with_key("asma8280-publish-unseen")
+    .send(world)
+    .await;
+    assert_eq!(
+        unseen.status, 400,
+        "publishing bytes the preview never saw: {}",
+        unseen.body
+    );
+
+    let publish = |key: &'static str, document: String| {
+        let preview_hash = previewed.json()["preview_hash"].clone();
+        async move {
+            Call::post(
+                "/v1/fleet/policy:publish",
+                &serde_json::json!({"document": document, "preview_hash": preview_hash}),
+            )
+            .signed_as(world, "admin")
+            .with_key(key)
+            .send(world)
+            .await
+        }
+    };
+    let published = publish("asma8280-publish", yaml.clone()).await;
+    assert_eq!(published.status, 200, "{}", published.body);
+    assert_eq!(published.json()["applied"], "created");
+    assert_eq!(published.json()["policy_hash"], hash.as_str());
+    let replayed = publish("asma8280-publish", yaml.clone()).await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["applied"], "unchanged");
+
+    // One key names one publication: reusing it for other valid bytes, under
+    // their own preview, publishes nothing.
+    let other_hash = ContentHash::of(other.as_bytes()).to_string();
+    let other_artifact = world
+        .directory
+        .path()
+        .join("fleet-history")
+        .join(format!("{other_hash}.yml"));
+    let other_preview = Call::post(
+        "/v1/fleet/policy:preview",
+        &serde_json::json!({"document": other}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(other_preview.status, 200, "{}", other_preview.body);
+    let publish_other = |key: &'static str| {
+        let body = serde_json::json!({
+            "document": other,
+            "preview_hash": other_preview.json()["preview_hash"],
+        });
+        async move {
+            Call::post("/v1/fleet/policy:publish", &body)
+                .signed_as(world, "admin")
+                .with_key(key)
+                .send(world)
+                .await
+        }
+    };
+    let reused_publication = publish_other("asma8280-publish").await;
+    assert_eq!(
+        reused_publication.status, 409,
+        "one key names one publication: {}",
+        reused_publication.body
+    );
+    assert!(!other_artifact.exists(), "the reused key published nothing");
+    let other_published = publish_other("asma8280-publish-other").await;
+    assert_eq!(other_published.status, 200, "{}", other_published.body);
+    assert!(other_artifact.exists());
+
+    let after_publication = Call::get("/v1/fleet/policy")
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    assert_eq!(
+        after_publication.json()["selection"],
+        "fleet_yml",
+        "publication selects nothing: {}",
+        after_publication.body
+    );
+
+    let activate = |key: &'static str, policy: &str, expected: Option<&str>| {
+        let body = serde_json::json!({
+            "policy_hash": policy,
+            "expected_active_policy_hash": expected,
+        });
+        async move {
+            Call::post("/v1/fleet/policy:activate", &body)
+                .signed_as(world, "admin")
+                .with_key(key)
+                .send(world)
+                .await
+        }
+    };
+    let unpublished = activate(
+        "asma8280-activate-unpublished",
+        ContentHash::of(b"never published").as_str(),
+        None,
+    )
+    .await;
+    assert_eq!(unpublished.status, 404, "{}", unpublished.body);
+    let stale = activate("asma8280-activate-stale", &hash, Some(&hash)).await;
+    assert_eq!(
+        stale.status, 409,
+        "the caller read an activation that never was: {}",
+        stale.body
+    );
+
+    let activated = activate("asma8280-activate", &hash, None).await;
+    assert_eq!(activated.status, 200, "{}", activated.body);
+    assert_eq!(activated.json()["applied"], "created");
+    assert_eq!(activated.json()["activation"]["policy_hash"], hash.as_str());
+    let again = activate("asma8280-activate", &hash, None).await;
+    assert_eq!(again.status, 200, "{}", again.body);
+    assert_eq!(again.json()["applied"], "unchanged");
+    // Reusing the key for an otherwise valid activation of another published
+    // policy, under the correct fence, activates nothing.
+    let reused = activate("asma8280-activate", &other_hash, Some(&hash)).await;
+    assert_eq!(
+        reused.status, 409,
+        "one key names one activation: {}",
+        reused.body
+    );
+
+    let selected = Call::get("/v1/fleet/policy")
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    assert_eq!(
+        selected.json()["selection"],
+        "activation",
+        "{}",
+        selected.body
+    );
+    assert_eq!(selected.json()["active_policy_hash"], hash.as_str());
+    assert_eq!(selected.json()["activation"]["policy_hash"], hash.as_str());
+    assert_eq!(selected.json()["active_schema_version"], 1);
+}
+
+/// ASMA-8280: Core Team materialization resolves LSA and TPM through the
+/// activated policy. A caller route off the bound chain refuses before any
+/// seat exists; an unverifiable activation refuses with its failed check; an
+/// unactivated publication or `fleet.yml` edit changes nothing; and every
+/// admitted launch records the exact revision, slot and position the shared
+/// resolver itself answers from the activated bytes.
+#[tokio::test]
+async fn leadership_materialization_is_resolved_through_the_activated_policy() {
+    let composed = compose_realm("/tmp/kontor-asma8280-leadership-materialize").await;
+    let world = &composed.world;
+    let project = composed.project.clone();
+    let epic = composed.epic.clone();
+    adopt_session_base(world, &project, composed.project_revision).await;
+    publish_core_team(
+        world,
+        &project,
+        serde_json::json!([seat("SA", "default", true)]),
+    )
+    .await;
+    let keys = leadership_keys(world, &project, &epic);
+    let (lsa, tpm) = (&keys["lsa"], &keys["tpm"]);
+
+    // The activated policy: LSA on xhigh only, TPM on xhigh or high.
+    let hash = activate_through_the_registry(
+        world,
+        &leadership_policy(
+            lsa.as_str(),
+            "sol@xhigh",
+            tpm.as_str(),
+            "sol@xhigh, sol@high",
+        ),
+        "asma8280-materialize-policy",
+    )
+    .await;
+    // Two unactivated sources say the opposite for the LSA. Neither is read.
+    publish_through_the_registry(
+        world,
+        &leadership_policy(lsa.as_str(), "sol@high", tpm.as_str(), "sol@high"),
+        "asma8280-materialize-unactivated",
+    )
+    .await;
+    write_fleet(world, &fleet_yaml(&["team/t/s"], CLAUDE_THEN_CODEX));
+
+    let materialize = |key: &'static str, lsa_effort: &str, tpm_effort: &str| {
+        let body = serde_json::json!({
+            "expected_revision": 1,
+            "routes": [
+                {"role_code": "LSA", "model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": lsa_effort
+                }},
+                {"role_code": "TPM", "model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": tpm_effort
+                }}
+            ]
+        });
+        let project = project.clone();
+        let epic = epic.clone();
+        async move {
+            Call::post(
+                format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+                &body,
+            )
+            .signed_as(world, "admin")
+            .with_key(key)
+            .send(world)
+            .await
+        }
+    };
+
+    let domain = kontor_profiles::bundled_operational_domain().expect("the bundled domain");
+    let control_seats = |world: &World| -> usize {
+        world.daemon.state().with_store(|store| {
+            store
+                .list_topology_nodes(project_id_of(&project), Some(epic_id_of(&epic)))
+                .expect("the epic's nodes read")
+                .into_iter()
+                .filter(|node| node.kind == domain.delivery.control_kind)
+                .map(|node| {
+                    store
+                        .list_seat_bindings(project_id_of(&project), node.id)
+                        .expect("the seats read")
+                        .len()
+                })
+                .sum()
+        })
+    };
+    let seats_before = control_seats(world);
+
+    tamper_published_policy(world, &hash, &fleet_yaml(&["team/t/s"], CODEX_THEN_CLAUDE));
+    let unverifiable = materialize("asma8280-materialize-tampered", "xhigh", "xhigh").await;
+    assert_eq!(unverifiable.status, 409, "{}", unverifiable.body);
+    assert!(
+        unverifiable
+            .body
+            .contains("a published fleet policy does not hash to its content address"),
+        "{}",
+        unverifiable.body
+    );
+    assert_eq!(
+        hosted_launches(world),
+        0,
+        "nothing launched on an unverifiable policy"
+    );
+    tamper_published_policy(
+        world,
+        &hash,
+        &leadership_policy(
+            lsa.as_str(),
+            "sol@xhigh",
+            tpm.as_str(),
+            "sol@xhigh, sol@high",
+        ),
+    );
+
+    let off_chain = materialize("asma8280-materialize-off-chain", "high", "high").await;
+    assert_eq!(off_chain.status, 409, "{}", off_chain.body);
+    assert_eq!(off_chain.code(), "placement_blocked");
+    assert!(
+        off_chain
+            .body
+            .contains("the requested route is not in the chain the activated fleet policy binds"),
+        "{}",
+        off_chain.body
+    );
+    assert_eq!(
+        hosted_launches(world),
+        0,
+        "a refused route launches nothing"
+    );
+    assert_eq!(
+        control_seats(world),
+        seats_before,
+        "the refusals came before any logical seat was written"
+    );
+
+    let admitted = materialize("asma8280-materialize-admitted", "xhigh", "high").await;
+    assert_eq!(admitted.status, 200, "{}", admitted.body);
+    let seats = admitted.json()["core_team"]["seats"]
+        .as_array()
+        .expect("the Core Team seats")
+        .clone();
+    for (role_code, slot, effort) in [
+        ("LSA", "lsa", EffortLevel::Xhigh),
+        ("TPM", "tpm", EffortLevel::High),
+    ] {
+        let seat = seats
+            .iter()
+            .find(|seat| seat["role"]["role_code"] == role_code)
+            .unwrap_or_else(|| panic!("the {role_code} seat: {seats:?}"));
+        let binding = seat["seat_binding_id"].as_str().expect("the SeatBinding");
+        let native = seat["native_seat"]["native_id"]
+            .as_str()
+            .expect("a launched native");
+        assert_eq!(seat["native_seat"]["generation"], 1, "{seat}");
+        let hosted = world.daemon.state().with_store(|store| {
+            store
+                .get_hosted_topology_seat(
+                    project_id_of(&project),
+                    SeatBindingId::parse(binding).expect("a SeatBinding"),
+                )
+                .expect("the hosted seat reads")
+                .expect("the hosted seat exists")
+        });
+        assert_eq!(hosted.native_identity.native_id.as_str(), native);
+        assert_eq!(hosted.model_rung, codex_sol(effort), "{role_code}");
+
+        let decisions = leadership_decisions(world, binding);
+        assert_eq!(decisions.len(), 1, "{decisions:?}");
+        let decision = &decisions[0];
+        assert_eq!(decision["operation"], "materialize_core_team");
+        assert_eq!(decision["occupancy_generation"], 1);
+        assert_eq!(decision["seat_binding_id"], binding);
+        assert_eq!(decision["epic_id"], epic.as_str());
+        let (provenance, route) = direct_resolution(world, &hash, &keys[slot], &codex_sol(effort));
+        assert_eq!(provenance.policy_hash.as_str(), hash, "the activated bytes");
+        assert_decision_is_the_shared_resolution(decision, &provenance, &route, &keys[slot]);
+    }
+}
+
+/// The epic's frozen roster written as the explicit Core Team source an
+/// aligned bundle declares, at `version` (ASMA-8280 B-2).
+fn core_team_source_for(world: &World, project: &str, epic: &str, version: SpecVersion) -> String {
+    let stored = world.daemon.state().with_store(|store| {
+        store
+            .get_epic_roster(project_id_of(project), epic_id_of(epic))
+            .expect("the roster reads")
+            .expect("the epic froze a roster")
+    });
+    let seats: Vec<kontor_teams::CoreTeamSeat> =
+        serde_json::from_value(stored.seats).expect("the frozen seats read");
+    let catalog = bundled_role_catalog();
+    let catalog_hash = catalog.canonicalize().expect("the catalog").hash().clone();
+    assert_eq!(
+        stored.catalog_hash, catalog_hash,
+        "the epic froze the bundled catalog"
+    );
+    serde_yaml_ng::to_string(&kontor_daemon::orchestration::CoreTeamSource {
+        schema_version: kontor_daemon::orchestration::SOURCE_SCHEMA_VERSION,
+        version,
+        role_catalog: kontor_fleet_activation::RoleCatalogPin {
+            catalog_id: catalog.catalog_id,
+            version: catalog.version,
+            content_hash: catalog_hash,
+        },
+        seats: seats
+            .iter()
+            .map(|seat| kontor_daemon::orchestration::CoreTeamSourceSeat {
+                role_slot_id: seat.role_slot_id.clone(),
+                role_code: seat.role.role_code.clone(),
+                custom_display_name: seat.role.custom_display_name.clone(),
+                presence: seat.presence,
+                ad_hoc_allowed: seat.ad_hoc_allowed,
+            })
+            .collect(),
+    })
+    .expect("the Core Team source")
+}
+
+fn bundled_role_catalog() -> kontor_core::spec::RoleCatalogRevision {
+    kontor_profiles::bundled_operational_domain()
+        .expect("the bundled domain")
+        .role_catalogs
+        .remove(0)
+}
+
+/// Resolve, publish and activate one aligned bundle through the daemon's own
+/// seams, fenced on the standing record. Returns the bundle and roster hashes.
+fn activate_aligned_bundle(
+    world: &World,
+    core_team: &str,
+    fleet: &str,
+) -> (ContentHash, ContentHash) {
+    let root = world.directory.path();
+    let orchestration =
+        kontor_daemon::orchestration::propose_orchestration().expect("the selector");
+    let resolved = kontor_daemon::orchestration::resolve_bundle(
+        &kontor_daemon::orchestration::BundleSources {
+            orchestration: &orchestration,
+            fleet,
+            core_team,
+        },
+        &bundled_role_catalog(),
+    )
+    .expect("the bundle resolves");
+    let source = kontor_daemon::fleet::FleetSource::at(root);
+    let published = source
+        .publish_bundle(&resolved)
+        .expect("the bundle publishes");
+    let standing = kontor_fleet_activation::read_activation(root).ok();
+    let fence = kontor_daemon::fleet::ActivationFence {
+        policy_hash: standing.as_ref().map(|record| record.policy_hash.clone()),
+        source_bundle_hash: standing.and_then(|record| record.source_bundle_hash),
+    };
+    source
+        .activate_bundle(&published.bundle_hash, &fence)
+        .expect("the bundle activates");
+    (published.bundle_hash, resolved.roster.hash().clone())
+}
+
+/// ASMA-8280 B-2: under an aligned activation a governed leadership launch
+/// consumes exactly the selected roster. While the bundle selects another
+/// revision — even one whose policy binds this epic's keys — the launch is
+/// blocked before any seat or native effect and the epic keeps its pin. Once a
+/// bundle selecting the epic's own revision is active, the launch resolves
+/// through that bundle's policy and the decision names the bundle.
+#[tokio::test]
+async fn an_aligned_activation_leads_only_the_epic_pinned_to_its_roster() {
+    let composed = compose_realm("/tmp/kontor-asma8280-aligned-leadership").await;
+    let world = &composed.world;
+    let project = composed.project.clone();
+    let epic = composed.epic.clone();
+    adopt_session_base(world, &project, composed.project_revision).await;
+    let keys = leadership_keys(world, &project, &epic);
+    let (lsa, tpm) = (&keys["lsa"], &keys["tpm"]);
+    let fleet = leadership_policy(lsa.as_str(), "sol@xhigh", tpm.as_str(), "sol@high");
+
+    let materialize = |key: &'static str| {
+        let body = serde_json::json!({
+            "expected_revision": 1,
+            "routes": [
+                {"role_code": "LSA", "model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+                }},
+                {"role_code": "TPM", "model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": "high"
+                }}
+            ]
+        });
+        let project = project.clone();
+        let epic = epic.clone();
+        async move {
+            Call::post(
+                format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+                &body,
+            )
+            .signed_as(world, "admin")
+            .with_key(key)
+            .send(world)
+            .await
+        }
+    };
+
+    // Another revision of the same seats, under a policy that binds this
+    // epic's own keys: the policy alone would admit the launch.
+    let other = core_team_source_for(
+        world,
+        &project,
+        &epic,
+        SpecVersion::FIRST.next().expect("a second revision"),
+    );
+    let (_, other_roster) = activate_aligned_bundle(world, &other, &fleet);
+    assert_ne!(&other_roster, lsa.core_team_revision_hash());
+    let blocked = materialize("asma8280-aligned-other-roster").await;
+    assert_eq!(blocked.status, 409, "{}", blocked.body);
+    assert_eq!(blocked.code(), "placement_blocked");
+    assert!(
+        blocked.body.contains(
+            "the epic's pinned Core Team revision is not the roster the activated orchestration bundle selects"
+        ),
+        "{}",
+        blocked.body
+    );
+    assert_eq!(hosted_launches(world), 0, "nothing launched");
+    assert_eq!(
+        leadership_keys(world, &project, &epic)["lsa"].as_str(),
+        lsa.as_str(),
+        "the epic keeps its pin"
+    );
+
+    // The bundle selecting the epic's own revision leads it.
+    let own = core_team_source_for(world, &project, &epic, SpecVersion::FIRST);
+    let (bundle, roster) = activate_aligned_bundle(world, &own, &fleet);
+    assert_eq!(&roster, lsa.core_team_revision_hash());
+    let admitted = materialize("asma8280-aligned-own-roster").await;
+    assert_eq!(admitted.status, 200, "{}", admitted.body);
+    let seats = admitted.json()["core_team"]["seats"]
+        .as_array()
+        .expect("the Core Team seats")
+        .clone();
+    let policy_hash = kontor_core::id::ContentHash::of(fleet.as_bytes());
+    for (role_code, slot, effort) in [
+        ("LSA", "lsa", EffortLevel::Xhigh),
+        ("TPM", "tpm", EffortLevel::High),
+    ] {
+        let seat = seats
+            .iter()
+            .find(|seat| seat["role"]["role_code"] == role_code)
+            .unwrap_or_else(|| panic!("the {role_code} seat: {seats:?}"));
+        let binding = seat["seat_binding_id"].as_str().expect("the SeatBinding");
+        let decisions = leadership_decisions(world, binding);
+        assert_eq!(decisions.len(), 1, "{decisions:?}");
+        let decision = &decisions[0];
+        assert_eq!(
+            decision["source_bundle_hash"],
+            bundle.as_str(),
+            "{decision}"
+        );
+        let (provenance, route) =
+            direct_resolution(world, policy_hash.as_str(), &keys[slot], &codex_sol(effort));
+        assert_decision_is_the_shared_resolution(decision, &provenance, &route, &keys[slot]);
+    }
+}
+
+/// ASMA-8280 G-4: a leadership seat the caller names no route for is routed
+/// by the activated policy's own choice under the eligibility the caller
+/// states — the shared resolver's `select`, recorded with that eligibility —
+/// while a named route beside it is admitted exactly as named. With no policy
+/// binding the seat, or nothing eligible, the launch is refused before any
+/// seat or native effect; a route request naming both or neither is invalid.
+#[tokio::test]
+async fn a_leadership_seat_without_a_caller_route_is_routed_by_the_policy_choice() {
+    let composed = compose_realm("/tmp/kontor-asma8280-leadership-choice").await;
+    let world = &composed.world;
+    let project = composed.project.clone();
+    let epic = composed.epic.clone();
+    adopt_session_base(world, &project, composed.project_revision).await;
+    let keys = leadership_keys(world, &project, &epic);
+    let (lsa, tpm) = (&keys["lsa"], &keys["tpm"]);
+
+    let materialize = |key: &'static str, lsa_route: serde_json::Value| {
+        let mut lsa_route = lsa_route;
+        lsa_route["role_code"] = serde_json::json!("LSA");
+        let body = serde_json::json!({
+            "expected_revision": 1,
+            "routes": [
+                lsa_route,
+                {"role_code": "TPM", "model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+                }}
+            ]
+        });
+        let project = project.clone();
+        let epic = epic.clone();
+        async move {
+            Call::post(
+                format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+                &body,
+            )
+            .signed_as(world, "admin")
+            .with_key(key)
+            .send(world)
+            .await
+        }
+    };
+    let chosen = || serde_json::json!({"eligibility": {}});
+
+    // No policy is in force: there is nothing to choose with.
+    let unbound = materialize("asma8280-choice-unbound", chosen()).await;
+    assert_eq!(unbound.status, 409, "{}", unbound.body);
+    assert_eq!(unbound.code(), "placement_blocked");
+    assert!(
+        unbound
+            .body
+            .contains("no activated fleet policy binds this leadership seat"),
+        "{}",
+        unbound.body
+    );
+
+    let hash = activate_through_the_registry(
+        world,
+        &leadership_policy(
+            lsa.as_str(),
+            "sol@high, sol@xhigh",
+            tpm.as_str(),
+            "sol@xhigh",
+        ),
+        "asma8280-choice-policy",
+    )
+    .await;
+
+    for (key, route) in [
+        ("asma8280-choice-neither", serde_json::json!({})),
+        (
+            "asma8280-choice-both",
+            serde_json::json!({
+                "eligibility": {},
+                "model_route": {"provider": "codex", "model": "gpt-5.6-sol", "effort": "high"},
+            }),
+        ),
+    ] {
+        let invalid = materialize(key, route).await;
+        assert_eq!(invalid.status, 400, "{}", invalid.body);
+        assert!(
+            invalid
+                .body
+                .contains("names exactly one of model_route and eligibility"),
+            "{}",
+            invalid.body
+        );
+    }
+    let ineligible = materialize(
+        "asma8280-choice-ineligible",
+        serde_json::json!({"eligibility": {"unavailable_accounts": ["codex"]}}),
+    )
+    .await;
+    assert_eq!(ineligible.status, 409, "{}", ineligible.body);
+    assert_eq!(ineligible.code(), "placement_blocked");
+    assert!(
+        ineligible
+            .body
+            .contains("is eligible under the stated eligibility"),
+        "{}",
+        ineligible.body
+    );
+    assert_eq!(hosted_launches(world), 0, "no refusal launched anything");
+
+    let admitted = materialize("asma8280-choice-admitted", chosen()).await;
+    assert_eq!(admitted.status, 200, "{}", admitted.body);
+    let seats = admitted.json()["core_team"]["seats"]
+        .as_array()
+        .expect("the Core Team seats")
+        .clone();
+    // The shared resolver's own choice for the same bytes, key and eligibility.
+    let artifact = world
+        .directory
+        .path()
+        .join("fleet-history")
+        .join(format!("{hash}.yml"));
+    let snapshot = kontor_fleet::FleetSnapshot::parse_policy(
+        &std::fs::read_to_string(artifact).expect("the activated artifact"),
+    )
+    .expect("the activated bytes validate");
+    let expected = snapshot
+        .resolve_leadership(lsa)
+        .expect("the policy binds the LSA")
+        .select(&kontor_fleet::Eligibility::default());
+    let chosen_route = expected.selected.clone().expect("an eligible route");
+    assert_eq!(
+        chosen_route.rung,
+        codex_sol(EffortLevel::High),
+        "chain order"
+    );
+    for (role_code, slot, effort) in [
+        ("LSA", "lsa", EffortLevel::High),
+        ("TPM", "tpm", EffortLevel::Xhigh),
+    ] {
+        let seat = seats
+            .iter()
+            .find(|seat| seat["role"]["role_code"] == role_code)
+            .unwrap_or_else(|| panic!("the {role_code} seat: {seats:?}"));
+        let binding = seat["seat_binding_id"].as_str().expect("the SeatBinding");
+        let hosted = world.daemon.state().with_store(|store| {
+            store
+                .get_hosted_topology_seat(
+                    project_id_of(&project),
+                    SeatBindingId::parse(binding).expect("a SeatBinding"),
+                )
+                .expect("the hosted seat reads")
+                .expect("the hosted seat exists")
+        });
+        assert_eq!(hosted.model_rung, codex_sol(effort), "{role_code}");
+        let decisions = leadership_decisions(world, binding);
+        assert_eq!(decisions.len(), 1, "{decisions:?}");
+        let decision = &decisions[0];
+        let (provenance, route) = direct_resolution(world, &hash, &keys[slot], &codex_sol(effort));
+        assert_decision_is_the_shared_resolution(decision, &provenance, &route, &keys[slot]);
+        // ASMA-8280 G-3: the hosted launch requested exactly what its
+        // decision records, and the fake runtime proved none of it.
+        assert_one_unproven_fleet_launch(
+            world,
+            binding,
+            "hosted_leadership",
+            &provenance_of_decision(decision),
+        );
+        if role_code == "LSA" {
+            assert_eq!(provenance, expected.provenance);
+            assert_eq!(route, chosen_route);
+            assert_eq!(
+                decision["eligibility"],
+                serde_json::json!({"unavailable_accounts": [], "excluded_vendors": []}),
+                "the choice records the eligibility it was made under"
+            );
+        } else {
+            assert!(
+                decision.get("eligibility").is_none(),
+                "an admitted caller route records no choice: {decision}"
+            );
+        }
+    }
+}
+
+/// The registered proposal, resolved once through the registered preview so
+/// the policy can bind both leadership slots of the exact roster it names.
+/// Returns the three source documents and that roster's hash.
+async fn proposed_bundle(world: &World) -> (String, String, String, String) {
+    let proposal = Call::post("/v1/fleet/bundle:propose", &serde_json::json!({}))
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    assert_eq!(proposal.status, 200, "{}", proposal.body);
+    let orchestration = proposal.json()["orchestration"]
+        .as_str()
+        .expect("orchestration.yml")
+        .to_owned();
+    let core_team = proposal.json()["core_team"]
+        .as_str()
+        .expect("teams/core-team.yml")
+        .to_owned();
+    let probe = Call::post(
+        "/v1/fleet/bundle:preview",
+        &serde_json::json!({
+            "orchestration": orchestration,
+            "fleet": fleet_yaml(&["team/t/s"], CLAUDE_THEN_CODEX),
+            "core_team": core_team,
+        }),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(probe.status, 200, "{}", probe.body);
+    let roster = probe.json()["manifest"]["core_team_revision_hash"]
+        .as_str()
+        .expect("the roster hash")
+        .to_owned();
+    let fleet = leadership_policy(
+        &format!("leadership/{roster}/lsa"),
+        "sol@xhigh",
+        &format!("leadership/{roster}/tpm"),
+        "sol@high",
+    );
+    (orchestration, fleet, core_team, roster)
+}
+
+/// ASMA-8280 S-1/S-2: an orchestration bundle is proposed, previewed,
+/// published and activated through registered admin operations. Publication
+/// selects nothing; activation verifies every artifact and is fenced on the
+/// exact standing pair; each key names one logical request; the read reports
+/// v1 and v2 honestly; and a v1 activation still converges over a v2 one.
+#[tokio::test]
+async fn an_orchestration_bundle_is_published_and_activated_through_registered_operations() {
+    let composed = compose_realm("/tmp/kontor-asma8280-bundle-operations").await;
+    let world = &composed.world;
+    let shaped = serde_json::json!({"orchestration": "", "fleet": "", "core_team": ""});
+    for (path, body) in [
+        ("/v1/fleet/bundle:propose", serde_json::json!({})),
+        ("/v1/fleet/bundle:preview", shaped),
+    ] {
+        let refused = Call::post(path, &body)
+            .signed_as(world, "operator")
+            .send(world)
+            .await;
+        assert_eq!(refused.status, 403, "{path} is admin configuration");
+    }
+    let refused = Call::get("/v1/fleet/bundle")
+        .signed_as(world, "operator")
+        .send(world)
+        .await;
+    assert_eq!(refused.status, 403);
+
+    // The proposal pins the exact catalog revision the realm holds.
+    let proposal = Call::post("/v1/fleet/bundle:propose", &serde_json::json!({}))
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    let catalog = bundled_role_catalog();
+    assert_eq!(
+        proposal.json()["role_catalog"]["content_hash"],
+        catalog.canonicalize().expect("the catalog").hash().as_str()
+    );
+    assert_eq!(
+        proposal.json()["role_catalog"]["catalog_id"],
+        catalog.catalog_id.to_string()
+    );
+
+    let (orchestration, fleet, core_team, roster) = proposed_bundle(world).await;
+    let sources = |fleet: &str| serde_json::json!({"orchestration": orchestration, "fleet": fleet, "core_team": core_team});
+    let previewed = Call::post("/v1/fleet/bundle:preview", &sources(&fleet))
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    assert_eq!(previewed.status, 200, "{}", previewed.body);
+    let manifest = previewed.json()["manifest"].clone();
+    let bundle = manifest["source_bundle_hash"]
+        .as_str()
+        .expect("a bundle")
+        .to_owned();
+    assert_eq!(manifest["core_team_revision_hash"], roster.as_str());
+    assert_eq!(
+        manifest["policy_hash"],
+        ContentHash::of(fleet.as_bytes()).as_str()
+    );
+    assert_eq!(
+        manifest["sources"]["teams/core-team.yml"],
+        ContentHash::of(core_team.as_bytes()).as_str()
+    );
+    let preview_hash = previewed.json()["preview_hash"].clone();
+    assert!(
+        !world
+            .directory
+            .path()
+            .join("orchestration-history")
+            .exists(),
+        "preview writes nothing"
+    );
+
+    let publish = |key: &'static str, fleet: String, preview_hash: serde_json::Value| {
+        let mut body = sources(&fleet);
+        body["preview_hash"] = preview_hash;
+        async move {
+            Call::post("/v1/fleet/bundle:publish", &body)
+                .signed_as(world, "admin")
+                .with_key(key)
+                .send(world)
+                .await
+        }
+    };
+    let other_fleet = leadership_policy(
+        &format!("leadership/{roster}/lsa"),
+        "sol@high",
+        &format!("leadership/{roster}/tpm"),
+        "sol@high",
+    );
+    let unseen = publish(
+        "asma8280-bundle-unseen",
+        other_fleet.clone(),
+        preview_hash.clone(),
+    )
+    .await;
+    assert_eq!(
+        unseen.status, 400,
+        "bytes the preview never resolved: {}",
+        unseen.body
+    );
+    let published = publish(
+        "asma8280-bundle-publish",
+        fleet.clone(),
+        preview_hash.clone(),
+    )
+    .await;
+    assert_eq!(published.status, 200, "{}", published.body);
+    assert_eq!(published.json()["applied"], "created");
+    assert_eq!(published.json()["manifest"], manifest);
+    let replay = publish(
+        "asma8280-bundle-publish",
+        fleet.clone(),
+        preview_hash.clone(),
+    )
+    .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["applied"], "unchanged");
+    // One key names one publication.
+    let other_preview = Call::post("/v1/fleet/bundle:preview", &sources(&other_fleet))
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    let reused = publish(
+        "asma8280-bundle-publish",
+        other_fleet.clone(),
+        other_preview.json()["preview_hash"].clone(),
+    )
+    .await;
+    assert_eq!(reused.status, 409, "{}", reused.body);
+
+    // Publication selected nothing.
+    let standing = Call::get("/v1/fleet/bundle")
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    assert_eq!(standing.status, 200, "{}", standing.body);
+    assert_eq!(standing.json()["selection"], "fleet_yml");
+    assert!(
+        standing.json().get("activation").is_none(),
+        "{}",
+        standing.body
+    );
+
+    let activate = |key: &'static str, bundle: String, expected: serde_json::Value| async move {
+        let mut body = serde_json::json!({"source_bundle_hash": bundle});
+        if !expected.is_null() {
+            body["expected_active"] = expected;
+        }
+        Call::post("/v1/fleet/bundle:activate", &body)
+            .signed_as(world, "admin")
+            .with_key(key)
+            .send(world)
+            .await
+    };
+    // A fence naming a standing activation that does not exist moves nothing.
+    let stale = activate(
+        "asma8280-bundle-stale",
+        bundle.clone(),
+        serde_json::json!({"policy_hash": ContentHash::of(b"never").as_str()}),
+    )
+    .await;
+    assert_eq!(stale.status, 409, "{}", stale.body);
+    let unpublished = activate(
+        "asma8280-bundle-unpublished",
+        ContentHash::of(b"no such bundle").to_string(),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(unpublished.status, 404, "{}", unpublished.body);
+
+    let activated = activate(
+        "asma8280-bundle-activate",
+        bundle.clone(),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(activated.status, 200, "{}", activated.body);
+    assert_eq!(activated.json()["applied"], "created");
+    let record = activated.json()["activation"].clone();
+    assert_eq!(record["source_bundle_hash"], bundle.as_str());
+    assert_eq!(record["core_team_revision_hash"], roster.as_str());
+    assert_eq!(record["policy_hash"], manifest["policy_hash"]);
+    let replay = activate(
+        "asma8280-bundle-activate",
+        bundle.clone(),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(replay.json()["applied"], "unchanged", "{}", replay.body);
+
+    let read = Call::get("/v1/fleet/bundle")
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    assert_eq!(read.json()["selection"], "activation");
+    assert_eq!(read.json()["activation_schema_version"], 2);
+    assert_eq!(read.json()["manifest"], manifest);
+    assert!(read.json().get("refusal").is_none(), "{}", read.body);
+
+    // The next bundle needs the exact standing pair.
+    let other_preview = Call::post("/v1/fleet/bundle:preview", &sources(&other_fleet))
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    let other_published = publish(
+        "asma8280-bundle-publish-other",
+        other_fleet.clone(),
+        other_preview.json()["preview_hash"].clone(),
+    )
+    .await;
+    assert_eq!(other_published.status, 200, "{}", other_published.body);
+    let other_bundle = other_published.json()["manifest"]["source_bundle_hash"]
+        .as_str()
+        .expect("a bundle")
+        .to_owned();
+    let policy_only = activate(
+        "asma8280-bundle-policy-only-fence",
+        other_bundle.clone(),
+        serde_json::json!({"policy_hash": record["policy_hash"]}),
+    )
+    .await;
+    assert_eq!(
+        policy_only.status, 409,
+        "a v2 record is named by its pair: {}",
+        policy_only.body
+    );
+    let moved = activate(
+        "asma8280-bundle-move",
+        other_bundle.clone(),
+        serde_json::json!({"policy_hash": record["policy_hash"], "source_bundle_hash": bundle}),
+    )
+    .await;
+    assert_eq!(moved.status, 200, "{}", moved.body);
+    assert_eq!(
+        moved.json()["activation"]["source_bundle_hash"],
+        other_bundle.as_str()
+    );
+
+    // v1 compatibility: the single-policy activation still converges, fenced
+    // on the policy, and the read then reports a v1 record with no bundle.
+    let v1 = fleet_yaml(&["team/t/s"], CODEX_THEN_CLAUDE);
+    let v1_hash = publish_through_the_registry(world, &v1, "asma8280-bundle-v1").await;
+    let v1_activated = Call::post(
+        "/v1/fleet/policy:activate",
+        &serde_json::json!({
+            "policy_hash": v1_hash,
+            "expected_active_policy_hash": moved.json()["activation"]["policy_hash"],
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("asma8280-bundle-v1-activate")
+    .send(world)
+    .await;
+    assert_eq!(v1_activated.status, 200, "{}", v1_activated.body);
+    let read = Call::get("/v1/fleet/bundle")
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    assert_eq!(read.json()["activation_schema_version"], 1, "{}", read.body);
+    assert!(read.json().get("manifest").is_none(), "{}", read.body);
+    assert!(
+        read.json()["activation"]
+            .get("source_bundle_hash")
+            .is_none()
+    );
+
+    // A rewritten roster refuses the bundle's activation and moves nothing.
+    let roster_path = world
+        .directory
+        .path()
+        .join("core-team-history")
+        .join(format!("{roster}.json"));
+    std::fs::write(&roster_path, "{}").expect("the roster is rewritten");
+    let tampered = activate(
+        "asma8280-bundle-tampered",
+        bundle.clone(),
+        serde_json::json!({"policy_hash": v1_hash}),
+    )
+    .await;
+    assert_eq!(tampered.status, 400, "{}", tampered.body);
+    assert!(
+        tampered
+            .body
+            .contains("a published Core Team revision is not canonical"),
+        "{}",
+        tampered.body
+    );
+    let read = Call::get("/v1/fleet/bundle")
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    assert_eq!(read.json()["activation_schema_version"], 1, "nothing moved");
+}
+
+/// ASMA-8280 S-3: a project's Core Team is published from a published bundle
+/// through the existing preview and apply contract — the one Core Team writer
+/// — with the bundle re-verified at both steps, held byte for byte to its
+/// roster, named in the intent and receipt, and never retargeting an epic pin.
+#[tokio::test]
+async fn a_core_team_is_published_from_a_verified_bundle_through_the_existing_contract() {
+    let composed = compose_realm("/tmp/kontor-asma8280-bundle-core-team").await;
+    let world = &composed.world;
+    let project = composed.project.clone();
+    let epic_pin_before = leadership_keys(world, &project, &composed.epic)["lsa"]
+        .as_str()
+        .to_owned();
+    let (orchestration, fleet, core_team, roster) = proposed_bundle(world).await;
+    let sources =
+        serde_json::json!({"orchestration": orchestration, "fleet": fleet, "core_team": core_team});
+    let previewed = Call::post("/v1/fleet/bundle:preview", &sources)
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    let mut body = sources.clone();
+    body["preview_hash"] = previewed.json()["preview_hash"].clone();
+    let published = Call::post("/v1/fleet/bundle:publish", &body)
+        .signed_as(world, "admin")
+        .with_key("asma8280-s3-publish")
+        .send(world)
+        .await;
+    assert_eq!(published.status, 200, "{}", published.body);
+    let bundle = published.json()["manifest"]["source_bundle_hash"]
+        .as_str()
+        .expect("a bundle")
+        .to_owned();
+
+    let preview = |body: serde_json::Value| {
+        let project = project.clone();
+        async move {
+            Call::post(format!("/v1/projects/{project}/core-team:preview"), &body)
+                .signed_as(world, "admin")
+                .send(world)
+                .await
+        }
+    };
+    // Exactly one of seats and a bundle.
+    for (body, rule) in [
+        (serde_json::json!({}), "names its seats or a source bundle"),
+        (
+            serde_json::json!({"seats": [seat("SA", "default", true)], "source_bundle_hash": bundle}),
+            "not both",
+        ),
+    ] {
+        let refused = preview(body).await;
+        assert_eq!(refused.status, 400, "{}", refused.body);
+        assert!(refused.body.contains(rule), "{}", refused.body);
+    }
+    let unpublished = preview(serde_json::json!({
+        "source_bundle_hash": ContentHash::of(b"no such bundle").as_str()
+    }))
+    .await;
+    assert_eq!(unpublished.status, 404, "{}", unpublished.body);
+
+    let previewed = preview(serde_json::json!({"source_bundle_hash": bundle})).await;
+    assert_eq!(previewed.status, 200, "{}", previewed.body);
+    assert_eq!(previewed.json()["source_bundle_hash"], bundle.as_str());
+    let apply = |key: &'static str, body: serde_json::Value| {
+        let project = project.clone();
+        async move {
+            Call::post(format!("/v1/projects/{project}/core-team:apply"), &body)
+                .signed_as(world, "admin")
+                .with_key(key)
+                .send(world)
+                .await
+        }
+    };
+    let applied_body = serde_json::json!({
+        "source_bundle_hash": bundle,
+        "preview_hash": previewed.json()["preview_hash"],
+        "expected_revision": 1,
+    });
+    let applied = apply("asma8280-s3-apply", applied_body.clone()).await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(applied.json()["source_bundle_hash"], bundle.as_str());
+    assert_eq!(applied.json()["receipt"]["applied"], "created");
+    let replay = apply("asma8280-s3-apply", applied_body.clone()).await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(
+        replay.json()["receipt"]["receipt_id"],
+        applied.json()["receipt"]["receipt_id"],
+        "one receipt names the bundle-sourced apply"
+    );
+
+    // The published revision is the bundle's roster, byte for byte.
+    let stored = world.daemon.state().with_store(|store| {
+        store
+            .get_current_core_team(project_id_of(&project))
+            .expect("the Core Team reads")
+            .expect("a Core Team was published")
+    });
+    let published_revision = kontor_teams::CoreTeamRevision {
+        version: stored.version,
+        catalog_hash: stored.catalog_hash,
+        seats: serde_json::from_value(stored.seats).expect("the seats read"),
+    }
+    .canonicalize()
+    .expect("canonical");
+    assert_eq!(
+        published_revision.hash().as_str(),
+        roster,
+        "the published revision is the roster"
+    );
+    // The epic keeps the roster it froze.
+    assert_eq!(
+        leadership_keys(world, &project, &composed.epic)["lsa"].as_str(),
+        epic_pin_before,
+        "no epic pin is retargeted"
+    );
+
+    // The project's next version is 2 now; the bundle declares version 1.
+    let next = preview(serde_json::json!({"source_bundle_hash": bundle})).await;
+    assert_eq!(next.status, 400, "{}", next.body);
+    assert!(
+        next.body.contains(
+            "the bundle's Core Team revision is not the revision this project would publish next"
+        ),
+        "{}",
+        next.body
+    );
+
+    // A rewritten roster is refused at preview.
+    let roster_path = world
+        .directory
+        .path()
+        .join("core-team-history")
+        .join(format!("{roster}.json"));
+    std::fs::write(&roster_path, "{}").expect("the roster is rewritten");
+    let tampered = preview(serde_json::json!({"source_bundle_hash": bundle})).await;
+    assert_eq!(tampered.status, 400, "{}", tampered.body);
+}
+
+/// ASMA-8280: a Core Team route correction is held to the activated chain.
+/// Off-chain moves refuse before any native effect, an unactivated publication
+/// or `fleet.yml` edit between preview and apply changes nothing, and a new
+/// activation between them expires the preview.
+#[tokio::test]
+async fn a_leadership_route_correction_is_held_to_the_activated_chain() {
+    let (composed, binding, predecessor, generation) = hosted_tpm_seat(
+        "/tmp/kontor-asma8280-leadership-route",
+        "asma8280-route-seat",
+    )
+    .await;
+    let world = &composed.world;
+    let project = composed.project.clone();
+    let epic = composed.epic.clone();
+    let keys = leadership_keys(world, &project, &epic);
+    let (lsa, tpm) = (&keys["lsa"], &keys["tpm"]);
+    let hash = activate_through_the_registry(
+        world,
+        &leadership_policy(
+            lsa.as_str(),
+            "sol@xhigh",
+            tpm.as_str(),
+            "sol@xhigh, sol@high",
+        ),
+        "asma8280-route-policy",
+    )
+    .await;
+    let launches_before = hosted_launches(world);
+    let body = |native: &ExternalId, generation: u64, model: &str, effort: &str| {
+        serde_json::json!({
+            "expected_revision": 1,
+            "seat_binding_id": binding,
+            "expected_native_id": native,
+            "expected_generation": generation,
+            "desired_model_route": {"provider": "codex", "model": model, "effort": effort},
+        })
+    };
+    let preview = |request: serde_json::Value| {
+        let (project, epic) = (project.clone(), epic.clone());
+        async move {
+            Call::post(
+                format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+                &request,
+            )
+            .signed_as(world, "admin")
+            .send(world)
+            .await
+        }
+    };
+
+    let off_chain = preview(body(&predecessor, generation, "gpt-5.6-terra", "xhigh")).await;
+    assert_eq!(off_chain.status, 409, "{}", off_chain.body);
+    assert!(
+        off_chain
+            .body
+            .contains("the requested route is not in the chain the activated fleet policy binds"),
+        "{}",
+        off_chain.body
+    );
+    assert_eq!(hosted_launches(world), launches_before);
+
+    let on_chain = preview(body(&predecessor, generation, "gpt-5.6-sol", "high")).await;
+    assert_eq!(on_chain.status, 200, "{}", on_chain.body);
+
+    // Unactivated edits between preview and apply: neither moves anything.
+    publish_through_the_registry(
+        world,
+        &leadership_policy(lsa.as_str(), "sol@xhigh", tpm.as_str(), "sol@xhigh"),
+        "asma8280-route-unactivated",
+    )
+    .await;
+    write_fleet(world, &fleet_yaml(&["team/t/s"], CLAUDE_THEN_CODEX));
+
+    let mut apply_body = body(&predecessor, generation, "gpt-5.6-sol", "high");
+    apply_body["preview_hash"] = on_chain.json()["preview_hash"].clone();
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &apply_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("asma8280-route-apply")
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(applied.json()["seat_binding_id"], binding.as_str());
+    assert_eq!(
+        applied.json()["predecessor_native_id"],
+        predecessor.as_str()
+    );
+    let successor = ExternalId::parse(
+        applied.json()["successor_native_id"]
+            .as_str()
+            .expect("the successor native"),
+    )
+    .expect("a native id");
+    assert_ne!(successor, predecessor, "a route correction is a new native");
+    let hosted = world.daemon.state().with_store(|store| {
+        store
+            .get_hosted_topology_seat(
+                project_id_of(&project),
+                SeatBindingId::parse(&binding).expect("a SeatBinding"),
+            )
+            .expect("the hosted seat reads")
+            .expect("the hosted seat exists")
+    });
+    assert_eq!(hosted.native_identity.native_id, successor);
+    assert_eq!(hosted.model_rung, codex_sol(EffortLevel::High));
+    // The SeatBinding keeps its identity; the occupancy is the new generation.
+    let occupancy = world.daemon.state().with_store(|store| {
+        store
+            .hosted_topology_seat_occupancy_generation(
+                project_id_of(&project),
+                SeatBindingId::parse(&binding).expect("a SeatBinding"),
+            )
+            .expect("the occupancy reads")
+            .expect("the seat is occupied")
+    });
+    assert_eq!(occupancy, 2, "the correction opened the second occupancy");
+
+    let decisions = leadership_decisions(world, &binding);
+    assert_eq!(decisions.len(), 1, "{decisions:?}");
+    assert_eq!(decisions[0]["operation"], "core_team_route_correction");
+    assert_eq!(decisions[0]["occupancy_generation"], occupancy);
+    let (provenance, route) = direct_resolution(world, &hash, tpm, &codex_sol(EffortLevel::High));
+    assert_decision_is_the_shared_resolution(&decisions[0], &provenance, &route, tpm);
+    assert_eq!((route.step, route.sub_step), (1, 2));
+    // ASMA-8280 G-3: the correction's launch requested exactly what its
+    // decision records, with no eligibility for the caller's own route; the
+    // seat's first launch, before any activation, requested none.
+    assert!(
+        decisions[0].get("eligibility").is_none(),
+        "{}",
+        decisions[0]
+    );
+    assert_one_unproven_fleet_launch(
+        world,
+        &binding,
+        "hosted_leadership",
+        &provenance_of_decision(&decisions[0]),
+    );
+    assert_eq!(
+        launch_provenance_records(world, &binding)[0]["native_id"],
+        successor.as_str(),
+        "the record names the successor the correction launched"
+    );
+
+    // A new *activation* between preview and apply is a routing change, so the
+    // preview it did not see expires instead of being applied.
+    let successor_generation = hosted.native_identity.generation;
+    let back = preview(body(
+        &successor,
+        successor_generation,
+        "gpt-5.6-sol",
+        "xhigh",
+    ))
+    .await;
+    assert_eq!(back.status, 200, "{}", back.body);
+    let narrower = leadership_policy(lsa.as_str(), "sol@xhigh", tpm.as_str(), "sol@xhigh");
+    let narrower_hash = ContentHash::of(narrower.as_bytes()).to_string();
+    let reactivated = Call::post(
+        "/v1/fleet/policy:activate",
+        &serde_json::json!({"policy_hash": narrower_hash, "expected_active_policy_hash": hash}),
+    )
+    .signed_as(world, "admin")
+    .with_key("asma8280-route-reactivate")
+    .send(world)
+    .await;
+    assert_eq!(reactivated.status, 200, "{}", reactivated.body);
+    let launches_after_first = hosted_launches(world);
+    let mut stale_body = body(&successor, successor_generation, "gpt-5.6-sol", "xhigh");
+    stale_body["preview_hash"] = back.json()["preview_hash"].clone();
+    let stale = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &stale_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("asma8280-route-apply-stale")
+    .send(world)
+    .await;
+    assert_eq!(stale.status, 400, "{}", stale.body);
+    assert!(
+        stale.body.contains("no longer matches its preview"),
+        "{}",
+        stale.body
+    );
+    assert_eq!(
+        hosted_launches(world),
+        launches_after_first,
+        "nothing was retired or launched"
+    );
+    assert_eq!(leadership_decisions(world, &binding).len(), 1);
+}
+
+/// ASMA-8280: superseding a wedged leadership launch intent is held to the
+/// activated chain, and the admitted replacement records its decision once.
+#[tokio::test]
+async fn a_leadership_launch_intent_supersession_is_held_to_the_activated_chain() {
+    let (composed, binding, revision) = wedged_launch_intent_seat(
+        "/tmp/kontor-asma8280-leadership-supersede",
+        "asma8280-supersede-seat",
+    )
+    .await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let keys = leadership_keys(world, project, epic);
+    let (lsa, tpm) = (&keys["lsa"], &keys["tpm"]);
+    let high_only = activate_through_the_registry(
+        world,
+        &leadership_policy(lsa.as_str(), "sol@xhigh", tpm.as_str(), "sol@high"),
+        "asma8280-supersede-high",
+    )
+    .await;
+
+    let refused = supersede(
+        world,
+        project,
+        epic,
+        &supersede_body(&binding, revision),
+        "asma8280-supersede-refused",
+    )
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert!(
+        refused
+            .body
+            .contains("the requested route is not in the chain the activated fleet policy binds"),
+        "{}",
+        refused.body
+    );
+    let intent = |world: &World| {
+        world.daemon.state().with_store(|store| {
+            store
+                .get_hosted_seat_launch_intent(
+                    project_id_of(project),
+                    SeatBindingId::parse(&binding).expect("a SeatBinding"),
+                    1,
+                )
+                .expect("the intent reads")
+                .expect("the intent exists")
+        })
+    };
+    assert_eq!(
+        intent(world).model_rung.provider.0,
+        "opencode",
+        "nothing was swapped"
+    );
+    assert!(leadership_decisions(world, &binding).is_empty());
+
+    let xhigh = leadership_policy(lsa.as_str(), "sol@xhigh", tpm.as_str(), "sol@xhigh");
+    publish_through_the_registry(world, &xhigh, "asma8280-supersede-xhigh").await;
+    let xhigh_hash = ContentHash::of(xhigh.as_bytes()).to_string();
+    let activated = Call::post(
+        "/v1/fleet/policy:activate",
+        &serde_json::json!({"policy_hash": xhigh_hash, "expected_active_policy_hash": high_only}),
+    )
+    .signed_as(world, "admin")
+    .with_key("asma8280-supersede-xhigh-activate")
+    .send(world)
+    .await;
+    assert_eq!(activated.status, 200, "{}", activated.body);
+
+    let applied = supersede(
+        world,
+        project,
+        epic,
+        &supersede_body(&binding, revision),
+        "asma8280-supersede-admitted",
+    )
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(intent(world).model_rung, codex_sol(EffortLevel::Xhigh));
+    let replay = supersede(
+        world,
+        project,
+        epic,
+        &supersede_body(&binding, revision),
+        "asma8280-supersede-admitted",
+    )
+    .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+
+    let decisions = leadership_decisions(world, &binding);
+    assert_eq!(
+        decisions.len(),
+        1,
+        "an exact replay records no second decision"
+    );
+    assert_eq!(
+        decisions[0]["operation"],
+        "supersede_core_team_launch_intent"
+    );
+    assert_eq!(decisions[0]["occupancy_generation"], 1);
+    let (provenance, route) =
+        direct_resolution(world, &xhigh_hash, tpm, &codex_sol(EffortLevel::Xhigh));
+    assert_decision_is_the_shared_resolution(&decisions[0], &provenance, &route, tpm);
+}
+
+/// ASMA-8280: a Committee seat recovery reads the activated policy, and while
+/// the activated bytes do not verify it refuses with the failed check before
+/// the predecessor is fenced or retired.
+#[tokio::test]
+async fn a_committee_seat_recovery_fails_closed_on_an_unverifiable_activation() {
+    let realm = consultation_realm(
+        "/tmp/kontor-asma8280-committee-recovery",
+        &[("Cursor", "cursor")],
+    )
+    .await;
+    let world = &realm.world;
+    write_fleet(world, &formal_review_fleet_yaml());
+    let invoked = invoke_fleet_committee(
+        &realm,
+        "Activated seat recovery",
+        "asma8280-recovery-invoke",
+    )
+    .await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let run = invoked.json()["committee_run_id"]
+        .as_str()
+        .expect("a Committee run")
+        .to_owned();
+    let readback = committee_readback(world, &realm.project, &run).await;
+    let reviewer_a = readback["seats"]
+        .as_array()
+        .expect("Committee seats")
+        .iter()
+        .find(|seat| seat["role_slot_id"] == "reviewer-a")
+        .expect("reviewer-a")
+        .clone();
+    let binding = SeatBindingId::parse(
+        reviewer_a["seat_binding_id"]
+            .as_str()
+            .expect("the reviewer-a SeatBinding"),
+    )
+    .expect("a SeatBinding");
+    let predecessor = reviewer_a["observed_binding"]["native_id"].clone();
+
+    let activated = committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "cursor-grok")]);
+    let hash = activate_fleet_policy(world, &activated);
+    let unactivated =
+        committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "claude-then-codex")]);
+    write_fleet(world, &unactivated);
+    tamper_published_policy(world, &hash, &unactivated);
+    let calls_before = world.fake.calls();
+    let recover = |key: &'static str| {
+        let body = serde_json::json!({
+            "expected_revision": readback["revision"],
+            "expected_native_id": predecessor,
+            "reason": "provider_unavailable",
+            "recovery_profile": [],
+        });
+        let project = realm.project.clone();
+        let run = run.clone();
+        async move {
+            Call::post(
+                format!("/v1/projects/{project}/committee-runs/{run}/seats/{binding}/recover"),
+                &body,
+            )
+            .signed_as(world, "admin")
+            .with_key(key)
+            .send(world)
+            .await
+        }
+    };
+    let refused = recover("asma8280-recovery-refused").await;
+    assert_ne!(refused.status, 200, "{}", refused.body);
+    assert!(
+        refused
+            .body
+            .contains("a published fleet policy does not hash to its content address"),
+        "the refusal names the failed check: {}",
+        refused.body
+    );
+    assert_eq!(
+        world.fake.calls(),
+        calls_before,
+        "nothing was retired or launched on an unverifiable policy"
+    );
+
+    tamper_published_policy(world, &hash, &activated);
+    let recovered = recover("asma8280-recovery-admitted").await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    assert_eq!(
+        recovered.json()["active_model_route"]["provider"],
+        "cursor",
+        "the recovery took the activated chain, not fleet.yml: {}",
+        recovered.body
+    );
+}
+
+/// ASMA-8280: a native-less consultation reroute reads the activated policy
+/// and refuses with the failed check while the activated bytes do not verify.
+#[tokio::test]
+async fn a_native_less_consultation_reroute_fails_closed_on_an_unverifiable_activation() {
+    let realm = consultation_realm(
+        "/tmp/kontor-asma8280-native-less-reroute",
+        &[("Cursor", "cursor")],
+    )
+    .await;
+    let world = &realm.world;
+    write_fleet(world, &formal_review_fleet_yaml());
+    let reviewer_a = RoleSlotId::parse("reviewer-a").expect("a role slot");
+    world.fake.refusing_launch_of(&reviewer_a);
+    let invoked = invoke_fleet_committee(
+        &realm,
+        "Activated native-less reroute",
+        "asma8280-reroute-invoke",
+    )
+    .await;
+    assert_eq!(invoked.status, 503, "{}", invoked.body);
+    let stuck = world.daemon.state().with_store(|store| {
+        store
+            .get_consultation_run_by_key(
+                project_id_of(&realm.project),
+                &IdempotencyKey::parse("asma8280-reroute-invoke").expect("the invoke key"),
+            )
+            .expect("the materializing run reads")
+            .expect("the run was frozen before launch")
+    });
+    assert_eq!(stuck.state, ConsultationRunState::Materializing);
+    let stuck_id = match stuck.id {
+        ConsultationRunId::Committee(id) => id,
+        _ => unreachable!(),
+    };
+    let read = committee_readback(world, &realm.project, &stuck_id.to_string()).await;
+    let stuck_seat = read["seats"]
+        .as_array()
+        .expect("seats")
+        .iter()
+        .find(|seat| seat["role_slot_id"] == "reviewer-a")
+        .expect("reviewer-a")
+        .clone();
+    assert!(stuck_seat.get("observed_binding").is_none(), "{stuck_seat}");
+
+    let activated = committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "cursor-grok")]);
+    let hash = activate_fleet_policy(world, &activated);
+    let unactivated =
+        committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "claude-then-codex")]);
+    write_fleet(world, &unactivated);
+    tamper_published_policy(world, &hash, &unactivated);
+    let before = world.daemon.state().with_store(|store| {
+        store
+            .get_consultation_run(project_id_of(&realm.project), stuck.id)
+            .expect("the run reads")
+            .expect("the run exists")
+    });
+    let refused = Call::post(
+        format!(
+            "/v1/projects/{}/committee-runs/{stuck_id}/seats/{}/reroute-unmaterialized",
+            realm.project,
+            stuck_seat["seat_binding_id"].as_str().expect("binding")
+        ),
+        &serde_json::json!({
+            "expected_revision": stuck.revision,
+            "expected_occupancy_generation": 1,
+            "expected_model_route": stuck_seat["model_route"],
+            "reason": "permission_mode_unsupported",
+            "recovery_profile": [
+                {"provider": "cursor", "model": "grok-4.7"}
+            ]
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("asma8280-reroute-refused")
+    .send(world)
+    .await;
+    assert_ne!(refused.status, 200, "{}", refused.body);
+    assert!(
+        refused
+            .body
+            .contains("a published fleet policy does not hash to its content address"),
+        "the refusal names the failed check: {}",
+        refused.body
+    );
+    let after = world.daemon.state().with_store(|store| {
+        store
+            .get_consultation_run(project_id_of(&realm.project), stuck.id)
+            .expect("the run reads")
+            .expect("the run exists")
+    });
+    assert_eq!(
+        after.revision, before.revision,
+        "the refused reroute wrote nothing"
+    );
 }
 
 /// LF-04: an empty `provider_unavailable` recovery profile takes its candidate
@@ -35238,9 +37677,11 @@ async fn a_fleet_bound_reviewer_that_loses_its_provider_recovers_on_the_fleet_ch
     )
     .await;
     let world = &realm.world;
-    // The predecessor is placed from the pinned template; the fleet arrives
-    // only for the recovery, which is what makes the successor route evidence
-    // of the chain the recovery consulted.
+    // The predecessor is placed from the pinned template: the explicit
+    // fixture fleet binds only the judge (ASMA-8280). The reviewer-a binding
+    // arrives only for the recovery, which is what makes the successor route
+    // evidence of the chain the recovery consulted.
+    write_fleet(world, &formal_review_fleet_yaml());
     let invoked = invoke_fleet_committee(
         &realm,
         "Fleet seat recovery provenance",
@@ -35345,18 +37786,112 @@ async fn a_fleet_bound_reviewer_that_loses_its_provider_recovers_on_the_fleet_ch
         "{}",
         recorded
     );
+    // ASMA-8280 G-4: the fleet-routed recovery records the explicit
+    // eligibility the shared resolver chose its successor under.
+    assert!(
+        recorded["eligibility"]["unavailable_accounts"].is_array(),
+        "{recorded}"
+    );
 }
 
-/// LF-04: with no `fleet.yml`, Committee allocation is exactly the pinned
-/// template's, and no placement records a fleet decision.
+/// ASMA-8280: the pinned formal template's own routes seat two Claude seats,
+/// and the formal Independent Review allows one, counting its judge. With no
+/// `fleet.yml` no selected policy names any route's maker, so no seat can be
+/// shown to keep the cap; with a policy that lists those routes but binds no
+/// slot, their makers are named and no whole allocation keeps the cap. Either
+/// way the invocation is refused, typed, before any run, seat, receipt or
+/// native effect, and the immutable revision reads back with its hash. Only an
+/// explicit compliant selection is admitted, and its frozen routes say which
+/// source each came from.
 #[tokio::test]
-async fn without_fleet_yml_committee_allocation_is_unchanged() {
+async fn without_a_compliant_fleet_the_formal_committee_is_refused_before_any_effect() {
     let realm = consultation_realm("/tmp/kontor-lf04-committee-no-fleet", &[]).await;
     let world = &realm.world;
-    let invoked =
+    let project_id = ProjectId::parse(&realm.project).expect("a project id");
+    let bundled_hash = kontor_profiles::seeds::bundled_consultation_presets()
+        .expect("the presets load")
+        .committee_templates
+        .remove(0)
+        .canonicalize()
+        .expect("the preset canonicalizes")
+        .hash()
+        .clone();
+    let calls_before = world.fake.calls().len();
+
+    let unlisted =
         invoke_fleet_committee(&realm, "Pinned template allocation", "lf04-no-fleet-invoke").await;
-    assert_eq!(invoked.status, 200, "{}", invoked.body);
-    let run = invoked.json()["committee_run_id"]
+    assert_eq!(unlisted.status, 409, "{}", unlisted.body);
+    assert_eq!(unlisted.code(), "placement_blocked");
+    assert_eq!(
+        unlisted.json()["rule"],
+        "a Committee slot has no currently admissible governed route"
+    );
+
+    // Lists the template's routes and their makers; binds only the Advisor.
+    write_fleet(
+        world,
+        &committee_fleet_yaml(&[(&advisor_fleet_key(), "codex-sol")]),
+    );
+    let capped = invoke_fleet_committee(
+        &realm,
+        "Pinned template allocation",
+        "lf04-listing-fleet-invoke",
+    )
+    .await;
+    assert_eq!(capped.status, 409, "{}", capped.body);
+    assert_eq!(capped.code(), "placement_blocked");
+    assert_eq!(
+        capped.json()["rule"],
+        "no currently admissible whole-Committee allocation keeps the formal Independent Review to one Claude seat"
+    );
+
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_before,
+        "a refused Committee reached the native runtime"
+    );
+    let (runs, receipts) = world.daemon.state().with_store(|store| {
+        let epic = MiniProjectId::parse(&realm.epic).expect("an epic id");
+        let runs = store
+            .list_consultation_runs(project_id, epic, ConsultationFamily::Committee)
+            .expect("Committee runs list");
+        let receipts = ["lf04-no-fleet-invoke", "lf04-listing-fleet-invoke"].map(|key| {
+            store
+                .get_receipt_by_key(&IdempotencyKey::parse(key).expect("a key"))
+                .expect("the receipt reads")
+        });
+        (runs, receipts)
+    });
+    assert!(
+        runs.is_empty(),
+        "a refused Committee created a run: {runs:?}"
+    );
+    assert!(receipts.iter().all(Option::is_none), "{receipts:?}");
+    let catalog = Call::get(format!(
+        "/v1/projects/{}/committee-templates",
+        realm.project
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(catalog.status, 200, "{}", catalog.body);
+    assert_eq!(catalog.json()["revisions"][0]["id"], COMMITTEE_PRESET);
+    assert_eq!(catalog.json()["revisions"][0]["version"], 1);
+    assert_eq!(
+        catalog.json()["revisions"][0]["definition_hash"],
+        bundled_hash.as_str(),
+        "the refusal changed the immutable v1 revision"
+    );
+
+    write_fleet(world, &formal_review_fleet_yaml());
+    let admitted = invoke_fleet_committee(
+        &realm,
+        "Pinned template allocation",
+        "lf04-compliant-fleet-invoke",
+    )
+    .await;
+    assert_eq!(admitted.status, 200, "{}", admitted.body);
+    let run = admitted.json()["committee_run_id"]
         .as_str()
         .expect("a Committee run")
         .to_owned();
@@ -35370,45 +37905,26 @@ async fn without_fleet_yml_committee_allocation_is_unchanged() {
     let routes = context["admission"]["routes"]
         .as_array()
         .expect("frozen admission routes");
-    let reviewer_a = admission_route_for_slot(routes, "reviewer-a");
-    assert_eq!(
-        reviewer_a["model_route"]["provider"], "claude-work",
-        "{}",
-        reviewer_a
-    );
-    assert_eq!(
-        reviewer_a["model_route"]["model"], "claude-opus-5",
-        "{}",
-        reviewer_a
-    );
-    let reviewer_b = admission_route_for_slot(routes, "reviewer-b");
-    assert_eq!(
-        reviewer_b["model_route"]["provider"], "codex-work",
-        "{}",
-        reviewer_b
-    );
-    assert_eq!(
-        reviewer_b["model_route"]["model"], "gpt-5.6-sol",
-        "{}",
-        reviewer_b
-    );
-    let judge = admission_route_for_slot(routes, "judge");
-    assert_eq!(judge["model_route"]["provider"], "claude-work", "{}", judge);
-    assert_eq!(judge["model_route"]["model"], "claude-opus-5", "{}", judge);
-    for route in [reviewer_a, reviewer_b, judge] {
-        assert_eq!(
-            route["source"], "template",
-            "a template-routed slot was stamped with another policy: {route}"
-        );
-        assert_eq!(
-            route["profile_hash"], context["template_hash"],
-            "the frozen route is not the pinned template revision: {route}"
-        );
+    for (slot, provider, model, source) in [
+        ("reviewer-a", "claude-work", "claude-opus-5", "template"),
+        ("reviewer-b", "codex-work", "gpt-5.6-sol", "template"),
+        ("judge", "codex-work", "gpt-5.6-sol", "fleet_configuration"),
+    ] {
+        let route = admission_route_for_slot(routes, slot);
+        assert_eq!(route["model_route"]["provider"], provider, "{route}");
+        assert_eq!(route["model_route"]["model"], model, "{route}");
+        assert_eq!(route["source"], source, "{route}");
+        assert_eq!(route["rank"], 1, "{route}");
     }
-    assert!(
-        !world.directory.path().join("fleet-decisions").exists(),
-        "a placement without a fleet wrote a fleet decision"
-    );
+    let judge = admission_route_for_slot(routes, "judge");
+    assert_eq!(judge["fleet_provenance"]["chain"], "codex-sol", "{judge}");
+    assert_eq!(judge["fleet_provenance"]["step"], 1, "{judge}");
+    assert_eq!(judge["fleet_provenance"]["vendor"], "openai", "{judge}");
+    for slot in ["reviewer-a", "reviewer-b"] {
+        let route = admission_route_for_slot(routes, slot);
+        assert_eq!(route["profile_hash"], context["template_hash"], "{route}");
+        assert!(route.get("fleet_provenance").is_none(), "{route}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -49427,6 +51943,8 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
                 &lsa_successor,
                 at("2026-08-18T09:01:00Z"),
                 "test the remediation authority generation fence",
+                // Staged directly; no succession is claimed for it.
+                None,
             )
         })
         .expect("the LSA occupancy is replaced");
@@ -50454,6 +52972,19 @@ async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayabl
     }
 
     prepare_fake_provider_headroom(world, project).await;
+    // ASMA-8280: a formal Committee seat needs a maker the selected policy
+    // names. This policy names the maker of every template and recovery route
+    // below and binds no Committee slot, so the accepted recovery routes keep
+    // their own ordinals: reviewer A takes OpenCode DeepSeek and the judge
+    // Codex Sol, both at recovery rung 1, while Claude is exhausted.
+    write_fleet(
+        world,
+        "schema_version: 1\n\
+         domains:\n  claude: { provider: claude, accounts: [claude-work, claude-personal] }\n  codex: { provider: codex, accounts: [codex-work, codex-personal] }\n  opencode: { provider: opencode, accounts: [opencode] }\n\
+         models:\n  opus: { domain: claude, id: claude-opus-5, vendor: anthropic }\n  sol: { domain: codex, id: gpt-5.6-sol, vendor: openai }\n  deepseek: { domain: opencode, id: deepseek/deepseek-v4-flash, vendor: deepseek }\n\
+         chains: {}\n\
+         bindings: {}\n",
+    );
     let epic_read = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
         .signed_as(world, "observer")
         .send(world)
@@ -51663,6 +54194,28 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         .send(world)
         .await;
     assert_eq!(seeded_committee.status, 200, "{}", seeded_committee.body);
+    ensure_consultation_account(
+        world,
+        project,
+        "Committee Cursor",
+        "committee-cursor",
+        "cursor",
+    )
+    .await;
+    prepare_fake_provider_headroom(world, project).await;
+    let compliant_fleet =
+        committee_fleet_yaml(&[(&committee_fleet_key("judge"), "judge-recovery")]).replace(
+            "bindings:\n",
+            "  judge-recovery:\n    - [grok]\n    - [sol@xhigh]\n\nbindings:\n",
+        );
+    let compliant_fleet = compliant_fleet
+        .replace(
+            "id: gpt-5.6-sol, vendor: openai",
+            "id: gpt-5.6-sol, vendor: openai, efforts: [xhigh]",
+        )
+        .replace("[sol]", "[sol@xhigh]");
+    assert!(kontor_fleet::FleetSnapshot::parse(&compliant_fleet).is_ok());
+    write_fleet(world, &compliant_fleet);
     let mut legacy_template = kontor_profiles::seeds::bundled_consultation_presets()
         .expect("the bundled presets load")
         .committee_templates
@@ -51965,7 +54518,8 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         .collect();
     assert_eq!(ordinary_routes["reviewer-a"], "claude-work");
     assert_eq!(ordinary_routes["reviewer-b"], "codex-work");
-    assert_eq!(ordinary_routes["judge"], "claude-work");
+    // The explicit fixture gives the Judge Cursor R1, then Sol R2 for recovery.
+    assert_eq!(ordinary_routes["judge"], "cursor");
     let reviewer_ids: Vec<String> = seats
         .iter()
         .filter(|seat| {
@@ -52133,62 +54687,6 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         premature_judge_read.status, 403,
         "an unlaunched Judge may not read independent work"
     );
-
-    // Deployed Committees predating immutable per-slot admission provenance
-    // still freeze their exact template revision and each seat's exact route.
-    // Reproduce that historical row shape and prove recovery accepts only the
-    // route declared by the pinned template rather than abandoning the run.
-    let mut legacy_context = frozen_invocation.context.clone();
-    legacy_context
-        .as_object_mut()
-        .expect("the frozen Committee context is an object")
-        .remove("admission");
-    let legacy_context_document = CanonicalDocument::from_value(&legacy_context)
-        .expect("the legacy Committee context canonicalizes");
-    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
-    let connection = rusqlite::Connection::open(database).expect("the Realm database opens");
-    connection
-        .execute_batch("DROP TRIGGER consultation_run_inputs_are_frozen;")
-        .expect("the isolated fixture may reproduce the deployed legacy row");
-    connection
-        .execute(
-            "UPDATE consultation_runs
-             SET context = ?1, context_hash = ?2
-             WHERE project_id = ?3 AND run_id = ?4 AND family = 'committee'",
-            rusqlite::params![
-                legacy_context_document.json(),
-                legacy_context_document.hash().as_str(),
-                project,
-                run,
-            ],
-        )
-        .expect("the deployed pre-provenance Committee row is reproduced");
-    connection
-        .execute_batch(
-            "CREATE TRIGGER consultation_run_inputs_are_frozen
-             BEFORE UPDATE ON consultation_runs
-             WHEN OLD.project_id <> NEW.project_id
-               OR OLD.mini_project_id <> NEW.mini_project_id
-               OR OLD.family <> NEW.family
-               OR OLD.profile_id <> NEW.profile_id
-               OR OLD.profile_version <> NEW.profile_version
-               OR OLD.definition_hash <> NEW.definition_hash
-               OR OLD.question <> NEW.question
-               OR OLD.question_hash <> NEW.question_hash
-               OR OLD.context <> NEW.context
-               OR OLD.context_hash <> NEW.context_hash
-               OR OLD.caller_seat_binding_id <> NEW.caller_seat_binding_id
-               OR OLD.topology_node_id <> NEW.topology_node_id
-               OR OLD.invoke_key <> NEW.invoke_key
-               OR OLD.invoke_intent_hash <> NEW.invoke_intent_hash
-               OR OLD.created_at <> NEW.created_at
-               OR OLD.result IS NOT NULL
-             BEGIN
-                 SELECT RAISE(ABORT, 'a consultation run cannot rewrite frozen input or settled evidence');
-             END;",
-        )
-        .expect("the frozen-input guard is restored after fixture setup");
-    drop(connection);
 
     // An admin may replace an exact idle native filler without changing the
     // logical Committee seat or inventing a finding. Recovery advances the
@@ -60399,6 +62897,7 @@ async fn committee_containers_follow_their_recorded_subject_not_their_caller() {
             })
             .expect("the Committee preset publishes");
     });
+    write_fleet(world, &formal_review_fleet_yaml());
 
     let invoke_committee = |topic: &'static str, task: Option<String>, key: &'static str| {
         let caller = caller.clone();
@@ -60579,6 +63078,593 @@ async fn consultation_containers_follow_their_recorded_subject_not_their_caller(
         ],
         "each run froze the exact subject it was invoked about",
     );
+}
+
+/// The derived Kontor item code is server-owned name material whether or not
+/// the pinned Team Definition renders it. The Jira-key successor templates here
+/// render the confirmed key instead, so the legacy code must still be refused
+/// as caller-supplied topic material, for both consultation families, before
+/// any run row or native effect exists.
+#[tokio::test]
+async fn a_legacy_item_code_is_forbidden_in_a_topic_even_when_the_template_does_not_render_it() {
+    let fixture = jira_key_consultation_fixture("/tmp/kontor-asma8114-legacy-code-topic").await;
+    let ConsultationFixture {
+        composed,
+        epic_key,
+        caller,
+        ..
+    } = &fixture;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let epic_id = MiniProjectId::parse(epic).expect("an epic id");
+    let (epic_key, caller) = (epic_key.clone(), caller.clone());
+
+    // The epic owns an active immutable namespace and a confirmed key, so the
+    // derived legacy code exists and is exactly the material under test.
+    let item_code = world.daemon.state().with_store(|store| {
+        let code = store
+            .epic_backlog_code(project_id, epic_id)
+            .expect("the epic namespace reads")
+            .expect("the composed epic has an active immutable backlog code");
+        let key = store
+            .confirmed_jira_epic_key(project_id, epic_id)
+            .expect("the epic binding reads")
+            .expect("the composed epic is confirmed");
+        kontor_core::backlog_identity::JiraItemCode::derive(&code, &key)
+            .expect("the legacy item code derives")
+            .as_str()
+            .to_owned()
+    });
+    assert_ne!(
+        item_code,
+        epic_key.as_str(),
+        "the fixture must distinguish the derived code from the confirmed key"
+    );
+    let bad_topic = format!("{item_code} operational completion");
+
+    // The Committee preset is published through the store because this suite
+    // does not exercise the Committee authoring routes.
+    let presets = kontor_profiles::seeds::bundled_consultation_presets().expect("the presets load");
+    let template = presets.committee_templates[0].clone();
+    let document = template.canonicalize().expect("the template canonicalizes");
+    let committee_profile = template.template_id.to_string();
+    world.daemon.state().with_store(|store| {
+        store
+            .publish_consultation_profile_revision(&StoredConsultationProfileRevision {
+                project_id,
+                family: ConsultationFamily::Committee,
+                profile_id: committee_profile.clone(),
+                version: template.version,
+                name: template.name.clone(),
+                definition: document.json().to_owned(),
+                definition_hash: document.hash().clone(),
+                published_at: kontor_api::now(),
+            })
+            .expect("the Committee preset publishes");
+    });
+    // Match the supported formal-review admission used by the subject fixture.
+    write_fleet(world, &formal_review_fleet_yaml());
+    prepare_fake_provider_headroom(world, project).await;
+
+    let read_epic_revision = || async {
+        let epic_read = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+            .signed_as(world, "observer")
+            .send(world)
+            .await;
+        epic_read.json()["revision"].clone()
+    };
+
+    // Committee first, then Advisor: both families freeze the same semantic
+    // identity shape and both must refuse the legacy code as topic material.
+    let committee_revision = read_epic_revision().await;
+    let committee_body = serde_json::json!({
+        "profile": {"id": committee_profile, "version": template.version.get()},
+        "topic": bad_topic,
+        "question": "Which confirmed key names this consultation?",
+        "caller_seat_binding_id": caller,
+        "expected_revision": committee_revision,
+    });
+    let calls_before = world.fake.calls().len();
+    let committee_refused = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+        &committee_body,
+    )
+    .signed_as(world, "operator")
+    .with_key("asma8114-legacy-code-committee")
+    .send(world)
+    .await;
+    assert_eq!(committee_refused.status, 400, "{}", committee_refused.body);
+    assert_eq!(committee_refused.json()["code"], "invalid_request");
+    assert!(
+        committee_refused.json()["rule"]
+            .as_str()
+            .is_some_and(|rule| rule.contains("consultation_topic_repeats_scope_code")),
+        "{}",
+        committee_refused.body
+    );
+    assert_eq!(committee_refused.json()["subject"], "ConsultationTopic");
+    assert_eq!(committee_refused.json()["at"], "topic");
+    assert!(
+        !committee_refused.body.contains(&item_code),
+        "the refusal must not echo the caller's topic material: {}",
+        committee_refused.body
+    );
+
+    let advisor_revision = read_epic_revision().await;
+    let advisor_body = serde_json::json!({
+        "profile": {"id": ADVISOR_PROFILE, "version": 1},
+        "topic": bad_topic,
+        "question": "Which confirmed key names this consultation?",
+        "caller_seat_binding_id": caller,
+        "expected_revision": advisor_revision,
+    });
+    let advisor_refused = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/advisor-runs:invoke"),
+        &advisor_body,
+    )
+    .signed_as(world, "operator")
+    .with_key("asma8114-legacy-code-advisor")
+    .send(world)
+    .await;
+    assert_eq!(advisor_refused.status, 400, "{}", advisor_refused.body);
+    assert_eq!(advisor_refused.json()["code"], "invalid_request");
+    assert!(
+        advisor_refused.json()["rule"]
+            .as_str()
+            .is_some_and(|rule| rule.contains("consultation_topic_repeats_scope_code")),
+        "{}",
+        advisor_refused.body
+    );
+    assert_eq!(advisor_refused.json()["subject"], "ConsultationTopic");
+    assert_eq!(advisor_refused.json()["at"], "topic");
+    assert!(
+        !advisor_refused.body.contains(&item_code),
+        "the refusal must not echo the caller's topic material: {}",
+        advisor_refused.body
+    );
+
+    // Neither refusal reached the runtime or froze a run.
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_before,
+        "a refused topic reached the native runtime"
+    );
+    let frozen = world.daemon.state().with_store(|store| {
+        let advisor = store
+            .list_consultation_runs(project_id, epic_id, ConsultationFamily::Advisor)
+            .expect("the Advisor runs read");
+        let committee = store
+            .list_consultation_runs(project_id, epic_id, ConsultationFamily::Committee)
+            .expect("the Committee runs read");
+        advisor.len() + committee.len()
+    });
+    assert_eq!(frozen, 0, "a refused topic froze a run");
+
+    // And the pinned template really does not render the code: a clean topic
+    // still succeeds, titled from the confirmed key and not the legacy code.
+    let clean_revision = read_epic_revision().await;
+    let clean_body = serde_json::json!({
+        "profile": {"id": committee_profile, "version": template.version.get()},
+        "topic": "operational completion",
+        "question": "Which confirmed key names this consultation?",
+        "caller_seat_binding_id": caller,
+        "expected_revision": clean_revision,
+    });
+    let invited = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+        &clean_body,
+    )
+    .signed_as(world, "operator")
+    .with_key("asma8114-legacy-code-clean")
+    .send(world)
+    .await;
+    assert_eq!(invited.status, 200, "{}", invited.body);
+    assert_eq!(
+        invited.json()["container_name"],
+        format!("CSW • {epic_key} • operational completion")
+    );
+}
+
+/// Two different idempotency keys, one semantic identity, both dispatched
+/// before either can answer: exactly one invoke freezes the run, and the other
+/// receives the sequential refusal shape — code, rule, the existing run's
+/// locator and read/resume guidance — with no second row and no native effect
+/// of its own. Both families are raced so neither can be fixed alone.
+#[tokio::test]
+async fn a_fresh_key_cannot_freeze_the_same_semantic_consultation_concurrently() {
+    let fixture = jira_key_consultation_fixture("/tmp/kontor-asma8114-concurrent-duplicate").await;
+    let ConsultationFixture {
+        composed, caller, ..
+    } = &fixture;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let epic_id = MiniProjectId::parse(epic).expect("an epic id");
+    let caller = caller.clone();
+
+    let presets = kontor_profiles::seeds::bundled_consultation_presets().expect("the presets load");
+    let template = presets.committee_templates[0].clone();
+    let document = template.canonicalize().expect("the template canonicalizes");
+    let committee_profile = template.template_id.to_string();
+    world.daemon.state().with_store(|store| {
+        store
+            .publish_consultation_profile_revision(&StoredConsultationProfileRevision {
+                project_id,
+                family: ConsultationFamily::Committee,
+                profile_id: committee_profile.clone(),
+                version: template.version,
+                name: template.name.clone(),
+                definition: document.json().to_owned(),
+                definition_hash: document.hash().clone(),
+                published_at: kontor_api::now(),
+            })
+            .expect("the Committee preset publishes");
+    });
+    // Match the supported formal-review admission used by the subject fixture.
+    write_fleet(world, &formal_review_fleet_yaml());
+
+    for family in [ConsultationFamily::Advisor, ConsultationFamily::Committee] {
+        let family_label = match family {
+            ConsultationFamily::Advisor => "Advisor",
+            ConsultationFamily::Committee => "Committee",
+            ConsultationFamily::PlanningPair => {
+                unreachable!("this fixture enumerates only Advisor and Committee")
+            }
+        };
+        let epic_read = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+            .signed_as(world, "observer")
+            .send(world)
+            .await;
+        let (uri, profile, run_field) = match family {
+            ConsultationFamily::Advisor => (
+                format!("/v1/projects/{project}/epics/{epic}/advisor-runs:invoke"),
+                serde_json::json!({"id": ADVISOR_PROFILE, "version": 1}),
+                "advisor_run_id",
+            ),
+            ConsultationFamily::Committee => (
+                format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+                serde_json::json!({"id": committee_profile, "version": template.version.get()}),
+                "committee_run_id",
+            ),
+            ConsultationFamily::PlanningPair => {
+                unreachable!("this fixture enumerates only Advisor and Committee")
+            }
+        };
+        let body = serde_json::json!({
+            "profile": profile,
+            "topic": "concurrent completion",
+            "question": "Which run owns this semantic identity?",
+            "caller_seat_binding_id": caller,
+            "expected_revision": epic_read.json()["revision"],
+        });
+        prepare_fake_provider_headroom(world, project).await;
+        world.fake.take_calls();
+        let first = Call::post(&uri, &body)
+            .signed_as(world, "operator")
+            .with_key(format!("asma8114-concurrent-{family}-a"))
+            .send(world);
+        let second = Call::post(&uri, &body)
+            .signed_as(world, "operator")
+            .with_key(format!("asma8114-concurrent-{family}-b"))
+            .send(world);
+        let (first, second) = tokio::join!(first, second);
+        let (winner, loser) = if first.status == 200 {
+            (first, second)
+        } else if second.status == 200 {
+            (second, first)
+        } else {
+            panic!(
+                "one concurrent invoke must freeze the {family} run: {} / {}",
+                first.body, second.body
+            );
+        };
+        assert_eq!(loser.status, 409, "{}", loser.body);
+        assert_eq!(loser.json()["code"], "idempotency_conflict");
+        assert_eq!(
+            loser.json()["rule"],
+            format!(
+                "consultation_semantic_duplicate: this {family_label} scope and topic already has one run"
+            ),
+            "{}",
+            loser.body
+        );
+        assert_eq!(
+            loser.json()["subject"],
+            "consultation semantic identity",
+            "{}",
+            loser.body
+        );
+        assert!(
+            loser.json()["current_revision"].is_null(),
+            "a semantic duplicate is not a revision conflict: {}",
+            loser.body
+        );
+        let winner_run = winner.json()[run_field]
+            .as_str()
+            .expect("the winning run id")
+            .to_owned();
+        assert_eq!(
+            loser.json()["at"],
+            format!("consultation-runs/{winner_run}"),
+            "{}",
+            loser.body
+        );
+        assert_eq!(
+            loser.json()["action"],
+            "read or resume the existing consultation run"
+        );
+        let winner_seats: Vec<String> = winner.json()["seats"]
+            .as_array()
+            .expect("the winning seats")
+            .iter()
+            .filter_map(|seat| seat["seat_binding_id"].as_str().map(str::to_owned))
+            .collect();
+        let launched: Vec<String> = world
+            .fake
+            .take_calls()
+            .iter()
+            .filter_map(|call| match call {
+                AdapterCall::LaunchConsultation(seat) => Some(seat.to_string()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !launched.is_empty(),
+            "the winning run must launch at least one consultation seat"
+        );
+        assert!(
+            launched.iter().all(|seat| winner_seats.contains(seat)),
+            "only the winning run's seats may launch: {launched:?} vs {winner_seats:?}"
+        );
+        let runs = world.daemon.state().with_store(|store| {
+            store
+                .list_consultation_runs(project_id, epic_id, family)
+                .expect("the runs read")
+        });
+        assert_eq!(runs.len(), 1, "the losing invoke must leave no second run");
+        assert_eq!(runs[0].id.as_text(), winner_run);
+    }
+}
+
+/// The daemon realm's own store, two concurrent writers, one semantic
+/// identity: the unique index refuses the loser, and the realm's transport
+/// mapping renders the exact sequential envelope — code, rule, subject,
+/// locator and action — for both families. The transactional path is entered
+/// directly through the realm store, so degrading only that mapping fails
+/// here.
+#[tokio::test]
+async fn concurrent_daemon_insert_losers_render_the_exact_sequential_envelope() {
+    let fixture = jira_key_consultation_fixture("/tmp/kontor-asma8114-insert-loser-envelope").await;
+    let ConsultationFixture {
+        composed, caller, ..
+    } = &fixture;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let epic_id = MiniProjectId::parse(epic).expect("an epic id");
+    let caller = SeatBindingId::parse(caller).expect("the LSA SeatBinding");
+
+    let presets = kontor_profiles::seeds::bundled_consultation_presets().expect("the presets load");
+    let template = presets.committee_templates[0].clone();
+    let document = template.canonicalize().expect("the template canonicalizes");
+    let committee_profile = template.template_id.to_string();
+    world.daemon.state().with_store(|store| {
+        store
+            .publish_consultation_profile_revision(&StoredConsultationProfileRevision {
+                project_id,
+                family: ConsultationFamily::Committee,
+                profile_id: committee_profile.clone(),
+                version: template.version,
+                name: template.name.clone(),
+                definition: document.json().to_owned(),
+                definition_hash: document.hash().clone(),
+                published_at: kontor_api::now(),
+            })
+            .expect("the Committee preset publishes");
+    });
+
+    let (epic_node, topology) = world.daemon.state().with_store(|store| {
+        let node = store
+            .list_topology_nodes(project_id, Some(epic_id))
+            .expect("the epic topology reads")
+            .into_iter()
+            .find(|node| node.kind.as_str() == "ESW")
+            .expect("the fixture materialized the epic node");
+        (node.id, node.topology)
+    });
+
+    for family in [ConsultationFamily::Advisor, ConsultationFamily::Committee] {
+        let family_label = match family {
+            ConsultationFamily::Advisor => "Advisor",
+            ConsultationFamily::Committee => "Committee",
+            ConsultationFamily::PlanningPair => {
+                unreachable!("this fixture enumerates only Advisor and Committee")
+            }
+        };
+        let (profile_id, profile_version, definition_hash) =
+            world.daemon.state().with_store(|store| {
+                let revision = store
+                    .list_consultation_profile_revisions(project_id, family)
+                    .expect("the profile revisions read")
+                    .into_iter()
+                    .next_back()
+                    .expect("the fixture published a revision for this family");
+                (
+                    revision.profile_id,
+                    revision.version,
+                    revision.definition_hash,
+                )
+            });
+        let identity = ContentHash::of(format!("daemon insert loser {family}").as_bytes());
+        let prepared = |suffix: &str| {
+            let node_id = TopologyNodeId::generate();
+            let id = match family {
+                ConsultationFamily::Advisor => ConsultationRunId::Advisor(AdvisorRunId::generate()),
+                ConsultationFamily::Committee => {
+                    ConsultationRunId::Committee(CommitteeRunId::generate())
+                }
+                ConsultationFamily::PlanningPair => {
+                    unreachable!("this fixture enumerates only Advisor and Committee")
+                }
+            };
+            let question = BoundedText::parse("Which run owns this semantic identity?")
+                .expect("a bounded question");
+            let context = serde_json::json!({"schema_version": 1});
+            let context_hash = CanonicalDocument::from_serializable(&context)
+                .expect("canonical context")
+                .hash()
+                .clone();
+            let now = kontor_api::now();
+            let run = StoredConsultationRun {
+                id,
+                project_id,
+                mini_project_id: epic_id,
+                profile_id: profile_id.clone(),
+                profile_version,
+                definition_hash: definition_hash.clone(),
+                semantic_identity_hash: Some(identity.clone()),
+                subject: Some(ConsultationSubject::Epic),
+                topic: Some(ExternalName::parse("concurrent envelope").expect("a topic")),
+                question_hash: ContentHash::of(question.as_str().as_bytes()),
+                question,
+                context,
+                context_hash,
+                caller_seat_binding_id: caller,
+                topology_node_id: node_id,
+                invoke_key: IdempotencyKey::parse(&format!("insert-loser-{family}-{suffix}"))
+                    .expect("a key"),
+                invoke_intent_hash: ContentHash::of(
+                    format!("insert-loser-intent-{family}-{suffix}").as_bytes(),
+                ),
+                state: ConsultationRunState::Materializing,
+                round: 1,
+                result: None,
+                result_hash: None,
+                revision: AggregateRevision::INITIAL,
+                created_at: now,
+                updated_at: now,
+                settled_at: None,
+            };
+            let node = NewSessionTopologyNode {
+                id: node_id,
+                project_id,
+                mini_project_id: Some(epic_id),
+                topology: topology.clone(),
+                kind: TopologyKindKey::parse(match family {
+                    ConsultationFamily::Advisor => "ASW",
+                    ConsultationFamily::Committee => "CSW",
+                    ConsultationFamily::PlanningPair => {
+                        unreachable!("this fixture enumerates only Advisor and Committee")
+                    }
+                })
+                .expect("the consultation kind"),
+                parent_id: Some(epic_node),
+                task_id: None,
+                created_at: now,
+            };
+            (run, node)
+        };
+
+        let (first_run, first_node) = prepared("a");
+        let (second_run, second_node) = prepared("b");
+        let state = world.daemon.state();
+        let realm_id = state.realm_id();
+        let barrier = Arc::new(Barrier::new(2));
+        let outcomes: Vec<(TopologyNodeId, Result<(), RepositoryError>)> =
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = [(first_run, first_node), (second_run, second_node)]
+                    .into_iter()
+                    .map(|(run, node)| {
+                        let barrier = Arc::clone(&barrier);
+                        let writer = state.clone();
+                        scope.spawn(move || {
+                            barrier.wait();
+                            let outcome = writer.with_store(|store| {
+                                store.create_consultation_run(&run, &node, &[])
+                            });
+                            (node.id, outcome)
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|handle| handle.join().expect("the daemon writer completes"))
+                    .collect()
+            });
+
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|(_, outcome)| outcome.is_ok())
+                .count(),
+            1,
+            "exactly one daemon writer may freeze {family}"
+        );
+        let survivor = world.daemon.state().with_store(|store| {
+            store
+                .get_consultation_run_by_semantic_identity(project_id, &identity)
+                .expect("the identity lookup succeeds")
+                .expect("the surviving run remains")
+        });
+        let (loser_node, loser) = outcomes
+            .iter()
+            .find(|(_, outcome)| outcome.is_err())
+            .expect("one daemon writer must lose");
+        let loser = loser
+            .as_ref()
+            .expect_err("the losing writer's transaction is refused");
+        let (family_found, run_id) = match loser {
+            RepositoryError::DuplicateConsultation { family, run_id } => (*family, *run_id),
+            other => panic!("the daemon insert-loser must be the typed duplicate: {other}"),
+        };
+        assert_eq!(family_found, family);
+        assert_eq!(
+            run_id, survivor.id,
+            "the transactional refusal names the surviving run"
+        );
+
+        // The realm's transport mapping renders the exact sequential envelope.
+        let body = ApiError::from_repository(realm_id, loser).body();
+        assert_eq!(body.code, ApiErrorCode::IdempotencyConflict);
+        assert_eq!(body.code.status().as_u16(), 409);
+        assert_eq!(
+            body.rule,
+            format!(
+                "consultation_semantic_duplicate: this {family_label} scope and topic already has one run"
+            )
+        );
+        assert_eq!(body.subject, Some("consultation semantic identity"));
+        let expected_at = format!("consultation-runs/{}", survivor.id.as_text());
+        assert_eq!(body.at.as_deref(), Some(expected_at.as_str()));
+        assert_eq!(body.action, "read or resume the existing consultation run");
+        assert!(body.current_revision.is_none());
+
+        assert!(
+            world
+                .daemon
+                .state()
+                .with_store(|store| store
+                    .get_topology_node(project_id, *loser_node)
+                    .expect("the topology read succeeds"))
+                .is_none(),
+            "the losing transaction must roll back its own node"
+        );
+        assert_eq!(
+            world
+                .daemon
+                .state()
+                .with_store(|store| store
+                    .list_consultation_runs(project_id, epic_id, family)
+                    .expect("the runs read"))
+                .len(),
+            1,
+            "the losing writer must leave no run row"
+        );
+    }
 }
 
 /// A consultation invoked before the subject was recorded has no subject to
@@ -61782,13 +64868,34 @@ async fn previewed_succession(
     native: &ExternalId,
     generation: u64,
 ) -> serde_json::Value {
+    previewed_route(world, project, epic, binding, native, generation, "xhigh").await
+}
+
+/// Preview one succession onto an exact desired effort.
+///
+/// Asking for an effort the seat was not materialized under is what makes a
+/// *live* predecessor need replacing, and it matters for recovery: with the
+/// desired route unequal to the predecessor's, `stale_native_recovery` is false
+/// by construction, so the preview hash does not move when a failed attempt
+/// leaves the runtime holding something else. A replay can therefore present the
+/// same body — and so the same intent — which is the only way to reach the
+/// recovery paths at all.
+async fn previewed_route(
+    world: &World,
+    project: &str,
+    epic: &str,
+    binding: &str,
+    native: &ExternalId,
+    generation: u64,
+    effort: &str,
+) -> serde_json::Value {
     let request = serde_json::json!({
         "expected_revision": 1,
         "seat_binding_id": binding,
         "expected_native_id": native,
         "expected_generation": generation,
         "desired_model_route": {
-            "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+            "provider": "codex", "model": "gpt-5.6-sol", "effort": effort
         },
     });
     let preview = Call::post(
@@ -61802,6 +64909,1409 @@ async fn previewed_succession(
     let mut body = request;
     body["preview_hash"] = preview.json()["preview_hash"].clone();
     body
+}
+
+// ---------------------------------------------------------------------------
+// ASMA-8187 — the Core Team route succession ledger.
+//
+// The ledger answers three separate problems that are the same fact recorded at
+// different moments: who exclusively owns a succession before its first
+// duplicable effect, what a replay converges on after a loss, and whether the
+// effects a route commit still owes have actually landed.
+// ---------------------------------------------------------------------------
+
+/// Apply one previewed succession under an exact idempotency key.
+async fn apply_succession(
+    world: &World,
+    project: &str,
+    epic: &str,
+    body: &serde_json::Value,
+    key: &str,
+) -> Answer {
+    Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        body,
+    )
+    .signed_as(world, "admin")
+    .with_key(key.to_owned())
+    .send(world)
+    .await
+}
+
+/// Two fresh keys race one seat; exactly one successor may exist afterwards.
+///
+/// The launch is the duplicable effect. Serialising on the native-activity lock
+/// does not prevent duplication — both callers proceed in turn — and a
+/// compare-and-swap after the launch is too late, because the second native
+/// already exists. Only a claim taken before the first effect makes the loser
+/// refuse having launched nothing (ASMA-8187 acceptance 4).
+#[tokio::test]
+async fn two_fresh_keys_converge_on_one_core_team_successor_and_one_transition() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8187-two-keys", "asma-8187-two-keys-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    world.fake.archive_hosted_seat(&native);
+
+    // Both callers previewed the same still-current state, which is exactly the
+    // race: two legitimate previews, two fresh keys, one seat.
+    let first_body =
+        previewed_succession(world, project, epic, &binding, &native, generation).await;
+    let second_body =
+        previewed_succession(world, project, epic, &binding, &native, generation).await;
+
+    let first = apply_succession(world, project, epic, &first_body, "asma-8187-race-one").await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let minted_after_first = world.fake.minted_natives();
+
+    let second = apply_succession(world, project, epic, &second_body, "asma-8187-race-two").await;
+    // Convergence, not refusal: the second key finds the seat already succeeded
+    // and answers with the same successor. What it must never do is produce a
+    // second one.
+    assert_eq!(second.status, 200, "{}", second.body);
+    assert_eq!(
+        second.json()["successor_native_id"],
+        first.json()["successor_native_id"],
+        "the second key answered with a different successor"
+    );
+    assert_eq!(second.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(
+        world.fake.minted_natives(),
+        minted_after_first,
+        "the second key minted a second native"
+    );
+
+    // Exactly one active occupant, exactly one retirement, one occupancy step.
+    let (active, history, occupancy) = succession_shape(world, project_id, binding_id);
+    assert_eq!(
+        active,
+        first.json()["successor_native_id"].as_str().unwrap()
+    );
+    assert_eq!(history, vec![native.as_str().to_owned()]);
+    assert_eq!(occupancy, 2);
+
+    // And exactly one ledger transition owns the seat.
+    world.daemon.state().with_store(|store| {
+        let owner = store
+            .core_team_route_succession_owner(project_id, binding_id, 1)
+            .expect("the ledger reads")
+            .expect("the succession has an owner");
+        assert_eq!(owner.idempotency_key.as_str(), "asma-8187-race-one");
+        assert!(owner.is_complete(), "the winning succession is incomplete");
+        assert!(
+            store
+                .get_core_team_route_succession(
+                    &IdempotencyKey::parse("asma-8187-race-two").expect("a key")
+                )
+                .expect("the ledger reads")
+                .is_none(),
+            "the second key left a second ledger row"
+        );
+
+        // The exclusivity itself, asked directly of the claim. Convergence
+        // above is what a *sequential* second caller sees; this is what stops a
+        // genuinely concurrent one from ever reaching the retire and the
+        // launch, and it is the only thing that can.
+        let intruder = store.claim_core_team_route_succession(
+            &kontor_core::repository::NewCoreTeamRouteSuccessionClaim {
+                idempotency_key: IdempotencyKey::parse("asma-8187-race-intruder").expect("a key"),
+                intent_hash: ContentHash::of(b"a concurrent caller's intent"),
+                project_id,
+                mini_project_id: MiniProjectId::parse(&composed.epic).expect("an epic id"),
+                seat_binding_id: binding_id,
+                predecessor_native_id: native.clone(),
+                predecessor_generation: generation,
+                predecessor_occupancy_generation: 1,
+                successor_occupancy_generation: 2,
+                successor_credential_generation: 2,
+                claimed_at: kontor_api::now(),
+            },
+        );
+        assert!(
+            intruder.is_err(),
+            "a second key claimed a succession this seat already owns"
+        );
+    });
+}
+
+/// A pending succession the seat has outrun must not be receipted.
+///
+/// This is the reachable shape the earlier pending-effects test never built: a
+/// route commits, its trailing effects are lost, and *then* a later succession
+/// moves the seat to another occupancy. Those effects can now never land — the
+/// native they describe is no longer the occupant — so reconciliation has
+/// nothing to do and must say so rather than quietly succeeding. A receipt
+/// minted here would assert that a half-landed command finished
+/// (ASMA-8187 P1).
+#[tokio::test]
+async fn a_pending_succession_the_seat_outran_is_refused_rather_than_receipted() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8187-outrun", "asma-8187-outrun-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    let key = IdempotencyKey::parse("asma-8187-outrun").expect("a key");
+
+    // First succession: the route commits and the latch is lost.
+    world.fake.archive_hosted_seat(&native);
+    let first_body =
+        previewed_succession(world, project, epic, &binding, &native, generation).await;
+    world
+        .daemon
+        .state()
+        .with_store(kontor_store::SqliteStore::lose_next_succession_effects);
+    let lost = apply_succession(world, project, epic, &first_body, "asma-8187-outrun").await;
+    assert_ne!(lost.status, 200, "the injected loss returned success");
+    let pending = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_core_team_route_succession(&key))
+        .expect("the ledger reads")
+        .expect("the succession exists");
+    assert!(pending.route_committed_at.is_some());
+    assert!(!pending.is_complete());
+    assert!(pending.receipt_id.is_none());
+    let stranded_successor = pending
+        .successor_native_id
+        .clone()
+        .expect("the committed row names its successor");
+
+    // The seat is then succeeded again, by another key, to a third occupancy.
+    let (second_active, _, second_occupancy) = succession_shape(world, project_id, binding_id);
+    assert_eq!(second_active, stranded_successor.as_str());
+    assert_eq!(second_occupancy, 2);
+    world
+        .fake
+        .archive_hosted_seat(&ExternalId::parse(&second_active).expect("a native id"));
+    let second_body = previewed_succession(
+        world,
+        project,
+        epic,
+        &binding,
+        &ExternalId::parse(&second_active).expect("a native id"),
+        1,
+    )
+    .await;
+    let second =
+        apply_succession(world, project, epic, &second_body, "asma-8187-outrun-next").await;
+    assert_eq!(second.status, 200, "{}", second.body);
+    let (third_active, _, third_occupancy) = succession_shape(world, project_id, binding_id);
+    assert_eq!(
+        third_occupancy, 3,
+        "the seat did not reach a third occupancy"
+    );
+    assert_ne!(third_active, stranded_successor.as_str());
+
+    // The first command is now unreconcilable. Replaying it must refuse.
+    let refused = apply_succession(world, project, epic, &first_body, "asma-8187-outrun").await;
+    assert_ne!(
+        refused.status, 200,
+        "an unreconcilable pending succession was reported as complete: {}",
+        refused.body
+    );
+
+    // And it must have minted nothing: no receipt on the row, still incomplete.
+    let after = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_core_team_route_succession(&key))
+        .expect("the ledger reads")
+        .expect("the succession exists");
+    assert!(
+        after.receipt_id.is_none(),
+        "a receipt was bound to an incomplete succession"
+    );
+    assert!(
+        !after.is_complete(),
+        "an unreconcilable succession was marked complete"
+    );
+
+    // The store binder refuses it directly too, so the guard does not depend on
+    // the caller having checked.
+    world.daemon.state().with_store(|store| {
+        assert!(
+            store
+                .bind_core_team_route_succession_receipt(
+                    &key,
+                    &after.intent_hash,
+                    CommandReceiptId::generate(),
+                    kontor_api::now(),
+                )
+                .is_err(),
+            "the binder accepted a receipt for an incomplete succession"
+        );
+    });
+}
+
+/// A seat already owned by another key refuses before it retires or launches.
+///
+/// This is the concurrent half of exclusivity. The sequential caller converges
+/// through the plan because the seat has already moved; a caller that arrives
+/// while another key still holds the claim has *not* had the seat move under
+/// it, so nothing but the claim can stop it. The refusal must land before the
+/// retire and the launch, with the predecessor still live and no native minted
+/// (ASMA-8187 acceptance 4, refusal before effects).
+#[tokio::test]
+async fn a_succession_owned_by_another_key_refuses_before_any_effect() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8187-owned", "asma-8187-owned-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    world.fake.archive_hosted_seat(&native);
+    let body = previewed_succession(world, project, epic, &binding, &native, generation).await;
+
+    // Another key takes the claim first and does not release it.
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.claim_core_team_route_succession(
+                &kontor_core::repository::NewCoreTeamRouteSuccessionClaim {
+                    idempotency_key: IdempotencyKey::parse("asma-8187-owner").expect("a key"),
+                    intent_hash: ContentHash::of(b"the owning caller's intent"),
+                    project_id,
+                    mini_project_id: MiniProjectId::parse(epic).expect("an epic id"),
+                    seat_binding_id: binding_id,
+                    predecessor_native_id: native.clone(),
+                    predecessor_generation: generation,
+                    predecessor_occupancy_generation: 1,
+                    successor_occupancy_generation: 2,
+                    successor_credential_generation: 2,
+                    claimed_at: kontor_api::now(),
+                },
+            )
+        })
+        .expect("the first claim is taken");
+
+    let shape_before = succession_shape(world, project_id, binding_id);
+    let minted_before = world.fake.minted_natives();
+    let calls_before = world.fake.calls().len();
+    let refused = apply_succession(world, project, epic, &body, "asma-8187-latecomer").await;
+    assert_ne!(
+        refused.status, 200,
+        "a seat owned by another key was succeeded anyway: {}",
+        refused.body
+    );
+    assert!(
+        !world.fake.calls()[calls_before..]
+            .iter()
+            .any(|call| matches!(
+                call,
+                AdapterCall::RetireHostedSeat(_) | AdapterCall::LaunchHostedSeat(_)
+            )),
+        "the refusal landed after a native effect"
+    );
+    assert_eq!(
+        world.fake.minted_natives(),
+        minted_before,
+        "the refused caller minted a native"
+    );
+    assert_eq!(
+        succession_shape(world, project_id, binding_id),
+        shape_before,
+        "the refusal moved durable seat state"
+    );
+}
+
+/// The successor's credential is a generation-scoped subject, never a value.
+///
+/// A seat credential is derived from the operator secret. The readback records
+/// the public pair the grant is scoped to — this seat and this occupancy
+/// generation — and a digest over exactly that pair. A predecessor's grant is
+/// not copied because it is not recorded, and the successor's subject is a
+/// different generation, so the digest differs from the predecessor's by
+/// construction (ASMA-8187 acceptance 1 and 2).
+#[tokio::test]
+async fn a_successor_derives_its_own_generation_scoped_credential_subject() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8187-credential", "asma-8187-credential-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    world.fake.archive_hosted_seat(&native);
+    let body = previewed_succession(world, project, epic, &binding, &native, generation).await;
+
+    let applied = apply_succession(world, project, epic, &body, "asma-8187-credential").await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let readback = applied.json()["readback"].clone();
+    assert!(!readback.is_null(), "the succession returned no readback");
+
+    // The successor's grant is scoped to generation two, not the predecessor's.
+    assert_eq!(readback["grant_subject"]["generation"], 2);
+    assert_eq!(readback["successor"]["occupancy_generation"], 2);
+    assert_eq!(readback["predecessor"]["occupancy_generation"], 1);
+    assert_eq!(
+        readback["grant_subject"]["subject_seat_binding_id"],
+        binding.as_str(),
+        "the grant is scoped to another seat"
+    );
+
+    // The digest is over the public subject pair, so it is reproducible from
+    // identifiers alone — and therefore provably carries nothing secret.
+    let mut subject = Vec::new();
+    subject.extend_from_slice(b"kontor-core-team-seat-grant-subject-v1\0");
+    subject.extend_from_slice(binding.as_bytes());
+    subject.push(0);
+    subject.extend_from_slice(b"2");
+    assert_eq!(
+        readback["grant_subject"]["subject_digest"],
+        ContentHash::of(&subject).as_str(),
+        "the credential digest is not the public subject digest"
+    );
+
+    // A predecessor-generation subject is a different digest, so nothing here
+    // can be reused as the predecessor's authority.
+    let mut predecessor_subject = Vec::new();
+    predecessor_subject.extend_from_slice(b"kontor-core-team-seat-grant-subject-v1\0");
+    predecessor_subject.extend_from_slice(binding.as_bytes());
+    predecessor_subject.push(0);
+    predecessor_subject.extend_from_slice(b"1");
+    assert_ne!(
+        readback["grant_subject"]["subject_digest"],
+        ContentHash::of(&predecessor_subject).as_str(),
+        "the successor inherited the predecessor's credential subject"
+    );
+
+    // Nothing anywhere in the durable readback resembles bearer material.
+    let stored = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.get_core_team_route_succession(
+                &IdempotencyKey::parse("asma-8187-credential").expect("a key"),
+            )
+        })
+        .expect("the ledger reads")
+        .expect("the succession exists");
+    let serialized = serde_json::to_string(&stored.readback).expect("the readback serializes");
+    for forbidden in ["KONTOR_AUTH", "bearer", "secret", "credential_value"] {
+        assert!(
+            !serialized.contains(forbidden),
+            "the durable readback carries {forbidden}"
+        );
+    }
+    assert_eq!(stored.successor_credential_generation, 2);
+
+    // The ledger's own predecessor identity must be the predecessor's, not a
+    // near-miss. A recorded generation that drifts from the native it names
+    // makes the row unusable as the "which occupancy did this replace" answer,
+    // and every later fence that reads it inherits the error.
+    assert_eq!(
+        stored.predecessor_generation, generation,
+        "the ledger recorded another predecessor runtime generation"
+    );
+    assert_eq!(
+        stored.predecessor_native_id.as_str(),
+        native.as_str(),
+        "the ledger recorded another predecessor native"
+    );
+    assert_eq!(
+        readback["predecessor"]["generation"],
+        serde_json::Value::from(stored.predecessor_generation),
+        "the readback and the ledger disagree on the predecessor generation"
+    );
+    assert_eq!(stored.predecessor_occupancy_generation, 1);
+    assert_eq!(stored.successor_occupancy_generation, 2);
+    let _ = (project_id, binding_id);
+}
+
+/// A succession whose trailing effects never landed is not complete.
+///
+/// The route transition commits with its evidence, but the launch-intent
+/// installation and the SeatBinding observation follow it. Reporting a route
+/// commit as a finished succession would be a complete-looking answer built
+/// from a partial one, so the ledger records those two separately and a replay
+/// reconciles them (ASMA-8187 acceptance 3).
+#[tokio::test]
+async fn a_committed_succession_with_pending_effects_is_reconciled_by_replay() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8187-pending", "asma-8187-pending-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    world.fake.archive_hosted_seat(&native);
+    let body = previewed_succession(world, project, epic, &binding, &native, generation).await;
+    let key = IdempotencyKey::parse("asma-8187-pending").expect("a key");
+
+    // Enter the interval honestly. The route transition commits and the latch
+    // that follows it is lost, which is what a process death there looks like.
+    // It cannot be staged by un-latching afterwards: the ledger's own trigger
+    // refuses that, because an effect that has landed may never un-land.
+    world
+        .daemon
+        .state()
+        .with_store(kontor_store::SqliteStore::lose_next_succession_effects);
+    let lost = apply_succession(world, project, epic, &body, "asma-8187-pending").await;
+    assert_ne!(
+        lost.status, 200,
+        "the injected loss returned success: {}",
+        lost.body
+    );
+
+    let pending = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_core_team_route_succession(&key))
+        .expect("the ledger reads")
+        .expect("the succession exists");
+    assert!(
+        pending.route_committed_at.is_some(),
+        "the route commit is the precondition for this case"
+    );
+    assert!(
+        !pending.is_complete(),
+        "the staged succession reads complete"
+    );
+
+    // The replay reconciles the pending effects rather than reporting a
+    // complete result it cannot stand behind.
+    let replayed = apply_succession(world, project, epic, &body, "asma-8187-pending").await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["receipt"]["applied"], "unchanged");
+    let settled = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_core_team_route_succession(&key))
+        .expect("the ledger reads")
+        .expect("the succession exists");
+    assert!(
+        settled.is_complete(),
+        "the replay left the succession incomplete"
+    );
+    assert!(settled.receipt_id.is_some(), "the replay bound no receipt");
+    assert_eq!(
+        replayed.json()["succession_effects"]["launch_intent_installed"],
+        serde_json::Value::Bool(true)
+    );
+    assert_eq!(
+        replayed.json()["succession_effects"]["seat_binding_observed"],
+        serde_json::Value::Bool(true)
+    );
+    let (active, _history, occupancy) = succession_shape(world, project_id, binding_id);
+    assert_eq!(active, settled.successor_native_id.unwrap().as_str());
+    assert_eq!(occupancy, 2);
+}
+
+/// An exact replay answers from durable evidence, not from the current seat.
+///
+/// Once a later succession has moved the seat on, recomputing the answer would
+/// describe whoever holds the seat now. The ledger row is what makes a replay
+/// of *this* command still answer with the generation it installed.
+#[tokio::test]
+async fn a_replayed_succession_answers_with_its_own_durable_readback() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8187-durable", "asma-8187-durable-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    world.fake.archive_hosted_seat(&native);
+    let body = previewed_succession(world, project, epic, &binding, &native, generation).await;
+    let first = apply_succession(world, project, epic, &body, "asma-8187-durable").await;
+    assert_eq!(first.status, 200, "{}", first.body);
+
+    let calls_before = world.fake.calls().len();
+    let replayed = apply_succession(world, project, epic, &body, "asma-8187-durable").await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(
+        replayed.json()["successor_native_id"],
+        first.json()["successor_native_id"],
+        "the replay answered with a different successor"
+    );
+    assert_eq!(
+        replayed.json()["readback_hash"],
+        first.json()["readback_hash"],
+        "the replay answered with different evidence"
+    );
+    assert_eq!(
+        replayed.json()["receipt"]["receipt_id"],
+        first.json()["receipt"]["receipt_id"],
+        "the replay minted a second receipt"
+    );
+    assert!(
+        !world.fake.calls()[calls_before..]
+            .iter()
+            .any(|call| matches!(
+                call,
+                AdapterCall::RetireHostedSeat(_) | AdapterCall::LaunchHostedSeat(_)
+            )),
+        "an exact replay produced a native effect"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ASMA-8187 remedy 4 — the intervals a succession can actually be lost in.
+//
+// Exclusivity and recovery were previously argued from sequential probes: a
+// claim seeded by hand, a replay issued after the first caller had already
+// finished. Neither stands where the hazard is. A second caller is dangerous
+// precisely while the first is *inside* its irreversible effects, and a
+// recovery is only proved by entering the interval it recovers from. The tests
+// below do both — one deterministic barrier for concurrency, and one seam per
+// real boundary, each entered honestly rather than staged afterwards.
+//
+// The four boundaries, in the order the command crosses them:
+//   1. after the native retirement, before the launch;
+//   2. after the native launch, before the route commit;
+//   3. after the route and ledger commit, before either trailing effect;
+//   4. after the command receipt is recorded, before the ledger binds it.
+// ---------------------------------------------------------------------------
+
+/// A genuinely concurrent second key is refused at the claim, mid-retirement.
+///
+/// The existing exclusivity test seeds a claim and then applies, which proves
+/// the refusal but not that it lands in time: a sequential caller has already
+/// had the seat move under it. Here the first caller is *held inside its own
+/// retirement*, having taken the claim and not yet launched, and the second
+/// arrives exactly there. Nothing but the claim can stop it, and it must stop
+/// it before any native effect (ASMA-8187 acceptance 4).
+#[tokio::test]
+async fn a_concurrent_second_key_is_refused_at_the_claim_before_any_native_effect() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8187-barrier", "asma-8187-barrier-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+
+    // A live predecessor on a changed route: the retirement below is a real
+    // native effect, so the barrier stands where the hazard actually is.
+    let first_body =
+        previewed_route(world, project, epic, &binding, &native, generation, "high").await;
+    let second_body =
+        previewed_route(world, project, epic, &binding, &native, generation, "high").await;
+
+    let pause = world.fake.pause_next_hosted_retirement();
+    let minted_before = world.fake.minted_natives();
+    let first = apply_succession(world, project, epic, &first_body, "asma-8187-barrier-one");
+    let intruder = async {
+        pause.entered().await;
+        // The first caller is now inside `retire_hosted_seat`, holding its
+        // claim and having launched nothing. Everything measured from here is
+        // attributable to the second caller alone.
+        let calls_while_claimed = world.fake.calls().len();
+        let minted_while_claimed = world.fake.minted_natives();
+        let second =
+            apply_succession(world, project, epic, &second_body, "asma-8187-barrier-two").await;
+        assert_ne!(
+            second.status, 200,
+            "a concurrent second key succeeded a seat another key owns: {}",
+            second.body
+        );
+        // The rule text does not survive the API's conflict mapping, so the
+        // refusal is localized by what it did not do. The claim is taken before
+        // the placement proof, so a refusal there means no retire and no launch;
+        // anything later would have left one of them behind.
+        assert!(
+            !world.fake.calls()[calls_while_claimed..]
+                .iter()
+                .any(|call| matches!(
+                    call,
+                    AdapterCall::RetireHostedSeat(_) | AdapterCall::LaunchHostedSeat(_)
+                )),
+            "the refusal landed after a native effect"
+        );
+        assert_eq!(
+            world.fake.minted_natives(),
+            minted_while_claimed,
+            "the refused caller minted a native"
+        );
+        assert!(
+            world
+                .daemon
+                .state()
+                .with_store(|store| store.get_core_team_route_succession(
+                    &IdempotencyKey::parse("asma-8187-barrier-two").expect("a key")
+                ))
+                .expect("the ledger reads")
+                .is_none(),
+            "the refused caller left a ledger row"
+        );
+        pause.release();
+    };
+    let (first, ()) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        tokio::join!(first, intruder)
+    })
+    .await
+    .expect("the held retirement and the concurrent refusal both finish");
+
+    assert_eq!(first.status, 200, "{}", first.body);
+    let (active, history, occupancy) = succession_shape(world, project_id, binding_id);
+    assert_eq!(
+        active,
+        first.json()["successor_native_id"].as_str().unwrap(),
+        "the seat does not hold the successor the winner reported"
+    );
+    assert_eq!(history, vec![native.as_str().to_owned()]);
+    assert_eq!(occupancy, 2, "the seat advanced more than one occupancy");
+    // Mints, not launch calls: the runtime answers a repeated launch with the
+    // seat it already holds, so only the count of natives it created can tell a
+    // duplicate from a convergence.
+    assert_eq!(
+        world.fake.minted_natives(),
+        minted_before + 1,
+        "the race produced more than one successor"
+    );
+}
+
+/// Two concurrent applies under one key produce one succession, then converge.
+///
+/// Same-key concurrency is a different hazard from two fresh keys: the claim is
+/// deliberately re-entrant, because that is what lets an exact replay continue.
+/// So the claim cannot be what stops the second arrival — the compare-and-swap
+/// on the route it is trying to commit is, and the caller that loses it must
+/// then answer from the ledger rather than from the bytes it had assembled.
+///
+/// Both callers therefore succeed, which is the point: one idempotency key is
+/// one command, and it may not answer twice with two different successors, two
+/// occupancy generations or two receipts. Before this was fenced, the loser
+/// re-derived the occupancy from a seat the winner had already moved and
+/// reported a generation the ledger never recorded.
+#[tokio::test]
+async fn concurrent_applies_under_one_key_converge_on_a_single_successor() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8187-same-key", "asma-8187-same-key-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    let key = IdempotencyKey::parse("asma-8187-same-key").expect("a key");
+    let body = previewed_route(world, project, epic, &binding, &native, generation, "high").await;
+
+    let pause = world.fake.pause_next_hosted_retirement();
+    let minted_before = world.fake.minted_natives();
+    let held = apply_succession(world, project, epic, &body, "asma-8187-same-key");
+    let concurrent = async {
+        pause.entered().await;
+        let second = apply_succession(world, project, epic, &body, "asma-8187-same-key").await;
+        pause.release();
+        second
+    };
+    let (held, concurrent) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        tokio::join!(held, concurrent)
+    })
+    .await
+    .expect("both same-key callers finish");
+
+    // The held caller entered first and finished second, so the concurrent one
+    // is the one whose transition commits. Both answer, and both must answer
+    // with the *same* succession.
+    assert_eq!(concurrent.status, 200, "{}", concurrent.body);
+    assert_eq!(held.status, 200, "{}", held.body);
+    assert_eq!(
+        held.json()["successor_native_id"],
+        concurrent.json()["successor_native_id"],
+        "one key answered with two different successors"
+    );
+    assert_eq!(
+        held.json()["readback"],
+        concurrent.json()["readback"],
+        "one key answered with two different readbacks"
+    );
+    assert_eq!(
+        held.json()["readback"]["successor"]["occupancy_generation"],
+        serde_json::json!(2),
+        "a caller reported an occupancy the ledger never recorded"
+    );
+    assert_eq!(
+        held.json()["receipt"]["receipt_id"],
+        concurrent.json()["receipt"]["receipt_id"],
+        "one key minted two receipts"
+    );
+    assert_eq!(held.json()["receipt"]["applied"], "unchanged");
+
+    let (active, history, occupancy) = succession_shape(world, project_id, binding_id);
+    assert_eq!(
+        active,
+        concurrent.json()["successor_native_id"].as_str().unwrap()
+    );
+    assert_eq!(history, vec![native.as_str().to_owned()]);
+    assert_eq!(occupancy, 2, "the seat advanced more than one occupancy");
+    assert_eq!(
+        world.fake.minted_natives(),
+        minted_before + 1,
+        "the same key created two natives"
+    );
+    // Nothing was prepared for an occupancy the command never produced.
+    world.daemon.state().with_store(|store| {
+        assert!(
+            store
+                .get_hosted_seat_launch_intent(project_id, binding_id, 3)
+                .expect("the launch intent reads")
+                .is_none(),
+            "a losing caller prepared a launch intent for an unrecorded occupancy"
+        );
+    });
+
+    // And a later retry is convergence too, from a caller that was never
+    // concurrent with anything.
+    let minted_after_race = world.fake.minted_natives();
+    let retry = apply_succession(world, project, epic, &body, "asma-8187-same-key").await;
+    assert_eq!(retry.status, 200, "{}", retry.body);
+    assert_eq!(
+        retry.json()["successor_native_id"],
+        concurrent.json()["successor_native_id"]
+    );
+    assert_eq!(
+        retry.json()["receipt"]["receipt_id"],
+        concurrent.json()["receipt"]["receipt_id"],
+        "the retry minted a second receipt"
+    );
+    assert_eq!(retry.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(world.fake.minted_natives(), minted_after_race);
+    world.daemon.state().with_store(|store| {
+        let settled = store
+            .get_core_team_route_succession(&key)
+            .expect("the ledger reads")
+            .expect("the succession exists");
+        assert!(settled.is_complete());
+        assert!(settled.receipt_id.is_some());
+    });
+}
+
+/// Boundary 1: the retirement landed and its acknowledgement did not.
+///
+/// The predecessor is genuinely archived out there and the caller was told
+/// nothing. The claim is the only record that this key owns the half-finished
+/// succession, and the replay has to finish it — retiring nothing a second time
+/// and launching exactly one successor.
+#[tokio::test]
+async fn a_lost_retirement_acknowledgement_is_finished_by_the_claim_owner() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8187-retire-ack", "asma-8187-retire-ack-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    let key = IdempotencyKey::parse("asma-8187-retire-ack").expect("a key");
+    let body = previewed_route(world, project, epic, &binding, &native, generation, "high").await;
+
+    let minted_before = world.fake.minted_natives();
+    world.fake.lose_next_hosted_retire_ack(binding_id);
+    let lost = apply_succession(world, project, epic, &body, "asma-8187-retire-ack").await;
+    assert_ne!(
+        lost.status, 200,
+        "the lost retirement acknowledgement returned success: {}",
+        lost.body
+    );
+
+    // The native effect happened; nothing downstream of it did.
+    assert_eq!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .filter(|call| matches!(call, AdapterCall::RetireHostedSeat(id) if *id == binding_id))
+            .count(),
+        1,
+        "the retirement did not take effect"
+    );
+    assert_eq!(
+        world.fake.minted_natives(),
+        minted_before,
+        "a successor was launched after the retirement was lost"
+    );
+    let claimed = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_core_team_route_succession(&key))
+        .expect("the ledger reads")
+        .expect("the claim survived the loss");
+    assert!(
+        claimed.route_committed_at.is_none(),
+        "a route committed after the retirement was lost"
+    );
+    assert!(!claimed.is_complete());
+    assert_eq!(
+        succession_shape(world, project_id, binding_id).2,
+        1,
+        "the occupancy advanced with no successor"
+    );
+
+    // The claim owner resumes and finishes: one successor, one retirement.
+    let resumed = apply_succession(world, project, epic, &body, "asma-8187-retire-ack").await;
+    assert_eq!(resumed.status, 200, "{}", resumed.body);
+    assert_eq!(
+        world.fake.minted_natives(),
+        minted_before + 1,
+        "the resumed succession minted more than one successor"
+    );
+    assert_eq!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .filter(|call| matches!(call, AdapterCall::RetireHostedSeat(id) if *id == binding_id))
+            .count(),
+        1,
+        "the resume retired a predecessor that was already archived"
+    );
+    let (active, history, occupancy) = succession_shape(world, project_id, binding_id);
+    assert_eq!(
+        active,
+        resumed.json()["successor_native_id"].as_str().unwrap()
+    );
+    assert_eq!(history, vec![native.as_str().to_owned()]);
+    assert_eq!(occupancy, 2);
+    world.daemon.state().with_store(|store| {
+        let settled = store
+            .get_core_team_route_succession(&key)
+            .expect("the ledger reads")
+            .expect("the succession exists");
+        assert!(settled.is_complete(), "the resume left effects pending");
+        assert!(settled.receipt_id.is_some());
+    });
+}
+
+/// Boundary 2: the successor exists and the caller never learned its identity.
+///
+/// This is the shape the durable pre-effect launch intent exists for. The native
+/// is real, unrecorded, and reachable only because the runtime answers for the
+/// seat it was launched into. A replay must adopt *that* native rather than
+/// create a second one, which is the difference between a recovery and a leak.
+#[tokio::test]
+async fn a_lost_launch_acknowledgement_converges_on_the_native_it_created() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8187-launch-ack", "asma-8187-launch-ack-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    let key = IdempotencyKey::parse("asma-8187-launch-ack").expect("a key");
+    let body = previewed_route(world, project, epic, &binding, &native, generation, "high").await;
+
+    let minted_before = world.fake.minted_natives();
+    world.fake.lose_next_hosted_launch_ack();
+    let lost = apply_succession(world, project, epic, &body, "asma-8187-launch-ack").await;
+    assert_ne!(
+        lost.status, 200,
+        "the lost launch acknowledgement returned success: {}",
+        lost.body
+    );
+    let orphan = world
+        .fake
+        .hosted_seat_native_id(binding_id)
+        .expect("the runtime holds the native the lost launch created");
+    assert_eq!(
+        world.fake.minted_natives(),
+        minted_before + 1,
+        "the launch did not take effect"
+    );
+    assert_ne!(orphan, native, "the runtime still holds the predecessor");
+    let claimed = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_core_team_route_succession(&key))
+        .expect("the ledger reads")
+        .expect("the claim survived the loss");
+    assert!(
+        claimed.route_committed_at.is_none(),
+        "a route committed for a successor the caller never learned"
+    );
+    assert_eq!(
+        succession_shape(world, project_id, binding_id).0,
+        native.as_str(),
+        "the seat moved to a successor no transition committed"
+    );
+
+    // The replay adopts the orphan rather than minting beside it.
+    let resumed = apply_succession(world, project, epic, &body, "asma-8187-launch-ack").await;
+    assert_eq!(resumed.status, 200, "{}", resumed.body);
+    assert_eq!(
+        world.fake.minted_natives(),
+        minted_before + 1,
+        "the replay created a second native beside the orphan"
+    );
+    assert_eq!(
+        resumed.json()["successor_native_id"],
+        serde_json::json!(orphan.as_str()),
+        "the replay did not converge on the native the lost launch created"
+    );
+    let (active, history, occupancy) = succession_shape(world, project_id, binding_id);
+    assert_eq!(active, orphan.as_str());
+    assert_eq!(history, vec![native.as_str().to_owned()]);
+    assert_eq!(occupancy, 2);
+    world.daemon.state().with_store(|store| {
+        let settled = store
+            .get_core_team_route_succession(&key)
+            .expect("the ledger reads")
+            .expect("the succession exists");
+        assert!(settled.is_complete());
+        assert_eq!(
+            settled.successor_native_id.as_ref().map(ExternalId::as_str),
+            Some(orphan.as_str())
+        );
+    });
+}
+
+/// A refused launch is not a lost one, and the recovery is different.
+///
+/// The provider declined before creating anything, so there is no native to
+/// converge on — and the retirement that preceded it cannot be taken back. The
+/// seat is momentarily an occupancy with no live native, and the claim is what
+/// lets its owner finish rather than a fresh key racing in to launch a second.
+#[tokio::test]
+async fn a_refused_launch_leaves_its_claim_to_finish_the_succession() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8187-launch-no", "asma-8187-launch-no-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    let key = IdempotencyKey::parse("asma-8187-launch-no").expect("a key");
+    let body = previewed_route(world, project, epic, &binding, &native, generation, "high").await;
+
+    let minted_before = world.fake.minted_natives();
+    world.fake.refuse_next_hosted_launch("codex");
+    let refused = apply_succession(world, project, epic, &body, "asma-8187-launch-no").await;
+    assert_ne!(
+        refused.status, 200,
+        "a refused launch returned success: {}",
+        refused.body
+    );
+    // The distinguishing fact: unlike a lost acknowledgement, nothing was
+    // created. A recovery that assumed otherwise would adopt a native that does
+    // not exist.
+    assert_eq!(
+        world.fake.minted_natives(),
+        minted_before,
+        "a refused launch created a native anyway"
+    );
+    assert!(
+        world.fake.hosted_seat_native_id(binding_id).is_none(),
+        "the runtime holds a native after a refused launch"
+    );
+    assert_eq!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .filter(|call| matches!(call, AdapterCall::RetireHostedSeat(id) if *id == binding_id))
+            .count(),
+        1,
+        "the irreversible retirement did not happen"
+    );
+
+    // A fresh key may not step into the gap: the claim still owns it.
+    let intruder_body =
+        previewed_route(world, project, epic, &binding, &native, generation, "high").await;
+    let intruder = apply_succession(
+        world,
+        project,
+        epic,
+        &intruder_body,
+        "asma-8187-launch-no-two",
+    )
+    .await;
+    assert_ne!(
+        intruder.status, 200,
+        "a fresh key launched into a claimed succession: {}",
+        intruder.body
+    );
+    assert_eq!(world.fake.minted_natives(), minted_before);
+
+    // The owner finishes, creating exactly one successor.
+    let finished = apply_succession(world, project, epic, &body, "asma-8187-launch-no").await;
+    assert_eq!(finished.status, 200, "{}", finished.body);
+    assert_eq!(
+        world.fake.minted_natives(),
+        minted_before + 1,
+        "the recovery minted more than one successor"
+    );
+    let (active, history, occupancy) = succession_shape(world, project_id, binding_id);
+    assert_eq!(
+        active,
+        finished.json()["successor_native_id"].as_str().unwrap()
+    );
+    assert_eq!(history, vec![native.as_str().to_owned()]);
+    assert_eq!(occupancy, 2);
+    world.daemon.state().with_store(|store| {
+        assert!(
+            store
+                .get_core_team_route_succession(&key)
+                .expect("the ledger reads")
+                .expect("the succession exists")
+                .is_complete()
+        );
+    });
+}
+
+/// Boundary 3: the route and its ledger row committed, and nothing else ran.
+///
+/// This is the *earliest* incomplete shape that exists, and it is not the one
+/// the pending-effects test enters: there, both effects had already landed and
+/// only the latch recording them was lost. Here neither has been attempted, so
+/// a replay has to perform them rather than merely re-record them — and until it
+/// does, the succession must not read complete.
+#[tokio::test]
+async fn a_succession_that_lost_its_route_acknowledgement_reconciles_from_neither_effect() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8187-route-ack", "asma-8187-route-ack-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    let key = IdempotencyKey::parse("asma-8187-route-ack").expect("a key");
+    // Archived first: the preview must describe the stale predecessor the apply
+    // will re-plan against, or the hash expires before the seam is reached.
+    world.fake.archive_hosted_seat(&native);
+    let body = previewed_succession(world, project, epic, &binding, &native, generation).await;
+
+    world
+        .daemon
+        .state()
+        .with_store(kontor_store::SqliteStore::lose_next_succession_route_ack);
+    let lost = apply_succession(world, project, epic, &body, "asma-8187-route-ack").await;
+    assert_ne!(
+        lost.status, 200,
+        "the lost route acknowledgement returned success: {}",
+        lost.body
+    );
+
+    let pending = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_core_team_route_succession(&key))
+        .expect("the ledger reads")
+        .expect("the succession exists");
+    assert!(
+        pending.route_committed_at.is_some(),
+        "the route commit is the precondition for this case"
+    );
+    assert!(!pending.is_complete());
+    let successor = pending
+        .successor_native_id
+        .clone()
+        .expect("the committed row names its successor");
+
+    // Neither effect was even attempted. Asserting the latch alone would not
+    // tell this interval apart from the one where both landed and only the
+    // latch was lost, so the effects themselves are read.
+    world.daemon.state().with_store(|store| {
+        let intent = store
+            .get_hosted_seat_launch_intent(project_id, binding_id, 2)
+            .expect("the launch intent reads")
+            .expect("the pre-effect intent was prepared");
+        assert_ne!(
+            intent.state,
+            HostedSeatLaunchIntentState::Installed,
+            "the launch intent was installed after the route commit was lost"
+        );
+        assert_eq!(intent.observed_native_id, None);
+    });
+
+    // The replay performs both effects and only then completes.
+    let replayed = apply_succession(world, project, epic, &body, "asma-8187-route-ack").await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    world.daemon.state().with_store(|store| {
+        let intent = store
+            .get_hosted_seat_launch_intent(project_id, binding_id, 2)
+            .expect("the launch intent reads")
+            .expect("the intent exists");
+        assert_eq!(
+            intent.state,
+            HostedSeatLaunchIntentState::Installed,
+            "the replay left the launch intent uninstalled"
+        );
+        assert_eq!(
+            intent.observed_native_id.as_ref().map(ExternalId::as_str),
+            Some(successor.as_str())
+        );
+        let settled = store
+            .get_core_team_route_succession(&key)
+            .expect("the ledger reads")
+            .expect("the succession exists");
+        assert!(settled.is_complete(), "the replay left effects pending");
+        assert!(settled.receipt_id.is_some(), "the replay bound no receipt");
+    });
+    assert_eq!(
+        succession_shape(world, project_id, binding_id).0,
+        successor.as_str()
+    );
+}
+
+/// Boundary 4: the receipt was recorded and the ledger never learned of it.
+///
+/// The realm now holds a command receipt that no succession row points at. A
+/// replay must find and rebind *that* receipt: recording a second one would make
+/// a single command answer with two different receipt identities, which is the
+/// one thing an idempotency key exists to prevent.
+#[tokio::test]
+async fn a_lost_receipt_binding_rebinds_the_same_receipt() {
+    let (composed, binding, native, generation) = hosted_tpm_seat(
+        "/tmp/kontor-8187-receipt-ack",
+        "asma-8187-receipt-ack-seats",
+    )
+    .await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    let key = IdempotencyKey::parse("asma-8187-receipt-ack").expect("a key");
+    // Archived first: the preview must describe the stale predecessor the apply
+    // will re-plan against, or the hash expires before the seam is reached.
+    world.fake.archive_hosted_seat(&native);
+    let body = previewed_succession(world, project, epic, &binding, &native, generation).await;
+
+    world
+        .daemon
+        .state()
+        .with_store(kontor_store::SqliteStore::lose_next_succession_receipt_binding);
+    let lost = apply_succession(world, project, epic, &body, "asma-8187-receipt-ack").await;
+    assert_ne!(
+        lost.status, 200,
+        "the lost receipt binding returned success: {}",
+        lost.body
+    );
+
+    let recorded = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_receipt_by_key(&key))
+        .expect("the receipt reads")
+        .expect("the command receipt was recorded before the binding was lost");
+    world.daemon.state().with_store(|store| {
+        let pending = store
+            .get_core_team_route_succession(&key)
+            .expect("the ledger reads")
+            .expect("the succession exists");
+        assert!(
+            pending.is_complete(),
+            "this boundary is reached only after both effects landed"
+        );
+        assert!(
+            pending.receipt_id.is_none(),
+            "the ledger bound a receipt the loss was supposed to prevent"
+        );
+    });
+
+    let replayed = apply_succession(world, project, epic, &body, "asma-8187-receipt-ack").await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(
+        replayed.json()["receipt"]["receipt_id"],
+        serde_json::json!(recorded.id.to_string()),
+        "the replay answered with a receipt other than the recorded one"
+    );
+    world.daemon.state().with_store(|store| {
+        let settled = store
+            .get_core_team_route_succession(&key)
+            .expect("the ledger reads")
+            .expect("the succession exists");
+        assert_eq!(
+            settled.receipt_id,
+            Some(recorded.id),
+            "the ledger bound a second receipt"
+        );
+        assert_eq!(
+            store
+                .get_receipt_by_key(&key)
+                .expect("the receipt reads")
+                .expect("the receipt exists")
+                .id,
+            recorded.id,
+            "a second receipt was recorded under one key"
+        );
+    });
+    // The loss was in the binding alone: the succession it describes is
+    // untouched, so the seat must still hold exactly the successor it named.
+    let (active, history, occupancy) = succession_shape(world, project_id, binding_id);
+    assert_eq!(
+        active,
+        replayed.json()["successor_native_id"].as_str().unwrap()
+    );
+    assert_eq!(history, vec![native.as_str().to_owned()]);
+    assert_eq!(occupancy, 2);
+}
+
+/// A successor authenticates where its predecessor no longer can.
+///
+/// The succession's whole point, from a credential's side. The predecessor's
+/// bearer is not revoked, forged or expired — it is still a genuine signature
+/// over a genuine seat — and it must stop working anyway, because the occupancy
+/// it names is over. The successor derives its own, and neither inherits the
+/// other's. A shared Realm credential is a third thing again: it carries no
+/// seat identity at all, so it cannot stand in for either
+/// (ASMA-8187 acceptance 1 and 2).
+#[tokio::test]
+async fn a_successor_seat_authenticates_where_its_predecessor_no_longer_can() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8187-bearer", "asma-8187-bearer-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    let path = format!("/v1/projects/{project}/epics/{epic}/open-questions:record");
+    let bearer = |generation: u64| {
+        world
+            .daemon
+            .state()
+            .credentials()
+            .seat_credential_for_generation(binding_id, generation)
+    };
+    let raise = |question: kontor_core::id::OpenQuestionId, subject: &str| {
+        serde_json::json!({
+            "question_id": question, "expected_revision": 0,
+            "action": {
+                "action": "raise", "subject": subject, "scope": "architecture",
+                "attachment": {"record": {"kind": "mini_project", "mini_project_id": epic}},
+                "why_ambiguous": "The route correction left two readings of the contract.",
+                "options": ["Retain the original", "Record a supersession"],
+            }
+        })
+    };
+
+    // Generation one is the seat's current occupancy, and its bearer works.
+    let first_question = kontor_core::id::OpenQuestionId::generate();
+    let before = Call::post(&path, &raise(first_question, "Before the succession"))
+        .with_token(bearer(1))
+        .with_key("asma-8187-bearer-before")
+        .send(world)
+        .await;
+    assert_eq!(before.status, 200, "{}", before.body);
+
+    // The seat succeeds to occupancy two.
+    world.fake.archive_hosted_seat(&native);
+    let body = previewed_succession(world, project, epic, &binding, &native, generation).await;
+    let applied = apply_succession(world, project, epic, &body, "asma-8187-bearer").await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(succession_shape(world, project_id, binding_id).2, 2);
+    assert_eq!(
+        applied.json()["readback"]["grant_subject"]["generation"],
+        serde_json::json!(2),
+        "the successor did not derive its own grant generation"
+    );
+
+    // The predecessor's bearer still verifies — it is a real signature over a
+    // real seat — and is refused on the occupancy it names. That distinction is
+    // the whole mechanism: nothing was revoked, the generation simply moved.
+    let predecessor = Call::post(
+        &path,
+        &raise(
+            kontor_core::id::OpenQuestionId::generate(),
+            "From the predecessor",
+        ),
+    )
+    .with_token(bearer(1))
+    .with_key("asma-8187-bearer-predecessor")
+    .send(world)
+    .await;
+    assert_eq!(predecessor.status, 409, "{}", predecessor.body);
+    assert_eq!(predecessor.json()["code"], "stale_binding");
+    assert!(
+        predecessor
+            .body
+            .contains("no matching current hosted occupancy"),
+        "the predecessor was refused for some other reason: {}",
+        predecessor.body
+    );
+
+    // The successor's own bearer is accepted.
+    let successor = Call::post(
+        &path,
+        &raise(
+            kontor_core::id::OpenQuestionId::generate(),
+            "From the successor",
+        ),
+    )
+    .with_token(bearer(2))
+    .with_key("asma-8187-bearer-successor")
+    .send(world)
+    .await;
+    assert_eq!(successor.status, 200, "{}", successor.body);
+
+    // A generation the seat has never reached is refused the same way, so
+    // acceptance is of *this* occupancy and not merely of "not the predecessor".
+    let unreached = Call::post(
+        &path,
+        &raise(kontor_core::id::OpenQuestionId::generate(), "From nowhere"),
+    )
+    .with_token(bearer(3))
+    .with_key("asma-8187-bearer-unreached")
+    .send(world)
+    .await;
+    assert_eq!(unreached.status, 409, "{}", unreached.body);
+
+    // A bearer that is not this Realm's signature never authenticates as a seat
+    // at all, which is a different refusal from a fenced one.
+    let forged = Call::post(
+        &path,
+        &raise(kontor_core::id::OpenQuestionId::generate(), "Forged"),
+    )
+    .with_token(format!("kontor-seat-v2.{binding_id}.2.{}", "f".repeat(64)))
+    .with_key("asma-8187-bearer-forged")
+    .send(world)
+    .await;
+    assert_ne!(forged.status, 200, "{}", forged.body);
+    assert_ne!(
+        forged.json()["code"],
+        "stale_binding",
+        "a forged bearer was treated as a fenced occupancy: {}",
+        forged.body
+    );
+
+    // And an ordinary Realm credential is not a seat. It carries no seat
+    // identity to fence, so it has to name the seat it reports for — and it
+    // still cannot close a question, which is the act reserved to the seat's
+    // own scoped bearer.
+    let anonymous = Call::post(
+        &path,
+        &raise(
+            kontor_core::id::OpenQuestionId::generate(),
+            "From the Realm",
+        ),
+    )
+    .signed_as(world, "operator")
+    .with_key("asma-8187-bearer-realm")
+    .send(world)
+    .await;
+    assert_eq!(anonymous.status, 400, "{}", anonymous.body);
+    assert!(
+        anonymous
+            .body
+            .contains("operator reporting must name the active author seat"),
+        "{}",
+        anonymous.body
+    );
+    let closing = serde_json::json!({
+        "question_id": first_question,
+        "expected_revision": 1,
+        "action": {"action": "dispose", "outcome": {"deferred": {
+            "key": "asma-8187-reviewed",
+            "condition": "The route correction is reviewed."
+        }}}
+    });
+    let realm_closure = Call::post(&path, &closing)
+        .signed_as(world, "operator")
+        .with_key("asma-8187-bearer-realm-close")
+        .send(world)
+        .await;
+    assert_eq!(realm_closure.status, 403, "{}", realm_closure.body);
+    assert!(
+        realm_closure
+            .body
+            .contains("requires its configured leadership seat's scoped credential"),
+        "{}",
+        realm_closure.body
+    );
 }
 
 /// The live ASMA-8098 shape: a closed predecessor the runtime calls stale.

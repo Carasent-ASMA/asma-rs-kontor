@@ -1,0 +1,23 @@
+   Compiling kontor-store v0.2.1 (/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/isolated-source/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.42s
+     Running tests/backup_snapshot.rs (/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/mutation-target/debug/deps/backup_snapshot-ba16d7a45b9280c9)
+
+running 1 test
+test nonempty_public_authority_ledger_is_not_silently_omitted_from_export ... FAILED
+
+failures:
+
+---- nonempty_public_authority_ledger_is_not_silently_omitted_from_export stdout ----
+
+thread 'nonempty_public_authority_ledger_is_not_silently_omitted_from_export' (26804765) panicked at crates/kontor-store/tests/backup_snapshot.rs:92:5:
+assertion failed: matches!(kontor_store::backup::export_realm(&store,
+    at("2026-10-03T18:01:00Z")), Err(BackupError::Verification { .. }))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    nonempty_public_authority_ledger_is_not_silently_omitted_from_export
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 19 filtered out; finished in 2.00s
+
+error: test failed, to rerun pass `-p kontor-store --test backup_snapshot`

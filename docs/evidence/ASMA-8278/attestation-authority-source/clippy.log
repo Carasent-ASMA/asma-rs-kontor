@@ -1,0 +1,21 @@
+    Checking kontor-core v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-core)
+    Checking rustix v1.1.5
+    Checking tempfile v3.27.0
+    Checking security-framework v3.7.0
+    Checking rustls-platform-verifier v0.7.0
+    Checking chrono v0.4.45
+    Checking tower-http v0.6.11
+    Checking reqwest v0.13.4
+    Checking icalendar v0.17.13
+    Checking rusqlite v0.40.2
+    Checking rusty-fork v0.3.1
+    Checking proptest v1.11.0
+    Checking kontor-runtime v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-runtime)
+    Checking kontor-context v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-context)
+    Checking kontor-policy v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-policy)
+    Checking kontor-scheduler v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-scheduler)
+    Checking kontor-teams v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-teams)
+    Checking kontor-calendar v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-calendar)
+    Checking kontor-profiles v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-profiles)
+    Checking kontor-store v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-store)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 24.84s

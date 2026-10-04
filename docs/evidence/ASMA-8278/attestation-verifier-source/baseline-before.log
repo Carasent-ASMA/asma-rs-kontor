@@ -1,0 +1,74 @@
+   Compiling libc v0.2.189
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.26
+   Compiling quote v1.0.47
+   Compiling jobserver v0.1.35
+   Compiling find-msvc-tools v0.1.12
+   Compiling shlex v2.0.1
+   Compiling syn v3.0.6
+   Compiling serde_core v1.0.229
+   Compiling cc v1.4.6
+   Compiling typenum v1.20.1
+   Compiling hybrid-array v0.4.15
+   Compiling cmake v0.1.58
+   Compiling pkg-config v0.3.34
+   Compiling dunce v1.0.5
+   Compiling fs_extra v1.3.0
+   Compiling aws-lc-sys v0.45.0
+   Compiling zmij v1.0.23
+   Compiling getrandom v0.4.3
+   Compiling cfg-if v1.0.5
+   Compiling block-buffer v0.12.1
+   Compiling crypto-common v0.2.2
+   Compiling serde v1.0.229
+   Compiling const-oid v0.10.2
+   Compiling thiserror v2.0.20
+   Compiling serde_json v1.0.151
+   Compiling digest v0.11.3
+   Compiling serde_derive v1.0.229
+   Compiling thiserror-impl v2.0.20
+   Compiling cpufeatures v0.3.1
+   Compiling errno v0.3.14
+   Compiling memchr v2.8.3
+   Compiling jiff-core v0.1.1
+   Compiling jiff-tzdb v0.1.8
+   Compiling itoa v1.0.18
+   Compiling aws-lc-rs v1.18.1
+   Compiling jiff v0.2.35
+   Compiling signal-hook-registry v1.4.8
+   Compiling sha2 v0.11.0
+   Compiling uuid v1.24.0
+   Compiling tokio-macros v2.7.2
+   Compiling mio v1.2.3
+   Compiling socket2 v0.6.5
+   Compiling bytes v1.12.1
+   Compiling hex v0.4.3
+   Compiling pin-project-lite v0.2.17
+   Compiling zeroize v1.9.0
+   Compiling untrusted v0.7.1
+   Compiling tokio v1.53.1
+   Compiling kontor-core v0.2.1 (/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-attestation-mutations-gvnm3zs2/source/crates/kontor-core)
+   Compiling async-trait v0.1.92
+   Compiling kontor-runtime v0.2.1 (/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-attestation-mutations-gvnm3zs2/source/crates/kontor-runtime)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 52.82s
+     Running unittests src/lib.rs (/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-attestation-mutations-gvnm3zs2/target/debug/deps/kontor_runtime-38fd6bad31f23716)
+
+running 15 tests
+test planning_pair::attestation::tests::all_and_only_the_six_existing_command_names_are_supported ... ok
+test planning_pair::attestation::tests::exact_bytes_signature_and_domain_are_required ... ok
+test planning_pair::attestation::tests::audience_and_ungranted_operation_are_refused ... ok
+test planning_pair::attestation::tests::bounds_are_checked_before_parsing_or_signature_verification ... ok
+test planning_pair::attestation::tests::token_interval_is_inclusive_at_start_exclusive_at_expiry_and_policy_bounded ... ok
+test planning_pair::attestation::tests::explicit_policy_audience_and_expected_generations_must_be_valid ... ok
+test planning_pair::attestation::tests::every_native_identity_component_must_match_exactly ... ok
+test planning_pair::attestation::tests::valid_signature_returns_only_claims_and_snapshot_revision ... ok
+test planning_pair::attestation::tests::every_scope_component_must_match_exactly ... ok
+test planning_pair::attestation::tests::revoked_and_invalid_key_intervals_are_refused ... ok
+test planning_pair::attestation::tests::snapshot_ambiguity_invalid_revision_and_key_bounds_are_refused ... ok
+test planning_pair::attestation::tests::malformed_claims_and_zero_generations_are_refused ... ok
+test planning_pair::attestation::tests::seat_and_generation_must_match_exactly ... ok
+test planning_pair::attestation::tests::unknown_duplicate_fields_and_invalid_ids_are_refused_without_defaults ... ok
+test planning_pair::attestation::tests::unknown_issuer_key_and_wrong_public_key_are_refused ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 107 filtered out; finished in 0.60s
+

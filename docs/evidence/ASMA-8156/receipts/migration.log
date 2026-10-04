@@ -1,0 +1,74 @@
+   Compiling kontor-store v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8156-typed-experience-contract-and/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.67s
+     Running tests/schema_v1.rs (target/debug/deps/schema_v1-31c4c1b44e8419d0)
+
+running 65 tests
+test a_failing_migration_leaves_version_zero_and_no_partial_schema ... ok
+test a_failure_in_the_second_migration_rolls_the_first_one_back ... ok
+test a_derived_state_may_only_be_terminal_together_with_an_outcome ... ok
+test a_concurrent_first_open_initializes_exactly_one_realm ... ok
+test a_content_gap_has_nowhere_to_put_session_content ... ok
+test a_needs_human_row_cannot_be_written_without_its_brief ... ok
+test a_message_issuance_is_unique_per_id_and_recognises_its_own_replay ... ok
+test a_migrated_v1_account_profile_carries_no_invented_state ... ok
+test a_newer_schema_is_refused_rather_than_downgraded ... ok
+test a_pinned_snapshot_cannot_be_rewritten_by_direct_sql ... ok
+test a_normalized_observation_cannot_be_stored_in_pieces_or_claim_a_used_sequence ... ok
+test a_busy_writer_waits_then_times_out_without_partial_state ... ok
+test a_replay_checkpoint_and_a_finished_census_never_move_backwards ... ok
+test a_schema_v1_database_is_upgraded_in_place_and_keeps_its_realm ... ok
+test an_account_profile_insert_without_explicit_state_is_refused ... ok
+test a_profile_selection_outcome_is_an_immutable_receipt_to_policy_binding ... ok
+test a_terminal_run_cannot_be_reopened_or_edited_by_direct_sql ... ok
+test a_task_may_not_depend_on_itself ... ok
+test a_terminal_task_cannot_be_changed_by_direct_sql ... ok
+test a_terminal_team_run_cannot_be_reopened_or_edited_by_direct_sql ... ok
+test all_logical_relationships_are_project_scoped_and_fk_backed ... ok
+test a_profile_missing_only_its_enabled_or_revision_still_refuses_to_load has been running for over 60 seconds
+test an_empty_database_migrates_to_the_current_schema_version ... ok
+test an_observation_with_no_native_id_is_identified_by_its_sequence_not_its_payload ... ok
+test every_connection_reports_wal_foreign_keys_and_a_bounded_busy_timeout ... ok
+test a_profile_missing_only_its_enabled_or_revision_still_refuses_to_load ... ok
+test append_only_tables_reject_update_and_delete_from_direct_sql ... ok
+test issuance_boundary_is_frozen_across_replay_and_reopen ... ok
+test documents_published_before_the_classification_existed_adopt_the_tier_default ... ok
+test imported_profile_selection_outcome_lineage_is_immutable_and_non_authoritative ... ok
+test migration_0010_rebuilds_command_receipts_without_losing_a_row_or_a_reference ... ok
+test an_empty_database_creates_exactly_one_immutable_realm has been running for over 60 seconds
+test only_one_active_workflow_and_one_active_calendar_may_exist ... ok
+test an_empty_database_creates_exactly_one_immutable_realm ... ok
+test opening_an_already_migrated_database_is_idempotent ... ok
+test realm_identity_survives_reopen_and_cannot_be_replaced ... ok
+test rolled_back_cursor_is_never_reused_after_reopen ... ok
+test strict_typing_and_check_constraints_reject_impossible_rows ... ok
+test realm_metadata_rejects_update_delete_and_duplicate ... ok
+test v106_preserves_legacy_container_identity_and_leaves_new_readback_unknown ... ok
+test the_integrity_and_foreign_key_checks_pass_on_a_fresh_database ... ok
+test v113_preserves_known_artifacts_and_their_existing_references ... ok
+test the_deployed_consultation_v36_lineage_upgrades_forward ... ok
+test the_deployed_op03_v31_lineage_converges_without_losing_its_receipts ... ok
+test the_runtime_event_cursor_is_monotonic_and_never_reused ... ok
+test the_schema_has_no_outbound_comment_representation ... ok
+test the_merged_op12_v41_lineage_upgrades_through_epic_execution_scopes_v43 ... ok
+test the_schema_contains_exactly_the_expected_tables_and_they_are_all_strict ... ok
+test v64_preserves_published_committee_remediation_and_its_immutability ... ok
+test v65_backfills_published_proposals_and_fences_new_generations ... ok
+test v66_claims_remediation_commands_and_re_review_provenance_immutably ... ok
+test v67_keeps_every_provider_usage_heartbeat_immutable_and_permanent ... ok
+test tier_a_operational_tables_have_nowhere_to_store_a_classification ... ok
+test v69_preserves_global_round_rows_and_opens_the_positive_u8_domain ... ok
+test v80_backfills_only_provable_v79_command_intents_and_fences_the_rest ... ok
+test v83_preserves_era_one_remediation_and_separates_reopened_rounds ... ok
+test v95_adds_immutable_jira_identity_without_losing_or_inventing_a_single_v94_row ... ok
+test the_operational_hardening_v35_lineage_converges_without_losing_its_receipt ... ok
+test v108_worktree_correction_evidence_is_append_only ... ok
+test v120_upgrade_preserves_generic_ledger_and_enforces_immutable_memory_receipts ... ok
+test v46_to_v47_canonicalizes_only_the_known_builtin_hash_and_every_reference ... ok
+test v47_refuses_an_unknown_reference_hash_before_rewriting_the_builtin ... ok
+test v99_records_a_hold_lift_condition_that_can_neither_be_edited_nor_withdrawn ... ok
+test v68_materialization_reroute_lineage_is_immutable_and_has_distinct_receipt_authority ... ok
+test v49_backfills_a_confirmed_receipt_without_tripping_the_immutability_trigger ... ok
+test v47_refuses_the_builtin_identity_when_its_prior_hash_is_unknown ... ok
+test v54_seeds_each_existing_project_without_claiming_pending_memory ... ok
+
+test result: ok. 65 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 233.16s

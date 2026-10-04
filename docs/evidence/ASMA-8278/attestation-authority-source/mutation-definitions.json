@@ -1,0 +1,66 @@
+[
+  {
+    "id": "M01-expected-head",
+    "path": "crates/kontor-store/src/repository/attestation_authority.rs",
+    "old": "if actual != expected {",
+    "new": "if actual != expected && false {",
+    "suite": "attestation_authority",
+    "test": "exact_expected_head_is_required_and_failed_writes_leave_no_partial_mutation"
+  },
+  {
+    "id": "M02-project-scope",
+    "path": "crates/kontor-store/src/repository/attestation_authority.rs",
+    "old": "WHERE h.project_id = ?1 AND h.application = ?2",
+    "new": "WHERE (?1 IS NOT NULL) AND h.application = ?2",
+    "suite": "attestation_authority",
+    "test": "realm_project_and_application_scopes_never_leak_or_create_unknown_rows"
+  },
+  {
+    "id": "M03-immutable-material",
+    "path": "crates/kontor-store/migrations/0124_attestation_authority_keys.sql",
+    "old": "  OR NEW.public_key_der <> OLD.public_key_der OR NEW.material_digest <> OLD.material_digest\n",
+    "new": "",
+    "suite": "attestation_authority",
+    "test": "direct_sql_cannot_change_material_unrevoke_delete_or_jump_the_head"
+  },
+  {
+    "id": "M04-monotonic-head",
+    "path": "crates/kontor-store/migrations/0124_attestation_authority_keys.sql",
+    "old": "WHEN NEW.project_id <> OLD.project_id OR NEW.application <> OLD.application\n  OR NEW.revision <> OLD.revision + 1 OR NOT EXISTS (\n    SELECT 1 FROM attestation_authority_keys WHERE project_id = NEW.project_id\n      AND application = NEW.application AND\n        (registered_revision = NEW.revision OR revoked_revision = NEW.revision))",
+    "new": "WHEN 0",
+    "suite": "attestation_authority",
+    "test": "direct_sql_cannot_change_material_unrevoke_delete_or_jump_the_head"
+  },
+  {
+    "id": "M05-one-way-revocation",
+    "path": "crates/kontor-store/migrations/0124_attestation_authority_keys.sql",
+    "old": "  OR OLD.revoked_revision IS NOT NULL OR NEW.revoked_revision IS NULL\n",
+    "new": "",
+    "suite": "attestation_authority",
+    "test": "direct_sql_cannot_change_material_unrevoke_delete_or_jump_the_head"
+  },
+  {
+    "id": "M06-export-continuity",
+    "path": "crates/kontor-store/src/backup/export.rs",
+    "old": "    ensure_empty_attestation_ledger(&transaction)?;",
+    "new": "    let _ = ensure_empty_attestation_ledger(&transaction);",
+    "suite": "backup_snapshot",
+    "test": "nonempty_public_authority_ledger_is_not_silently_omitted_from_export"
+  },
+  {
+    "id": "M07-destination-continuity",
+    "path": "crates/kontor-store/src/backup/restore.rs",
+    "old": "        refuse_nonempty_attestation_ledger(destination)?;",
+    "new": "        let _ = refuse_nonempty_attestation_ledger(destination);",
+    "suite": "backup_snapshot",
+    "test": "an_old_empty_snapshot_cannot_rollback_current_public_key_revocation"
+  },
+  {
+    "id": "M08-source-continuity",
+    "path": "crates/kontor-store/src/backup/restore.rs",
+    "old": "    refuse_nonempty_attestation_ledger(snapshot)?;",
+    "new": "    let _ = refuse_nonempty_attestation_ledger(snapshot);",
+    "suite": "backup_snapshot",
+    "test": "a_nonempty_public_authority_snapshot_is_refused_before_destination_creation"
+  }
+]

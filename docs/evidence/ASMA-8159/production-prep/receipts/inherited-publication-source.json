@@ -1,0 +1,13 @@
+{
+  "accepted_source": "831dd7c1dc95a57258c75f5896bff5b76f3830fa",
+  "test_path": "crates/kontor-store/tests/publication_attestations_immutable.rs",
+  "sha256": "33e715193317f3c9be77263bce2705330cc795667b0a5b67cc3d2bbba225c831",
+  "unchanged_from_accepted": true,
+  "assertion_line": 18,
+  "assertion": "assert_eq!(store.schema_version().expect(\"schema version\"), 119);",
+  "accepted_schema_declaration": [
+    "pub const SCHEMA_VERSION: i64 = 120;"
+  ],
+  "current_schema": 121,
+  "claim": "source attribution; runtime result in dedicated final qualification receipt"
+}
