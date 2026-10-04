@@ -533,8 +533,8 @@ pub struct ArtifactEvidence {
     pub locator: CanonicalDocument,
     /// Which role produced it.
     pub producer_role: RoleKey,
-    /// Which account produced it.
-    pub producer_account: AccountProfileId,
+    /// The original producer account, when known. Absence never proves account separation.
+    pub producer_account: Option<AccountProfileId>,
     /// When it was recorded.
     pub recorded_at: Timestamp,
 }

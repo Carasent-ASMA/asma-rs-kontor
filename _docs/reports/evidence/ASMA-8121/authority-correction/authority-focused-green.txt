@@ -1,0 +1,16 @@
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.65s
+     Running tests/backup_export.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/backup_export-86507a0c15daf53a)
+
+running 6 tests
+test command_intents_export_under_their_own_document_contract ... ok
+test command_events_refuse_an_unrelated_payload_even_with_its_own_valid_hash ... ok
+test command_intent_payloads_still_receive_the_embedded_canary_scan ... ok
+test command_intent_import_preserves_its_non_executable_source_lineage ... ok
+test command_events_refuse_missing_or_wrong_project_receipts ... ok
+test command_events_refuse_hashes_that_do_not_identify_the_payload ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 37.23s
+
+
+PROCESS_EXIT_CODE=0

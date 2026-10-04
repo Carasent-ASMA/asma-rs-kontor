@@ -321,7 +321,7 @@ mod tests {
     }
 
     /// TEST-001: the worker profile at operator authority serves exactly the
-    /// profile's eighteen tools — no more, no fewer.
+    /// profile's tools — no more, no fewer.
     #[test]
     fn the_worker_profile_at_operator_serves_exactly_the_profile() {
         let served: BTreeSet<&str> = profiled(CallerTier::Operator, "worker")
@@ -339,7 +339,11 @@ mod tests {
             served, declared,
             "the served list is exactly the profile ∩ operator, which is the whole profile"
         );
-        assert_eq!(served.len(), 18, "worker v2 is eighteen tools");
+        assert_eq!(
+            served.len(),
+            25,
+            "the worker profile includes artifact recovery and OpenQuestion reads and reports"
+        );
     }
 
     /// A consultation native receives both family reads and the two
@@ -358,12 +362,13 @@ mod tests {
                 "kontor_advisor_run_settle",
                 "kontor_committee_findings_record",
                 "kontor_committee_run_get",
+                "kontor_committee_artifact_get",
             ])
         );
     }
 
     /// The presentation profile still cannot turn an observer credential into
-    /// a finding author: only the two consultation reads remain visible.
+    /// a finding author: only consultation and subject-artifact reads remain visible.
     #[test]
     fn the_consultation_profile_never_widens_observer_authority() {
         let served: BTreeSet<&str> = profiled(CallerTier::Observer, "consultation")
@@ -373,8 +378,51 @@ mod tests {
             .collect();
         assert_eq!(
             served,
-            BTreeSet::from(["kontor_advisor_run_get", "kontor_committee_run_get"])
+            BTreeSet::from([
+                "kontor_advisor_run_get",
+                "kontor_committee_run_get",
+                "kontor_committee_artifact_get"
+            ])
         );
+    }
+
+    /// The opt-in caller profile at operator tier serves exactly its four
+    /// tools; at observer tier it serves only the read, so a profile never
+    /// lifts a credential to the caller's writes.
+    #[test]
+    fn the_planning_pair_caller_profile_serves_its_four_tools_within_the_tier() {
+        let served = |tier| -> BTreeSet<&str> {
+            profiled(tier, "planning_pair_caller")
+                .served()
+                .iter()
+                .map(|tool| tool.name)
+                .collect()
+        };
+        assert_eq!(
+            served(CallerTier::Operator),
+            BTreeSet::from([
+                "kontor_planning_pair_run_get",
+                "kontor_planning_pair_run_invoke",
+                "kontor_planning_pair_clarification_request",
+                "kontor_planning_pair_disposition_record",
+            ])
+        );
+        assert_eq!(
+            served(CallerTier::Observer),
+            BTreeSet::from(["kontor_planning_pair_run_get"])
+        );
+    }
+
+    /// An observer credential presented under the planning pair member profile
+    /// keeps only the read; the profile never lifts it to a member write.
+    #[test]
+    fn the_planning_pair_member_profile_never_widens_observer_authority() {
+        let served: BTreeSet<&str> = profiled(CallerTier::Observer, "planning_pair_member")
+            .served()
+            .iter()
+            .map(|tool| tool.name)
+            .collect();
+        assert_eq!(served, BTreeSet::from(["kontor_planning_pair_run_get"]));
     }
 
     /// TEST-002: a tool the tier reaches but the profile excludes is refused at
@@ -421,7 +469,11 @@ mod tests {
             served, observer_reads,
             "an observer server under the worker profile serves profile ∩ observer only"
         );
-        assert_eq!(served.len(), 10, "the worker profile holds ten reads");
+        assert_eq!(
+            served.len(),
+            14,
+            "the worker profile includes OpenQuestion reads"
+        );
         assert!(
             !served.contains("kontor_ticket_claim"),
             "a profile entry above the tier is not served"
@@ -445,11 +497,35 @@ mod tests {
         assert!(observer.get_tool("kontor_realm_get").is_some());
 
         let admin = server(CallerTier::Admin);
+        let local = REGISTRY
+            .iter()
+            .filter(|tool| tool.route().is_none())
+            .count();
+        assert!(local > 0, "the registry declares a local operation");
         assert_eq!(
             admin.served().len(),
-            REGISTRY.len() - CLI_ONLY.len(),
-            "an admin server serves the whole vocabulary less what is held off the listing"
+            REGISTRY.len() - CLI_ONLY.len() - local,
+            "an admin server serves every routed tool less what is held off the listing"
         );
+        // A local operation has no route: it is neither listed nor declared,
+        // at any authority, and it is not on the hiding list.
+        for tool in REGISTRY.iter().filter(|tool| tool.route().is_none()) {
+            assert!(
+                !CLI_ONLY.contains(&tool.name),
+                "{} is hidden, not local",
+                tool.name
+            );
+            assert!(
+                admin.get_tool(tool.name).is_none(),
+                "{} is declared",
+                tool.name
+            );
+            assert!(
+                !admin.served().iter().any(|served| served.name == tool.name),
+                "{} is listed",
+                tool.name
+            );
+        }
         // The lever is subtracted from the *listing* and nowhere else, so a
         // held-back tool is still a real tool the CLI generates a command for.
         for name in CLI_ONLY {

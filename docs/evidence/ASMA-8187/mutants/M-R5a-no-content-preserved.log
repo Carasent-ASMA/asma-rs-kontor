@@ -1,0 +1,16 @@
+
+---- a_succession_crosses_a_realm_boundary_as_evidence_and_not_as_authority stdout ----
+
+thread 'a_succession_crosses_a_realm_boundary_as_evidence_and_not_as_authority' (74356311) panicked at crates/kontor-store/tests/hosted_seat_autonomy.rs:1671:5:
+assertion `left == right` failed: the succession content did not survive the crossing
+  left: 0
+ right: 3
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    a_succession_crosses_a_realm_boundary_as_evidence_and_not_as_authority
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 21 filtered out; finished in 3.52s
+
+error: test failed, to rerun pass `-p kontor-store --test hosted_seat_autonomy`

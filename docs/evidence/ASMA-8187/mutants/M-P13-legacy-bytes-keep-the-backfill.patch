@@ -1,0 +1,15 @@
+diff --git a/crates/kontor-store/src/backup/export.rs b/crates/kontor-store/src/backup/export.rs
+index 6ca157db..7301caa7 100644
+--- a/crates/kontor-store/src/backup/export.rs
++++ b/crates/kontor-store/src/backup/export.rs
+@@ -370,9 +370,7 @@ impl KontorExportV1 {
+             remove_succession_record_fields(&mut value)?;
+             remove_quota_runtime_cursor_fields(&mut value)?;
+         }
+-        if self.schema_version < CORE_TEAM_ROUTE_SUCCESSION_EXPORT_VERSION {
+-            remove_core_team_route_succession_record_fields(&mut value)?;
+-        }
++        // MUTANT M-P13: rehash a legacy document with the back-filled field.
+         canonical_bytes(&value)
+     }
+ 

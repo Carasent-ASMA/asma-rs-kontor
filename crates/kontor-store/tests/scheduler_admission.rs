@@ -25,14 +25,17 @@
 //! * a stale holder that can still renew or release after its token advanced;
 //! * a capacity ceiling trusted from the snapshot rather than recounted.
 
+mod support;
+
 use std::collections::BTreeSet;
 
 use kontor_core::calendar::{ExecutionAuthorization, TimeRange, WorkScope};
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, CanonicalDocument, CommandReceiptId,
     CurrencyCode, ExecutionAuthorizationId, ExternalId, ExternalName, IdempotencyKey,
-    MiniProjectId, ModuleKey, Money, ProjectId, ResourceLeaseId, RuntimeKindKey, SCHEMA_VERSION,
-    SpecVersion, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId, Timestamp, parse_utc_timestamp,
+    MiniProjectId, ModuleKey, Money, ProjectId, ResourceLeaseId, RuntimeBindingId, RuntimeKindKey,
+    SCHEMA_VERSION, SpecVersion, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId, Timestamp,
+    parse_utc_timestamp,
 };
 use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
@@ -47,7 +50,8 @@ use kontor_scheduler::{
     CapacitySnapshot, OrderingInputs, RejectionCode, RejectionEvidence,
 };
 use kontor_store::{
-    AdmissionCommit, LeaseEventKind, LeaseRelease, LeaseRenewal, RecordedRejection, SqliteStore,
+    AdmissionCommit, AdmissionScanKey, LeaseEventKind, LeaseRelease, LeaseRenewal,
+    RecordedRejection, SqliteStore,
 };
 use rusqlite::Connection;
 use tempfile::TempDir;
@@ -92,6 +96,14 @@ fn document(marker: &str) -> CanonicalDocument {
     .expect("a canonical document")
 }
 
+fn recovery_document(admitted: &AdmittedCandidate) -> CanonicalDocument {
+    CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "admitted": admitted,
+    }))
+    .expect("recovery evidence")
+}
+
 /// Ceilings wide enough that only a test that narrows one sees a capacity refusal.
 fn wide_capacity() -> CapacityConfig {
     CapacityConfig {
@@ -130,7 +142,7 @@ struct Scope {
 
 impl Harness {
     fn new() -> Self {
-        let directory = TempDir::new().expect("a temporary directory");
+        let directory = support::state_root();
         let store =
             SqliteStore::open(&directory.path().join("kontor.db")).expect("the store opens");
         Self {
@@ -315,6 +327,7 @@ impl Harness {
             runtime_kind: runtime_kind(),
             runtime_generation: 7,
             intake_receipt_id: None,
+            placement_attestation_digest: None,
         }
     }
 }
@@ -551,6 +564,283 @@ fn exact_recovery_decodes_the_durable_qnr_admission_shape() {
     assert_eq!(
         recovered.admitted.runtime_kind,
         RuntimeKindKey::parse("paseo.agent").expect("the durable runtime kind")
+    );
+}
+
+#[test]
+fn unconfirmed_admissions_are_unknown_unbound_queued_roots_only() {
+    let harness = Harness::new();
+    let scope = harness.scope("unconfirmed-roots");
+    let peers = BTreeSet::new();
+
+    let task = harness.task(&scope, "Unconfirmed", TaskState::Ready);
+    let admitted = harness.admitted(&scope, task, None, None);
+    let parts = Parts::new("unconfirmed");
+    let mut request = commit(&scope, &admitted, &peers, &parts, &scope.template, now());
+    request.evidence = recovery_document(&admitted);
+    harness
+        .store
+        .admit_candidate(&request)
+        .expect("the unconfirmed admission commits");
+
+    let observed_task = harness.task(&scope, "Observed", TaskState::Ready);
+    let observed = harness.admitted(&scope, observed_task, None, None);
+    let observed_parts = Parts::new("observed");
+    let mut observed_request = commit(
+        &scope,
+        &observed,
+        &peers,
+        &observed_parts,
+        &scope.template,
+        now(),
+    );
+    observed_request.evidence = recovery_document(&observed);
+    harness
+        .store
+        .admit_candidate(&observed_request)
+        .expect("the observed admission commits");
+
+    let bound_task = harness.task(&scope, "Bound", TaskState::Ready);
+    let bound = harness.admitted(&scope, bound_task, None, None);
+    let bound_parts = Parts::new("bound");
+    let mut bound_request = commit(&scope, &bound, &peers, &bound_parts, &scope.template, now());
+    bound_request.evidence = recovery_document(&bound);
+    harness
+        .store
+        .admit_candidate(&bound_request)
+        .expect("the bound admission commits");
+
+    let raw = harness.raw();
+    raw.execute(
+        "UPDATE agent_runs SET observed_state = 'queued' WHERE project_id = ?1 AND id = ?2",
+        rusqlite::params![
+            scope.project.to_string(),
+            observed_parts.agent_run.to_string()
+        ],
+    )
+    .expect("the runtime observation is represented");
+    raw.execute(
+        "INSERT INTO runtime_bindings
+             (id, project_id, agent_run_id, runtime_kind, host, generation, native_id, bound_at)
+         VALUES (?1, ?2, ?3, 'sa.runtime', 'host-1', 7, 'native-1', ?4)",
+        rusqlite::params![
+            RuntimeBindingId::generate().to_string(),
+            scope.project.to_string(),
+            bound_parts.agent_run.to_string(),
+            now().to_string()
+        ],
+    )
+    .expect("the runtime binding is represented");
+
+    let recoverable = harness
+        .store
+        .unconfirmed_admissions(Some(scope.project), Some(scope.mission), None, 10)
+        .expect("unconfirmed admissions are readable");
+    assert_eq!(recoverable.len(), 1);
+    assert_eq!(recoverable[0].team_run_id, parts.team_run);
+    assert_eq!(recoverable[0].agent_run_id, parts.agent_run);
+    assert_eq!(recoverable[0].recovery.launch_key, parts.launch_key);
+}
+
+#[test]
+fn a_blocked_first_page_cannot_hide_later_admissions() {
+    // The resident scan's bound. Sixteen admissions that never recover are
+    // exactly one page, which is what made them able to hide everything else.
+    const PAGE: u32 = 16;
+    const CANDIDATES: usize = 20;
+
+    let harness = Harness::new();
+    let scope = harness.scope("fair-rotation");
+    let peers = BTreeSet::new();
+
+    // Twenty eligible admissions in a known order. Distinct `decided_at`
+    // values make the scan order total, so "the first page" is a fact rather
+    // than a tie-break.
+    let mut order = Vec::new();
+    for index in 0..CANDIDATES {
+        let task = harness.task(&scope, &format!("Candidate {index:02}"), TaskState::Ready);
+        let admitted = harness.admitted(&scope, task, None, None);
+        let parts = Parts::new(&format!("fair-{index:02}"));
+        let decided_at = at(&format!("2026-08-12T09:00:{:02}Z", index + 1));
+        let mut request = commit(
+            &scope,
+            &admitted,
+            &peers,
+            &parts,
+            &scope.template,
+            decided_at,
+        );
+        request.evidence = recovery_document(&admitted);
+        harness
+            .store
+            .admit_candidate(&request)
+            .expect("the admission commits");
+        order.push(parts.agent_run);
+    }
+
+    let page = |after: Option<&AdmissionScanKey>| {
+        harness
+            .store
+            .unconfirmed_admissions(Some(scope.project), Some(scope.mission), after, PAGE)
+            .expect("unconfirmed admissions are readable")
+    };
+
+    // The first page is the oldest sixteen and nothing else. This is the whole
+    // of what a scan that always restarted at the oldest row could ever see.
+    let first = page(None);
+    assert_eq!(first.len(), PAGE as usize, "the scan stays bounded");
+    assert_eq!(
+        first
+            .iter()
+            .map(|admission| admission.agent_run_id)
+            .collect::<Vec<_>>(),
+        order[..PAGE as usize].to_vec(),
+        "the first page is the oldest admissions, in order"
+    );
+
+    // None of the later admissions is in that page. Without a resume point a
+    // page that never recovers would be re-read forever and these four would
+    // never be attempted at all — the starvation this guards.
+    for later in &order[PAGE as usize..] {
+        assert!(
+            !first
+                .iter()
+                .any(|admission| &admission.agent_run_id == later),
+            "a later admission must not be reachable in the first page"
+        );
+    }
+
+    // Resuming after the first page reaches exactly the admissions it hid,
+    // while every one of those sixteen is still eligible and untouched.
+    let second = page(Some(&first[first.len() - 1].scan_key));
+    assert_eq!(
+        second
+            .iter()
+            .map(|admission| admission.agent_run_id)
+            .collect::<Vec<_>>(),
+        order[PAGE as usize..].to_vec(),
+        "the scan behind a blocked page reaches the admissions it was hiding"
+    );
+
+    // Past the last admission the cursored read is empty. That is the signal to
+    // wrap, not a statement that there is nothing to do.
+    let exhausted = page(Some(&second[second.len() - 1].scan_key));
+    assert!(
+        exhausted.is_empty(),
+        "past the last admission a cursored scan reads nothing"
+    );
+
+    // Following the resident rule exactly — resume after the last row seen, and
+    // wrap when a cursored read comes back empty — every eligible admission is
+    // visited even though not one of them ever recovers.
+    let mut cursor: Option<AdmissionScanKey> = None;
+    let mut seen: BTreeSet<AgentRunId> = BTreeSet::new();
+    let mut scans = 0;
+    while scans < 8 && seen.len() < CANDIDATES {
+        let mut batch = page(cursor.as_ref());
+        if batch.is_empty() && cursor.is_some() {
+            cursor = None;
+            batch = page(None);
+        }
+        assert!(
+            batch.len() <= PAGE as usize,
+            "no scan may exceed the bound it was given"
+        );
+        if let Some(last) = batch.last() {
+            cursor = Some(last.scan_key.clone());
+        }
+        seen.extend(batch.iter().map(|admission| admission.agent_run_id));
+        scans += 1;
+    }
+    assert_eq!(
+        seen.len(),
+        CANDIDATES,
+        "every eligible admission is eventually revisited under the bound"
+    );
+
+    // And the rotation returns to the beginning rather than stopping at the
+    // end: after wrapping, the oldest page is readable again.
+    let wrapped = page(None);
+    assert_eq!(
+        wrapped
+            .iter()
+            .map(|admission| admission.agent_run_id)
+            .collect::<Vec<_>>(),
+        order[..PAGE as usize].to_vec(),
+        "wrapping returns the rotation to the oldest admissions"
+    );
+}
+
+#[test]
+fn admissions_sharing_a_decided_at_are_not_skipped_by_the_resume_point() {
+    // Two admissions decided in the same instant, and one later. If the resume
+    // point compared `decided_at` alone, then resuming after the first of the
+    // pair would skip its sibling entirely: the sibling's timestamp is not
+    // greater, so it would never be read again and would starve behind a
+    // position that had already passed it.
+    let harness = Harness::new();
+    let scope = harness.scope("tied-decided-at");
+    let peers = BTreeSet::new();
+    let shared = at("2026-08-12T09:00:01Z");
+
+    for (label, decided_at) in [
+        ("tie-a", shared),
+        ("tie-b", shared),
+        ("later", at("2026-08-12T09:00:02Z")),
+    ] {
+        let task = harness.task(&scope, label, TaskState::Ready);
+        let admitted = harness.admitted(&scope, task, None, None);
+        let parts = Parts::new(label);
+        let mut request = commit(
+            &scope,
+            &admitted,
+            &peers,
+            &parts,
+            &scope.template,
+            decided_at,
+        );
+        request.evidence = recovery_document(&admitted);
+        harness
+            .store
+            .admit_candidate(&request)
+            .expect("the admission commits");
+    }
+
+    let page = |after: Option<&AdmissionScanKey>, limit: u32| {
+        harness
+            .store
+            .unconfirmed_admissions(Some(scope.project), Some(scope.mission), after, limit)
+            .expect("unconfirmed admissions are readable")
+    };
+
+    // Learn the scan order rather than assume it: the tie is broken by the
+    // event id, which is generated.
+    let full = page(None, 16);
+    assert_eq!(full.len(), 3, "all three admissions are eligible");
+    assert_eq!(
+        full[0].admitted_at, full[1].admitted_at,
+        "the first two must genuinely share a decided_at, or this proves nothing"
+    );
+
+    // One at a time, following the same rule the resident scan follows.
+    let first = page(None, 1);
+    assert_eq!(first[0].agent_run_id, full[0].agent_run_id);
+
+    let second = page(Some(&first[0].scan_key), 1);
+    assert_eq!(
+        second.len(),
+        1,
+        "the sibling sharing the instant must still be reachable"
+    );
+    assert_eq!(
+        second[0].agent_run_id, full[1].agent_run_id,
+        "resuming after one of a tied pair reaches its sibling, not the next instant"
+    );
+
+    let third = page(Some(&second[0].scan_key), 1);
+    assert_eq!(
+        third[0].agent_run_id, full[2].agent_run_id,
+        "and only then the later instant"
     );
 }
 

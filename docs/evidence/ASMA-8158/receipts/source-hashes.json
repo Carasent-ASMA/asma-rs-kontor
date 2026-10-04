@@ -1,0 +1,16 @@
+{
+  "files": {
+    "Cargo.toml": "00e391943e2bed3edc387693798856e385f731aee740516d9334dcb43b263a5c",
+    "Cargo.lock": "df30ba74da6a3ffd42cf5c0c3fc9ba4712e2f8cf96a6a09b4154573b819c5683",
+    "crates/kontor-daemon/Cargo.toml": "b59a217cdb815bed2296fdbf6cafa22d90da415eaf7bd3aa95937ba21acb66fd",
+    "crates/kontor-daemon/src/applications.rs": "0a15e9f04c77edfd34b56ef6a0be1f70b5c142b4cdc1d795bc0e5d2a7292617a",
+    "crates/kontor-daemon/src/lib.rs": "01590a08e3f90f468a9f34bc2233f8c1877cf9ef51e3407f935411ab6151a9cd",
+    "crates/kontor-daemon/tests/loopback_api.rs": "949bfbf57c7a6cca40d28261e40be2a272d6dcc53f7f722db08d66510f785959",
+    "crates/kontor-daemon/tests/loopback/experience_launch.rs": "711d78ac8dc82131edb0c048e9877d9cab240b607356b921407ed92919702980",
+    "crates/kontor-memory-cognee/Cargo.toml": "804f1a26e1074579dd579d961d01a98451216bb9dedfff3de7cad18d5dab4043",
+    "crates/kontor-memory-cognee/src/lib.rs": "f461effcda17a460a0939ef2bb077f74de1bd0b26ee5b6c44b997fcd3ec84c40",
+    "crates/kontor-memory-cognee/tests/fixtures.rs": "4e33d2017c2831d02ff49a7a4ae46d2bcc6f6391637c53d139640dc7b362e933",
+    "docs/CONFIGURATION.md": "52291614fab66dce96dba72ff8559107d2dc364874366735d32e25bb598ac373"
+  },
+  "sha256": "528cbcd02cc5ccf553923c01751390bea1cf8f1441f2157e4e6a3c920ecb2b21"
+}

@@ -1,0 +1,121 @@
+{
+  "coordinator": "74250c1e",
+  "phase": 1,
+  "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+  "base_sha": "8a368041d5c692c301371513c9a51947d659c57e",
+  "base_tree": "97ed01c64537c814beaa28cbe8372cc502e9d772",
+  "commands": [
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "HEAD",
+        "HEAD^{tree}"
+      ],
+      "started_at_utc": "2026-10-04T01:23:12.823606+00:00",
+      "completed_at_utc": "2026-10-04T01:23:12.848788+00:00",
+      "exit_code": 0,
+      "stdout": "8a368041d5c692c301371513c9a51947d659c57e\n97ed01c64537c814beaa28cbe8372cc502e9d772\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--name-only"
+      ],
+      "started_at_utc": "2026-10-04T01:23:12.848848+00:00",
+      "completed_at_utc": "2026-10-04T01:23:12.873058+00:00",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--cached",
+        "--name-only"
+      ],
+      "started_at_utc": "2026-10-04T01:23:12.873106+00:00",
+      "completed_at_utc": "2026-10-04T01:23:12.900828+00:00",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "branch",
+        "--show-current"
+      ],
+      "started_at_utc": "2026-10-04T01:23:12.900904+00:00",
+      "completed_at_utc": "2026-10-04T01:23:12.922062+00:00",
+      "exit_code": 0,
+      "stdout": "feat/ASMA-8155-kontor-experience-memory-and-analogue-recall\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "status",
+        "--short"
+      ],
+      "started_at_utc": "2026-10-04T01:23:12.922134+00:00",
+      "completed_at_utc": "2026-10-04T01:23:12.965932+00:00",
+      "exit_code": 0,
+      "stdout": "?? .agents/\n?? .asma/\n?? .cursor/\n?? AGENTS.md\n?? CLAUDE.md\n?? docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "df",
+        "-k",
+        "."
+      ],
+      "started_at_utc": "2026-10-04T01:23:12.969240+00:00",
+      "completed_at_utc": "2026-10-04T01:23:12.975871+00:00",
+      "exit_code": 0,
+      "stdout": "Filesystem   1024-blocks      Used Available Capacity  iused      ifree %iused  Mounted on\n/dev/disk3s5   971350180 607677224 341015016    65% 15433364 3410150160    0%   /System/Volumes/Data\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "du",
+        "-sk",
+        "."
+      ],
+      "started_at_utc": "2026-10-04T01:23:12.975914+00:00",
+      "completed_at_utc": "2026-10-04T01:23:13.011521+00:00",
+      "exit_code": 0,
+      "stdout": "66336\t.\n",
+      "stderr": ""
+    }
+  ],
+  "contracts_before": [
+    {
+      "path": "crates/kontor-api/contract/openapi.json",
+      "bytes": 877755,
+      "sha256": "30e66d56acadd5d6e7c97ce406e2dc3bc46597ae7ffb9973302dcd9ada898ff0"
+    },
+    {
+      "path": "apps/console/src/api/schema.d.ts",
+      "bytes": 760653,
+      "sha256": "440a199e2da1cca30606fa8105d149f709887d5e0ea2b977b20c784d6fe55e9a"
+    }
+  ],
+  "target_before_exists": false,
+  "build_resource_env": {
+    "CARGO_BUILD_JOBS": "1",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0"
+  },
+  "cap_bytes": 10737418240,
+  "cached_console_generator": {
+    "path": "/Users/igor/.npm/_npx/f1e70922fc87e24a/node_modules/openapi-typescript/bin/cli.js",
+    "version": "7.13.0",
+    "cli_sha256": "8d7ba578431790f4325dd3bbc128f2301970fdbbdeba9781019e8cc25d0fa407"
+  },
+  "scope": "Contract regeneration only; QA phase 2 not started."
+}

@@ -290,6 +290,162 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/fleet/bundle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The Realm's orchestration bundle selection. */
+        get: operations["fleet_bundle"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fleet/bundle:activate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Activate one published orchestration bundle under the expected standing
+         *     activation.
+         */
+        post: operations["activate_fleet_bundle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fleet/bundle:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resolve one candidate orchestration bundle. Writes nothing. */
+        post: operations["preview_fleet_bundle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fleet/bundle:propose": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Propose an initial orchestration bundle for review. Writes nothing. */
+        post: operations["propose_fleet_bundle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fleet/bundle:publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Publish one previewed orchestration bundle. Selects nothing. */
+        post: operations["publish_fleet_bundle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fleet/policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The Realm's fleet policy selection. */
+        get: operations["fleet_policy_selection"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fleet/policy:activate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Activate one published fleet policy under the expected current selection. */
+        post: operations["activate_fleet_policy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fleet/policy:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Validate one candidate fleet policy. Writes nothing. */
+        post: operations["preview_fleet_policy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fleet/policy:publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Publish one previewed fleet policy. Selects nothing. */
+        post: operations["publish_fleet_policy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/health": {
         parameters: {
             query?: never;
@@ -567,6 +723,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turn-correlation:challenge-apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Persist and deliver or reconcile one exact server-owned challenge. */
+        post: operations["apply_turn_correlation_challenge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turn-correlation:challenge-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview one new server-owned correlation challenge without runtime effects. */
+        post: operations["preview_turn_correlation_challenge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turns:settle": {
         parameters: {
             query?: never;
@@ -700,6 +890,23 @@ export interface paths {
         };
         /** Read one Committee consultation, including all current-round findings. */
         get: operations["committee_run"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/committee-runs/{committee_run_id}/artifacts/{evidence_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one artifact without granting shell, network, or general filesystem access. */
+        get: operations["committee_artifact"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1201,6 +1408,45 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/epics/{epic_id}/core-team": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One epic's materialized Core Team.
+         * @description Pure. It records no command, calls no runtime, and changes nothing; the
+         *     mutating epic routes already return this projection and this route only
+         *     stops a caller from having to mutate in order to see it.
+         */
+        get: operations["epic_core_team"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/epics/{epic_id}/core-team/launch-intents:supersede": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Supersede one never-bound prepared Core Team launch intent. */
+        post: operations["supersede_core_team_launch_intent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/epics/{epic_id}/core-team/routes:apply": {
         parameters: {
             query?: never;
@@ -1263,6 +1509,28 @@ export interface paths {
         put?: never;
         /** Preview attachment of one exact already-running session to a Core Team seat. */
         post: operations["preview_core_team_seat_claim"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/epics/{epic_id}/core-team/seats/{seat_binding_id}/occupancies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every occupancy one hosted seat has had, oldest first.
+         * @description Pure, and deliberately a separate route from the roster: the roster answers
+         *     what is true now, and carrying every seat's whole history inside it would
+         *     make the common read pay for the rare one.
+         */
+        get: operations["epic_hosted_seat_occupancies"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1467,6 +1735,55 @@ export interface paths {
         put?: never;
         /** Preview every bound container and persistent seat name in one epic. */
         post: operations["preview_native_names"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/epics/{epic_id}/open-questions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_open_questions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/epics/{epic_id}/open-questions:record": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["record_open_question"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/epics/{epic_id}/planning-pair-runs:invoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Invoke one planning pair as its caller's own scoped seat. */
+        post: operations["invoke_planning_pair_run"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1730,6 +2047,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/memory/experiences:classify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["classify"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/memory/experiences:propose": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["propose_experience"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/memory/import:apply": {
         parameters: {
             query?: never;
@@ -1756,6 +2105,102 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["import_preview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/memory/projection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["projection_readback"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/memory/projection:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["projection_preview"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/memory/projection:rebuild": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["projection_rebuild"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/memory/recall/{agent_run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["recall_readback"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/memory/recall:freeze": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["recall_freeze"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/memory/recall:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["recall_preview"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1836,6 +2281,162 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["tombstone"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/planning-pair-profiles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every published planning pair document revision. */
+        get: operations["planning_pair_profiles"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/planning-pair-profiles:apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Publish one planning pair document revision. */
+        post: operations["apply_planning_pair_profile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/planning-pair-profiles:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Judge one planning pair document. Commits nothing. */
+        post: operations["preview_planning_pair_profile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one planning pair as its reader may see it. */
+        get: operations["planning_pair_run"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/answers:record": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record the authenticated addressed member's sealed answer. */
+        post: operations["record_planning_pair_answer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/clarification:request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Ask the caller's one clarification question. */
+        post: operations["request_planning_pair_clarification"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/disposition:record": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record the caller's disposition. Terminal; never a settlement. */
+        post: operations["record_planning_pair_disposition"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/findings:record": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record the authenticated member's sealed finding. */
+        post: operations["record_planning_pair_finding"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/seats/{seat_binding_id}/recover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Requalify one member on its exact known native session, as the pair's
+         *     frozen caller's own scoped seat. Never a replacement or a new session.
+         */
+        post: operations["recover_planning_pair_seat"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2231,6 +2832,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/tasks/{task_id}/artifacts:record": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Verify and durably record one settled-turn artifact augmentation. */
+        post: operations["record_artifact"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/tasks/{task_id}/context:resolve": {
         parameters: {
             query?: never;
@@ -2493,6 +3111,71 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/tasks/{task_id}/workflow:recover-phase": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Catch a stalled workflow up to the phase its own durable evidence proves.
+         * @description The advance is normally computed as a side effect of recording a gate or
+         *     settling a turn. When that moment is missed — ASMA-8205 passed its
+         *     `high-verification-gate` at sequence 2 and the stored phase never moved —
+         *     nothing re-derives it afterwards, and the workflow stalls with complete and
+         *     unambiguous evidence sitting in front of it.
+         *
+         *     This is that missing surface and nothing more. It records no verdict,
+         *     appends no evaluation, replays no turn and chooses no phase: it runs the
+         *     same deterministic projection the ordinary paths run, over evidence that is
+         *     already durable. A workflow already at its evidence phase is left exactly
+         *     as it is, which is what makes running it twice a no-op rather than a second
+         *     advance.
+         */
+        post: operations["recover_workflow_phase"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/tasks/{task_id}/worktree-claim:apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply one exact task worktree-claim correction under CAS. */
+        post: operations["apply_worktree_claim_correction"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/tasks/{task_id}/worktree-claim:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Validate one exact task worktree-claim correction without writing. */
+        post: operations["preview_worktree_claim_correction"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/team-definition-selection:apply": {
         parameters: {
             query?: never;
@@ -2589,6 +3272,40 @@ export interface paths {
         put?: never;
         /** Validate one complete Team Definition against its exact published topology. */
         post: operations["validate_team_definition"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/admission:adopt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record bounded authority to materialize one existing queued role slot. */
+        post: operations["adopt_team_run_admission"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/seat": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Fill a declared, unwaived slot whose durable follow-up cannot be delivered. */
+        post: operations["fill_team_run_seat"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3051,6 +3768,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/sessions/{agent_run_id}/messages/proof": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read durable proof progress for the exact original issuance. */
+        get: operations["message_proof"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{agent_run_id}/messages:reconcile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Freeze or advance one read-only canonical proof page with durable replay. */
+        post: operations["reconcile_message_delivery"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sessions/{agent_run_id}/permissions/{request_id}": {
         parameters: {
             query?: never;
@@ -3106,6 +3857,42 @@ export interface paths {
          *     skips a sequence or rewrites a position it already delivered is refused.
          */
         get: operations["timeline"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{agent_run_id}/turns/current": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Observe the exact current turn, without asserting anything about it.
+         * @description This exists because a delivery seat cannot settle itself: it has no way to
+         *     name the canonical position of a response it has not returned yet. A
+         *     post-turn control caller can, and until now it had to hand-derive the tuple
+         *     from a timeline read. Hand-derivation is exactly where a wrong position comes
+         *     from, and a wrong position is what settlement's guard then has to catch.
+         *
+         *     Read-only by construction. It runs the same canonical history path
+         *     `/timeline` does — same cursor, same `HistoryReader` validation, so a gap, a
+         *     redelivery or an epoch change is refused here too — and it writes nothing,
+         *     attests nothing and settles nothing. `turns:settle` re-derives all of it and
+         *     remains the only validator: an observation is a convenience for the caller,
+         *     never evidence on its own.
+         *
+         *     The turn it reports is the *last complete* one: the final canonically
+         *     addressed Kontor message, and the terminal provider response that closed it.
+         *     A seat still working has no such pair and is reported as unfinished rather
+         *     than as a turn whose end has not arrived.
+         */
+        get: operations["observe_current_turn"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3296,6 +4083,23 @@ export interface components {
             /** @description The preserved TeamRun envelope. */
             team_run_id: string;
         };
+        /** @description Authorize materialization of one existing queued run without inventing a handoff. */
+        AdoptTeamRunAdmissionRequest: {
+            /** @description Exact existing, unbound AgentRun. */
+            agent_run_id: string;
+            /**
+             * Format: int64
+             * @description Revision of the exact queued run.
+             */
+            expected_agent_run_revision: number;
+            /**
+             * Format: int64
+             * @description Task revision observed before adoption.
+             */
+            expected_task_revision: number;
+            /** @description Operator's reason, retained in the immutable command intent. */
+            reason: string;
+        };
         /** @description Advance one epic's completion. */
         AdvanceCompletionRequest: {
             evidence?: null | components["schemas"]["CompletionEvidenceDto"];
@@ -3409,6 +4213,11 @@ export interface components {
             oldest_retained_cursor?: number | null;
             /** @description The Realm the request was refused in. */
             realm_id: string;
+            /**
+             * Format: int64
+             * @description Safe delay before retrying a throttled usage read; quota projections were not changed.
+             */
+            retry_after_seconds?: number | null;
             /** @description A static description of the rule that refused. Never a stored value. */
             rule: string;
             /**
@@ -3487,6 +4296,8 @@ export interface components {
              *     call. Reporting it here made drift detection fire on every replay.
              */
             bundle_hash: string;
+            /** @description What this epic's control plane actually is, beside what it declares. */
+            control_plane: components["schemas"]["EpicControlPlaneDto"];
             /**
              * @description Kontor-owned immutable namespace for this epic. Legacy receipt replays
              *     created before schema v72 remain readable until an explicit epic apply
@@ -3713,6 +4524,53 @@ export interface components {
             /** @description The tasks to arm. Empty arms the whole epic. */
             tasks?: string[];
         };
+        /** @description Immutable augmentation receipt. Attribution identifies the old claim, not byte authorship. */
+        ArtifactSubmissionDto: {
+            /** @description Source persistent agent run. */
+            agent_run_id: string;
+            /** @description Declared artifact key. */
+            artifact_key: string;
+            /** @description Exact commit locator. */
+            commit: string;
+            /** @description Artifact registry identity. */
+            evidence_id: string;
+            /** @description Persistent common Git directory, independent of a disposable worktree. */
+            git_dir: string;
+            /** @description Canonical locator digest. */
+            locator_hash: string;
+            /** @description Exact blob path. */
+            path: string;
+            /** @description Provider account derived from the source run; not the calling operator's identity. */
+            producer_account?: string | null;
+            producer_account_attribution?: null | components["schemas"]["ProducerAccountAttribution"];
+            /** @description Pinned producing phase. */
+            producer_phase: string;
+            /** @description Source role slot, derived from the settled turn. */
+            producer_role: string;
+            /** @description Always `operator_recovered_git_blob`, never inferred agent authorship. */
+            provenance: string;
+            /** @description Owning Realm. */
+            realm_id: string;
+            /** @description Verification/recording instant. */
+            recorded_at: string;
+            /** @description Credential tier that authorized the augmentation. */
+            recorded_by: string;
+            /** @description Source settled-turn receipt. */
+            role_turn_id: string;
+            /**
+             * Format: int32
+             * @description Envelope schema version.
+             */
+            schema_version: number;
+            /** @description Verified content digest. */
+            sha256: string;
+            /** @description Exact task and workflow. */
+            task_id: string;
+            /** @description Native-proof versus historical/attested source turn. */
+            turn_proof_class: string;
+            /** @description Pinned workflow whose declared artifact this satisfies. */
+            workflow_id: string;
+        };
         Attest: {
             /** Format: int64 */
             expected_revision: number;
@@ -3758,6 +4616,16 @@ export interface components {
             capability_receipt_id: string;
             /** @description The account profile that granted it. */
             created_by: string;
+            /**
+             * @description What would end this hold, beside the prose that says why it exists.
+             *
+             *     `None` on a live grant, which has no terms left to meet, and on the
+             *     narrow arm and disarm answers that do not consult the ledger. A hold
+             *     read back from its epic always states it, because "why work is held" and
+             *     "what would release it" are different questions and only the second one
+             *     can be acted on.
+             */
+            lift_condition?: string | null;
             /**
              * Format: int32
              * @description Maximum concurrent runs it authorizes.
@@ -4012,10 +4880,21 @@ export interface components {
         };
         /** @description The current immutable capacity configuration revision. */
         CapacityConfigurationDto: {
-            /** @description The effective values. */
+            /**
+             * @description The effective values: what this Realm is admitting under right now,
+             *     which are the ceilings it was composed with.
+             */
             ceilings: components["schemas"]["CapacityCeilingsDto"];
             /** @description The Realm it governs. */
             realm_id: string;
+            /**
+             * @description Whether a stored configuration exists that the running daemon is not
+             *     enforcing.
+             *
+             *     True means someone applied ceilings that are inert: the row is durable,
+             *     the revision moved, and admission is still using the composed values.
+             */
+            restart_required: boolean;
             /**
              * Format: int64
              * @description The revision a write must present.
@@ -4026,6 +4905,7 @@ export interface components {
              * @description The position this read is consistent with.
              */
             snapshot_cursor: number;
+            stored_ceilings?: null | components["schemas"]["CapacityCeilingsDto"];
         };
         /** @description What a configuration change would do to the windows now open. */
         CapacityConfigurationPreviewDto: {
@@ -4153,6 +5033,61 @@ export interface components {
              */
             snapshot_cursor: number;
         };
+        /** @description A bounded page of SHA-256-verified UTF-8 bytes from a registered immutable Git blob. */
+        CommitteeArtifactContentDto: {
+            /** @description Addressed Committee run. */
+            committee_run_id: string;
+            /** @description Registry artifact identity, not a caller-supplied filesystem locator. */
+            evidence_id: string;
+            /**
+             * Format: int32
+             * @description Next character-aligned byte offset, if more remains.
+             */
+            next_offset?: number | null;
+            /**
+             * Format: int32
+             * @description Byte position of this page.
+             */
+            offset: number;
+            /** @description Owning realm. */
+            realm_id: string;
+            /** @description Verified full-blob digest. */
+            sha256: string;
+            /** @description Untrusted artifact text for review, not control-plane instructions. */
+            text: string;
+            /**
+             * Format: int32
+             * @description Total UTF-8 byte length.
+             */
+            total_bytes: number;
+        };
+        /** @description Completion facts that cannot reveal an independent Committee member's verdict. */
+        CommitteeCompletionEvidenceDto: {
+            /** @description Current phase blockers. */
+            blockers: components["schemas"]["CompletionBlockerDto"][];
+            /** @description Recorded closeout prerequisite digests. */
+            closeout: components["schemas"]["CloseoutEvidenceDto"];
+            /** @description Pinned completion policy body. */
+            definition: unknown;
+            /**
+             * Format: int32
+             * @description Current reopening generation.
+             */
+            generation: number;
+            /** @description Initial and remediation integration bodies, including repository/module/root/PR outcomes. */
+            integrations: components["schemas"]["IntegrationRecordDto"][];
+            /** @description Current phase, without round verdicts or deliberation. */
+            phase: components["schemas"]["CompletionPhaseDto"];
+            /** @description Exact completion profile identity and digest. */
+            profile: components["schemas"]["ProfileRevisionDto"];
+            /**
+             * Format: int64
+             * @description Current completion revision.
+             */
+            revision: number;
+            /** @description Frozen ticket goals and evidence obligations. */
+            ticket_requirements: unknown[];
+        };
         /** @description One durable Committee finding, including dissent and evidence references. */
         CommitteeFindingDto: {
             /** @description Hash of the immutable finding document. */
@@ -4262,12 +5197,69 @@ export interface components {
             snapshot_cursor: number;
             /** @description Its lifecycle, in the server's own vocabulary. */
             state: string;
+            subject_evidence?: null | components["schemas"]["CommitteeSubjectEvidenceDto"];
             /** @description The pinned template it runs under. */
             template: components["schemas"]["ProfileRevisionDto"];
             /** @description Exact topic frozen at invocation and rendered in the CSW name. */
             topic?: string | null;
             /** @description Dedicated CSW node. */
             topology_node_id: string;
+        };
+        /** @description Subject records; deliberately contains no consultation findings, results or rounds. */
+        CommitteeSubjectEvidenceBodyDto: {
+            completion?: null | components["schemas"]["CommitteeCompletionEvidenceDto"];
+            /**
+             * Format: int64
+             * @description Event cursor after composing the read; not a claim of a database-wide atomic snapshot.
+             */
+            cursor_after: number;
+            /**
+             * Format: int64
+             * @description Event cursors bracketing this composed read. Different cursors signal concurrent writes.
+             */
+            cursor_before: number;
+            /** @description Owning epic from the persisted run. */
+            epic_id: string;
+            /** @description Epic identity and external convergence proof. */
+            jira_binding: components["schemas"]["JiraBindingDto"];
+            /** @description Current epic question ledger; empty for a ticket-scoped run. */
+            open_questions: unknown[];
+            /** @description Owning project from the persisted run, never from caller input. */
+            project_id: string;
+            /** @description Original question frozen at invocation. */
+            question: string;
+            /**
+             * Format: int32
+             * @description Canonical evidence envelope version.
+             */
+            schema_version: number;
+            /** @description Exact ticket subject, if this is a ticket-scoped consultation. */
+            task_id?: string | null;
+            /** @description Only the exact task, or all epic tasks for an epic-scoped run. */
+            tasks: components["schemas"]["CommitteeTaskEvidenceDto"][];
+        };
+        /** @description A current projection, not a new completion receipt or an immutable stored snapshot. */
+        CommitteeSubjectEvidenceDto: {
+            /** @description Only the subject frozen onto this Committee run. */
+            body: components["schemas"]["CommitteeSubjectEvidenceBodyDto"];
+            /** @description Canonical SHA-256 of `body`, allowing the reviewer to cite exactly what it read. */
+            content_hash: string;
+        };
+        /** @description The task contract, current gate evaluations, and distinct evidence authority classes. */
+        CommitteeTaskEvidenceDto: {
+            /** @description Append-only evaluations of the active workflow, including evaluator and evidence citations. */
+            gate_evaluations: unknown[];
+            /** @description Current native closure certificate keys. These do not establish artifact production. */
+            native_closure_artifact_keys: string[];
+            /**
+             * @description Active-workflow artifact records with immutable locators and truthful producer provenance.
+             *     GET also includes bounded SHA-256-verified UTF-8 `content`, or an explicit unavailable/deferred status.
+             */
+            producer_artifacts: unknown[];
+            /** @description Existing task projection including gate obligations, current states and Jira binding. */
+            task: components["schemas"]["EpicTaskProjectionDto"];
+            /** @description Exact immutable work profile pinned by the active workflow. */
+            work_profile?: unknown;
         };
         /** @description Apply request bound to one exact Committee-topic correction preview. */
         CommitteeTopicCorrectionApplyRequest: {
@@ -4471,6 +5463,11 @@ export interface components {
         };
         /** @description One operator-asserted completion fact, tagged by the phase it answers. */
         CompletionEvidenceDto: {
+            /** @description The immutable Committee run whose stored result completion consumes. */
+            committee_run_id: string;
+            /** @enum {string} */
+            phase: "verdict";
+        } | {
             /** @enum {string} */
             phase: "integration";
             /**
@@ -4708,6 +5705,8 @@ export interface components {
         };
         /** @description One declared consultation seat and its exact runtime readback. */
         ConsultationSeatDto: {
+            /** @description Committee function frozen from its template; absent for Advisor seats. */
+            committee_role?: string | null;
             /** @description Logical role under the pinned policy. */
             logical_role: string;
             /**
@@ -4755,6 +5754,27 @@ export interface components {
          * @enum {string}
          */
         ConsultationVerdictDto: "compliant" | "non_compliant";
+        /** @description Complete exact-id readback of one native topology container. */
+        ContainerReadbackDto: {
+            /** @description Exact canonical working directory. */
+            canonical_cwd?: string | null;
+            /**
+             * Format: int64
+             * @description Runtime generation in which the native id is meaningful.
+             */
+            generation: number;
+            /** @description Runtime host that owns the native generation. */
+            host: string;
+            /** @description Runtime-reported kind. */
+            native_kind: string;
+            native_parent?: null | components["schemas"]["NativeContainerParentDto"];
+            /** @description Native projection read back for the container. */
+            projection: string;
+            /** @description Exact topology correlation reported for this native id. */
+            topology_correlation: string;
+            /** @description Exact runtime-visible title. */
+            visible_title: string;
+        };
         /** @description Apply request bound to an exact stale-container preview. */
         ContainerRecoveryApplyRequest: {
             /**
@@ -4765,11 +5785,29 @@ export interface components {
             /** @description Hash returned by the recovery preview. */
             preview_hash: string;
         };
+        /**
+         * @description Which of the two dispositions one recovery census authorizes.
+         *
+         *     The operation has always had one answer — adopt the sole live candidate.
+         *     This names that answer so a second one can exist beside it without either
+         *     being inferred from the shape of the payload. An operator reading a preview
+         *     should not have to deduce "it is going to build one" from a missing field.
+         * @enum {string}
+         */
+        ContainerRecoveryDispositionDto: "adopt_existing" | "recreate_absent";
         /** @description Exact before/after identity proved by a read-only recovery census. */
         ContainerRecoveryPreviewDto: {
             /** @description Preserved canonical working directory. */
             canonical_cwd: string;
-            /** @description Runtime-reported candidate title. */
+            /** @description Which answer this census reached. */
+            disposition: components["schemas"]["ContainerRecoveryDispositionDto"];
+            /**
+             * @description Runtime-reported candidate title.
+             *
+             *     On a `recreate_absent` preview there is no candidate to report one from,
+             *     so this carries the exact title apply will write — the same bytes the
+             *     naming authority already rendered, never a title the caller chose.
+             */
             observed_title: string;
             /** @description Exact native parent in which the census ran. */
             parent_native_id: string;
@@ -4779,8 +5817,16 @@ export interface components {
             project_id: string;
             /** @description Realm that performed the census. */
             realm_id: string;
-            /** @description Sole live parent/path/title candidate. */
-            replacement_native_id: string;
+            /**
+             * @description Sole live parent/path/title candidate.
+             *
+             *     Absent exactly when the disposition is
+             *     [`ContainerRecoveryDispositionDto::RecreateAbsent`] and this is a
+             *     preview: there is no candidate yet, and naming one before apply has run
+             *     would be predicting an identity the runtime has not minted. Always
+             *     present on an applied result.
+             */
+            replacement_native_id?: string | null;
             /**
              * Format: int64
              * @description Snapshot position.
@@ -4845,6 +5891,20 @@ export interface components {
              *     presenting it.
              */
             expected_revision: number;
+        };
+        ContextMemoryBinding: {
+            /** Format: date-time */
+            bound_at: string;
+            ordered_revisions: components["schemas"]["FrozenRevision"][];
+            /** Format: uuid */
+            project_id: string;
+            result_hash: string;
+            run_id: string;
+            /** Format: int64 */
+            selection_cursor: number;
+            selection_spec: {
+                [key: string]: unknown;
+            };
         };
         /**
          * @description One seat's context-window policy and the latest attempt to compact it.
@@ -4929,7 +5989,10 @@ export interface components {
             /** @description `total` | `growth_after_prefix`. */
             trigger_scope: string;
         };
-        /** @description Apply a named Core Team preview. */
+        /**
+         * @description Apply a named Core Team preview: the same seats, or the same bundle, it was
+         *     previewed with.
+         */
         CoreTeamApplyRequest: {
             /**
              * Format: int64
@@ -4939,7 +6002,9 @@ export interface components {
             /** @description The hash the preview answered with. */
             preview_hash: string;
             /** @description The roles the Core Team should seat, in order. */
-            seats: components["schemas"]["CoreTeamSeatSelectionDto"][];
+            seats?: components["schemas"]["CoreTeamSeatSelectionDto"][] | null;
+            /** @description The published orchestration bundle the preview was made from. */
+            source_bundle_hash?: string | null;
         };
         /** @description One project's Core Team. */
         CoreTeamDto: {
@@ -4959,6 +6024,70 @@ export interface components {
              * @description The position this read is consistent with.
              */
             snapshot_cursor: number;
+        };
+        /**
+         * @description Supersede one unobserved prepared launch intent with an approved route.
+         *
+         *     A successor intent requires exact archive and placement proof for its prior
+         *     occupant. The current occupant and its history remain unchanged; only the
+         *     next unobserved intent can change. Omit predecessor fences for a never-bound seat.
+         */
+        CoreTeamLaunchIntentSupersedeRequest: {
+            /** @description The catalog-approved replacement route. */
+            desired_model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /** @description The exact inert route being superseded, compared verbatim. */
+            expected_model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /** @description Exact runtime archive timestamp of the predecessor. */
+            expected_predecessor_archived_at?: string | null;
+            /**
+             * Format: int64
+             * @description Runtime generation of the archived predecessor, not the occupancy ordinal.
+             */
+            expected_predecessor_generation?: number | null;
+            /** @description Exact prior native, required with both other predecessor fences for a successor intent. */
+            expected_predecessor_native_id?: string | null;
+            /** @description The exact instant that inert intent was prepared, compared verbatim. */
+            expected_prepared_at: string;
+            /**
+             * Format: int64
+             * @description Epic revision the caller read.
+             */
+            expected_revision: number;
+            /**
+             * Format: int64
+             * @description The binding revision the caller read.
+             */
+            expected_seat_binding_revision: number;
+            /**
+             * Format: int64
+             * @description The occupancy generation whose inert intent is replaced.
+             */
+            occupancy_generation: number;
+            /** @description The logical seat, preserved exactly. */
+            seat_binding_id: string;
+        };
+        /** @description What one launch-intent supersession replaced, and what now stands. */
+        CoreTeamLaunchIntentSupersessionDto: {
+            /**
+             * Format: int64
+             * @description The occupancy generation whose intent was replaced; unchanged by this.
+             */
+            occupancy_generation: number;
+            /** @description Realm that recorded it. */
+            realm_id: string;
+            /** @description Audited mutation receipt. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description The approved route that now stands. */
+            replacement_model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /** @description The preserved logical seat. Never retired, never replaced. */
+            seat_binding_id: string;
+            /**
+             * Format: int64
+             * @description Unchanged binding revision the swap was fenced on.
+             */
+            seat_binding_revision: number;
+            /** @description The inert route that was superseded, retained as evidence. */
+            superseded_model_route: components["schemas"]["RuntimeModelRouteRequest"];
         };
         /** @description Materialize the Core Team's seats for one epic. */
         CoreTeamMaterializeRequest: {
@@ -5002,6 +6131,11 @@ export interface components {
             core_team: components["schemas"]["CoreTeamDto"];
             /** @description The receipt it was committed under. */
             receipt: components["schemas"]["MutationReceiptDto"];
+            /**
+             * @description The published orchestration bundle a Core Team apply took its seats
+             *     from, when it took them from one.
+             */
+            source_bundle_hash?: string | null;
         };
         /** @description What a Core Team change would do. */
         CoreTeamPreviewDto: {
@@ -5011,11 +6145,22 @@ export interface components {
             preview_hash: string;
             /** @description The Realm that computed it. */
             realm_id: string;
+            /** @description The published bundle the seats came from, when they came from one. */
+            source_bundle_hash?: string | null;
         };
-        /** @description A proposed Core Team composition. */
+        /**
+         * @description A proposed Core Team composition: the caller's seats, or the Core Team
+         *     revision one published orchestration bundle declares (ASMA-8280 S-3).
+         *     Exactly one of the two.
+         */
         CoreTeamPreviewRequest: {
             /** @description The roles the Core Team should seat, in order. */
-            seats: components["schemas"]["CoreTeamSeatSelectionDto"][];
+            seats?: components["schemas"]["CoreTeamSeatSelectionDto"][] | null;
+            /**
+             * @description A published orchestration bundle whose verified Core Team revision
+             *     supplies the seats instead.
+             */
+            source_bundle_hash?: string | null;
         };
         /** @description Apply one still-current Core Team route preview. */
         CoreTeamRouteApplyRequest: {
@@ -5038,16 +6183,81 @@ export interface components {
             /** @description Logical SeatBinding that must be preserved. */
             seat_binding_id: string;
         };
+        /** @description Which trailing effects of a committed succession have landed. */
+        CoreTeamRouteEffectsDto: {
+            /** @description The launch intent has been reconciled against the native it produced. */
+            launch_intent_installed: boolean;
+            /** @description The SeatBinding has been observed against the successor. */
+            seat_binding_observed: boolean;
+        };
+        /**
+         * @description The successor's grant subject, as non-secret identity only.
+         *
+         *     A seat credential is bearer material derived from the operator secret, so
+         *     neither it nor any digest *of it* appears here or anywhere else. What is
+         *     recorded is the subject the grant is scoped to — the logical seat and the
+         *     occupancy generation — and a digest over exactly that public pair. A reader
+         *     can therefore prove which generation-scoped grant the successor derived
+         *     without the record ever having held anything secret (ASMA-8187).
+         */
+        CoreTeamRouteGrantSubjectDto: {
+            /**
+             * Format: int64
+             * @description The generation this successor's grant is scoped to.
+             */
+            generation: number;
+            /**
+             * @description Digest over the non-secret (seat, generation) subject pair. Never over
+             *     credential material.
+             */
+            subject_digest: string;
+            /** @description The logical seat the grant is scoped to. */
+            subject_seat_binding_id: string;
+        };
+        /** @description One exact native occupant of a logical Core Team seat. */
+        CoreTeamRouteOccupantDto: {
+            /**
+             * Format: int64
+             * @description Runtime generation of this native.
+             */
+            generation: number;
+            /** @description Host it was placed on. */
+            host: string;
+            /** @description Frozen provider/model/effort route it runs on. */
+            model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /** @description Exact native session identity. */
+            native_id: string;
+            /**
+             * Format: int64
+             * @description Which occupancy of the logical seat this native is.
+             */
+            occupancy_generation: number;
+            /** @description Provider conversation, when the runtime exposes one. */
+            provider_session_id?: string | null;
+            /** @description Runtime that holds it. */
+            runtime_kind: string;
+        };
         /** @description Completed in-place route correction with exact identity readback. */
         CoreTeamRouteOutcomeDto: {
             /** @description Core Team projection after correction. */
             core_team: components["schemas"]["CoreTeamDto"];
             /** @description Archived predecessor native identity. */
             predecessor_native_id: string;
+            readback?: null | components["schemas"]["CoreTeamRouteSuccessionReadbackDto"];
+            /**
+             * @description Digest of that readback.
+             *
+             *     Covers the immutable outcome only. The trailing effects below are live
+             *     ledger state rather than evidence of what the command did, so they are
+             *     deliberately outside the hashed document — a digest that moved when an
+             *     effect landed would not be a digest of the outcome.
+             */
+            readback_hash?: string | null;
             /** @description Audited mutation receipt. */
             receipt: components["schemas"]["MutationReceiptDto"];
             /** @description Preserved logical SeatBinding. */
             seat_binding_id: string;
+            succession_effects?: null | components["schemas"]["CoreTeamRouteEffectsDto"];
             /** @description Active successor native identity; equal to predecessor for an unchanged route. */
             successor_native_id: string;
         };
@@ -5095,6 +6305,32 @@ export interface components {
             expected_revision: number;
             /** @description Logical SeatBinding that must be preserved. */
             seat_binding_id: string;
+        };
+        /**
+         * @description The complete durable evidence one Core Team succession produced.
+         *
+         *     Persisted in the same transaction as the route transition and answered with
+         *     verbatim thereafter. Recomputing it would describe the seat's *current*
+         *     occupant, which is precisely the wrong answer to "what did this command do"
+         *     once a later succession has moved the seat on.
+         */
+        CoreTeamRouteSuccessionReadbackDto: {
+            /**
+             * @description The successor's generation-scoped grant subject, never any credential.
+             *
+             *     Named `grant_subject` rather than `credential` deliberately: the realm's
+             *     canonical-document guard forbids a node called `credential` outright, and
+             *     this node is the subject a grant is scoped to rather than a grant.
+             */
+            grant_subject: components["schemas"]["CoreTeamRouteGrantSubjectDto"];
+            /** @description Exact archived predecessor. */
+            predecessor: components["schemas"]["CoreTeamRouteOccupantDto"];
+            /** @description Instant the predecessor was retired. */
+            retired_at: string;
+            /** @description The preserved logical seat. */
+            seat_binding_id: string;
+            /** @description Exact installed successor. */
+            successor: components["schemas"]["CoreTeamRouteOccupantDto"];
         };
         /** @description Apply one still-current existing-session Core Team claim. */
         CoreTeamSeatClaimApplyRequest: {
@@ -5191,13 +6427,49 @@ export interface components {
             presence: string;
             /** @description The role, as the server resolved it. */
             role: components["schemas"]["ResolvedRoleRefDto"];
+            role_persona?: null | components["schemas"]["CoreTeamSeatPersonaDto"];
             /** @description The binding filling it, once one has been materialized. */
             seat_binding_id?: string | null;
         };
-        /** @description One authorized native route for a persistent Core Team role. */
+        /**
+         * @description The persona one launched occupancy was opened under, as Kontor froze it.
+         *
+         *     Deliberately *not* a field of [`CoreTeamNativeSeatDto`], which reports what
+         *     the runtime read back. The runtime's `config.systemPrompt` is creation-only,
+         *     so no runtime here can attest the prompt a native is currently running
+         *     under. This is evidence that Kontor froze this persona and delivered it at
+         *     launch, and `delivery` says which of those two things it is in as many
+         *     words, rather than leaving a reader to assume the stronger one.
+         */
+        CoreTeamSeatPersonaDto: {
+            /** @description What the runtime's acceptance of this persona actually proves. */
+            delivery: string;
+            /**
+             * Format: date-time
+             * @description When it was frozen, which is before the native call.
+             */
+            frozen_at: string;
+            /**
+             * Format: int64
+             * @description The occupancy generation this persona was frozen for.
+             */
+            occupancy_generation: number;
+            /** @description Digest of the exact delivered text. */
+            prompt_hash: string;
+            /** @description The catalog role whose persona was delivered. */
+            role_code: string;
+        };
+        /**
+         * @description One authorized native route for a persistent Core Team role.
+         *
+         *     Exactly one of `model_route` and `eligibility`: the caller's exact route,
+         *     which the activated fleet policy may admit or refuse but never replaces, or
+         *     — when the caller names none — the policy's own choice under the
+         *     eligibility the caller states (ASMA-8280).
+         */
         CoreTeamSeatRouteRequest: {
-            /** @description Exact provider/model/effort route to launch or recover. */
-            model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            eligibility?: null | components["schemas"]["FleetEligibilityRequest"];
+            model_route?: null | components["schemas"]["RuntimeModelRouteRequest"];
             /** @description Stable role code in the epic's frozen Core Team roster. */
             role_code: string;
         };
@@ -5250,6 +6522,8 @@ export interface components {
              */
             reserve_minor_units: number;
         };
+        /** @enum {string} */
+        DegradedReason: "absent" | "stale" | "timeout" | "unavailable" | "malformed" | "empty" | "no_eligible_candidates";
         /** @description One durable step in the deliberation path already tried. */
         DeliberationStepDto: {
             /** @description The consultation or recovery mechanism used. */
@@ -5534,6 +6808,41 @@ export interface components {
             spec_version: number;
         };
         /**
+         * @description What an epic's control plane *is*, as distinct from what its roster declares.
+         *
+         *     An epic is born with an ECP topology node and one live seat binding per
+         *     mandatory role, and both are logical rows. Nothing in that sequence binds a
+         *     native workspace or launches a seat, so an epic could report governed
+         *     leadership while no LSA and no TPM existed anywhere — a bound delivery
+         *     workspace beside an unbound control plane, with nothing saying the
+         *     difference mattered. That is OG-052, and this is the answer to it: the
+         *     difference is reported, in the same response that creates it, and it names
+         *     the call that closes it.
+         *
+         *     Deliberately a report and not a refusal. Every epic in this realm created
+         *     since 2026-09-12 has an unbound ECP; gating admission on it would stop all
+         *     delivery to fix a visibility problem.
+         */
+        EpicControlPlaneDto: {
+            /**
+             * @description The exact supported call that advances materialization, or `None` when
+             *     the control plane is already whole.
+             */
+            completes_with?: string | null;
+            /**
+             * Format: int32
+             * @description Live leadership seats the frozen roster declares on it.
+             */
+            declared_seats: number;
+            /** @description Whether the ECP node holds a native container binding. */
+            materialized: boolean;
+            /**
+             * Format: int32
+             * @description How many of those hold a native session, and so could take a turn.
+             */
+            staffed_seats: number;
+        };
+        /**
          * @description The runtime-facing identity an epic declares independently of its display
          *     name and of any process-wide runtime configuration.
          */
@@ -5754,6 +7063,410 @@ export interface components {
             /** @description The runtime family that reported it. */
             runtime_kind: string;
         };
+        /** @enum {string} */
+        EvidenceConfidence: "inferred" | "observed";
+        EvidenceRef: {
+            content_hash: string;
+            /** Format: uuid */
+            receipt_id: string;
+            /** @enum {string} */
+            type: "receipt";
+        } | {
+            content_hash: string;
+            /** @description Nonblank; at most 128 UTF-8 bytes; canonical sensitive-material validation applies. */
+            item_id: string;
+            /** Format: uuid */
+            project_id: string;
+            /** Format: uuid */
+            revision_id: string;
+            /** @enum {string} */
+            type: "memory_revision";
+        } | {
+            content_hash: string;
+            /** @description Nonblank; at most 1024 UTF-8 bytes; canonical sensitive-material validation applies. */
+            locator: string;
+            /** @enum {string} */
+            type: "artifact";
+        };
+        ExperienceClassification: {
+            identity: components["schemas"]["MemoryIdentity"];
+            projection_policy: components["schemas"]["ProjectionPolicy"] | null;
+            recall_eligible: boolean;
+        };
+        ExperienceClassificationResponse: {
+            classifications: components["schemas"]["ExperienceClassification"][];
+            realm_id: string;
+        };
+        /** @enum {string} */
+        ExperienceKind: "experience" | "lesson" | "mental_model";
+        ExperienceMemoryV1: {
+            actions: string[];
+            avoid: string[];
+            confidence: components["schemas"]["EvidenceConfidence"];
+            /** @enum {string} */
+            document_type: "experience_memory";
+            domains: string[];
+            evidence_refs: components["schemas"]["EvidenceRef"][];
+            future_cues: string[];
+            /** @description Nonblank; at most 4096 UTF-8 bytes; canonical sensitive-material validation applies. */
+            intent: string;
+            kind: components["schemas"]["ExperienceKind"];
+            /** @description Nonblank; at most 4096 UTF-8 bytes; canonical sensitive-material validation applies. */
+            lesson: string;
+            /** Format: date-time */
+            occurred_at: string;
+            outcome: components["schemas"]["ExperienceOutcome"];
+            projection_policy?: components["schemas"]["ProjectionPolicy"];
+            /** @enum {integer} */
+            schema_version: 1;
+            /** @description Nonblank; at most 4096 UTF-8 bytes; canonical sensitive-material validation applies. */
+            situation: string;
+            went_well: string[];
+            went_wrong: string[];
+        };
+        ExperienceOutcome: {
+            kind: components["schemas"]["OutcomeKind"];
+            /** @description Nonblank; at most 4096 UTF-8 bytes; canonical sensitive-material validation applies. */
+            summary: string;
+        };
+        ExperienceProposal: {
+            document: components["schemas"]["ExperienceMemoryV1"];
+            /** Format: int64 */
+            expected_revision: number;
+            item_id: string;
+            proposed_by: string;
+            provenance: components["schemas"]["MemoryProvenance"];
+        };
+        ExperienceProposalResponse: {
+            realm_id: string;
+            receipt: components["schemas"]["MemoryReceipt"];
+            revision: components["schemas"]["ExperienceRevision"];
+        };
+        ExperienceRevision: {
+            approved: boolean;
+            current: boolean;
+            document: components["schemas"]["ExperienceMemoryV1"];
+            item_id: string;
+            /** Format: uuid */
+            project_id: string;
+            /** Format: date-time */
+            proposed_at: string;
+            proposed_by: string;
+            provenance: components["schemas"]["MemoryProvenance"];
+            /** Format: int64 */
+            revision: number;
+            /** Format: uuid */
+            revision_id: string;
+            supersedes_id: string | null;
+            tombstoned: boolean;
+        };
+        /** @description Fill one frozen, unwaived role slot that is owed a durable follow-up. */
+        FillTeamRunSeatRequest: {
+            /**
+             * Format: int64
+             * @description The task revision observed before authorizing materialization.
+             */
+            expected_task_revision: number;
+            model_route?: null | components["schemas"]["RuntimeModelRouteRequest"];
+            /** @description Why the operator is completing this admitted team's missing seat. */
+            reason: string;
+        };
+        /** @description The preserved admission, its filled seat and the durable delivery readback. */
+        FilledTeamRunSeatDto: {
+            /** @description The current run filling the slot. */
+            agent_run_id: string;
+            /**
+             * Format: int64
+             * @description Generation of the runtime identity.
+             */
+            binding_generation: number;
+            /** @description The runtime binding read back from the run. */
+            binding_id: string;
+            /** @description All durable handoffs for this exact TeamRun and slot. */
+            dispatches: components["schemas"]["TeamRunSeatDispatchDto"][];
+            /** @description The native session identity read back from the binding. */
+            native_id: string;
+            /** @description Owning realm. */
+            realm_id: string;
+            /** @description The operator command's receipt. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description The slot selected from that envelope's frozen snapshot. */
+            role_slot_id: string;
+            /** @description Persisted lifecycle of the filled run. */
+            run_lifecycle: string;
+            /** @description The admitted task, unchanged by this operation. */
+            task_id: string;
+            /** @description The existing team envelope. */
+            team_run_id: string;
+        };
+        /** @description One activation record: the published policy placement reads. */
+        FleetActivationDto: {
+            /** @description When activation replaced the record. */
+            activated_at: string;
+            /**
+             * @description The Core Team revision an aligned activation selects; absent for a
+             *     schema_version 1 record.
+             */
+            core_team_revision_hash?: string | null;
+            /** @description SHA-256 of exactly the activated policy bytes. */
+            policy_hash: string;
+            /**
+             * Format: int32
+             * @description The schema those bytes validate under.
+             */
+            policy_schema_version: number;
+            /**
+             * @description The orchestration bundle an aligned (schema_version 2) activation
+             *     names; absent for a schema_version 1 record.
+             */
+            source_bundle_hash?: string | null;
+        };
+        /**
+         * @description The standing activation a caller read, as an activation must name it.
+         *
+         *     Omitted entirely only when no activation record stands; a schema_version 1
+         *     record is named by its policy alone.
+         */
+        FleetActivationFenceDto: {
+            /** @description The policy the standing record names. */
+            policy_hash: string;
+            /** @description The bundle the standing record names, for a schema_version 2 record. */
+            source_bundle_hash?: string | null;
+        };
+        /**
+         * @description Select one published bundle — its policy and its Core Team revision
+         *     together — for every later placement.
+         */
+        FleetBundleActivateRequest: {
+            expected_active?: null | components["schemas"]["FleetActivationFenceDto"];
+            /** @description The published bundle to activate. */
+            source_bundle_hash: string;
+        };
+        /**
+         * @description The Realm's orchestration bundle selection (ASMA-8280 S-1).
+         *
+         *     The same single activation pointer [`FleetPolicyDto`] reports, read for its
+         *     bundle: a schema_version 1 record names a policy alone; a schema_version 2
+         *     record also names the orchestration bundle and Core Team revision, whose
+         *     manifest is reported here when it verifies.
+         */
+        FleetBundleDto: {
+            activation?: null | components["schemas"]["FleetActivationDto"];
+            /**
+             * Format: int32
+             * @description The activation record's format, `1` or `2`, when one can be read.
+             */
+            activation_schema_version?: number | null;
+            manifest?: null | components["schemas"]["FleetBundleManifestDto"];
+            /** @description The Realm it governs. */
+            realm_id: string;
+            /** @description Why the selected activation cannot be served, when it cannot. */
+            refusal?: string | null;
+            /** @description Which source decides fleet routing. */
+            selection: components["schemas"]["FleetPolicySelectionDto"];
+        };
+        /** @description One immutable orchestration bundle manifest. */
+        FleetBundleManifestDto: {
+            /** @description The bundle's canonical Core Team revision. */
+            core_team_revision_hash: string;
+            /** @description The bundle's policy. */
+            policy_hash: string;
+            /**
+             * Format: int32
+             * @description The schema that policy validates under.
+             */
+            policy_schema_version: number;
+            /** @description The resolver that produced the bundle. */
+            resolver: string;
+            /** @description The role catalog the Core Team revision was resolved against. */
+            role_catalog: components["schemas"]["FleetRoleCatalogPinDto"];
+            /** @description The manifest's canonical content hash: the bundle's identity. */
+            source_bundle_hash: string;
+            /** @description SHA-256 of each authoring source's exact bytes, by bundle-relative path. */
+            sources: {
+                [key: string]: string;
+            };
+        };
+        /** @description What a candidate bundle resolves to, before anything is written. */
+        FleetBundlePreviewDto: {
+            /** @description The manifest publication would write. */
+            manifest: components["schemas"]["FleetBundleManifestDto"];
+            /**
+             * @description The hash the corresponding publish must name: the three exact source
+             *     documents and the selected catalog revision.
+             */
+            preview_hash: string;
+            /** @description The Realm it was resolved for. */
+            realm_id: string;
+        };
+        /**
+         * @description One candidate orchestration bundle, as authored: the exact bytes of its
+         *     three sources.
+         */
+        FleetBundlePreviewRequest: {
+            /** @description The exact bytes of `teams/core-team.yml`. */
+            core_team: string;
+            /** @description The exact bytes of `fleet.yml`. */
+            fleet: string;
+            /** @description The exact bytes of `orchestration.yml`. */
+            orchestration: string;
+        };
+        /** @description A proposed initial orchestration bundle for review (ASMA-8280 S-2). */
+        FleetBundleProposalDto: {
+            /** @description The proposed `teams/core-team.yml` bytes: the mandatory roles alone. */
+            core_team: string;
+            /** @description The proposed `orchestration.yml` bytes. */
+            orchestration: string;
+            /** @description The Realm it was proposed for. */
+            realm_id: string;
+            /** @description The exact catalog revision the proposal pins. */
+            role_catalog: components["schemas"]["FleetRoleCatalogPinDto"];
+        };
+        /**
+         * @description Publish one previewed bundle as immutable, content-addressed artifacts.
+         *
+         *     Publication selects nothing: placement keeps reading the current selection
+         *     until an activation names this bundle.
+         */
+        FleetBundlePublishRequest: {
+            /** @description The exact bytes of `teams/core-team.yml` that were previewed. */
+            core_team: string;
+            /** @description The exact bytes of `fleet.yml` that were previewed. */
+            fleet: string;
+            /** @description The exact bytes of `orchestration.yml` that were previewed. */
+            orchestration: string;
+            /** @description The hash preview returned for these bytes. */
+            preview_hash: string;
+        };
+        /** @description One published bundle. */
+        FleetBundlePublishedDto: {
+            /** @description Whether this call wrote any artifact or found them all published. */
+            applied: components["schemas"]["AppliedDto"];
+            /** @description The manifest as published. */
+            manifest: components["schemas"]["FleetBundleManifestDto"];
+            /** @description The Realm it was published in. */
+            realm_id: string;
+        };
+        /**
+         * @description The runtime facts one fleet policy choice is made under: stated by the
+         *     caller, applied in chain order, and recorded with the decision.
+         */
+        FleetEligibilityRequest: {
+            /** @description Vendors the seat must avoid. */
+            excluded_vendors?: string[];
+            /** @description Account aliases that cannot take the seat now. */
+            unavailable_accounts?: string[];
+        };
+        /** @description Select one published policy for every later placement. */
+        FleetPolicyActivateRequest: {
+            /** @description The policy the caller read as active; omit when none was. */
+            expected_active_policy_hash?: string | null;
+            /** @description The published policy to activate. */
+            policy_hash: string;
+        };
+        /** @description The activation one activate call left standing. */
+        FleetPolicyActivatedDto: {
+            /** @description The standing activation record. */
+            activation: components["schemas"]["FleetActivationDto"];
+            /**
+             * @description `created` when this call replaced the record, `unchanged` when the
+             *     policy was already active.
+             */
+            applied: components["schemas"]["AppliedDto"];
+            /** @description The Realm it governs. */
+            realm_id: string;
+        };
+        /**
+         * @description The Realm's fleet policy selection (ASMA-8280).
+         *
+         *     Exactly one source decides fleet routing: an activation record naming one
+         *     published policy by content hash, or — when none exists — the unmigrated
+         *     state-root `fleet.yml`. An activation that cannot be verified is reported
+         *     here and refuses placement; it never falls back.
+         */
+        FleetPolicyDto: {
+            activation?: null | components["schemas"]["FleetActivationDto"];
+            /** @description SHA-256 of the policy bytes placement reads now, when there is one. */
+            active_policy_hash?: string | null;
+            /**
+             * Format: int32
+             * @description The schema version of that policy.
+             */
+            active_schema_version?: number | null;
+            /** @description The Realm it governs. */
+            realm_id: string;
+            /** @description Why the selected activation cannot be served, when it cannot. */
+            refusal?: string | null;
+            /** @description Which source decides fleet routing. */
+            selection: components["schemas"]["FleetPolicySelectionDto"];
+        };
+        /** @description What a candidate policy is, before anything is written. */
+        FleetPolicyPreviewDto: {
+            /** @description SHA-256 of exactly the validated bytes: the policy's identity. */
+            policy_hash: string;
+            /** @description The hash the corresponding publish must name. */
+            preview_hash: string;
+            /** @description The Realm it was validated for. */
+            realm_id: string;
+            /**
+             * Format: int32
+             * @description The schema those bytes validate under.
+             */
+            schema_version: number;
+        };
+        /** @description One candidate fleet policy, as authored. */
+        FleetPolicyPreviewRequest: {
+            /** @description The exact YAML bytes of a schema_version 1 or 2 fleet policy. */
+            document: string;
+        };
+        /**
+         * @description Publish one previewed policy as an immutable, content-addressed artifact.
+         *
+         *     Publication selects nothing: placement keeps reading the current selection
+         *     until an activation names this policy.
+         */
+        FleetPolicyPublishRequest: {
+            /** @description The exact YAML bytes that were previewed. */
+            document: string;
+            /** @description The hash preview returned for these bytes. */
+            preview_hash: string;
+        };
+        /** @description One published policy. */
+        FleetPolicyPublishedDto: {
+            /** @description Whether this call wrote the artifact or found it already published. */
+            applied: components["schemas"]["AppliedDto"];
+            /** @description SHA-256 of exactly the published bytes. */
+            policy_hash: string;
+            /** @description The Realm it was published in. */
+            realm_id: string;
+            /**
+             * Format: int32
+             * @description The schema those bytes validate under.
+             */
+            schema_version: number;
+        };
+        /**
+         * @description Which source decides a Realm's fleet routing.
+         * @enum {string}
+         */
+        FleetPolicySelectionDto: "activation" | "fleet_yml";
+        /** @description The exact role catalog revision a bundle pins. */
+        FleetRoleCatalogPinDto: {
+            /** @description The catalog's stable identity. */
+            catalog_id: string;
+            /** @description The canonical content hash of that revision. */
+            content_hash: string;
+            /**
+             * Format: int32
+             * @description The catalog revision.
+             */
+            version: number;
+        };
+        FrozenRevision: {
+            content_hash: string;
+            /** Format: uuid */
+            revision_id: string;
+        };
         /** @description A recorded discontinuity a reader is owed. */
         GapDto: {
             /**
@@ -5948,6 +7661,50 @@ export interface components {
             /** @description Instruction delivered to the exact native session. */
             body: string;
         };
+        /** @description The immutable occupancy chain of one logical hosted seat inside one epic. */
+        HostedSeatOccupancyChainDto: {
+            /** @description The epic whose control plane owns the seat. */
+            epic_id: string;
+            /** @description Every occupancy, oldest generation first. */
+            occupancies: components["schemas"]["HostedSeatOccupancyDto"][];
+            /** @description The project it serves. */
+            project_id: string;
+            /** @description The Realm it was read in. */
+            realm_id: string;
+            /** @description The standard role the seat is held under. */
+            role_code: string;
+            /** @description The logical seat whose occupancies these are. */
+            seat_binding_id: string;
+            /**
+             * Format: int64
+             * @description The position this read is consistent with.
+             */
+            snapshot_cursor: number;
+        };
+        /**
+         * @description One occupancy of a logical hosted seat: the native that filled it and the
+         *     persona that occupancy was opened under.
+         *
+         *     A seat outlives its natives. Reporting only the current one answers "who is
+         *     here" but not "what was this seat ever opened under", and the second question
+         *     is the one a no-overwrite qualification has to ask.
+         */
+        HostedSeatOccupancyDto: {
+            /**
+             * @description `current` for the occupancy filling the seat now, `retired` for one it
+             *     superseded. Stated rather than inferred from position, so a reader does
+             *     not have to know the ordering rule to know which native is live.
+             */
+            lifecycle: string;
+            /** @description Exact native session that filled this occupancy. */
+            native: components["schemas"]["CoreTeamNativeSeatDto"];
+            /**
+             * Format: int64
+             * @description The occupancy generation this native filled.
+             */
+            occupancy_generation: number;
+            role_persona?: null | components["schemas"]["CoreTeamSeatPersonaDto"];
+        };
         ImportBody: {
             entries: Record<string, never>[];
             /** Format: int32 */
@@ -5964,8 +7721,14 @@ export interface components {
         };
         /** @description The no-write projection of a requested covering kickoff hold. */
         InitialExecutionHoldPreviewDto: {
-            /** @description The account profile that will record the hold. */
+            /** @description The account profile that will record the hold. Its owner. */
             held_by: string;
+            /**
+             * @description The machine-checkable condition apply will record, resolved — so a
+             *     caller that named none sees `manual` here rather than an absence it has
+             *     to interpret.
+             */
+            lift_condition: string;
             /** @description The durable reason apply will record. */
             reason: string;
             /** @description The hold always covers the whole epic. */
@@ -5978,8 +7741,21 @@ export interface components {
          *     governable by the scheduler.
          */
         InitialExecutionHoldRequest: {
-            /** @description The account profile recording the kickoff hold. */
+            /** @description The account profile recording the kickoff hold. Its owner. */
             held_by: string;
+            /**
+             * @description What would end the hold, as something Kontor can evaluate.
+             *
+             *     `reason` is prose: it reads well and decides nothing, so before this
+             *     field the only thing that ever lifted a hold was a human calling
+             *     `execution-arm`, and an epic whose stated condition had been true for
+             *     days sat idle because nobody was asked to look.
+             *
+             *     Absent means [`HoldLiftCondition::Manual`], which is what every hold
+             *     recorded before this field existed actually meant. A caller that says
+             *     nothing gets exactly the behaviour it already had.
+             */
+            lift_condition?: string | null;
             /** @description Why work must remain ineligible after the graph is created. */
             reason: string;
         };
@@ -6108,6 +7884,26 @@ export interface components {
              */
             topic?: string | null;
         };
+        /** @description Invoke one planning pair against an epic, as its frozen caller. */
+        InvokePlanningPairRequest: {
+            /**
+             * Format: int64
+             * @description The epic revision the caller read.
+             */
+            expected_revision: number;
+            /** @description Exactly two members, `seat-a` then `seat-b`. */
+            members: components["schemas"]["PlanningPairMemberPlacementRequest"][];
+            /** @description The exact document revision, including its canonical hash. */
+            profile: components["schemas"]["PlanningPairProfileRefDto"];
+            /** @description The protocol, named explicitly. Nothing substitutes another. */
+            protocol: components["schemas"]["PlanningPairProtocolDto"];
+            /** @description What the caller asks. */
+            question: string;
+            /** @description Optional ticket scope inside the epic; absent means the epic. */
+            task_id?: string | null;
+            /** @description Short semantic subject the pinned Team Definition renders. */
+            topic: string;
+        };
         /** @description Confirmed Jira identity evidence, or an explicit awaiting state. */
         JiraBindingDto: {
             /**
@@ -6163,6 +7959,11 @@ export interface components {
         };
         /** @description One server-derived Jira object's requested mode. */
         JiraMaterializationIntentDto: {
+            /**
+             * @description Exact Jira description body. On create it replaces the generated body;
+             *     on link it explicitly authorizes an in-place description-only update.
+             */
+            description?: string | null;
             /** @description Required only for link mode; create has no caller-authored key. */
             issue_key?: string | null;
             /** @description Create or link. */
@@ -6170,8 +7971,12 @@ export interface components {
         };
         /** @description One ordered Jira object in a materialization preview or receipt. */
         JiraMaterializationItemDto: {
+            /** @description Exact description read back after apply. */
+            confirmed_description?: string | null;
             /** @description The confirmed Jira key after apply. */
             confirmed_key?: string | null;
+            /** @description Description the preview will create or explicitly update. */
+            description?: string | null;
             /** @description Epic or task. */
             item_kind: string;
             /** @description Create or link. */
@@ -6284,6 +8089,69 @@ export interface components {
             /** @description The task it applies to, for the task-scoped actions. */
             task_id?: string | null;
         };
+        MemoryIdentity: {
+            content_hash: string;
+            item_id: string;
+            /** Format: uuid */
+            project_id: string;
+            /** Format: uuid */
+            revision_id: string;
+        };
+        MemoryProvenance: {
+            history_unavailable: boolean;
+            legacy_last_write_wins: boolean;
+            source: string;
+            source_id?: string | null;
+        };
+        MemoryReceipt: {
+            aggregate_revision: number | null;
+            item_id: string | null;
+            operation: string;
+            /** Format: uuid */
+            project_id: string;
+            /** Format: uuid */
+            receipt_id: string;
+            /** Format: date-time */
+            recorded_at: string;
+            result_hash: string;
+            revision_id: string | null;
+        };
+        /**
+         * @description How much approved memory the resolved pack could carry.
+         *
+         *     Approved memory grows without bound while the canonical document may not
+         *     exceed its ceiling, so a large enough project eventually has more approved
+         *     memory than one pack can hold. When that happens the resolver narrows the set
+         *     rather than refusing, and this says so explicitly: a caller can see that the
+         *     pack is not the whole of approved memory, and exactly which revisions are
+         *     missing from it. Below the ceiling `omitted` is empty and `narrowed` is
+         *     false, which is the ordinary case and the one that must stay unchanged.
+         */
+        MemorySelectionDto: {
+            /**
+             * Format: int64
+             * @description The canonical byte ceiling the selection was made against.
+             */
+            ceiling_bytes: number;
+            /**
+             * Format: int32
+             * @description How many approved revisions the pack carries.
+             */
+            included: number;
+            /** @description Whether the set had to be narrowed at all. */
+            narrowed: boolean;
+            /**
+             * @description Every approved revision the pack could not carry, in the order the
+             *     resolver would have taken them.
+             */
+            omitted: components["schemas"]["OmittedMemoryRevisionDto"][];
+            /**
+             * Format: int32
+             * @description The selector that chose them, so a changed rule is visible as a changed
+             *     number rather than as an unexplained change of hash.
+             */
+            selector_version: number;
+        };
         /** @description The runtime's answer to one delivered message. */
         MessageAckDto: {
             /**
@@ -6308,6 +8176,16 @@ export interface components {
              * @description Where it landed inside that epoch.
              */
             sequence: number;
+        };
+        /** @description One bounded reconciliation step. This never resumes or sends a native message. */
+        MessageReconcileRequest: {
+            /**
+             * Format: int64
+             * @description Zero starts a proof; later calls name its returned revision.
+             */
+            expected_revision: number;
+            /** @description Exact previously issued client message id. */
+            message_id: string;
         };
         /** @description What a caller sends into a session. */
         MessageRequest: {
@@ -6354,6 +8232,20 @@ export interface components {
              * @description The control-plane position the answer is consistent with.
              */
             snapshot_cursor: number;
+        };
+        /** @description Complete native parent identity reported for a child container. */
+        NativeContainerParentDto: {
+            /**
+             * Format: int64
+             * @description Runtime generation.
+             */
+            generation: number;
+            /** @description Runtime host. */
+            host: string;
+            /** @description Native parent id. */
+            native_id: string;
+            /** @description Runtime family. */
+            runtime_kind: string;
         };
         /**
          * @description One subject in an epic-wide native-name plan.
@@ -6474,6 +8366,7 @@ export interface components {
          *     desired value presented as an observation is how drift stops being visible.
          */
         ObservedBindingDto: {
+            container_readback?: null | components["schemas"]["ContainerReadbackDto"];
             /** @description The working directory it reported. */
             cwd?: string | null;
             /** @description The exact native identity it reported. */
@@ -6488,6 +8381,61 @@ export interface components {
             /** @description The runtime family that answered. */
             runtime_kind: string;
         };
+        /**
+         * @description The exact current turn, as canonical history records it.
+         *
+         *     Read-only, and deliberately not a proof. It is what a post-turn control
+         *     caller needs in order to *state* a settlement: the Kontor message id the
+         *     runtime echoed back, and the two canonical positions bounding the turn it
+         *     opened. `turns:settle` re-derives every one of these itself and is the only
+         *     thing that decides whether they are true — this surface never writes, never
+         *     attests, and being able to read it grants nothing.
+         *
+         *     The fields are named to match `TurnRuntimeProofRequest` exactly, so relaying
+         *     an observation into a settlement is a copy rather than a transcription.
+         */
+        ObservedTurnDto: {
+            /** @description The run whose session was read. */
+            agent_run_id: string;
+            /**
+             * @description The position the scan stopped at, so a caller reading a long session can
+             *     resume rather than start over.
+             */
+            anchor: string;
+            /** @description The Kontor message id the runtime echoed on the current user message. */
+            message_id: string;
+            /**
+             * Format: int64
+             * @description The canonical sequence of that exact user message.
+             */
+            message_sequence: number;
+            /** @description The Realm the session belongs to. */
+            realm_id: string;
+            /**
+             * Format: int64
+             * @description The canonical sequence of the turn's terminal provider response.
+             */
+            response_sequence: number;
+            /**
+             * Format: int64
+             * @description The canonical epoch both positions belong to.
+             */
+            timeline_epoch: number;
+        };
+        /**
+         * @description One approved memory revision a Context Pack could not carry.
+         *
+         *     It names the revision and never its content: the point is that a caller can
+         *     go and read what was left out, not that the pack leaks it by another route.
+         */
+        OmittedMemoryRevisionDto: {
+            /** @description The memory item. */
+            item_id: string;
+            /** @description The immutable approved revision of it. */
+            revision_id: string;
+        };
+        /** @enum {string} */
+        OutcomeKind: "success" | "failure" | "mixed";
         /** @description Exact queued downstream run and already-created native a partial recovery adopts. */
         PartialAdmissionSeatDto: {
             /** @description The unique current replacement-chain leaf for its frozen role slot. */
@@ -6555,6 +8503,236 @@ export interface components {
              */
             version: number;
         };
+        /** @description The released clarification round. */
+        PlanningPairClarificationDto: {
+            /** @description The members it addressed. */
+            addressed: components["schemas"]["PlanningPairSlotDto"][];
+            /** @description Every addressed member's answer. */
+            answers: components["schemas"]["PlanningPairContributionDto"][];
+            /** @description The caller's question. */
+            question: string;
+        };
+        /** @description One released finding or answer. */
+        PlanningPairContributionDto: {
+            /** @description The advice, verbatim. */
+            advice: string;
+            /** @description Its canonical address. */
+            document_hash: string;
+            /** @description `findings` or `clarification`. */
+            round: string;
+            /** @description The member that gave it. */
+            slot: components["schemas"]["PlanningPairSlotDto"];
+        };
+        /** @description The caller's recorded disposition. */
+        PlanningPairDispositionRecordDto: {
+            /** @description One entry per member, `seat-a` then `seat-b`. */
+            members: components["schemas"]["PlanningPairMemberDispositionDto"][];
+            /** @description Why the caller decided as it did. */
+            rationale: string;
+        };
+        /**
+         * @description One member's known native session: what a trusted runtime readback named,
+         *     never a qualification.
+         */
+        PlanningPairKnownNativeDto: {
+            /** @description The exact session. */
+            native_identity: components["schemas"]["PlanningPairNativeIdentityDto"];
+            /**
+             * Format: date-time
+             * @description When it was read back.
+             */
+            observed_at: string;
+            /** @description Its provider conversation, when one was reported. */
+            provider_session_id?: string | null;
+            /** @description Why its launch readback did not qualify the member, when it did not. */
+            readback_refusal?: string | null;
+        };
+        /** @description What the caller decided about one member's advice. */
+        PlanningPairMemberDispositionDto: {
+            /** @description The exact clarification answer, when the member gave one. */
+            answer?: string | null;
+            /** @description Accepted, partially accepted or rejected. */
+            disposition: components["schemas"]["AdviceDispositionDto"];
+            /** @description The exact finding the decision is about. */
+            finding: string;
+            /** @description The member. */
+            slot: components["schemas"]["PlanningPairSlotDto"];
+        };
+        /** @description One frozen member. */
+        PlanningPairMemberDto: {
+            /** @description The binding the TPM named. */
+            binding_key: string;
+            known_native?: null | components["schemas"]["PlanningPairKnownNativeDto"];
+            /** @description The exact native seat title. */
+            label: string;
+            /** @description The route the shared allocator chose. */
+            model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            observed_binding?: null | components["schemas"]["ObservedBindingDto"];
+            /**
+             * Format: int64
+             * @description The native-filler generation scoped credentials are fenced to.
+             */
+            occupancy_generation: number;
+            /** @description The persistent SeatBinding. */
+            seat_binding_id: string;
+            /** @description The member slot. */
+            slot: components["schemas"]["PlanningPairSlotDto"];
+            /** @description The actual vendor the shared allocator held distinct. */
+            vendor: string;
+        };
+        /**
+         * @description One member's placement: the existing binding the TPM names for it and the
+         *     eligibility it states. The route is the shared allocator's, never the
+         *     caller's.
+         */
+        PlanningPairMemberPlacementRequest: {
+            /** @description The existing canonical binding this member resolves. */
+            binding_key: string;
+            /** @description Vendors this member must avoid. */
+            excluded_vendors?: string[];
+            /** @description The member slot. */
+            slot: components["schemas"]["PlanningPairSlotDto"];
+            /** @description Account aliases that cannot take this member now. */
+            unavailable_accounts?: string[];
+        };
+        /**
+         * @description One exact native session: its runtime family, host and runtime generation,
+         *     and its native id.
+         */
+        PlanningPairNativeIdentityDto: {
+            /**
+             * Format: int64
+             * @description The runtime generation.
+             */
+            generation: number;
+            /** @description The runtime host that owns the generation. */
+            host: string;
+            /** @description The native session id within it. */
+            native_id: string;
+            /** @description The runtime family. */
+            runtime_kind: string;
+        };
+        /** @description The exact published document revision an invocation pins. */
+        PlanningPairProfileRefDto: {
+            /** @description The canonical hash the caller read; a different published hash refuses. */
+            definition_hash: string;
+            /** @description The document id shared by every revision. */
+            id: string;
+            /**
+             * Format: int32
+             * @description The pinned revision.
+             */
+            version: number;
+        };
+        /**
+         * @description The protocol a caller explicitly selects. There is exactly one.
+         * @enum {string}
+         */
+        PlanningPairProtocolDto: "planning_pair@1";
+        /** @description One planning pair as its reader may see it. */
+        PlanningPairRunDto: {
+            /** @description The frozen caller seat. */
+            caller_seat_binding_id: string;
+            clarification?: null | components["schemas"]["PlanningPairClarificationDto"];
+            /** @description The rendered container name, when the pinned Team Definition names it. */
+            container_name?: string | null;
+            disposition?: null | components["schemas"]["PlanningPairDispositionRecordDto"];
+            /** @description The epic it advises. */
+            epic_id: string;
+            /** @description Both findings, once released and only to the caller. */
+            findings?: components["schemas"]["PlanningPairContributionDto"][] | null;
+            /** @description Both frozen members. */
+            members: components["schemas"]["PlanningPairMemberDto"][];
+            /** @description A member reader's own contributions, sealed or not. */
+            own_contributions?: components["schemas"]["PlanningPairContributionDto"][];
+            /** @description The protocol phase the latest record restores to. */
+            phase: string;
+            /** @description The frozen placement's canonical hash. */
+            placement_hash: string;
+            /** @description The consultation. */
+            planning_pair_run_id: string;
+            /** @description The pinned document revision. */
+            profile: components["schemas"]["ProfileRevisionDto"];
+            /** @description Always `planning_pair@1`. */
+            protocol: components["schemas"]["PlanningPairProtocolDto"];
+            /** @description The caller's question. */
+            question: string;
+            /** @description The Realm it belongs to. */
+            realm_id: string;
+            receipt?: null | components["schemas"]["MutationReceiptDto"];
+            /**
+             * Format: int64
+             * @description The record revision the projection restored.
+             */
+            record_revision: number;
+            /**
+             * @description The advice the caller did not wholly adopt, kept verbatim; to the
+             *     caller only.
+             */
+            retained_dissent?: components["schemas"]["PlanningPairContributionDto"][];
+            /**
+             * Format: int64
+             * @description The run revision.
+             */
+            revision: number;
+            /**
+             * Format: int64
+             * @description The control-plane position the answer is consistent with.
+             */
+            snapshot_cursor: number;
+            /** @description `materializing`, `running`, `needs_human` or `disposed`. */
+            state: string;
+            /** @description The ticket it advises, when it was invoked at one. */
+            task_id?: string | null;
+            /** @description The frozen semantic topic. */
+            topic: string;
+            /** @description The container node. */
+            topology_node_id: string;
+            /** @description Who this projection was rendered for. */
+            viewer: components["schemas"]["PlanningPairViewerDto"];
+        };
+        /**
+         * @description One member requalified on its exact known native session.
+         *
+         *     The same SeatBinding, generation, session and frozen placement: nothing is
+         *     created, replaced or rerouted, and nothing here is a verdict.
+         */
+        PlanningPairSeatRecoveryDto: {
+            /**
+             * Format: int64
+             * @description The member's unchanged occupancy generation.
+             */
+            member_occupancy_generation: number;
+            /** @description The same native session, read back again. */
+            native_identity: components["schemas"]["PlanningPairNativeIdentityDto"];
+            /** @description The frozen placement the member's provenance was read back against. */
+            placement_hash: string;
+            /** @description The pair as its caller now sees it. */
+            planning_pair: components["schemas"]["PlanningPairRunDto"];
+            /** @description The same provider conversation, when one is recorded. */
+            provider_session_id?: string | null;
+            /** @description The recovery's receipt. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /**
+             * Format: int64
+             * @description The run revision the requalification was recorded at.
+             */
+            recovered_revision: number;
+            /** @description The member's persistent SeatBinding. */
+            seat_binding_id: string;
+            /** @description The member slot. */
+            slot: components["schemas"]["PlanningPairSlotDto"];
+        };
+        /**
+         * @description One of the two member slots.
+         * @enum {string}
+         */
+        PlanningPairSlotDto: "seat-a" | "seat-b";
+        /**
+         * @description Who the projection was rendered for, and so what it may contain.
+         * @enum {string}
+         */
+        PlanningPairViewerDto: "caller" | "member" | "observer";
         /** @description The result of judging an epic with the exact apply rules and no writes. */
         PreviewEpicDto: {
             /** @description Whether apply would create the epic or find it unchanged. */
@@ -6607,6 +8785,11 @@ export interface components {
             /** @description The exact selectable provider route to refresh. */
             provider: string;
         };
+        /**
+         * @description Account identity evidenced by the original producer, never the calling operator.
+         * @enum {string}
+         */
+        ProducerAccountAttribution: "original_run_pin" | "native_proved_unknown";
         /** @description Publish one revalidated definition as an immutable revision. */
         ProfileApplyRequest: {
             /** @description The complete definition to publish. */
@@ -6946,6 +9129,54 @@ export interface components {
             /** @description The outcome, when the run is closed. */
             outcome?: string | null;
         };
+        ProjectionEntry: {
+            cues: string[];
+            identity: components["schemas"]["MemoryIdentity"];
+            /** @description Nonblank; at most 4096 UTF-8 bytes; canonical sensitive-material validation applies. */
+            lesson: string;
+        };
+        /**
+         * @default local_only
+         * @enum {string}
+         */
+        ProjectionPolicy: "local_only" | "provider_eligible";
+        ProjectionPreview: {
+            /** Format: int64 */
+            active_generation: number;
+            entries: components["schemas"]["ProjectionEntry"][];
+            snapshot: components["schemas"]["ProjectionSnapshot"];
+        };
+        ProjectionPreviewResponse: {
+            preview: components["schemas"]["ProjectionPreview"];
+            realm_id: string;
+        };
+        ProjectionReadback: {
+            active: components["schemas"]["ProjectionSnapshot"] | null;
+            adapter_available: boolean;
+            /** Format: int64 */
+            generation: number;
+            stale: boolean;
+        };
+        ProjectionRebuildRequest: {
+            /** Format: int64 */
+            expected_generation: number;
+            /** Format: int64 */
+            expected_memory_cursor: number;
+            preview_digest: string;
+        };
+        ProjectionResponse: {
+            projection: components["schemas"]["ProjectionReadback"];
+            realm_id: string;
+        };
+        ProjectionSnapshot: {
+            dataset: string;
+            digest: string;
+            identities: components["schemas"]["MemoryIdentity"][];
+            /** Format: int64 */
+            memory_cursor: number;
+            /** Format: uuid */
+            project_id: string;
+        };
         /** @description One promoted Quick session, now an epic. */
         PromotedSessionDto: {
             /** @description The epic the session became. */
@@ -7230,6 +9461,32 @@ export interface components {
         Purge: {
             by: string;
         };
+        QuestionAction: {
+            /** @enum {string} */
+            action: "raise";
+            attachment: Record<string, never>;
+            options: string[];
+            scope: string;
+            subject: string;
+            why_ambiguous: string;
+        } | {
+            /** @enum {string} */
+            action: "correct";
+            options: string[];
+            /** Format: int32 */
+            supersedes?: number | null;
+            why_ambiguous: string;
+        } | {
+            /** @enum {string} */
+            action: "dispose";
+            outcome: Record<string, never>;
+            /** Format: int32 */
+            supersedes?: number | null;
+        } | {
+            /** @enum {string} */
+            action: "fire_trigger";
+            trigger: string;
+        };
         /** @description The roles a Quick session may be opened against. */
         QuickRolesDto: {
             /** @description The project. */
@@ -7411,6 +9668,48 @@ export interface components {
              */
             schema_version: number;
         };
+        RecallExclusions: {
+            /** Format: int64 */
+            budget: number;
+            /** Format: int64 */
+            duplicate: number;
+            /** Format: int64 */
+            invalid: number;
+            /** Format: int64 */
+            item_limit: number;
+        };
+        RecallFreezeRequest: {
+            agent_run_id: string;
+            task_id: string;
+        };
+        RecallMetadata: {
+            block_bytes: number;
+            block_hash: string;
+            exclusions: components["schemas"]["RecallExclusions"];
+            identities: components["schemas"]["MemoryIdentity"][];
+            intent_hash: string;
+            /** Format: int64 */
+            memory_cursor: number;
+            mode: components["schemas"]["RetrievalMode"];
+            projection_cursor: number | null;
+            projection_digest: string | null;
+            reason: components["schemas"]["DegradedReason"] | null;
+            /** @enum {integer} */
+            schema_version: 1;
+        };
+        RecallRequest: {
+            task_id: string;
+        };
+        RecallResponse: {
+            realm_id: string;
+            recall: components["schemas"]["RecalledMemory"];
+        };
+        RecalledMemory: {
+            binding: components["schemas"]["ContextMemoryBinding"];
+            canonical_block: string;
+            metadata: components["schemas"]["RecallMetadata"];
+            replayed: boolean;
+        };
         /** @description The durable record of one command. */
         ReceiptDto: {
             /**
@@ -7445,6 +9744,26 @@ export interface components {
              * @description When the receipt last changed.
              */
             updated_at: string;
+        };
+        /** @description Attaches verified Git bytes to an existing claim; does not assert agent authorship. */
+        RecordArtifactRequest: {
+            /** @description Declared artifact key already claimed by that turn. */
+            artifact_key: string;
+            /** @description Full immutable Git commit object id (40 or 64 lower-case hexadecimal digits). */
+            commit: string;
+            /**
+             * Format: int64
+             * @description Current task revision.
+             */
+            expected_task_revision: number;
+            /** @description Repository-relative blob path, without parent traversal. */
+            path: string;
+            /** @description Registered repository root: `task` worktree or `project` checkout. */
+            repository: string;
+            /** @description Exact existing settled-turn receipt. */
+            role_turn_id: string;
+            /** @description Expected SHA-256 of the blob contents, verified by the daemon. */
+            sha256: string;
         };
         /** @description Record one round of Committee findings. */
         RecordFindingsRequest: {
@@ -7510,6 +9829,28 @@ export interface components {
             /** @description The verdict. `waived` is an admin decision; the rest are operator work. */
             verdict: string;
         };
+        /** @description One member's finding or clarification answer. */
+        RecordPlanningPairContributionRequest: {
+            /** @description The advice, verbatim. */
+            advice: string;
+            /**
+             * Format: int64
+             * @description The run revision the member read.
+             */
+            expected_revision: number;
+        };
+        /** @description The caller's disposition. A decision, not a verdict. */
+        RecordPlanningPairDispositionRequest: {
+            /**
+             * Format: int64
+             * @description The run revision the caller read.
+             */
+            expected_revision: number;
+            /** @description One entry per member, `seat-a` then `seat-b`. */
+            members: components["schemas"]["PlanningPairMemberDispositionDto"][];
+            /** @description Why the caller decided as it did. */
+            rationale: string;
+        };
         /**
          * @description What `provider-quota-states:record` is asked for.
          *
@@ -7542,6 +9883,20 @@ export interface components {
              *     provider offers *now*, and a merge would keep a window it has withdrawn.
              */
             windows?: components["schemas"]["QuotaWindowDto"][];
+        };
+        RecordQuestionRequest: {
+            action: components["schemas"]["QuestionAction"];
+            /**
+             * @description Ordinary Operator reporting names the active seat on whose behalf it
+             *     reports. Closing always requires that leadership seat's scoped bearer.
+             */
+            author_seat_binding_id?: string | null;
+            /**
+             * Format: int64
+             * @description Zero when raising; otherwise the exact question revision just read.
+             */
+            expected_revision: number;
+            question_id: string;
         };
         /** @description Closeout evidence retained from one earlier completion era. */
         RecordedCloseoutDto: {
@@ -7608,6 +9963,34 @@ export interface components {
              * @description Which append-only evaluation of the gate that receipt recorded.
              */
             sequence: number;
+        };
+        /**
+         * @description Requalify one member on its exact known native session, as the pair's
+         *     frozen caller.
+         *
+         *     Every field is a compare-and-swap assertion. The member and the pair come
+         *     from the path and the caller from its credential; the session is the one
+         *     already known for the member, never one named here. There is no route,
+         *     provider, profile, generation, credential or new-session field.
+         */
+        RecoverPlanningPairSeatRequest: {
+            /**
+             * Format: int64
+             * @description The member's occupancy generation the caller read.
+             */
+            expected_member_occupancy_generation: number;
+            /** @description The member's known native session the caller read. */
+            expected_native_identity: components["schemas"]["PlanningPairNativeIdentityDto"];
+            /**
+             * @description The member's provider conversation, required exactly when one is
+             *     recorded for the known session.
+             */
+            expected_provider_session_id?: string | null;
+            /**
+             * Format: int64
+             * @description The run revision the caller read.
+             */
+            expected_run_revision: number;
         };
         /**
          * @description One member the resolver removed, and why.
@@ -7819,6 +10202,18 @@ export interface components {
             /** @description The root-pointer revision, for a module that has one. */
             root_pointer_revision?: string | null;
         };
+        /** @description The caller's one clarification question. */
+        RequestPlanningPairClarificationRequest: {
+            /** @description One or both members, each once. */
+            addressed: components["schemas"]["PlanningPairSlotDto"][];
+            /**
+             * Format: int64
+             * @description The run revision the caller read.
+             */
+            expected_revision: number;
+            /** @description What the caller needs clarified. */
+            question: string;
+        };
         /** @description Exact Admin compare-and-swap for one native-less Committee seat. */
         RerouteUnmaterializedConsultationSeatRequest: {
             /** @description Exact active admitted route. */
@@ -7873,6 +10268,8 @@ export interface components {
             context_hash: string;
             /** @description The frozen pack, when this call snapshotted one. */
             context_pack_id?: string | null;
+            /** @description Which approved memory revisions the pack carries, and which it could not. */
+            memory_selection: components["schemas"]["MemorySelectionDto"];
             /** @description Where every resolved path came from. */
             provenance: components["schemas"]["ProvenanceDto"][];
             /** @description The Realm it was resolved in. */
@@ -7916,6 +10313,8 @@ export interface components {
              */
             expected_revision: number;
         };
+        /** @enum {string} */
+        RetrievalMode: "semantic" | "lexical_degraded" | "none";
         /** @description One immutable specification revision, as a caller pins it. */
         RevisionRefDto: {
             /** @description The specification's stable id. */
@@ -8172,8 +10571,8 @@ export interface components {
         /**
          * @description What the planner decided, and what it decided against.
          *
-         *     A plan is a dry run in the strongest sense available: it reads rows, it calls
-         *     no runtime, and it writes nothing. `plan_hash` is what `scheduler:start`
+         *     A plan is a dry run in the strongest sense available: it reads rows, performs
+         *     read-only exact runtime inspection, and writes nothing. `plan_hash` is what `scheduler:start`
          *     applies, so a caller starts the plan it was shown rather than whatever the
          *     world looks like by the time it decides.
          */
@@ -8535,8 +10934,17 @@ export interface components {
          *     newer work after a resume or daemon restart.
          */
         SettleTurnRequest: {
-            /** @description The artifacts the turn produced. */
+            /**
+             * @description Declared artifact claims. Gate/phase evidence requires an addressable
+             *     record through `artifacts:record`; a label alone is not evidence.
+             */
             artifacts?: string[];
+            /**
+             * @description A server-generated challenge MessageId, mutually exclusive with
+             *     `runtime_proof`. Kontor loads the message coordinate from its durable
+             *     challenge and selects the terminal response server-side.
+             */
+            correlation_challenge_message_id?: string | null;
             /**
              * Format: int64
              * @description The task revision the caller believes is current.
@@ -8985,6 +11393,26 @@ export interface components {
             /** @description The standard role this seat fills. */
             role: components["schemas"]["RoleSelectionDto"];
         };
+        /** @description An adoption authorizes a later seat fill; it does not dispatch work. */
+        TeamRunAdmissionAdoptionDto: {
+            /**
+             * Format: int64
+             * @description Run revision proved by the adoption.
+             */
+            adopted_agent_run_revision: number;
+            /** @description Immutable adoption identity. */
+            adoption_id: string;
+            /** @description Exact run authorized for materialization. */
+            agent_run_id: string;
+            /** @description Confirmed local command; no native operation is queued. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description Frozen slot identity, distinct from its catalog role. */
+            role_slot_id: string;
+            /** @description Owning task. */
+            task_id: string;
+            /** @description Existing admitted TeamRun. */
+            team_run_id: string;
+        };
         /** @description One team run and its seats, as the epic projection reports them. */
         TeamRunProjectionDto: {
             /** @description Its lifecycle. */
@@ -8993,6 +11421,17 @@ export interface components {
             seats: components["schemas"]["SeatProjectionDto"][];
             /** @description The team run. */
             team_run_id: string;
+        };
+        /** @description Readback of one durable handoff to the requested slot. */
+        TeamRunSeatDispatchDto: {
+            /** @description True only when the runtime acknowledged the send. */
+            dispatched: boolean;
+            /** @description The stable message identity, retained across delivery attempts. */
+            message_id: string;
+            /** @description The settlement that derived this handoff. */
+            settled_turn_id: string;
+            /** @description The target recorded by successful delivery, if any. */
+            target_agent_run_id?: string | null;
         };
         /** @description One selectable team template revision. */
         TeamTemplateCatalogDto: {
@@ -9501,6 +11940,85 @@ export interface components {
             /** @description The work profile revision the work it proposes would use. */
             work_profile: components["schemas"]["RevisionRefDto"];
         };
+        /** @description Apply request bound to one exact no-write challenge preview. */
+        TurnCorrelationChallengeApplyRequest: {
+            /** @description The request whose server-owned boundary was previewed. */
+            challenge: components["schemas"]["TurnCorrelationChallengePreviewRequest"];
+            /** @description Hash returned by the preview. */
+            preview_hash: string;
+        };
+        /** @description Durable result of applying a server-owned correlation challenge. */
+        TurnCorrelationChallengeDto: {
+            /** @description Whether this call created the durable challenge intent. */
+            applied: components["schemas"]["AppliedDto"];
+            /** @description Unpredictable server MessageId frozen before native contact. */
+            message_id: string;
+            message_position?: null | components["schemas"]["TurnTimelinePositionDto"];
+            /** @description The no-write plan this application consumed. */
+            preview: components["schemas"]["TurnCorrelationChallengePreviewDto"];
+            /** @description `prepared`, `dispatching`, `acknowledged`, or `settled`. */
+            state: string;
+        };
+        /** @description Exact no-write plan for creating one future correlation point. */
+        TurnCorrelationChallengePreviewDto: {
+            /** @description Existing agent-run identity retained by the plan. */
+            agent_run_id: string;
+            /** @description Verified artifact and approved evidence. */
+            artifact: string;
+            /** @description Canonical tail observed without writing to the runtime. */
+            boundary: components["schemas"]["TurnTimelinePositionDto"];
+            /** @description Hash of the exact approved evidence content. */
+            evidence_content_hash: string;
+            /** @description Approved immutable evidence revision. */
+            evidence_revision_id: string;
+            /** @description Always false: ambiguous historical turns are not backfilled. */
+            historical_backfill_supported: boolean;
+            /** @description Native session identity retained by the plan. */
+            native_id: string;
+            /** @description Hash binding every identity, revision, evidence fact and boundary. */
+            preview_hash: string;
+            /** @description Exact project/task/team/run/binding identities retained by the plan. */
+            project_id: string;
+            /** @description Realm that verified the plan. */
+            realm_id: string;
+            /** @description Approved operational-gap report checksum. */
+            report_checksum: string;
+            /** @description Exact issued runtime binding retained by the plan. */
+            runtime_binding_id: string;
+            /** @description Exact active topology SeatBinding retained by the plan. */
+            seat_binding_id: string;
+            /** @description Existing task retained by the plan. */
+            task_id: string;
+            /** @description Existing team-run identity retained by the plan. */
+            team_run_id: string;
+        };
+        /**
+         * @description Read-only request for a new server-owned correlation challenge.
+         *
+         *     Historical message and response coordinates are deliberately absent.
+         */
+        TurnCorrelationChallengePreviewRequest: {
+            /** @description Exact artifact whose unchanged bytes the native must confirm. */
+            artifact: string;
+            /** @description Hash of that exact immutable memory document. */
+            evidence_content_hash: string;
+            /** @description Current approved memory revision carrying the operational-gap evidence. */
+            evidence_revision_id: string;
+            /**
+             * Format: int64
+             * @description Agent-run revision the recovery evidence describes.
+             */
+            expected_run_revision: number;
+            /**
+             * Format: int64
+             * @description Task revision the recovery evidence describes.
+             */
+            expected_task_revision: number;
+            /** @description Approved report checksum embedded in that document. */
+            report_checksum: string;
+            /** @description Exact role slot held by the addressed run. */
+            role_slot: string;
+        };
         /** @description One follow-up a settled turn derived. */
         TurnFollowUpDto: {
             /** @description Why it was derived: the handoff's phase and artifact conditions are met. */
@@ -9679,6 +12197,115 @@ export interface components {
             team?: null | components["schemas"]["RevisionRefDto"];
             /** @description The phases it may terminate at. */
             terminal_phases: string[];
+        };
+        /**
+         * @description What re-deriving a stalled workflow's phase from durable evidence did.
+         *
+         *     Reports the phase before and after, so a caller can see whether anything
+         *     moved. `advanced: false` is the ordinary answer for a workflow already where
+         *     its evidence puts it — which is exactly what makes this safe to run twice.
+         */
+        WorkflowPhaseRecoveryDto: {
+            /** @description Whether the stored phase actually moved. */
+            advanced: boolean;
+            /** @description The phase its durable evidence puts it at. */
+            current_phase: string;
+            /** @description The phase the workflow stood at before. */
+            previous_phase: string;
+            /** @description The Realm the task belongs to. */
+            realm_id: string;
+            /**
+             * Format: int64
+             * @description The workflow revision after the projection caught up.
+             */
+            revision: number;
+            /** @description The task whose workflow was re-derived. */
+            task_id: string;
+        };
+        /** @description Durable result of one task-scoped worktree-claim correction. */
+        WorktreeClaimCorrectionAppliedDto: {
+            /** @description Whether this invocation committed or replayed the correction. */
+            applied: components["schemas"]["AppliedDto"];
+            /** @description Jira-key publication branch the supported materializer must create. */
+            branch: string;
+            /**
+             * Format: date-time
+             * @description Commit instant recorded in the immutable audit row.
+             */
+            corrected_at: string;
+            /** @description Catalog module whose repository the target names. */
+            module: string;
+            /** @description Exact replacement claim read from immutable evidence. */
+            new_worktree: string;
+            /** @description Exact replaced claim. */
+            old_worktree: string;
+            /** @description Digest of the preview that authorized the correction. */
+            preview_hash: string;
+            /** @description Owning project. */
+            project_id: string;
+            /** @description Realm in which the correction committed. */
+            realm_id: string;
+            /** @description Immutable local command receipt. */
+            receipt_id: string;
+            /** @description Preserved task identity. */
+            task_id: string;
+            /**
+             * Format: int64
+             * @description Preserved task revision used as the CAS fence.
+             */
+            task_revision: number;
+        };
+        /** @description Apply one exact worktree-claim preview. */
+        WorktreeClaimCorrectionApplyRequest: {
+            /**
+             * Format: int64
+             * @description Exact task revision the preview inspected.
+             */
+            expected_revision: number;
+            /** @description Exact deterministic replacement. */
+            new_worktree: string;
+            /** @description Exact currently stored claim. */
+            old_worktree: string;
+            /** @description Digest returned by the matching preview. */
+            preview_hash: string;
+        };
+        /** @description One no-write, identity-bound worktree-claim correction decision. */
+        WorktreeClaimCorrectionPreviewDto: {
+            /** @description Jira-key publication branch the supported materializer must create. */
+            branch: string;
+            /** @description Catalog module whose repository the target names. */
+            module: string;
+            /** @description Exact derived replacement. */
+            new_worktree: string;
+            /** @description Exact claim apply may replace. */
+            old_worktree: string;
+            /** @description Digest binding the full preview and required by apply. */
+            preview_hash: string;
+            /** @description Owning project. */
+            project_id: string;
+            /** @description Realm in which the preview was decided. */
+            realm_id: string;
+            /** @description Preserved task identity. */
+            task_id: string;
+            /**
+             * Format: int64
+             * @description Task revision fenced by apply.
+             */
+            task_revision: number;
+            /** @description A valid correction always writes exactly one claim. */
+            writes: boolean;
+        };
+        /** @description What a caller asks one task-scoped worktree-claim preview to repair. */
+        WorktreeClaimCorrectionRequest: {
+            /**
+             * Format: int64
+             * @description Exact task revision the caller inspected.
+             */
+            expected_revision: number;
+            /** @description Exact deterministic ASMA catalog-module target. */
+            new_worktree: string;
+            /** @description Exact currently stored claim; a mismatch refuses rather than overwrites. */
+            old_worktree: string;
         };
     };
     responses: never;
@@ -10204,6 +12831,399 @@ export interface operations {
             };
         };
     };
+    fleet_bundle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FleetBundleDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    activate_fleet_bundle: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FleetBundleActivateRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FleetPolicyActivatedDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_fleet_bundle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FleetBundlePreviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FleetBundlePreviewDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    propose_fleet_bundle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FleetBundleProposalDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    publish_fleet_bundle: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FleetBundlePublishRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FleetBundlePublishedDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    fleet_policy_selection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FleetPolicyDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    activate_fleet_policy: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FleetPolicyActivateRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FleetPolicyActivatedDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_fleet_policy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FleetPolicyPreviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FleetPolicyPreviewDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    publish_fleet_policy: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FleetPolicyPublishRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FleetPolicyPublishedDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     health: {
         parameters: {
             query?: never;
@@ -10518,6 +13538,12 @@ export interface operations {
                 content?: never;
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10980,6 +14006,122 @@ export interface operations {
             };
         };
     };
+    apply_turn_correlation_challenge: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The exact persistent seat run */
+                agent_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TurnCorrelationChallengeApplyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TurnCorrelationChallengeDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The preview moved or the key names another challenge */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Delivery is uncertain; replay may reconcile but never resend */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_turn_correlation_challenge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The exact persistent seat run */
+                agent_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TurnCorrelationChallengePreviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TurnCorrelationChallengePreviewDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The identity, revision, binding, evidence, or native tail moved */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     settle_turn: {
         parameters: {
             query?: never;
@@ -11366,6 +14508,68 @@ export interface operations {
                 content?: never;
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    committee_artifact: {
+        parameters: {
+            query?: {
+                /** @description Zero for the first page; then use the returned `next_offset`. */
+                offset?: number;
+            };
+            header?: never;
+            path: {
+                project_id: string;
+                committee_run_id: string;
+                evidence_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommitteeArtifactContentDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12977,6 +16181,129 @@ export interface operations {
             };
         };
     };
+    epic_core_team: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic whose control plane holds the seats */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoreTeamDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    supersede_core_team_launch_intent: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CoreTeamLaunchIntentSupersedeRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoreTeamLaunchIntentSupersessionDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The runtime could not be reached */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     apply_core_team_route: {
         parameters: {
             query?: never;
@@ -13253,6 +16580,58 @@ export interface operations {
                 content?: never;
             };
             /** @description The runtime could not be reached */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    epic_hosted_seat_occupancies: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic whose control plane holds the seat */
+                epic_id: string;
+                /** @description The logical seat */
+                seat_binding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HostedSeatOccupancyChainDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such seat in this epic */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -13934,6 +17313,148 @@ export interface operations {
                 content?: never;
             };
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_open_questions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    record_open_question: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                project_id: string;
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordQuestionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    invoke_planning_pair_run: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InvokePlanningPairRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanningPairRunDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -14716,6 +18237,66 @@ export interface operations {
             };
         };
     };
+    classify: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExperienceClassificationResponse"];
+                };
+            };
+        };
+    };
+    propose_experience: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExperienceProposal"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExperienceProposalResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     import_apply: {
         parameters: {
             query?: never;
@@ -14757,6 +18338,203 @@ export interface operations {
         };
         responses: {
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    projection_readback: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectionResponse"];
+                };
+            };
+        };
+    };
+    projection_preview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectionPreviewResponse"];
+                };
+            };
+        };
+    };
+    projection_rebuild: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectionRebuildRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectionResponse"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    recall_readback: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                agent_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecallResponse"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    recall_freeze: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecallFreezeRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecallResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    recall_preview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecallRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecallResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -14880,6 +18658,525 @@ export interface operations {
         };
         responses: {
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    planning_pair_profiles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileCatalogDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    apply_planning_pair_profile: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProfileApplyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppliedProfileDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_planning_pair_profile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProfilePreviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfilePreviewDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    planning_pair_run: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The planning pair */
+                planning_pair_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanningPairRunDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    record_planning_pair_answer: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The member's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The planning pair */
+                planning_pair_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordPlanningPairContributionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanningPairRunDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    request_planning_pair_clarification: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The planning pair */
+                planning_pair_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RequestPlanningPairClarificationRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanningPairRunDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    record_planning_pair_disposition: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The planning pair */
+                planning_pair_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordPlanningPairDispositionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanningPairRunDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    record_planning_pair_finding: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The member's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The planning pair */
+                planning_pair_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordPlanningPairContributionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanningPairRunDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    recover_planning_pair_seat: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The planning pair */
+                planning_pair_run_id: string;
+                /** @description The member seat to requalify */
+                seat_binding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecoverPlanningPairSeatRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanningPairSeatRecoveryDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -15034,6 +19331,14 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
             };
             502: {
                 headers: {
@@ -15997,6 +20302,58 @@ export interface operations {
             };
         };
     };
+    record_artifact: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                project_id: string;
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordArtifactRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtifactSubmissionDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     resolve_context: {
         parameters: {
             query?: never;
@@ -16749,6 +21106,171 @@ export interface operations {
             };
         };
     };
+    recover_workflow_phase: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The task */
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowPhaseRecoveryDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The task has no active workflow */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    apply_worktree_claim_correction: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The task whose claim is repaired */
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorktreeClaimCorrectionApplyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorktreeClaimCorrectionAppliedDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_worktree_claim_correction: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The task whose claim is repaired */
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorktreeClaimCorrectionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorktreeClaimCorrectionPreviewDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     apply_project_team_definition_selection: {
         parameters: {
             query?: never;
@@ -17026,6 +21548,143 @@ export interface operations {
                 content?: never;
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    adopt_team_run_admission: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                project_id: string;
+                team_run_id: string;
+                role_slot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdoptTeamRunAdmissionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamRunAdmissionAdoptionDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    fill_team_run_seat: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The existing admitted team */
+                team_run_id: string;
+                /** @description The frozen role slot */
+                role_slot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FillTeamRunSeatRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FilledTeamRunSeatDto"];
+                };
+            };
+            /** @description The slot is undeclared or is not owed a follow-up */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision, lifecycle, waiver or placement refuses the fill */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Reconciliation or runtime is unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -18283,6 +22942,63 @@ export interface operations {
             };
         };
     };
+    message_proof: {
+        parameters: {
+            query: {
+                message_id: string;
+            };
+            header?: never;
+            path: {
+                agent_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    reconcile_message_delivery: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                agent_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MessageReconcileRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Proof revision, identity or history refused */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     respond_permission: {
         parameters: {
             query?: never;
@@ -18393,6 +23109,55 @@ export interface operations {
                 };
             };
             /** @description The timeline must be refetched from the start */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description This runtime cannot replay content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    observe_current_turn: {
+        parameters: {
+            query?: {
+                /** @description Resume from a previous anchor */
+                after?: string;
+                /** @description Maximum items per page */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                /** @description The Kontor agent run */
+                agent_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The exact current turn */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ObservedTurnDto"];
+                };
+            };
+            /** @description No completed turn is visible in the scanned window */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The seat is still working, or the history broke */
             409: {
                 headers: {
                     [name: string]: unknown;

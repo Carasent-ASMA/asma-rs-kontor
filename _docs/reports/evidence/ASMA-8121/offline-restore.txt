@@ -1,0 +1,4 @@
+2026-09-26T06:08:01.73113Z  INFO kontor_daemon::recovery realm restored; scheduling stays shut until the next start reconciles realm_id=01a00649-9ee6-73e0-ba1b-6a6c35cfd065 state_root=/private/tmp/ASMA-8121-continuity-20260926/restored-root reconciliation_required=true
+/private/tmp/ASMA-8121-continuity-20260926/restored-root/kontor.db
+
+PROCESS_EXIT_CODE=0

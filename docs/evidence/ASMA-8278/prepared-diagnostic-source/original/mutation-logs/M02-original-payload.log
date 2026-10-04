@@ -1,0 +1,21 @@
+   Compiling kontor-runtime v0.2.1 (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/mutation-source/crates/kontor-runtime)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.71s
+     Running unittests src/lib.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/mutation-target/debug/deps/kontor_runtime-38fd6bad31f23716)
+
+running 1 test
+
+thread 'planning_pair::attestation::prepared_diagnostic::tests::exact_original_payload_digest_precedes_revocation_and_verification' (396092) panicked at crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic/tests.rs:383:5:
+assertion `left == right` failed
+  left: Err(Verification)
+ right: Err(TokenCommitment)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test planning_pair::attestation::prepared_diagnostic::tests::exact_original_payload_digest_precedes_revocation_and_verification ... FAILED
+
+failures:
+
+failures:
+    planning_pair::attestation::prepared_diagnostic::tests::exact_original_payload_digest_precedes_revocation_and_verification
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 156 filtered out; finished in 0.30s
+
+error: test failed, to rerun pass `-p kontor-runtime --lib`

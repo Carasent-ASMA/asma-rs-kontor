@@ -1,0 +1,9 @@
+   Compiling kontor-store v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.65s
+     Running tests/repository_roundtrip.rs (target/debug/deps/repository_roundtrip-85feb6fb7002d950)
+
+running 1 test
+test v115_confirms_exact_local_mutations_with_typed_provenance_and_preserves_history ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 88 filtered out; finished in 2.75s
+
