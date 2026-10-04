@@ -1,0 +1,6 @@
+{"baseline": "PASS"}
+{"id": "M01-key-material", "result": "KILLED", "restored": true, "original_unchanged": true}
+{"id": "M02-original-payload", "result": "KILLED", "restored": true, "original_unchanged": true}
+{"id": "M03-token-revocation", "result": "KILLED", "restored": true, "original_unchanged": true}
+{"id": "M04-signed-metadata", "result": "KILLED", "restored": true, "original_unchanged": true}
+{"finished": true, "killed": 4, "all_restored": true}

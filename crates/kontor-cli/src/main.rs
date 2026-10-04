@@ -1,15 +1,18 @@
 //! `kontor` — the Kontor control plane command-line interface.
 //!
-//! One command is one tool is one `/v1` operation. The command surface is
-//! generated from the MCP tool registry, so a shell and a Paseo session reach the
-//! same operations at the same authorities under the same argument names — and the
-//! CLI cannot grow a route the tool vocabulary does not have.
+//! One command is one tool is one registered operation — almost always one `/v1`
+//! route. The command surface is generated from the MCP tool registry, so a shell
+//! and a Paseo session reach the same operations at the same authorities under the
+//! same argument names — and the CLI cannot grow a route the tool vocabulary does
+//! not have. A row the registry declares *local* has no route: it is run here, by
+//! the one in-process handler it names, before any connection exists.
 //!
 //! The process holds exactly one credential tier, defaulting to `observer`: a
 //! command that mutates has to be asked for with `--tier operator` or
 //! `--tier admin`, so a careless invocation reads rather than writes.
 
 mod commands;
+mod local;
 mod output;
 
 use kontor_mcp::{CallerTier, connect};
@@ -58,6 +61,20 @@ async fn run() -> ExitClass {
             );
         }
     };
+
+    // A local operation branches here, on its declared class, before anything
+    // connects: it has no route, so no daemon, base URL or credential is used.
+    if let Some(operation) = tool.local() {
+        if base_url.is_some() {
+            return output::emit_local(
+                tool.name,
+                "invalid_request",
+                "a local operation reads the state root and calls no daemon, so it takes no --base-url",
+                "drop --base-url and run it again",
+            );
+        }
+        return local::run(tool, operation, tier, &state_root, &arguments);
+    }
 
     // Everything local resolves before a request exists: a missing credential file
     // or a non-loopback address is this machine's problem, reported as such rather

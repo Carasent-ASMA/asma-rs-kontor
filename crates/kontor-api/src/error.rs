@@ -46,6 +46,22 @@ closed_enum! {
     /// A client branches on this and on nothing else. The accompanying `rule` is
     /// for a human reading a log.
     ApiErrorCode, "ApiErrorCode" {
+        /// Typed memory document validation refused.
+        InvalidExperience => "invalid_experience",
+        /// Evidence cannot be resolved in this project.
+        UnresolvedEvidence => "unresolved_evidence",
+        /// Explicit purge removed a frozen payload; reselection is refused.
+        FrozenPayloadPurged => "frozen_payload_purged",
+        /// Frozen payload or receipt hash failed verification.
+        FrozenPayloadMismatch => "frozen_payload_mismatch",
+        /// The immutable memory binding or proposal key is already occupied.
+        MemoryBindingConflict => "binding_conflict",
+        /// Upstream candidate work exceeded its bound.
+        MemoryCandidateLimit => "candidate_limit",
+        /// Projection freshness or activation compare-and-swap failed.
+        ProjectionConflict => "projection_conflict",
+        /// A semantic adapter has not qualified a projection.
+        ProjectionUnavailable => "projection_unavailable",
         /// No usable credential was presented.
         Unauthenticated => "unauthenticated",
         /// The credential is valid but does not carry the required authority.
@@ -167,6 +183,14 @@ impl ApiErrorCode {
     #[must_use]
     pub const fn status(self) -> StatusCode {
         match self {
+            Self::InvalidExperience | Self::UnresolvedEvidence | Self::MemoryCandidateLimit => {
+                StatusCode::BAD_REQUEST
+            }
+            Self::FrozenPayloadPurged => StatusCode::GONE,
+            Self::FrozenPayloadMismatch
+            | Self::MemoryBindingConflict
+            | Self::ProjectionConflict => StatusCode::CONFLICT,
+            Self::ProjectionUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             Self::Unauthenticated => StatusCode::UNAUTHORIZED,
             Self::Forbidden => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
@@ -216,6 +240,18 @@ impl ApiErrorCode {
     #[must_use]
     pub const fn default_action(self) -> &'static str {
         match self {
+            Self::InvalidExperience | Self::UnresolvedEvidence => {
+                "read the typed experience contract and correct the document or evidence"
+            }
+            Self::MemoryCandidateLimit => "bound candidate work before authoritative selection",
+            Self::FrozenPayloadPurged | Self::FrozenPayloadMismatch => {
+                "preserve the frozen receipt; do not silently reselect memories"
+            }
+            Self::MemoryBindingConflict => "replay the original request with its original identity",
+            Self::ProjectionConflict => "read a fresh projection preview and generation",
+            Self::ProjectionUnavailable => {
+                "configure and qualify the semantic adapter before rebuilding"
+            }
             Self::Unauthenticated => "present a credential for this realm",
             Self::Forbidden => "present a credential carrying the tier this operation requires",
             Self::RealmMismatch => "re-read the value from this realm and retry with that one",
@@ -652,6 +688,9 @@ impl ApiError {
                     ConsultationFamily::Committee => {
                         "consultation_semantic_duplicate: this Committee scope and topic already has one run"
                     }
+                    ConsultationFamily::PlanningPair => {
+                        "consultation_semantic_duplicate: this planning pair scope and topic already has one run"
+                    }
                 },
             )
             .about("consultation semantic identity")
@@ -890,6 +929,11 @@ impl ApiError {
             // A launch the runtime will not admit because it cannot prove a
             // required capability is not unavailability either: retrying will
             // not help until the capability is provable.
+            RuntimeError::PlanningPairMemberSurfaceUnsupported { .. } => Self::new(
+                realm_id,
+                ApiErrorCode::UnsupportedCapability,
+                "this runtime cannot establish the closed planning pair member surface for that route",
+            ),
             RuntimeError::LaunchNotAdmitted { rule } => Self::new(
                 realm_id,
                 ApiErrorCode::UnsupportedCapability,

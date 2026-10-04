@@ -1,0 +1,14 @@
+diff --git a/crates/kontor-store/src/repository.rs b/crates/kontor-store/src/repository.rs
+index 54b692a9..099a83e3 100644
+--- a/crates/kontor-store/src/repository.rs
++++ b/crates/kontor-store/src/repository.rs
+@@ -5732,8 +5732,8 @@ impl SqliteStore {
+             self.get_seat_binding(recorded.project_id, recorded.seat_binding_id)?,
+         ) {
+             (Some(active), Some(binding)) => {
++                // MUTANT M-P11b: compare the external id alone.
+                 active.native_identity.native_id == successor_native_id
+-                    && active.native_identity.generation == successor_generation
+                     && binding.last_attached_at == Some(active.observed_at)
+             }
+             _ => false,

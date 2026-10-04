@@ -1,0 +1,35 @@
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-store)
+   Compiling kontor-api v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-api)
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-daemon)
+warning: unused variable: `reloaded`
+     --> crates/kontor-daemon/src/applications.rs:25123:21
+      |
+25123 |                 let reloaded = state
+      |                     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_reloaded`
+      |
+      = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `kontor-daemon` (lib) generated 1 warning (run `cargo fix --lib -p kontor-daemon` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 57.93s
+     Running tests/loopback_api.rs (target/debug/deps/loopback_api-33d0e6c483a75765)
+
+running 1 test
+test a_pending_succession_the_seat_outran_is_refused_rather_than_receipted ... FAILED
+
+failures:
+
+---- a_pending_succession_the_seat_outran_is_refused_rather_than_receipted stdout ----
+
+thread 'a_pending_succession_the_seat_outran_is_refused_rather_than_receipted' (70750064) panicked at crates/kontor-daemon/tests/loopback_api.rs:61767:5:
+assertion `left != right` failed: an unreconcilable pending succession was reported as complete: {"core_team":{"realm_id":"01a0e4af-b9be-7440-b0f0-c74d4a58f5db","project_id":"01a0e4af-c09c-7da3-99f9-5ad5449a7518","seats":[{"role":{"catalog_revision":{"id":"01936f5a-1000-7000-8000-000000000002","version":1},"role_code":"LSA","standard_title":"Lead Software Architect","segment":"architecture","custom_display_name":null},"presence":"required","ad_hoc_allowed":true,"seat_binding_id":"01a0e4af-c0ea-7023-a27e-2daff0033177","native_seat":{"runtime_kind":"fake.runtime","host":"fake-host","generation":1,"native_id":"native-hosted-seat-3","provider_session_id":"provider-hosted-seat-3","model_route":{"provider":"codex","model":"gpt-5.6-sol","effort":"xhigh"},"observed_at":"2026-09-27T21:05:18.641477Z"},"role_persona":{"role_code":"LSA","prompt_hash":"be05a2220f6800089f7d51ecb44763ad830747df4635c2f3a40e8b34960117e7","delivery":"create_only_no_readback","occupancy_generation":1,"frozen_at":"2026-09-27T21:05:18.641043Z"}},{"role":{"catalog_revision":{"id":"01936f5a-1000-7000-8000-000000000002","version":1},"role_code":"TPM","standard_title":"Technical Program Manager","segment":"product_delivery","custom_display_name":null},"presence":"required","ad_hoc_allowed":false,"seat_binding_id":"01a0e4af-c0ee-7bc3-8a49-d24f6a7cea84","native_seat":{"runtime_kind":"fake.runtime","host":"fake-host","generation":1,"native_id":"native-hosted-seat-6","provider_session_id":"provider-hosted-seat-6","model_route":{"provider":"codex","model":"gpt-5.6-sol","effort":"xhigh"},"observed_at":"2026-09-27T21:05:18.7006Z"},"role_persona":null}],"revision":1,"snapshot_cursor":9},"seat_binding_id":"01a0e4af-c0ee-7bc3-8a49-d24f6a7cea84","predecessor_native_id":"native-hosted-seat-4","successor_native_id":"native-hosted-seat-5","readback":{"seat_binding_id":"01a0e4af-c0ee-7bc3-8a49-d24f6a7cea84","predecessor":{"native_id":"native-hosted-seat-4","runtime_kind":"fake.runtime","host":"fake-host","generation":1,"provider_session_id":"provider-hosted-seat-4","occupancy_generation":1,"model_route":{"provider":"codex","model":"gpt-5.6-sol","effort":"xhigh"}},"successor":{"native_id":"native-hosted-seat-5","runtime_kind":"fake.runtime","host":"fake-host","generation":1,"provider_session_id":"provider-hosted-seat-5","occupancy_generation":2,"model_route":{"provider":"codex","model":"gpt-5.6-sol","effort":"xhigh"}},"grant_subject":{"generation":2,"subject_seat_binding_id":"01a0e4af-c0ee-7bc3-8a49-d24f6a7cea84","subject_digest":"53c12ac5ac91713397b1100cf9dcb98a123c1d0f3bd2ae2587549ed7408435dd"},"retired_at":"2026-09-27T21:05:18.667283Z"},"readback_hash":"cdbbdd3a0ae9b3610406b104f101eb48027d31bb2ffb8cbdca0c215e841bb22c","succession_effects":{"launch_intent_installed":false,"seat_binding_observed":false},"receipt":{"realm_id":"01a0e4af-b9be-7440-b0f0-c74d4a58f5db","receipt_id":"01a0e4af-c178-7333-ac6a-a35e0e2e3879","applied":"unchanged","revision":1,"snapshot_cursor":9}}
+  left: 200
+ right: 200
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    a_pending_succession_the_seat_outran_is_refused_rather_than_receipted
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 489 filtered out; finished in 1.99s
+
+error: test failed, to rerun pass `-p kontor-daemon --test loopback_api`

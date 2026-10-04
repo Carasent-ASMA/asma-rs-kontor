@@ -945,6 +945,11 @@ fn an_export_carries_no_credential_reference_no_comment_body_and_no_secret() {
         "import_receipts",
         "imported_records",
         "imported_profile_selection_outcomes",
+        // ASMA-8187: imported testimony about another Realm's records. It is
+        // readable here and is not this Realm's to forward; exporting it would
+        // put a second Realm's account of an event into a third one under this
+        // Realm's name.
+        "imported_record_evidence",
     ] {
         assert!(
             export
@@ -1075,6 +1080,10 @@ fn generation_two_without_profile_selection_outcomes_remains_importable() {
         "team_definition_migration_targets",
         "team_definition_migration_command_intents",
         "team_definition_migration_receipts",
+        // Generation thirteen. A faithful v2 document carries no Core Team
+        // succession key either, and leaving it in makes the fixture hash as
+        // something no schema-2 emitter ever wrote (ASMA-8187).
+        "core_team_route_successions",
     ] {
         legacy
             .pointer_mut("/records")

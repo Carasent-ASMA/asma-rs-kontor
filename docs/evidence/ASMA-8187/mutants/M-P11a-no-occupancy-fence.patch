@@ -1,0 +1,19 @@
+diff --git a/crates/kontor-store/src/repository.rs b/crates/kontor-store/src/repository.rs
+index 54b692a9..f9937a07 100644
+--- a/crates/kontor-store/src/repository.rs
++++ b/crates/kontor-store/src/repository.rs
+@@ -5702,12 +5702,8 @@ impl SqliteStore {
+             recorded.project_id,
+             recorded.seat_binding_id,
+         )?;
+-        if occupancy != Some(recorded.successor_occupancy_generation) {
+-            return Err(RepositoryError::Conflict {
+-                subject: "core team route succession",
+-                rule: "the seat has left the occupancy generation this succession installed",
+-            });
+-        }
++        // MUTANT M-P11a: drop the occupancy fence.
++        let _ = occupancy;
+ 
+         // Effect one: the launch intent, installed against this exact native.
+         let intent = self.get_hosted_seat_launch_intent(

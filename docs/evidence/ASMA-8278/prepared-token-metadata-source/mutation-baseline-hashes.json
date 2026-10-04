@@ -1,0 +1,13 @@
+{
+  "crates/kontor-core/src/repository.rs": "347b17d654fb90d87a8896e53c66d9582dc50578b472cbd1452f6627e422a412",
+  "crates/kontor-core/src/repository/attestation_authority.rs": "8f220d51c1f513d9e7087d13b2079d76073151d996513c6045c42664e01ab0a2",
+  "crates/kontor-store/src/repository/attestation_authority.rs": "8a270dae01029fae5584b697c2a94c6be175f63bb494ed12182a3a7d1ab11382",
+  "crates/kontor-store/src/repository/attestation_authority/token_metadata.rs": "d37392428f1ab49b6121fb4231cb963017b8c8bec730322faa9c23db779392ea",
+  "crates/kontor-store/src/migrations.rs": "9b55206ca7e0d8a898f27e535a0d4cf7bd75bb79ee77a304b259b161968c102f",
+  "crates/kontor-store/migrations/0125_prepared_attestation_tokens.sql": "2db8150e9e5f3e1586f4a2add3905c5f0726a4c226d3663dc7cc117cdc9f5826",
+  "crates/kontor-store/tests/attestation_token_metadata.rs": "b9d140e673f8b90c9beefb693bb473fabdcb1e7f9897e10a83082d4d4afd6d69",
+  "crates/kontor-store/tests/schema_v1.rs": "16eb7724ccbb343e651f07c7e33e602ac17c52059e15b1c344d36ef63c8c75ad",
+  "crates/kontor-store/tests/repository_roundtrip.rs": "15177b3dacde34d7b9e39b287b233ae4b2f050b1e032b3a4ac55e1cd0c8e9716",
+  "crates/kontor-store/src/backup/export.rs": "28c9fd6f5d54206944a5b4b7168229569a10d6645a9115a7dfb515d338140d89",
+  "crates/kontor-store/tests/backup_snapshot.rs": "9a953b7d75ea4b9c4fc976835caeaa51fa6a60b00faca9a6c03de3068fe42169"
+}

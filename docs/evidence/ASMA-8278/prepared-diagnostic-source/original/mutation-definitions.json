@@ -1,0 +1,34 @@
+[
+  {
+    "id": "M01-key-material",
+    "path": "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic.rs",
+    "test": "key_material_commitments_are_recomputed_from_selected_der",
+    "old": "let material_digest = ContentHash::of(&key.public_key_der);\n    if key.material_digest != material_digest\n        || token.key_material_digest != material_digest\n        || key.issuer != token.issuer",
+    "new": "let _material_digest = ContentHash::of(&key.public_key_der);\n    if key.issuer != token.issuer",
+    "defect": "omit both recomputed DER commitment comparisons"
+  },
+  {
+    "id": "M02-original-payload",
+    "path": "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic.rs",
+    "test": "exact_original_payload_digest_precedes_revocation_and_verification",
+    "old": "    if token.payload_digest != ContentHash::of(payload) {\n        return Err(Refusal::TokenCommitment);\n    }\n",
+    "new": "",
+    "defect": "omit exact original payload digest guard"
+  },
+  {
+    "id": "M03-token-revocation",
+    "path": "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic.rs",
+    "test": "token_revocation_precedes_interval_and_signature_checks",
+    "old": "    if token.revoked_revision.is_some() {\n        return Err(Refusal::TokenRevoked);\n    }\n",
+    "new": "",
+    "defect": "omit selected token revocation guard"
+  },
+  {
+    "id": "M04-signed-metadata",
+    "path": "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic.rs",
+    "test": "signed_metadata_matches_every_exact_prepared_field_after_verification",
+    "old": "    if !matches_metadata(verified.claims(), token) {\n        return Err(Refusal::Metadata);\n    }\n",
+    "new": "    let _consistency = matches_metadata(verified.claims(), token);\n",
+    "defect": "omit final exact signed/prepared metadata guard"
+  }
+]
