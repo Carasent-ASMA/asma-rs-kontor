@@ -148,6 +148,20 @@ async fn a_restored_realm_starts_with_scheduling_shut_until_it_reconciles() {
 
     daemon.shutdown();
 
+    // Offline restore requires a fully stopped database, not just a released
+    // daemon lock. This in-process fixture can retain application-state handles;
+    // drain its committed WAL as closing the stopped process would. Restore
+    // itself must keep refusing an undrained WAL before replacing any files.
+    let database = rusqlite::Connection::open(state_root.join(DATABASE_FILE))
+        .expect("the stopped fixture database opens for checkpointing");
+    let (busy, _, _): (i64, i64, i64) = database
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .expect("the stopped fixture checkpoints its committed WAL");
+    assert_eq!(busy, 0, "no database writer remains in this fixture");
+    drop(database);
+
     let plan = recovery::restore(&state_root, &outcome.snapshot, Timestamp::now())
         .expect("the stopped realm is restored");
     assert_eq!(plan.realm_id, realm);
