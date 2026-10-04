@@ -1,0 +1,43 @@
+=== mutant M-COH-TEAM-hybrid-generation-and-persona-36ed5607 (corrected baseline) ===
+baseline commit   : 36ed5607753bb749a3a3f12f785fe632c3092650
+mutated file      : crates/kontor-daemon/src/applications.rs
+snapshot sha256   : 122ebac3bea301310889e20ec31102352928da743a5d6e496127ace6d6328029
+mutated  sha256   : ca58e9534778438a0f65cdf1b366972c55c3064d53ef225ff4bf35524468baa3
+patch             : M-COH-TEAM-hybrid-generation-and-persona-36ed5607.patch (mutation-only, 89 lines)
+  git apply --check: accepted
+  patch --dry-run  : patching file 'crates/kontor-daemon/src/applications.rs'
+test command      : cargo test -p kontor-daemon --lib -- coherence::the_core_team --test-threads=1
+reproduce (exact) : LIMIT=600 docs/evidence/ASMA-8187/mutants/harness/mutate.sh M-COH-TEAM-hybrid-generation-and-persona-36ed5607 docs/evidence/ASMA-8187/mutants/harness/m_cohteam_hybrid.py crates/kontor-daemon/src/applications.rs test -p kontor-daemon --lib -- coherence::the_core_team --test-threads=1
+limiter           : this harness bounds the run at 600s wall clock and
+                    reports 124 = timeout, inconclusive, never a kill.
+toolchain         : rustc 1.97.1 (8bab26f4f 2026-07-14)
+platform          : Darwin 25.6.0 arm64
+--- raw output ---
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.44s
+     Running unittests src/lib.rs (target/debug/deps/kontor_daemon-efbe81bf64c053fc)
+
+running 1 test
+test applications::coherence::the_core_team_projection_answers_from_one_instant ... FAILED
+
+failures:
+
+---- applications::coherence::the_core_team_projection_answers_from_one_instant stdout ----
+
+thread 'applications::coherence::the_core_team_projection_answers_from_one_instant' (25250398) panicked at crates/kontor-daemon/src/applications.rs:44797:17:
+assertion `left == right` failed: CoreTeamSeatDto { role: ResolvedRoleRefDto { catalog_revision: RevisionRefDto { id: "01936f5a-1000-7000-8000-000000000002", version: SpecVersion(1) }, role_code: RoleCode("LSA"), standard_title: ExternalName("Lead Software Architect"), segment: Architecture, custom_display_name: None }, presence: Required, ad_hoc_allowed: true, seat_binding_id: Some(SeatBindingId(01a102a2-29e4-7103-8307-28481270c3ea)), native_seat: Some(CoreTeamNativeSeatDto { runtime_kind: RuntimeKindKey("paseo.agent"), host: "paseo-local", generation: 1, native_id: ExternalId("coherence-first"), provider_session_id: None, model_route: RuntimeModelRouteRequest { provider: "codex", model: "gpt-5.6", effort: None }, observed_at: 2026-10-03T01:01:00Z }), role_persona: Some(CoreTeamSeatPersonaDto { role_code: RoleCode("LSA"), prompt_hash: ContentHash("d28ab2c7145c6507a619314d5c8f19269e1d0d4b71f8f00bd19f2f08eb9f8396"), delivery: "create_only_no_readback", occupancy_generation: 2, frozen_at: 2026-10-03T01:00:30Z }) }
+  left: 2
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    applications::coherence::the_core_team_projection_answers_from_one_instant
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 124 filtered out; finished in 1.87s
+
+error: test failed, to rerun pass `-p kontor-daemon --lib`
+--- exit status: 101 (non-zero = killed; 124 = timeout, inconclusive) ---
+restored sha256   : 122ebac3bea301310889e20ec31102352928da743a5d6e496127ace6d6328029
+restoration       : byte-identical to the named snapshot
+MUTANT markers    : 0

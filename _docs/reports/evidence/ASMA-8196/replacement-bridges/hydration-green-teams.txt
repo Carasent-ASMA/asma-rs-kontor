@@ -1,0 +1,12 @@
+   Compiling kontor-teams v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-teams)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.19s
+     Running tests/team_contract.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/team_contract-9e0ebfdb674ea778)
+
+running 2 tests
+test hydration_preserves_transitive_abandoned_bridges_without_spending_depth ... ok
+test malformed_transitive_abandoned_bridges_still_refuse_hydration ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 47 filtered out; finished in 0.01s
+
+
+PROCESS_EXIT_CODE=0

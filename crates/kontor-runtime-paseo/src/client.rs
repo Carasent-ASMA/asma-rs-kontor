@@ -157,6 +157,16 @@ pub(crate) fn permission_mode(provider: &str) -> RuntimeResult<Option<&'static s
     }
 }
 
+/// The Claude creation restriction every contained consultation-family seat
+/// gets: the file-reading tools and tool discovery, and every write, shell,
+/// delegation, skill, plan transition and user prompt denied.
+fn claude_contained_tools() -> serde_json::Value {
+    serde_json::json!({
+        "allowedTools": ["Read", "Glob", "Grep", "ToolSearch"],
+        "disallowedTools": ["Bash", "Write", "Edit", "NotebookEdit", "Agent", "Task", "Skill", "EnterPlanMode", "ExitPlanMode", "AskUserQuestion"]
+    })
+}
+
 /// The provider-native contained mode used by ordinary consultation seats.
 ///
 /// Cursor is deliberately absent. Mode names and provider metadata are not
@@ -188,11 +198,42 @@ pub(crate) fn consultation_permission_mode(provider: &str) -> RuntimeResult<Opti
 /// guidance, not OS-level containment; the qualified canary proved shell
 /// writes remain possible. Every other OpenCode provider alias, model,
 /// effort, template route and future recovery source remains refused.
+///
+/// Cursor carries the same class of risk acceptance (operator exception,
+/// 2026-09-23): its `plan` mode refuses direct file tools but, per the Grok 4.6
+/// canary, not shell writes. Only the exact `cursor`/`gpt-5.6-sol`/`xhigh`
+/// route under an operator-accepted recovery profile is admitted, never a
+/// template route; the composed consultation MCP remains the only write path
+/// Kontor hands the seat.
+///
+/// A route whose source is the live fleet configuration runs Cursor and
+/// OpenCode in `plan` for any model the owner-only `fleet.yml` lists, except
+/// `cursor`/`auto-smart`, whose vendor is unknown and never eligible for a
+/// reviewer slot. Claude and Codex modes are unchanged. The file accepts the
+/// same risk as the two accepted fallbacks above: `plan` is behavioral
+/// guidance, not an OS-level boundary.
 pub(crate) fn consultation_route_permission_mode(
     rung: &ModelRung,
     provenance: &ConsultationRouteProvenance,
 ) -> RuntimeResult<Option<&'static str>> {
+    if built_in_provider(&rung.provider.0) == "cursor" {
+        if provenance.is_fleet_configuration() && rung.model.0 != "auto-smart" {
+            return Ok(Some("plan"));
+        }
+        let exact_route = rung.provider.0 == "cursor"
+            && rung.model.0 == "gpt-5.6-sol"
+            && rung.effort.is_some_and(|effort| effort.as_str() == "xhigh");
+        if exact_route && provenance.is_operator_accepted_recovery() {
+            return Ok(Some("plan"));
+        }
+        return Err(RuntimeError::PermissionModeUnsupported {
+            provider: rung.provider.0.clone(),
+        });
+    }
     if rung.provider.0 == "opencode" {
+        if provenance.is_fleet_configuration() {
+            return Ok(Some("plan"));
+        }
         let exact_model = matches!(
             rung.model.0.as_str(),
             "deepseek/deepseek-v4-flash" | "deepseek/deepseek-flash"
@@ -1205,16 +1246,67 @@ impl PaseoRpc {
         )?;
         let provider = built_in_provider(&model_rung.provider.0);
         if provider == "claude" {
-            request.message["config"]["providerOptions"] = serde_json::json!({
-                "allowedTools": ["Read", "Glob", "Grep", "ToolSearch"],
-                "disallowedTools": ["Bash", "Write", "Edit", "NotebookEdit", "Agent", "Task", "Skill", "EnterPlanMode", "ExitPlanMode", "AskUserQuestion"]
-            });
+            request.message["config"]["providerOptions"] = claude_contained_tools();
         } else if provider == "codex" {
             request.message["config"]["providerOptions"] = serde_json::json!({
                 "sandbox_mode": "read-only", "approval_policy": "never"
             });
         }
         Ok(request)
+    }
+
+    /// `create_agent_request` for one planning pair member (ASMA-8282 D-3).
+    ///
+    /// Only a provider whose closed member surface Kontor composes is
+    /// constructible, and today that is Claude alone: its default mode under
+    /// the composed member guard, with the contained file-reading tools and
+    /// every write, shell, delegation and plan transition denied at creation.
+    /// Every other provider is refused here, before a frame exists, and is
+    /// never substituted or launched under the consultation surface. The
+    /// credential travels only in the frame's secret environment.
+    #[allow(clippy::too_many_arguments)]
+    pub fn planning_pair_member_agent_create(
+        request_id: String,
+        workspace_id: &str,
+        canonical_cwd: &str,
+        model_rung: &ModelRung,
+        title: &str,
+        labels: &BTreeMap<String, String>,
+        prompt: &str,
+        credential: &str,
+    ) -> RuntimeResult<Self> {
+        if built_in_provider(&model_rung.provider.0) != "claude" {
+            return Err(RuntimeError::PermissionModeUnsupported {
+                provider: model_rung.provider.0.clone(),
+            });
+        }
+        let mut request = Self::scoped_seat_agent_create(
+            request_id,
+            workspace_id,
+            canonical_cwd,
+            model_rung,
+            title,
+            labels,
+            prompt,
+            credential,
+            Some("default"),
+        )?;
+        request.message["config"]["providerOptions"] = claude_contained_tools();
+        Ok(request)
+    }
+
+    /// Inject a planning pair member's credential-scoped MCP under its closed
+    /// serve profile, and preapprove exactly the domain's three member
+    /// operations, generated from the one member surface list.
+    pub fn with_planning_pair_member_mcp(&mut self, seat: &crate::seat_mcp::SeatMcp) {
+        self.message["config"]["mcpServers"] =
+            seat.server_config(kontor_core::planning_pair::MEMBER_SERVE_PROFILE);
+        self.message["config"]["toolPolicy"] = serde_json::json!({
+            "preapproved": kontor_core::planning_pair::MEMBER_MCP_TOOLS
+                .iter()
+                .map(|tool| serde_json::json!({"kind": "mcp", "server": "kontor", "tool": tool}))
+                .collect::<Vec<_>>()
+        });
     }
 
     /// Inject the credential-scoped consultation MCP and approve only its four
@@ -2648,6 +2740,175 @@ mod tests {
             error,
             RuntimeError::PermissionModeUnsupported { provider } if provider == "cursor"
         ));
+    }
+
+    /// The 2026-09-23 operator exception admits one exact Cursor route under any
+    /// operator-accepted recovery profile, in `plan`, with the scoped credential
+    /// in the frame only. Template data, other routes, aliases and unaccepted
+    /// fallbacks stay refused before an RPC exists.
+    #[test]
+    fn cursor_consultation_admits_only_the_exact_operator_accepted_recovery_route() {
+        let accepted = |source| ConsultationRouteProvenance {
+            source,
+            evidence_hash: ContentHash::of(b"recovery profile"),
+            fallback_disposition: Some(ConsultationFallbackDisposition::OperatorAccepted),
+        };
+        let create = |rung: &ModelRung, provenance: &ConsultationRouteProvenance| {
+            PaseoRpc::consultation_agent_create(
+                "request-cursor-exception".to_owned(),
+                "wks_1",
+                "/w/epic",
+                rung,
+                provenance,
+                "Reviewer",
+                &labels(),
+                "review without mutation",
+                "seat-secret-value",
+            )
+        };
+        let exact = route("cursor", "gpt-5.6-sol", Some(EffortLevel::Xhigh));
+        for source in [
+            ConsultationRouteSource::InitialRecoveryProfile,
+            ConsultationRouteSource::MaterializationRecoveryProfile,
+            ConsultationRouteSource::SeatRecoveryProfile,
+        ] {
+            let request = create(&exact, &accepted(source))
+                .expect("the operator-accepted Cursor route is constructible");
+            assert_eq!(request.message["config"]["provider"], "cursor");
+            assert_eq!(request.message["config"]["model"], "gpt-5.6-sol");
+            assert_eq!(request.message["config"]["thinkingOptionId"], "xhigh");
+            assert_eq!(request.message["config"]["modeId"], "plan");
+            assert!(request.message.get("env").is_none());
+            assert!(!format!("{request:?}").contains("seat-secret-value"));
+            assert_eq!(
+                request.envelope()["message"]["env"]["KONTOR_AUTH"],
+                "seat-secret-value"
+            );
+        }
+
+        let recovery = accepted(ConsultationRouteSource::SeatRecoveryProfile);
+        let cases = [
+            (exact.clone(), template_provenance(), "template route"),
+            (
+                exact.clone(),
+                ConsultationRouteProvenance {
+                    fallback_disposition: Some(ConsultationFallbackDisposition::Rejected),
+                    ..recovery.clone()
+                },
+                "unaccepted fallback",
+            ),
+            (
+                exact.clone(),
+                ConsultationRouteProvenance {
+                    fallback_disposition: None,
+                    ..recovery.clone()
+                },
+                "missing disposition",
+            ),
+            (
+                route("cursor", "gpt-5.6-sol", Some(EffortLevel::High)),
+                recovery.clone(),
+                "other effort",
+            ),
+            (
+                route("cursor", "gpt-5.6-sol", None),
+                recovery.clone(),
+                "missing effort",
+            ),
+            (
+                route("cursor", "auto-smart", Some(EffortLevel::Xhigh)),
+                recovery.clone(),
+                "other model",
+            ),
+            (
+                route("cursor-work", "gpt-5.6-sol", Some(EffortLevel::Xhigh)),
+                recovery,
+                "provider alias",
+            ),
+        ];
+        for (rung, provenance, case) in cases {
+            let error = create(&rung, &provenance).expect_err(case);
+            assert!(
+                matches!(error, RuntimeError::PermissionModeUnsupported { .. }),
+                "{case}: {error:?}"
+            );
+        }
+    }
+
+    /// REQ-016: a consultation route whose source is the live fleet
+    /// configuration runs Cursor and OpenCode in `plan` for any model the file
+    /// lists, while Cursor Auto, template routes and unlisted sources stay
+    /// refused and Claude and Codex keep their ordinary modes.
+    #[test]
+    fn a_fleet_route_runs_cursor_and_opencode_consultations_in_plan_mode() {
+        let fleet = ConsultationRouteProvenance::fleet_configuration(ContentHash::of(b"fleet"));
+        let create = |rung: &ModelRung, provenance: &ConsultationRouteProvenance| {
+            PaseoRpc::consultation_agent_create(
+                "request-fleet-route".to_owned(),
+                "wks_1",
+                "/w/epic",
+                rung,
+                provenance,
+                "Reviewer",
+                &labels(),
+                "review without mutation",
+                "seat-secret-value",
+            )
+        };
+        for (rung, case) in [
+            (
+                route("cursor", "grok-4.7", Some(EffortLevel::Xhigh)),
+                "a Cursor fleet route",
+            ),
+            (
+                route(
+                    "opencode",
+                    "openrouter/z-ai/glm-5.3-flash",
+                    Some(EffortLevel::Max),
+                ),
+                "an OpenCode fleet route",
+            ),
+        ] {
+            let request = create(&rung, &fleet).unwrap_or_else(|error| panic!("{case}: {error:?}"));
+            assert_eq!(request.message["config"]["modeId"], "plan", "{case}");
+            assert!(request.message.get("env").is_none());
+        }
+        for (rung, provenance, case) in [
+            (
+                route("cursor", "auto-smart", Some(EffortLevel::Xhigh)),
+                fleet.clone(),
+                "Cursor Auto has no vendor and is never eligible",
+            ),
+            (
+                route("cursor", "grok-4.7", Some(EffortLevel::Xhigh)),
+                template_provenance(),
+                "a template route keeps the fail-closed posture",
+            ),
+        ] {
+            let error = create(&rung, &provenance).expect_err(case);
+            assert!(
+                matches!(error, RuntimeError::PermissionModeUnsupported { .. }),
+                "{case}: {error:?}"
+            );
+        }
+        for (rung, expected) in [
+            (
+                route("claude", "claude-opus-5", Some(EffortLevel::Xhigh)),
+                "default",
+            ),
+            (
+                route("codex", "gpt-5.6-sol", Some(EffortLevel::Xhigh)),
+                "auto-review",
+            ),
+        ] {
+            let request = create(&rung, &fleet)
+                .unwrap_or_else(|error| panic!("{}: {error:?}", rung.provider.0));
+            assert_eq!(
+                request.message["config"]["modeId"], expected,
+                "{} keeps its ordinary consultation mode under a fleet route",
+                rung.provider.0
+            );
+        }
     }
 
     /// A leadership seat launches under the autonomy it was *given*, and its

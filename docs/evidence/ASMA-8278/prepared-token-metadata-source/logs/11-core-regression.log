@@ -1,0 +1,486 @@
+   Compiling kontor-core v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.67s
+     Running unittests src/lib.rs (target/debug/deps/kontor_core-471d5875e3300392)
+
+running 43 tests
+test authority::tests::native_origins_start_writable_and_refuse_cutover ... ok
+test authority::tests::pending_origins_start_legacy_and_permit_cutover ... ok
+test authority::tests::spellings_round_trip ... ok
+test compaction::tests::a_boundary_trigger_respects_the_policy_that_forbids_it ... ok
+test compaction::tests::a_finished_turn_is_not_a_trigger ... ok
+test compaction::tests::a_runtime_that_enforces_nothing_has_no_threshold_to_reach ... ok
+test compaction::tests::each_deterministic_trigger_fires_on_its_own_grounds ... ok
+test compaction::tests::only_a_boundary_or_operator_compaction_owes_a_durable_handoff ... ok
+test epic_seat::tests::a_runtime_self_report_certifies_a_native_but_not_activity ... ok
+test epic_seat::tests::a_released_seat_is_released_whatever_else_it_carries ... ok
+test epic_seat::tests::a_seat_nothing_was_ever_observed_of_is_unobserved ... ok
+test epic_seat::tests::a_task_scoped_seat_with_a_native_can_be_succeeded ... ok
+test epic_seat::tests::a_task_scoped_seat_with_no_native_has_no_predecessor_to_cite ... ok
+test epic_seat::tests::an_attach_instant_alone_does_not_certify_a_native ... ok
+test epic_seat::tests::observed_activity_is_the_only_thing_that_certifies_work ... ok
+test quota::tests::a_threshold_of_zero_or_over_a_hundred_is_refused ... ok
+test quota::tests::a_window_is_classified_by_its_span_not_by_its_field_name ... ok
+test quota::tests::credit_above_its_reserve_clears_and_credit_at_the_floor_does_not ... ok
+test quota::tests::every_window_below_its_own_threshold_is_headroom ... ok
+test quota::tests::no_window_is_not_the_same_fact_as_an_empty_one ... ok
+test quota::tests::thresholds_are_per_kind_and_not_one_number ... ok
+test quota::tests::one_exhausted_window_blocks_even_beside_a_window_with_room ... ok
+test quota::tests::two_currencies_are_refused_rather_than_converted ... ok
+test quota::tests::two_exhausted_windows_block_until_the_later_reset ... ok
+test retired_evaluator::tests::the_exact_live_retired_audit_seat_is_attestable ... ok
+test retired_evaluator::tests::the_same_claim_proves_the_same_digest_and_a_changed_one_does_not ... ok
+test selector::tests::a_canonical_key_selects_by_key ... ok
+test selector::tests::a_uuid_selects_by_identity ... ok
+test selector::tests::an_epic_selector_accepts_both_spellings ... ok
+test selector::tests::lowercase_and_malformed_spellings_are_refused ... ok
+test selector::tests::the_two_grammars_do_not_collide ... ok
+test retired_evaluator::tests::each_fence_refuses_on_its_own ... ok
+test tpm_lineage::tests::a_native_no_durable_record_names_is_not_a_candidate ... ok
+test tpm_lineage::tests::a_prepared_intent_that_never_installed_names_no_native ... ok
+test tpm_lineage::tests::a_record_whose_route_disagrees_is_a_different_admission ... ok
+test tpm_lineage::tests::a_seat_that_moved_out_of_its_ecp_refuses_before_any_lineage_is_read ... ok
+test tpm_lineage::tests::a_replayed_record_is_one_lineage_not_two ... ok
+test tpm_lineage::tests::an_agreeing_occupancy_and_intent_are_one_lineage_evidenced_by_both ... ok
+test tpm_lineage::tests::an_occupancy_and_intent_naming_different_natives_contradict ... ok
+test tpm_lineage::tests::another_generations_lineage_is_not_this_generations ... ok
+test tpm_lineage::tests::the_live_seat_resolves_generation_one_to_exactly_one_native ... ok
+test tpm_lineage::tests::two_installed_intents_naming_different_natives_are_ambiguous ... ok
+test tpm_lineage::tests::two_occupancies_naming_different_natives_are_ambiguous ... ok
+
+test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/backlog_identity.rs (target/debug/deps/backlog_identity-d6b18c70088220a2)
+
+running 8 tests
+test a_legacy_correction_basis_preserves_a_bounded_noncanonical_spelling ... ok
+test automatic_allocation_refuses_titles_with_fewer_than_two_usable_characters ... ok
+test automatic_epic_code_starts_with_title_initials ... ok
+test exhausted_title_characters_use_the_smallest_free_numeric_ordinal ... ok
+test collisions_expand_title_characters_in_column_major_order_case_insensitively ... ok
+test item_code_refuses_noncanonical_or_missing_jira_numeric_identity ... ok
+test item_code_uses_the_confirmed_jira_keys_canonical_numeric_suffix ... ok
+test manual_epic_codes_are_canonical_namespaces_not_issue_numbers ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/branch_identity.rs (target/debug/deps/branch_identity-7153472a65672183)
+
+running 10 tests
+test a_managed_worktree_encodes_exactly_its_branch ... ok
+test a_long_title_is_cut_without_a_dangling_hyphen ... ok
+test a_tracker_key_is_never_repaired ... ok
+test an_asma_cli_catalog_worktree_has_a_separate_task_slug_and_module ... ok
+test canonical_branches_parse_with_their_key ... ok
+test derivation_matches_the_asma_cli_examples ... ok
+test every_audited_deviation_is_refused_with_its_code ... ok
+test every_refusal_reports_its_stable_code_first ... ok
+test the_binding_check_accepts_only_a_confirmed_key ... ok
+test the_release_line_is_the_only_keyless_form ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/consultation_identity_golden.rs (target/debug/deps/consultation_identity_golden-15828e618d7bdd57)
+
+running 2 tests
+test advisor_and_committee_identities_keep_their_golden_bytes ... ok
+test a_planning_pair_identity_is_its_own_family_and_still_ignores_retry_mechanics ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/consultation_specs.rs (target/debug/deps/consultation_specs-bf72eea196d38acf)
+
+running 26 tests
+test a_consultation_topic_cannot_repeat_server_owned_name_components ... ok
+test a_legacy_topic_correction_only_peels_server_owned_leading_material ... ok
+test a_missing_finding_blocks_settlement_rather_than_passing ... ok
+test a_committee_past_the_seat_bound_is_refused ... ok
+test a_zero_consultation_limit_is_refused ... ok
+test a_third_round_cannot_be_declared ... ok
+test advisor_profile_is_publishable ... ok
+test an_advisor_no_role_may_consult_is_refused ... ok
+test an_advisor_with_no_scope_is_refused ... ok
+test both_compliant_with_complete_evidence_settles_compliant ... ok
+test cardinality_is_data_not_three ... ok
+test dispositions_round_trip_their_stable_spelling ... ok
+test duplicate_scopes_are_refused_rather_than_deduplicated ... ok
+test duplicate_slot_ids_are_refused ... ok
+test empty_behavioural_prose_is_refused ... ok
+test canonical_hash_is_stable_across_equal_revisions ... ok
+test independent_review_is_publishable ... ok
+test judge_slot_is_reported_when_frozen ... ok
+test missing_required_evidence_settles_non_compliant ... ok
+test one_dissent_settles_non_compliant ... ok
+test one_reviewer_is_refused ... ok
+test logical_consultation_identity_ignores_retry_mechanics_and_changes_with_semantics ... ok
+test reviewers_colliding_only_on_a_fallback_rung_are_refused ... ok
+test reviewers_sharing_a_primary_provider_are_refused ... ok
+test shared_providers_are_allowed_when_no_distinctness_is_declared ... ok
+test two_judges_are_refused ... ok
+
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/domain_state.rs (target/debug/deps/domain_state-0800946165e5c8dd)
+
+running 37 tests
+test a_completed_task_reopens_only_under_an_explicit_authority ... ok
+test a_healthy_seat_is_the_only_one_that_counts_as_executing ... ok
+test a_confirmed_run_needs_intent_observation_binding_and_freshness_to_agree ... ok
+test a_queued_run_is_accepted_but_not_dispatched ... ok
+test a_self_reported_running_runtime_does_not_prove_activity ... ok
+test a_settled_command_receipt_is_immutable ... ok
+test a_stale_observation_and_a_changed_generation_are_not_confirmations ... ok
+test a_task_cannot_claim_progress_without_an_attached_seat ... ok
+test a_terminal_task_is_immutable ... ok
+test a_ready_task_completes_on_the_same_certificate_an_in_progress_one_needs ... ok
+test acknowledgement_is_not_completion_and_unknown_forbids_a_blind_retry ... ok
+test a_waiver_the_profile_forbids_cannot_certify_closure ... ok
+test an_attached_seat_that_never_showed_activity_is_stalled_not_healthy ... ok
+test an_idempotency_key_is_a_replay_only_for_the_same_command ... ok
+test an_orphan_is_an_orphan_however_healthy_its_runtime_looks ... ok
+test an_unattached_seat_becomes_a_finding_once_its_deadline_passes ... ok
+test attesting_a_retired_evaluator_witnesses_only_its_task_and_moves_no_run ... ok
+test closure_evidence_is_the_only_route_to_terminal ... ok
+test desired_observed_and_derived_can_all_differ_at_once ... ok
+test closing_a_task_requires_the_profile_to_certify_closure ... ok
+test failing_a_task_requires_its_run_to_have_closed_failed ... ok
+test fresh_runtime_evidence_converges_non_terminal_lifecycle_without_regression ... ok
+test freshness_is_measured_not_assumed ... ok
+test gate_verdicts_and_states_stay_distinct ... ok
+test leaving_a_held_state_requires_a_command_receipt ... ok
+test operator_abandon_can_only_claim_abandoned ... ok
+test realm_envelopes_require_matching_realm_and_qualify_cursors ... ok
+test replayed_or_out_of_order_native_events_never_regress_projection_or_revision ... ok
+test revisions_start_at_one_and_only_move_under_a_compare_and_swap ... ok
+test every_command_kind_declares_its_legal_targets_revision_rule_and_desired_state ... ok
+test run_lifecycle_and_task_lifecycle_are_not_interchangeable ... ok
+test task_transitions_follow_the_declared_table ... ok
+test terminal_evidence_must_belong_to_the_closed_run_and_match_its_hash ... ok
+test the_exact_incident_shape_cannot_certify_progress ... ok
+test team_run_advances_and_closes_with_cas_and_bound_evidence ... ok
+test uncertainty_is_never_completion ... ok
+test the_team_child_digest_is_order_independent_and_matches_an_independent_hash ... ok
+
+test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/native_naming.rs (target/debug/deps/native_naming-e341c38abe7f2fa2)
+
+running 18 tests
+test a_jira_key_token_renders_its_exact_confirmed_bytes ... ok
+test a_confirmed_jira_key_is_admitted_only_in_its_canonical_spelling ... ok
+test ai_short_names_are_trimmed_two_keyword_values_and_preserve_unicode_bytes ... ok
+test a_separator_only_revision_changes_every_join_without_mutating_v1 ... ok
+test every_missing_token_fails_closed_and_names_the_missing_contract ... ok
+test every_token_keeps_its_exact_serialized_spelling ... ok
+test item_code_is_one_typed_native_name_value_not_two_recombined_tokens ... ok
+test retired_names_keep_exact_identity_text_under_one_selected_prefix ... ok
+test retired_names_preserve_interior_marker_text_and_nonmatching_prefixes ... ok
+test retired_names_preserve_the_exact_sixty_scalar_boundary ... ok
+test retired_names_refuse_a_marker_only_or_untrimmed_base ... ok
+test retired_names_reject_caps_that_cannot_preserve_the_marker_and_base ... ok
+test retired_names_reject_empty_controls_and_separator_bearing_markers ... ok
+test retired_names_take_marker_separator_and_cap_from_the_selected_policy ... ok
+test retired_names_strip_all_repeated_leading_markers_and_are_idempotent ... ok
+test the_backlog_code_wins_when_a_descriptive_ai_short_name_is_also_present ... ok
+test retired_names_truncate_unicode_scalars_instead_of_utf8_bytes ... ok
+test the_v1_matrix_renders_exact_bullet_separated_bytes ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/open_question.rs (target/debug/deps/open_question-7b3c0845ce3cc856)
+
+running 27 tests
+test a_correction_must_name_a_predecessor_that_exists ... ok
+test a_citation_of_a_superseded_revision_is_reported ... ok
+test a_disposition_correction_appends_and_supersedes_by_name ... ok
+test a_disposition_outcome_survives_a_json_round_trip ... ok
+test a_mismatched_trigger_is_refused ... ok
+test a_fired_trigger_on_a_deferred_question_is_reported_not_applied ... ok
+test a_question_is_project_shared_by_the_tier_default ... ok
+test a_reopened_question_can_be_dispositioned_again ... ok
+test a_resolved_or_undispositioned_question_has_no_trigger_to_fire ... ok
+test a_round_correction_appends_and_leaves_the_predecessor_byte_identical ... ok
+test a_round_must_record_why_and_at_least_one_option ... ok
+test a_superseded_decision_is_not_a_contradiction ... ok
+test an_already_reopened_question_is_not_reported_again ... ok
+test a_trigger_cannot_fire_twice_against_one_deferral ... ok
+test an_undispositioned_question_is_open_and_blocks_completion ... ok
+test an_unfired_trigger_reports_nothing ... ok
+test contradicting_accepted_decisions_are_reported ... ok
+test any_seat_may_raise_a_question ... ok
+test deferring_requires_a_concrete_non_empty_trigger ... ok
+test each_disposition_releases_the_gate_and_reports_its_own_status ... ok
+test finding_order_does_not_depend_on_observation_order ... ok
+test not_relevant_requires_a_reason ... ok
+test nothing_reclassifies_a_question ... ok
+test the_closer_split_never_names_a_role_code ... ok
+test the_matching_trigger_reopens_without_erasing_the_deferral ... ok
+test there_are_exactly_three_dispositions ... ok
+test the_configured_closer_split_governs_disposition ... ok
+
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/planning_pair.rs (target/debug/deps/planning_pair-5d5b83b54c33534d)
+
+running 25 tests
+test a_disposed_pair_is_immutable ... ok
+test a_disposition_cannot_carry_a_verdict ... ok
+test a_disposition_that_omits_or_reorders_a_member_is_refused ... ok
+test a_disposition_citing_a_rewritten_finding_or_answer_is_refused ... ok
+test a_findings_round_missing_a_member_releases_nothing ... ok
+test a_member_cannot_speak_for_the_other_seat_or_the_caller ... ok
+test a_document_revision_is_identified_by_its_id_version_and_hash ... ok
+test a_member_without_a_known_vendor_is_refused ... ok
+test a_pair_missing_a_member_is_refused ... ok
+test a_member_grant_cannot_name_an_authority ... ok
+test a_recorded_finding_or_answer_cannot_be_rewritten ... ok
+test a_planning_pair_has_no_judge_quorum_or_verdict_to_declare ... ok
+test a_sealed_answer_has_no_public_read_path_until_every_addressed_member_answers ... ok
+test a_sealed_finding_has_no_public_read_path_until_release ... ok
+test a_second_clarification_round_is_refused ... ok
+test a_stored_record_has_no_room_for_a_judge_a_verdict_or_a_second_round ... ok
+test a_run_survives_the_store_at_every_point_in_its_life ... ok
+test a_stored_run_under_another_revision_or_protocol_fails_closed ... ok
+test advice_cannot_satisfy_a_formal_review_gate ... ok
+test dissent_survives_the_callers_decision ... ok
+test members_on_one_actual_vendor_are_refused ... ok
+test one_findings_round_one_clarification_then_the_callers_disposition ... ok
+test only_an_addressed_member_answers_and_only_when_the_caller_asked ... ok
+test protocol_selection_is_explicit_and_never_substituted ... ok
+test a_stored_run_that_breaks_a_rule_fails_closed_on_that_rule ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/publication_identity.rs (target/debug/deps/publication_identity-2439818c4ff4ef07)
+
+running 13 tests
+test a_keyless_or_unbound_branch_is_refused_before_any_rule ... ok
+test a_commit_sha_is_forty_lowercase_hex_digits ... ok
+test a_publication_for_an_unbound_repository_is_refused ... ok
+test a_pull_request_must_carry_a_title ... ok
+test a_repository_outside_the_binding_is_refused ... ok
+test a_task_branch_binds_through_its_own_key ... ok
+test a_title_leads_with_exactly_one_key_and_one_space ... ok
+test a_task_branch_is_narrower_than_its_epic ... ok
+test a_title_naming_a_foreign_key_is_a_mismatch ... ok
+test an_empty_authorization_set_authorizes_nothing ... ok
+test an_epic_branch_accepts_only_its_own_title_key ... ok
+test an_unauthorized_repository_is_reported_beside_every_other_failure ... ok
+test every_failing_rule_is_reported_at_once ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/quota_headroom.rs (target/debug/deps/quota_headroom-b0d12ab73b0d65f8)
+
+running 9 tests
+test a_longer_span_is_never_a_shorter_kind ... ok
+test a_credit_balance_cannot_change_a_window_verdict ... ok
+test a_span_classifies_into_exactly_one_kind ... ok
+test a_single_spent_window_blocks_the_whole_set ... ok
+test a_window_is_judged_against_its_own_kinds_threshold ... ok
+test adding_a_window_never_relieves_a_blocked_set ... ok
+test blocking_names_the_latest_reset_among_the_spent_windows ... ok
+test credit_clears_only_above_its_floor_and_only_in_one_currency ... ok
+test consumption_at_the_threshold_already_stops_admitting ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/spec_validation.rs (target/debug/deps/spec_validation-6b5c3953aa9d7e1d)
+
+running 61 tests
+test a_credential_prefix_must_begin_at_a_token_boundary ... ok
+test a_daylight_saving_gap_never_opens_a_window_that_has_no_local_time ... ok
+test a_daylight_saving_fold_opens_the_repeated_local_hour_both_times ... ok
+test a_declared_ceiling_clamps_the_trigger_and_records_why ... ok
+test a_document_must_declare_a_schema_version_this_binary_understands ... ok
+test a_dedup_expression_must_resolve_completely_or_not_at_all ... ok
+test a_frozen_slot_resolves_to_the_role_it_fills_and_never_to_its_own_name ... ok
+test a_model_chain_is_closed_and_bounded ... ok
+test a_persona_can_never_approve_its_own_scenario ... ok
+test a_persona_may_not_reference_production_or_real_identity ... ok
+test a_policy_document_refuses_an_arbitrary_token_target ... ok
+test a_gate_must_have_authority_and_a_distinct_waiver_authority ... ok
+test a_required_artifact_must_have_a_producing_evidence_contract ... ok
+test a_rejection_route_must_target_a_strict_ancestor ... ok
+test a_seed_table_refuses_a_duplicate_role_and_an_explicit_only_class ... ok
+test a_stored_document_is_re_verified_against_its_bytes_and_digest ... ok
+test an_intake_decision_must_be_internally_consistent ... ok
+test an_ambiguous_or_incomplete_frozen_team_names_no_role_at_all ... ok
+test an_overnight_shift_must_be_declared_as_two_windows_and_then_resolves ... ok
+test an_override_is_attributable_and_a_default_is_not ... ok
+test an_unenforced_context_policy_renders_as_not_enforced_and_never_as_success ... ok
+test an_unknown_ceiling_leaves_the_requested_trigger_standing ... ok
+test an_invalid_phase_graph_is_refused ... ok
+test any_cycle_is_refused ... ok
+test auto_arming_is_always_bounded ... ok
+test best_effort_on_an_incapable_runtime_is_visibly_not_enforced ... ok
+test budget_bounds_are_never_open_ended ... ok
+test canonical_form_is_key_order_and_line_ending_independent ... ok
+test canonicalization_is_bounded ... ok
+test classification_spellings_are_stable_and_closed ... ok
+test documents_that_carry_credentials_or_identity_are_refused_before_sql ... ok
+test each_classifiable_tier_has_a_default_so_work_never_stalls ... ok
+test entity_ids_must_be_canonical_version_seven_uuids ... ok
+test every_gate_key_in_the_fixture_is_data_not_behaviour ... ok
+test extended_and_native_are_unreachable_from_a_seed ... ok
+test external_names_are_unicode_and_may_contain_spaces ... ok
+test internal_keys_follow_one_conservative_rule ... ok
+test module_keys_contend_across_slash_and_dotted_holdout_spellings ... ok
+test module_keys_refuse_every_non_canonical_path_spelling ... ok
+test module_keys_round_trip_canonical_repository_paths ... ok
+test only_an_exhausted_allowance_recovers_on_a_clock ... ok
+test only_the_module_key_carries_a_path_separator ... ok
+test overlapping_windows_are_refused_and_touching_windows_are_not ... ok
+test persona_actor_cannot_evaluate_or_waive_and_prohibited_actions_are_required ... ok
+test persona_steps_must_be_consecutively_numbered ... ok
+test precedence_is_override_then_role_slot_then_work_profile_then_seed_then_standard ... ok
+test renaming_every_profile_and_phase_id_changes_nothing_but_the_hash ... ok
+test required_enforcement_refuses_a_runtime_that_cannot_configure_it ... ok
+test resolution_is_byte_identical_across_repeated_freezes ... ok
+test sensitive_material_is_rejected_from_every_persisted_string_category_without_echo ... ok
+test the_arbitrary_fixture_profile_validates_and_hashes_stably ... ok
+test the_five_classes_map_to_exactly_the_approved_trigger_targets ... ok
+test the_persona_fixture_validates_and_freezes ... ok
+test the_trigger_fixture_validates_and_matches_deterministically ... ok
+test tier_a_operational_state_refuses_classification ... ok
+test timestamps_must_already_be_canonical_utc ... ok
+test topology_naming_accepts_versioned_bullets_while_rejecting_invalid_separators ... ok
+test topology_naming_rejects_legacy_unknown_empty_duplicate_and_punctuated_templates ... ok
+test topology_naming_requires_typed_container_and_hosted_seat_templates ... ok
+test unconstrained_budget_is_positive_and_distinct_from_a_stated_ceiling ... ok
+test arbitrary_linear_profiles_validate ... ok
+
+test result: ok. 61 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+
+     Running tests/succession.rs (target/debug/deps/succession-afd41a9d6c602693)
+
+running 4 tests
+test deferred_refresh_accepts_exactly_admit_or_future_wait_shapes ... ok
+test placement_wait_is_the_only_way_an_attempt_starts_deferred ... ok
+test the_succession_state_machine_is_forward_only ... ok
+test a_degraded_handoff_is_durable_evidence_not_a_release_refusal ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/team_definition_naming.rs (target/debug/deps/team_definition_naming-bccfe609dc49a7c8)
+
+running 9 tests
+test a_missing_topic_or_local_seat_value_fails_closed ... ok
+test a_duplicate_team_slot_id_is_refused ... ok
+test a_team_slot_the_seat_template_cannot_render_is_refused ... ok
+test alternative_templates_may_register_one_role_code_under_different_slot_ids ... ok
+test recommended_team_definition_renders_the_exact_container_and_local_seat_matrix ... ok
+test team_slots_register_delivery_roles_without_inferring_them ... ok
+test team_definitions_reject_every_legacy_naming_source ... ok
+test unknown_fields_fail_closed_at_every_nested_definition_level ... ok
+test the_snapshot_binds_the_exact_definition_bytes ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/team_definition_render_contract.rs (target/debug/deps/team_definition_render_contract-568080926ed74a9e)
+
+running 11 tests
+test a_required_jira_key_with_no_confirmed_binding_refuses_instead_of_rendering ... ok
+test a_seat_template_carrying_a_jira_key_is_refused ... ok
+test a_seat_template_repeating_container_scope_is_refused ... ok
+test a_topic_containing_the_separator_is_refused_as_ambiguous ... ok
+test duplicate_container_prefixes_are_ambiguous_and_refused ... ok
+test every_local_seat_row_renders_exactly_from_the_pinned_definition ... ok
+test every_jira_key_container_row_renders_the_exact_contract_bytes ... ok
+test every_recommended_container_row_renders_the_exact_contract_bytes ... ok
+test role_coded_and_display_named_seat_policies_are_mutually_exclusive ... ok
+test the_old_token_definition_still_validates_and_renders_unchanged ... ok
+test the_separator_is_exact_bullet_bytes_and_never_a_normalized_lookalike ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/team_definition_successors.rs (target/debug/deps/team_definition_successors-14db1e2c429757fe)
+
+running 5 tests
+test a_candidate_differs_from_its_source_only_by_version_and_the_agreed_tokens ... ok
+test every_candidate_targets_an_unused_version_of_its_own_source_lineage ... ok
+test every_candidate_is_publishable_and_hashes_to_its_recorded_identity ... ok
+test the_manifest_covers_exactly_the_four_live_pinned_source_revisions ... ok
+test every_recorded_source_document_still_hashes_to_its_published_identity ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/ticket_content.rs (target/debug/deps/ticket_content-aff0992a545e9582)
+
+running 14 tests
+test a_body_still_equal_to_what_kontor_published_is_kontors_own_drift ... ok
+test a_body_nobody_published_is_treated_as_human_authored ... ok
+test a_missing_observation_is_missing_evidence_not_agreement ... ok
+test a_placeholder_is_a_conflict_even_when_nothing_is_intended ... ok
+test a_present_but_empty_body_is_reported_missing ... ok
+test a_real_body_with_nothing_intended_is_not_kontors_to_judge ... ok
+test an_empty_body_is_not_reported_as_a_placeholder ... ok
+test an_observed_body_equal_to_the_intent_is_not_a_conflict ... ok
+test every_conflict_kind_round_trips_its_stable_spelling ... ok
+test authored_prose_beginning_with_kontor_is_not_a_placeholder ... ok
+test reconciliation_judges_a_body_without_any_intended_content ... ok
+test reconciliation_never_reports_divergence ... ok
+test the_creation_marker_is_recognized_as_a_placeholder ... ok
+test the_task_creation_marker_is_recognized_too ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/ticket_policy.rs (target/debug/deps/ticket_policy-28396320d4ab011e)
+
+running 37 tests
+test a_field_specification_is_accepted_or_refused_atomically ... ok
+test a_projection_may_not_contradict_its_pinned_specification ... ok
+test a_matching_milestone_selects_the_live_transition_by_destination ... ok
+test a_required_field_may_not_be_omitted ... ok
+test a_select_value_must_be_one_the_specification_declares ... ok
+test a_stale_observation_is_never_acted_on ... ok
+test a_target_two_moves_away_is_reached_through_the_declared_intermediate ... ok
+test a_transition_receipt_must_record_something_it_actually_did ... ok
+test accept_external_never_writes_an_assignee_it_did_not_have_to ... ok
+test a_workflow_specification_is_checked_structurally ... ok
+test accept_external_preserves_an_existing_owner_and_still_converges_the_status ... ok
+test an_absent_field_means_no_write_never_a_clear ... ok
+test accept_external_still_assigns_an_unassigned_ticket_to_the_principal ... ok
+test an_already_converged_ticket_is_a_no_op ... ok
+test an_epic_closes_only_from_completion_and_child_evidence ... ok
+test an_absent_route_keeps_the_v1_canonical_document_and_hash ... ok
+test an_epic_route_selects_only_the_configured_next_hop ... ok
+test an_external_hold_with_unfinished_epic_work_is_an_incompatible_human_move ... ok
+test an_externally_closed_ticket_without_internal_evidence_is_a_conflict ... ok
+test an_intermediate_kontor_was_not_given_is_refused_rather_than_invented ... ok
+test an_unknown_status_or_an_incompatible_human_move_is_a_conflict ... ok
+test comments_are_inbound_only_and_identified_by_link_id_and_body ... ok
+test both_workflow_fixtures_validate_and_use_different_spellings ... ok
+test epic_predicates_cannot_be_satisfied_by_task_facts ... ok
+test each_external_terminal_class_requires_its_own_corresponding_internal_outcome ... ok
+test external_terminal_success_with_incomplete_gates_is_a_conflict_even_when_run_outcome_exists ... ok
+test milestone_routes_are_closed_deterministic_chains_to_the_target ... ok
+test owner_and_direction_must_be_a_permitted_pair ... ok
+test no_matching_milestone_does_nothing ... ok
+test predicates_read_kontor_state_and_nothing_else ... ok
+test ownership_is_converged_before_the_status_moves ... ok
+test preserve_never_clears_a_terminal_assignee ... ok
+test resolving_the_exact_incompatible_move_allows_that_transition_source_only ... ok
+test the_field_key_set_is_closed ... ok
+test someone_else_holding_the_ticket_is_a_conflict_not_a_takeover ... ok
+test the_two_fixtures_produce_the_same_decisions ... ok
+test zero_or_several_live_transitions_are_conflicts ... ok
+
+test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+   Doc-tests kontor_core
+
+running 1 test
+test crates/kontor-core/src/planning_pair.rs - planning_pair::PlanningPairRun (line 612) ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 4 tests
+test crates/kontor-core/src/planning_pair.rs - planning_pair::PlanningPairRun (line 629) - compile fail ... ok
+test crates/kontor-core/src/planning_pair.rs - planning_pair::PlanningPairRun (line 621) - compile fail ... ok
+test crates/kontor-core/src/planning_pair.rs - planning_pair::PlanningPairRun (line 645) - compile fail ... ok
+test crates/kontor-core/src/planning_pair.rs - planning_pair::PlanningPairRun (line 637) - compile fail ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+all doctests ran in 0.61s; merged doctests compilation took 0.20s

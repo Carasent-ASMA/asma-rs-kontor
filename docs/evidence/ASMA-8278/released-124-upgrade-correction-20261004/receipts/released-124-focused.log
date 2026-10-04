@@ -1,0 +1,9 @@
+   Compiling kontor-store v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-release-integration/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 37.68s
+     Running unittests src/lib.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/kontor_store-faf5f54623ec0389)
+
+running 1 test
+test migrations::release_integration_tests::released_124_upgrade_preserves_realm_bindings_and_memory_content ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 28 filtered out; finished in 9.78s
+

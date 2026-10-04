@@ -1,0 +1,12 @@
+{
+  "recordedAt": "2026-09-26T09:09:53.629915+00:00",
+  "preservedEvidenceHead": "c0926e9519185d57e41a6908fb29908d554a1e39",
+  "mergedSourceBase": "dddb72870c6d58d5d6383a69227844dbc8dca45e",
+  "conflicts": [
+    "owning report add/add",
+    "SHA256SUMS.json add/add"
+  ],
+  "resolution": "Preserve the complete later audited report and hash manifest; align the evidence branch with its already merged qualified source. No implementation, tests, dependencies or prior artifact content changed.",
+  "auditArtifactSha256": "0ffa7b099e8d62bca1a58c438d79c7404f886e6cab63181923a6f76ccdb48bec",
+  "scope": "Documentation history alignment only; no new runtime, test, census or closure credit"
+}

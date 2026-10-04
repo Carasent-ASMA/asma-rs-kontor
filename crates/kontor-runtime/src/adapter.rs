@@ -34,6 +34,7 @@ use crate::container::{
     ContainerRecoveryOutcome, ContainerRecoveryRequest,
 };
 use crate::observation::{ControlPlaneObservation, NativeSession, ReconciliationReport};
+use crate::provenance::{FleetLaunchProvenance, FleetProvenanceObservation};
 use crate::request::{
     AdoptRequest, CancelRequest, CompactRequest, CorrelationChallengeCompletionRequest,
     CorrelationChallengeRequest, HistoryRequest, InspectRequest, LaunchRequest,
@@ -122,6 +123,15 @@ pub enum RuntimeError {
     CallerAgentNotFound {
         /// The exact native caller Paseo refused.
         caller_agent_id: ExternalId,
+    },
+    /// A planning pair member route whose closed member surface this runtime
+    /// cannot establish (ASMA-8282 D-3), named with its provider and gap.
+    #[error("runtime cannot establish the planning pair member surface for {provider}: {gap:?}")]
+    PlanningPairMemberSurfaceUnsupported {
+        /// The route's provider.
+        provider: String,
+        /// Why the surface cannot be established for it.
+        gap: crate::planning_pair::MemberSurfaceGap,
     },
     /// The selected provider has no permission mode Kontor knows how to pin.
     #[error("provider {provider} has no pinned runtime permission mode")]
@@ -317,6 +327,9 @@ pub struct LaunchOutcome {
     /// The first normalized fact about the session. A launch acknowledgement is
     /// an acknowledgement, not a completion.
     pub observation: ControlPlaneObservation,
+    /// The fleet provenance read back from the native surface, or why none
+    /// could be (ASMA-8280 G-3). Never the request's own value.
+    pub fleet_provenance: FleetProvenanceObservation,
 }
 
 /// Source of one consultation route, frozen before native construction.
@@ -330,6 +343,8 @@ pub enum ConsultationRouteSource {
     MaterializationRecoveryProfile,
     /// Route selected while replacing an already-materialized native filler.
     SeatRecoveryProfile,
+    /// Route listed by the live `fleet.yml` read at placement time.
+    FleetConfiguration,
 }
 
 impl ConsultationRouteSource {
@@ -341,6 +356,7 @@ impl ConsultationRouteSource {
             Self::InitialRecoveryProfile => "initial_recovery_profile",
             Self::MaterializationRecoveryProfile => "materialization_recovery_profile",
             Self::SeatRecoveryProfile => "seat_recovery_profile",
+            Self::FleetConfiguration => "fleet_configuration",
         }
     }
 }
@@ -386,10 +402,37 @@ impl ConsultationRouteProvenance {
         }
     }
 
+    /// Provenance for one route the live fleet configuration selected.
+    #[must_use]
+    pub fn fleet_configuration(evidence_hash: ContentHash) -> Self {
+        Self {
+            source: ConsultationRouteSource::FleetConfiguration,
+            evidence_hash,
+            fallback_disposition: Some(ConsultationFallbackDisposition::OperatorAccepted),
+        }
+    }
+
+    /// Whether the live fleet configuration supplied this route.
+    #[must_use]
+    pub const fn is_fleet_configuration(&self) -> bool {
+        matches!(self.source, ConsultationRouteSource::FleetConfiguration)
+    }
+
     /// Whether this is the one risk-accepted initial fallback class.
     #[must_use]
     pub const fn is_operator_accepted_initial_recovery_profile(&self) -> bool {
         matches!(self.source, ConsultationRouteSource::InitialRecoveryProfile)
+            && matches!(
+                self.fallback_disposition,
+                Some(ConsultationFallbackDisposition::OperatorAccepted)
+            )
+    }
+
+    /// Whether an operator accepted this route through any recovery profile,
+    /// as opposed to template data or an unaccepted fallback.
+    #[must_use]
+    pub const fn is_operator_accepted_recovery(&self) -> bool {
+        !matches!(self.source, ConsultationRouteSource::Template)
             && matches!(
                 self.fallback_disposition,
                 Some(ConsultationFallbackDisposition::OperatorAccepted)
@@ -427,10 +470,17 @@ pub struct ConsultationLaunchRequest {
     pub model_rung: ModelRung,
     /// Immutable policy and disposition that selected the route.
     pub route_provenance: ConsultationRouteProvenance,
+    /// The fleet policy's authority for this route, when the activated policy
+    /// chose it (ASMA-8280 G-3).
+    pub fleet_provenance: Option<FleetLaunchProvenance>,
     /// Immutable context-window policy.
     pub context_policy: ContextPolicySnapshot,
     /// Invocation instant.
     pub requested_at: Timestamp,
+    /// The frozen member context a planning pair launch is held to, and
+    /// `None` for every Advisor and Committee launch (ASMA-8282 D-3). See
+    /// [`ConsultationLaunchRequest::planning_pair_context`].
+    pub planning_pair: Option<crate::planning_pair::PlanningPairLaunchContext>,
 }
 
 /// A persistent seat credential whose debug form never exposes its value.
@@ -472,6 +522,12 @@ pub struct ConsultationLaunchOutcome {
     /// Whether this call created the session or recovered the existing exact
     /// labelled one after a lost acknowledgement/restart.
     pub created: bool,
+    /// The fleet provenance read back from the native surface, or why none
+    /// could be (ASMA-8280 G-3). Never the request's own value.
+    pub fleet_provenance: FleetProvenanceObservation,
+    /// What a planning pair member launch read back of its member surface,
+    /// and `None` for every Advisor and Committee launch.
+    pub planning_pair: Option<crate::planning_pair::PlanningPairMemberObservation>,
 }
 
 /// Retire the exact native filler of one consultation SeatBinding before a
@@ -541,6 +597,9 @@ pub struct HostedSeatLaunchRequest {
     pub fenced_predecessor_native_ids: Vec<ExternalId>,
     /// Exact provider/model/effort route authorized for this seat.
     pub model_rung: ModelRung,
+    /// The activated fleet policy's authority for `model_rung`, when a policy
+    /// binds this leadership seat (ASMA-8280 G-3).
+    pub fleet_provenance: Option<FleetLaunchProvenance>,
     /// How much this leadership seat may do before it has to ask a human,
     /// frozen at launch exactly as a delivery seat's is.
     ///
@@ -946,6 +1005,28 @@ pub trait RuntimeAdapter: Send + Sync {
         })
     }
 
+    /// Prove, without a native effect, that this runtime composes the closed
+    /// planning pair member surface (ASMA-8282 D-3) for each of the pair's two
+    /// actual frozen routes: the member serve profile, its guard and closed
+    /// tool restriction, the provider's contained permission mode, and the
+    /// observed provenance readback.
+    ///
+    /// Asked before the pair is frozen and again before its container is
+    /// prepared. The answer is per route: a route whose provider has no
+    /// supported closed surface is refused with that provider named, never
+    /// launched under another surface or substituted. The default refuses
+    /// every route, so a runtime that has not composed the surface never
+    /// launches a member under the Advisor and Committee surface.
+    fn validate_planning_pair_member_surface(
+        &self,
+        routes: &[crate::planning_pair::PlanningPairMemberRoute],
+    ) -> RuntimeResult<()> {
+        let _ = routes;
+        Err(RuntimeError::UnsupportedCapability {
+            capability: crate::capability::RuntimeCapability::Launch,
+        })
+    }
+
     /// The posture seats on this runtime get when their role slot declares none.
     ///
     /// A plane-wide operator default, subordinate to the role slot: a template
@@ -1052,6 +1133,27 @@ pub trait RuntimeAdapter: Send + Sync {
     ) -> RuntimeResult<ConsultationLaunchOutcome> {
         Err(RuntimeError::UnsupportedCapability {
             capability: crate::capability::RuntimeCapability::Launch,
+        })
+    }
+
+    /// Reconcile one planning pair member's exact known native session in
+    /// place (ASMA-8282 frontier A), reading its member surface and
+    /// provenance back as a launch does.
+    ///
+    /// The answer is that same session with `created` false. A runtime never
+    /// creates, replaces, archives or reroutes a member here. An absent
+    /// session is [`RuntimeError::StaleBinding`]; another session, or one
+    /// whose correlation labels name anything but the request's frozen
+    /// context, is [`RuntimeError::CorrelationFailed`]; a field it cannot read
+    /// back is reported `Unsupported`, never matched. The default refuses as
+    /// an unsupported capability before any native effect, so a runtime that
+    /// has not composed this never answers it.
+    async fn reconcile_planning_pair_member(
+        &self,
+        _request: &crate::planning_pair::PlanningPairMemberReconcileRequest,
+    ) -> RuntimeResult<ConsultationLaunchOutcome> {
+        Err(RuntimeError::UnsupportedCapability {
+            capability: crate::capability::RuntimeCapability::Resume,
         })
     }
 

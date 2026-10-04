@@ -1,0 +1,256 @@
+diff --git a/crates/kontor-daemon/src/applications.rs b/crates/kontor-daemon/src/applications.rs
+index 08b077b4..b38c8ecf 100644
+--- a/crates/kontor-daemon/src/applications.rs
++++ b/crates/kontor-daemon/src/applications.rs
+@@ -8529,7 +8529,8 @@ impl Services {
+                     "the recorded Core Team succession can no longer land its pending effects",
+                 )
+             })?;
+-        if !recorded.effects.launch_intent_installed {
++        // MUTANT M-R4d: trust the latch instead of performing the effect.
++        if false {
+             state
+                 .with_store(|store| {
+                     store.install_hosted_seat_launch_intent(
+@@ -8566,6 +8567,86 @@ impl Services {
+         Ok(())
+     }
+ 
++    /// Answer a succession that is already committed, from its own evidence.
++    ///
++    /// Two callers reach this. An exact replay arrives after the fact; and a
++    /// caller that finds the transition it was about to make *already made* —
++    /// the concurrent second arrival under one key, which the claim cannot
++    /// refuse because the claim is deliberately re-entrant so that replays can
++    /// continue. Neither may answer from bytes it assembled itself: those
++    /// describe the succession it intended, and only the ledger row describes
++    /// the one the realm recorded.
++    async fn converge_on_recorded_succession(
++        &self,
++        key: &IdempotencyKey,
++        project_id: ProjectId,
++        epic_id: MiniProjectId,
++        intent: &CanonicalDocument,
++        target: AggregateRef,
++        recorded: &kontor_core::repository::StoredCoreTeamRouteSuccession,
++    ) -> Result<CoreTeamRouteOutcomeDto, ApiError> {
++        let state = self.state()?;
++        let epic = self.epic_row(project_id, epic_id)?;
++        let roster = self.frozen_roster(project_id, epic_id)?;
++        if !recorded.is_complete() {
++            self.reconcile_succession_effects(project_id, recorded)
++                .await?;
++        }
++        // Reloaded rather than assumed. Reconciliation reports what it
++        // attempted; only the durable row says what landed, and no receipt may
++        // be recorded until it says everything did.
++        let reloaded = state
++            .with_store(|store| store.get_core_team_route_succession(key))
++            .map_err(|error| self.refuse(&error))?
++            .ok_or_else(|| {
++                self.deny(
++                    ApiErrorCode::Unavailable,
++                    "the recorded Core Team succession disappeared mid-reconciliation",
++                )
++            })?;
++        if !reloaded.is_complete() {
++            return Err(self.deny(
++                ApiErrorCode::RevisionConflict,
++                "the recorded Core Team succession is not complete and cannot be receipted",
++            ));
++        }
++        let receipt_id = self.record(
++            key,
++            project_id,
++            CommandKind::CorrectCoreTeamRoute,
++            target,
++            epic.revision,
++            intent,
++        )?;
++        state
++            .with_store(|store| {
++                store.bind_core_team_route_succession_receipt(
++                    key,
++                    intent.hash(),
++                    receipt_id,
++                    kontor_api::now(),
++                )
++            })
++            .map_err(|error| self.refuse(&error))?;
++        let settled = state
++            .with_store(|store| store.get_core_team_route_succession(key))
++            .map_err(|error| self.refuse(&error))?
++            .ok_or_else(|| {
++                self.deny(
++                    ApiErrorCode::Unavailable,
++                    "the recorded Core Team succession disappeared mid-reconciliation",
++                )
++            })?;
++        self.recorded_succession_outcome(
++            project_id,
++            epic_id,
++            &settled,
++            receipt_id,
++            epic.revision,
++            &roster,
++        )
++    }
++
+     /// Answer one recorded succession from its durable evidence.
+     fn recorded_succession_outcome(
+         &self,
+@@ -25107,65 +25188,11 @@ impl ApplicationOperations for Services {
+                 // a route commit alone is not the whole succession, and
+                 // answering as though it were is the misleading complete result
+                 // this reconciliation exists to prevent.
+-                let epic = self.epic_row(project_id, epic_id)?;
+-                let roster = self.frozen_roster(project_id, epic_id)?;
+-                if !recorded.is_complete() {
+-                    self.reconcile_succession_effects(project_id, &recorded)
+-                        .await?;
+-                }
+-                // Reloaded rather than assumed. Reconciliation reports what it
+-                // attempted; only the durable row says what landed, and no
+-                // receipt may be recorded until it says everything did.
+-                let reloaded = state
+-                    .with_store(|store| store.get_core_team_route_succession(key))
+-                    .map_err(|error| self.refuse(&error))?
+-                    .ok_or_else(|| {
+-                        self.deny(
+-                            ApiErrorCode::Unavailable,
+-                            "the recorded Core Team succession disappeared mid-reconciliation",
+-                        )
+-                    })?;
+-                if !reloaded.is_complete() {
+-                    return Err(self.deny(
+-                        ApiErrorCode::RevisionConflict,
+-                        "the recorded Core Team succession is not complete and cannot be receipted",
+-                    ));
+-                }
+-                let receipt_id = self.record(
+-                    key,
+-                    project_id,
+-                    CommandKind::CorrectCoreTeamRoute,
+-                    target,
+-                    epic.revision,
+-                    &intent,
+-                )?;
+-                state
+-                    .with_store(|store| {
+-                        store.bind_core_team_route_succession_receipt(
+-                            key,
+-                            intent.hash(),
+-                            receipt_id,
+-                            kontor_api::now(),
+-                        )
+-                    })
+-                    .map_err(|error| self.refuse(&error))?;
+-                let settled = state
+-                    .with_store(|store| store.get_core_team_route_succession(key))
+-                    .map_err(|error| self.refuse(&error))?
+-                    .ok_or_else(|| {
+-                        self.deny(
+-                            ApiErrorCode::Unavailable,
+-                            "the recorded Core Team succession disappeared mid-reconciliation",
+-                        )
+-                    })?;
+-                return self.recorded_succession_outcome(
+-                    project_id,
+-                    epic_id,
+-                    &settled,
+-                    receipt_id,
+-                    epic.revision,
+-                    &roster,
+-                );
++                return self
++                    .converge_on_recorded_succession(
++                        key, project_id, epic_id, &intent, target, &recorded,
++                    )
++                    .await;
+             }
+             // Claimed and not committed: this key still owns the succession and
+             // resumes it below. Nothing else may.
+@@ -25244,6 +25271,20 @@ impl ApplicationOperations for Services {
+                     })
+                 })
+                 .map_err(|error| self.refuse(&error))?;
++            // Read back rather than carried forward. The claim is what fixes
++            // which occupancy this command produces, and re-deriving that number
++            // later from the seat would let a concurrent winner move it: the
++            // loser would then prepare, launch and report a generation the
++            // ledger never recorded.
++            let claimed = state
++                .with_store(|store| store.get_core_team_route_succession(key))
++                .map_err(|error| self.refuse(&error))?
++                .ok_or_else(|| {
++                    self.deny(
++                        ApiErrorCode::Unavailable,
++                        "the Core Team succession claim disappeared after it was taken",
++                    )
++                })?;
+             // The same closed classification the plan used, re-asked here
+             // because the answer may have changed since it was previewed. A
+             // predecessor the runtime proves gone has nothing left to archive,
+@@ -25367,24 +25408,7 @@ impl ApplicationOperations for Services {
+                 plan.binding.id,
+             ))
+             .map_err(|error| self.refuse_domain(&error))?;
+-            let successor_occupancy_generation = state
+-                .with_store(|store| {
+-                    store.hosted_topology_seat_occupancy_generation(project_id, plan.binding.id)
+-                })
+-                .map_err(|error| self.refuse(&error))?
+-                .ok_or_else(|| {
+-                    self.deny(
+-                        ApiErrorCode::StaleBinding,
+-                        "the hosted-seat predecessor has no active occupancy generation",
+-                    )
+-                })?
+-                .checked_add(1)
+-                .ok_or_else(|| {
+-                    self.deny(
+-                        ApiErrorCode::PlacementBlocked,
+-                        "the hosted-seat occupancy generation overflowed",
+-                    )
+-                })?;
++            let successor_occupancy_generation = claimed.successor_occupancy_generation;
+             let fenced_predecessor_native_ids = state
+                 .with_store(|store| {
+                     store.list_hosted_topology_seat_history_native_ids(project_id, plan.binding.id)
+@@ -25498,7 +25522,7 @@ impl ApplicationOperations for Services {
+                 "schema_version": 1,
+                 "readback": readback_value,
+             }))?;
+-            state
++            let transitioned = state
+                 .with_store(|store| {
+                     store.replace_hosted_topology_seat_route(
+                         &plan.predecessor,
+@@ -25514,6 +25538,27 @@ impl ApplicationOperations for Services {
+                     )
+                 })
+                 .map_err(|error| self.refuse(&error))?;
++            if transitioned == Applied::Unchanged {
++                // The seat already holds this successor, so this call's own
++                // transition never committed and the readback above describes
++                // nothing durable. Whoever did commit it wrote the evidence;
++                // answer from that, or refuse if there is none to answer from.
++                let committed = state
++                    .with_store(|store| store.get_core_team_route_succession(key))
++                    .map_err(|error| self.refuse(&error))?
++                    .filter(|recorded| recorded.route_committed_at.is_some())
++                    .ok_or_else(|| {
++                        self.deny(
++                            ApiErrorCode::RevisionConflict,
++                            "the hosted Core Team seat already holds this successor under no recorded succession",
++                        )
++                    })?;
++                return self
++                    .converge_on_recorded_succession(
++                        key, project_id, epic_id, &intent, target, &committed,
++                    )
++                    .await;
++            }
+             state
+                 .with_store(|store| {
+                     store.install_hosted_seat_launch_intent(

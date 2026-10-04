@@ -62,6 +62,13 @@ use crate::observation::{
     ReconciliationReport, reconcile, timestamp_control_sequence,
 };
 use crate::refusal::{RefusalProvenance, TransientRefusal};
+
+/// The native surface this fake reports for fleet provenance. It has none that
+/// can carry it, so a launch that requests provenance is told `unsupported`.
+const FAKE_SURFACE: &str = "fake.runtime";
+
+/// The fake surface a planning pair member's provenance labels are read from.
+const FAKE_LABEL_SURFACE: &str = "fake.runtime.labels";
 use crate::request::{
     AdoptRequest, CancelRequest, CompactRequest, CorrelationChallengeCompletionRequest,
     CorrelationChallengeRequest, CorrelationLabel, HistoryRequest, InspectRequest, LaunchRequest,
@@ -369,6 +376,9 @@ pub enum AdapterCall {
     Launch(AgentRunId),
     /// A read-only consultation seat was launched or recovered.
     LaunchConsultation(SeatBindingId),
+    /// One planning pair member's exact known native session was reconciled
+    /// in place.
+    ReconcilePlanningPairMember(SeatBindingId),
     /// An exact idle consultation predecessor was retired for recovery.
     RetireConsultation(SeatBindingId),
     /// One consultation seat's pending permissions were read.
@@ -549,6 +559,11 @@ impl FakeState {
             candidate.observed_at,
         )?;
         Ok(LaunchOutcome {
+            fleet_provenance: crate::provenance::FleetProvenanceObservation::without_surface(
+                request.fleet_provenance(),
+                FAKE_SURFACE,
+                &snapshot.identity().native_id,
+            ),
             snapshot,
             observation,
         })
@@ -722,6 +737,53 @@ impl FakeNativePause {
     }
 }
 
+/// Holds every consultation launch until released, so a test can interleave
+/// two invocations at the one point a live runtime would: after the container
+/// is prepared and before any member is launched. Like [`FakeNativePause`] it
+/// needs no executor; unlike it, it holds every waiting launch, not one.
+#[derive(Debug, Clone, Default)]
+pub struct ConsultationLaunchGate {
+    state: Arc<Mutex<ConsultationLaunchGateState>>,
+}
+
+#[derive(Debug, Default)]
+struct ConsultationLaunchGateState {
+    waiting: usize,
+    released: bool,
+    held: Vec<std::task::Waker>,
+}
+
+impl ConsultationLaunchGate {
+    /// How many launches have reached the gate so far.
+    #[must_use]
+    pub fn waiting(&self) -> usize {
+        self.state.lock().expect("gate lock").waiting
+    }
+
+    /// Let every held and every later launch through.
+    pub fn release(&self) {
+        let mut state = self.state.lock().expect("gate lock");
+        state.released = true;
+        for waker in state.held.drain(..) {
+            waker.wake();
+        }
+    }
+
+    async fn pass(&self) {
+        self.state.lock().expect("gate lock").waiting += 1;
+        std::future::poll_fn(|context| {
+            let mut state = self.state.lock().expect("gate lock");
+            if state.released {
+                std::task::Poll::Ready(())
+            } else {
+                state.held.push(context.waker().clone());
+                std::task::Poll::Pending
+            }
+        })
+        .await;
+    }
+}
+
 #[derive(Debug)]
 struct FakeState {
     /// Whether this runtime holds a plane-level container, and whether it has
@@ -731,6 +793,35 @@ struct FakeState {
     canonical_root: Option<WorkspaceRoot>,
     /// Role slots this runtime will not launch, by slot id.
     unlaunchable: BTreeSet<String>,
+    /// Whether this runtime withholds the planning pair member surface.
+    planning_pair_surface_withheld: bool,
+    /// Providers whose planning pair member routes this runtime refuses.
+    planning_pair_withheld_providers: BTreeSet<String>,
+    /// The frozen context every planning pair member launch presented.
+    planning_pair_contexts:
+        BTreeMap<SeatBindingId, crate::planning_pair::PlanningPairLaunchContext>,
+    /// The provenance labels this runtime wrote on each member session, which
+    /// is the only place a member's readback comes from.
+    planning_pair_labels: BTreeMap<SeatBindingId, crate::provenance::FleetLaunchProvenance>,
+    /// Whether member sessions are created without their provenance labels.
+    planning_pair_labels_dropped: bool,
+    /// Mandatory member-surface fields this runtime reports as unsupported.
+    planning_pair_unobserved_fields: BTreeSet<crate::planning_pair::MandatoryMemberField>,
+    /// Mandatory member-surface fields reported as unsupported for one member
+    /// slot only.
+    planning_pair_unobserved_slot_fields: BTreeSet<(
+        kontor_core::planning_pair::PlanningPairSlot,
+        crate::planning_pair::MandatoryMemberField,
+    )>,
+    /// Whether member launches report no member-surface observation at all.
+    planning_pair_observation_omitted: bool,
+    /// Member sessions that are stopped, which this fake does not resume in
+    /// place.
+    planning_pair_stopped: BTreeSet<SeatBindingId>,
+    /// Whether a member reconcile misreports its answer as a create.
+    planning_pair_reconcile_misreports_create: bool,
+    /// The gate every consultation launch waits at, when one is installed.
+    consultation_launch_gate: Option<ConsultationLaunchGate>,
     /// Providers this runtime refuses specifically as recovery successors.
     unsupported_consultation_recovery_providers: BTreeSet<String>,
     /// Every seat whose *placement* this runtime can currently prove.
@@ -756,6 +847,7 @@ struct FakeState {
     launched_accounts: BTreeMap<AgentRunId, AccountProfileId>,
     launched_prompts: BTreeMap<AgentRunId, BoundedText>,
     consultation_routes: BTreeMap<SeatBindingId, ModelRung>,
+    consultation_route_provenances: BTreeMap<SeatBindingId, &'static str>,
     retired_consultations: BTreeMap<ExternalId, ConsultationSeatRetireRequest>,
     unavailable_providers: BTreeSet<String>,
     provider_fallbacks: BTreeMap<String, ModelRung>,
@@ -790,6 +882,14 @@ struct FakeState {
     /// exist until that same call creates it, so a caller arming this failure
     /// cannot name it in advance.
     lose_hosted_launch_ack_once: bool,
+    /// One provider catalog key the next hosted launch refuses under, before it
+    /// has created anything.
+    ///
+    /// A refusal is not a lost acknowledgement: nothing native exists
+    /// afterwards, so a replay has to create the successor rather than converge
+    /// on one. Keeping the two arrangeable separately is what lets a test tell
+    /// the recoveries apart.
+    refuse_hosted_launch_once: Option<String>,
     /// One exact `StaleBinding` rule every hosted-seat inspection answers with.
     hosted_inspect_stale_rule: Option<&'static str>,
     /// The seat is restored for terminal readback only: no placement, so it
@@ -966,6 +1066,56 @@ impl SeatFacts for FakeSeatFacts<'_> {
 }
 
 impl FakeState {
+    /// What this fake reads back of one member session's provenance labels.
+    fn planning_pair_provenance_readback(
+        &self,
+        seat: SeatBindingId,
+        native_id: &ExternalId,
+    ) -> crate::provenance::FleetProvenanceObservation {
+        self.planning_pair_labels.get(&seat).cloned().map_or_else(
+            || crate::provenance::FleetProvenanceObservation::Unsupported {
+                surface: FAKE_LABEL_SURFACE.to_owned(),
+                native_id: native_id.clone(),
+            },
+            |provenance| crate::provenance::FleetProvenanceObservation::Observed {
+                surface: FAKE_LABEL_SURFACE.to_owned(),
+                provenance,
+            },
+        )
+    }
+
+    /// What this fake observes of one member's surface, read at the moment
+    /// it is asked: a hypothetical runtime that observes every mandatory
+    /// field unless a test withholds one. Account authority is never observed
+    /// by any runtime.
+    fn planning_pair_member_observation(
+        &self,
+        slot: kontor_core::planning_pair::PlanningPairSlot,
+    ) -> Option<crate::planning_pair::PlanningPairMemberObservation> {
+        let field = |name: crate::planning_pair::MandatoryMemberField| {
+            if self.planning_pair_unobserved_fields.contains(&name)
+                || self
+                    .planning_pair_unobserved_slot_fields
+                    .contains(&(slot, name))
+            {
+                crate::planning_pair::MemberSurfaceField::Unsupported
+            } else {
+                crate::planning_pair::MemberSurfaceField::Matched
+            }
+        };
+        (!self.planning_pair_observation_omitted).then(|| {
+            crate::planning_pair::PlanningPairMemberObservation {
+                surface: FAKE_SURFACE.to_owned(),
+                correlation: field(crate::planning_pair::MandatoryMemberField::Correlation),
+                route: field(crate::planning_pair::MandatoryMemberField::Route),
+                tool_restrictions: field(
+                    crate::planning_pair::MandatoryMemberField::ToolRestrictions,
+                ),
+                account_authority: crate::planning_pair::MemberSurfaceField::Unsupported,
+            }
+        })
+    }
+
     /// What a recreation census proves about one node's canonical place.
     ///
     /// Read-only. `created: true` means "nothing is there, a create is
@@ -1372,6 +1522,11 @@ impl FakeState {
             request.requested_at(),
         )?;
         Ok(LaunchOutcome {
+            fleet_provenance: crate::provenance::FleetProvenanceObservation::without_surface(
+                request.fleet_provenance(),
+                FAKE_SURFACE,
+                &snapshot.identity().native_id,
+            ),
             snapshot,
             observation,
         })
@@ -1397,6 +1552,17 @@ impl ScriptedFakeRuntime {
                 plane: PlaneRequirement::NotRequired,
                 canonical_root: None,
                 unlaunchable: BTreeSet::new(),
+                planning_pair_surface_withheld: false,
+                planning_pair_withheld_providers: BTreeSet::new(),
+                planning_pair_contexts: BTreeMap::new(),
+                planning_pair_labels: BTreeMap::new(),
+                planning_pair_labels_dropped: false,
+                planning_pair_unobserved_fields: BTreeSet::new(),
+                planning_pair_unobserved_slot_fields: BTreeSet::new(),
+                planning_pair_observation_omitted: false,
+                planning_pair_stopped: BTreeSet::new(),
+                planning_pair_reconcile_misreports_create: false,
+                consultation_launch_gate: None,
                 unsupported_consultation_recovery_providers: BTreeSet::new(),
                 placements: BTreeSet::new(),
                 runtime_kind: RuntimeKindKey::parse("fake.runtime").expect("valid runtime kind"),
@@ -1414,6 +1580,7 @@ impl ScriptedFakeRuntime {
                 launched_accounts: BTreeMap::new(),
                 launched_prompts: BTreeMap::new(),
                 consultation_routes: BTreeMap::new(),
+                consultation_route_provenances: BTreeMap::new(),
                 retired_consultations: BTreeMap::new(),
                 unavailable_providers: BTreeSet::new(),
                 provider_fallbacks: BTreeMap::new(),
@@ -1428,6 +1595,7 @@ impl ScriptedFakeRuntime {
                 lose_archive_ack_once: BTreeSet::new(),
                 lose_hosted_retire_ack_once: BTreeSet::new(),
                 lose_hosted_launch_ack_once: false,
+                refuse_hosted_launch_once: None,
                 hosted_inspect_stale_rule: None,
                 readback_only: false,
                 pause_hosted_retire_once: None,
@@ -1512,6 +1680,108 @@ impl ScriptedFakeRuntime {
     /// session, no binding, and the seat's reservation given back.
     pub fn refusing_launch_of(&self, slot: &kontor_core::id::RoleSlotId) {
         self.lock().unlaunchable.insert(slot.as_str().to_owned());
+    }
+
+    /// Refuse every planning pair member route on `provider`, as a runtime
+    /// that cannot compose that provider's closed member surface does.
+    pub fn withholding_planning_pair_members_on(&self, provider: &str) {
+        self.lock()
+            .planning_pair_withheld_providers
+            .insert(provider.to_owned());
+    }
+
+    /// Create planning pair member sessions without their provenance labels,
+    /// so their readback finds none: the drift a member must not qualify
+    /// through.
+    pub fn dropping_planning_pair_provenance_labels(&self) {
+        self.lock().planning_pair_labels_dropped = true;
+    }
+
+    /// Report one mandatory member-surface field as unsupported after create,
+    /// as a runtime that claimed the surface and then could not observe it
+    /// would.
+    pub fn observing_planning_pair_member_field_unsupported(
+        &self,
+        field: crate::planning_pair::MandatoryMemberField,
+    ) {
+        self.lock().planning_pair_unobserved_fields.insert(field);
+    }
+
+    /// Report one mandatory member-surface field as unsupported after create
+    /// for the member in `slot` alone, as a runtime whose readback fails for
+    /// one member and not the other would.
+    pub fn observing_planning_pair_member_field_unsupported_in(
+        &self,
+        slot: kontor_core::planning_pair::PlanningPairSlot,
+        field: crate::planning_pair::MandatoryMemberField,
+    ) {
+        self.lock()
+            .planning_pair_unobserved_slot_fields
+            .insert((slot, field));
+    }
+
+    /// Observe every member-surface field again from now on, as a runtime
+    /// whose readback was repaired would. Labels a session was created without
+    /// stay missing.
+    pub fn clearing_planning_pair_member_observation_faults(&self) {
+        let mut state = self.lock();
+        state.planning_pair_unobserved_fields.clear();
+        state.planning_pair_unobserved_slot_fields.clear();
+        state.planning_pair_observation_omitted = false;
+    }
+
+    /// Stop one member's native session. This fake does not resume a stopped
+    /// session in place, so a reconcile reports it unavailable.
+    pub fn stopping_consultation_native(&self, seat: SeatBindingId) {
+        self.lock().planning_pair_stopped.insert(seat);
+    }
+
+    /// Let one stopped member session run again, the same session, as one
+    /// started outside this runtime would.
+    pub fn running_consultation_native_again(&self, seat: SeatBindingId) {
+        self.lock().planning_pair_stopped.remove(&seat);
+    }
+
+    /// Misreport every later member reconcile as a create, as a faulty runtime
+    /// might: the answer a caller must refuse.
+    pub fn misreporting_planning_pair_reconcile_as_created(&self) {
+        self.lock().planning_pair_reconcile_misreports_create = true;
+    }
+
+    /// Lose one consultation seat's native session, as a runtime whose
+    /// session was removed out of band would: a reconcile then finds it
+    /// absent.
+    pub fn losing_consultation_native(&self, seat: SeatBindingId) {
+        self.lock().consultations.remove(&seat);
+    }
+
+    /// Report no member-surface observation at all for member launches.
+    pub fn omitting_planning_pair_member_observation(&self) {
+        self.lock().planning_pair_observation_omitted = true;
+    }
+
+    /// The frozen context every planning pair member launch presented, by
+    /// SeatBinding.
+    #[must_use]
+    pub fn planning_pair_launch_contexts(
+        &self,
+    ) -> BTreeMap<SeatBindingId, crate::planning_pair::PlanningPairLaunchContext> {
+        self.lock().planning_pair_contexts.clone()
+    }
+
+    /// Hold every consultation launch from now on at one gate, until the
+    /// returned gate is released.
+    pub fn holding_consultation_launches(&self) -> ConsultationLaunchGate {
+        let gate = ConsultationLaunchGate::default();
+        self.lock().consultation_launch_gate = Some(gate.clone());
+        gate
+    }
+
+    /// Withhold the planning pair member surface, as a runtime that has not
+    /// composed it does: the surface check and every member launch refuse it
+    /// as an unsupported capability.
+    pub fn withholding_planning_pair_members(&self) {
+        self.lock().planning_pair_surface_withheld = true;
     }
 
     /// Let a role slot that was deliberately refused become launchable again.
@@ -2193,6 +2463,16 @@ impl ScriptedFakeRuntime {
         self.lock().lose_hosted_launch_ack_once = true;
     }
 
+    /// Refuse the next hosted launch outright, before any native is created.
+    ///
+    /// The distinction from [`Self::lose_next_hosted_launch_ack`] is the whole
+    /// point: there, the seat exists and only the answer is gone, so a replay
+    /// must converge on it; here nothing was created, so a replay must still
+    /// create one — with the retirement that preceded it already irreversible.
+    pub fn refuse_next_hosted_launch(&self, provider: &str) {
+        self.lock().refuse_hosted_launch_once = Some(provider.to_owned());
+    }
+
     /// Report this runtime as reachable but not drivable, the shape a seat has
     /// after its workspace was archived: an exact readback still answers while
     /// every driving operation refuses for want of a placement.
@@ -2404,6 +2684,16 @@ impl ScriptedFakeRuntime {
     #[must_use]
     pub fn consultation_route(&self, seat: SeatBindingId) -> Option<ModelRung> {
         self.lock().consultation_routes.get(&seat).cloned()
+    }
+
+    /// The provenance source a consultation seat was launched with, as
+    /// `ConsultationRouteSource::as_str` renders it.
+    #[must_use]
+    pub fn consultation_route_provenance(&self, seat: SeatBindingId) -> Option<&'static str> {
+        self.lock()
+            .consultation_route_provenances
+            .get(&seat)
+            .copied()
     }
 
     /// Native identity still held for one active consultation filler.
@@ -2769,6 +3059,32 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 provider: rung.provider.0.clone(),
             });
         }
+        Ok(())
+    }
+
+    fn validate_planning_pair_member_surface(
+        &self,
+        routes: &[crate::planning_pair::PlanningPairMemberRoute],
+    ) -> RuntimeResult<()> {
+        crate::planning_pair::PlanningPairMemberRoute::require_pair(routes)?;
+        let state = self.lock();
+        if state.planning_pair_surface_withheld {
+            return Err(RuntimeError::UnsupportedCapability {
+                capability: RuntimeCapability::Launch,
+            });
+        }
+        if let Some(route) = routes.iter().find(|route| {
+            state
+                .planning_pair_withheld_providers
+                .contains(&route.model_rung.provider.0)
+        }) {
+            return Err(RuntimeError::PlanningPairMemberSurfaceUnsupported {
+                provider: route.model_rung.provider.0.clone(),
+                gap: crate::planning_pair::MemberSurfaceGap::NotComposed,
+            });
+        }
+        // Otherwise this fake claims the whole surface: a hypothetical,
+        // source-contract runtime, not a statement about any real one.
         Ok(())
     }
 
@@ -3713,8 +4029,34 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         &self,
         request: &ConsultationLaunchRequest,
     ) -> RuntimeResult<ConsultationLaunchOutcome> {
+        let gate = self.lock().consultation_launch_gate.clone();
+        if let Some(gate) = gate {
+            gate.pass().await;
+        }
         let mut state = self.lock();
         state.require_plane()?;
+        // The family and its frozen context agree before anything else.
+        let context = request.planning_pair_context()?.cloned();
+        if state.planning_pair_surface_withheld
+            && matches!(
+                request.run_id,
+                kontor_core::consultation::ConsultationRunId::PlanningPair(_)
+            )
+        {
+            return Err(RuntimeError::UnsupportedCapability {
+                capability: RuntimeCapability::Launch,
+            });
+        }
+        if context.is_some()
+            && state
+                .planning_pair_withheld_providers
+                .contains(&request.model_rung.provider.0)
+        {
+            return Err(RuntimeError::PlanningPairMemberSurfaceUnsupported {
+                provider: request.model_rung.provider.0.clone(),
+                gap: crate::planning_pair::MemberSurfaceGap::NotComposed,
+            });
+        }
         if state.unlaunchable.contains(request.role_slot_id.as_str()) {
             return Err(RuntimeError::Transport {
                 rule: "this runtime will not launch that consultation role slot",
@@ -3750,6 +4092,10 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         state
             .consultation_routes
             .insert(request.seat_binding_id, request.model_rung.clone());
+        state.consultation_route_provenances.insert(
+            request.seat_binding_id,
+            request.route_provenance.source.as_str(),
+        );
         if let Some(existing) = state.consultations.get(&request.seat_binding_id) {
             return Ok(existing.clone());
         }
@@ -3758,7 +4104,40 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             "native-consultation-{}",
             state.minted
         ))?);
+        let (fleet_provenance, planning_pair) = match context {
+            // A member session carries its provenance on this fake's own
+            // labels, and its readback is those labels. The observation is the
+            // fake surface's: source-contract evidence only.
+            Some(context) => {
+                let slot = context.slot;
+                state
+                    .planning_pair_contexts
+                    .insert(request.seat_binding_id, context);
+                if !state.planning_pair_labels_dropped
+                    && let Some(requested) = &request.fleet_provenance
+                {
+                    state
+                        .planning_pair_labels
+                        .insert(request.seat_binding_id, requested.clone());
+                }
+                let observed = state.planning_pair_provenance_readback(
+                    request.seat_binding_id,
+                    &identity.native_id,
+                );
+                let observation = state.planning_pair_member_observation(slot);
+                (observed, observation)
+            }
+            None => (
+                crate::provenance::FleetProvenanceObservation::without_surface(
+                    request.fleet_provenance.as_ref(),
+                    FAKE_SURFACE,
+                    &identity.native_id,
+                ),
+                None,
+            ),
+        };
         let outcome = ConsultationLaunchOutcome {
+            fleet_provenance,
             identity,
             provider_session_id: Some(ExternalId::parse(&format!(
                 "provider-consultation-{}",
@@ -3766,6 +4145,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             ))?),
             observed_at: request.requested_at,
             created: true,
+            planning_pair,
         };
         state
             .consultations
@@ -3782,6 +4162,70 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             ),
         );
         Ok(outcome)
+    }
+
+    async fn reconcile_planning_pair_member(
+        &self,
+        request: &crate::planning_pair::PlanningPairMemberReconcileRequest,
+    ) -> RuntimeResult<ConsultationLaunchOutcome> {
+        let mut state = self.lock();
+        state.require_plane()?;
+        request.validate()?;
+        let context = &request.context;
+        if state.planning_pair_surface_withheld {
+            return Err(RuntimeError::UnsupportedCapability {
+                capability: RuntimeCapability::Resume,
+            });
+        }
+        if state
+            .planning_pair_withheld_providers
+            .contains(&context.route.provider.0)
+        {
+            return Err(RuntimeError::PlanningPairMemberSurfaceUnsupported {
+                provider: context.route.provider.0.clone(),
+                gap: crate::planning_pair::MemberSurfaceGap::NotComposed,
+            });
+        }
+        state.calls.push(AdapterCall::ReconcilePlanningPairMember(
+            context.seat_binding_id,
+        ));
+        let held = state
+            .consultations
+            .get(&context.seat_binding_id)
+            .cloned()
+            .ok_or(RuntimeError::StaleBinding {
+                rule: "the planning pair member's known native session is absent",
+            })?;
+        // This fake's correlation labels are the frozen context the session
+        // was created under, so the exact session must carry exactly the
+        // requested one: any other run, seat, slot, generation, pin, route,
+        // vendor or placement is another member's, never this one's.
+        if !held.identity.same_session(&request.identity)
+            || state.planning_pair_contexts.get(&context.seat_binding_id) != Some(context)
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        if state
+            .planning_pair_stopped
+            .contains(&context.seat_binding_id)
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the planning pair member's native session is stopped and this runtime does not resume it in place",
+            });
+        }
+        // The same session, read back again now, never a create: a
+        // hypothetical runtime, source-contract evidence only.
+        Ok(ConsultationLaunchOutcome {
+            fleet_provenance: state.planning_pair_provenance_readback(
+                context.seat_binding_id,
+                &held.identity.native_id,
+            ),
+            planning_pair: state.planning_pair_member_observation(context.slot),
+            identity: held.identity,
+            provider_session_id: held.provider_session_id,
+            observed_at: request.requested_at,
+            created: state.planning_pair_reconcile_misreports_create,
+        })
     }
 
     async fn message_consultation(
@@ -3971,6 +4415,11 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 context_policy: Some(&request.context_policy),
             },
         )?;
+        // Before the call is recorded and before anything is minted: a refused
+        // launch is a launch that did not happen.
+        if let Some(provider) = state.refuse_hosted_launch_once.take() {
+            return Err(RuntimeError::ProviderUnavailable { provider });
+        }
         state
             .calls
             .push(AdapterCall::LaunchHostedSeat(request.seat_binding_id));
@@ -3989,17 +4438,26 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             return Ok(existing.clone());
         }
         state.minted = state.minted.saturating_add(1);
+        let identity = state.identity(ExternalId::parse(&format!(
+            "native-hosted-seat-{}",
+            state.minted
+        ))?);
         let outcome = ConsultationLaunchOutcome {
-            identity: state.identity(ExternalId::parse(&format!(
-                "native-hosted-seat-{}",
-                state.minted
-            ))?),
+            // This fake has no native surface that carries fleet provenance, so
+            // it says so rather than echoing the request back as an observation.
+            fleet_provenance: crate::provenance::FleetProvenanceObservation::without_surface(
+                request.fleet_provenance.as_ref(),
+                FAKE_SURFACE,
+                &identity.native_id,
+            ),
+            identity,
             provider_session_id: Some(ExternalId::parse(&format!(
                 "provider-hosted-seat-{}",
                 state.minted
             ))?),
             observed_at: request.requested_at,
             created: true,
+            planning_pair: None,
         };
         state
             .hosted_seats
@@ -4175,6 +4633,8 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 provider_session_id: preview.provider_session_id.clone(),
                 observed_at: preview.observed_at,
                 created: false,
+                fleet_provenance: crate::provenance::FleetProvenanceObservation::NotRequested,
+                planning_pair: None,
             },
         );
         state
@@ -4551,14 +5011,19 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             let landed = session.content[..session.history_len]
                 .iter()
                 .find(|event| event.subject == EventSubject::Message(request.message_id))
-                .map(|event| event.position);
-            if let Some(position) = landed {
+                .map(|event| (event.position, event.emitted_at));
+            if let Some((position, accepted_at)) = landed {
                 state.unconfirmed_deliveries.remove(&request.message_id);
+                // The occurrence's own instant, never this retry's: adopting what
+                // already landed is a readback, and the real adapter reports the
+                // native entry's timestamp for exactly the same reason. A retry
+                // that answered with its own clock would make a byte-identical
+                // replay impossible to observe.
                 return Ok(MessageAck {
                     message_id: request.message_id,
                     binding_id,
                     position,
-                    accepted_at: request.sent_at,
+                    accepted_at,
                 });
             }
         }
@@ -4692,24 +5157,30 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                     && event.kind == SessionEventKind::Message
                     && payload_body_is(event, request.body.as_str())
             })
-            .map(|event| event.position)
+            .map(|event| (event.position, event.emitted_at))
             .collect::<Vec<_>>();
         if matches.len() > 1 {
             return Err(RuntimeError::DuplicateMessage {
                 rule: "the exact server correlation challenge appears more than once",
             });
         }
-        let position = if let Some(position) = matches.first().copied() {
-            position
+        // Adoption reports the occurrence already in the timeline, so its own
+        // instant travels with its position; only a fresh dispatch is stamped
+        // with this request's clock.
+        let (position, accepted_at) = if let Some((position, accepted_at)) =
+            matches.first().copied()
+        {
+            (position, accepted_at)
         } else if request.may_dispatch {
             // Deliberately omit EventSubject::Message: the challenge contract
             // proves the Paseo 0.8.0 case where native history loses that echo.
-            session.append(
+            let position = session.append(
                 SessionEventKind::Message,
                 EventSubject::None,
                 request.body.as_str(),
                 request.sent_at,
-            )?
+            )?;
+            (position, request.sent_at)
         } else {
             return Err(RuntimeError::DeliveryConfirmationUnknown {
                 rule: "the durably claimed correlation challenge is not yet present; retry may reconcile but must not resend",
@@ -4719,7 +5190,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             message_id: request.message_id,
             binding_id,
             position,
-            accepted_at: request.sent_at,
+            accepted_at,
         };
         if lose_ack {
             return Err(RuntimeError::Transport {
@@ -5103,6 +5574,9 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         Ok(LaunchOutcome {
             snapshot,
             observation,
+            // Adoption binds a session no launch of Kontor's created, so there
+            // is no requested provenance to write or read back.
+            fleet_provenance: crate::provenance::FleetProvenanceObservation::NotRequested,
         })
     }
 
@@ -5647,6 +6121,8 @@ mod retitle_seat_generation_tests {
                     .parse::<Timestamp>()
                     .expect("timestamp"),
                 created: true,
+                fleet_provenance: crate::provenance::FleetProvenanceObservation::NotRequested,
+                planning_pair: None,
             },
         );
         let request = HostedSeatInspectRequest {
@@ -5737,6 +6213,8 @@ mod retitle_seat_generation_tests {
                     .parse::<Timestamp>()
                     .expect("timestamp"),
                 created: true,
+                fleet_provenance: crate::provenance::FleetProvenanceObservation::NotRequested,
+                planning_pair: None,
             },
         );
         let request = HostedSeatMessageRequest {
@@ -5779,6 +6257,8 @@ mod retitle_seat_generation_tests {
                 provider_session_id: None,
                 observed_at: request.sent_at,
                 created: true,
+                fleet_provenance: crate::provenance::FleetProvenanceObservation::NotRequested,
+                planning_pair: None,
             },
         );
         let successor_request = HostedSeatMessageRequest {

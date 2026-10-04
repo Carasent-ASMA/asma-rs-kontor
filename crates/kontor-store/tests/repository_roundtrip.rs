@@ -15,6 +15,8 @@
 //! * mirroring one external comment twice, or losing an edit's provenance;
 //! * treating an absent calendar as closed.
 
+mod support;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use kontor_core::calendar::{
@@ -115,6 +117,10 @@ fn remove_v98_shape(connection: &Connection) {
 /// that leaked a row into a table the test did not think about would still be
 /// caught.
 const CENSUS_TABLES: &[&str] = &[
+    "attestation_authority_heads",
+    "attestation_authority_keys",
+    "attestation_token_heads",
+    "prepared_attestation_tokens",
     "account_profiles",
     "agent_runs",
     "calendar_exceptions",
@@ -413,7 +419,7 @@ struct Fixture {
 fn fixture() -> Fixture {
     let directory = TempDir::new().expect("a temporary directory");
     let path = directory.path().join("kontor.db");
-    let store = SqliteStore::open(&path).expect("the store opens");
+    let store = support::store_from_template(&path);
 
     let project = ProjectId::generate();
     let other_project = ProjectId::generate();
@@ -2797,12 +2803,54 @@ fn atomic_local_gate_and_done_survive_restart_and_replay_after_reopen() {
     );
 }
 
+/// Return the fixture to the exact schema v115 knew, then apply 0115 again.
+///
+/// The fixture is created at the current schema, so every generation after 0115
+/// has to be undone here: the reopen at the end of the v115 test replays them,
+/// and a table or column left behind turns that replay into a collision instead
+/// of a migration. 0116 adds one table, 0117 two columns and 0118 the two
+/// delivery-proof tables, and 0119 the publication-attestation guards. 0120
+/// adds Core Team route successions, 0121 imported-record evidence and 0122
+/// succession receipt guards. 0123 adds the six memory projection/eligibility/
+/// receipt tables, and 0124 the two projection rebuild receipt tables. A future
+/// migration that adds anything must undo it here too, and the replay is what
+/// notices when it does not.
 fn apply_v115_to_legacy_fixture(fixture: &Fixture) {
     let connection = Connection::open(&fixture.path).expect("migration connection");
     connection
         .execute_batch(
-            "DROP TABLE local_command_results;
+            // Every artefact introduced after v114 has to go, or reopening
+            // re-applies its migration onto a schema that already has it. A new
+            // table is one `DROP TABLE`: SQLite takes its indexes and triggers
+            // with it, and a `DROP TABLE` does not fire the row triggers that
+            // make the rows themselves undeletable.
+            "DROP TABLE memory_projection_rebuild_results;
+         DROP TABLE memory_projection_rebuild_keys;
+         DROP TABLE memory_recall_keys;
+         DROP TABLE memory_recall_metadata;
+         DROP TABLE memory_experience_proposals;
+         DROP TABLE memory_projection_active;
+         DROP TABLE memory_projection_snapshots;
+         DROP TABLE memory_experience_eligibility;
+         DROP TABLE imported_record_evidence;
+         DROP TABLE core_team_route_successions;
+         DROP TABLE local_command_results;
          DROP TABLE legacy_dispatch_local_confirmation_provenance;
+         DROP TABLE hosted_seat_role_personas;
+         ALTER TABLE runtime_message_issuances DROP COLUMN boundary_epoch;
+         ALTER TABLE runtime_message_issuances DROP COLUMN boundary_sequence;
+         DROP TABLE runtime_message_delivery_proof_steps;
+         DROP TABLE runtime_message_delivery_proofs;
+         DROP TRIGGER publication_attestation_no_update;
+         DROP TRIGGER publication_attestation_no_delete;
+         DROP TABLE planning_pair_member_natives;
+         DROP TABLE planning_pair_contributions;
+         DROP TABLE planning_pair_record_revisions;
+         DROP TABLE planning_pair_placements;
+         DROP TABLE prepared_attestation_tokens;
+         DROP TABLE attestation_token_heads;
+         DROP TABLE attestation_authority_keys;
+         DROP TABLE attestation_authority_heads;
          PRAGMA user_version = 114;",
         )
         .expect("return empty v115 tables to exact prior schema");
@@ -2919,7 +2967,12 @@ fn v115_confirms_exact_local_mutations_with_typed_provenance_and_preserves_histo
     }
     assert_eq!(
         before["command_outbox"],
-        census(fixture)["command_outbox"],
+        // This fixture is temporarily at v115, before the v124 ledger exists.
+        // Keep the same outbox assertion without querying current-only tables.
+        connection
+            .query_row("SELECT count(*) FROM command_outbox", [], |row| row
+                .get::<_, i64>(0))
+            .expect("historical outbox count"),
         "historical payloads retained"
     );
     assert!(
@@ -10629,4 +10682,77 @@ fn a_recorded_proof_is_append_only() {
     assert!(edited.is_err(), "a proof may not be edited");
     let deleted = connection.execute("DELETE FROM retired_evaluator_attestations", []);
     assert!(deleted.is_err(), "a proof may not be deleted");
+}
+
+/// A settled turn's claimed keys become ticket evidence only after the task is
+/// done. An open task contributes nothing, and a key the turn never claimed
+/// stays absent so the ticket gate can still refuse it.
+#[test]
+fn a_done_tasks_settled_turn_claim_counts_and_a_missing_key_stays_absent() {
+    let fixture = fixture();
+    let team_run = with_team_run(&fixture, now());
+    let run = AgentRunId::generate();
+    fixture
+        .store
+        .create_agent_run(&NewAgentRun {
+            id: run,
+            project_id: fixture.project,
+            team_run_id: team_run,
+            parent_agent_run_id: None,
+            role: role("zz.maker"),
+            account_profile_id: Some(fixture.account),
+            binding: None,
+            created_at: now(),
+        })
+        .expect("the seat is created");
+    fixture
+        .store
+        .settle_role_turn(&kontor_store::NewRoleTurn {
+            id: kontor_core::id::RoleTurnId::generate(),
+            project_id: fixture.project,
+            task_id: fixture.task,
+            team_run_id: team_run,
+            agent_run_id: run,
+            role_slot_id: kontor_core::id::RoleSlotId::parse("zz.maker").expect("a slot"),
+            idempotency_key: "turn-settled-claim".to_owned(),
+            task_revision: AggregateRevision::INITIAL,
+            binding_generation: 1,
+            runtime_proof: Some(runtime_turn_proof()),
+            authority_tier: "operator",
+            account_profile: Some(fixture.account),
+            artifacts: [artifact("code-change"), artifact("qa-report")]
+                .into_iter()
+                .collect(),
+            evidence_hash: ContentHash::of(b"settled-claim"),
+            settled_at: now(),
+        })
+        .expect("the turn settles");
+
+    let open = fixture
+        .store
+        .list_settled_turn_artifact_keys(fixture.project, fixture.task)
+        .expect("the open task reads");
+    assert!(
+        open.is_empty(),
+        "an open task's settled claim does not satisfy the ticket gate"
+    );
+
+    let connection = rusqlite::Connection::open(&fixture.path).expect("the database opens");
+    connection
+        .execute(
+            "UPDATE tasks SET state = 'done' WHERE id = ?1",
+            rusqlite::params![fixture.task.to_string()],
+        )
+        .expect("the task is done");
+
+    let claimed = fixture
+        .store
+        .list_settled_turn_artifact_keys(fixture.project, fixture.task)
+        .expect("the done task reads");
+    assert!(claimed.contains(&name("code-change")));
+    assert!(claimed.contains(&name("qa-report")));
+    assert!(
+        !claimed.contains(&name("release-notes")),
+        "a key the turn never claimed stays a blocker"
+    );
 }

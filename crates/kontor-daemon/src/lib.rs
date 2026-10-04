@@ -45,10 +45,12 @@
 pub mod applications;
 pub mod credentials;
 pub mod endpoint;
+pub mod fleet;
 pub mod github_publication;
 pub mod jira_sync;
 pub mod lock;
 pub mod logging;
+pub mod orchestration;
 pub mod provider_config;
 pub mod quota_observation;
 pub mod recovery;
@@ -249,6 +251,14 @@ pub enum StartupError {
     /// The configured seat-supervision policy could not be loaded.
     #[error(transparent)]
     Supervision(#[from] SupervisionError),
+    /// The optional memory transport configuration was invalid or needs the
+    /// later authorized credential/activation composition.
+    #[error("the memory transport could not be composed: {source}")]
+    MemoryCognee {
+        /// Static redacted refusal.
+        #[source]
+        source: kontor_memory_cognee::Error,
+    },
 }
 
 /// Everything a daemon is configured with.
@@ -293,6 +303,9 @@ pub struct DaemonConfig {
     /// An explicitly composed connector set for embeddings and tests. Ordinary
     /// daemon startup reads strict `jira.json` from the state root instead.
     jira_connectors: Option<kontor_jira::JiraConnectors>,
+    /// Explicitly composed synthetic/embedding transport. No secret resolver is
+    /// installed by ordinary startup in this source-only qualification phase.
+    memory_cognee: Option<kontor_memory_cognee::Client>,
 }
 
 impl DaemonConfig {
@@ -307,6 +320,7 @@ impl DaemonConfig {
             derived_read_deadline_seconds: DEFAULT_DERIVED_READ_DEADLINE_SECONDS,
             capacity: DEFAULT_CAPACITY,
             jira_connectors: None,
+            memory_cognee: None,
         }
     }
 
@@ -325,6 +339,13 @@ impl DaemonConfig {
     #[must_use]
     pub fn with_jira_connectors(mut self, connectors: kontor_jira::JiraConnectors) -> Self {
         self.jira_connectors = Some(connectors);
+        self
+    }
+
+    /// Supply an already configured transport without reading provider secrets.
+    #[must_use]
+    pub fn with_memory_cognee(mut self, client: kontor_memory_cognee::Client) -> Self {
+        self.memory_cognee = Some(client);
         self
     }
 
@@ -512,7 +533,10 @@ impl Daemon {
         let jira = config
             .jira_connectors
             .clone()
-            .map_or_else(|| kontor_jira::JiraConnectors::read(&config.state_root), Ok)
+            .map_or_else(
+                || kontor_jira::JiraConnectors::read(&config.state_root, realm_id),
+                Ok,
+            )
             .map_err(|source| StartupError::Connector { source })?;
         let usage_poller =
             usage_poller.unwrap_or_else(|| usage::UsagePoller::discover(&config.state_root));
@@ -542,8 +566,24 @@ impl Daemon {
             usage_poller.clone(),
             quota_signals,
             github_publication.clone(),
+            Arc::new(crate::fleet::FleetSource::at(&config.state_root)),
         )
         .map_err(|source| StartupError::Applications { source })?;
+
+        let memory_config =
+            kontor_memory_cognee::Config::read(&config.state_root.join("memory-cognee.json"))
+                .map_err(|source| StartupError::MemoryCognee { source })?;
+        if memory_config.is_some_and(|document| document.enabled) && config.memory_cognee.is_none()
+        {
+            return Err(StartupError::MemoryCognee {
+                source: kontor_memory_cognee::Error(
+                    kontor_core::memory::DegradedReason::Unavailable,
+                ),
+            });
+        }
+        if let Some(client) = config.memory_cognee.clone() {
+            applications.attach_memory_cognee(client);
+        }
 
         let state = ApiState::new(ApiParts {
             store,
@@ -629,6 +669,24 @@ impl Daemon {
     /// resident process also invokes the same seam from its wake/backstop loop.
     pub async fn reconcile_jira_once(&self) -> applications::JiraReconcileReport {
         self.applications.reconcile_jira_once().await
+    }
+
+    /// Hold every planning pair invocation at its receipt write until the
+    /// returned hold is released. A black-box contract seam only: nothing this
+    /// daemon composes installs one.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn hold_planning_pair_invocation_receipts(&self) -> applications::PlanningPairReceiptHold {
+        self.applications.hold_planning_pair_invocation_receipts()
+    }
+
+    /// Hold every planning pair member recovery at its compare-and-swap, for a
+    /// black-box test that lines requests up after their readback. No
+    /// composed daemon installs one.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn hold_planning_pair_recovery_writes(&self) -> applications::PlanningPairReceiptHold {
+        self.applications.hold_planning_pair_recovery_writes()
     }
 
     /// The concrete Jira reconciliation services owned by this daemon.
@@ -734,6 +792,10 @@ impl Daemon {
             }
             let mut ticker = tokio::time::interval(period);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            // The rotation position, carried across ticks so each bounded scan
+            // resumes where the last one stopped instead of re-reading the
+            // oldest page forever.
+            let mut cursor = None;
             loop {
                 tokio::select! {
                     _ = stopping.changed() => return,
@@ -741,7 +803,7 @@ impl Daemon {
                 }
                 tokio::select! {
                     _ = stopping.changed() => return,
-                    result = applications.recover_unconfirmed_admissions(UNCONFIRMED_ADMISSION_SCAN_LIMIT) => match result {
+                    result = applications.recover_unconfirmed_admissions(UNCONFIRMED_ADMISSION_SCAN_LIMIT, &mut cursor) => match result {
                         Ok((recovered, blocked)) if recovered > 0 || blocked > 0 => info!(
                             recovered,
                             blocked,

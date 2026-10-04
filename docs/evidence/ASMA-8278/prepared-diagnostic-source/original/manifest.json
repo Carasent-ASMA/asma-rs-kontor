@@ -1,0 +1,577 @@
+{
+  "schema_version": 1,
+  "epic": "ASMA-8278",
+  "worker": "/root/attestation_verifier",
+  "status": "SOURCE_READY; exclusive writes finished and released to root",
+  "evidence_root": "/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029",
+  "source_root": "/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-restart-20261004",
+  "base": "975b05f91a69ac4c8623c5655dc1855091f81b69",
+  "actual_final_parent": "975b05f91a69ac4c8623c5655dc1855091f81b69",
+  "branch": "feat/ASMA-8278-shared-orchestration-workflow",
+  "bound_root_contract": "dc6d360a2616c683921526ea7e6f0114f0e4664f",
+  "spec": "1.5 section9.8",
+  "owned_final_sha256": {
+    "crates/kontor-runtime/src/planning_pair/attestation.rs": "4902114724206f4581ca055b47a1e7c18444c449b7ae61094df46d8380e57260",
+    "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic.rs": "8d4b5040642c68b58986fb8d3d8614584e48bb70ff5ac3ba7728b9679efd1a2d",
+    "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic/tests.rs": "a353b4aeb87f0ff27f3bde04fda45e0c926a2707664304500f13295fcd4e2c1e"
+  },
+  "candidate_files": "candidate-files/<owned path>; verified byte-equal to original and final isolated source",
+  "checks": {
+    "runtime_tests": 177,
+    "runtime_suites": 4,
+    "diagnostic_tests_included": 16,
+    "privacy_doctests": 2,
+    "suite_counts": [
+      {
+        "suite": "Running unittests src/lib.rs",
+        "status": "ok",
+        "passed": 157,
+        "failed": 0
+      },
+      {
+        "suite": "Running tests/binding_timeline.rs",
+        "status": "ok",
+        "passed": 5,
+        "failed": 0
+      },
+      {
+        "suite": "Running tests/bound_container_contract.rs",
+        "status": "ok",
+        "passed": 7,
+        "failed": 0
+      },
+      {
+        "suite": "Running tests/retitle_container.rs",
+        "status": "ok",
+        "passed": 8,
+        "failed": 0
+      },
+      {
+        "suite": "Doc-tests kontor_runtime",
+        "status": "ok",
+        "passed": 2,
+        "failed": 0
+      }
+    ],
+    "commands": [
+      {
+        "command": [
+          "cargo",
+          "test",
+          "--offline",
+          "--jobs",
+          "2",
+          "-p",
+          "kontor-runtime",
+          "planning_pair::attestation::prepared_diagnostic",
+          "--",
+          "--nocapture"
+        ],
+        "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-restart-20261004",
+        "cargo_target": "/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target",
+        "started_utc": "2026-10-03T22:28:33.897021+00:00",
+        "elapsed_seconds": 55.002,
+        "exit_code": 0,
+        "log": "logs/01-focused.log",
+        "sha256": "8e7f381929c92914f05456d1c965addd1e14d9e6f2d864dd295ca30b029214eb"
+      },
+      {
+        "command": [
+          "cargo",
+          "test",
+          "--offline",
+          "--jobs",
+          "2",
+          "-p",
+          "kontor-runtime"
+        ],
+        "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-restart-20261004",
+        "cargo_target": "/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target",
+        "started_utc": "2026-10-03T22:30:29.115051+00:00",
+        "elapsed_seconds": 5.308,
+        "exit_code": 0,
+        "log": "logs/02-runtime-regression.log",
+        "sha256": "a42770059e58d4ce8237d863904eb42f669c6ed7fada771930739ef23b4fb347"
+      },
+      {
+        "command": [
+          "cargo",
+          "clippy",
+          "--offline",
+          "--jobs",
+          "2",
+          "-p",
+          "kontor-runtime",
+          "--all-targets",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-restart-20261004",
+        "cargo_target": "/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target",
+        "started_utc": "2026-10-03T22:31:00.551822+00:00",
+        "elapsed_seconds": 36.46,
+        "exit_code": 0,
+        "log": "logs/03-clippy.log",
+        "sha256": "839618ef8df52c08c0f88a4757409d5732a36d8e10a85425fe6576a0dc3a99eb"
+      },
+      {
+        "command": [
+          "cargo",
+          "fmt",
+          "--all",
+          "--",
+          "--check"
+        ],
+        "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-restart-20261004",
+        "cargo_target": "/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target",
+        "started_utc": "2026-10-03T22:31:01.710421+00:00",
+        "elapsed_seconds": 3.384,
+        "exit_code": 0,
+        "log": "logs/04-fmt.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "command": [
+          "git",
+          "diff",
+          "--check"
+        ],
+        "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-restart-20261004",
+        "cargo_target": "/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target",
+        "started_utc": "2026-10-03T22:32:40.990640+00:00",
+        "elapsed_seconds": 0.076,
+        "exit_code": 0,
+        "log": "logs/07-diff-check.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ],
+    "fmt": "PASS",
+    "diff": "PASS",
+    "clippy": "PASS",
+    "size": {
+      "files": [
+        {
+          "path": "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic.rs",
+          "lines": 207,
+          "sha256": "8d4b5040642c68b58986fb8d3d8614584e48bb70ff5ac3ba7728b9679efd1a2d",
+          "functions": [
+            {
+              "name": "diagnose_prepared_attestation",
+              "start_line": 57,
+              "body_lines": 69,
+              "total_lines": 90
+            },
+            {
+              "name": "validate_projection",
+              "start_line": 147,
+              "body_lines": 28,
+              "total_lines": 34
+            },
+            {
+              "name": "valid_registration",
+              "start_line": 181,
+              "body_lines": 3,
+              "total_lines": 4
+            },
+            {
+              "name": "valid_revocation",
+              "start_line": 185,
+              "body_lines": 3,
+              "total_lines": 4
+            },
+            {
+              "name": "matches_metadata",
+              "start_line": 189,
+              "body_lines": 15,
+              "total_lines": 16
+            }
+          ],
+          "pass": true
+        },
+        {
+          "path": "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic/tests.rs",
+          "lines": 534,
+          "sha256": "a353b4aeb87f0ff27f3bde04fda45e0c926a2707664304500f13295fcd4e2c1e",
+          "functions": [
+            {
+              "name": "signing_key",
+              "start_line": 20,
+              "body_lines": 4,
+              "total_lines": 5
+            },
+            {
+              "name": "sign",
+              "start_line": 25,
+              "body_lines": 14,
+              "total_lines": 15
+            },
+            {
+              "name": "new",
+              "start_line": 51,
+              "body_lines": 87,
+              "total_lines": 87
+            },
+            {
+              "name": "request",
+              "start_line": 138,
+              "body_lines": 14,
+              "total_lines": 15
+            },
+            {
+              "name": "diagnose",
+              "start_line": 153,
+              "body_lines": 9,
+              "total_lines": 10
+            },
+            {
+              "name": "key_mut",
+              "start_line": 163,
+              "body_lines": 3,
+              "total_lines": 4
+            },
+            {
+              "name": "token_mut",
+              "start_line": 167,
+              "body_lines": 3,
+              "total_lines": 3
+            },
+            {
+              "name": "replace_payload",
+              "start_line": 170,
+              "body_lines": 5,
+              "total_lines": 6
+            },
+            {
+              "name": "id",
+              "start_line": 177,
+              "body_lines": 3,
+              "total_lines": 4
+            },
+            {
+              "name": "consistency_returns_unit_with_historical_heads_and_no_current_provenance_claim",
+              "start_line": 183,
+              "body_lines": 16,
+              "total_lines": 16
+            },
+            {
+              "name": "size_precedes_scope_absence_and_parsing",
+              "start_line": 201,
+              "body_lines": 18,
+              "total_lines": 18
+            },
+            {
+              "name": "scopes_and_fixed_application_precede_absent_rows",
+              "start_line": 221,
+              "body_lines": 30,
+              "total_lines": 30
+            },
+            {
+              "name": "selected_key_then_token_presence_precedes_bad_heads",
+              "start_line": 253,
+              "body_lines": 10,
+              "total_lines": 10
+            },
+            {
+              "name": "projection_revisions_and_revocation_order_are_validated_before_commitments",
+              "start_line": 265,
+              "body_lines": 29,
+              "total_lines": 29
+            },
+            {
+              "name": "selected_der_and_utf8_identifier_bounds_precede_hashing",
+              "start_line": 296,
+              "body_lines": 46,
+              "total_lines": 46
+            },
+            {
+              "name": "key_material_commitments_are_recomputed_from_selected_der",
+              "start_line": 344,
+              "body_lines": 20,
+              "total_lines": 20
+            },
+            {
+              "name": "selected_key_identity_and_immutable_registration_must_match_preparation",
+              "start_line": 366,
+              "body_lines": 12,
+              "total_lines": 12
+            },
+            {
+              "name": "exact_original_payload_digest_precedes_revocation_and_verification",
+              "start_line": 380,
+              "body_lines": 17,
+              "total_lines": 17
+            },
+            {
+              "name": "token_revocation_precedes_interval_and_signature_checks",
+              "start_line": 399,
+              "body_lines": 8,
+              "total_lines": 8
+            },
+            {
+              "name": "key_revocation_is_refused_by_existing_verifier",
+              "start_line": 409,
+              "body_lines": 5,
+              "total_lines": 5
+            },
+            {
+              "name": "invalid_or_uncontained_prepared_intervals_precede_verification",
+              "start_line": 416,
+              "body_lines": 15,
+              "total_lines": 15
+            },
+            {
+              "name": "signature_and_strict_payload_checks_are_delegated",
+              "start_line": 433,
+              "body_lines": 24,
+              "total_lines": 24
+            },
+            {
+              "name": "supplied_time_operation_policy_and_request_identity_use_existing_verifier",
+              "start_line": 459,
+              "body_lines": 30,
+              "total_lines": 30
+            },
+            {
+              "name": "signed_metadata_matches_every_exact_prepared_field_after_verification",
+              "start_line": 491,
+              "body_lines": 31,
+              "total_lines": 31
+            },
+            {
+              "name": "key_commitment_precedes_token_commitment_and_signature_precedes_final_metadata",
+              "start_line": 524,
+              "body_lines": 11,
+              "total_lines": 11
+            }
+          ],
+          "pass": true
+        }
+      ],
+      "pass": true,
+      "limits": "hard600 file/100 function lines; Rust strings/comments masked before brace counting"
+    },
+    "offline_jobs": 2
+  },
+  "mutation": {
+    "report": "mutation-report.json",
+    "definitions": "mutation-definitions.json",
+    "runner": "run_mutations.py",
+    "unique_seeded": 4,
+    "compiled_intended_assertion_kills": 4,
+    "all_sources_restored": true,
+    "restored_diagnostic_baseline": 16,
+    "original_and_isolated_hashes": {
+      "crates/kontor-runtime/src/planning_pair/attestation.rs": "4902114724206f4581ca055b47a1e7c18444c449b7ae61094df46d8380e57260",
+      "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic.rs": "8d4b5040642c68b58986fb8d3d8614584e48bb70ff5ac3ba7728b9679efd1a2d",
+      "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic/tests.rs": "a353b4aeb87f0ff27f3bde04fda45e0c926a2707664304500f13295fcd4e2c1e"
+    }
+  },
+  "temporal_provenance": "temporal-provenance.json; initial focused and final strengthened test bytes separately pinned",
+  "completion": "completion-readback.json",
+  "limitations": [
+    "Result<(), fieldless refusal) reports supplied metadata/signed-byte consistency only.",
+    "No verified object, actor/grant/permission/receipt/intent/admission or current provenance is returned.",
+    "Caller-supplied projections and time establish no authenticity, transaction-held freshness, possession/custody/fencing/finality.",
+    "No store dependency/caller/writer/migration/endpoint, installed DB, keychain, provider or native effects.",
+    "Existing owner comparison and Unsupported guards unchanged; future authentic owner-transaction composition remains unresolved.",
+    "No epic acceptance or closure claim; root sole publisher and independent-review dispatcher."
+  ],
+  "artifact_inventory": [
+    {
+      "path": "01-focused.log.json",
+      "bytes": 613,
+      "sha256": "59da171357b0b9240cb3020938d99ac6a2694fcac1b93401145ad434fcb4e312"
+    },
+    {
+      "path": "01-source-hashes.json",
+      "bytes": 433,
+      "sha256": "1b8efa05a846409cea23819b580e78e58d066ea78159e2f3609cb43dda150890"
+    },
+    {
+      "path": "02-runtime-regression.log.json",
+      "bytes": 539,
+      "sha256": "a5972ec349088b5aa83f747192907ac560a48beecaaa167493900129891ca2bd"
+    },
+    {
+      "path": "03-clippy.log.json",
+      "bytes": 586,
+      "sha256": "72e2afa83ad7d0cbc7100f449f7f3baa835a7cad24e335d7a5c08a2efb19a9e5"
+    },
+    {
+      "path": "04-fmt.log.json",
+      "bytes": 489,
+      "sha256": "c8b9ba264213cd62f01fd6156975e99e400201515c06bd9158931168ee11a052"
+    },
+    {
+      "path": "07-diff-check.log.json",
+      "bytes": 472,
+      "sha256": "4fe3bfcba3ccd1e88239ef7fe5eedd7bf1b1f4c1a64c649b38acbe72c8c1ec68"
+    },
+    {
+      "path": "README.md",
+      "bytes": 4844,
+      "sha256": "eba56d87c4939ab2bbab890cb5d834fca844f0fdc2927b7ea57b4d1915ad1a6e"
+    },
+    {
+      "path": "assignment.json",
+      "bytes": 594,
+      "sha256": "d06e61e77b8e3ea651198898ef4dbabf9d0d4a32bc5229235350acf9f28d89aa"
+    },
+    {
+      "path": "check_sizes.py",
+      "bytes": 1338,
+      "sha256": "fa18b86a632fa4f6df360a4ba5109bd4863fd0aefc7c5d006308529c9540f6ce"
+    },
+    {
+      "path": "completion-readback.json",
+      "bytes": 741,
+      "sha256": "cc12bf7b2037a31c4e99efd85125b1c47ae4feed001d352c9fce06e9ee3ae386"
+    },
+    {
+      "path": "final-git-status.txt",
+      "bytes": 272,
+      "sha256": "6274c80c300f37a210504acf6578fe569023e6adcc4e57a57be6ff86a504638d"
+    },
+    {
+      "path": "final-owned-hashes.json",
+      "bytes": 433,
+      "sha256": "233be73aec2b5385f5ad17fd3e7c2077aed4823fb4ee339c370019442a02d908"
+    },
+    {
+      "path": "final-owned-hashes.tsv",
+      "bytes": 406,
+      "sha256": "61ad0433491b5f0ce02bf9d05c48b504266f38fe07d44cda68aceb356ab1b393"
+    },
+    {
+      "path": "finalize_evidence.py",
+      "bytes": 11442,
+      "sha256": "4c1388eba673735cf9f3c9b85f266e6633615aef85190b0d48cd772223d310e9"
+    },
+    {
+      "path": "graph-verify-trace.json",
+      "bytes": 1270,
+      "sha256": "e7ecb4476da6b822bf9027c782afbde38c87813392c4aa376df8505b8cffa69a"
+    },
+    {
+      "path": "mutation-baseline-hashes.json",
+      "bytes": 433,
+      "sha256": "233be73aec2b5385f5ad17fd3e7c2077aed4823fb4ee339c370019442a02d908"
+    },
+    {
+      "path": "mutation-definitions.json",
+      "bytes": 1872,
+      "sha256": "02edc048fe275ed00faf636f98449d2c574b84b99bdd4dd2e9cc9c9cbbd582fd"
+    },
+    {
+      "path": "mutation-report.json",
+      "bytes": 10163,
+      "sha256": "390d9449072939c106b228e85bf13cdccf2953ed83b864a64dfe5467289b6d7a"
+    },
+    {
+      "path": "prepare_mutations.py",
+      "bytes": 2535,
+      "sha256": "88352f9b1cfe6ef36e38c714da4c4ed75feb25a63d3dd0ee52541e91f382864d"
+    },
+    {
+      "path": "run_check.py",
+      "bytes": 916,
+      "sha256": "d1896392b554d5eea9f6f3b2e6b51acbb5cdd0e1ae1af0fcf8893ae59f31deda"
+    },
+    {
+      "path": "run_mutations.py",
+      "bytes": 3617,
+      "sha256": "eeb7054ac3929a5136ae895fd3afc6dd89362b9d60f0363c59c891c6ae53531e"
+    },
+    {
+      "path": "runtime-suite-counts.json",
+      "bytes": 560,
+      "sha256": "97382a70924e151ba1e849f4b3c14b617a9d63144939f10424647960cc241b8b"
+    },
+    {
+      "path": "source-delta.patch",
+      "bytes": 526,
+      "sha256": "70b1be6a882a47c46f61ede65b216ca0e528f3e2d4c4306ffa17adea5b5ce774"
+    },
+    {
+      "path": "temporal-provenance.json",
+      "bytes": 1662,
+      "sha256": "cbf1fbdcad0cd3f76fa29b867b93a9770cb918e0f646109cad4f95ea6d77575f"
+    },
+    {
+      "path": "logs/01-focused.log",
+      "bytes": 5081,
+      "sha256": "8e7f381929c92914f05456d1c965addd1e14d9e6f2d864dd295ca30b029214eb"
+    },
+    {
+      "path": "logs/02-runtime-regression.log",
+      "bytes": 18644,
+      "sha256": "a42770059e58d4ce8237d863904eb42f669c6ed7fada771930739ef23b4fb347"
+    },
+    {
+      "path": "logs/03-clippy.log",
+      "bytes": 1415,
+      "sha256": "839618ef8df52c08c0f88a4757409d5732a36d8e10a85425fe6576a0dc3a99eb"
+    },
+    {
+      "path": "logs/04-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "logs/05-mutation-setup.log",
+      "bytes": 165,
+      "sha256": "7b865690b6ee9bbd2c7c519a1eebbfcd445b0fce1b33e832e0aa45a155b7f81c"
+    },
+    {
+      "path": "logs/06-mutation-runner.log",
+      "bytes": 458,
+      "sha256": "1822dd0250155209b58e3aef9ded45ab62ad2bf1c38843ef8d1143442c9b32df"
+    },
+    {
+      "path": "logs/07-diff-check.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "logs/08-size-check.log",
+      "bytes": 5607,
+      "sha256": "7ee2d8bb0ef8dd6c81fb7fbe80ded834b733ebf9642753fbaf65c88517172fd2"
+    },
+    {
+      "path": "mutation-logs/M01-key-material.log",
+      "bytes": 1237,
+      "sha256": "0e8b62cb3677a48fa177c597fdd7e374dd8246a67b032490f818461480bfa33b"
+    },
+    {
+      "path": "mutation-logs/M02-original-payload.log",
+      "bytes": 1277,
+      "sha256": "44566b104b0346d583833e949fe2cc7d8ed74903f3c4eb817eb96086ced59ac8"
+    },
+    {
+      "path": "mutation-logs/M03-token-revocation.log",
+      "bytes": 1230,
+      "sha256": "4ef5540364db1ee7769ab652039dacb373cda5fe1b98cc7069d4b02fbe0086e3"
+    },
+    {
+      "path": "mutation-logs/M04-signed-metadata.log",
+      "bytes": 1277,
+      "sha256": "cce4e2fd05a4818c823b4266bdcdcf25dc889c9b62b338ea12e4b1aea0a31666"
+    },
+    {
+      "path": "mutation-logs/baseline.log",
+      "bytes": 4238,
+      "sha256": "007af94c7224a1668880b7d11c0028f70ef74288f8860510769efa88bbd10a96"
+    },
+    {
+      "path": "mutation-logs/restored-baseline.log",
+      "bytes": 2595,
+      "sha256": "e2fcf87de890c2179bd221c0bf6c5bb3c509af6ff06af979fb1013a308da1fa7"
+    }
+  ],
+  "inventory_exclusions": [
+    "compiler targets",
+    "full source fixture copy, whose owned3 bytes are independently pinned",
+    "manifest self-hash emitted separately"
+  ]
+}

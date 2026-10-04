@@ -1,0 +1,12 @@
+import pathlib
+P = pathlib.Path("crates/kontor-store/migrations/0122_core_team_route_succession_receipt_identity.sql")
+s = P.read_text()
+old = """CREATE UNIQUE INDEX ux_core_team_route_succession_receipt
+ON core_team_route_successions (receipt_id)
+WHERE receipt_id IS NOT NULL;"""
+new = """-- MUTANT M-P22b1: one receipt may complete any number of successions.
+CREATE INDEX ux_core_team_route_succession_receipt
+ON core_team_route_successions (receipt_id)
+WHERE receipt_id IS NOT NULL;"""
+assert s.count(old) == 1
+P.write_text(s.replace(old, new, 1))

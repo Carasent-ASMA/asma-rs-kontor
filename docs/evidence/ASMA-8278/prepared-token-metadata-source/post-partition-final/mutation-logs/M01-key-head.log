@@ -1,0 +1,20 @@
+   Compiling kontor-store v0.2.1 (/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-prepared-token-validation-da8llp8_/post-partition-final/mutation-source/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.52s
+     Running tests/attestation_token_metadata.rs (/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-prepared-token-validation-da8llp8_/post-partition-final/mutation-target/debug/deps/attestation_token_metadata-27446f01ef2e338a)
+
+running 1 test
+
+thread 'fresh_checks_precede_identity_reuse_and_leave_existing_commitment_unchanged' (28666957) panicked at crates/kontor-store/tests/attestation_token_metadata.rs:178:5:
+assertion failed: matches!(f.refuse_unchanged(&r), RepositoryError::Conflict
+    { rule: "expected head revision does not match", .. })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test fresh_checks_precede_identity_reuse_and_leave_existing_commitment_unchanged ... FAILED
+
+failures:
+
+failures:
+    fresh_checks_precede_identity_reuse_and_leave_existing_commitment_unchanged
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 21 filtered out; finished in 2.06s
+
+error: test failed, to rerun pass `-p kontor-store --test attestation_token_metadata`

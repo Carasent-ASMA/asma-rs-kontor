@@ -358,23 +358,25 @@ impl LaunchPermit {
     /// runtime is trusting a caller to have made.
     #[must_use]
     pub fn launch_request(self, authority: LaunchAuthority, launch: SlotLaunch) -> PreparedLaunch {
-        let request = authority.into_request(LaunchParts {
-            agent_run_id: self.agent_run_id,
-            team_run_id: self.team_run_id,
-            role_slot_id: self.slot.clone(),
-            task_id: launch.task_id,
-            binding_id: launch.binding_id,
-            placement: launch.placement,
-            cwd: launch.cwd,
-            scope: launch.scope,
-            display_name: launch.display_name,
-            account_profile_id: launch.account_profile_id,
-            prompt: launch.prompt,
-            model_rung: launch.model_rung,
-            context_policy: launch.context_policy,
-            autonomy: launch.autonomy,
-            requested_at: launch.requested_at,
-        });
+        let request = authority
+            .into_request(LaunchParts {
+                agent_run_id: self.agent_run_id,
+                team_run_id: self.team_run_id,
+                role_slot_id: self.slot.clone(),
+                task_id: launch.task_id,
+                binding_id: launch.binding_id,
+                placement: launch.placement,
+                cwd: launch.cwd,
+                scope: launch.scope,
+                display_name: launch.display_name,
+                account_profile_id: launch.account_profile_id,
+                prompt: launch.prompt,
+                model_rung: launch.model_rung,
+                context_policy: launch.context_policy,
+                autonomy: launch.autonomy,
+                requested_at: launch.requested_at,
+            })
+            .with_fleet_provenance(launch.fleet_provenance);
         PreparedLaunch {
             permit: self,
             request,
@@ -474,6 +476,10 @@ pub struct SlotLaunch {
     pub autonomy: SeatAutonomy,
     /// When the launch was requested.
     pub requested_at: Timestamp,
+    /// Which fleet policy chose this seat's route, when one did (ASMA-8280
+    /// G-3). The runtime writes it natively where it can and reports what it
+    /// read back; it is never the proof of itself.
+    pub fleet_provenance: Option<kontor_runtime::FleetLaunchProvenance>,
 }
 
 /// A slot with exactly one live native session.
@@ -881,16 +887,31 @@ impl TeamRunSlots {
             .collect();
 
         // An operator-abandoned run that never held a native binding normally
-        // spends neither a seat nor successor depth. Retain only the exact rows
-        // that a real successor names as its audit parent; without that anchor
-        // the successor becomes a rootless lineage after restart. Unreferenced
+        // spends neither a seat nor successor depth. Retain the full ancestor
+        // closure of meaningful runs, including consecutive abandoned bridges;
+        // otherwise their successors become rootless after restart. Unreferenced
         // failed launches remain omitted, including abandoned branches beside
         // an otherwise valid native successor chain.
-        let referenced_parents: BTreeSet<AgentRunId> = runs
+        let parents: BTreeMap<AgentRunId, Option<AgentRunId>> = runs
+            .iter()
+            .map(|run| (run.id, run.parent_agent_run_id))
+            .collect();
+        let mut pending_parents: Vec<AgentRunId> = runs
             .iter()
             .filter(|run| !run.is_operator_abandoned_unbound())
             .filter_map(|run| run.parent_agent_run_id)
             .collect();
+        let mut referenced_parents = BTreeSet::new();
+        while let Some(id) = pending_parents.pop() {
+            if referenced_parents.insert(id)
+                && let Some(Some(parent)) = parents.get(&id)
+            {
+                pending_parents.push(*parent);
+            }
+        }
+        // The closure walk is finite even for malformed ancestry. The retained
+        // rows still pass through hydrate_slot's missing-parent, fork, cycle,
+        // role, occupancy and depth checks; retention grants no launch authority.
         let mut grouped: BTreeMap<RoleSlotId, Vec<&AgentRun>> = BTreeMap::new();
         for run in runs {
             if run.team_run_id != team_run_id {

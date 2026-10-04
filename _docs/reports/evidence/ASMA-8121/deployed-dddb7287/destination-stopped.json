@@ -1,0 +1,8 @@
+{
+  "recordedAt": "2026-09-26T08:09:17.285008+00:00",
+  "pid": 54296,
+  "command": "/private/tmp/kontor-ASMA-8121-release-dddb7287/bin/kontor-daemon --state-root /private/tmp/ASMA-8121-continuity-20260926/corrected-dddb7287/destination-root --port 7781",
+  "signal": "SIGTERM",
+  "port7781ListenerAbsent": true,
+  "livePort7717Untouched": true
+}

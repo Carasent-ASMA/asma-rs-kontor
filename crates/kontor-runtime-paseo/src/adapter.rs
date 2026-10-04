@@ -118,7 +118,8 @@ use crate::wire::{
     PaseoProject, PaseoProjectAdded, PaseoProjectList, PaseoProjectRenamed, PaseoProjection,
     PaseoSendAccepted, PaseoServerInfo, PaseoStreamFrame, PaseoSubscriptionAck,
     PaseoTimelineCursor, PaseoTimelineEntry, PaseoTimelinePage, PaseoWorkspace, PaseoWorkspaceKind,
-    PaseoWorkspacePage, label, normalize_entry, stream_permission_external_id,
+    PaseoWorkspacePage, covers_window, expand_to_sequences, label, normalize_entry,
+    stream_permission_external_id,
 };
 
 /// Map this plane's wire vocabulary onto the runtime-neutral container shape.
@@ -2879,8 +2880,10 @@ impl PaseoAdapter {
         ) {
             return None;
         }
+        // Raw on purpose: refusal provenance is defined over Paseo's own source
+        // ranges, which expansion would narrow to one sequence.
         let page = self
-            .fetch_canonical(
+            .fetch_timeline_page(
                 native_id,
                 PaseoDirection::Tail,
                 None,
@@ -3675,14 +3678,121 @@ impl PaseoAdapter {
 // ---------------------------------------------------------------------------
 
 impl PaseoAdapter {
-    /// One canonical page for `agent_id`, strictly after `cursor`.
+    /// One canonical page for `agent_id`: one entry per native sequence.
+    ///
+    /// Paseo 0.9 answers every read from its projection, so a page may carry
+    /// entries that span several sequences, and an older page may have holes
+    /// where an entry anchored further back absorbed a later sequence (a tool
+    /// call completing across the page boundary). Both are re-expressed here
+    /// through [`expand_to_sequences`], so every caller keeps paging a dense,
+    /// one-event-per-sequence transcript. An already-canonical page is returned
+    /// exactly as the daemon sent it.
+    ///
+    /// # Errors
+    /// Everything [`Self::fetch_timeline_page`] refuses, plus
+    /// [`TimelineBreak::SequenceGap`] when the window cannot be proven dense.
+    async fn fetch_canonical(
+        &self,
+        agent_id: &str,
+        direction: PaseoDirection,
+        cursor: Option<&PaseoTimelineCursor>,
+        limit: u32,
+        projection: PaseoProjection,
+    ) -> RuntimeResult<PaseoTimelinePage> {
+        let gap = || RuntimeError::TimelineRefetchRequired {
+            reason: TimelineBreak::SequenceGap,
+        };
+        let page = self
+            .fetch_timeline_page(agent_id, direction, cursor, limit, projection)
+            .await?;
+        let collapsed = page.entries.iter().any(|entry| !entry.is_single_sequence());
+        if !collapsed && direction != PaseoDirection::Before {
+            return Ok(page);
+        }
+        let Some(lo) = page.entries.iter().map(|entry| entry.seq_start).min() else {
+            return Ok(page);
+        };
+        let (lo, hi) = match direction {
+            PaseoDirection::Tail => (
+                lo,
+                page.entries
+                    .iter()
+                    .map(|entry| entry.seq_end)
+                    .max()
+                    .unwrap_or(lo),
+            ),
+            PaseoDirection::After => {
+                let after = cursor.ok_or_else(gap)?.seq;
+                let hi = page.end_cursor.as_ref().ok_or_else(gap)?.seq;
+                (after.checked_add(1).ok_or_else(gap)?, hi)
+            }
+            PaseoDirection::Before => (
+                lo,
+                cursor.ok_or_else(gap)?.seq.checked_sub(1).ok_or_else(gap)?,
+            ),
+        };
+        let mut expanded = expand_to_sequences(&page.entries, lo, hi)?;
+        if !collapsed && covers_window(&expanded, lo, hi) {
+            return Ok(page);
+        }
+        // An older page's holes belong to entries anchored further back; fetch
+        // those and fold them in until the window is dense or provably is not.
+        let (mut lo, mut has_older, mut entries) = (lo, page.has_older, page.entries.clone());
+        let mut budget = RECONCILE_PAGE_BUDGET;
+        while direction == PaseoDirection::Before && !covers_window(&expanded, lo, hi) {
+            if !has_older || budget == 0 {
+                return Err(gap());
+            }
+            budget -= 1;
+            let older_cursor = PaseoTimelineCursor {
+                epoch: page.epoch.clone(),
+                seq: lo,
+            };
+            let older = self
+                .fetch_timeline_page(agent_id, direction, Some(&older_cursor), limit, projection)
+                .await?;
+            if older.epoch != page.epoch {
+                return Err(RuntimeError::TimelineRefetchRequired {
+                    reason: TimelineBreak::EpochChanged,
+                });
+            }
+            let older_lo = older
+                .entries
+                .iter()
+                .map(|entry| entry.seq_start)
+                .min()
+                .ok_or_else(gap)?;
+            if older_lo >= lo {
+                return Err(gap());
+            }
+            entries.extend(older.entries);
+            (lo, has_older) = (older_lo, older.has_older);
+            expanded = expand_to_sequences(&entries, lo, hi)?;
+        }
+        if !covers_window(&expanded, lo, hi) {
+            return Err(gap());
+        }
+        let at = |seq| PaseoTimelineCursor {
+            epoch: page.epoch.clone(),
+            seq,
+        };
+        Ok(PaseoTimelinePage {
+            entries: expanded.into_values().collect(),
+            start_cursor: Some(at(lo)),
+            end_cursor: Some(at(hi)),
+            has_older,
+            ..page
+        })
+    }
+
+    /// One raw page for `agent_id`, exactly as the daemon answered it.
     ///
     /// A page that declares `reset`, `staleCursor` or `gap` is a break rather
     /// than a page: Paseo puts those flags on the *response*, so this is the one
     /// place they have to be read, and reading its entries anyway would page
     /// over the hole the daemon just declared. Same for the daemon's own
     /// `error`: a page that failed is not an empty transcript.
-    async fn fetch_canonical(
+    async fn fetch_timeline_page(
         &self,
         agent_id: &str,
         direction: PaseoDirection,
@@ -4509,6 +4619,11 @@ impl PaseoAdapter {
             &project,
             &workspace_id,
         )?;
+        // ASMA-8280 G-3: the fleet policy's authority rides as native labels,
+        // so the census and the readback hold the seat to it as well.
+        if let Some(provenance) = request.fleet_provenance() {
+            labels.extend(crate::wire::fleet_provenance_labels(provenance)?);
+        }
         // Built before the census, not after, because the create carries a
         // launch-intent digest and the census must match the labels the created
         // agent will actually have. This is also the reconciliation claim: the
@@ -4736,6 +4851,7 @@ impl PaseoAdapter {
             }
             return Err(invalid);
         }
+        let fleet_provenance = Self::observed_fleet_provenance(request.fleet_provenance(), &agent)?;
 
         // A delivery seat exists by now, carrying this launch's exact intent. If
         // the durable bind fails, the seat is neither stranded nor duplicated:
@@ -4816,6 +4932,7 @@ impl PaseoAdapter {
         Ok(LaunchOutcome {
             snapshot,
             observation,
+            fleet_provenance,
         })
     }
 
@@ -5255,7 +5372,61 @@ impl PaseoAdapter {
         } else {
             labels.insert(label::READ_ONLY.to_owned(), "true".to_owned());
         }
+        if let Some(provenance) = &request.fleet_provenance {
+            labels.extend(crate::wire::fleet_provenance_labels(provenance)?);
+        }
         Ok(labels)
+    }
+
+    /// Why this adapter cannot establish a planning pair member's closed
+    /// surface for one route (ASMA-8282 D-3), decided with no plane call, no
+    /// file, no process and no session.
+    ///
+    /// Every real route is refused today, each for its own reason:
+    ///
+    /// * **Claude.** The member guard, serve profile and creation restriction
+    ///   are composable, and their construction is proved on source fixtures.
+    ///   But this Paseo acknowledges no applied closed tool restriction for a
+    ///   created session: `providerOptionsApplied` is an optional per-agent
+    ///   flag about OpenCode provider options, not the session's exact tools,
+    ///   guard or ambient MCP exclusion. So the restriction could never be
+    ///   observed, and a member could never qualify.
+    /// * **Codex.** A read-only sandbox and `never` approval are not a closed
+    ///   tool restriction: `toolPolicy` only preapproves, and the provider
+    ///   home's own MCP servers are not excluded.
+    /// * **Cursor and OpenCode.** `plan` and every historical fallback are
+    ///   behavioral, not an enforced read-only boundary.
+    /// * **Anything else.** No member surface is composed.
+    fn planning_pair_member_route_gap(rung: &ModelRung) -> RuntimeError {
+        use kontor_runtime::planning_pair::MemberSurfaceGap;
+        let gap = match crate::client::built_in_provider(&rung.provider.0) {
+            "claude" => MemberSurfaceGap::RestrictionUnacknowledged,
+            "codex" => MemberSurfaceGap::ClosedToolsUnavailable,
+            "cursor" | "opencode" => MemberSurfaceGap::ReadOnlyUnenforced,
+            _ => MemberSurfaceGap::NotComposed,
+        };
+        RuntimeError::PlanningPairMemberSurfaceUnsupported {
+            provider: rung.provider.0.clone(),
+            gap,
+        }
+    }
+
+    /// What this launch observed of its fleet provenance: read back from the
+    /// agent's native labels, which the placement readback has already held
+    /// to the exact requested set. Nothing requested is nothing to observe.
+    fn observed_fleet_provenance(
+        requested: Option<&kontor_runtime::FleetLaunchProvenance>,
+        agent: &PaseoAgent,
+    ) -> RuntimeResult<kontor_runtime::FleetProvenanceObservation> {
+        if requested.is_none() {
+            return Ok(kontor_runtime::FleetProvenanceObservation::NotRequested);
+        }
+        let provenance = crate::wire::fleet_provenance_from_labels(&agent.labels)?
+            .ok_or(RuntimeError::CorrelationFailed)?;
+        Ok(kontor_runtime::FleetProvenanceObservation::Observed {
+            surface: crate::wire::FLEET_PROVENANCE_SURFACE.to_owned(),
+            provenance,
+        })
     }
 
     async fn launch_consultation_inner(
@@ -5419,6 +5590,11 @@ impl PaseoAdapter {
                 .transpose()?,
             observed_at: request.requested_at,
             created,
+            fleet_provenance: Self::observed_fleet_provenance(
+                request.fleet_provenance.as_ref(),
+                &agent,
+            )?,
+            planning_pair: None,
         })
     }
 
@@ -5459,14 +5635,18 @@ impl PaseoAdapter {
         project: &PaseoProjectBinding,
         workspace_id: &str,
     ) -> RuntimeResult<BTreeMap<String, String>> {
-        self.hosted_labels(
+        let mut labels = self.hosted_labels(
             request.seat_binding_id,
             &request.role_slot_id,
             &request.scope,
             project,
             workspace_id,
             &request.cwd,
-        )
+        )?;
+        if let Some(provenance) = &request.fleet_provenance {
+            labels.extend(crate::wire::fleet_provenance_labels(provenance)?);
+        }
+        Ok(labels)
     }
 
     fn released_seat_title(
@@ -5952,6 +6132,11 @@ impl PaseoAdapter {
                 .transpose()?,
             observed_at: request.requested_at,
             created,
+            fleet_provenance: Self::observed_fleet_provenance(
+                request.fleet_provenance.as_ref(),
+                &agent,
+            )?,
+            planning_pair: None,
         })
     }
 }
@@ -5964,6 +6149,14 @@ impl RuntimeAdapter for PaseoAdapter {
         provenance: &ConsultationRouteProvenance,
     ) -> RuntimeResult<()> {
         super::client::consultation_route_permission_mode(rung, provenance).map(|_| ())
+    }
+
+    fn validate_planning_pair_member_surface(
+        &self,
+        routes: &[kontor_runtime::planning_pair::PlanningPairMemberRoute],
+    ) -> RuntimeResult<()> {
+        kontor_runtime::planning_pair::PlanningPairMemberRoute::require_pair(routes)?;
+        Err(Self::planning_pair_member_route_gap(&routes[0].model_rung))
     }
 
     fn declared_autonomy(&self) -> Option<SeatAutonomy> {
@@ -6449,6 +6642,13 @@ impl RuntimeAdapter for PaseoAdapter {
         &self,
         request: &ConsultationLaunchRequest,
     ) -> RuntimeResult<ConsultationLaunchOutcome> {
+        // ASMA-8282 D-3: the family and its frozen member context agree, and
+        // then the member is refused for its route's own gap, before the launch
+        // claim, any plane call, any composed file or any session. A planning
+        // pair is never launched under the Advisor and Committee surface.
+        if request.planning_pair_context()?.is_some() {
+            return Err(Self::planning_pair_member_route_gap(&request.model_rung));
+        }
         {
             let state = &mut *self.lock();
             if !state.consultation_claims.insert(request.seat_binding_id) {
@@ -9076,6 +9276,9 @@ impl RuntimeAdapter for PaseoAdapter {
         Ok(LaunchOutcome {
             snapshot,
             observation,
+            // Adoption binds a session no launch of Kontor's created, so there is
+            // no requested fleet provenance to observe.
+            fleet_provenance: kontor_runtime::FleetProvenanceObservation::NotRequested,
         })
     }
 

@@ -1,0 +1,20 @@
+COMMAND=['cargo', 'build', '--release', '--locked', '-p', 'kontor-daemon', '-p', 'kontor-mcp', '-p', 'kontor-cli', '--target-dir', '/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target']
+   Compiling kontor-core v0.2.1 (/private/tmp/kontor-ASMA-8121-release-dddb7287/source/crates/kontor-core)
+   Compiling kontor-runtime v0.2.1 (/private/tmp/kontor-ASMA-8121-release-dddb7287/source/crates/kontor-runtime)
+   Compiling kontor-policy v0.2.1 (/private/tmp/kontor-ASMA-8121-release-dddb7287/source/crates/kontor-policy)
+   Compiling kontor-context v0.2.1 (/private/tmp/kontor-ASMA-8121-release-dddb7287/source/crates/kontor-context)
+   Compiling kontor-mcp v0.2.1 (/private/tmp/kontor-ASMA-8121-release-dddb7287/source/crates/kontor-mcp)
+   Compiling kontor-cli v0.2.1 (/private/tmp/kontor-ASMA-8121-release-dddb7287/source/crates/kontor-cli)
+   Compiling kontor-scheduler v0.2.1 (/private/tmp/kontor-ASMA-8121-release-dddb7287/source/crates/kontor-scheduler)
+   Compiling kontor-teams v0.2.1 (/private/tmp/kontor-ASMA-8121-release-dddb7287/source/crates/kontor-teams)
+   Compiling kontor-runtime-paseo v0.2.1 (/private/tmp/kontor-ASMA-8121-release-dddb7287/source/crates/kontor-runtime-paseo)
+   Compiling kontor-profiles v0.2.1 (/private/tmp/kontor-ASMA-8121-release-dddb7287/source/crates/kontor-profiles)
+   Compiling kontor-calendar v0.2.1 (/private/tmp/kontor-ASMA-8121-release-dddb7287/source/crates/kontor-calendar)
+   Compiling kontor-accounts v0.2.1 (/private/tmp/kontor-ASMA-8121-release-dddb7287/source/crates/kontor-accounts)
+   Compiling kontor-store v0.2.1 (/private/tmp/kontor-ASMA-8121-release-dddb7287/source/crates/kontor-store)
+   Compiling kontor-jira v0.2.1 (/private/tmp/kontor-ASMA-8121-release-dddb7287/source/crates/kontor-jira)
+   Compiling kontor-api v0.2.1 (/private/tmp/kontor-ASMA-8121-release-dddb7287/source/crates/kontor-api)
+   Compiling kontor-daemon v0.2.1 (/private/tmp/kontor-ASMA-8121-release-dddb7287/source/crates/kontor-daemon)
+    Finished `release` profile [optimized] target(s) in 2m 34s
+
+PROCESS_EXIT_CODE=0

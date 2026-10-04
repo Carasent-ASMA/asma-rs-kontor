@@ -1,0 +1,26 @@
+{
+  "qualifiedCandidate": "79b07f31028704a6a98203b89877264fd179a535",
+  "gitTree": "ebd20eb03d5659b30747bc2202e2b2ee0896528d",
+  "mode": "archive",
+  "fullGateExitCode": 0,
+  "apiVerificationExitCode": 0,
+  "rust": {
+    "testBinaries": 149,
+    "passed": 2905,
+    "failed": 0,
+    "ignored": 9
+  },
+  "console": {
+    "passed": 305,
+    "failed": 0
+  },
+  "logs": {
+    "79b07f31-full-gate.txt": "23cd33191706edc85a1124a97e62cadad8cbbd1b8f497e3dc37af0368a074178",
+    "79b07f31-verify-api.txt": "5a42a65a8d30738a131d2618abc6ca87e4cd856fbb78c6c788014d1213bdf1af"
+  },
+  "sourceHashes": {
+    "crates/kontor-store/src/backup/export.rs": "d347191051f326b16972993c37a2b707fa2c76a68508ec5bba271c059b7898ad",
+    "crates/kontor-store/tests/backup_export.rs": "7afbea3321796ae70413e2f197fa9defee3c83f9b9bd97e166b32a2864412f28"
+  },
+  "boundary": "Exact source qualification; actual snapshot export, integration, deployment and post-restart continuity remain separate and uncredited."
+}

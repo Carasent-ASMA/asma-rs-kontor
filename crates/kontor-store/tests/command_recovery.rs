@@ -17,6 +17,8 @@
 //!   as one;
 //! * letting a duplicate or out-of-order transition move a receipt backwards.
 
+mod support;
+
 use std::collections::BTreeMap;
 
 use kontor_core::id::{
@@ -102,7 +104,7 @@ impl Fixture {
 fn fixture() -> Fixture {
     let directory = TempDir::new().expect("a temporary directory");
     let path = directory.path().join("kontor.db");
-    let store = SqliteStore::open(&path).expect("the store opens");
+    let store = support::store_from_template(&path);
     let connection = Connection::open(&path).expect("a raw connection opens");
     connection
         .execute_batch(FIXTURE_SQL)
@@ -118,7 +120,7 @@ fn fixture() -> Fixture {
 fn unbound_fixture() -> Fixture {
     let directory = TempDir::new().expect("a temporary directory");
     let path = directory.path().join("kontor.db");
-    let store = SqliteStore::open(&path).expect("the store opens");
+    let store = support::store_from_template(&path);
     let connection = Connection::open(&path).expect("a raw connection opens");
     let without_binding = FIXTURE_SQL
         .split_once("INSERT INTO runtime_bindings")

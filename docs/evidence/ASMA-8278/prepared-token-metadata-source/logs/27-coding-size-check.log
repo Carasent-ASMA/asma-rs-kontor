@@ -1,0 +1,289 @@
+{
+  "scope": "new Rust files/functions only; existing large files changed only inside assigned seams",
+  "files": [
+    {
+      "path": "crates/kontor-store/src/repository/attestation_authority/token_metadata.rs",
+      "file_lines": 525,
+      "functions": [
+        {
+          "name": "token_head_in",
+          "line": 17,
+          "lines": 14
+        },
+        {
+          "name": "unsigned",
+          "line": 32,
+          "lines": 3
+        },
+        {
+          "name": "revision",
+          "line": 36,
+          "lines": 3
+        },
+        {
+          "name": "token_from_row",
+          "line": 40,
+          "lines": 51
+        },
+        {
+          "name": "projection_in",
+          "line": 92,
+          "lines": 37
+        },
+        {
+          "name": "validate_request",
+          "line": 130,
+          "lines": 28
+        },
+        {
+          "name": "membership_in",
+          "line": 168,
+          "lines": 59
+        },
+        {
+          "name": "native_unique_in",
+          "line": 228,
+          "lines": 16
+        },
+        {
+          "name": "consultation_provenance_in",
+          "line": 245,
+          "lines": 61
+        },
+        {
+          "name": "provenance_in",
+          "line": 307,
+          "lines": 59
+        },
+        {
+          "name": "insert_in",
+          "line": 367,
+          "lines": 41
+        },
+        {
+          "name": "prepare",
+          "line": 409,
+          "lines": 63
+        },
+        {
+          "name": "revoke",
+          "line": 473,
+          "lines": 38
+        },
+        {
+          "name": "read",
+          "line": 512,
+          "lines": 14
+        }
+      ],
+      "pass": true
+    },
+    {
+      "path": "crates/kontor-store/tests/attestation_token_metadata.rs",
+      "file_lines": 348,
+      "functions": [
+        {
+          "name": "hosted_preparation_is_coherent_durable_and_does_not_advance_key_head",
+          "line": 19,
+          "lines": 56
+        },
+        {
+          "name": "both_heads_use_exact_cas_and_failed_preparation_rolls_back",
+          "line": 77,
+          "lines": 29
+        },
+        {
+          "name": "permanent_issuer_token_identity_refuses_even_identical_reuse_across_rotation",
+          "line": 108,
+          "lines": 53
+        },
+        {
+          "name": "fresh_checks_precede_identity_reuse_and_leave_existing_commitment_unchanged",
+          "line": 163,
+          "lines": 29
+        },
+        {
+          "name": "irreversible_revocation_remains_available_after_key_revocation_and_seat_retirement",
+          "line": 194,
+          "lines": 45
+        },
+        {
+          "name": "bounds_intervals_and_native_generation_refuse_without_token_head",
+          "line": 241,
+          "lines": 45
+        },
+        {
+          "name": "selected_key_absence_revocation_and_exact_native_components_are_checked",
+          "line": 288,
+          "lines": 26
+        },
+        {
+          "name": "scope_and_absent_task_are_exact_and_cross_scope_reads_do_not_leak",
+          "line": 316,
+          "lines": 33
+        }
+      ],
+      "pass": true
+    },
+    {
+      "path": "crates/kontor-store/tests/attestation_token_metadata/fixture.rs",
+      "file_lines": 396,
+      "functions": [
+        {
+          "name": "id",
+          "line": 29,
+          "lines": 3
+        },
+        {
+          "name": "name",
+          "line": 32,
+          "lines": 3
+        },
+        {
+          "name": "native",
+          "line": 35,
+          "lines": 8
+        },
+        {
+          "name": "rung",
+          "line": 43,
+          "lines": 7
+        },
+        {
+          "name": "fixture_project",
+          "line": 51,
+          "lines": 33
+        },
+        {
+          "name": "fixture_nodes",
+          "line": 85,
+          "lines": 30
+        },
+        {
+          "name": "fixture_key",
+          "line": 116,
+          "lines": 13
+        },
+        {
+          "name": "build",
+          "line": 143,
+          "lines": 84
+        },
+        {
+          "name": "sql",
+          "line": 227,
+          "lines": 5
+        },
+        {
+          "name": "request",
+          "line": 232,
+          "lines": 18
+        },
+        {
+          "name": "counts",
+          "line": 250,
+          "lines": 3
+        },
+        {
+          "name": "frozen_run",
+          "line": 253,
+          "lines": 37
+        },
+        {
+          "name": "consultation",
+          "line": 291,
+          "lines": 6
+        },
+        {
+          "name": "consultation_family",
+          "line": 300,
+          "lines": 87
+        },
+        {
+          "name": "refuse_unchanged",
+          "line": 387,
+          "lines": 9
+        }
+      ],
+      "pass": true
+    },
+    {
+      "path": "crates/kontor-store/tests/attestation_token_metadata/guards.rs",
+      "file_lines": 395,
+      "functions": [
+        {
+          "name": "inactive_binding_and_node_each_refuse_unchanged",
+          "line": 8,
+          "lines": 19
+        },
+        {
+          "name": "consultation_uses_stored_run_slot_revisions_and_its_own_generation",
+          "line": 29,
+          "lines": 25
+        },
+        {
+          "name": "consultation_eligible_phases_are_explicit_and_terminal_or_needs_human_refuse",
+          "line": 56,
+          "lines": 26
+        },
+        {
+          "name": "unknown_native_and_missing_consultation_never_imply_hosted_provenance",
+          "line": 84,
+          "lines": 13
+        },
+        {
+          "name": "hosted_generation_is_history_count_plus_one_not_runtime_generation",
+          "line": 99,
+          "lines": 16
+        },
+        {
+          "name": "raw_sql_cannot_replace_rewrite_unrevoke_or_delete_metadata_or_heads",
+          "line": 117,
+          "lines": 38
+        },
+        {
+          "name": "checked_token_revision_overflow_leaves_no_partial_preparation_or_revocation",
+          "line": 157,
+          "lines": 15
+        },
+        {
+          "name": "two_store_preparation_race_has_one_cas_winner_and_one_unchanged_conflict",
+          "line": 174,
+          "lines": 32
+        },
+        {
+          "name": "consultation_slot_node_cross_run_and_ambiguous_domain_refuse_unchanged",
+          "line": 208,
+          "lines": 32
+        },
+        {
+          "name": "a_container_native_identity_cannot_masquerade_as_seat_provenance",
+          "line": 242,
+          "lines": 13
+        },
+        {
+          "name": "migration125_transaction_rolls_back_all_tables_and_version_on_ddl_failure",
+          "line": 257,
+          "lines": 19
+        },
+        {
+          "name": "prepared_and_revoked_history_cannot_be_exported_or_restored_to_an_older_head",
+          "line": 278,
+          "lines": 54
+        },
+        {
+          "name": "all_family_qualified_registry_metadata_is_retained_and_disposed_pairs_refuse",
+          "line": 334,
+          "lines": 23
+        },
+        {
+          "name": "raw_sql_insert_refuses_false_key_commitments_and_invalid_bounds_atomically",
+          "line": 359,
+          "lines": 37
+        }
+      ],
+      "pass": true
+    }
+  ],
+  "pass": true
+}

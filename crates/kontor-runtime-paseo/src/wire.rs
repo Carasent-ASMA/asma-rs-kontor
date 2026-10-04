@@ -214,6 +214,16 @@ pub mod label {
     pub const TITLE_RELEASED_FOR: &str = "kontor.title_released_for_seat_binding_id";
     /// Explicit non-mutating authority marker for consultation sessions.
     pub const READ_ONLY: &str = "kontor.read_only";
+    /// ASMA-8282 D-3: the occupancy generation of a planning pair member's
+    /// seat, which its credential was minted for.
+    pub const OCCUPANCY_GENERATION: &str = "kontor.occupancy_generation";
+    /// ASMA-8282 D-3: the canonical hash of the pinned planning pair document.
+    pub const CONSULTATION_PROFILE_HASH: &str = "kontor.consultation_profile_hash";
+    /// ASMA-8282 D-3: the canonical hash of a member's placement receipt.
+    pub const PLACEMENT_HASH: &str = "kontor.placement_hash";
+    /// ASMA-8282 D-3: the closed serve profile a member's MCP was composed
+    /// under. A label states what Kontor composed; it proves no enforcement.
+    pub const SERVE_PROFILE: &str = "kontor.serve_profile";
     /// Canonical profile hash for a risk-accepted behavioral fallback.
     ///
     /// Its presence deliberately replaces `READ_ONLY`; the two labels are
@@ -231,6 +241,40 @@ pub mod label {
     /// the one this launch created. A hash, never the values.
     pub const LAUNCH_INTENT: &str = "kontor.launch_intent";
 
+    /// ASMA-8280 G-3: the activated fleet policy that chose this seat's route.
+    ///
+    /// The fleet labels are written only when a launch requests fleet
+    /// provenance, are part of the exact label set its census and readback
+    /// require, and are what the launch reports as observed — read back from
+    /// the agent, never copied from the request.
+    pub const FLEET_POLICY_HASH: &str = "kontor.fleet.policy_hash";
+    /// The orchestration bundle an aligned activation names.
+    pub const FLEET_SOURCE_BUNDLE: &str = "kontor.fleet.source_bundle_hash";
+    /// The canonical binding key the seat resolved.
+    pub const FLEET_BINDING_KEY: &str = "kontor.fleet.binding_key";
+    /// The chain that binding is bound to.
+    pub const FLEET_CHAIN: &str = "kontor.fleet.chain";
+    /// The chain step, counted from one.
+    pub const FLEET_STEP: &str = "kontor.fleet.step";
+    /// The route's position inside its step, counted from one.
+    pub const FLEET_SUB_STEP: &str = "kontor.fleet.sub_step";
+    /// The model's maker, as the policy names it.
+    pub const FLEET_VENDOR: &str = "kontor.fleet.vendor";
+    /// The stated eligibility, as compact canonical JSON, when one was stated.
+    pub const FLEET_ELIGIBILITY: &str = "kontor.fleet.eligibility";
+
+    /// Every fleet provenance label key.
+    pub const FLEET: &[&str] = &[
+        FLEET_POLICY_HASH,
+        FLEET_SOURCE_BUNDLE,
+        FLEET_BINDING_KEY,
+        FLEET_CHAIN,
+        FLEET_STEP,
+        FLEET_SUB_STEP,
+        FLEET_VENDOR,
+        FLEET_ELIGIBILITY,
+    ];
+
     /// Every label key, in the order they are applied.
     pub const ALL: &[&str] = &[
         AGENT_RUN,
@@ -244,6 +288,126 @@ pub mod label {
         WORKSPACE_ID,
         WORKTREE,
     ];
+}
+
+/// The correlation labels a planning pair member session would carry beside
+/// its consultation and fleet labels: its occupancy generation, document hash,
+/// placement hash and serve profile (ASMA-8282 D-3).
+///
+/// Composable and proved on source fixtures only. No member is launched
+/// through this adapter while every route is refused; and a label states what
+/// Kontor wrote, never account ownership or enforcement.
+#[must_use]
+pub fn planning_pair_member_labels(
+    context: &kontor_runtime::planning_pair::PlanningPairLaunchContext,
+) -> BTreeMap<String, String> {
+    [
+        (
+            label::OCCUPANCY_GENERATION,
+            context.occupancy_generation.to_string(),
+        ),
+        (
+            label::CONSULTATION_PROFILE_HASH,
+            context.profile.definition_hash.as_str().to_owned(),
+        ),
+        (
+            label::PLACEMENT_HASH,
+            context.placement_hash.as_str().to_owned(),
+        ),
+        (
+            label::SERVE_PROFILE,
+            kontor_core::planning_pair::MEMBER_SERVE_PROFILE.to_owned(),
+        ),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_owned(), value))
+    .collect()
+}
+
+/// The native label surface fleet provenance is written to and read from.
+pub const FLEET_PROVENANCE_SURFACE: &str = "paseo.agent.labels";
+
+/// The exact labels one launch's fleet provenance is written as.
+///
+/// # Errors
+/// A stated eligibility that cannot be encoded as JSON.
+pub fn fleet_provenance_labels(
+    provenance: &kontor_runtime::FleetLaunchProvenance,
+) -> RuntimeResult<BTreeMap<String, String>> {
+    let mut labels: BTreeMap<String, String> = [
+        (
+            label::FLEET_POLICY_HASH,
+            provenance.policy_hash.as_str().to_owned(),
+        ),
+        (label::FLEET_BINDING_KEY, provenance.binding_key.clone()),
+        (label::FLEET_CHAIN, provenance.chain.clone()),
+        (label::FLEET_STEP, provenance.step.to_string()),
+        (label::FLEET_SUB_STEP, provenance.sub_step.to_string()),
+        (label::FLEET_VENDOR, provenance.vendor.clone()),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_owned(), value))
+    .collect();
+    if let Some(bundle) = &provenance.source_bundle_hash {
+        labels.insert(
+            label::FLEET_SOURCE_BUNDLE.to_owned(),
+            bundle.as_str().to_owned(),
+        );
+    }
+    if let Some(eligibility) = &provenance.eligibility {
+        labels.insert(
+            label::FLEET_ELIGIBILITY.to_owned(),
+            serde_json::to_string(eligibility).map_err(|_| RuntimeError::Transport {
+                rule: "the fleet launch eligibility could not be encoded as a label",
+            })?,
+        );
+    }
+    Ok(labels)
+}
+
+/// The fleet provenance one agent's native labels hold, when they hold any.
+///
+/// `None` when the agent carries no fleet policy label. Every value is parsed
+/// from the agent's own labels; a label that is present but unreadable is a
+/// correlation failure, not an absence.
+///
+/// # Errors
+/// [`RuntimeError::CorrelationFailed`] for a present but malformed fleet label.
+pub fn fleet_provenance_from_labels(
+    labels: &BTreeMap<String, String>,
+) -> RuntimeResult<Option<kontor_runtime::FleetLaunchProvenance>> {
+    let Some(policy_hash) = labels.get(label::FLEET_POLICY_HASH) else {
+        return Ok(None);
+    };
+    let text = |key: &str| {
+        labels
+            .get(key)
+            .cloned()
+            .ok_or(RuntimeError::CorrelationFailed)
+    };
+    let number = |key: &str| {
+        labels
+            .get(key)
+            .and_then(|value| value.parse::<u16>().ok())
+            .ok_or(RuntimeError::CorrelationFailed)
+    };
+    let hash = |value: &str| ContentHash::parse(value).map_err(|_| RuntimeError::CorrelationFailed);
+    Ok(Some(kontor_runtime::FleetLaunchProvenance {
+        policy_hash: hash(policy_hash)?,
+        source_bundle_hash: labels
+            .get(label::FLEET_SOURCE_BUNDLE)
+            .map(|value| hash(value))
+            .transpose()?,
+        binding_key: text(label::FLEET_BINDING_KEY)?,
+        chain: text(label::FLEET_CHAIN)?,
+        step: number(label::FLEET_STEP)?,
+        sub_step: number(label::FLEET_SUB_STEP)?,
+        vendor: text(label::FLEET_VENDOR)?,
+        eligibility: labels
+            .get(label::FLEET_ELIGIBILITY)
+            .map(|value| serde_json::from_str(value).map_err(|_| RuntimeError::CorrelationFailed))
+            .transpose()?,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -1310,6 +1474,111 @@ impl PaseoTimelineEntry {
             && self.source_seq_ranges[0].start_seq == self.seq_start
             && self.source_seq_ranges[0].end_seq == self.seq_end
     }
+
+    /// This entry alone at `seq`, as a single-sequence entry.
+    fn at_sequence(&self, seq: u64) -> Self {
+        Self {
+            item: self.item.clone(),
+            timestamp: self.timestamp.clone(),
+            seq_start: seq,
+            seq_end: seq,
+            source_seq_ranges: vec![PaseoSeqRange {
+                start_seq: seq,
+                end_seq: seq,
+            }],
+            collapsed: Vec::new(),
+        }
+    }
+
+    /// A content-free stand-in for `seq`, which this entry absorbed.
+    fn elided_at(&self, seq: u64) -> Self {
+        Self {
+            item: PaseoTimelineItem {
+                item_type: PASEO_ELIDED_ITEM_TYPE.to_owned(),
+                ..PaseoTimelineItem::default()
+            },
+            ..self.at_sequence(seq)
+        }
+    }
+}
+
+/// The item type of a native sequence Paseo folded into a later entry.
+///
+/// Classifies as [`SessionEventKind::Log`]; it carries no text and no ids, so it
+/// can never be mistaken for a message, a tool call or a delivery proof.
+pub const PASEO_ELIDED_ITEM_TYPE: &str = "kontor_elided";
+
+/// The widest window [`expand_to_sequences`] will materialize.
+// ponytail: fixed ceiling; a longer projected window is refused as a gap. Page
+// the read instead of raising this if real sessions ever reach it.
+const MAX_EXPANDED_WINDOW: u64 = 250_000;
+
+/// Re-express projected entries as one entry per native sequence in `lo..=hi`.
+///
+/// Paseo 0.9 keeps only its projection: streamed assistant and reasoning chunks
+/// and a tool call's lifecycle are merged into one entry spanning several
+/// native sequences, whatever projection is requested. Kontor's timeline is one
+/// event per sequence, so each entry is placed whole at its `seqEnd` — the
+/// sequence Paseo itself stamps it with — and every other sequence it absorbed
+/// becomes a [`PASEO_ELIDED_ITEM_TYPE`] stand-in. Native positions keep their
+/// meaning, and a single-sequence entry maps to itself unchanged. User messages
+/// are never merged, so delivery proofs still read the exact native entry.
+///
+/// Sequences outside the window are dropped: they belong to another page.
+///
+/// # Errors
+/// * [`RuntimeError::TimelineRefetchRequired`] with
+///   [`TimelineBreak::ConflictingDuplicate`] when two different entries claim
+///   one sequence.
+/// * [`RuntimeError::Domain`] when the window exceeds [`MAX_EXPANDED_WINDOW`].
+pub fn expand_to_sequences(
+    entries: &[PaseoTimelineEntry],
+    lo: u64,
+    hi: u64,
+) -> RuntimeResult<BTreeMap<u64, PaseoTimelineEntry>> {
+    if hi >= lo && hi - lo >= MAX_EXPANDED_WINDOW {
+        return Err(RuntimeError::Domain(DomainError::invalid(
+            "PaseoTimelinePage",
+            "spans more native sequences than one read may expand",
+        )));
+    }
+    let mut out = BTreeMap::new();
+    for entry in entries {
+        let mut covered: Vec<(u64, u64)> = entry
+            .source_seq_ranges
+            .iter()
+            .map(|range| (range.start_seq, range.end_seq))
+            .collect();
+        covered.push((entry.seq_start, entry.seq_start));
+        covered.push((entry.seq_end, entry.seq_end));
+        for (start, end) in covered {
+            for seq in start.max(lo)..=end.min(hi) {
+                let one = if seq == entry.seq_end {
+                    entry.at_sequence(seq)
+                } else {
+                    entry.elided_at(seq)
+                };
+                match out.entry(seq) {
+                    std::collections::btree_map::Entry::Vacant(slot) => {
+                        slot.insert(one);
+                    }
+                    std::collections::btree_map::Entry::Occupied(seen) if *seen.get() == one => {}
+                    std::collections::btree_map::Entry::Occupied(_) => {
+                        return Err(RuntimeError::TimelineRefetchRequired {
+                            reason: TimelineBreak::ConflictingDuplicate,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Whether `expanded` holds every sequence in `lo..=hi`.
+#[must_use]
+pub fn covers_window(expanded: &BTreeMap<u64, PaseoTimelineEntry>, lo: u64, hi: u64) -> bool {
+    hi < lo || expanded.range(lo..=hi).count() as u64 == hi - lo + 1
 }
 
 /// One page of canonical timeline.
@@ -1618,6 +1887,71 @@ pub fn body_digest(body: &str) -> ContentHash {
 
 #[cfg(test)]
 mod tests {
+
+    fn provenance() -> kontor_runtime::FleetLaunchProvenance {
+        kontor_runtime::FleetLaunchProvenance {
+            policy_hash: ContentHash::of(b"policy"),
+            source_bundle_hash: None,
+            binding_key: "team/t/s".to_owned(),
+            chain: "codex-first".to_owned(),
+            step: 1,
+            sub_step: 2,
+            vendor: "openai".to_owned(),
+            eligibility: Some(kontor_runtime::LaunchEligibility {
+                unavailable_accounts: BTreeSet::from(["codex-work".to_owned()]),
+                excluded_vendors: BTreeSet::from(["anthropic".to_owned()]),
+            }),
+        }
+    }
+
+    /// ASMA-8280 G-3: fleet provenance round-trips through native labels, and a
+    /// present but unreadable label is a correlation failure, not an absence.
+    #[test]
+    fn fleet_provenance_round_trips_through_exact_labels() {
+        let requested = provenance();
+        let labels = fleet_provenance_labels(&requested).expect("encodes");
+        assert_eq!(labels[label::FLEET_STEP], "1");
+        assert_eq!(labels[label::FLEET_SUB_STEP], "2");
+        assert!(!labels.contains_key(label::FLEET_SOURCE_BUNDLE));
+        assert_eq!(
+            labels[label::FLEET_ELIGIBILITY],
+            r#"{"unavailable_accounts":["codex-work"],"excluded_vendors":["anthropic"]}"#
+        );
+        assert!(
+            labels
+                .keys()
+                .all(|key| label::FLEET.contains(&key.as_str()))
+        );
+        assert_eq!(
+            fleet_provenance_from_labels(&labels).expect("reads"),
+            Some(requested.clone())
+        );
+        // A caller route states no eligibility, and none is written or read.
+        let mut caller = requested;
+        caller.eligibility = None;
+        let labels =
+            fleet_provenance_from_labels(&fleet_provenance_labels(&caller).expect("encodes"))
+                .expect("reads");
+        assert_eq!(labels, Some(caller.clone()));
+
+        assert_eq!(
+            fleet_provenance_from_labels(&BTreeMap::new()).expect("reads"),
+            None
+        );
+        let mut broken = fleet_provenance_labels(&caller).expect("encodes");
+        broken.insert(label::FLEET_STEP.to_owned(), "one".to_owned());
+        assert!(matches!(
+            fleet_provenance_from_labels(&broken),
+            Err(RuntimeError::CorrelationFailed)
+        ));
+        let mut missing = fleet_provenance_labels(&caller).expect("encodes");
+        missing.remove(label::FLEET_CHAIN);
+        assert!(matches!(
+            fleet_provenance_from_labels(&missing),
+            Err(RuntimeError::CorrelationFailed)
+        ));
+    }
+
     use super::*;
 
     #[test]
@@ -1735,6 +2069,117 @@ mod tests {
         assert!(normalize_entry(&split, 1).is_err());
 
         normalize_entry(&entry(4, "tool_call"), 1).expect("one sequence is one event");
+    }
+
+    fn spanning(item_type: &str, ranges: &[(u64, u64)], collapse: &str) -> PaseoTimelineEntry {
+        let mut spanning = entry(ranges[0].0, item_type);
+        spanning.seq_end = ranges.iter().map(|range| range.1).max().unwrap();
+        spanning.source_seq_ranges = ranges
+            .iter()
+            .map(|&(start_seq, end_seq)| PaseoSeqRange { start_seq, end_seq })
+            .collect();
+        spanning.collapsed = vec![collapse.to_owned()];
+        spanning
+    }
+
+    #[test]
+    fn a_paseo_09_projection_expands_to_one_entry_per_native_sequence() {
+        // A tool call started at 2 and completed at 5, with its interleaved
+        // neighbours at 3–4, then streamed assistant chunks 6–9 merged into one.
+        let mut user = entry(1, "user_message");
+        user.item.client_message_id = Some("01890000-0000-7000-8000-000000000011".to_owned());
+        let mut tool = spanning("tool_call", &[(2, 2), (5, 5)], "tool_lifecycle");
+        tool.item.call_id = Some("call_1".to_owned());
+        let mut reply = spanning("assistant_message", &[(6, 9)], "assistant_merge");
+        reply.item.text = Some("done".to_owned());
+        let entries = vec![
+            user.clone(),
+            tool.clone(),
+            entry(3, "reasoning"),
+            entry(4, "tool_call"),
+            reply,
+        ];
+
+        let expanded = expand_to_sequences(&entries, 1, 9).expect("a projection expands");
+        assert!(covers_window(&expanded, 1, 9));
+        let types: Vec<&str> = expanded
+            .values()
+            .map(|e| e.item.item_type.as_str())
+            .collect();
+        assert_eq!(
+            types,
+            [
+                "user_message",
+                PASEO_ELIDED_ITEM_TYPE,
+                "reasoning",
+                "tool_call",
+                "tool_call",
+                PASEO_ELIDED_ITEM_TYPE,
+                PASEO_ELIDED_ITEM_TYPE,
+                PASEO_ELIDED_ITEM_TYPE,
+                "assistant_message",
+            ]
+        );
+        // The user message is the exact native entry; the whole items sit at
+        // their `seqEnd`; every stand-in is empty.
+        assert_eq!(expanded[&1], user);
+        assert_eq!(expanded[&5].item.call_id.as_deref(), Some("call_1"));
+        assert_eq!(expanded[&9].item.text.as_deref(), Some("done"));
+        for elided in [2, 6, 7, 8] {
+            let item = &expanded[&elided].item;
+            assert!(
+                item.text.is_none() && item.client_message_id.is_none() && item.call_id.is_none()
+            );
+        }
+        for (seq, one) in &expanded {
+            let event = normalize_entry(one, 1).expect("every expanded entry is one event");
+            assert_eq!(event.position.sequence, *seq);
+        }
+        assert_eq!(
+            normalize_entry(&expanded[&2], 1).unwrap().kind,
+            SessionEventKind::Log
+        );
+    }
+
+    #[test]
+    fn expansion_is_clipped_to_the_window_and_reports_holes() {
+        let tool = spanning("tool_call", &[(2, 2), (5, 5)], "tool_lifecycle");
+        // A page starting at 3 that does not hold the tool call has a hole at 5.
+        let newer = vec![
+            entry(3, "reasoning"),
+            entry(4, "tool_call"),
+            entry(6, "tool_call"),
+        ];
+        let expanded = expand_to_sequences(&newer, 3, 6).unwrap();
+        assert!(!covers_window(&expanded, 3, 6));
+        // Folding the older anchor in closes it, and nothing outside 3–6 leaks.
+        let mut both = newer;
+        both.push(tool);
+        let expanded = expand_to_sequences(&both, 3, 6).unwrap();
+        assert!(covers_window(&expanded, 3, 6));
+        assert_eq!(expanded.keys().copied().collect::<Vec<_>>(), [3, 4, 5, 6]);
+        assert!(
+            covers_window(&expanded, 7, 6),
+            "an empty window is trivially covered"
+        );
+    }
+
+    #[test]
+    fn two_entries_claiming_one_sequence_are_a_conflict() {
+        let entries = vec![
+            spanning("assistant_message", &[(2, 4)], "assistant_merge"),
+            entry(3, "tool_call"),
+        ];
+        assert_eq!(
+            expand_to_sequences(&entries, 1, 4).expect_err("Paseo contradicted itself"),
+            RuntimeError::TimelineRefetchRequired {
+                reason: TimelineBreak::ConflictingDuplicate
+            }
+        );
+        let same = entry(3, "tool_call");
+        expand_to_sequences(&[same.clone(), same], 1, 4).expect("an identical repeat is one entry");
+        expand_to_sequences(&[entry(1, "x")], 1, MAX_EXPANDED_WINDOW).expect("the ceiling itself");
+        assert!(expand_to_sequences(&[entry(1, "x")], 1, MAX_EXPANDED_WINDOW + 1).is_err());
     }
 
     #[test]
