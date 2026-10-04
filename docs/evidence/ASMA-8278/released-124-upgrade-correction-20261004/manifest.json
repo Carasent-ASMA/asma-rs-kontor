@@ -46,6 +46,12 @@
       "git_blob": "03726a075e159932bd47274ba0eaee732fa5c268"
     },
     {
+      "path": "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/committed-source-pin.json",
+      "bytes": 1901,
+      "sha256": "690568777a1e092574580f594a4b39cf5dd7d242e52fc418a8bda029b3342665",
+      "git_blob": "df89f063601a3c0e582ad3bf6c6ae3a3de6d2436"
+    },
+    {
       "path": "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/corrected-files-old-and-new.txt",
       "bytes": 737,
       "sha256": "eed19d137f0e286feef82194ebe9383958af62291839151fd989f414e68f72a8",
@@ -118,5 +124,6 @@
       "git_blob": "7144d7a80e6810d1c6964df8a5dd6b8c1e824f80"
     }
   ],
-  "artifact_count": 15
+  "artifact_count": 16,
+  "source_pin_supplement": "receipts/committed-source-pin.json"
 }
