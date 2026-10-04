@@ -49433,6 +49433,8 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
                 &lsa_successor,
                 at("2026-08-18T09:01:00Z"),
                 "test the remediation authority generation fence",
+                // Staged directly; no succession is claimed for it.
+                None,
             )
         })
         .expect("the LSA occupancy is replaced");
@@ -62356,13 +62358,34 @@ async fn previewed_succession(
     native: &ExternalId,
     generation: u64,
 ) -> serde_json::Value {
+    previewed_route(world, project, epic, binding, native, generation, "xhigh").await
+}
+
+/// Preview one succession onto an exact desired effort.
+///
+/// Asking for an effort the seat was not materialized under is what makes a
+/// *live* predecessor need replacing, and it matters for recovery: with the
+/// desired route unequal to the predecessor's, `stale_native_recovery` is false
+/// by construction, so the preview hash does not move when a failed attempt
+/// leaves the runtime holding something else. A replay can therefore present the
+/// same body — and so the same intent — which is the only way to reach the
+/// recovery paths at all.
+async fn previewed_route(
+    world: &World,
+    project: &str,
+    epic: &str,
+    binding: &str,
+    native: &ExternalId,
+    generation: u64,
+    effort: &str,
+) -> serde_json::Value {
     let request = serde_json::json!({
         "expected_revision": 1,
         "seat_binding_id": binding,
         "expected_native_id": native,
         "expected_generation": generation,
         "desired_model_route": {
-            "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+            "provider": "codex", "model": "gpt-5.6-sol", "effort": effort
         },
     });
     let preview = Call::post(
@@ -62376,6 +62399,1409 @@ async fn previewed_succession(
     let mut body = request;
     body["preview_hash"] = preview.json()["preview_hash"].clone();
     body
+}
+
+// ---------------------------------------------------------------------------
+// ASMA-8187 — the Core Team route succession ledger.
+//
+// The ledger answers three separate problems that are the same fact recorded at
+// different moments: who exclusively owns a succession before its first
+// duplicable effect, what a replay converges on after a loss, and whether the
+// effects a route commit still owes have actually landed.
+// ---------------------------------------------------------------------------
+
+/// Apply one previewed succession under an exact idempotency key.
+async fn apply_succession(
+    world: &World,
+    project: &str,
+    epic: &str,
+    body: &serde_json::Value,
+    key: &str,
+) -> Answer {
+    Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        body,
+    )
+    .signed_as(world, "admin")
+    .with_key(key.to_owned())
+    .send(world)
+    .await
+}
+
+/// Two fresh keys race one seat; exactly one successor may exist afterwards.
+///
+/// The launch is the duplicable effect. Serialising on the native-activity lock
+/// does not prevent duplication — both callers proceed in turn — and a
+/// compare-and-swap after the launch is too late, because the second native
+/// already exists. Only a claim taken before the first effect makes the loser
+/// refuse having launched nothing (ASMA-8187 acceptance 4).
+#[tokio::test]
+async fn two_fresh_keys_converge_on_one_core_team_successor_and_one_transition() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8187-two-keys", "asma-8187-two-keys-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    world.fake.archive_hosted_seat(&native);
+
+    // Both callers previewed the same still-current state, which is exactly the
+    // race: two legitimate previews, two fresh keys, one seat.
+    let first_body =
+        previewed_succession(world, project, epic, &binding, &native, generation).await;
+    let second_body =
+        previewed_succession(world, project, epic, &binding, &native, generation).await;
+
+    let first = apply_succession(world, project, epic, &first_body, "asma-8187-race-one").await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let minted_after_first = world.fake.minted_natives();
+
+    let second = apply_succession(world, project, epic, &second_body, "asma-8187-race-two").await;
+    // Convergence, not refusal: the second key finds the seat already succeeded
+    // and answers with the same successor. What it must never do is produce a
+    // second one.
+    assert_eq!(second.status, 200, "{}", second.body);
+    assert_eq!(
+        second.json()["successor_native_id"],
+        first.json()["successor_native_id"],
+        "the second key answered with a different successor"
+    );
+    assert_eq!(second.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(
+        world.fake.minted_natives(),
+        minted_after_first,
+        "the second key minted a second native"
+    );
+
+    // Exactly one active occupant, exactly one retirement, one occupancy step.
+    let (active, history, occupancy) = succession_shape(world, project_id, binding_id);
+    assert_eq!(
+        active,
+        first.json()["successor_native_id"].as_str().unwrap()
+    );
+    assert_eq!(history, vec![native.as_str().to_owned()]);
+    assert_eq!(occupancy, 2);
+
+    // And exactly one ledger transition owns the seat.
+    world.daemon.state().with_store(|store| {
+        let owner = store
+            .core_team_route_succession_owner(project_id, binding_id, 1)
+            .expect("the ledger reads")
+            .expect("the succession has an owner");
+        assert_eq!(owner.idempotency_key.as_str(), "asma-8187-race-one");
+        assert!(owner.is_complete(), "the winning succession is incomplete");
+        assert!(
+            store
+                .get_core_team_route_succession(
+                    &IdempotencyKey::parse("asma-8187-race-two").expect("a key")
+                )
+                .expect("the ledger reads")
+                .is_none(),
+            "the second key left a second ledger row"
+        );
+
+        // The exclusivity itself, asked directly of the claim. Convergence
+        // above is what a *sequential* second caller sees; this is what stops a
+        // genuinely concurrent one from ever reaching the retire and the
+        // launch, and it is the only thing that can.
+        let intruder = store.claim_core_team_route_succession(
+            &kontor_core::repository::NewCoreTeamRouteSuccessionClaim {
+                idempotency_key: IdempotencyKey::parse("asma-8187-race-intruder").expect("a key"),
+                intent_hash: ContentHash::of(b"a concurrent caller's intent"),
+                project_id,
+                mini_project_id: MiniProjectId::parse(&composed.epic).expect("an epic id"),
+                seat_binding_id: binding_id,
+                predecessor_native_id: native.clone(),
+                predecessor_generation: generation,
+                predecessor_occupancy_generation: 1,
+                successor_occupancy_generation: 2,
+                successor_credential_generation: 2,
+                claimed_at: kontor_api::now(),
+            },
+        );
+        assert!(
+            intruder.is_err(),
+            "a second key claimed a succession this seat already owns"
+        );
+    });
+}
+
+/// A pending succession the seat has outrun must not be receipted.
+///
+/// This is the reachable shape the earlier pending-effects test never built: a
+/// route commits, its trailing effects are lost, and *then* a later succession
+/// moves the seat to another occupancy. Those effects can now never land — the
+/// native they describe is no longer the occupant — so reconciliation has
+/// nothing to do and must say so rather than quietly succeeding. A receipt
+/// minted here would assert that a half-landed command finished
+/// (ASMA-8187 P1).
+#[tokio::test]
+async fn a_pending_succession_the_seat_outran_is_refused_rather_than_receipted() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8187-outrun", "asma-8187-outrun-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    let key = IdempotencyKey::parse("asma-8187-outrun").expect("a key");
+
+    // First succession: the route commits and the latch is lost.
+    world.fake.archive_hosted_seat(&native);
+    let first_body =
+        previewed_succession(world, project, epic, &binding, &native, generation).await;
+    world
+        .daemon
+        .state()
+        .with_store(kontor_store::SqliteStore::lose_next_succession_effects);
+    let lost = apply_succession(world, project, epic, &first_body, "asma-8187-outrun").await;
+    assert_ne!(lost.status, 200, "the injected loss returned success");
+    let pending = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_core_team_route_succession(&key))
+        .expect("the ledger reads")
+        .expect("the succession exists");
+    assert!(pending.route_committed_at.is_some());
+    assert!(!pending.is_complete());
+    assert!(pending.receipt_id.is_none());
+    let stranded_successor = pending
+        .successor_native_id
+        .clone()
+        .expect("the committed row names its successor");
+
+    // The seat is then succeeded again, by another key, to a third occupancy.
+    let (second_active, _, second_occupancy) = succession_shape(world, project_id, binding_id);
+    assert_eq!(second_active, stranded_successor.as_str());
+    assert_eq!(second_occupancy, 2);
+    world
+        .fake
+        .archive_hosted_seat(&ExternalId::parse(&second_active).expect("a native id"));
+    let second_body = previewed_succession(
+        world,
+        project,
+        epic,
+        &binding,
+        &ExternalId::parse(&second_active).expect("a native id"),
+        1,
+    )
+    .await;
+    let second =
+        apply_succession(world, project, epic, &second_body, "asma-8187-outrun-next").await;
+    assert_eq!(second.status, 200, "{}", second.body);
+    let (third_active, _, third_occupancy) = succession_shape(world, project_id, binding_id);
+    assert_eq!(
+        third_occupancy, 3,
+        "the seat did not reach a third occupancy"
+    );
+    assert_ne!(third_active, stranded_successor.as_str());
+
+    // The first command is now unreconcilable. Replaying it must refuse.
+    let refused = apply_succession(world, project, epic, &first_body, "asma-8187-outrun").await;
+    assert_ne!(
+        refused.status, 200,
+        "an unreconcilable pending succession was reported as complete: {}",
+        refused.body
+    );
+
+    // And it must have minted nothing: no receipt on the row, still incomplete.
+    let after = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_core_team_route_succession(&key))
+        .expect("the ledger reads")
+        .expect("the succession exists");
+    assert!(
+        after.receipt_id.is_none(),
+        "a receipt was bound to an incomplete succession"
+    );
+    assert!(
+        !after.is_complete(),
+        "an unreconcilable succession was marked complete"
+    );
+
+    // The store binder refuses it directly too, so the guard does not depend on
+    // the caller having checked.
+    world.daemon.state().with_store(|store| {
+        assert!(
+            store
+                .bind_core_team_route_succession_receipt(
+                    &key,
+                    &after.intent_hash,
+                    CommandReceiptId::generate(),
+                    kontor_api::now(),
+                )
+                .is_err(),
+            "the binder accepted a receipt for an incomplete succession"
+        );
+    });
+}
+
+/// A seat already owned by another key refuses before it retires or launches.
+///
+/// This is the concurrent half of exclusivity. The sequential caller converges
+/// through the plan because the seat has already moved; a caller that arrives
+/// while another key still holds the claim has *not* had the seat move under
+/// it, so nothing but the claim can stop it. The refusal must land before the
+/// retire and the launch, with the predecessor still live and no native minted
+/// (ASMA-8187 acceptance 4, refusal before effects).
+#[tokio::test]
+async fn a_succession_owned_by_another_key_refuses_before_any_effect() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8187-owned", "asma-8187-owned-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    world.fake.archive_hosted_seat(&native);
+    let body = previewed_succession(world, project, epic, &binding, &native, generation).await;
+
+    // Another key takes the claim first and does not release it.
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.claim_core_team_route_succession(
+                &kontor_core::repository::NewCoreTeamRouteSuccessionClaim {
+                    idempotency_key: IdempotencyKey::parse("asma-8187-owner").expect("a key"),
+                    intent_hash: ContentHash::of(b"the owning caller's intent"),
+                    project_id,
+                    mini_project_id: MiniProjectId::parse(epic).expect("an epic id"),
+                    seat_binding_id: binding_id,
+                    predecessor_native_id: native.clone(),
+                    predecessor_generation: generation,
+                    predecessor_occupancy_generation: 1,
+                    successor_occupancy_generation: 2,
+                    successor_credential_generation: 2,
+                    claimed_at: kontor_api::now(),
+                },
+            )
+        })
+        .expect("the first claim is taken");
+
+    let shape_before = succession_shape(world, project_id, binding_id);
+    let minted_before = world.fake.minted_natives();
+    let calls_before = world.fake.calls().len();
+    let refused = apply_succession(world, project, epic, &body, "asma-8187-latecomer").await;
+    assert_ne!(
+        refused.status, 200,
+        "a seat owned by another key was succeeded anyway: {}",
+        refused.body
+    );
+    assert!(
+        !world.fake.calls()[calls_before..]
+            .iter()
+            .any(|call| matches!(
+                call,
+                AdapterCall::RetireHostedSeat(_) | AdapterCall::LaunchHostedSeat(_)
+            )),
+        "the refusal landed after a native effect"
+    );
+    assert_eq!(
+        world.fake.minted_natives(),
+        minted_before,
+        "the refused caller minted a native"
+    );
+    assert_eq!(
+        succession_shape(world, project_id, binding_id),
+        shape_before,
+        "the refusal moved durable seat state"
+    );
+}
+
+/// The successor's credential is a generation-scoped subject, never a value.
+///
+/// A seat credential is derived from the operator secret. The readback records
+/// the public pair the grant is scoped to — this seat and this occupancy
+/// generation — and a digest over exactly that pair. A predecessor's grant is
+/// not copied because it is not recorded, and the successor's subject is a
+/// different generation, so the digest differs from the predecessor's by
+/// construction (ASMA-8187 acceptance 1 and 2).
+#[tokio::test]
+async fn a_successor_derives_its_own_generation_scoped_credential_subject() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8187-credential", "asma-8187-credential-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    world.fake.archive_hosted_seat(&native);
+    let body = previewed_succession(world, project, epic, &binding, &native, generation).await;
+
+    let applied = apply_succession(world, project, epic, &body, "asma-8187-credential").await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let readback = applied.json()["readback"].clone();
+    assert!(!readback.is_null(), "the succession returned no readback");
+
+    // The successor's grant is scoped to generation two, not the predecessor's.
+    assert_eq!(readback["grant_subject"]["generation"], 2);
+    assert_eq!(readback["successor"]["occupancy_generation"], 2);
+    assert_eq!(readback["predecessor"]["occupancy_generation"], 1);
+    assert_eq!(
+        readback["grant_subject"]["subject_seat_binding_id"],
+        binding.as_str(),
+        "the grant is scoped to another seat"
+    );
+
+    // The digest is over the public subject pair, so it is reproducible from
+    // identifiers alone — and therefore provably carries nothing secret.
+    let mut subject = Vec::new();
+    subject.extend_from_slice(b"kontor-core-team-seat-grant-subject-v1\0");
+    subject.extend_from_slice(binding.as_bytes());
+    subject.push(0);
+    subject.extend_from_slice(b"2");
+    assert_eq!(
+        readback["grant_subject"]["subject_digest"],
+        ContentHash::of(&subject).as_str(),
+        "the credential digest is not the public subject digest"
+    );
+
+    // A predecessor-generation subject is a different digest, so nothing here
+    // can be reused as the predecessor's authority.
+    let mut predecessor_subject = Vec::new();
+    predecessor_subject.extend_from_slice(b"kontor-core-team-seat-grant-subject-v1\0");
+    predecessor_subject.extend_from_slice(binding.as_bytes());
+    predecessor_subject.push(0);
+    predecessor_subject.extend_from_slice(b"1");
+    assert_ne!(
+        readback["grant_subject"]["subject_digest"],
+        ContentHash::of(&predecessor_subject).as_str(),
+        "the successor inherited the predecessor's credential subject"
+    );
+
+    // Nothing anywhere in the durable readback resembles bearer material.
+    let stored = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.get_core_team_route_succession(
+                &IdempotencyKey::parse("asma-8187-credential").expect("a key"),
+            )
+        })
+        .expect("the ledger reads")
+        .expect("the succession exists");
+    let serialized = serde_json::to_string(&stored.readback).expect("the readback serializes");
+    for forbidden in ["KONTOR_AUTH", "bearer", "secret", "credential_value"] {
+        assert!(
+            !serialized.contains(forbidden),
+            "the durable readback carries {forbidden}"
+        );
+    }
+    assert_eq!(stored.successor_credential_generation, 2);
+
+    // The ledger's own predecessor identity must be the predecessor's, not a
+    // near-miss. A recorded generation that drifts from the native it names
+    // makes the row unusable as the "which occupancy did this replace" answer,
+    // and every later fence that reads it inherits the error.
+    assert_eq!(
+        stored.predecessor_generation, generation,
+        "the ledger recorded another predecessor runtime generation"
+    );
+    assert_eq!(
+        stored.predecessor_native_id.as_str(),
+        native.as_str(),
+        "the ledger recorded another predecessor native"
+    );
+    assert_eq!(
+        readback["predecessor"]["generation"],
+        serde_json::Value::from(stored.predecessor_generation),
+        "the readback and the ledger disagree on the predecessor generation"
+    );
+    assert_eq!(stored.predecessor_occupancy_generation, 1);
+    assert_eq!(stored.successor_occupancy_generation, 2);
+    let _ = (project_id, binding_id);
+}
+
+/// A succession whose trailing effects never landed is not complete.
+///
+/// The route transition commits with its evidence, but the launch-intent
+/// installation and the SeatBinding observation follow it. Reporting a route
+/// commit as a finished succession would be a complete-looking answer built
+/// from a partial one, so the ledger records those two separately and a replay
+/// reconciles them (ASMA-8187 acceptance 3).
+#[tokio::test]
+async fn a_committed_succession_with_pending_effects_is_reconciled_by_replay() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8187-pending", "asma-8187-pending-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    world.fake.archive_hosted_seat(&native);
+    let body = previewed_succession(world, project, epic, &binding, &native, generation).await;
+    let key = IdempotencyKey::parse("asma-8187-pending").expect("a key");
+
+    // Enter the interval honestly. The route transition commits and the latch
+    // that follows it is lost, which is what a process death there looks like.
+    // It cannot be staged by un-latching afterwards: the ledger's own trigger
+    // refuses that, because an effect that has landed may never un-land.
+    world
+        .daemon
+        .state()
+        .with_store(kontor_store::SqliteStore::lose_next_succession_effects);
+    let lost = apply_succession(world, project, epic, &body, "asma-8187-pending").await;
+    assert_ne!(
+        lost.status, 200,
+        "the injected loss returned success: {}",
+        lost.body
+    );
+
+    let pending = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_core_team_route_succession(&key))
+        .expect("the ledger reads")
+        .expect("the succession exists");
+    assert!(
+        pending.route_committed_at.is_some(),
+        "the route commit is the precondition for this case"
+    );
+    assert!(
+        !pending.is_complete(),
+        "the staged succession reads complete"
+    );
+
+    // The replay reconciles the pending effects rather than reporting a
+    // complete result it cannot stand behind.
+    let replayed = apply_succession(world, project, epic, &body, "asma-8187-pending").await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["receipt"]["applied"], "unchanged");
+    let settled = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_core_team_route_succession(&key))
+        .expect("the ledger reads")
+        .expect("the succession exists");
+    assert!(
+        settled.is_complete(),
+        "the replay left the succession incomplete"
+    );
+    assert!(settled.receipt_id.is_some(), "the replay bound no receipt");
+    assert_eq!(
+        replayed.json()["succession_effects"]["launch_intent_installed"],
+        serde_json::Value::Bool(true)
+    );
+    assert_eq!(
+        replayed.json()["succession_effects"]["seat_binding_observed"],
+        serde_json::Value::Bool(true)
+    );
+    let (active, _history, occupancy) = succession_shape(world, project_id, binding_id);
+    assert_eq!(active, settled.successor_native_id.unwrap().as_str());
+    assert_eq!(occupancy, 2);
+}
+
+/// An exact replay answers from durable evidence, not from the current seat.
+///
+/// Once a later succession has moved the seat on, recomputing the answer would
+/// describe whoever holds the seat now. The ledger row is what makes a replay
+/// of *this* command still answer with the generation it installed.
+#[tokio::test]
+async fn a_replayed_succession_answers_with_its_own_durable_readback() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8187-durable", "asma-8187-durable-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    world.fake.archive_hosted_seat(&native);
+    let body = previewed_succession(world, project, epic, &binding, &native, generation).await;
+    let first = apply_succession(world, project, epic, &body, "asma-8187-durable").await;
+    assert_eq!(first.status, 200, "{}", first.body);
+
+    let calls_before = world.fake.calls().len();
+    let replayed = apply_succession(world, project, epic, &body, "asma-8187-durable").await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(
+        replayed.json()["successor_native_id"],
+        first.json()["successor_native_id"],
+        "the replay answered with a different successor"
+    );
+    assert_eq!(
+        replayed.json()["readback_hash"],
+        first.json()["readback_hash"],
+        "the replay answered with different evidence"
+    );
+    assert_eq!(
+        replayed.json()["receipt"]["receipt_id"],
+        first.json()["receipt"]["receipt_id"],
+        "the replay minted a second receipt"
+    );
+    assert!(
+        !world.fake.calls()[calls_before..]
+            .iter()
+            .any(|call| matches!(
+                call,
+                AdapterCall::RetireHostedSeat(_) | AdapterCall::LaunchHostedSeat(_)
+            )),
+        "an exact replay produced a native effect"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ASMA-8187 remedy 4 — the intervals a succession can actually be lost in.
+//
+// Exclusivity and recovery were previously argued from sequential probes: a
+// claim seeded by hand, a replay issued after the first caller had already
+// finished. Neither stands where the hazard is. A second caller is dangerous
+// precisely while the first is *inside* its irreversible effects, and a
+// recovery is only proved by entering the interval it recovers from. The tests
+// below do both — one deterministic barrier for concurrency, and one seam per
+// real boundary, each entered honestly rather than staged afterwards.
+//
+// The four boundaries, in the order the command crosses them:
+//   1. after the native retirement, before the launch;
+//   2. after the native launch, before the route commit;
+//   3. after the route and ledger commit, before either trailing effect;
+//   4. after the command receipt is recorded, before the ledger binds it.
+// ---------------------------------------------------------------------------
+
+/// A genuinely concurrent second key is refused at the claim, mid-retirement.
+///
+/// The existing exclusivity test seeds a claim and then applies, which proves
+/// the refusal but not that it lands in time: a sequential caller has already
+/// had the seat move under it. Here the first caller is *held inside its own
+/// retirement*, having taken the claim and not yet launched, and the second
+/// arrives exactly there. Nothing but the claim can stop it, and it must stop
+/// it before any native effect (ASMA-8187 acceptance 4).
+#[tokio::test]
+async fn a_concurrent_second_key_is_refused_at_the_claim_before_any_native_effect() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8187-barrier", "asma-8187-barrier-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+
+    // A live predecessor on a changed route: the retirement below is a real
+    // native effect, so the barrier stands where the hazard actually is.
+    let first_body =
+        previewed_route(world, project, epic, &binding, &native, generation, "high").await;
+    let second_body =
+        previewed_route(world, project, epic, &binding, &native, generation, "high").await;
+
+    let pause = world.fake.pause_next_hosted_retirement();
+    let minted_before = world.fake.minted_natives();
+    let first = apply_succession(world, project, epic, &first_body, "asma-8187-barrier-one");
+    let intruder = async {
+        pause.entered().await;
+        // The first caller is now inside `retire_hosted_seat`, holding its
+        // claim and having launched nothing. Everything measured from here is
+        // attributable to the second caller alone.
+        let calls_while_claimed = world.fake.calls().len();
+        let minted_while_claimed = world.fake.minted_natives();
+        let second =
+            apply_succession(world, project, epic, &second_body, "asma-8187-barrier-two").await;
+        assert_ne!(
+            second.status, 200,
+            "a concurrent second key succeeded a seat another key owns: {}",
+            second.body
+        );
+        // The rule text does not survive the API's conflict mapping, so the
+        // refusal is localized by what it did not do. The claim is taken before
+        // the placement proof, so a refusal there means no retire and no launch;
+        // anything later would have left one of them behind.
+        assert!(
+            !world.fake.calls()[calls_while_claimed..]
+                .iter()
+                .any(|call| matches!(
+                    call,
+                    AdapterCall::RetireHostedSeat(_) | AdapterCall::LaunchHostedSeat(_)
+                )),
+            "the refusal landed after a native effect"
+        );
+        assert_eq!(
+            world.fake.minted_natives(),
+            minted_while_claimed,
+            "the refused caller minted a native"
+        );
+        assert!(
+            world
+                .daemon
+                .state()
+                .with_store(|store| store.get_core_team_route_succession(
+                    &IdempotencyKey::parse("asma-8187-barrier-two").expect("a key")
+                ))
+                .expect("the ledger reads")
+                .is_none(),
+            "the refused caller left a ledger row"
+        );
+        pause.release();
+    };
+    let (first, ()) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        tokio::join!(first, intruder)
+    })
+    .await
+    .expect("the held retirement and the concurrent refusal both finish");
+
+    assert_eq!(first.status, 200, "{}", first.body);
+    let (active, history, occupancy) = succession_shape(world, project_id, binding_id);
+    assert_eq!(
+        active,
+        first.json()["successor_native_id"].as_str().unwrap(),
+        "the seat does not hold the successor the winner reported"
+    );
+    assert_eq!(history, vec![native.as_str().to_owned()]);
+    assert_eq!(occupancy, 2, "the seat advanced more than one occupancy");
+    // Mints, not launch calls: the runtime answers a repeated launch with the
+    // seat it already holds, so only the count of natives it created can tell a
+    // duplicate from a convergence.
+    assert_eq!(
+        world.fake.minted_natives(),
+        minted_before + 1,
+        "the race produced more than one successor"
+    );
+}
+
+/// Two concurrent applies under one key produce one succession, then converge.
+///
+/// Same-key concurrency is a different hazard from two fresh keys: the claim is
+/// deliberately re-entrant, because that is what lets an exact replay continue.
+/// So the claim cannot be what stops the second arrival — the compare-and-swap
+/// on the route it is trying to commit is, and the caller that loses it must
+/// then answer from the ledger rather than from the bytes it had assembled.
+///
+/// Both callers therefore succeed, which is the point: one idempotency key is
+/// one command, and it may not answer twice with two different successors, two
+/// occupancy generations or two receipts. Before this was fenced, the loser
+/// re-derived the occupancy from a seat the winner had already moved and
+/// reported a generation the ledger never recorded.
+#[tokio::test]
+async fn concurrent_applies_under_one_key_converge_on_a_single_successor() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8187-same-key", "asma-8187-same-key-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    let key = IdempotencyKey::parse("asma-8187-same-key").expect("a key");
+    let body = previewed_route(world, project, epic, &binding, &native, generation, "high").await;
+
+    let pause = world.fake.pause_next_hosted_retirement();
+    let minted_before = world.fake.minted_natives();
+    let held = apply_succession(world, project, epic, &body, "asma-8187-same-key");
+    let concurrent = async {
+        pause.entered().await;
+        let second = apply_succession(world, project, epic, &body, "asma-8187-same-key").await;
+        pause.release();
+        second
+    };
+    let (held, concurrent) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        tokio::join!(held, concurrent)
+    })
+    .await
+    .expect("both same-key callers finish");
+
+    // The held caller entered first and finished second, so the concurrent one
+    // is the one whose transition commits. Both answer, and both must answer
+    // with the *same* succession.
+    assert_eq!(concurrent.status, 200, "{}", concurrent.body);
+    assert_eq!(held.status, 200, "{}", held.body);
+    assert_eq!(
+        held.json()["successor_native_id"],
+        concurrent.json()["successor_native_id"],
+        "one key answered with two different successors"
+    );
+    assert_eq!(
+        held.json()["readback"],
+        concurrent.json()["readback"],
+        "one key answered with two different readbacks"
+    );
+    assert_eq!(
+        held.json()["readback"]["successor"]["occupancy_generation"],
+        serde_json::json!(2),
+        "a caller reported an occupancy the ledger never recorded"
+    );
+    assert_eq!(
+        held.json()["receipt"]["receipt_id"],
+        concurrent.json()["receipt"]["receipt_id"],
+        "one key minted two receipts"
+    );
+    assert_eq!(held.json()["receipt"]["applied"], "unchanged");
+
+    let (active, history, occupancy) = succession_shape(world, project_id, binding_id);
+    assert_eq!(
+        active,
+        concurrent.json()["successor_native_id"].as_str().unwrap()
+    );
+    assert_eq!(history, vec![native.as_str().to_owned()]);
+    assert_eq!(occupancy, 2, "the seat advanced more than one occupancy");
+    assert_eq!(
+        world.fake.minted_natives(),
+        minted_before + 1,
+        "the same key created two natives"
+    );
+    // Nothing was prepared for an occupancy the command never produced.
+    world.daemon.state().with_store(|store| {
+        assert!(
+            store
+                .get_hosted_seat_launch_intent(project_id, binding_id, 3)
+                .expect("the launch intent reads")
+                .is_none(),
+            "a losing caller prepared a launch intent for an unrecorded occupancy"
+        );
+    });
+
+    // And a later retry is convergence too, from a caller that was never
+    // concurrent with anything.
+    let minted_after_race = world.fake.minted_natives();
+    let retry = apply_succession(world, project, epic, &body, "asma-8187-same-key").await;
+    assert_eq!(retry.status, 200, "{}", retry.body);
+    assert_eq!(
+        retry.json()["successor_native_id"],
+        concurrent.json()["successor_native_id"]
+    );
+    assert_eq!(
+        retry.json()["receipt"]["receipt_id"],
+        concurrent.json()["receipt"]["receipt_id"],
+        "the retry minted a second receipt"
+    );
+    assert_eq!(retry.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(world.fake.minted_natives(), minted_after_race);
+    world.daemon.state().with_store(|store| {
+        let settled = store
+            .get_core_team_route_succession(&key)
+            .expect("the ledger reads")
+            .expect("the succession exists");
+        assert!(settled.is_complete());
+        assert!(settled.receipt_id.is_some());
+    });
+}
+
+/// Boundary 1: the retirement landed and its acknowledgement did not.
+///
+/// The predecessor is genuinely archived out there and the caller was told
+/// nothing. The claim is the only record that this key owns the half-finished
+/// succession, and the replay has to finish it — retiring nothing a second time
+/// and launching exactly one successor.
+#[tokio::test]
+async fn a_lost_retirement_acknowledgement_is_finished_by_the_claim_owner() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8187-retire-ack", "asma-8187-retire-ack-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    let key = IdempotencyKey::parse("asma-8187-retire-ack").expect("a key");
+    let body = previewed_route(world, project, epic, &binding, &native, generation, "high").await;
+
+    let minted_before = world.fake.minted_natives();
+    world.fake.lose_next_hosted_retire_ack(binding_id);
+    let lost = apply_succession(world, project, epic, &body, "asma-8187-retire-ack").await;
+    assert_ne!(
+        lost.status, 200,
+        "the lost retirement acknowledgement returned success: {}",
+        lost.body
+    );
+
+    // The native effect happened; nothing downstream of it did.
+    assert_eq!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .filter(|call| matches!(call, AdapterCall::RetireHostedSeat(id) if *id == binding_id))
+            .count(),
+        1,
+        "the retirement did not take effect"
+    );
+    assert_eq!(
+        world.fake.minted_natives(),
+        minted_before,
+        "a successor was launched after the retirement was lost"
+    );
+    let claimed = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_core_team_route_succession(&key))
+        .expect("the ledger reads")
+        .expect("the claim survived the loss");
+    assert!(
+        claimed.route_committed_at.is_none(),
+        "a route committed after the retirement was lost"
+    );
+    assert!(!claimed.is_complete());
+    assert_eq!(
+        succession_shape(world, project_id, binding_id).2,
+        1,
+        "the occupancy advanced with no successor"
+    );
+
+    // The claim owner resumes and finishes: one successor, one retirement.
+    let resumed = apply_succession(world, project, epic, &body, "asma-8187-retire-ack").await;
+    assert_eq!(resumed.status, 200, "{}", resumed.body);
+    assert_eq!(
+        world.fake.minted_natives(),
+        minted_before + 1,
+        "the resumed succession minted more than one successor"
+    );
+    assert_eq!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .filter(|call| matches!(call, AdapterCall::RetireHostedSeat(id) if *id == binding_id))
+            .count(),
+        1,
+        "the resume retired a predecessor that was already archived"
+    );
+    let (active, history, occupancy) = succession_shape(world, project_id, binding_id);
+    assert_eq!(
+        active,
+        resumed.json()["successor_native_id"].as_str().unwrap()
+    );
+    assert_eq!(history, vec![native.as_str().to_owned()]);
+    assert_eq!(occupancy, 2);
+    world.daemon.state().with_store(|store| {
+        let settled = store
+            .get_core_team_route_succession(&key)
+            .expect("the ledger reads")
+            .expect("the succession exists");
+        assert!(settled.is_complete(), "the resume left effects pending");
+        assert!(settled.receipt_id.is_some());
+    });
+}
+
+/// Boundary 2: the successor exists and the caller never learned its identity.
+///
+/// This is the shape the durable pre-effect launch intent exists for. The native
+/// is real, unrecorded, and reachable only because the runtime answers for the
+/// seat it was launched into. A replay must adopt *that* native rather than
+/// create a second one, which is the difference between a recovery and a leak.
+#[tokio::test]
+async fn a_lost_launch_acknowledgement_converges_on_the_native_it_created() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8187-launch-ack", "asma-8187-launch-ack-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    let key = IdempotencyKey::parse("asma-8187-launch-ack").expect("a key");
+    let body = previewed_route(world, project, epic, &binding, &native, generation, "high").await;
+
+    let minted_before = world.fake.minted_natives();
+    world.fake.lose_next_hosted_launch_ack();
+    let lost = apply_succession(world, project, epic, &body, "asma-8187-launch-ack").await;
+    assert_ne!(
+        lost.status, 200,
+        "the lost launch acknowledgement returned success: {}",
+        lost.body
+    );
+    let orphan = world
+        .fake
+        .hosted_seat_native_id(binding_id)
+        .expect("the runtime holds the native the lost launch created");
+    assert_eq!(
+        world.fake.minted_natives(),
+        minted_before + 1,
+        "the launch did not take effect"
+    );
+    assert_ne!(orphan, native, "the runtime still holds the predecessor");
+    let claimed = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_core_team_route_succession(&key))
+        .expect("the ledger reads")
+        .expect("the claim survived the loss");
+    assert!(
+        claimed.route_committed_at.is_none(),
+        "a route committed for a successor the caller never learned"
+    );
+    assert_eq!(
+        succession_shape(world, project_id, binding_id).0,
+        native.as_str(),
+        "the seat moved to a successor no transition committed"
+    );
+
+    // The replay adopts the orphan rather than minting beside it.
+    let resumed = apply_succession(world, project, epic, &body, "asma-8187-launch-ack").await;
+    assert_eq!(resumed.status, 200, "{}", resumed.body);
+    assert_eq!(
+        world.fake.minted_natives(),
+        minted_before + 1,
+        "the replay created a second native beside the orphan"
+    );
+    assert_eq!(
+        resumed.json()["successor_native_id"],
+        serde_json::json!(orphan.as_str()),
+        "the replay did not converge on the native the lost launch created"
+    );
+    let (active, history, occupancy) = succession_shape(world, project_id, binding_id);
+    assert_eq!(active, orphan.as_str());
+    assert_eq!(history, vec![native.as_str().to_owned()]);
+    assert_eq!(occupancy, 2);
+    world.daemon.state().with_store(|store| {
+        let settled = store
+            .get_core_team_route_succession(&key)
+            .expect("the ledger reads")
+            .expect("the succession exists");
+        assert!(settled.is_complete());
+        assert_eq!(
+            settled.successor_native_id.as_ref().map(ExternalId::as_str),
+            Some(orphan.as_str())
+        );
+    });
+}
+
+/// A refused launch is not a lost one, and the recovery is different.
+///
+/// The provider declined before creating anything, so there is no native to
+/// converge on — and the retirement that preceded it cannot be taken back. The
+/// seat is momentarily an occupancy with no live native, and the claim is what
+/// lets its owner finish rather than a fresh key racing in to launch a second.
+#[tokio::test]
+async fn a_refused_launch_leaves_its_claim_to_finish_the_succession() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8187-launch-no", "asma-8187-launch-no-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    let key = IdempotencyKey::parse("asma-8187-launch-no").expect("a key");
+    let body = previewed_route(world, project, epic, &binding, &native, generation, "high").await;
+
+    let minted_before = world.fake.minted_natives();
+    world.fake.refuse_next_hosted_launch("codex");
+    let refused = apply_succession(world, project, epic, &body, "asma-8187-launch-no").await;
+    assert_ne!(
+        refused.status, 200,
+        "a refused launch returned success: {}",
+        refused.body
+    );
+    // The distinguishing fact: unlike a lost acknowledgement, nothing was
+    // created. A recovery that assumed otherwise would adopt a native that does
+    // not exist.
+    assert_eq!(
+        world.fake.minted_natives(),
+        minted_before,
+        "a refused launch created a native anyway"
+    );
+    assert!(
+        world.fake.hosted_seat_native_id(binding_id).is_none(),
+        "the runtime holds a native after a refused launch"
+    );
+    assert_eq!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .filter(|call| matches!(call, AdapterCall::RetireHostedSeat(id) if *id == binding_id))
+            .count(),
+        1,
+        "the irreversible retirement did not happen"
+    );
+
+    // A fresh key may not step into the gap: the claim still owns it.
+    let intruder_body =
+        previewed_route(world, project, epic, &binding, &native, generation, "high").await;
+    let intruder = apply_succession(
+        world,
+        project,
+        epic,
+        &intruder_body,
+        "asma-8187-launch-no-two",
+    )
+    .await;
+    assert_ne!(
+        intruder.status, 200,
+        "a fresh key launched into a claimed succession: {}",
+        intruder.body
+    );
+    assert_eq!(world.fake.minted_natives(), minted_before);
+
+    // The owner finishes, creating exactly one successor.
+    let finished = apply_succession(world, project, epic, &body, "asma-8187-launch-no").await;
+    assert_eq!(finished.status, 200, "{}", finished.body);
+    assert_eq!(
+        world.fake.minted_natives(),
+        minted_before + 1,
+        "the recovery minted more than one successor"
+    );
+    let (active, history, occupancy) = succession_shape(world, project_id, binding_id);
+    assert_eq!(
+        active,
+        finished.json()["successor_native_id"].as_str().unwrap()
+    );
+    assert_eq!(history, vec![native.as_str().to_owned()]);
+    assert_eq!(occupancy, 2);
+    world.daemon.state().with_store(|store| {
+        assert!(
+            store
+                .get_core_team_route_succession(&key)
+                .expect("the ledger reads")
+                .expect("the succession exists")
+                .is_complete()
+        );
+    });
+}
+
+/// Boundary 3: the route and its ledger row committed, and nothing else ran.
+///
+/// This is the *earliest* incomplete shape that exists, and it is not the one
+/// the pending-effects test enters: there, both effects had already landed and
+/// only the latch recording them was lost. Here neither has been attempted, so
+/// a replay has to perform them rather than merely re-record them — and until it
+/// does, the succession must not read complete.
+#[tokio::test]
+async fn a_succession_that_lost_its_route_acknowledgement_reconciles_from_neither_effect() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8187-route-ack", "asma-8187-route-ack-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    let key = IdempotencyKey::parse("asma-8187-route-ack").expect("a key");
+    // Archived first: the preview must describe the stale predecessor the apply
+    // will re-plan against, or the hash expires before the seam is reached.
+    world.fake.archive_hosted_seat(&native);
+    let body = previewed_succession(world, project, epic, &binding, &native, generation).await;
+
+    world
+        .daemon
+        .state()
+        .with_store(kontor_store::SqliteStore::lose_next_succession_route_ack);
+    let lost = apply_succession(world, project, epic, &body, "asma-8187-route-ack").await;
+    assert_ne!(
+        lost.status, 200,
+        "the lost route acknowledgement returned success: {}",
+        lost.body
+    );
+
+    let pending = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_core_team_route_succession(&key))
+        .expect("the ledger reads")
+        .expect("the succession exists");
+    assert!(
+        pending.route_committed_at.is_some(),
+        "the route commit is the precondition for this case"
+    );
+    assert!(!pending.is_complete());
+    let successor = pending
+        .successor_native_id
+        .clone()
+        .expect("the committed row names its successor");
+
+    // Neither effect was even attempted. Asserting the latch alone would not
+    // tell this interval apart from the one where both landed and only the
+    // latch was lost, so the effects themselves are read.
+    world.daemon.state().with_store(|store| {
+        let intent = store
+            .get_hosted_seat_launch_intent(project_id, binding_id, 2)
+            .expect("the launch intent reads")
+            .expect("the pre-effect intent was prepared");
+        assert_ne!(
+            intent.state,
+            HostedSeatLaunchIntentState::Installed,
+            "the launch intent was installed after the route commit was lost"
+        );
+        assert_eq!(intent.observed_native_id, None);
+    });
+
+    // The replay performs both effects and only then completes.
+    let replayed = apply_succession(world, project, epic, &body, "asma-8187-route-ack").await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    world.daemon.state().with_store(|store| {
+        let intent = store
+            .get_hosted_seat_launch_intent(project_id, binding_id, 2)
+            .expect("the launch intent reads")
+            .expect("the intent exists");
+        assert_eq!(
+            intent.state,
+            HostedSeatLaunchIntentState::Installed,
+            "the replay left the launch intent uninstalled"
+        );
+        assert_eq!(
+            intent.observed_native_id.as_ref().map(ExternalId::as_str),
+            Some(successor.as_str())
+        );
+        let settled = store
+            .get_core_team_route_succession(&key)
+            .expect("the ledger reads")
+            .expect("the succession exists");
+        assert!(settled.is_complete(), "the replay left effects pending");
+        assert!(settled.receipt_id.is_some(), "the replay bound no receipt");
+    });
+    assert_eq!(
+        succession_shape(world, project_id, binding_id).0,
+        successor.as_str()
+    );
+}
+
+/// Boundary 4: the receipt was recorded and the ledger never learned of it.
+///
+/// The realm now holds a command receipt that no succession row points at. A
+/// replay must find and rebind *that* receipt: recording a second one would make
+/// a single command answer with two different receipt identities, which is the
+/// one thing an idempotency key exists to prevent.
+#[tokio::test]
+async fn a_lost_receipt_binding_rebinds_the_same_receipt() {
+    let (composed, binding, native, generation) = hosted_tpm_seat(
+        "/tmp/kontor-8187-receipt-ack",
+        "asma-8187-receipt-ack-seats",
+    )
+    .await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    let key = IdempotencyKey::parse("asma-8187-receipt-ack").expect("a key");
+    // Archived first: the preview must describe the stale predecessor the apply
+    // will re-plan against, or the hash expires before the seam is reached.
+    world.fake.archive_hosted_seat(&native);
+    let body = previewed_succession(world, project, epic, &binding, &native, generation).await;
+
+    world
+        .daemon
+        .state()
+        .with_store(kontor_store::SqliteStore::lose_next_succession_receipt_binding);
+    let lost = apply_succession(world, project, epic, &body, "asma-8187-receipt-ack").await;
+    assert_ne!(
+        lost.status, 200,
+        "the lost receipt binding returned success: {}",
+        lost.body
+    );
+
+    let recorded = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_receipt_by_key(&key))
+        .expect("the receipt reads")
+        .expect("the command receipt was recorded before the binding was lost");
+    world.daemon.state().with_store(|store| {
+        let pending = store
+            .get_core_team_route_succession(&key)
+            .expect("the ledger reads")
+            .expect("the succession exists");
+        assert!(
+            pending.is_complete(),
+            "this boundary is reached only after both effects landed"
+        );
+        assert!(
+            pending.receipt_id.is_none(),
+            "the ledger bound a receipt the loss was supposed to prevent"
+        );
+    });
+
+    let replayed = apply_succession(world, project, epic, &body, "asma-8187-receipt-ack").await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(
+        replayed.json()["receipt"]["receipt_id"],
+        serde_json::json!(recorded.id.to_string()),
+        "the replay answered with a receipt other than the recorded one"
+    );
+    world.daemon.state().with_store(|store| {
+        let settled = store
+            .get_core_team_route_succession(&key)
+            .expect("the ledger reads")
+            .expect("the succession exists");
+        assert_eq!(
+            settled.receipt_id,
+            Some(recorded.id),
+            "the ledger bound a second receipt"
+        );
+        assert_eq!(
+            store
+                .get_receipt_by_key(&key)
+                .expect("the receipt reads")
+                .expect("the receipt exists")
+                .id,
+            recorded.id,
+            "a second receipt was recorded under one key"
+        );
+    });
+    // The loss was in the binding alone: the succession it describes is
+    // untouched, so the seat must still hold exactly the successor it named.
+    let (active, history, occupancy) = succession_shape(world, project_id, binding_id);
+    assert_eq!(
+        active,
+        replayed.json()["successor_native_id"].as_str().unwrap()
+    );
+    assert_eq!(history, vec![native.as_str().to_owned()]);
+    assert_eq!(occupancy, 2);
+}
+
+/// A successor authenticates where its predecessor no longer can.
+///
+/// The succession's whole point, from a credential's side. The predecessor's
+/// bearer is not revoked, forged or expired — it is still a genuine signature
+/// over a genuine seat — and it must stop working anyway, because the occupancy
+/// it names is over. The successor derives its own, and neither inherits the
+/// other's. A shared Realm credential is a third thing again: it carries no
+/// seat identity at all, so it cannot stand in for either
+/// (ASMA-8187 acceptance 1 and 2).
+#[tokio::test]
+async fn a_successor_seat_authenticates_where_its_predecessor_no_longer_can() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8187-bearer", "asma-8187-bearer-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    let path = format!("/v1/projects/{project}/epics/{epic}/open-questions:record");
+    let bearer = |generation: u64| {
+        world
+            .daemon
+            .state()
+            .credentials()
+            .seat_credential_for_generation(binding_id, generation)
+    };
+    let raise = |question: kontor_core::id::OpenQuestionId, subject: &str| {
+        serde_json::json!({
+            "question_id": question, "expected_revision": 0,
+            "action": {
+                "action": "raise", "subject": subject, "scope": "architecture",
+                "attachment": {"record": {"kind": "mini_project", "mini_project_id": epic}},
+                "why_ambiguous": "The route correction left two readings of the contract.",
+                "options": ["Retain the original", "Record a supersession"],
+            }
+        })
+    };
+
+    // Generation one is the seat's current occupancy, and its bearer works.
+    let first_question = kontor_core::id::OpenQuestionId::generate();
+    let before = Call::post(&path, &raise(first_question, "Before the succession"))
+        .with_token(bearer(1))
+        .with_key("asma-8187-bearer-before")
+        .send(world)
+        .await;
+    assert_eq!(before.status, 200, "{}", before.body);
+
+    // The seat succeeds to occupancy two.
+    world.fake.archive_hosted_seat(&native);
+    let body = previewed_succession(world, project, epic, &binding, &native, generation).await;
+    let applied = apply_succession(world, project, epic, &body, "asma-8187-bearer").await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(succession_shape(world, project_id, binding_id).2, 2);
+    assert_eq!(
+        applied.json()["readback"]["grant_subject"]["generation"],
+        serde_json::json!(2),
+        "the successor did not derive its own grant generation"
+    );
+
+    // The predecessor's bearer still verifies — it is a real signature over a
+    // real seat — and is refused on the occupancy it names. That distinction is
+    // the whole mechanism: nothing was revoked, the generation simply moved.
+    let predecessor = Call::post(
+        &path,
+        &raise(
+            kontor_core::id::OpenQuestionId::generate(),
+            "From the predecessor",
+        ),
+    )
+    .with_token(bearer(1))
+    .with_key("asma-8187-bearer-predecessor")
+    .send(world)
+    .await;
+    assert_eq!(predecessor.status, 409, "{}", predecessor.body);
+    assert_eq!(predecessor.json()["code"], "stale_binding");
+    assert!(
+        predecessor
+            .body
+            .contains("no matching current hosted occupancy"),
+        "the predecessor was refused for some other reason: {}",
+        predecessor.body
+    );
+
+    // The successor's own bearer is accepted.
+    let successor = Call::post(
+        &path,
+        &raise(
+            kontor_core::id::OpenQuestionId::generate(),
+            "From the successor",
+        ),
+    )
+    .with_token(bearer(2))
+    .with_key("asma-8187-bearer-successor")
+    .send(world)
+    .await;
+    assert_eq!(successor.status, 200, "{}", successor.body);
+
+    // A generation the seat has never reached is refused the same way, so
+    // acceptance is of *this* occupancy and not merely of "not the predecessor".
+    let unreached = Call::post(
+        &path,
+        &raise(kontor_core::id::OpenQuestionId::generate(), "From nowhere"),
+    )
+    .with_token(bearer(3))
+    .with_key("asma-8187-bearer-unreached")
+    .send(world)
+    .await;
+    assert_eq!(unreached.status, 409, "{}", unreached.body);
+
+    // A bearer that is not this Realm's signature never authenticates as a seat
+    // at all, which is a different refusal from a fenced one.
+    let forged = Call::post(
+        &path,
+        &raise(kontor_core::id::OpenQuestionId::generate(), "Forged"),
+    )
+    .with_token(format!("kontor-seat-v2.{binding_id}.2.{}", "f".repeat(64)))
+    .with_key("asma-8187-bearer-forged")
+    .send(world)
+    .await;
+    assert_ne!(forged.status, 200, "{}", forged.body);
+    assert_ne!(
+        forged.json()["code"],
+        "stale_binding",
+        "a forged bearer was treated as a fenced occupancy: {}",
+        forged.body
+    );
+
+    // And an ordinary Realm credential is not a seat. It carries no seat
+    // identity to fence, so it has to name the seat it reports for — and it
+    // still cannot close a question, which is the act reserved to the seat's
+    // own scoped bearer.
+    let anonymous = Call::post(
+        &path,
+        &raise(
+            kontor_core::id::OpenQuestionId::generate(),
+            "From the Realm",
+        ),
+    )
+    .signed_as(world, "operator")
+    .with_key("asma-8187-bearer-realm")
+    .send(world)
+    .await;
+    assert_eq!(anonymous.status, 400, "{}", anonymous.body);
+    assert!(
+        anonymous
+            .body
+            .contains("operator reporting must name the active author seat"),
+        "{}",
+        anonymous.body
+    );
+    let closing = serde_json::json!({
+        "question_id": first_question,
+        "expected_revision": 1,
+        "action": {"action": "dispose", "outcome": {"deferred": {
+            "key": "asma-8187-reviewed",
+            "condition": "The route correction is reviewed."
+        }}}
+    });
+    let realm_closure = Call::post(&path, &closing)
+        .signed_as(world, "operator")
+        .with_key("asma-8187-bearer-realm-close")
+        .send(world)
+        .await;
+    assert_eq!(realm_closure.status, 403, "{}", realm_closure.body);
+    assert!(
+        realm_closure
+            .body
+            .contains("requires its configured leadership seat's scoped credential"),
+        "{}",
+        realm_closure.body
+    );
 }
 
 /// The live ASMA-8098 shape: a closed predecessor the runtime calls stale.

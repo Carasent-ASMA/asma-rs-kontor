@@ -709,4 +709,279 @@ mod tests {
             Some(BarrierState::Failed)
         );
     }
+
+    /// A reader that records whether anybody tried to read the credential.
+    ///
+    /// Not a panicking reader: a panic would prove the read did not *complete*,
+    /// and the contract under test is that it is never attempted at all. The
+    /// body matters for the control, which has to get *past* the schema gate and
+    /// then fail on the document itself.
+    struct WatchfulReader {
+        seen: Arc<AtomicBool>,
+        body: std::io::Cursor<Vec<u8>>,
+    }
+
+    impl WatchfulReader {
+        fn new(seen: &Arc<AtomicBool>, body: &[u8]) -> Self {
+            Self {
+                seen: Arc::clone(seen),
+                body: std::io::Cursor::new(body.to_vec()),
+            }
+        }
+    }
+
+    impl std::io::Read for WatchfulReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.seen.store(true, Ordering::SeqCst);
+            std::io::Read::read(&mut self.body, buffer)
+        }
+    }
+
+    /// The frozen-claim trigger exactly as `0120` defined it.
+    ///
+    /// Sliced out of that migration rather than transcribed, so a fixture that
+    /// claims to reproduce the 120/121 era cannot drift from the migration that
+    /// actually created it.
+    fn frozen_claim_trigger_as_of_0120() -> String {
+        const MIGRATION: &str =
+            include_str!("../../kontor-store/migrations/0120_core_team_route_successions.sql");
+        let start = MIGRATION
+            .find("CREATE TRIGGER core_team_route_succession_claim_is_frozen")
+            .expect("0120 defines the frozen-claim trigger");
+        let end = MIGRATION[start..]
+            .find("\nEND;")
+            .map(|offset| start + offset + "\nEND;".len())
+            .expect("the trigger body terminates");
+        MIGRATION[start..end].to_owned()
+    }
+
+    /// Everything about one state root that must survive a refused install.
+    fn realm_fingerprint(database: &std::path::Path) -> (Vec<u8>, i64, Vec<String>) {
+        let bytes = std::fs::read(database).expect("the database reads");
+        let connection = rusqlite::Connection::open(database).expect("the database opens");
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("the version reads");
+        let mut statement = connection
+            .prepare("SELECT type || ':' || name FROM sqlite_master ORDER BY type, name")
+            .expect("the catalogue prepares");
+        let objects: Vec<String> = statement
+            .query_map([], |row| row.get(0))
+            .expect("the catalogue reads")
+            .collect::<Result<_, _>>()
+            .expect("the catalogue rows read");
+        (bytes, version, objects)
+    }
+
+    /// Reconstruct the schema as it stood at `version`.
+    ///
+    /// Stamping `user_version` over a current database is not a stopped Realm;
+    /// it is a current Realm wearing an old number, and a fixture built that way
+    /// cannot show that the refusal met the schema those versions actually had.
+    /// So `0122` is undone properly — its unique receipt index dropped and its
+    /// replacement trigger swapped back for the one `0120` wrote — and then each
+    /// later table is removed in turn.
+    ///
+    /// `0120` adds `core_team_route_successions`, `0121` adds
+    /// `imported_record_evidence`, and `0122` adds the index and replaces the
+    /// trigger. At 119 the `0120` table is gone and takes its trigger with it.
+    fn realm_stopped_at(root: &std::path::Path, version: i64) -> std::path::PathBuf {
+        let database = root.join("kontor.sqlite3");
+        drop(kontor_store::SqliteStore::open(&database).expect("the realm initializes"));
+        let connection = rusqlite::Connection::open(&database).expect("the database opens");
+
+        // Undo 0122: none of 119, 120 or 121 ever had it.
+        connection
+            .execute_batch(
+                "DROP INDEX ux_core_team_route_succession_receipt;
+                 DROP TRIGGER core_team_route_succession_claim_is_frozen;",
+            )
+            .expect("the 0122 artefacts are removed");
+        if version >= 120 {
+            connection
+                .execute_batch(&frozen_claim_trigger_as_of_0120())
+                .expect("the 0120-era trigger is restored");
+        }
+        if version < 121 {
+            connection
+                .execute_batch("DROP TABLE imported_record_evidence;")
+                .expect("the 0121 table is removed");
+        }
+        if version < 120 {
+            connection
+                .execute_batch("DROP TABLE core_team_route_successions;")
+                .expect("the 0120 table is removed");
+        }
+        connection
+            .pragma_update(None, "user_version", version)
+            .expect("the version is stamped");
+        drop(connection);
+        database
+    }
+
+    /// The schema text of one named object, as the database holds it.
+    fn stored_object_sql(database: &std::path::Path, name: &str) -> Option<String> {
+        let connection = rusqlite::Connection::open(database).expect("the database opens");
+        connection
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name = ?1",
+                [name],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .ok()
+            .flatten()
+    }
+
+    /// The 120 and 121 fixtures are the schema those versions had.
+    ///
+    /// Asserted separately from the refusal, because a fixture that is merely a
+    /// renumbered 122 database would let the refusal test pass while proving
+    /// nothing about the schemas it claims to cover.
+    #[test]
+    fn the_stopped_fixtures_reproduce_their_own_schema_era() {
+        for version in [120_i64, 121] {
+            let root = tempfile::tempdir().expect("a state root");
+            let canonical = root.path().canonicalize().expect("an absolute root");
+            let database = realm_stopped_at(&canonical, version);
+
+            assert!(
+                stored_object_sql(&database, "ux_core_team_route_succession_receipt").is_none(),
+                "the 0122 unique receipt index exists in a fixture stopped at {version}"
+            );
+            let trigger =
+                stored_object_sql(&database, "core_team_route_succession_claim_is_frozen")
+                    .unwrap_or_else(|| panic!("the 0120-era trigger is missing at {version}"));
+            assert_eq!(
+                trigger.trim(),
+                frozen_claim_trigger_as_of_0120()
+                    .trim()
+                    .trim_end_matches(';')
+                    .trim(),
+                "the frozen-claim trigger at {version} is not the one 0120 wrote"
+            );
+            assert!(
+                !trigger.contains("receipted_at IS NOT NEW.receipted_at"),
+                "the 0122 trigger clause survives in a fixture stopped at {version}"
+            );
+            let evidence = stored_object_sql(&database, "imported_record_evidence");
+            if version < 121 {
+                assert!(evidence.is_none(), "the 0121 table exists at {version}");
+            } else {
+                assert!(evidence.is_some(), "the 0121 table is missing at {version}");
+            }
+        }
+    }
+
+    /// Every schema this lane passes through is refused, and refused early.
+    ///
+    /// ASMA-8187 takes the binary from 119 to 122, so an operator can hold a
+    /// Realm stopped at 119, 120 or 121 and meet a 122 binary. The exact-version
+    /// contract refuses all three — that is decided and correct — and what this
+    /// test pins is the *shape* of the refusal: it happens before the credential
+    /// is read and before anything is installed, and it leaves the Realm exactly
+    /// as it found it. A refusal that read the secret first would have handled
+    /// it needlessly; one that migrated would upgrade a Realm its operator had
+    /// deliberately stopped (ASMA-8187 / ASMA-8015).
+    #[test]
+    fn a_realm_stopped_before_the_current_schema_refuses_without_reading_or_installing() {
+        for version in [119_i64, 120, 121] {
+            let root = tempfile::tempdir().expect("a state root");
+            let canonical = root.path().canonicalize().expect("an absolute root");
+            let database = realm_stopped_at(&canonical, version);
+            let before = realm_fingerprint(&database);
+
+            let read_attempted = Arc::new(AtomicBool::new(false));
+            let installed = Arc::new(AtomicBool::new(false));
+            let outcome = install_jira_credential(
+                &canonical,
+                "any-configured-alias",
+                WatchfulReader::new(&read_attempted, b""),
+                |_scope, _secret| {
+                    installed.store(true, Ordering::SeqCst);
+                    Ok(())
+                },
+            );
+
+            assert!(
+                matches!(outcome, Err(OperatorError::CredentialScope)),
+                "a realm stopped at {version} was not refused as out of scope: {outcome:?}"
+            );
+            assert!(
+                !read_attempted.load(Ordering::SeqCst),
+                "the credential was read before the realm at {version} was refused"
+            );
+            assert!(
+                !installed.load(Ordering::SeqCst),
+                "an installation was attempted against a realm stopped at {version}"
+            );
+
+            let after = realm_fingerprint(&database);
+            assert_eq!(after.0, before.0, "the refusal changed bytes at {version}");
+            assert_eq!(
+                after.1, before.1,
+                "the refusal migrated a realm stopped at {version}"
+            );
+            assert_eq!(
+                after.2, before.2,
+                "the refusal added or removed schema objects at {version}"
+            );
+        }
+    }
+
+    /// A current Realm gets past the schema gate and fails further in.
+    ///
+    /// Without this the stopped-schema test above would pass just as well
+    /// against an implementation that refused *every* Realm at the schema
+    /// boundary — the assertions there are all about what does not happen, and
+    /// "nothing happened" is exactly what a blanket refusal produces.
+    ///
+    /// So this control is arranged to get further: the alias is configured, the
+    /// Realm is current, and the input is malformed. That forces a distinct
+    /// later failure — `OperatorError::Jira`, raised by the document parser —
+    /// and proves the reader was reached, which a refusal at the schema gate
+    /// could never do. The installer must still not run: malformed input is
+    /// refused before anything is written (ASMA-8187 / ASMA-8015).
+    #[test]
+    fn a_current_realm_reaches_the_credential_reader_and_fails_after_the_gate() {
+        let root = configured_credential_root();
+        let database = recovery::database_in(root.path());
+        let before = realm_fingerprint(&database);
+
+        let read_attempted = Arc::new(AtomicBool::new(false));
+        let installed = Arc::new(AtomicBool::new(false));
+        let outcome = install_jira_credential(
+            root.path(),
+            "work",
+            WatchfulReader::new(&read_attempted, b"synthetic-canary"),
+            |_scope, _secret| {
+                installed.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        );
+
+        // Past the gate: the failure is the document's, not the schema's.
+        assert!(
+            matches!(outcome, Err(OperatorError::Jira(_))),
+            "a current realm did not reach the credential reader: {outcome:?}"
+        );
+        assert!(
+            read_attempted.load(Ordering::SeqCst),
+            "the credential reader was never reached on a current realm, so the \
+             stopped-schema assertions prove nothing"
+        );
+        assert!(
+            !installed.load(Ordering::SeqCst),
+            "malformed input reached the installer"
+        );
+        // The refused document is not echoed into the error.
+        let message = format!("{:?}", outcome.unwrap_err());
+        assert!(!message.contains("synthetic-canary"));
+
+        let after = realm_fingerprint(&database);
+        assert_eq!(
+            after.1, before.1,
+            "a current realm was migrated by a refusal"
+        );
+        assert_eq!(after.2, before.2);
+    }
 }

@@ -52,33 +52,34 @@ use kontor_core::repository::{
     AccountProfile, AccountProfileUpdate, AdaptiveAdmissionAdvance, AdoptionWrite, AgentRun,
     AttestationWrite, AvailabilityOverride, CalendarRepository, CapacityObservation,
     CapacityRepository, CommandRepository, CompletionWrite, ConnectorSpecSelector,
+    CoreTeamRouteSuccessionCommit, CoreTeamRouteSuccessionEffects, CoreTeamRouteSuccessionReadback,
     CredentialReference, CredentialReferenceKind, GateEvaluation, GateRejectionRecovery,
     GateRejectionRoute, GateRouteOrigin, HistoryGapKind, HistoryGapMarker,
     HostedSeatLaunchIntentState, HostedSeatLaunchIntentSupersession, IntakeCreatedWork,
     IntakeDecisionRecord, IntakeOutcome, IntakeRepository, MiniProject,
     MiniProjectTopologySnapshot, NewAbandonReceipt, NewAccountProfile, NewAdaptiveAdmissionState,
     NewAgentRun, NewAvailabilityOverride, NewCapacityObservation, NewCommandIntent,
-    NewConsultationMaterializationReroute, NewConsultationRecoveryAttempt, NewGateEvaluation,
-    NewIntakeDecision, NewIntakeDecisionRecord, NewIntakeReevaluation, NewLocalCommand,
-    NewMiniProject, NewNativeContainerBinding, NewObservation, NewProject, NewProviderQuotaState,
-    NewProviderUsageObservation, NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode,
-    NewSourceEvent, NewTask, NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink,
-    PhaseAdvance, Project, ProjectRepository, ProjectTopologyDefault, ProviderQuotaState,
-    ProviderUsageObservation, QuotaObservationProvenance, RealmEventPage, RealmRepository,
-    ReceiptAdvance, ReevaluationOutcome, RepositoryError, RepositoryResult, RunClosure,
-    RunInspection, RunRepository, RuntimeBinding, RuntimeEvent, SeatLivenessObservation,
-    SessionVerdictEvidence, SourceDisposition, SourceEventIngest, SpecRepository,
-    StoredAdvisorAdvice, StoredCapacityConfiguration, StoredCommitteeFinding,
-    StoredCompletionProfile, StoredCompletionWake, StoredCompletionWakeDelivery,
-    StoredConsultationMaterializationReroute, StoredConsultationProfileRevision,
-    StoredConsultationRecoveryAttempt, StoredConsultationRun, StoredConsultationSeat,
-    StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster, StoredHostedSeatLaunchIntent,
-    StoredHostedTopologySeat, StoredLegacyEpicBacklogCodeCorrection, StoredPromotion,
-    StoredQuickSession, StoredRemediationProposal, StoredRetiredEvaluatorAttestation,
-    StoredTeamRunAdmissionAdoption, StoredTopologyContainerRecovery, SuccessionRepository, Task,
-    TaskInspection, TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure,
-    TicketLink, TicketRepository, TopologyRepository, WorkflowRepository,
-    validate_dependency_graph,
+    NewConsultationMaterializationReroute, NewConsultationRecoveryAttempt,
+    NewCoreTeamRouteSuccessionClaim, NewGateEvaluation, NewIntakeDecision, NewIntakeDecisionRecord,
+    NewIntakeReevaluation, NewLocalCommand, NewMiniProject, NewNativeContainerBinding,
+    NewObservation, NewProject, NewProviderQuotaState, NewProviderUsageObservation,
+    NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode, NewSourceEvent, NewTask,
+    NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink, PhaseAdvance, Project,
+    ProjectRepository, ProjectTopologyDefault, ProviderQuotaState, ProviderUsageObservation,
+    QuotaObservationProvenance, RealmEventPage, RealmRepository, ReceiptAdvance,
+    ReevaluationOutcome, RepositoryError, RepositoryResult, RunClosure, RunInspection,
+    RunRepository, RuntimeBinding, RuntimeEvent, SeatLivenessObservation, SessionVerdictEvidence,
+    SourceDisposition, SourceEventIngest, SpecRepository, StoredAdvisorAdvice,
+    StoredCapacityConfiguration, StoredCommitteeFinding, StoredCompletionProfile,
+    StoredCompletionWake, StoredCompletionWakeDelivery, StoredConsultationMaterializationReroute,
+    StoredConsultationProfileRevision, StoredConsultationRecoveryAttempt, StoredConsultationRun,
+    StoredConsultationSeat, StoredCoreTeamRevision, StoredCoreTeamRouteSuccession,
+    StoredEpicCompletion, StoredEpicRoster, StoredHostedSeatLaunchIntent, StoredHostedTopologySeat,
+    StoredLegacyEpicBacklogCodeCorrection, StoredPromotion, StoredQuickSession,
+    StoredRemediationProposal, StoredRetiredEvaluatorAttestation, StoredTeamRunAdmissionAdoption,
+    StoredTopologyContainerRecovery, SuccessionRepository, Task, TaskInspection,
+    TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink,
+    TicketRepository, TopologyRepository, WorkflowRepository, validate_dependency_graph,
 };
 use kontor_core::repository::{
     LegacyConsultationTopicCorrection, LegacyEpicBacklogCodeCorrection, LiveNativeSubject,
@@ -5380,12 +5381,17 @@ impl SqliteStore {
 
     /// Atomically move the exact predecessor to history and make its successor
     /// the active native filler of the same logical SeatBinding.
+    /// `succession`, when supplied, is committed in this same transaction. The
+    /// transition and the evidence that reconstructs it therefore commit
+    /// together or not at all, which is what removes the window a process lost
+    /// between them used to leave open (ASMA-8187).
     pub fn replace_hosted_topology_seat_route(
         &self,
         predecessor: &StoredHostedTopologySeat,
         successor: &StoredHostedTopologySeat,
         retired_at: Timestamp,
         reason: &str,
+        succession: Option<&CoreTeamRouteSuccessionCommit>,
     ) -> RepositoryResult<Applied> {
         if predecessor.project_id != successor.project_id
             || predecessor.seat_binding_id != successor.seat_binding_id
@@ -5396,23 +5402,39 @@ impl SqliteStore {
             });
         }
         let transaction = self.begin()?;
-        let active_native: Option<String> = transaction
+        // The whole identity, not the external id alone. A provider may reissue
+        // an external id it has already used, so `native_id` on its own cannot
+        // say whether the seat holds *this* native or a later one wearing the
+        // same name; the runtime generation is what tells them apart
+        // (ASMA-8187 P1).
+        let active: Option<(String, i64, String, String)> = transaction
             .query_row(
-                "SELECT native_id FROM hosted_topology_seats
-                 WHERE project_id = ?1 AND seat_binding_id = ?2",
+                "SELECT native_id, generation, runtime_kind, host
+                   FROM hosted_topology_seats
+                  WHERE project_id = ?1 AND seat_binding_id = ?2",
                 params![
                     predecessor.project_id.to_string(),
                     predecessor.seat_binding_id.to_string(),
                 ],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()
             .map_err(backend)?;
-        if active_native.as_deref() == Some(successor.native_identity.native_id.as_str()) {
+        let names = |identity: &NativeRuntimeIdentity| {
+            active
+                .as_ref()
+                .is_some_and(|(native, generation, kind, host)| {
+                    native == identity.native_id.as_str()
+                        && u64::try_from(*generation).unwrap_or(u64::MAX) == identity.generation
+                        && kind == identity.runtime_kind.as_str()
+                        && host == identity.host.as_str()
+                })
+        };
+        if names(&successor.native_identity) {
             transaction.rollback().map_err(backend)?;
             return Ok(Applied::Unchanged);
         }
-        if active_native.as_deref() != Some(predecessor.native_identity.native_id.as_str()) {
+        if !names(&predecessor.native_identity) {
             return Err(RepositoryError::Conflict {
                 subject: "hosted topology seat route",
                 rule: "the active native predecessor differs from the correction",
@@ -5490,8 +5512,725 @@ impl SqliteStore {
                 ],
             )
             .map_err(backend)?;
+        if let Some(succession) = succession {
+            // Validated here, at the boundary that persists it, and not only by
+            // whichever caller happened to build it. The readback arrives as
+            // free JSON, so this is the last place a nested forbidden key or a
+            // bearer-shaped value can be refused before it is durable — and the
+            // declared hash is re-derived rather than trusted, so a caller
+            // cannot record bytes under a digest that does not describe them.
+            let canonical = CanonicalDocument::from_value(&serde_json::json!({
+                "schema_version": 1,
+                "readback": succession.readback,
+            }))?;
+            if canonical.hash() != &succession.readback_hash {
+                return Err(RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule: "the succession readback does not match its declared hash",
+                });
+            }
+            // And it is a *readback*, not merely well-formed JSON under an
+            // honest digest. Typing it here is what stops an incomplete or
+            // embellished document becoming durable in the first place; the
+            // binder's later check then has something whole to compare against
+            // (ASMA-8187 P2).
+            let typed = serde_json::from_value::<CoreTeamRouteSuccessionReadback>(
+                succession.readback.clone(),
+            )
+            .map_err(|_| RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the succession readback is not a complete Core Team succession readback",
+            })?;
+            typed
+                .check_internal_consistency()
+                .map_err(|rule| RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule,
+                })?;
+            // Coherent is not the same as true. The claim fixes the two
+            // generations this command produces, and the caller supplies the two
+            // seat rows and the retirement instant; the readback has to describe
+            // *those*, or it is an internally tidy account of a succession that
+            // did not happen. Runtime kind, host, provider session and model
+            // route are carried nowhere else durable, so this is the only place
+            // they can ever be checked (ASMA-8187 P2).
+            let claim: (i64, i64, i64) = transaction
+                .query_row(
+                    "SELECT predecessor_occupancy_generation, successor_occupancy_generation,
+                            successor_credential_generation
+                       FROM core_team_route_successions WHERE idempotency_key = ?1",
+                    params![succession.idempotency_key.as_str()],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()
+                .map_err(backend)?
+                .ok_or(RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule: "a succession outcome cannot commit onto a claim that was never taken",
+                })?;
+            typed
+                .check_describes_transition(
+                    predecessor,
+                    u64::try_from(claim.0).unwrap_or(u64::MAX),
+                    successor,
+                    u64::try_from(claim.1).unwrap_or(u64::MAX),
+                    u64::try_from(claim.2).unwrap_or(u64::MAX),
+                    retired_at,
+                )
+                .map_err(|rule| RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule,
+                })?;
+            let readback = serde_json::to_string(&succession.readback).map_err(|error| {
+                RepositoryError::Backend {
+                    detail: format!("a succession readback could not be encoded: {error}"),
+                }
+            })?;
+            // The claim must already exist, name this exact seat, and not yet
+            // be committed. Anything else is a caller committing an outcome
+            // onto a claim that is not the one it took.
+            let updated = transaction
+                .execute(
+                    "UPDATE core_team_route_successions
+                        SET successor_native_id = ?2, successor_generation = ?3,
+                            readback = ?4, readback_hash = ?5, route_committed_at = ?6
+                      WHERE idempotency_key = ?1
+                        AND project_id = ?7
+                        AND seat_binding_id = ?8
+                        AND predecessor_native_id = ?9
+                        AND route_committed_at IS NULL",
+                    params![
+                        succession.idempotency_key.as_str(),
+                        successor.native_identity.native_id.as_str(),
+                        i64::try_from(successor.native_identity.generation).unwrap_or(i64::MAX),
+                        readback,
+                        succession.readback_hash.as_str(),
+                        text(succession.route_committed_at),
+                        predecessor.project_id.to_string(),
+                        predecessor.seat_binding_id.to_string(),
+                        predecessor.native_identity.native_id.as_str(),
+                    ],
+                )
+                .map_err(backend)?;
+            if updated != 1 {
+                return Err(RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule: "the claimed succession is already committed or names another seat",
+                });
+            }
+        }
+        transaction.commit().map_err(backend)?;
+        // The transition and its ledger row are durable and the caller is about
+        // to learn nothing about them. This is the *earliest* incomplete shape a
+        // replay can find — route committed, neither trailing effect attempted —
+        // and it is distinct from losing the latch after both have landed.
+        // Production builds never compile this.
+        #[cfg(feature = "fault-injection")]
+        if self.faults.lose_next_succession_route_ack.replace(false) {
+            return Err(RepositoryError::Backend {
+                detail: "injected fault after the succession route commit".to_owned(),
+            });
+        }
+        Ok(Applied::Updated)
+    }
+
+    /// Take exclusive ownership of one Core Team route succession.
+    ///
+    /// This runs *before* the retire and the launch, and its uniqueness index is
+    /// the exclusivity itself. A second caller arriving with a second fresh
+    /// idempotency key for the same (project, seat, predecessor occupancy)
+    /// cannot insert, so it never reaches an effect: the seat cannot acquire two
+    /// natives claiming one logical owner.
+    ///
+    /// Re-claiming under the same key and the same intent is `Unchanged`, which
+    /// is what lets an exact replay continue. The same key with a different
+    /// intent, or a different key against a live claim, is a conflict.
+    pub fn claim_core_team_route_succession(
+        &self,
+        claim: &NewCoreTeamRouteSuccessionClaim,
+    ) -> RepositoryResult<Applied> {
+        let transaction = self.begin()?;
+        let existing: Option<(String, String, i64)> = transaction
+            .query_row(
+                "SELECT idempotency_key, intent_hash, predecessor_occupancy_generation
+                   FROM core_team_route_successions
+                  WHERE project_id = ?1 AND seat_binding_id = ?2
+                    AND predecessor_occupancy_generation = ?3",
+                params![
+                    claim.project_id.to_string(),
+                    claim.seat_binding_id.to_string(),
+                    i64::try_from(claim.predecessor_occupancy_generation).unwrap_or(i64::MAX),
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        if let Some((key, intent_hash, _)) = existing {
+            transaction.rollback().map_err(backend)?;
+            if key != claim.idempotency_key.as_str() {
+                return Err(RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule: "another idempotency key already owns this seat's succession",
+                });
+            }
+            if intent_hash != claim.intent_hash.as_str() {
+                return Err(RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule: "the idempotency key already claimed a different succession",
+                });
+            }
+            return Ok(Applied::Unchanged);
+        }
+        transaction
+            .execute(
+                "INSERT INTO core_team_route_successions
+                     (idempotency_key, intent_hash, project_id, mini_project_id,
+                      seat_binding_id, predecessor_native_id, predecessor_generation,
+                      predecessor_occupancy_generation, successor_occupancy_generation,
+                      successor_credential_generation, claimed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    claim.idempotency_key.as_str(),
+                    claim.intent_hash.as_str(),
+                    claim.project_id.to_string(),
+                    claim.mini_project_id.to_string(),
+                    claim.seat_binding_id.to_string(),
+                    claim.predecessor_native_id.as_str(),
+                    i64::try_from(claim.predecessor_generation).unwrap_or(i64::MAX),
+                    i64::try_from(claim.predecessor_occupancy_generation).unwrap_or(i64::MAX),
+                    i64::try_from(claim.successor_occupancy_generation).unwrap_or(i64::MAX),
+                    i64::try_from(claim.successor_credential_generation).unwrap_or(i64::MAX),
+                    text(claim.claimed_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(Applied::Created)
+    }
+
+    /// Commit a succession's trailing effects by *proving* them.
+    ///
+    /// The previous shape took two booleans and trusted them, which meant the
+    /// persistence boundary recorded the caller's opinion rather than what
+    /// durable state actually says. Both latches are now derived here from the
+    /// exact rows the effects were supposed to write:
+    ///
+    /// * the launch intent for this occupancy is `installed` and names this
+    ///   succession's exact successor native — not merely some native;
+    /// * the seat's active occupant *is* that successor, and the SeatBinding's
+    ///   attachment instant is the successor's own observation instant, which
+    ///   is what ties the generic liveness write to this succession rather than
+    ///   to whatever last touched the seat.
+    ///
+    /// Anything short of both refuses and latches nothing, so a half-landed
+    /// succession cannot be talked into looking complete (ASMA-8187 P2).
+    pub fn commit_core_team_route_succession_effects(
+        &self,
+        key: &IdempotencyKey,
+    ) -> RepositoryResult<Applied> {
+        // A crash here is indistinguishable, from the caller, from the latch
+        // never having happened — which is the interval the pending-effect
+        // columns exist to survive. Production builds never compile this.
+        #[cfg(feature = "fault-injection")]
+        if self.faults.lose_next_succession_effects.replace(false) {
+            return Err(RepositoryError::Backend {
+                detail: "injected fault before the succession effect latch".to_owned(),
+            });
+        }
+        let recorded =
+            self.get_core_team_route_succession(key)?
+                .ok_or(RepositoryError::NotFound {
+                    subject: "core team route succession",
+                })?;
+        let (Some(successor_native_id), Some(_), Some(_)) = (
+            recorded.successor_native_id.clone(),
+            recorded.successor_generation,
+            recorded.route_committed_at,
+        ) else {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "a succession cannot commit effects before its route",
+            });
+        };
+        // The committed readback was proved against its own transition before it
+        // became durable and is immutable afterwards, so it — not the two
+        // identity columns beside it — is what the seat must still match.
+        let evidence = Self::committed_readback(&recorded)?;
+
+        // Effect zero, and the one the other two are only meaningful under: the
+        // seat is still standing in the occupancy this command produced. An
+        // external native id is the provider's to reissue, so a later occupancy
+        // reusing the same id would otherwise satisfy an older row's latches and
+        // let it receipt effects belonging to its successor's successor
+        // (ASMA-8187 P1).
+        let occupancy = self.hosted_topology_seat_occupancy_generation(
+            recorded.project_id,
+            recorded.seat_binding_id,
+        )?;
+        if occupancy != Some(recorded.successor_occupancy_generation) {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the seat has left the occupancy generation this succession installed",
+            });
+        }
+
+        // Effect one: the launch intent, installed against this exact native.
+        let intent = self.get_hosted_seat_launch_intent(
+            recorded.project_id,
+            recorded.seat_binding_id,
+            recorded.successor_occupancy_generation,
+        )?;
+        let launch_intent_installed = intent.is_some_and(|intent| {
+            intent.state == HostedSeatLaunchIntentState::Installed
+                && intent.observed_native_id.as_ref() == Some(&successor_native_id)
+        });
+
+        // Effect two: the observation, bound to this exact successor. The
+        // active occupant proves which native the seat holds — by its whole
+        // identity, so a reissued id under another runtime generation is not
+        // mistaken for it — and the attachment instant proves the observation
+        // was written for *that* native and not inherited from an earlier one.
+        let active =
+            self.get_hosted_topology_seat(recorded.project_id, recorded.seat_binding_id)?;
+        let seat_binding_observed = match (
+            active,
+            self.get_seat_binding(recorded.project_id, recorded.seat_binding_id)?,
+        ) {
+            (Some(active), Some(binding)) => {
+                evidence.successor_is(&active)
+                    && binding.last_attached_at == Some(active.observed_at)
+            }
+            _ => false,
+        };
+
+        if !launch_intent_installed || !seat_binding_observed {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the succession's trailing effects are not both proved against its successor",
+            });
+        }
+        let updated = self
+            .connection
+            .execute(
+                "UPDATE core_team_route_successions
+                    SET launch_intent_installed = 1, seat_binding_observed = 1
+                  WHERE idempotency_key = ?1 AND route_committed_at IS NOT NULL",
+                params![key.as_str()],
+            )
+            .map_err(backend)?;
+        if updated == 0 {
+            return Err(RepositoryError::NotFound {
+                subject: "core team route succession",
+            });
+        }
+        Ok(Applied::Updated)
+    }
+
+    /// The validated, immutable readback a committed succession recorded.
+    ///
+    /// Typed on the way in and proved against its own transition before it was
+    /// written, so decoding it here is reading evidence rather than trusting a
+    /// stored string. A row that cannot produce one is a row no later check can
+    /// stand on.
+    fn committed_readback(
+        recorded: &StoredCoreTeamRouteSuccession,
+    ) -> RepositoryResult<CoreTeamRouteSuccessionReadback> {
+        let readback = recorded.readback.clone().ok_or(RepositoryError::Conflict {
+            subject: "core team route succession",
+            rule: "a committed succession carries no readback to verify against",
+        })?;
+        serde_json::from_value(readback).map_err(|_| RepositoryError::Conflict {
+            subject: "core team route succession",
+            rule: "the stored succession readback is no longer a complete readback",
+        })
+    }
+
+    /// Bind one recorded succession to the receipt that completed it.
+    ///
+    /// One-time and exact on key *and* intent: a receipt is evidence for one
+    /// specific command, and binding it to another would make the ledger assert
+    /// something it never saw. Re-binding the identical receipt is unchanged,
+    /// which is what lets a lost acknowledgement finish.
+    pub fn bind_core_team_route_succession_receipt(
+        &self,
+        key: &IdempotencyKey,
+        intent_hash: &ContentHash,
+        receipt_id: CommandReceiptId,
+        receipted_at: Timestamp,
+    ) -> RepositoryResult<Applied> {
+        // The command receipt is already recorded by the time this runs, so a
+        // loss here leaves a realm holding a receipt no ledger row points at.
+        // A replay must rebind that same receipt rather than mint a second.
+        // Production builds never compile this.
+        #[cfg(feature = "fault-injection")]
+        if self
+            .faults
+            .lose_next_succession_receipt_binding
+            .replace(false)
+        {
+            return Err(RepositoryError::Backend {
+                detail: "injected fault before the succession receipt binding".to_owned(),
+            });
+        }
+        let transaction = self.begin()?;
+        #[allow(clippy::type_complexity)]
+        let row: Option<(
+            String,
+            Option<String>,
+            Option<String>,
+            i64,
+            i64,
+            String,
+            String,
+        )> = transaction
+            .query_row(
+                "SELECT intent_hash, receipt_id, route_committed_at,
+                            launch_intent_installed, seat_binding_observed,
+                            project_id, mini_project_id
+                       FROM core_team_route_successions
+                      WHERE idempotency_key = ?1",
+                params![key.as_str()],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((
+            recorded_hash,
+            bound,
+            committed,
+            launch_installed,
+            seat_observed,
+            project_id,
+            mini_project_id,
+        )) = row
+        else {
+            return Err(RepositoryError::NotFound {
+                subject: "core team route succession",
+            });
+        };
+        if recorded_hash != intent_hash.as_str() {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the receipt names a different succession intent",
+            });
+        }
+        // Completeness is a precondition of the receipt, not a consequence of
+        // it. A caller that reconciled nothing must not be able to mint the
+        // statement that everything landed.
+        if committed.is_none() || launch_installed != 1 || seat_observed != 1 {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "a receipt cannot bind a succession whose effects have not all landed",
+            });
+        }
+        // A foreign key proves the receipt exists; it says nothing about whose
+        // it is. Read it here, inside the same transaction, and require it to be
+        // the receipt this exact command produced: same project, same key, same
+        // command kind, same target epic, same intent. Anything else is a
+        // succession pointing at somebody else's completion (ASMA-8187 P2).
+        #[allow(clippy::type_complexity)]
+        let receipt: Option<(
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+        )> = transaction
+            .query_row(
+                "SELECT project_id, idempotency_key, kind, intent_hash,
+                            json_extract(target, '$.kind'),
+                            json_extract(target, '$.mini_project_id')
+                       FROM command_receipts WHERE id = ?1",
+                params![receipt_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((
+            receipt_project,
+            receipt_key,
+            receipt_kind,
+            receipt_intent,
+            target_kind,
+            target_epic,
+        )) = receipt
+        else {
+            return Err(RepositoryError::NotFound {
+                subject: "command receipt",
+            });
+        };
+        if receipt_project != project_id
+            || receipt_key != key.as_str()
+            || receipt_kind != "correct_core_team_route"
+            || receipt_intent != intent_hash.as_str()
+            || target_kind.as_deref() != Some("mini_project")
+            || target_epic.as_deref() != Some(mini_project_id.as_str())
+        {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the receipt was recorded for another command",
+            });
+        }
+        // The receipt is the last moment anything reads this row before it
+        // becomes the answer to every replay, so the evidence is re-proved
+        // here rather than assumed from the write that produced it. The digest
+        // is recomputed from the stored bytes, and every value the readback
+        // repeats from a ledger column is compared against that column: two
+        // layers wrote them, and agreement between the two is evidence rather
+        // than a restatement.
+        self.verify_succession_readback(&transaction, key)?;
+        // Only now may an identical binding answer `Unchanged`. Returning it
+        // earlier made the idempotent path the one path that proved nothing:
+        // a row bound by some other route — an upgrade, a restore, a direct
+        // write — would be re-affirmed on replay without its receipt or its
+        // readback ever being read. A replay is the most common way this row is
+        // looked at, so it has to be the most verified, not the least
+        // (ASMA-8187 P2).
+        if let Some(bound) = bound {
+            transaction.rollback().map_err(backend)?;
+            return if bound == receipt_id.to_string() {
+                Ok(Applied::Unchanged)
+            } else {
+                Err(RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule: "the succession is already bound to another receipt",
+                })
+            };
+        }
+        transaction
+            .execute(
+                "UPDATE core_team_route_successions
+                    SET receipt_id = ?2, receipted_at = ?3
+                  WHERE idempotency_key = ?1",
+                params![key.as_str(), receipt_id.to_string(), text(receipted_at)],
+            )
+            .map_err(backend)?;
         transaction.commit().map_err(backend)?;
         Ok(Applied::Updated)
+    }
+
+    /// Re-prove a committed succession's readback against its own ledger row.
+    fn verify_succession_readback(
+        &self,
+        transaction: &rusqlite::Transaction<'_>,
+        key: &IdempotencyKey,
+    ) -> RepositoryResult<()> {
+        let row: (
+            String,
+            String,
+            String,
+            i64,
+            i64,
+            String,
+            i64,
+            i64,
+            i64,
+            String,
+        ) = transaction
+            .query_row(
+                "SELECT readback, readback_hash, predecessor_native_id, predecessor_generation,
+                        predecessor_occupancy_generation, successor_native_id,
+                        successor_generation, successor_occupancy_generation,
+                        successor_credential_generation, seat_binding_id
+                   FROM core_team_route_successions WHERE idempotency_key = ?1",
+                params![key.as_str()],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                        row.get(9)?,
+                    ))
+                },
+            )
+            .map_err(backend)?;
+        let readback: serde_json::Value =
+            serde_json::from_str(&row.0).map_err(|error| RepositoryError::Backend {
+                detail: format!("a succession readback could not be decoded: {error}"),
+            })?;
+        let declared = ContentHash::parse(&row.1)?;
+        let recomputed = CanonicalDocument::from_value(&serde_json::json!({
+            "schema_version": 1,
+            "readback": readback,
+        }))?;
+        if recomputed.hash() != &declared {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the stored succession readback no longer matches its recorded digest",
+            });
+        }
+        // Typed, not probed. Reading nine pointers out of free JSON proves those
+        // nine agree and says nothing about the rest of the document: a missing
+        // `host`, an absent `retired_at` or an extra member nobody declared all
+        // passed. Deserializing into the shared domain structure — which denies
+        // unknown fields and has no optional identity — is what makes the whole
+        // readback the thing under test (ASMA-8187 P2).
+        let readback: CoreTeamRouteSuccessionReadback =
+            serde_json::from_value(readback).map_err(|_| RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the succession readback is not a complete Core Team succession readback",
+            })?;
+        let seat_binding_id = row.9;
+        let agrees = readback.seat_binding_id.to_string() == seat_binding_id
+            && readback.predecessor.native_id.as_str() == row.2
+            && readback.predecessor.generation == u64::try_from(row.3).unwrap_or(u64::MAX)
+            && readback.predecessor.occupancy_generation
+                == u64::try_from(row.4).unwrap_or(u64::MAX)
+            && readback.successor.native_id.as_str() == row.5
+            && readback.successor.generation == u64::try_from(row.6).unwrap_or(u64::MAX)
+            && readback.successor.occupancy_generation == u64::try_from(row.7).unwrap_or(u64::MAX)
+            && readback.grant_subject.generation == u64::try_from(row.8).unwrap_or(u64::MAX)
+            && readback.grant_subject.subject_seat_binding_id.to_string() == seat_binding_id;
+        if !agrees {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the succession readback disagrees with its own ledger identity",
+            });
+        }
+        // Re-asked here, over the stored bytes, rather than trusted from the
+        // write that produced them: the derived grant digest, two distinct
+        // occupants, a recorded retirement instant.
+        readback
+            .check_internal_consistency()
+            .map_err(|rule| RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule,
+            })?;
+        Ok(())
+    }
+
+    /// Read one recorded succession by the key a replay arrives holding.
+    pub fn get_core_team_route_succession(
+        &self,
+        key: &IdempotencyKey,
+    ) -> RepositoryResult<Option<StoredCoreTeamRouteSuccession>> {
+        self.read_core_team_route_succession("WHERE idempotency_key = ?1", params![key.as_str()])
+    }
+
+    /// Read the exclusive owner of one seat's succession, if it has one.
+    pub fn core_team_route_succession_owner(
+        &self,
+        project_id: ProjectId,
+        seat_binding_id: SeatBindingId,
+        predecessor_occupancy_generation: u64,
+    ) -> RepositoryResult<Option<StoredCoreTeamRouteSuccession>> {
+        self.read_core_team_route_succession(
+            "WHERE project_id = ?1 AND seat_binding_id = ?2
+               AND predecessor_occupancy_generation = ?3",
+            params![
+                project_id.to_string(),
+                seat_binding_id.to_string(),
+                i64::try_from(predecessor_occupancy_generation).unwrap_or(i64::MAX),
+            ],
+        )
+    }
+
+    fn read_core_team_route_succession(
+        &self,
+        predicate: &str,
+        parameters: &[&dyn rusqlite::ToSql],
+    ) -> RepositoryResult<Option<StoredCoreTeamRouteSuccession>> {
+        let Some(row) = self
+            .connection
+            .query_row(
+                &format!(
+                    "SELECT idempotency_key, intent_hash, project_id, mini_project_id,
+                            seat_binding_id, predecessor_native_id, predecessor_generation,
+                            predecessor_occupancy_generation, successor_occupancy_generation,
+                            successor_credential_generation, claimed_at, successor_native_id,
+                            successor_generation, readback, readback_hash, route_committed_at,
+                            launch_intent_installed, seat_binding_observed, receipt_id,
+                            receipted_at
+                       FROM core_team_route_successions {predicate}"
+                ),
+                parameters,
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, i64>(6)?,
+                        row.get::<_, i64>(7)?,
+                        row.get::<_, i64>(8)?,
+                        row.get::<_, i64>(9)?,
+                        row.get::<_, String>(10)?,
+                        row.get::<_, Option<String>>(11)?,
+                        row.get::<_, Option<i64>>(12)?,
+                        row.get::<_, Option<String>>(13)?,
+                        row.get::<_, Option<String>>(14)?,
+                        row.get::<_, Option<String>>(15)?,
+                        row.get::<_, i64>(16)?,
+                        row.get::<_, i64>(17)?,
+                        row.get::<_, Option<String>>(18)?,
+                        row.get::<_, Option<String>>(19)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(StoredCoreTeamRouteSuccession {
+            idempotency_key: IdempotencyKey::parse(&row.0)?,
+            intent_hash: ContentHash::parse(&row.1)?,
+            project_id: ProjectId::parse(&row.2)?,
+            mini_project_id: MiniProjectId::parse(&row.3)?,
+            seat_binding_id: SeatBindingId::parse(&row.4)?,
+            predecessor_native_id: ExternalId::parse(&row.5)?,
+            predecessor_generation: u64::try_from(row.6).unwrap_or_default(),
+            predecessor_occupancy_generation: u64::try_from(row.7).unwrap_or_default(),
+            successor_occupancy_generation: u64::try_from(row.8).unwrap_or_default(),
+            successor_credential_generation: u64::try_from(row.9).unwrap_or_default(),
+            claimed_at: read_timestamp(&row.10)?,
+            successor_native_id: row.11.as_deref().map(ExternalId::parse).transpose()?,
+            successor_generation: row.12.map(|value| u64::try_from(value).unwrap_or_default()),
+            readback: row
+                .13
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()
+                .map_err(|error| RepositoryError::Backend {
+                    detail: format!("a succession readback could not be decoded: {error}"),
+                })?,
+            readback_hash: row.14.as_deref().map(ContentHash::parse).transpose()?,
+            route_committed_at: row.15.as_deref().map(read_timestamp).transpose()?,
+            effects: CoreTeamRouteSuccessionEffects {
+                launch_intent_installed: row.16 != 0,
+                seat_binding_observed: row.17 != 0,
+            },
+            receipt_id: row.18.as_deref().map(CommandReceiptId::parse).transpose()?,
+            receipted_at: row.19.as_deref().map(read_timestamp).transpose()?,
+        }))
     }
 
     /// Read the one advice artifact a single-seat Advisor run produced.

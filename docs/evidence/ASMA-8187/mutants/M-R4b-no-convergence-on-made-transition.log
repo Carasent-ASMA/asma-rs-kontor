@@ -1,0 +1,22 @@
+     Running tests/loopback_api.rs (target/debug/deps/loopback_api-33d0e6c483a75765)
+
+running 1 test
+test concurrent_applies_under_one_key_converge_on_a_single_successor ... FAILED
+
+failures:
+
+---- concurrent_applies_under_one_key_converge_on_a_single_successor stdout ----
+
+thread 'concurrent_applies_under_one_key_converge_on_a_single_successor' (74049097) panicked at crates/kontor-daemon/tests/loopback_api.rs:62298:5:
+assertion `left == right` failed: one key answered with two different readbacks
+  left: Object {"grant_subject": Object {"generation": Number(2), "subject_digest": String("166e9e7fe85d774a5a3a920006e6e9e20abda7b7f1e190a69118dcb85c9c23a1"), "subject_seat_binding_id": String("01a0e6e3-ad2c-7b03-aba6-67bf1f1f3cab")}, "predecessor": Object {"generation": Number(1), "host": String("fake-host"), "model_route": Object {"effort": String("xhigh"), "model": String("gpt-5.6-sol"), "provider": String("codex")}, "native_id": String("native-hosted-seat-4"), "occupancy_generation": Number(1), "provider_session_id": String("provider-hosted-seat-4"), "runtime_kind": String("fake.runtime")}, "retired_at": String("2026-09-28T07:21:15.942948Z"), "seat_binding_id": String("01a0e6e3-ad2c-7b03-aba6-67bf1f1f3cab"), "successor": Object {"generation": Number(1), "host": String("fake-host"), "model_route": Object {"effort": String("high"), "model": String("gpt-5.6-sol"), "provider": String("codex")}, "native_id": String("native-hosted-seat-5"), "occupancy_generation": Number(2), "provider_session_id": String("provider-hosted-seat-5"), "runtime_kind": String("fake.runtime")}}
+ right: Object {"grant_subject": Object {"generation": Number(2), "subject_digest": String("166e9e7fe85d774a5a3a920006e6e9e20abda7b7f1e190a69118dcb85c9c23a1"), "subject_seat_binding_id": String("01a0e6e3-ad2c-7b03-aba6-67bf1f1f3cab")}, "predecessor": Object {"generation": Number(1), "host": String("fake-host"), "model_route": Object {"effort": String("xhigh"), "model": String("gpt-5.6-sol"), "provider": String("codex")}, "native_id": String("native-hosted-seat-4"), "occupancy_generation": Number(1), "provider_session_id": String("provider-hosted-seat-4"), "runtime_kind": String("fake.runtime")}, "retired_at": String("2026-09-28T07:21:15.920604Z"), "seat_binding_id": String("01a0e6e3-ad2c-7b03-aba6-67bf1f1f3cab"), "successor": Object {"generation": Number(1), "host": String("fake-host"), "model_route": Object {"effort": String("high"), "model": String("gpt-5.6-sol"), "provider": String("codex")}, "native_id": String("native-hosted-seat-5"), "occupancy_generation": Number(2), "provider_session_id": String("provider-hosted-seat-5"), "runtime_kind": String("fake.runtime")}}
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    concurrent_applies_under_one_key_converge_on_a_single_successor
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 496 filtered out; finished in 1.97s
+
+error: test failed, to rerun pass `-p kontor-daemon --test loopback_api`

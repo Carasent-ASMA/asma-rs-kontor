@@ -15,7 +15,7 @@ fn recorded_publication_attestations_are_immutable_at_the_database_boundary() {
     let directory = TempDir::new().expect("temp dir");
     let path = directory.path().join("kontor.db");
     let store = SqliteStore::open(&path).expect("store opens at current schema");
-    assert_eq!(store.schema_version().expect("schema version"), 119);
+    assert_eq!(store.schema_version().expect("schema version"), 122);
 
     let project = ProjectId::generate();
     store

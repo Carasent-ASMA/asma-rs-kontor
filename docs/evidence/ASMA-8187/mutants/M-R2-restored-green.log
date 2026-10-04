@@ -1,0 +1,27 @@
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.92s
+     Running tests/hosted_seat_autonomy.rs (target/debug/deps/hosted_seat_autonomy-37350dd3fcfb6d32)
+
+running 19 tests
+test a_hosted_seat_reads_back_the_authority_it_was_launched_under ... ok
+test a_live_generation_cannot_change_its_authority_in_place ... ok
+test archival_refuses_a_predecessor_whose_authority_does_not_match ... ok
+test a_changed_default_applies_to_the_successor_and_not_the_predecessor ... ok
+test an_installed_intent_refuses_a_second_native ... ok
+test pre_feature_hosted_rows_migrate_to_the_least_authority ... ok
+test binding_an_occupancy_reconciles_its_intent ... ok
+test a_succession_readback_is_refused_at_the_store_boundary ... ok
+test a_prepared_intent_holds_the_authority_before_any_occupancy_exists ... ok
+test a_readback_naming_another_successor_is_refused_before_binding ... ok
+test history_retains_the_authority_the_retired_generation_ran_under ... ok
+test one_generation_cannot_be_prepared_under_a_second_authority ... ok
+test a_contradictory_authority_is_refused_by_the_schema ... ok
+test preparing_the_same_launch_twice_is_one_intent ... ok
+test replaying_an_unacknowledged_launch_is_idempotent ... ok
+test the_schema_refuses_to_rewrite_a_recorded_decision ... ok
+test seat_history_reads_back_every_predecessor_in_retirement_order ... ok
+test seat_launch_intents_read_back_across_every_generation ... ok
+test succession_effects_and_readback_are_proved_before_a_receipt_binds ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.39s
+

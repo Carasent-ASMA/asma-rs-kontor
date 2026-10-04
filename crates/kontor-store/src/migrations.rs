@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 119;
+pub const SCHEMA_VERSION: i64 = 122;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -415,6 +415,16 @@ const MIGRATIONS: &[&str] = &[
     // the SQLite boundary so recorded publication evidence cannot be rewritten
     // or erased after insertion (ASMA-8102 / PUB-01).
     include_str!("../migrations/0119_publication_attestations_immutable.sql"),
+    // Schema v120. One Core Team route succession is owned exclusively before
+    // its first duplicable effect and stays recoverable across every interval
+    // those effects span.
+    include_str!("../migrations/0120_core_team_route_successions.sql"),
+    // Schema v121. The content of an imported record, kept beside its lineage as
+    // inspectable evidence and never as destination authority.
+    include_str!("../migrations/0121_imported_record_evidence.sql"),
+    // Schema v122. A succession's receipt is proved to be its own, binds at most
+    // one succession, and the instant it bound at is as frozen as the binding.
+    include_str!("../migrations/0122_core_team_route_succession_receipt_identity.sql"),
 ];
 
 const _: () = assert!(

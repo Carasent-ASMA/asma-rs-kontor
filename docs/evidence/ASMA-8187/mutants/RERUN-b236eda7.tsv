@@ -1,0 +1,12 @@
+M-P22b1-receipt-not-unique-b236eda7	101	byte-identical to the named snapshot
+M-P22b2-completion-instant-not-frozen-b236eda7	101	byte-identical to the named snapshot
+M-P23-upgrade-assumes-coherent-bindings-b236eda7	101	byte-identical to the named snapshot
+M-P24-readback-unbound-from-transition-b236eda7	101	byte-identical to the named snapshot
+M-P25-unchanged-answers-before-proof-b236eda7	101	byte-identical to the named snapshot
+M-CTL-control-pair-b236eda7	101	byte-identical to the named snapshot
+M-COH-split-lock-boundary-b236eda7	101	byte-identical to the named snapshot
+M-COH-TEAM-hybrid-generation-and-persona-b236eda7	101	byte-identical to the named snapshot
+M-HANG-SETTLE-ALWAYS-b236eda7	101	byte-identical to the named snapshot
+M-HANG-NO-TIMEOUT-FLAG-b236eda7	101	byte-identical to the named snapshot
+M-HANG-PAUSE-UNBOUNDED-b236eda7	101	byte-identical to the named snapshot
+M-HANG-WAIT-ASSERTS-b236eda7	101	byte-identical to the named snapshot

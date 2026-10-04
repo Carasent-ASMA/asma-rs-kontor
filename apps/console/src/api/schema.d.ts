@@ -1252,6 +1252,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/epics/{epic_id}/core-team": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One epic's materialized Core Team.
+         * @description Pure. It records no command, calls no runtime, and changes nothing; the
+         *     mutating epic routes already return this projection and this route only
+         *     stops a caller from having to mutate in order to see it.
+         */
+        get: operations["epic_core_team"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/epics/{epic_id}/core-team/launch-intents:supersede": {
         parameters: {
             query?: never;
@@ -1331,6 +1353,28 @@ export interface paths {
         put?: never;
         /** Preview attachment of one exact already-running session to a Core Team seat. */
         post: operations["preview_core_team_seat_claim"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/epics/{epic_id}/core-team/seats/{seat_binding_id}/occupancies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every occupancy one hosted seat has had, oldest first.
+         * @description Pure, and deliberately a separate route from the roster: the roster answers
+         *     what is true now, and carrying every seat's whole history inside it would
+         *     make the common read pay for the rare one.
+         */
+        get: operations["epic_hosted_seat_occupancies"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -5647,16 +5691,81 @@ export interface components {
             /** @description Logical SeatBinding that must be preserved. */
             seat_binding_id: string;
         };
+        /** @description Which trailing effects of a committed succession have landed. */
+        CoreTeamRouteEffectsDto: {
+            /** @description The launch intent has been reconciled against the native it produced. */
+            launch_intent_installed: boolean;
+            /** @description The SeatBinding has been observed against the successor. */
+            seat_binding_observed: boolean;
+        };
+        /**
+         * @description The successor's grant subject, as non-secret identity only.
+         *
+         *     A seat credential is bearer material derived from the operator secret, so
+         *     neither it nor any digest *of it* appears here or anywhere else. What is
+         *     recorded is the subject the grant is scoped to — the logical seat and the
+         *     occupancy generation — and a digest over exactly that public pair. A reader
+         *     can therefore prove which generation-scoped grant the successor derived
+         *     without the record ever having held anything secret (ASMA-8187).
+         */
+        CoreTeamRouteGrantSubjectDto: {
+            /**
+             * Format: int64
+             * @description The generation this successor's grant is scoped to.
+             */
+            generation: number;
+            /**
+             * @description Digest over the non-secret (seat, generation) subject pair. Never over
+             *     credential material.
+             */
+            subject_digest: string;
+            /** @description The logical seat the grant is scoped to. */
+            subject_seat_binding_id: string;
+        };
+        /** @description One exact native occupant of a logical Core Team seat. */
+        CoreTeamRouteOccupantDto: {
+            /**
+             * Format: int64
+             * @description Runtime generation of this native.
+             */
+            generation: number;
+            /** @description Host it was placed on. */
+            host: string;
+            /** @description Frozen provider/model/effort route it runs on. */
+            model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /** @description Exact native session identity. */
+            native_id: string;
+            /**
+             * Format: int64
+             * @description Which occupancy of the logical seat this native is.
+             */
+            occupancy_generation: number;
+            /** @description Provider conversation, when the runtime exposes one. */
+            provider_session_id?: string | null;
+            /** @description Runtime that holds it. */
+            runtime_kind: string;
+        };
         /** @description Completed in-place route correction with exact identity readback. */
         CoreTeamRouteOutcomeDto: {
             /** @description Core Team projection after correction. */
             core_team: components["schemas"]["CoreTeamDto"];
             /** @description Archived predecessor native identity. */
             predecessor_native_id: string;
+            readback?: null | components["schemas"]["CoreTeamRouteSuccessionReadbackDto"];
+            /**
+             * @description Digest of that readback.
+             *
+             *     Covers the immutable outcome only. The trailing effects below are live
+             *     ledger state rather than evidence of what the command did, so they are
+             *     deliberately outside the hashed document — a digest that moved when an
+             *     effect landed would not be a digest of the outcome.
+             */
+            readback_hash?: string | null;
             /** @description Audited mutation receipt. */
             receipt: components["schemas"]["MutationReceiptDto"];
             /** @description Preserved logical SeatBinding. */
             seat_binding_id: string;
+            succession_effects?: null | components["schemas"]["CoreTeamRouteEffectsDto"];
             /** @description Active successor native identity; equal to predecessor for an unchanged route. */
             successor_native_id: string;
         };
@@ -5704,6 +5813,32 @@ export interface components {
             expected_revision: number;
             /** @description Logical SeatBinding that must be preserved. */
             seat_binding_id: string;
+        };
+        /**
+         * @description The complete durable evidence one Core Team succession produced.
+         *
+         *     Persisted in the same transaction as the route transition and answered with
+         *     verbatim thereafter. Recomputing it would describe the seat's *current*
+         *     occupant, which is precisely the wrong answer to "what did this command do"
+         *     once a later succession has moved the seat on.
+         */
+        CoreTeamRouteSuccessionReadbackDto: {
+            /**
+             * @description The successor's generation-scoped grant subject, never any credential.
+             *
+             *     Named `grant_subject` rather than `credential` deliberately: the realm's
+             *     canonical-document guard forbids a node called `credential` outright, and
+             *     this node is the subject a grant is scoped to rather than a grant.
+             */
+            grant_subject: components["schemas"]["CoreTeamRouteGrantSubjectDto"];
+            /** @description Exact archived predecessor. */
+            predecessor: components["schemas"]["CoreTeamRouteOccupantDto"];
+            /** @description Instant the predecessor was retired. */
+            retired_at: string;
+            /** @description The preserved logical seat. */
+            seat_binding_id: string;
+            /** @description Exact installed successor. */
+            successor: components["schemas"]["CoreTeamRouteOccupantDto"];
         };
         /** @description Apply one still-current existing-session Core Team claim. */
         CoreTeamSeatClaimApplyRequest: {
@@ -6659,6 +6794,50 @@ export interface components {
         HostedSeatMessageRequestDto: {
             /** @description Instruction delivered to the exact native session. */
             body: string;
+        };
+        /** @description The immutable occupancy chain of one logical hosted seat inside one epic. */
+        HostedSeatOccupancyChainDto: {
+            /** @description The epic whose control plane owns the seat. */
+            epic_id: string;
+            /** @description Every occupancy, oldest generation first. */
+            occupancies: components["schemas"]["HostedSeatOccupancyDto"][];
+            /** @description The project it serves. */
+            project_id: string;
+            /** @description The Realm it was read in. */
+            realm_id: string;
+            /** @description The standard role the seat is held under. */
+            role_code: string;
+            /** @description The logical seat whose occupancies these are. */
+            seat_binding_id: string;
+            /**
+             * Format: int64
+             * @description The position this read is consistent with.
+             */
+            snapshot_cursor: number;
+        };
+        /**
+         * @description One occupancy of a logical hosted seat: the native that filled it and the
+         *     persona that occupancy was opened under.
+         *
+         *     A seat outlives its natives. Reporting only the current one answers "who is
+         *     here" but not "what was this seat ever opened under", and the second question
+         *     is the one a no-overwrite qualification has to ask.
+         */
+        HostedSeatOccupancyDto: {
+            /**
+             * @description `current` for the occupancy filling the seat now, `retired` for one it
+             *     superseded. Stated rather than inferred from position, so a reader does
+             *     not have to know the ordering rule to know which native is live.
+             */
+            lifecycle: string;
+            /** @description Exact native session that filled this occupancy. */
+            native: components["schemas"]["CoreTeamNativeSeatDto"];
+            /**
+             * Format: int64
+             * @description The occupancy generation this native filled.
+             */
+            occupancy_generation: number;
+            role_persona?: null | components["schemas"]["CoreTeamSeatPersonaDto"];
         };
         ImportBody: {
             entries: Record<string, never>[];
@@ -14310,6 +14489,55 @@ export interface operations {
             };
         };
     };
+    epic_core_team: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic whose control plane holds the seats */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoreTeamDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     supersede_core_team_launch_intent: {
         parameters: {
             query?: never;
@@ -14660,6 +14888,58 @@ export interface operations {
                 content?: never;
             };
             /** @description The runtime could not be reached */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    epic_hosted_seat_occupancies: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic whose control plane holds the seat */
+                epic_id: string;
+                /** @description The logical seat */
+                seat_binding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HostedSeatOccupancyChainDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such seat in this epic */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
             503: {
                 headers: {
                     [name: string]: unknown;

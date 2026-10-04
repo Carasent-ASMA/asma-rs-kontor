@@ -49,13 +49,29 @@ use crate::backup::BackupError;
 use crate::events::types::ensure_control_metadata;
 
 /// The export generation this build writes.
-pub const EXPORT_SCHEMA_VERSION: u32 = 12;
+pub const EXPORT_SCHEMA_VERSION: u32 = 13;
 
 /// The database generation that introduced the launch-intent supersession ledger.
 const LAUNCH_INTENT_SUPERSESSION_SCHEMA_VERSION: i64 = 109;
 
 /// The export generation that first carried it.
 const LAUNCH_INTENT_SUPERSESSION_EXPORT_VERSION: u32 = 11;
+
+/// The database generation that introduced the Core Team route succession ledger.
+const CORE_TEAM_ROUTE_SUCCESSION_SCHEMA_VERSION: i64 = 120;
+
+/// The export generation that first carried it.
+///
+/// Named for the same reason as its neighbours: adding a generation must not
+/// silently reclassify an older document as unable to prove what it does carry,
+/// and must not let a newer database export through a generation that cannot
+/// represent its succession ledger. Without this the receipt and readback a
+/// succession is reconstructed from would be dropped by a round trip, and the
+/// idempotency they provide would be silently lost (ASMA-8187).
+const CORE_TEAM_ROUTE_SUCCESSION_EXPORT_VERSION: u32 = 13;
+
+/// The record array introduced in generation 13.
+const CORE_TEAM_ROUTE_SUCCESSION_RECORD_FIELDS: [&str; 1] = ["core_team_route_successions"];
 
 /// The record array introduced in generation 11.
 const LAUNCH_INTENT_SUPERSESSION_RECORD_FIELDS: [&str; 1] =
@@ -319,6 +335,12 @@ impl KontorExportV1 {
             remove_succession_record_fields(records)?;
             remove_quota_runtime_cursor_fields(records)?;
         }
+        if self.schema_version < CORE_TEAM_ROUTE_SUCCESSION_EXPORT_VERSION {
+            let records = value.get_mut("records").ok_or(BackupError::Verification {
+                detail: "the export has no records object",
+            })?;
+            remove_core_team_route_succession_record_fields(records)?;
+        }
         canonical_bytes(&value)
     }
 
@@ -347,6 +369,9 @@ impl KontorExportV1 {
         if self.schema_version < SUCCESSION_EXPORT_VERSION {
             remove_succession_record_fields(&mut value)?;
             remove_quota_runtime_cursor_fields(&mut value)?;
+        }
+        if self.schema_version < CORE_TEAM_ROUTE_SUCCESSION_EXPORT_VERSION {
+            remove_core_team_route_succession_record_fields(&mut value)?;
         }
         canonical_bytes(&value)
     }
@@ -498,6 +523,20 @@ impl KontorExportV1 {
                 detail: "the legacy export generation carries launch-intent supersessions it did not define",
             });
         }
+        if self.schema_version < CORE_TEAM_ROUTE_SUCCESSION_EXPORT_VERSION
+            && !self.records.core_team_route_successions.is_empty()
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries Core Team route successions it did not define",
+            });
+        }
+        if self.schema_version < CORE_TEAM_ROUTE_SUCCESSION_EXPORT_VERSION
+            && self.database_schema_version >= CORE_TEAM_ROUTE_SUCCESSION_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove Core Team route succession completeness",
+            });
+        }
         if self.schema_version < RETIRED_EVALUATOR_ATTESTATION_EXPORT_VERSION
             && self.database_schema_version >= RETIRED_EVALUATOR_ATTESTATION_SCHEMA_VERSION
         {
@@ -597,6 +636,13 @@ impl KontorExportV1 {
                 detail: "the export's continuity summary does not match its records",
             });
         }
+        // Last, and over the whole document including every embedded JSON
+        // string. Construction scans what *this* Realm publishes; this scans
+        // what another Realm hands us, which is the only copy nobody here
+        // vouched for. It runs before an import opens a transaction, so a
+        // document carrying credential material is refused having written
+        // nothing (ASMA-8187 P1).
+        scan_for_canaries(&canonical_value(self)?, 0)?;
         Ok(())
     }
 
@@ -1020,6 +1066,25 @@ impl KontorExportV1 {
                     .or_insert_with(|| serde_json::Value::Array(Vec::new()));
             }
         }
+        // A document written before generation 13 carries no succession array,
+        // and its absence is not a malformed document — it is a document from
+        // before the ledger existed. Back-filling it empty is what lets that
+        // older generation still parse; the completeness guards above are what
+        // stop an older generation claiming to represent a database that could
+        // store one.
+        if found < CORE_TEAM_ROUTE_SUCCESSION_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in CORE_TEAM_ROUTE_SUCCESSION_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
         let export: Self =
             serde_json::from_value(value).map_err(|_| BackupError::Verification {
                 detail: "the export is not a document of this generation",
@@ -1098,6 +1163,26 @@ fn remove_succession_record_fields(records: &mut serde_json::Value) -> Result<()
         detail: "the export records are not an object",
     })?;
     for field in SUCCESSION_RECORD_FIELDS {
+        records.remove(field);
+    }
+    Ok(())
+}
+
+/// Remove the generation-13 Core Team succession field.
+///
+/// A genuine schema-12 document never had this key, so its digest was taken
+/// over bytes without it. Parsing back-fills an empty array so older documents
+/// present the current record type, and every path that reproduces the original
+/// bytes has to take that back-fill out again — otherwise the document is
+/// rehashed as something its source never wrote, and an authentic v12 export
+/// fails verification for having been read (ASMA-8187 P1).
+fn remove_core_team_route_succession_record_fields(
+    records: &mut serde_json::Value,
+) -> Result<(), BackupError> {
+    let records = records.as_object_mut().ok_or(BackupError::Verification {
+        detail: "the export records are not an object",
+    })?;
+    for field in CORE_TEAM_ROUTE_SUCCESSION_RECORD_FIELDS {
         records.remove(field);
     }
     Ok(())
@@ -1301,6 +1386,10 @@ fn redaction_summary() -> RedactionSummary {
             "imported_profile_selection_outcomes",
             "destination-local exact selection lineage is preserved by snapshot and readback, but is not forwarded as live source authority",
         ),
+        (
+            "imported_record_evidence",
+            "imported testimony about another Realm's records is inspectable here and is never forwarded onward as though this Realm were its source",
+        ),
     ];
     let excluded_columns = [
         (
@@ -1341,11 +1430,19 @@ fn redaction_summary() -> RedactionSummary {
     }
 }
 
-/// One exported record's source identity and digest.
+/// One exported record's source identity, digest and canonical content.
 ///
 /// This is what an import records as lineage: enough to say *which* source
 /// record a destination row came from, and to prove the bytes have not changed
-/// since, without carrying the record itself into the destination's authority.
+/// since.
+///
+/// `content` is the record itself, and carrying it is deliberate rather than
+/// incidental. It is what an import keeps for the kinds whose *account* of an
+/// event has to remain readable in another Realm — a Core Team route
+/// succession, above all. Keeping the bytes is not the same as granting them
+/// authority: the import writes them into `imported_record_evidence`, which no
+/// destination effect resolves against, and only ever beside a lineage row
+/// recorded as non-live.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordLineage {
     /// The record kind, which is the source table's name.
@@ -1354,6 +1451,12 @@ pub struct RecordLineage {
     pub identity: String,
     /// SHA-256 over the record's canonical JSON.
     pub hash: ContentHash,
+    /// The exact canonical JSON [`RecordLineage::hash`] was taken over.
+    ///
+    /// Retained rather than re-encoded on demand: a second encoding agrees with
+    /// the digest only by convention, and the digest is the reason this is
+    /// evidence rather than a copy.
+    pub content: serde_json::Value,
 }
 
 /// One exported table's contract.
@@ -1372,10 +1475,12 @@ trait ExportRow: Sized + Serialize {
 
     /// This record's lineage entry.
     fn lineage(&self) -> Result<RecordLineage, BackupError> {
+        let content = canonical_value(self)?;
         Ok(RecordLineage {
             kind: Self::KIND,
             identity: self.identity(),
-            hash: ContentHash::of(&canonical_bytes(&canonical_value(self)?)?),
+            hash: ContentHash::of(&canonical_bytes(&content)?),
+            content,
         })
     }
 }
@@ -1836,6 +1941,28 @@ exported_tables! {
         agent_run_id: Option<String>,
         reviewer_principal: Option<String>,
         policy_evaluation_id: Option<String>,
+    }
+    core_team_route_successions: CoreTeamRouteSuccessionsRow from "core_team_route_successions" key(idempotency_key) {
+        idempotency_key: String,
+        intent_hash: String,
+        project_id: String,
+        mini_project_id: String,
+        seat_binding_id: String,
+        predecessor_native_id: String,
+        predecessor_generation: i64,
+        predecessor_occupancy_generation: i64,
+        successor_occupancy_generation: i64,
+        successor_credential_generation: i64,
+        claimed_at: String,
+        successor_native_id: Option<String>,
+        successor_generation: Option<i64>,
+        readback: Option<String>,
+        readback_hash: Option<String>,
+        route_committed_at: Option<String>,
+        launch_intent_installed: i64,
+        seat_binding_observed: i64,
+        receipt_id: Option<String>,
+        receipted_at: Option<String>,
     }
     hosted_seat_launch_intent_supersessions: HostedSeatLaunchIntentSupersessionsRow from "hosted_seat_launch_intent_supersessions" key(idempotency_key) {
         idempotency_key: String,
@@ -2836,6 +2963,11 @@ impl ExportedRecords {
         }
         if schema_version < SUCCESSION_EXPORT_VERSION {
             for field in SUCCESSION_RECORD_FIELDS {
+                continuity.record_counts.remove(field);
+            }
+        }
+        if schema_version < CORE_TEAM_ROUTE_SUCCESSION_EXPORT_VERSION {
+            for field in CORE_TEAM_ROUTE_SUCCESSION_RECORD_FIELDS {
                 continuity.record_counts.remove(field);
             }
         }
