@@ -265,6 +265,11 @@ entity_ids! {
     AdvisorRunId,
     /// Identifies one consultation of a Committee.
     CommitteeRunId,
+    /// Identifies one consultation of a `planning_pair@1` pair.
+    ///
+    /// Its own type, never a Committee run id, so a planning pair can never
+    /// be read or settled as a Committee.
+    PlanningPairRunId,
     /// Identifies one Advisor profile across its revisions.
     ///
     /// The profile is the identity a run pins; a revision is a version within
@@ -273,6 +278,12 @@ entity_ids! {
     AdvisorProfileId,
     /// Identifies one Committee template across its revisions.
     CommitteeTemplateId,
+    /// Identifies one `planning_pair@1` document across its revisions.
+    ///
+    /// Like an Advisor profile, it is the identity a run pins, and a revision
+    /// is a version within it. It is its own type, never a Committee template
+    /// id, so a planning pair cannot be looked up as a Committee.
+    PlanningPairProfileId,
     /// Identifies one durable open question: an ambiguity somebody had to
     /// proceed past, recorded so that later work can be gated on it.
     ///
@@ -1669,17 +1680,13 @@ fn has_marker(lowered: &str, marker: &str, min_tail: usize) -> bool {
     })
 }
 
-/// Whether the text embeds a password in a URL's userinfo (`scheme://u:p@host`).
+/// Whether any URL embeds userinfo; even username-only userinfo is refused.
 fn has_url_credentials(lowered: &str) -> bool {
-    let Some(scheme_end) = lowered.find("://") else {
-        return false;
-    };
-    let authority = &lowered[scheme_end + 3..];
-    let authority = authority.split('/').next().unwrap_or(authority);
-    match authority.split_once('@') {
-        Some((userinfo, _)) => userinfo.contains(':'),
-        None => false,
-    }
+    lowered.split("://").skip(1).any(|tail| {
+        tail.split(['/', '?', '#', ' ', '\n', '\r', '\t'])
+            .next()
+            .is_some_and(|authority| authority.contains('@'))
+    })
 }
 
 /// Reject credential, token or key material in any persisted string.
@@ -1722,6 +1729,7 @@ pub fn reject_sensitive_material(value: &serde_json::Value) -> DomainResult<()> 
         match value {
             serde_json::Value::Object(members) => {
                 for (key, member) in members {
+                    reject_sensitive_text("<object-key>", key)?;
                     let normalized: String = key
                         .chars()
                         .filter(|c| !matches!(c, '-' | '_' | ' '))

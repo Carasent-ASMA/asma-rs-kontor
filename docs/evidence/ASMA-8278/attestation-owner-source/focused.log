@@ -1,0 +1,19 @@
+   Compiling kontor-runtime v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-runtime)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.74s
+     Running unittests src/lib.rs (target/debug/deps/kontor_runtime-38fd6bad31f23716)
+
+running 11 tests
+test planning_pair::attestation::owner_checks::tests::current_token_interval_can_narrow_but_never_bypass_signed_validity ... ok
+test planning_pair::attestation::owner_checks::tests::signed_token_expiry_between_verification_and_observation_is_refused ... ok
+test planning_pair::attestation::owner_checks::tests::matching_observations_return_unit_diagnostic_consistency_only ... ok
+test planning_pair::attestation::owner_checks::tests::every_native_identity_component_and_positive_generation_must_match ... ok
+test planning_pair::attestation::owner_checks::tests::selected_issuer_key_and_token_substitutions_are_refused ... ok
+test planning_pair::attestation::owner_checks::tests::active_seat_and_active_node_are_both_required ... ok
+test planning_pair::attestation::owner_checks::tests::current_binding_and_nonzero_occupancy_generation_must_match ... ok
+test planning_pair::attestation::owner_checks::tests::every_current_scope_component_and_task_presence_must_match ... ok
+test planning_pair::attestation::owner_checks::tests::key_and_token_revocation_after_verification_are_refused ... ok
+test planning_pair::attestation::owner_checks::tests::current_key_interval_is_inclusive_at_start_and_exclusive_at_end ... ok
+test planning_pair::attestation::owner_checks::tests::zero_older_and_newer_key_set_revisions_are_refused ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 122 filtered out; finished in 0.25s
+

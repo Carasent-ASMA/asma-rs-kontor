@@ -358,23 +358,25 @@ impl LaunchPermit {
     /// runtime is trusting a caller to have made.
     #[must_use]
     pub fn launch_request(self, authority: LaunchAuthority, launch: SlotLaunch) -> PreparedLaunch {
-        let request = authority.into_request(LaunchParts {
-            agent_run_id: self.agent_run_id,
-            team_run_id: self.team_run_id,
-            role_slot_id: self.slot.clone(),
-            task_id: launch.task_id,
-            binding_id: launch.binding_id,
-            placement: launch.placement,
-            cwd: launch.cwd,
-            scope: launch.scope,
-            display_name: launch.display_name,
-            account_profile_id: launch.account_profile_id,
-            prompt: launch.prompt,
-            model_rung: launch.model_rung,
-            context_policy: launch.context_policy,
-            autonomy: launch.autonomy,
-            requested_at: launch.requested_at,
-        });
+        let request = authority
+            .into_request(LaunchParts {
+                agent_run_id: self.agent_run_id,
+                team_run_id: self.team_run_id,
+                role_slot_id: self.slot.clone(),
+                task_id: launch.task_id,
+                binding_id: launch.binding_id,
+                placement: launch.placement,
+                cwd: launch.cwd,
+                scope: launch.scope,
+                display_name: launch.display_name,
+                account_profile_id: launch.account_profile_id,
+                prompt: launch.prompt,
+                model_rung: launch.model_rung,
+                context_policy: launch.context_policy,
+                autonomy: launch.autonomy,
+                requested_at: launch.requested_at,
+            })
+            .with_fleet_provenance(launch.fleet_provenance);
         PreparedLaunch {
             permit: self,
             request,
@@ -474,6 +476,10 @@ pub struct SlotLaunch {
     pub autonomy: SeatAutonomy,
     /// When the launch was requested.
     pub requested_at: Timestamp,
+    /// Which fleet policy chose this seat's route, when one did (ASMA-8280
+    /// G-3). The runtime writes it natively where it can and reports what it
+    /// read back; it is never the proof of itself.
+    pub fleet_provenance: Option<kontor_runtime::FleetLaunchProvenance>,
 }
 
 /// A slot with exactly one live native session.

@@ -2804,8 +2804,8 @@ fn a_readback_whose_derived_or_redundant_values_are_wrong_is_refused() {
 // ASMA-8187 P2 — the upgrade asks the rule of the rows that predate it.
 // ---------------------------------------------------------------------------
 
-/// Rewind one realm to schema 121: drop what `0122` added, restore `0120`'s
-/// trigger, and say so in `user_version`.
+/// Rewind one realm to schema 121: remove the later 0123/0124 memory tables
+/// and what `0122` added, restore `0120`'s trigger, and stamp `user_version`.
 ///
 /// The rewind is what makes the upgrade reachable from a test at all. A realm
 /// that has already run `0122` cannot run it again, so a fixture that wants to
@@ -2813,9 +2813,43 @@ fn a_readback_whose_derived_or_redundant_values_are_wrong_is_refused() {
 /// where those rows lived.
 fn rewind_to_schema_121(path: &std::path::Path) {
     let connection = Connection::open(path).expect("the database opens");
+    // This stopped fixture started at today's schema. A historical stamp must
+    // also remove the later additive tables, or a forward open would correctly
+    // refuse to create them again. Refuse to erase any fixture evidence.
+    for table in [
+        "prepared_attestation_tokens",
+        "attestation_token_heads",
+        "attestation_authority_keys",
+        "attestation_authority_heads",
+        "planning_pair_member_natives",
+        "planning_pair_contributions",
+        "planning_pair_record_revisions",
+        "planning_pair_placements",
+    ] {
+        let count: i64 = connection
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .expect("the later fixture table reads");
+        assert_eq!(
+            count, 0,
+            "a historical rewind must not erase {table} evidence"
+        );
+        connection
+            .execute_batch(&format!("DROP TABLE {table};"))
+            .expect("the empty later fixture table is removed");
+    }
     connection
         .execute_batch(
-            "DROP INDEX ux_core_team_route_succession_receipt;
+            "DROP TABLE memory_projection_rebuild_results;
+             DROP TABLE memory_projection_rebuild_keys;
+             DROP TABLE memory_recall_keys;
+             DROP TABLE memory_recall_metadata;
+             DROP TABLE memory_experience_proposals;
+             DROP TABLE memory_projection_active;
+             DROP TABLE memory_projection_snapshots;
+             DROP TABLE memory_experience_eligibility;
+             DROP INDEX ux_core_team_route_succession_receipt;
              DROP TRIGGER core_team_route_succession_claim_is_frozen;",
         )
         .expect("the generation-122 artefacts are removed");

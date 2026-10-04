@@ -1,0 +1,24 @@
+   Compiling kontor-store v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.58s
+     Running tests/attestation_token_metadata.rs (target/debug/deps/attestation_token_metadata-27446f01ef2e338a)
+
+running 16 tests
+test both_heads_use_exact_cas_and_failed_preparation_rolls_back ... ok
+test checked_token_revision_overflow_leaves_no_partial_preparation_or_revocation ... ok
+test bounds_intervals_and_native_generation_refuse_without_token_head ... ok
+test consultation_uses_stored_run_slot_revisions_and_its_own_generation ... ok
+test fresh_checks_precede_identity_reuse_and_leave_existing_commitment_unchanged ... ok
+test consultation_eligible_phases_are_explicit_and_terminal_or_needs_human_refuse ... ok
+test hosted_generation_is_history_count_plus_one_not_runtime_generation ... ok
+test hosted_preparation_is_coherent_durable_and_does_not_advance_key_head ... ok
+test irreversible_revocation_remains_available_after_key_revocation_and_seat_retirement ... ok
+test permanent_issuer_token_identity_refuses_even_identical_reuse_across_rotation ... ok
+test inactive_binding_and_node_each_refuse_unchanged ... ok
+test raw_sql_cannot_replace_rewrite_unrevoke_or_delete_metadata_or_heads ... ok
+test scope_and_absent_task_are_exact_and_cross_scope_reads_do_not_leak ... ok
+test selected_key_absence_revocation_and_exact_native_components_are_checked ... ok
+test two_store_preparation_race_has_one_cas_winner_and_one_unchanged_conflict ... ok
+test unknown_native_and_missing_consultation_never_imply_hosted_provenance ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.20s
+

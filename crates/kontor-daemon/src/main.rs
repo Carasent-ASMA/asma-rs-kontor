@@ -778,7 +778,8 @@ mod tests {
     /// Stamping `user_version` over a current database is not a stopped Realm;
     /// it is a current Realm wearing an old number, and a fixture built that way
     /// cannot show that the refusal met the schema those versions actually had.
-    /// So `0122` is undone properly — its unique receipt index dropped and its
+    /// The later 0123/0124 memory tables are removed first. Then `0122` is
+    /// undone properly — its unique receipt index dropped and its
     /// replacement trigger swapped back for the one `0120` wrote — and then each
     /// later table is removed in turn.
     ///
@@ -789,6 +790,19 @@ mod tests {
         let database = root.join("kontor.sqlite3");
         drop(kontor_store::SqliteStore::open(&database).expect("the realm initializes"));
         let connection = rusqlite::Connection::open(&database).expect("the database opens");
+
+        connection
+            .execute_batch(
+                "DROP TABLE memory_projection_rebuild_results;
+                 DROP TABLE memory_projection_rebuild_keys;
+                 DROP TABLE memory_recall_keys;
+                 DROP TABLE memory_recall_metadata;
+                 DROP TABLE memory_experience_proposals;
+                 DROP TABLE memory_projection_active;
+                 DROP TABLE memory_projection_snapshots;
+                 DROP TABLE memory_experience_eligibility;",
+            )
+            .expect("the later memory tables are removed");
 
         // Undo 0122: none of 119, 120 or 121 ever had it.
         connection

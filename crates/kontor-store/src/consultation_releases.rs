@@ -86,6 +86,9 @@ impl SqliteStore {
                         "advisor" => {
                             ConsultationRunId::Advisor(kontor_core::id::AdvisorRunId::parse(&run)?)
                         }
+                        "planning_pair" => ConsultationRunId::PlanningPair(
+                            kontor_core::id::PlanningPairRunId::parse(&run)?,
+                        ),
                         _ => {
                             return Err(RepositoryError::Conflict {
                                 subject: "consultation release",

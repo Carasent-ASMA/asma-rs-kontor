@@ -1,0 +1,6 @@
+{
+  "source_base": "ef0b71933d8879f33d963a4ad3b5f1fded4aa52f",
+  "bound_spec": "562fcc967eec2add2786f20c3652f7ee78607bf3",
+  "source_root": "/tmp/asma-8278-module-consolidation-20261002.Mcrugq",
+  "limits": "non-authorizing source and disposable fixture DBs only; no issuance/admission/custody/possession/fencing/finality/live qualification"
+}

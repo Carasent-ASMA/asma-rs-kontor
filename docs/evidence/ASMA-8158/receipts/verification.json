@@ -1,0 +1,179 @@
+{
+  "task": "ASMA-8158",
+  "epic": "ASMA-8155",
+  "orchestration": "Paseo-direct",
+  "branch": "feat/ASMA-8158-cognee-projection-and-task-launch-injection",
+  "base_commit": "655e07ead8b87bebf3a5d43ddccc15c860114e05",
+  "execution_contract_sha256": "7ee35150e2e90cdc4fab83bac999ecd2cef6286d236df128b0ad5b8c211d828b",
+  "feature_manifest_sha256": "528cbcd02cc5ccf553923c01751390bea1cf8f1441f2157e4e6a3c920ecb2b21",
+  "all_frozen_feature_files_match": true,
+  "checks": [
+    {
+      "check": "final-fixtures",
+      "command_or_scope": "cargo test -p kontor-memory-cognee --test fixtures",
+      "exit_code": 0,
+      "result": "PASS",
+      "log": "docs/evidence/ASMA-8158/receipts/final-fixtures.log.gz",
+      "log_sha256": "1ecf0216049adf7dc150ccd313f9a9207c590b9df137c4a576d21d6fd2685b32",
+      "raw_log_sha256": "aeef92f57d1e591bf5d868b09941156057d32c7b3d600fef66a5ac6c7951eddc",
+      "test_summaries": [
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 18.00s"
+      ]
+    },
+    {
+      "check": "final-launch",
+      "command_or_scope": "cargo test -p kontor-daemon --test loopback_api experience_launch",
+      "exit_code": 0,
+      "result": "PASS",
+      "log": "docs/evidence/ASMA-8158/receipts/final-launch.log.gz",
+      "log_sha256": "3eaaaf7a7830939190d9b85bb1673d8fc145185188ffdcbc1d5d7b1124cacc6c",
+      "raw_log_sha256": "2596eaae351410fb18cf75fc189baba8ce57b44f781996c7ed877953ab1d1e44",
+      "test_summaries": [
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 484 filtered out; finished in 6.59s"
+      ]
+    },
+    {
+      "check": "openapi",
+      "command_or_scope": "cargo test -p kontor-api --test openapi_contract",
+      "exit_code": 0,
+      "result": "PASS",
+      "log": "docs/evidence/ASMA-8158/receipts/openapi.log.gz",
+      "log_sha256": "0f2b00001382fbfb6c7e786fa46864ddef0432b6e07c21780e916bb4d1d29b87",
+      "raw_log_sha256": "11e85d8341d12492f7c68c25a880dc54e33148298348f8a8a08994c6947318bb",
+      "test_summaries": [
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s"
+      ]
+    },
+    {
+      "check": "cli-parity",
+      "command_or_scope": "cargo test -p kontor-cli --test memory_parity",
+      "exit_code": 0,
+      "result": "PASS",
+      "log": "docs/evidence/ASMA-8158/receipts/cli-parity.log.gz",
+      "log_sha256": "751e0e50cfd5d144c6ccc6efa8683934cd57deea28f96c5df1d38e9bcb3462cc",
+      "raw_log_sha256": "8e27c0b3634b3208d293eaaf823e5376c4c5b05926843169234d066aeb95ff21",
+      "test_summaries": [
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.77s"
+      ]
+    },
+    {
+      "check": "final-clippy",
+      "command_or_scope": "Strict Clippy: kontor-memory-cognee and kontor-daemon, all targets, warnings denied",
+      "exit_code": 0,
+      "result": "PASS",
+      "log": "docs/evidence/ASMA-8158/receipts/final-clippy.log",
+      "log_sha256": "52653dcc3c6ae7c6702bccf6a35d4fd1b12d32c1bac34ebfb87baf78af747793",
+      "raw_log_sha256": "52653dcc3c6ae7c6702bccf6a35d4fd1b12d32c1bac34ebfb87baf78af747793",
+      "test_summaries": []
+    },
+    {
+      "check": "final-fmt",
+      "command_or_scope": "cargo fmt --all -- --check",
+      "exit_code": 0,
+      "result": "PASS",
+      "log": "docs/evidence/ASMA-8158/receipts/final-fmt.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "raw_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "test_summaries": []
+    },
+    {
+      "check": "final-diff",
+      "command_or_scope": "git diff --check",
+      "exit_code": 0,
+      "result": "PASS",
+      "log": "docs/evidence/ASMA-8158/receipts/final-diff.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "raw_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "test_summaries": []
+    },
+    {
+      "check": "licenses",
+      "command_or_scope": "cargo-deny dependency-ban/license/source policy checks",
+      "exit_code": 0,
+      "result": "PASS_WITH_WARNINGS",
+      "log": "docs/evidence/ASMA-8158/receipts/licenses.log.gz",
+      "log_sha256": "51b3cd61a03c2c50d7d100ea2bdbbde3e3c94760958e44b2bb5dc3e0828b0a3d",
+      "raw_log_sha256": "45fd400014cdff24dda3beed2e2c11a84fab01c9d47cfb6d8850d19cb7d2c2d9",
+      "test_summaries": []
+    },
+    {
+      "check": "deny",
+      "command_or_scope": "Full cargo-deny policy gate",
+      "exit_code": 1,
+      "result": "FAIL_INHERITED_YANKED_YOKE_DERIVE_0_8_3",
+      "log": "docs/evidence/ASMA-8158/receipts/deny.log.gz",
+      "log_sha256": "51751c414589699ed90692bf387a0917562f46ef242ade457598ef19769c0451",
+      "raw_log_sha256": "ddbd64baabd12c7cf6f62057bdf5d02f4338d9a17c87184712da747ead2c12c2",
+      "test_summaries": []
+    },
+    {
+      "check": "audit",
+      "command_or_scope": "cargo audit on candidate lock",
+      "exit_code": 0,
+      "result": "PASS_WITH_10_ALLOWED_WARNINGS",
+      "log": "docs/evidence/ASMA-8158/receipts/audit.log",
+      "log_sha256": "5828f7651a8a9aa08859b6e9d8e33606f1931f07cf04dbaf98a42fdcd39f71ce",
+      "raw_log_sha256": "5828f7651a8a9aa08859b6e9d8e33606f1931f07cf04dbaf98a42fdcd39f71ce",
+      "test_summaries": []
+    },
+    {
+      "check": "base-audit",
+      "command_or_scope": "cargo audit on accepted base lock copied from git show 655e07ea:Cargo.lock",
+      "exit_code": 0,
+      "result": "PASS_WITH_SAME_10_ALLOWED_WARNINGS",
+      "log": "docs/evidence/ASMA-8158/receipts/base-audit.log",
+      "log_sha256": "cdd7d1a04060cec57684489e0e383e339d19ce40073045cd645b3bf868eee3d2",
+      "raw_log_sha256": "cdd7d1a04060cec57684489e0e383e339d19ce40073045cd645b3bf868eee3d2",
+      "test_summaries": []
+    },
+    {
+      "check": "affected",
+      "command_or_scope": "cargo test -p kontor-memory-cognee -p kontor-daemon --no-fail-fast",
+      "exit_code": 0,
+      "result": "EARLIER_PASS_BEFORE_FINAL_TEST_REFINEMENTS_WITH_KEYCHAIN_BOUNDARY_DEVIATION",
+      "log": "docs/evidence/ASMA-8158/receipts/affected.log.gz",
+      "log_sha256": "cf5a366c962322ee9a422ad61c63bf7c400979ea9e4f63b12ad26661f41bbb08",
+      "raw_log_sha256": "04e5b3515fad5c4adf04f488c2fb7ffcb5827f539a087d6db39a507076ff878f",
+      "test_summaries": [
+        "test result: ok. 123 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 57.39s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.37s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.91s",
+        "test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.30s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.84s",
+        "test result: ok. 487 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 65.29s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.99s",
+        "test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.60s",
+        "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.84s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 19.86s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ]
+    },
+    {
+      "check": "final-affected",
+      "command_or_scope": "cargo test -p kontor-memory-cognee -p kontor-daemon --no-fail-fast",
+      "exit_code": 130,
+      "result": "INTERRUPTED_AFTER_DISCOVERING_KEYCHAIN_BOUNDARY_DEVIATION",
+      "log": "docs/evidence/ASMA-8158/receipts/final-affected.log.gz",
+      "log_sha256": "6bf76cb0eb08e07f0ff6c19304d636e4a92deb7c507d480f3da675cc501b4795",
+      "raw_log_sha256": "e778fce65f5f8d8c9d0a75b0b8d421a2b428fea4fcd177908049d5868ccd6a49",
+      "test_summaries": [
+        "test result: ok. 123 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 51.60s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.76s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.28s",
+        "test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.29s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.83s",
+        "test result: ok. 488 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 75.23s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.06s",
+        "test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.55s"
+      ]
+    }
+  ],
+  "mutation_receipts": "docs/evidence/ASMA-8158/receipts/mutations.json",
+  "execution_deviation": "Inherited macOS usage unit tests performed missing-credential Keychain lookups for temporary fixture aliases. Passing assertions require NoCredential. No provider credential retrieved. Final broad command was interrupted once discovered; no subsequent full daemon unit run.",
+  "remaining_gate_blocker": "Inherited yanked yoke-derive 0.8.3 fails full cargo-deny; no registry version changes.",
+  "live_activation_and_MUT_007_owner": "ASMA-8159",
+  "independent_review": "Not performed by this writer; admission belongs to TPM on final committed SHA."
+}
