@@ -34,6 +34,10 @@ thiserror = { workspace = true }
 
 # macOS reads the keychain through `/usr/bin/security` instead, so that a grant
 # survives a rebuild of this ad-hoc-signed binary — see `SystemKeychain`.
+[target.'cfg(target_os = "macos")'.dependencies]
+# Safe nonblocking pipe operations; already present in the lockfile.
+rustix = { workspace = true }
+
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 keyring = { workspace = true }
 

@@ -1,0 +1,24 @@
+   Compiling kontor-runtime v0.2.1 (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/mutation-source/crates/kontor-runtime)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.12s
+     Running unittests src/lib.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/mutation-target/debug/deps/kontor_runtime-38fd6bad31f23716)
+
+running 16 tests
+test planning_pair::attestation::prepared_diagnostic::tests::selected_key_identity_and_immutable_registration_must_match_preparation ... ok
+test planning_pair::attestation::prepared_diagnostic::tests::scopes_and_fixed_application_precede_absent_rows ... ok
+test planning_pair::attestation::prepared_diagnostic::tests::projection_revisions_and_revocation_order_are_validated_before_commitments ... ok
+test planning_pair::attestation::prepared_diagnostic::tests::key_revocation_is_refused_by_existing_verifier ... ok
+test planning_pair::attestation::prepared_diagnostic::tests::key_commitment_precedes_token_commitment_and_signature_precedes_final_metadata ... ok
+test planning_pair::attestation::prepared_diagnostic::tests::selected_key_then_token_presence_precedes_bad_heads ... ok
+test planning_pair::attestation::prepared_diagnostic::tests::invalid_or_uncontained_prepared_intervals_precede_verification ... ok
+test planning_pair::attestation::prepared_diagnostic::tests::consistency_returns_unit_with_historical_heads_and_no_current_provenance_claim ... ok
+test planning_pair::attestation::prepared_diagnostic::tests::exact_original_payload_digest_precedes_revocation_and_verification ... ok
+test planning_pair::attestation::prepared_diagnostic::tests::selected_der_and_utf8_identifier_bounds_precede_hashing ... ok
+test planning_pair::attestation::prepared_diagnostic::tests::size_precedes_scope_absence_and_parsing ... ok
+test planning_pair::attestation::prepared_diagnostic::tests::signed_metadata_matches_every_exact_prepared_field_after_verification ... ok
+test planning_pair::attestation::prepared_diagnostic::tests::token_revocation_precedes_interval_and_signature_checks ... ok
+test planning_pair::attestation::prepared_diagnostic::tests::supplied_time_operation_policy_and_request_identity_use_existing_verifier ... ok
+test planning_pair::attestation::prepared_diagnostic::tests::signature_and_strict_payload_checks_are_delegated ... ok
+test planning_pair::attestation::prepared_diagnostic::tests::key_material_commitments_are_recomputed_from_selected_der ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 141 filtered out; finished in 0.43s
+

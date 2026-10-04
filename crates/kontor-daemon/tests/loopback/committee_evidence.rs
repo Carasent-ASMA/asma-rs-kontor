@@ -132,6 +132,7 @@ async fn scoped_committee_reads_actual_subject_evidence_and_verified_report_with
         })
     };
     refresh_committee_fixture_quota(&world, &seed.project).await;
+    write_fleet(&world, &formal_review_fleet_yaml());
     let invoked = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
         &invoke(None, "Subject evidence"),
@@ -339,4 +340,726 @@ async fn scoped_committee_reads_actual_subject_evidence_and_verified_report_with
     .send(&world)
     .await;
     assert_eq!(mutation.status, 403, "{}", mutation.body);
+}
+
+/// A fleet-only Judge without admission never represented a real legacy row.
+/// Keep the pinned template and seat identities; refuse all new effects.
+#[tokio::test]
+async fn simulated_formal_committee_provenance_loss_refuses_recovery_and_findings_before_effects() {
+    let realm = consultation_realm("/tmp/kontor-formal-provenance-loss", &[]).await;
+    let world = &realm.world;
+    let project = &realm.project;
+    write_fleet(world, &formal_review_fleet_yaml());
+    let invoked = invoke_fleet_committee(
+        &realm,
+        "Simulated provenance loss",
+        "provenance-loss-invoke",
+    )
+    .await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let run = invoked.json()["committee_run_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let project_id = ProjectId::parse(project).unwrap();
+    let run_id =
+        ConsultationRunId::Committee(kontor_core::id::CommitteeRunId::parse(&run).unwrap());
+    let frozen_invocation = world.daemon.state().with_store(|store| {
+        store
+            .get_consultation_run(project_id, run_id)
+            .unwrap()
+            .unwrap()
+    });
+    let seats_before = committee_readback(world, project, &run).await;
+    let reviewer = seats_before["seats"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|seat| seat["role_slot_id"] == "reviewer-a")
+        .unwrap()
+        .clone();
+    let judge = seats_before["seats"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|seat| seat["role_slot_id"] == "judge")
+        .unwrap()
+        .clone();
+    assert!(judge["observed_binding"].is_null());
+    assert_eq!(judge["model_route"]["provider"], "codex-work");
+    let mut simulated_context = frozen_invocation.context.clone();
+    simulated_context
+        .as_object_mut()
+        .expect("the frozen Committee context is an object")
+        .remove("admission");
+    let simulated_context_document = CanonicalDocument::from_value(&simulated_context)
+        .expect("the legacy Committee context canonicalizes");
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the Realm database opens");
+    connection
+        .execute_batch("DROP TRIGGER consultation_run_inputs_are_frozen;")
+        .expect("the isolated fixture simulates provenance loss");
+    connection
+        .execute(
+            "UPDATE consultation_runs
+             SET context = ?1, context_hash = ?2
+             WHERE project_id = ?3 AND run_id = ?4 AND family = 'committee'",
+            rusqlite::params![
+                simulated_context_document.json(),
+                simulated_context_document.hash().as_str(),
+                project,
+                run,
+            ],
+        )
+        .expect("the explicitly simulated provenance-loss row is reproduced");
+    connection
+        .execute_batch(
+            "CREATE TRIGGER consultation_run_inputs_are_frozen
+             BEFORE UPDATE ON consultation_runs
+             WHEN OLD.project_id <> NEW.project_id
+               OR OLD.mini_project_id <> NEW.mini_project_id
+               OR OLD.family <> NEW.family
+               OR OLD.profile_id <> NEW.profile_id
+               OR OLD.profile_version <> NEW.profile_version
+               OR OLD.definition_hash <> NEW.definition_hash
+               OR OLD.question <> NEW.question
+               OR OLD.question_hash <> NEW.question_hash
+               OR OLD.context <> NEW.context
+               OR OLD.context_hash <> NEW.context_hash
+               OR OLD.caller_seat_binding_id <> NEW.caller_seat_binding_id
+               OR OLD.topology_node_id <> NEW.topology_node_id
+               OR OLD.invoke_key <> NEW.invoke_key
+               OR OLD.invoke_intent_hash <> NEW.invoke_intent_hash
+               OR OLD.created_at <> NEW.created_at
+               OR OLD.result IS NOT NULL
+             BEGIN
+                 SELECT RAISE(ABORT, 'a consultation run cannot rewrite frozen input or settled evidence');
+             END;",
+        )
+        .expect("the frozen-input guard is restored after fixture setup");
+    drop(connection);
+
+    let calls_before = world.fake.calls();
+    let binding = SeatBindingId::parse(reviewer["seat_binding_id"].as_str().unwrap()).unwrap();
+    let native =
+        ExternalId::parse(reviewer["observed_binding"]["native_id"].as_str().unwrap()).unwrap();
+    let recovery = Call::post(format!("/v1/projects/{project}/committee-runs/{run}/seats/{binding}/recover"),
+        &serde_json::json!({"expected_revision": seats_before["revision"], "expected_native_id": native, "reason": "credential_propagation"}))
+        .signed_as(world, "admin").with_key("provenance-loss-recover").send(world).await;
+    assert_eq!(recovery.status, 409, "{}", recovery.body);
+    assert_eq!(recovery.code(), "placement_blocked");
+    assert_eq!(
+        recovery.json()["rule"],
+        "the active Committee route has no immutable template or reroute provenance"
+    );
+    let finding = Call::post(format!("/v1/projects/{project}/committee-runs/{run}/findings:record"),
+        &serde_json::json!({"round": 1, "verdict": "compliant", "evidence_complete": true, "rationale": "Simulated row must not authorize a Judge", "evidence_refs": ["fixture:provenance-loss"], "expected_revision": seats_before["revision"]}))
+        .with_token(world.daemon.state().credentials().consultation_seat_credential(binding))
+        .with_key("provenance-loss-finding").send(world).await;
+    assert_eq!(finding.status, 409, "{}", finding.body);
+    assert_eq!(finding.code(), "placement_blocked");
+    assert_eq!(
+        world.fake.calls(),
+        calls_before,
+        "no recovery, container or Judge native effect is authorized"
+    );
+    let after = committee_readback(world, project, &run).await;
+    assert_eq!(after["seats"], seats_before["seats"]);
+    assert_eq!(after["revision"], seats_before["revision"]);
+    assert_eq!(after["findings"], serde_json::json!([]));
+    assert!(after["result"].is_null());
+    world.daemon.state().with_store(|store| {
+        let stored = store
+            .get_consultation_run(project_id, run_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.definition_hash, frozen_invocation.definition_hash);
+        assert_eq!(stored.profile_id, frozen_invocation.profile_id);
+        assert_eq!(stored.profile_version, frozen_invocation.profile_version);
+        assert_eq!(
+            stored.semantic_identity_hash,
+            frozen_invocation.semantic_identity_hash
+        );
+        assert!(
+            stored.context.get("admission").is_none(),
+            "no provenance was invented"
+        );
+        assert!(
+            store
+                .get_consultation_recovery_attempt(
+                    project_id,
+                    run_id,
+                    &RoleSlotId::parse("reviewer-a").unwrap(),
+                    &native
+                )
+                .unwrap()
+                .is_none()
+        );
+        for key in ["provenance-loss-recover", "provenance-loss-finding"] {
+            assert!(
+                store
+                    .get_receipt_by_key(&IdempotencyKey::parse(key).unwrap())
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    });
+    let connection =
+        rusqlite::Connection::open(world.directory.path().join(kontor_daemon::DATABASE_FILE))
+            .unwrap();
+    assert!(
+        connection
+            .execute(
+                "UPDATE consultation_runs SET context = '{}' WHERE project_id = ?1 AND run_id = ?2",
+                rusqlite::params![project, run]
+            )
+            .is_err(),
+        "the immutable-input trigger is restored"
+    );
+}
+
+fn formal_seat(read: &serde_json::Value, slot: &str) -> serde_json::Value {
+    read["seats"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|seat| seat["role_slot_id"] == slot)
+        .unwrap()
+        .clone()
+}
+
+async fn formal_recover(
+    realm: &ConsultationRealm,
+    run: &str,
+    read: &serde_json::Value,
+    slot: &str,
+    reason: &str,
+    routes: serde_json::Value,
+    key: &str,
+) -> Answer {
+    let world = &realm.world;
+    let project = &realm.project;
+    let seat = formal_seat(read, slot);
+    Call::post(format!("/v1/projects/{project}/committee-runs/{run}/seats/{}/recover", seat["seat_binding_id"].as_str().unwrap()),
+        &serde_json::json!({"expected_revision": read["revision"], "expected_native_id": seat["observed_binding"]["native_id"], "reason": reason, "recovery_profile": routes}))
+        .signed_as(world, "admin").with_key(key).send(world).await
+}
+
+#[tokio::test]
+async fn formal_committee_recovery_counts_the_deferred_judge_before_attempts_and_replays_lawfully()
+{
+    let realm =
+        consultation_realm("/tmp/kontor-formal-recovery-cap", &[("Cursor", "cursor")]).await;
+    let world = &realm.world;
+    write_fleet(
+        world,
+        &committee_fleet_yaml(&[
+            (&committee_fleet_key("reviewer-a"), "codex-sol"),
+            (&committee_fleet_key("reviewer-b"), "cursor-grok"),
+            (&committee_fleet_key("judge"), "claude-then-codex"),
+        ]),
+    );
+    let invoked = invoke_fleet_committee(
+        &realm,
+        "Recovery cap including Judge",
+        "formal-recovery-cap-invoke",
+    )
+    .await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let run = invoked.json()["committee_run_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let read = committee_readback(world, &realm.project, &run).await;
+    assert!(
+        formal_seat(&read, "judge")["model_route"]["provider"]
+            .as_str()
+            .unwrap()
+            .starts_with("claude-")
+    );
+    assert!(formal_seat(&read, "judge")["observed_binding"].is_null());
+    // An activated chain change applies only to the proposed replacement.
+    write_fleet(
+        world,
+        &committee_fleet_yaml(&[
+            (&committee_fleet_key("reviewer-a"), "claude-then-codex"),
+            (&committee_fleet_key("reviewer-b"), "cursor-grok"),
+            (&committee_fleet_key("judge"), "codex-sol"),
+        ]),
+    );
+    let before = world.fake.calls();
+    let refused = formal_recover(
+        &realm,
+        &run,
+        &read,
+        "reviewer-a",
+        "provider_unavailable",
+        serde_json::json!([{"provider":"claude-work","model":"claude-opus-5"}]),
+        "formal-recovery-cap-refused",
+    )
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.code(), "placement_blocked");
+    assert_eq!(
+        refused.json()["rule"],
+        "no currently admissible whole-Committee allocation keeps the formal Independent Review to one Claude seat"
+    );
+    assert_eq!(world.fake.calls(), before);
+    assert_eq!(committee_readback(world, &realm.project, &run).await, read);
+    let a = formal_seat(&read, "reviewer-a");
+    world.daemon.state().with_store(|store| {
+        assert!(
+            store
+                .get_consultation_recovery_attempt(
+                    project_id_of(&realm.project),
+                    ConsultationRunId::Committee(
+                        kontor_core::id::CommitteeRunId::parse(&run).unwrap()
+                    ),
+                    &RoleSlotId::parse("reviewer-a").unwrap(),
+                    &ExternalId::parse(a["observed_binding"]["native_id"].as_str().unwrap())
+                        .unwrap()
+                )
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .get_receipt_by_key(&IdempotencyKey::parse("formal-recovery-cap-refused").unwrap())
+                .unwrap()
+                .is_none()
+        );
+    });
+    // The same route replacement consumes one logical slot and keeps peer identities.
+    let lawful = formal_recover(
+        &realm,
+        &run,
+        &read,
+        "reviewer-a",
+        "credential_propagation",
+        serde_json::json!([]),
+        "formal-recovery-lawful",
+    )
+    .await;
+    assert_eq!(lawful.status, 200, "{}", lawful.body);
+    let after = committee_readback(world, &realm.project, &run).await;
+    for slot in ["reviewer-b", "judge"] {
+        assert_eq!(formal_seat(&after, slot), formal_seat(&read, slot));
+    }
+    assert_eq!(formal_seat(&after, "reviewer-a")["occupancy_generation"], 2);
+    assert_eq!(
+        formal_seat(&after, "reviewer-a")["model_route"],
+        a["model_route"]
+    );
+    let calls = world.fake.calls();
+    let replay = formal_recover(
+        &realm,
+        &run,
+        &read,
+        "reviewer-a",
+        "credential_propagation",
+        serde_json::json!([]),
+        "formal-recovery-lawful",
+    )
+    .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(world.fake.calls(), calls);
+}
+
+#[tokio::test]
+async fn formal_committee_pending_recovery_refuses_peer_budget_and_resumes_exactly() {
+    let realm = consultation_realm("/tmp/kontor-formal-pending-cap", &[("Cursor", "cursor")]).await;
+    let world = &realm.world;
+    let policy = committee_fleet_yaml(&[
+        (&committee_fleet_key("reviewer-a"), "codex-sol"),
+        (&committee_fleet_key("reviewer-b"), "cursor-grok"),
+        (&committee_fleet_key("judge"), "codex-sol"),
+    ]);
+    write_fleet(world, &policy);
+    let invoked = invoke_fleet_committee(
+        &realm,
+        "Pending recovery reservation",
+        "formal-pending-invoke",
+    )
+    .await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let run = invoked.json()["committee_run_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let read = committee_readback(world, &realm.project, &run).await;
+    let replacement_policy = policy
+        .replace(
+            "  codex-sol:\n    - [sol]",
+            "  codex-sol:\n    - [sol]\n    - [opus]",
+        )
+        .replace(
+            "  cursor-grok:\n    - [grok]",
+            "  cursor-grok:\n    - [grok]\n    - [opus]",
+        );
+    write_fleet(world, &replacement_policy);
+    let route = serde_json::json!([{"provider":"claude-work","model":"claude-opus-5"}]);
+    world
+        .fake
+        .refusing_launch_of(&RoleSlotId::parse("reviewer-a").unwrap());
+    let pending = formal_recover(
+        &realm,
+        &run,
+        &read,
+        "reviewer-a",
+        "provider_unavailable",
+        route.clone(),
+        "formal-pending-a",
+    )
+    .await;
+    assert_eq!(pending.status, 503, "{}", pending.body);
+    let pending_read = committee_readback(world, &realm.project, &run).await;
+    let before = world.fake.calls();
+    let peer = formal_recover(
+        &realm,
+        &run,
+        &pending_read,
+        "reviewer-b",
+        "provider_unavailable",
+        route.clone(),
+        "formal-pending-b",
+    )
+    .await;
+    assert_eq!(peer.status, 409, "{}", peer.body);
+    assert_eq!(peer.code(), "placement_blocked");
+    assert_eq!(
+        peer.json()["rule"],
+        "the formal Committee has an unresolved peer recovery reservation"
+    );
+    assert_eq!(world.fake.calls(), before);
+    assert_eq!(
+        formal_seat(
+            &committee_readback(world, &realm.project, &run).await,
+            "reviewer-b"
+        ),
+        formal_seat(&read, "reviewer-b")
+    );
+    world
+        .fake
+        .allowing_launch_of(&RoleSlotId::parse("reviewer-a").unwrap());
+    let resumed = formal_recover(
+        &realm,
+        &run,
+        &read,
+        "reviewer-a",
+        "provider_unavailable",
+        route.clone(),
+        "formal-pending-a",
+    )
+    .await;
+    assert_eq!(resumed.status, 200, "{}", resumed.body);
+    let calls = world.fake.calls();
+    let replay = formal_recover(
+        &realm,
+        &run,
+        &read,
+        "reviewer-a",
+        "provider_unavailable",
+        route,
+        "formal-pending-a",
+    )
+    .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(world.fake.calls(), calls);
+}
+
+#[tokio::test]
+async fn formal_committee_concurrent_recoveries_cannot_both_reserve_anthropic() {
+    let realm =
+        consultation_realm("/tmp/kontor-formal-concurrent-cap", &[("Cursor", "cursor")]).await;
+    let world = &realm.world;
+    let policy = committee_fleet_yaml(&[
+        (&committee_fleet_key("reviewer-a"), "codex-sol"),
+        (&committee_fleet_key("reviewer-b"), "cursor-grok"),
+        (&committee_fleet_key("judge"), "codex-sol"),
+    ]);
+    write_fleet(world, &policy);
+    let invoked = invoke_fleet_committee(
+        &realm,
+        "Concurrent recovery proposals",
+        "formal-concurrent-invoke",
+    )
+    .await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let run = invoked.json()["committee_run_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let read = committee_readback(world, &realm.project, &run).await;
+    write_fleet(
+        world,
+        &policy
+            .replace(
+                "  codex-sol:\n    - [sol]",
+                "  codex-sol:\n    - [sol]\n    - [opus]",
+            )
+            .replace(
+                "  cursor-grok:\n    - [grok]",
+                "  cursor-grok:\n    - [grok]\n    - [opus]",
+            ),
+    );
+    let route = serde_json::json!([{"provider":"claude-work","model":"claude-opus-5"}]);
+    let (a, b) = tokio::join!(
+        formal_recover(
+            &realm,
+            &run,
+            &read,
+            "reviewer-a",
+            "provider_unavailable",
+            route.clone(),
+            "formal-concurrent-a"
+        ),
+        formal_recover(
+            &realm,
+            &run,
+            &read,
+            "reviewer-b",
+            "provider_unavailable",
+            route,
+            "formal-concurrent-b"
+        )
+    );
+    assert_eq!(
+        [a.status, b.status]
+            .into_iter()
+            .filter(|status| *status == 200)
+            .count(),
+        1,
+        "{} {}",
+        a.body,
+        b.body
+    );
+    let after = committee_readback(world, &realm.project, &run).await;
+    assert_eq!(
+        after["seats"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|seat| seat["model_route"]["provider"] == "claude-work")
+            .count(),
+        1
+    );
+    assert_eq!(formal_seat(&after, "judge"), formal_seat(&read, "judge"));
+}
+
+#[tokio::test]
+async fn formal_committee_native_less_judge_reroute_keeps_the_cap_before_persistence() {
+    let realm =
+        consultation_realm("/tmp/kontor-formal-judge-reroute", &[("Cursor", "cursor")]).await;
+    let world = &realm.world;
+    write_fleet(world, &formal_review_fleet_yaml());
+    world
+        .fake
+        .refusing_launch_of(&RoleSlotId::parse("reviewer-a").unwrap());
+    let invoked = invoke_fleet_committee(
+        &realm,
+        "Native-less Judge cap",
+        "formal-judge-reroute-invoke",
+    )
+    .await;
+    assert_eq!(invoked.status, 503, "{}", invoked.body);
+    let stored = world.daemon.state().with_store(|store| {
+        store
+            .get_consultation_run_by_key(
+                project_id_of(&realm.project),
+                &IdempotencyKey::parse("formal-judge-reroute-invoke").unwrap(),
+            )
+            .unwrap()
+            .unwrap()
+    });
+    let run = stored.id.as_text();
+    let read = committee_readback(world, &realm.project, &run).await;
+    let judge = formal_seat(&read, "judge");
+    refresh_committee_fixture_quota(world, &realm.project).await;
+    write_fleet(
+        world,
+        &committee_fleet_yaml(&[(&committee_fleet_key("judge"), "claude-then-codex")]),
+    );
+    let reroute_body = |route: serde_json::Value| {
+        serde_json::json!({
+            "expected_revision": read["revision"], "expected_occupancy_generation": judge["occupancy_generation"],
+            "expected_model_route": judge["model_route"], "reason":"permission_mode_unsupported", "recovery_profile": [route],
+        })
+    };
+    let endpoint = format!(
+        "/v1/projects/{}/committee-runs/{run}/seats/{}/reroute-unmaterialized",
+        realm.project,
+        judge["seat_binding_id"].as_str().unwrap()
+    );
+    let before = world.fake.calls();
+    let refused = Call::post(
+        &endpoint,
+        &reroute_body(serde_json::json!({"provider":"claude-work","model":"claude-opus-5"})),
+    )
+    .signed_as(world, "admin")
+    .with_key("formal-judge-reroute-refused")
+    .send(world)
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.code(), "placement_blocked");
+    assert_eq!(
+        refused.json()["rule"],
+        "no currently admissible whole-Committee allocation keeps the formal Independent Review to one Claude seat"
+    );
+    assert_eq!(world.fake.calls(), before);
+    assert_eq!(committee_readback(world, &realm.project, &run).await, read);
+    world.daemon.state().with_store(|store| {
+        assert!(
+            store
+                .get_consultation_materialization_route_provenance(
+                    project_id_of(&realm.project),
+                    stored.id,
+                    &RoleSlotId::parse("judge").unwrap(),
+                    2
+                )
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .get_receipt_by_key(&IdempotencyKey::parse("formal-judge-reroute-refused").unwrap())
+                .unwrap()
+                .is_none()
+        );
+    });
+    let lawful_policy = committee_fleet_yaml(&[(&committee_fleet_key("judge"), "terra-only")])
+        .replace(
+            "models:\n",
+            "models:\n  terra: { domain: codex, id: gpt-5.6-terra, vendor: openai }\n",
+        )
+        .replace("bindings:\n", "  terra-only:\n    - [terra]\n\nbindings:\n");
+    assert!(kontor_fleet::FleetSnapshot::parse(&lawful_policy).is_ok());
+    write_fleet(world, &lawful_policy);
+    let body = reroute_body(serde_json::json!({"provider":"codex-work","model":"gpt-5.6-terra"}));
+    let lawful = Call::post(&endpoint, &body)
+        .signed_as(world, "admin")
+        .with_key("formal-judge-reroute-lawful")
+        .send(world)
+        .await;
+    assert_eq!(lawful.status, 200, "{}", lawful.body);
+    let after = committee_readback(world, &realm.project, &run).await;
+    assert_eq!(formal_seat(&after, "judge")["occupancy_generation"], 2);
+    assert_eq!(
+        formal_seat(&after, "judge")["model_route"]["provider"],
+        "codex-work"
+    );
+    for slot in ["reviewer-a", "reviewer-b"] {
+        assert_eq!(formal_seat(&after, slot), formal_seat(&read, slot));
+    }
+    assert_eq!(
+        world.fake.calls(),
+        before,
+        "a native-less reroute has no native effect"
+    );
+    let replay = Call::post(&endpoint, &body)
+        .signed_as(world, "admin")
+        .with_key("formal-judge-reroute-lawful")
+        .send(world)
+        .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(world.fake.calls(), before);
+    let durable = world.daemon.state().with_store(|store| {
+        store
+            .get_consultation_run(project_id_of(&realm.project), stored.id)
+            .unwrap()
+            .unwrap()
+    });
+    assert_eq!(durable.context_hash, stored.context_hash);
+    assert_eq!(durable.definition_hash, stored.definition_hash);
+}
+
+#[tokio::test]
+async fn formal_committee_recovery_unknown_rank_or_vendor_refuses_before_fencing() {
+    let realm = consultation_realm(
+        "/tmp/kontor-formal-unknown-recovery",
+        &[("Cursor", "cursor")],
+    )
+    .await;
+    let world = &realm.world;
+    write_fleet(world, &formal_review_fleet_yaml());
+    let invoked = invoke_fleet_committee(
+        &realm,
+        "Unknown recovery authority",
+        "formal-unknown-invoke",
+    )
+    .await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let run = invoked.json()["committee_run_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let read = committee_readback(world, &realm.project, &run).await;
+    let policy = committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "claude-then-codex")]);
+    for (key, yaml, route) in [
+        (
+            "formal-unknown-rank",
+            policy.clone(),
+            serde_json::json!({"provider":"claude-work", "model":"claude-opus-5", "effort":"xhigh"}),
+        ),
+        (
+            "formal-unknown-vendor",
+            formal_review_fleet_yaml().replace("vendor: anthropic", "vendor: unknown"),
+            serde_json::json!({"provider":"claude-work", "model":"claude-opus-5"}),
+        ),
+    ] {
+        let parsed = kontor_fleet::FleetSnapshot::parse(&yaml)
+            .expect("the explicit unknown authority fixture parses");
+        if key == "formal-unknown-vendor" {
+            assert_eq!(
+                parsed.vendor_of(&ModelRung {
+                    provider: ProviderRef("claude-work".to_owned()),
+                    model: ModelRef("claude-opus-5".to_owned()),
+                    effort: None
+                }),
+                Some("unknown")
+            );
+            activate_fleet_policy(world, &yaml);
+        } else {
+            write_fleet(world, &yaml);
+        }
+        let calls = world.fake.calls();
+        let refused = formal_recover(
+            &realm,
+            &run,
+            &read,
+            "reviewer-a",
+            "provider_unavailable",
+            serde_json::json!([route]),
+            key,
+        )
+        .await;
+        assert_eq!(refused.status, 409, "{}", refused.body);
+        assert_eq!(refused.code(), "placement_blocked");
+        assert_eq!(world.fake.calls(), calls);
+        assert_eq!(committee_readback(world, &realm.project, &run).await, read);
+        world.daemon.state().with_store(|store| {
+            let a = formal_seat(&read, "reviewer-a");
+            assert!(
+                store
+                    .get_consultation_recovery_attempt(
+                        project_id_of(&realm.project),
+                        ConsultationRunId::Committee(
+                            kontor_core::id::CommitteeRunId::parse(&run).unwrap()
+                        ),
+                        &RoleSlotId::parse("reviewer-a").unwrap(),
+                        &ExternalId::parse(a["observed_binding"]["native_id"].as_str().unwrap())
+                            .unwrap()
+                    )
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                store
+                    .get_receipt_by_key(&IdempotencyKey::parse(key).unwrap())
+                    .unwrap()
+                    .is_none()
+            );
+        });
+    }
 }

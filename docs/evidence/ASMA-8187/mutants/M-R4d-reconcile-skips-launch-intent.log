@@ -1,0 +1,18 @@
+
+failures:
+
+---- a_succession_that_lost_its_route_acknowledgement_reconciles_from_neither_effect stdout ----
+
+thread 'a_succession_that_lost_its_route_acknowledgement_reconciles_from_neither_effect' (74077967) panicked at crates/kontor-daemon/tests/loopback_api.rs:62701:5:
+assertion `left == right` failed: {"realm_id":"01a0e6e7-da61-7053-8825-e71bd0ae6633","code":"revision_conflict","rule":"a persistence rule refused the write against the presented state","current_revision":null,"oldest_retained_cursor":null,"newest_cursor":null,"action":"re-read the aggregate and retry with the revision it reports"}
+  left: 409
+ right: 200
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    a_succession_that_lost_its_route_acknowledgement_reconciles_from_neither_effect
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 496 filtered out; finished in 1.96s
+
+error: test failed, to rerun pass `-p kontor-daemon --test loopback_api`

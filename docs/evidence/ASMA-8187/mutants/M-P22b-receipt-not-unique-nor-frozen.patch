@@ -1,0 +1,23 @@
+diff --git a/crates/kontor-store/migrations/0122_core_team_route_succession_receipt_identity.sql b/crates/kontor-store/migrations/0122_core_team_route_succession_receipt_identity.sql
+index f2c337d6..9ea6a923 100644
+--- a/crates/kontor-store/migrations/0122_core_team_route_succession_receipt_identity.sql
++++ b/crates/kontor-store/migrations/0122_core_team_route_succession_receipt_identity.sql
+@@ -14,7 +14,8 @@
+ 
+ -- One receipt binds at most one succession. Partial, because an unbound row is
+ -- not a claim on any receipt and any number of them may be pending at once.
+-CREATE UNIQUE INDEX ux_core_team_route_succession_receipt
++-- MUTANT M-P22b: one receipt may complete any number of successions.
++CREATE INDEX ux_core_team_route_succession_receipt
+ ON core_team_route_successions (receipt_id)
+ WHERE receipt_id IS NOT NULL;
+ 
+@@ -47,7 +48,7 @@ WHEN OLD.idempotency_key IS NOT NEW.idempotency_key
+   -- bound at: a completion time that can be rewritten is not evidence of when
+   -- anything completed.
+   OR (OLD.receipt_id IS NOT NULL AND OLD.receipt_id IS NOT NEW.receipt_id)
+-  OR (OLD.receipted_at IS NOT NULL AND OLD.receipted_at IS NOT NEW.receipted_at)
++  -- MUTANT M-P22b: the completion instant may be rewritten.
+   -- Pending effects latch forward only.
+   OR (OLD.launch_intent_installed = 1 AND NEW.launch_intent_installed = 0)
+   OR (OLD.seat_binding_observed = 1 AND NEW.seat_binding_observed = 0)

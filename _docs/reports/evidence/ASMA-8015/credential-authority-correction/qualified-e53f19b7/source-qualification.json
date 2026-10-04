@@ -1,0 +1,99 @@
+{
+  "recordedAt": "2026-09-26T19:32:35.898509+00:00",
+  "sourceCommit": "e53f19b744b80862b166b613dcb8992bcf371215",
+  "sourceTree": "24a8970facd62418aa77e6def93c7ef65f31e2c5",
+  "sourceArchiveSha256": "0b0d9701d7471390439b8475017e255222686312bdac83c4034a274c4f6673b0",
+  "fullGateExitCode": 0,
+  "fullGateFinishedAt": "2026-09-26T19:32:22.062775+00:00",
+  "fullGateCarrier": "qualified-e53f19b7/full-gate.txt.json",
+  "fullGateCarrierSha256": "e6e94d348c62326cca40f32101363ec8505399fd8ad04a3035dc83bc057bd4ca",
+  "fullGateDecodedSha256": "1e4afcd4d7f932c26e533343796460e3e51fcaaf67a16e78149047d895cd985f",
+  "fullGateDecodedBytes": 758762,
+  "originalExecutionReceiptSha256": "5e36a21e4127ebb6a1f5953d57370d6ccc764ebbd1dfabc6978401a82f9327f0",
+  "originalExecutionReceiptUnchanged": true,
+  "rustSummaries": 151,
+  "rustPassed": 2940,
+  "rustFailed": 0,
+  "rustIgnored": 9,
+  "consolePassed": 305,
+  "sourceObjects": {
+    "Cargo.lock": {
+      "gitBlob": "51f6f26716e2ca3f2c54d3c62b865933be0468dd",
+      "sha256": "16afee25fe03d980b6b159f9f3129b0190a2310bce36d26c917b365b528f8245"
+    },
+    "Cargo.toml": {
+      "gitBlob": "dff2f9859f1db9a7ce6ecc371cfc2d66743d0b33",
+      "sha256": "2c57ab3968c11b668247fd85031e474b6cc38c1adc44579898a87ae41fb85249"
+    },
+    "crates/kontor-accounts/Cargo.toml": {
+      "gitBlob": "406b0f973218a858e5f01168c28a91590caec514",
+      "sha256": "f0e62f3dfcdbbc1d0cc4e54bc09f0b0ed519cf93b4033db521ba57c9ce7207d5"
+    },
+    "crates/kontor-accounts/src/resolver.rs": {
+      "gitBlob": "f60b41121f2790f1e16c45eb8efc6b4c6bf8f5ab",
+      "sha256": "eda5b52aa8c86e369e16c7ecbc622c28cd80f7aa18a4f5397363b4480b77161f"
+    },
+    "crates/kontor-daemon/src/applications.rs": {
+      "gitBlob": "4fa0a6e5bd21ce2fa85fe8b02b5fadf37cfbcad8",
+      "sha256": "7e36d2932de7ddf526277a97648f95343f34ff06d073e3dcc13ddc7b6093dfb0"
+    },
+    "crates/kontor-daemon/src/lib.rs": {
+      "gitBlob": "3e3f3fa08534c0fc8363312f5d59728b2793a874",
+      "sha256": "f5d244120b4f125de6b598ce2e0228dfb0a2e4fa561ed44a855756eb92edfe16"
+    },
+    "crates/kontor-daemon/src/main.rs": {
+      "gitBlob": "85c6adcab32bf983e88c11737595e1ef674e9c95",
+      "sha256": "8f0fb6e63b3429554e9b7f92cbdec38377bcc03b7bcfec95002f415941bf5ee2"
+    },
+    "crates/kontor-daemon/tests/loopback_api.rs": {
+      "gitBlob": "9bf2a47e8e374d7cb7fd6568f4eec353d324cd69",
+      "sha256": "8acee0d07586725c07ba3eaa11546db239dbb65ac434d068a093a5b2b4fc0ca7"
+    },
+    "crates/kontor-jira/src/connector.rs": {
+      "gitBlob": "a22b168c03be47bb7eb5b7ad655460f5cf2cd42f",
+      "sha256": "cd087c50d42c8387465f847fb33db4f7b2478ad7411c754311b07151f9579d24"
+    },
+    "crates/kontor-jira/src/credentials.rs": {
+      "gitBlob": "4c69f68da1ab55ce9133fbddb378477fbb184991",
+      "sha256": "86be3dec6e31783e1aa04d68a96359962665687817b31bf075d61e334dc5a7f0"
+    },
+    "crates/kontor-jira/src/lib.rs": {
+      "gitBlob": "bcfc4076b5a9d7bfbf2fb7c33a131336d6886fb4",
+      "sha256": "485a99b5f15fe6b0625d47bbf21f473b943a67a116ac2df8e97b39e825a61569"
+    },
+    "crates/kontor-jira/tests/native_connector.rs": {
+      "gitBlob": "8437c917589112d91646e38cffe6bdd209f4f1e1",
+      "sha256": "b0c0877e9551cae93073f44dd65e3f973a9fcdb22a81fc3b00c7cdcb18298485"
+    },
+    "crates/kontor-store/src/lib.rs": {
+      "gitBlob": "896e62bb4890c6365cf96774cdaf0a96cdb93de5",
+      "sha256": "cd511c7473923d6ac97b672ee3425a9c0120699f467d7d6b6dff0a2af3357d8e"
+    },
+    "crates/kontor-store/src/migrations.rs": {
+      "gitBlob": "1f2634c769fa5109a34ba8ea657e386ad3942b86",
+      "sha256": "34ee7a6091f4f1f00e84353105d2f3a7fe30040cfdfed99bcc0f95422fd1b01f"
+    },
+    "crates/kontor-jira/tests/credential_scope.rs": {
+      "gitBlob": "77f88fbe36e9ca28c0d1b92a54813bfdcdce862c",
+      "sha256": "22c477e0747073af8832ae650aa38d8797a5b916ae123c40eba6c658e39b2eae"
+    },
+    "crates/kontor-store/tests/realm_preflight.rs": {
+      "gitBlob": "2d314a0cede34a75e8e20b71e313953e56a5f5ba",
+      "sha256": "8ed91fffb69c21f2bf12f32bd6984a8e445f84cb3120b61cebcfe529fa32dab8"
+    }
+  },
+  "mutationQualification": {
+    "executionReceipt": "mutations-e53f19b7/execution-results.json",
+    "compiledBehavioralKills": 9,
+    "baselinePassed": 108,
+    "restoredPassed": 108,
+    "sourceInventoryEntries": 2849,
+    "sourceInventoryRestored": true
+  },
+  "sourceInventoryBoundary": "The nine-mutant archive campaign preserves complete before/after contents. The full gate uses the committed verify-tree archive export; no additional post-gate extracted-directory inventory is claimed.",
+  "cacheBoundary": "Distinct private clone of completed synthetic working-tree cache; no original cache mutation; every gate runs anew",
+  "scope": "Exact integrated source and synthetic/fake-backend qualification only; independent receipt review pending. No merge, live Keychain, credential extraction, installation, deployment, workflow-gate, task, workflow or closure credit.",
+  "allowedWarningsPresent": true,
+  "realOSKeychainProof": false,
+  "allowedAuditWarnings": 9
+}

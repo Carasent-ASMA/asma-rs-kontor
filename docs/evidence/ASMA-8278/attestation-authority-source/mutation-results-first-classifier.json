@@ -1,0 +1,591 @@
+{
+  "head": "e3fdbe130b6ec3868d5b7d4dfa558eb9e51c5852",
+  "source_sha256": {
+    "crates/kontor-core/src/repository.rs": "00a3c94d462cc193c2b675f4bd9f59a16e686db14fe819ba631984492e1d595e",
+    "crates/kontor-core/src/repository/attestation_authority.rs": "7a628d7eeaf75b41741620cd83919ed6748492008aa5fcd081990c57b01f90cb",
+    "crates/kontor-store/src/repository.rs": "f457a40568d1470e36e651d367756357abfdf077340f8a6bf0a7e75f06acbf34",
+    "crates/kontor-store/src/repository/attestation_authority.rs": "889e91f20deee4aa6ce85285d45aca8b0876d0f67ab1ec1cbcb3e991c3112705",
+    "crates/kontor-store/src/migrations.rs": "f6bb45d669a7e9caa079acbfc782317b521f8943d6228558a2c32db20eb0d2ea",
+    "crates/kontor-store/migrations/0124_attestation_authority_keys.sql": "fe4564117380dd82d62f369c9f3ab636127859264725ab84657421a26fa00a35",
+    "crates/kontor-store/tests/attestation_authority.rs": "f4ec37000f1338a061eb675dd296c94a55c7ac7da2937b23655f10e44ba258ff",
+    "crates/kontor-store/tests/schema_v1.rs": "31123fe457625586a83d0e079f3c5189c2266a713c5391afe7c4a449f066ff7d",
+    "crates/kontor-store/tests/repository_roundtrip.rs": "ce3fb50a0d1898fdc1ec7ff49c6a509518c312c6216768699e88a6e6212f7cf5",
+    "crates/kontor-store/src/backup/export.rs": "1a8df3e3305afe5f6a58de5237a2cf9e8087cb855d0f7b5751cc5c0619175575",
+    "crates/kontor-store/src/backup/restore.rs": "45dddeb7d22651d878614e485623889af75191a815269acd55a3c1d521cd8fed",
+    "crates/kontor-store/tests/backup_snapshot.rs": "6c08fcde04ecca037778590688ae3ec3a9668e1127e8888bf6c146bdbb49665a"
+  },
+  "restored_copy_sha256": {
+    "crates/kontor-core/src/repository.rs": "00a3c94d462cc193c2b675f4bd9f59a16e686db14fe819ba631984492e1d595e",
+    "crates/kontor-core/src/repository/attestation_authority.rs": "7a628d7eeaf75b41741620cd83919ed6748492008aa5fcd081990c57b01f90cb",
+    "crates/kontor-store/src/repository.rs": "f457a40568d1470e36e651d367756357abfdf077340f8a6bf0a7e75f06acbf34",
+    "crates/kontor-store/src/repository/attestation_authority.rs": "889e91f20deee4aa6ce85285d45aca8b0876d0f67ab1ec1cbcb3e991c3112705",
+    "crates/kontor-store/src/migrations.rs": "f6bb45d669a7e9caa079acbfc782317b521f8943d6228558a2c32db20eb0d2ea",
+    "crates/kontor-store/migrations/0124_attestation_authority_keys.sql": "fe4564117380dd82d62f369c9f3ab636127859264725ab84657421a26fa00a35",
+    "crates/kontor-store/tests/attestation_authority.rs": "f4ec37000f1338a061eb675dd296c94a55c7ac7da2937b23655f10e44ba258ff",
+    "crates/kontor-store/tests/schema_v1.rs": "31123fe457625586a83d0e079f3c5189c2266a713c5391afe7c4a449f066ff7d",
+    "crates/kontor-store/tests/repository_roundtrip.rs": "ce3fb50a0d1898fdc1ec7ff49c6a509518c312c6216768699e88a6e6212f7cf5",
+    "crates/kontor-store/src/backup/export.rs": "1a8df3e3305afe5f6a58de5237a2cf9e8087cb855d0f7b5751cc5c0619175575",
+    "crates/kontor-store/src/backup/restore.rs": "45dddeb7d22651d878614e485623889af75191a815269acd55a3c1d521cd8fed",
+    "crates/kontor-store/tests/backup_snapshot.rs": "6c08fcde04ecca037778590688ae3ec3a9668e1127e8888bf6c146bdbb49665a"
+  },
+  "final_source_sha256": {
+    "crates/kontor-core/src/repository.rs": "00a3c94d462cc193c2b675f4bd9f59a16e686db14fe819ba631984492e1d595e",
+    "crates/kontor-core/src/repository/attestation_authority.rs": "7a628d7eeaf75b41741620cd83919ed6748492008aa5fcd081990c57b01f90cb",
+    "crates/kontor-store/src/repository.rs": "f457a40568d1470e36e651d367756357abfdf077340f8a6bf0a7e75f06acbf34",
+    "crates/kontor-store/src/repository/attestation_authority.rs": "889e91f20deee4aa6ce85285d45aca8b0876d0f67ab1ec1cbcb3e991c3112705",
+    "crates/kontor-store/src/migrations.rs": "f6bb45d669a7e9caa079acbfc782317b521f8943d6228558a2c32db20eb0d2ea",
+    "crates/kontor-store/migrations/0124_attestation_authority_keys.sql": "fe4564117380dd82d62f369c9f3ab636127859264725ab84657421a26fa00a35",
+    "crates/kontor-store/tests/attestation_authority.rs": "f4ec37000f1338a061eb675dd296c94a55c7ac7da2937b23655f10e44ba258ff",
+    "crates/kontor-store/tests/schema_v1.rs": "31123fe457625586a83d0e079f3c5189c2266a713c5391afe7c4a449f066ff7d",
+    "crates/kontor-store/tests/repository_roundtrip.rs": "ce3fb50a0d1898fdc1ec7ff49c6a509518c312c6216768699e88a6e6212f7cf5",
+    "crates/kontor-store/src/backup/export.rs": "1a8df3e3305afe5f6a58de5237a2cf9e8087cb855d0f7b5751cc5c0619175575",
+    "crates/kontor-store/src/backup/restore.rs": "45dddeb7d22651d878614e485623889af75191a815269acd55a3c1d521cd8fed",
+    "crates/kontor-store/tests/backup_snapshot.rs": "6c08fcde04ecca037778590688ae3ec3a9668e1127e8888bf6c146bdbb49665a"
+  },
+  "commands": [
+    {
+      "name": "baseline-exact_expected_head_is_required_and_failed_writes_leave_no_partial_mutation",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_authority",
+        "--offline",
+        "--jobs",
+        "2",
+        "exact_expected_head_is_required_and_failed_writes_leave_no_partial_mutation",
+        "--",
+        "--exact"
+      ],
+      "exit": 0,
+      "seconds": 99.609,
+      "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/baseline-exact_expected_head_is_required_and_failed_writes_leave_no_partial_mutation.log"
+    },
+    {
+      "name": "baseline-realm_project_and_application_scopes_never_leak_or_create_unknown_rows",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_authority",
+        "--offline",
+        "--jobs",
+        "2",
+        "realm_project_and_application_scopes_never_leak_or_create_unknown_rows",
+        "--",
+        "--exact"
+      ],
+      "exit": 0,
+      "seconds": 2.331,
+      "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/baseline-realm_project_and_application_scopes_never_leak_or_create_unknown_rows.log"
+    },
+    {
+      "name": "baseline-direct_sql_cannot_change_material_unrevoke_delete_or_jump_the_head",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_authority",
+        "--offline",
+        "--jobs",
+        "2",
+        "direct_sql_cannot_change_material_unrevoke_delete_or_jump_the_head",
+        "--",
+        "--exact"
+      ],
+      "exit": 0,
+      "seconds": 2.277,
+      "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/baseline-direct_sql_cannot_change_material_unrevoke_delete_or_jump_the_head.log"
+    },
+    {
+      "name": "baseline-nonempty_public_authority_ledger_is_not_silently_omitted_from_export",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "backup_snapshot",
+        "--offline",
+        "--jobs",
+        "2",
+        "nonempty_public_authority_ledger_is_not_silently_omitted_from_export",
+        "--",
+        "--exact"
+      ],
+      "exit": 0,
+      "seconds": 3.28,
+      "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/baseline-nonempty_public_authority_ledger_is_not_silently_omitted_from_export.log"
+    },
+    {
+      "name": "baseline-an_old_empty_snapshot_cannot_rollback_current_public_key_revocation",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "backup_snapshot",
+        "--offline",
+        "--jobs",
+        "2",
+        "an_old_empty_snapshot_cannot_rollback_current_public_key_revocation",
+        "--",
+        "--exact"
+      ],
+      "exit": 0,
+      "seconds": 2.542,
+      "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/baseline-an_old_empty_snapshot_cannot_rollback_current_public_key_revocation.log"
+    },
+    {
+      "name": "baseline-a_nonempty_public_authority_snapshot_is_refused_before_destination_creation",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "backup_snapshot",
+        "--offline",
+        "--jobs",
+        "2",
+        "a_nonempty_public_authority_snapshot_is_refused_before_destination_creation",
+        "--",
+        "--exact"
+      ],
+      "exit": 0,
+      "seconds": 2.516,
+      "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/baseline-a_nonempty_public_authority_snapshot_is_refused_before_destination_creation.log"
+    },
+    {
+      "name": "M01-expected-head",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_authority",
+        "--offline",
+        "--jobs",
+        "2",
+        "exact_expected_head_is_required_and_failed_writes_leave_no_partial_mutation",
+        "--",
+        "--exact"
+      ],
+      "exit": 101,
+      "seconds": 15.456,
+      "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/M01-expected-head.log"
+    },
+    {
+      "name": "M02-project-scope",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_authority",
+        "--offline",
+        "--jobs",
+        "2",
+        "realm_project_and_application_scopes_never_leak_or_create_unknown_rows",
+        "--",
+        "--exact"
+      ],
+      "exit": 101,
+      "seconds": 16.232,
+      "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/M02-project-scope.log"
+    },
+    {
+      "name": "M03-immutable-material",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_authority",
+        "--offline",
+        "--jobs",
+        "2",
+        "direct_sql_cannot_change_material_unrevoke_delete_or_jump_the_head",
+        "--",
+        "--exact"
+      ],
+      "exit": 101,
+      "seconds": 19.249,
+      "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/M03-immutable-material.log"
+    },
+    {
+      "name": "M04-monotonic-head",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_authority",
+        "--offline",
+        "--jobs",
+        "2",
+        "direct_sql_cannot_change_material_unrevoke_delete_or_jump_the_head",
+        "--",
+        "--exact"
+      ],
+      "exit": 101,
+      "seconds": 15.287,
+      "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/M04-monotonic-head.log"
+    },
+    {
+      "name": "M05-one-way-revocation",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_authority",
+        "--offline",
+        "--jobs",
+        "2",
+        "direct_sql_cannot_change_material_unrevoke_delete_or_jump_the_head",
+        "--",
+        "--exact"
+      ],
+      "exit": 101,
+      "seconds": 14.718,
+      "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/M05-one-way-revocation.log"
+    },
+    {
+      "name": "M06-export-continuity",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "backup_snapshot",
+        "--offline",
+        "--jobs",
+        "2",
+        "nonempty_public_authority_ledger_is_not_silently_omitted_from_export",
+        "--",
+        "--exact"
+      ],
+      "exit": 101,
+      "seconds": 15.989,
+      "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/M06-export-continuity.log"
+    },
+    {
+      "name": "M07-destination-continuity",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "backup_snapshot",
+        "--offline",
+        "--jobs",
+        "2",
+        "an_old_empty_snapshot_cannot_rollback_current_public_key_revocation",
+        "--",
+        "--exact"
+      ],
+      "exit": 101,
+      "seconds": 15.358,
+      "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/M07-destination-continuity.log"
+    },
+    {
+      "name": "M08-source-continuity",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "backup_snapshot",
+        "--offline",
+        "--jobs",
+        "2",
+        "a_nonempty_public_authority_snapshot_is_refused_before_destination_creation",
+        "--",
+        "--exact"
+      ],
+      "exit": 101,
+      "seconds": 15.247,
+      "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/M08-source-continuity.log"
+    },
+    {
+      "name": "restored-ledger",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_authority",
+        "--offline",
+        "--jobs",
+        "2"
+      ],
+      "exit": 0,
+      "seconds": 4.356,
+      "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/restored-ledger.log"
+    },
+    {
+      "name": "restored-nonempty_public_authority_ledger_is_not_silently_omitted_from_export",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "backup_snapshot",
+        "--offline",
+        "--jobs",
+        "2",
+        "nonempty_public_authority_ledger_is_not_silently_omitted_from_export",
+        "--",
+        "--exact"
+      ],
+      "exit": 0,
+      "seconds": 3.3,
+      "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/restored-nonempty_public_authority_ledger_is_not_silently_omitted_from_export.log"
+    },
+    {
+      "name": "restored-an_old_empty_snapshot_cannot_rollback_current_public_key_revocation",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "backup_snapshot",
+        "--offline",
+        "--jobs",
+        "2",
+        "an_old_empty_snapshot_cannot_rollback_current_public_key_revocation",
+        "--",
+        "--exact"
+      ],
+      "exit": 0,
+      "seconds": 2.425,
+      "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/restored-an_old_empty_snapshot_cannot_rollback_current_public_key_revocation.log"
+    },
+    {
+      "name": "restored-a_nonempty_public_authority_snapshot_is_refused_before_destination_creation",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "backup_snapshot",
+        "--offline",
+        "--jobs",
+        "2",
+        "a_nonempty_public_authority_snapshot_is_refused_before_destination_creation",
+        "--",
+        "--exact"
+      ],
+      "exit": 0,
+      "seconds": 2.461,
+      "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/restored-a_nonempty_public_authority_snapshot_is_refused_before_destination_creation.log"
+    }
+  ],
+  "results": [
+    {
+      "name": "M01-expected-head",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_authority",
+        "--offline",
+        "--jobs",
+        "2",
+        "exact_expected_head_is_required_and_failed_writes_leave_no_partial_mutation",
+        "--",
+        "--exact"
+      ],
+      "exit": 101,
+      "seconds": 15.456,
+      "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/M01-expected-head.log",
+      "id": "M01-expected-head",
+      "verdict": "KILLED",
+      "assertion_failure": true
+    },
+    {
+      "name": "M02-project-scope",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_authority",
+        "--offline",
+        "--jobs",
+        "2",
+        "realm_project_and_application_scopes_never_leak_or_create_unknown_rows",
+        "--",
+        "--exact"
+      ],
+      "exit": 101,
+      "seconds": 16.232,
+      "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/M02-project-scope.log",
+      "id": "M02-project-scope",
+      "verdict": "KILLED",
+      "assertion_failure": true
+    },
+    {
+      "name": "M03-immutable-material",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_authority",
+        "--offline",
+        "--jobs",
+        "2",
+        "direct_sql_cannot_change_material_unrevoke_delete_or_jump_the_head",
+        "--",
+        "--exact"
+      ],
+      "exit": 101,
+      "seconds": 19.249,
+      "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/M03-immutable-material.log",
+      "id": "M03-immutable-material",
+      "verdict": "UNRESOLVED",
+      "assertion_failure": false
+    },
+    {
+      "name": "M04-monotonic-head",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_authority",
+        "--offline",
+        "--jobs",
+        "2",
+        "direct_sql_cannot_change_material_unrevoke_delete_or_jump_the_head",
+        "--",
+        "--exact"
+      ],
+      "exit": 101,
+      "seconds": 15.287,
+      "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/M04-monotonic-head.log",
+      "id": "M04-monotonic-head",
+      "verdict": "KILLED",
+      "assertion_failure": true
+    },
+    {
+      "name": "M05-one-way-revocation",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_authority",
+        "--offline",
+        "--jobs",
+        "2",
+        "direct_sql_cannot_change_material_unrevoke_delete_or_jump_the_head",
+        "--",
+        "--exact"
+      ],
+      "exit": 101,
+      "seconds": 14.718,
+      "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/M05-one-way-revocation.log",
+      "id": "M05-one-way-revocation",
+      "verdict": "UNRESOLVED",
+      "assertion_failure": false
+    },
+    {
+      "name": "M06-export-continuity",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "backup_snapshot",
+        "--offline",
+        "--jobs",
+        "2",
+        "nonempty_public_authority_ledger_is_not_silently_omitted_from_export",
+        "--",
+        "--exact"
+      ],
+      "exit": 101,
+      "seconds": 15.989,
+      "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/M06-export-continuity.log",
+      "id": "M06-export-continuity",
+      "verdict": "KILLED",
+      "assertion_failure": true
+    },
+    {
+      "name": "M07-destination-continuity",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "backup_snapshot",
+        "--offline",
+        "--jobs",
+        "2",
+        "an_old_empty_snapshot_cannot_rollback_current_public_key_revocation",
+        "--",
+        "--exact"
+      ],
+      "exit": 101,
+      "seconds": 15.358,
+      "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/M07-destination-continuity.log",
+      "id": "M07-destination-continuity",
+      "verdict": "KILLED",
+      "assertion_failure": true
+    },
+    {
+      "name": "M08-source-continuity",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "backup_snapshot",
+        "--offline",
+        "--jobs",
+        "2",
+        "a_nonempty_public_authority_snapshot_is_refused_before_destination_creation",
+        "--",
+        "--exact"
+      ],
+      "exit": 101,
+      "seconds": 15.247,
+      "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/M08-source-continuity.log",
+      "id": "M08-source-continuity",
+      "verdict": "KILLED",
+      "assertion_failure": true
+    }
+  ],
+  "all_assertion_killed": false
+}

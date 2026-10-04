@@ -1,0 +1,37 @@
+=== mutant M-P11c-unchanged-by-external-id ===
+baseline commit : a088e037c083b2e6c2c2ddff670df4ea2d918371
+baseline tree   : 9a8114d00b87a90270bddde5aa37683c1a91f912
+command         : cargo test -p kontor-store --test hosted_seat_autonomy -- a_reused_native_id_in_a_later_occupancy_cannot_complete_an_older_succession
+toolchain       : rustc 1.97.1 (8bab26f4f 2026-07-14)
+platform        : Darwin 25.6.0 arm64
+--- preimage sha256 (files this mutant touches, at baseline) ---
+6a63c5dc587f3ef188a528d654dbe025e8d5432215089525074f1e61a4e202a0  crates/kontor-store/src/repository.rs
+--- mutated sha256 ---
+9079aa012a0db7b79f1ca23c69ed6df7acc5dc98b388206475cf831c07463f4b  crates/kontor-store/src/repository.rs
+--- raw output ---
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.36s
+     Running tests/hosted_seat_autonomy.rs (target/debug/deps/hosted_seat_autonomy-37350dd3fcfb6d32)
+
+running 1 test
+test a_reused_native_id_in_a_later_occupancy_cannot_complete_an_older_succession ... FAILED
+
+failures:
+
+---- a_reused_native_id_in_a_later_occupancy_cannot_complete_an_older_succession stdout ----
+
+thread 'a_reused_native_id_in_a_later_occupancy_cannot_complete_an_older_succession' (82548921) panicked at crates/kontor-store/tests/hosted_seat_autonomy.rs:1956:10:
+the later succession's own effects are proved: Conflict { subject: "core team route succession", rule: "a succession cannot commit effects before its route" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    a_reused_native_id_in_a_later_occupancy_cannot_complete_an_older_succession
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 1.86s
+
+error: test failed, to rerun pass `-p kontor-store --test hosted_seat_autonomy`
+--- exit status: 101 (non-zero = mutant killed) ---
+--- restored sha256 ---
+6a63c5dc587f3ef188a528d654dbe025e8d5432215089525074f1e61a4e202a0  crates/kontor-store/src/repository.rs
+restoration: byte-identical to baseline a088e037c083b2e6c2c2ddff670df4ea2d918371

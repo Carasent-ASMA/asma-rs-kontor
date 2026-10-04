@@ -1,0 +1,24 @@
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-store)
+   Compiling kontor-api v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-api)
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 57.40s
+     Running tests/loopback_api.rs (target/debug/deps/loopback_api-33d0e6c483a75765)
+
+running 1 test
+test a_concurrent_second_key_is_refused_at_the_claim_before_any_native_effect ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 496 filtered out; finished in 1.99s
+
+
+--- outcome: SURVIVED (double-guarded), reported rather than re-seeded ---
+The mutant removes the claim's other-key refusal, but the second caller still
+refuses before any native effect, with:
+
+  503 unavailable "the Core Team succession claim disappeared after it was taken"
+
+That guard is the claim read-back added for the occupancy pin: a claim that
+answers `Unchanged` without leaving a row is a claim that was never taken. The
+application check is therefore not the only thing standing between a concurrent
+second key and a retire, so removing it alone does not change observable
+behaviour. M-R4c2 isolates the property by removing the exclusivity itself —
+both the application check and the uniqueness index that enforces it.

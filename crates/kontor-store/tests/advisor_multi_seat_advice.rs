@@ -310,7 +310,9 @@ fn two_advisor_seats_each_record_their_own_advice_without_settling_the_run() {
     let w = world();
     let run_id = match w.run.id {
         ConsultationRunId::Advisor(id) => id,
-        ConsultationRunId::Committee(_) => unreachable!("the fixture builds an Advisor run"),
+        ConsultationRunId::Committee(_) | ConsultationRunId::PlanningPair(_) => {
+            unreachable!("the fixture builds an Advisor run")
+        }
     };
 
     let (first, first_hash) = advice("seat-a");
@@ -375,7 +377,9 @@ fn advice_is_idempotent_per_exact_seat_and_immutable_per_seat() {
     let w = world();
     let run_id = match w.run.id {
         ConsultationRunId::Advisor(id) => id,
-        ConsultationRunId::Committee(_) => unreachable!("the fixture builds an Advisor run"),
+        ConsultationRunId::Committee(_) | ConsultationRunId::PlanningPair(_) => {
+            unreachable!("the fixture builds an Advisor run")
+        }
     };
     let (document, hash) = advice("seat-a");
     let (run, inserted) = w

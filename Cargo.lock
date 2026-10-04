@@ -3098,6 +3098,7 @@ dependencies = [
  "kontor-scheduler",
  "kontor-store",
  "rusqlite",
+ "rustix",
  "secrecy",
  "serde",
  "serde_json",
@@ -3160,7 +3161,10 @@ dependencies = [
  "kontor-api",
  "kontor-core",
  "kontor-daemon",
+ "kontor-fleet",
+ "kontor-fleet-activation",
  "kontor-mcp",
+ "kontor-profiles",
  "kontor-store",
  "predicates",
  "reqwest",
@@ -3210,8 +3214,11 @@ dependencies = [
  "kontor-api",
  "kontor-context",
  "kontor-core",
+ "kontor-fleet",
+ "kontor-fleet-activation",
  "kontor-jira",
  "kontor-mcp",
+ "kontor-memory-cognee",
  "kontor-policy",
  "kontor-profiles",
  "kontor-runtime",
@@ -3250,6 +3257,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "kontor-fleet"
+version = "0.2.1"
+dependencies = [
+ "kontor-core",
+ "serde",
+ "serde_yaml_ng",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "kontor-fleet-activation"
+version = "0.2.1"
+dependencies = [
+ "kontor-core",
+ "kontor-fleet",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "kontor-intake"
 version = "0.2.1"
 dependencies = [
@@ -3280,6 +3308,7 @@ dependencies = [
  "tokio",
  "url",
  "wiremock",
+ "zeroize",
 ]
 
 [[package]]
@@ -3299,6 +3328,22 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "kontor-memory-cognee"
+version = "0.2.1"
+dependencies = [
+ "kontor-core",
+ "kontor-store",
+ "reqwest",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "url",
+ "wiremock",
 ]
 
 [[package]]
@@ -3327,6 +3372,7 @@ name = "kontor-runtime"
 version = "0.2.1"
 dependencies = [
  "async-trait",
+ "aws-lc-rs",
  "kontor-core",
  "serde",
  "serde_json",
@@ -4889,6 +4935,7 @@ dependencies = [
  "hyper-util",
  "js-sys",
  "log",
+ "mime_guess",
  "percent-encoding",
  "pin-project-lite",
  "quinn",
@@ -7900,9 +7947,9 @@ dependencies = [
 
 [[package]]
 name = "yoke-derive"
-version = "0.8.3"
+version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33811428bee40dbceb6d545e95754741d17a6aef9a4849f0fd62e2ba4f412a78"
+checksum = "ec8ebde2db3681e8c9980cc27822030e68752690ddfa9473e739aeb4dbde6d71"
 dependencies = [
  "proc-macro2",
  "quote",

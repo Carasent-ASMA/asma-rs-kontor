@@ -1,0 +1,41 @@
+=== mutant M-P25-unchanged-answers-before-proof-36ed5607 (corrected baseline) ===
+baseline commit   : 36ed5607753bb749a3a3f12f785fe632c3092650
+mutated file      : crates/kontor-store/src/repository.rs
+snapshot sha256   : 6af69a55ec0140e3240281d02d296c5afbfd858dcf7871f65fed349b73b71349
+mutated  sha256   : 355726a22d518aed81106ffe2a4c9439ee9e70462aaefa85d4ee51fc81b4c6a8
+patch             : M-P25-unchanged-answers-before-proof-36ed5607.patch (mutation-only, 40 lines)
+  git apply --check: accepted
+  patch --dry-run  : patching file 'crates/kontor-store/src/repository.rs'
+test command      : cargo test -p kontor-store --test hosted_seat_autonomy -- a_replayed_binding_is_proved_before_it_answers_unchanged
+reproduce (exact) : LIMIT=600 docs/evidence/ASMA-8187/mutants/harness/mutate.sh M-P25-unchanged-answers-before-proof-36ed5607 docs/evidence/ASMA-8187/mutants/harness/m_p25.py crates/kontor-store/src/repository.rs test -p kontor-store --test hosted_seat_autonomy -- a_replayed_binding_is_proved_before_it_answers_unchanged
+limiter           : this harness bounds the run at 600s wall clock and
+                    reports 124 = timeout, inconclusive, never a kill.
+toolchain         : rustc 1.97.1 (8bab26f4f 2026-07-14)
+platform          : Darwin 25.6.0 arm64
+--- raw output ---
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.90s
+     Running tests/hosted_seat_autonomy.rs (target/debug/deps/hosted_seat_autonomy-0318a31a1a362321)
+
+running 1 test
+test a_replayed_binding_is_proved_before_it_answers_unchanged ... FAILED
+
+failures:
+
+---- a_replayed_binding_is_proved_before_it_answers_unchanged stdout ----
+
+thread 'a_replayed_binding_is_proved_before_it_answers_unchanged' (25244546) panicked at crates/kontor-store/tests/hosted_seat_autonomy.rs:3196:10:
+a replay confirmed a binding nobody had proved: Unchanged
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    a_replayed_binding_is_proved_before_it_answers_unchanged
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 34 filtered out; finished in 1.81s
+
+error: test failed, to rerun pass `-p kontor-store --test hosted_seat_autonomy`
+--- exit status: 101 (non-zero = killed; 124 = timeout, inconclusive) ---
+restored sha256   : 6af69a55ec0140e3240281d02d296c5afbfd858dcf7871f65fed349b73b71349
+restoration       : byte-identical to the named snapshot
+MUTANT markers    : 0

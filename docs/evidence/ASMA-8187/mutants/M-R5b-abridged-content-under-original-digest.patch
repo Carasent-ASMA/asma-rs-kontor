@@ -1,0 +1,143 @@
+diff --git a/crates/kontor-store/src/backup/import.rs b/crates/kontor-store/src/backup/import.rs
+index d51aa78f..22c4968e 100644
+--- a/crates/kontor-store/src/backup/import.rs
++++ b/crates/kontor-store/src/backup/import.rs
+@@ -792,6 +792,7 @@ fn record_import(
+             )
+             .map_err(map_sql)?;
+     }
++    write_preserved_evidence(transaction, now, import_id, dispositions)?;
+     for row in &export.records.profile_selection_outcomes {
+         let identity = format!("{}/{}", row.project_id, row.receipt_id);
+         let source_hash = dispositions
+@@ -834,6 +835,69 @@ fn record_import(
+     Ok(())
+ }
+ 
++/// The record kinds whose content survives an import as readable evidence.
++///
++/// A closed, named list rather than a policy: keeping a record's bytes is a
++/// decision about that record, and one made for a stated reason. The reason for
++/// the one entry here is that a Core Team route succession is the only durable
++/// account of what a route correction did — which predecessor was retired, which
++/// successor replaced it, under which occupancy and grant generation, against
++/// which receipt — and an investigator in another Realm has to be able to read
++/// that account rather than merely confirm a digest over bytes they cannot see.
++///
++/// Membership grants nothing. The content lands in `imported_record_evidence`,
++/// whose schema admits it only beside a lineage row recorded as non-live, whose
++/// rows cannot be rewritten or deleted, and which no destination effect resolves
++/// against. The source idempotency key inside those bytes is a string here: it
++/// is not a key in this Realm, it replays nothing, and it authorizes nothing
++/// (ASMA-8187).
++const PRESERVED_EVIDENCE_KINDS: [&str; 1] = ["core_team_route_successions"];
++
++/// Write the canonical content of every preserved-kind record, as evidence.
++///
++/// Only `Recorded` dispositions are eligible, and the schema enforces that
++/// independently: a record this import materialized is destination state, and a
++/// second unreconciled copy of it beside the lineage would be exactly the
++/// ambiguity the disposition exists to avoid.
++fn write_preserved_evidence(
++    transaction: &Transaction<'_>,
++    now: Timestamp,
++    import_id: Uuid,
++    dispositions: &[(RecordLineage, Disposition)],
++) -> Result<(), BackupError> {
++    for (record, disposition) in dispositions {
++        if !PRESERVED_EVIDENCE_KINDS.contains(&record.kind)
++            || !matches!(disposition, Disposition::Recorded)
++        {
++            continue;
++        }
++        // MUTANT M-R5b: store an abridged record under the original digest.
++        let mut abridged = record.content.clone();
++        if let Some(object) = abridged.as_object_mut() {
++            object.remove("readback");
++        }
++        let content = serde_json::to_string(&abridged).map_err(|_| BackupError::Verification {
++            detail: "an imported record's content could not be rendered as JSON",
++        })?;
++        transaction
++            .execute(
++                "INSERT INTO imported_record_evidence
++                     (import_id, record_kind, source_identity, content, content_hash, recorded_at)
++                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
++                params![
++                    import_id.as_hyphenated().to_string(),
++                    record.kind,
++                    record.identity,
++                    content,
++                    record.hash.as_str(),
++                    format_utc_timestamp(now),
++                ],
++            )
++            .map_err(map_sql)?;
++    }
++    Ok(())
++}
++
+ /// Map a SQL failure onto a repository refusal without leaking a stored value.
+ fn map_sql(error: rusqlite::Error) -> BackupError {
+     BackupError::Repository(crate::repository::backend(error))
+@@ -945,6 +1009,60 @@ impl SqliteStore {
+         rows.collect::<Result<Vec<_>, _>>()
+             .map_err(|source| BackupError::Store(source.into()))
+     }
++
++    /// The preserved content of imported records, under one import receipt.
++    ///
++    /// This is the read side of the disposition: a Core Team route succession
++    /// from another Realm is *inspectable* here — the whole row, exactly as its
++    /// source wrote it, under the digest its source computed — and it is not
++    /// live. Nothing in this Realm resolves an effect from what this returns.
++    ///
++    /// # Errors
++    /// Returns [`BackupError::Store`] when the table cannot be read.
++    pub fn imported_record_evidence(
++        &self,
++        import_id: &str,
++    ) -> Result<Vec<ImportedRecordEvidenceRow>, BackupError> {
++        let mut statement = self
++            .connection
++            .prepare(
++                "SELECT record_kind, source_identity, content, content_hash, recorded_at
++                 FROM imported_record_evidence WHERE import_id = ?1
++                 ORDER BY record_kind, source_identity",
++            )
++            .map_err(|source| BackupError::Store(source.into()))?;
++        let rows = statement
++            .query_map(params![import_id], |row| {
++                Ok(ImportedRecordEvidenceRow {
++                    record_kind: row.get(0)?,
++                    source_identity: row.get(1)?,
++                    content: row.get(2)?,
++                    content_hash: row.get(3)?,
++                    recorded_at: row.get(4)?,
++                })
++            })
++            .map_err(|source| BackupError::Store(source.into()))?;
++        rows.collect::<Result<Vec<_>, _>>()
++            .map_err(|source| BackupError::Store(source.into()))
++    }
++}
++
++/// One imported record's preserved content, as text.
++///
++/// Evidence, not state. The identifiers inside [`Self::content`] name rows in
++/// the source Realm and resolve against nothing here.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct ImportedRecordEvidenceRow {
++    /// The source table the record came from.
++    pub record_kind: String,
++    /// The source record's primary key, rendered as text.
++    pub source_identity: String,
++    /// The exact canonical JSON the source digest was taken over.
++    pub content: String,
++    /// That digest.
++    pub content_hash: String,
++    /// When this Realm recorded the evidence.
++    pub recorded_at: String,
+ }
+ 
+ /// One stored import receipt, as text.

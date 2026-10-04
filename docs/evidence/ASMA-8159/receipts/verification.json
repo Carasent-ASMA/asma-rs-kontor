@@ -1,0 +1,472 @@
+[
+  {
+    "name": "combined-build",
+    "command": [
+      "cargo",
+      "build",
+      "-p",
+      "kontor-core",
+      "-p",
+      "kontor-store",
+      "-p",
+      "kontor-api",
+      "-p",
+      "kontor-daemon",
+      "-p",
+      "kontor-cli",
+      "-p",
+      "kontor-mcp",
+      "-p",
+      "kontor-memory-cognee",
+      "--locked",
+      "--offline"
+    ],
+    "shell_command": "cargo build -p kontor-core -p kontor-store -p kontor-api -p kontor-daemon -p kontor-cli -p kontor-mcp -p kontor-memory-cognee --locked --offline",
+    "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+    "exit_code": 0,
+    "seconds": 65.2,
+    "log": "docs/evidence/ASMA-8159/receipts/combined-build.log.gz",
+    "log_sha256": "bc6ff77d75c5829972577a6361dc3ff2b34f02f4161dfcb3b4a2f37c4378548d",
+    "raw_sha256": "316674d7fdc3ce594e2093bb6c075d22b9f3c8da2fc4a6b811539dc4bab9e258",
+    "compiled": false,
+    "test_results": [],
+    "failed_tests": [],
+    "compile_failure": false
+  },
+  {
+    "name": "core",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-core",
+      "--lib",
+      "--test",
+      "experience_memory",
+      "--locked",
+      "--offline"
+    ],
+    "shell_command": "cargo test -p kontor-core --lib --test experience_memory --locked --offline",
+    "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+    "exit_code": 0,
+    "seconds": 14.776,
+    "log": "docs/evidence/ASMA-8159/receipts/core.log.gz",
+    "log_sha256": "2471071dc665cfae9256cb31982cb3ca36da52b17f5f864be2f4ea8ca92eba66",
+    "raw_sha256": "647657fb90ebe96c4281af6c852e4e034b581db269a8b067d773934f6a5eaabb",
+    "compiled": true,
+    "test_results": [
+      "test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+      "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s"
+    ],
+    "failed_tests": [],
+    "compile_failure": false
+  },
+  {
+    "name": "store-memory",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-store",
+      "--lib",
+      "memory::",
+      "--locked",
+      "--offline"
+    ],
+    "shell_command": "cargo test -p kontor-store --lib memory:: --locked --offline",
+    "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+    "exit_code": 0,
+    "seconds": 102.173,
+    "log": "docs/evidence/ASMA-8159/receipts/store-memory.log.gz",
+    "log_sha256": "f84b41a5244893263171943158c84ff32d385ada772adf97d7c6166222a0ca55",
+    "raw_sha256": "fe6c334496cbe8d9383544410b691ba5698cbcb1b5746692418961bb3530a13d",
+    "compiled": true,
+    "test_results": [
+      "test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 80.44s"
+    ],
+    "failed_tests": [],
+    "compile_failure": false
+  },
+  {
+    "name": "schema",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-store",
+      "--test",
+      "schema_v1",
+      "--locked",
+      "--offline"
+    ],
+    "shell_command": "cargo test -p kontor-store --test schema_v1 --locked --offline",
+    "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+    "exit_code": 0,
+    "seconds": 234.179,
+    "log": "docs/evidence/ASMA-8159/receipts/schema.log.gz",
+    "log_sha256": "182d9e07fba50b096d04e09de93fb01c9fbe27387012e7d35e60ea85d76dedcf",
+    "raw_sha256": "d4acb7417011643352ad8b7b3b615ea0aa63f6e22ab5c8d4961da4f66c260b04",
+    "compiled": true,
+    "test_results": [
+      "test result: ok. 65 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 219.14s"
+    ],
+    "failed_tests": [],
+    "compile_failure": false
+  },
+  {
+    "name": "backup",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-store",
+      "--test",
+      "backup_snapshot",
+      "--locked",
+      "--offline",
+      "memory_ledger_and_import_evidence_restore_while_fts_is_rebuilt"
+    ],
+    "shell_command": "cargo test -p kontor-store --test backup_snapshot --locked --offline memory_ledger_and_import_evidence_restore_while_fts_is_rebuilt",
+    "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+    "exit_code": 0,
+    "seconds": 3.624,
+    "log": "docs/evidence/ASMA-8159/receipts/backup.log.gz",
+    "log_sha256": "79885869822da280bdc44c79ec3c3a05c1fdbb7387522fd983caea9f7dfac0b6",
+    "raw_sha256": "946d31e60afea9ab44eda46f4b2dfac89dd01b29664c133c8b8fdfb14c040e93",
+    "compiled": true,
+    "test_results": [
+      "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 2.18s"
+    ],
+    "failed_tests": [],
+    "compile_failure": false
+  },
+  {
+    "name": "api-mcp",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-api",
+      "-p",
+      "kontor-mcp",
+      "--lib",
+      "--tests",
+      "--locked",
+      "--offline"
+    ],
+    "shell_command": "cargo test -p kontor-api -p kontor-mcp --lib --tests --locked --offline",
+    "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+    "exit_code": 0,
+    "seconds": 41.081,
+    "log": "docs/evidence/ASMA-8159/receipts/api-mcp.log.gz",
+    "log_sha256": "1341b85543d099b23c31cd87fd3321af8297dc46c99082f921bca571f5cf38c1",
+    "raw_sha256": "3a5f7397deed9d92dc52ec592a7ce8fd834e2686c28d0d7ea87ff30e4edffd8c",
+    "compiled": true,
+    "test_results": [
+      "test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+      "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+      "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s",
+      "test result: ok. 66 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+      "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+      "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+    ],
+    "failed_tests": [],
+    "compile_failure": false
+  },
+  {
+    "name": "http-cli",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "experience_memory",
+      "-p",
+      "kontor-cli",
+      "--test",
+      "memory_parity",
+      "--locked",
+      "--offline"
+    ],
+    "shell_command": "cargo test -p kontor-daemon --test experience_memory -p kontor-cli --test memory_parity --locked --offline",
+    "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+    "exit_code": 0,
+    "seconds": 62.986,
+    "log": "docs/evidence/ASMA-8159/receipts/http-cli.log.gz",
+    "log_sha256": "289c0d967ff9827038ad1648ed145877c5423f3a8ae738ea7b11df5a83a0551b",
+    "raw_sha256": "b4d4a226e3712c4f84435bdac5d1b97b29cb3064187501cf30999caceb8ed952",
+    "compiled": true,
+    "test_results": [
+      "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.90s",
+      "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.14s"
+    ],
+    "failed_tests": [],
+    "compile_failure": false
+  },
+  {
+    "name": "registry-parity",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-tests-contract",
+      "--test",
+      "mcp_parity",
+      "--test",
+      "mcp_cardinality",
+      "--test",
+      "mcp_mutants",
+      "--locked",
+      "--offline"
+    ],
+    "shell_command": "cargo test -p kontor-tests-contract --test mcp_parity --test mcp_cardinality --test mcp_mutants --locked --offline",
+    "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+    "exit_code": 0,
+    "seconds": 48.025,
+    "log": "docs/evidence/ASMA-8159/receipts/registry-parity.log.gz",
+    "log_sha256": "6c5b58dcf7ab68e312f7467e7e84f02e25c778fa9f3345e6c987317b8cbb21b8",
+    "raw_sha256": "1eb4421a58c9b30490e5fe0522bec05a90498920769a8c15d6ae0c235c1becec",
+    "compiled": true,
+    "test_results": [
+      "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s",
+      "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s",
+      "test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s"
+    ],
+    "failed_tests": [],
+    "compile_failure": false
+  },
+  {
+    "name": "cognee-fixtures",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-memory-cognee",
+      "--test",
+      "fixtures",
+      "--locked",
+      "--offline"
+    ],
+    "shell_command": "cargo test -p kontor-memory-cognee --test fixtures --locked --offline",
+    "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+    "exit_code": 0,
+    "seconds": 43.369,
+    "log": "docs/evidence/ASMA-8159/receipts/cognee-fixtures.log.gz",
+    "log_sha256": "d4edf32bf51c0dd411d7e0bb72ce8ea1128e0d6f4eb8b09ae0abdcd1532a9cf8",
+    "raw_sha256": "4a25e47c5b616ca8c8c0a92e94b3efd1f57b8e71757e1c86993d0495402a9674",
+    "compiled": true,
+    "test_results": [
+      "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 17.96s"
+    ],
+    "failed_tests": [],
+    "compile_failure": false
+  },
+  {
+    "name": "launch-fixtures",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "experience_launch::",
+      "--locked",
+      "--offline"
+    ],
+    "shell_command": "cargo test -p kontor-daemon --test loopback_api experience_launch:: --locked --offline",
+    "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+    "exit_code": 0,
+    "seconds": 29.439,
+    "log": "docs/evidence/ASMA-8159/receipts/launch-fixtures.log.gz",
+    "log_sha256": "2aca0581644e8a5c153b34a64320169867ff8aa150fc7783c078d3e4ee23f23e",
+    "raw_sha256": "75c4ed91d7f24021a43252254bb724dbee9069a818cd28edc58f4c1d0135073f",
+    "compiled": true,
+    "test_results": [
+      "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 484 filtered out; finished in 6.72s"
+    ],
+    "failed_tests": [],
+    "compile_failure": false
+  },
+  {
+    "name": "context-approved",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "--locked",
+      "--offline",
+      "--",
+      "resolving_a_task_context_tracks_approved_memory_and_returns_no_content",
+      "--exact"
+    ],
+    "shell_command": "cargo test -p kontor-daemon --test loopback_api --locked --offline -- resolving_a_task_context_tracks_approved_memory_and_returns_no_content --exact",
+    "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+    "exit_code": 0,
+    "seconds": 2.181,
+    "log": "docs/evidence/ASMA-8159/receipts/context-approved.log.gz",
+    "log_sha256": "b8fa53d74967fba449ef06a4cffa14a1813be503ad8bd3836442a4060af29425",
+    "raw_sha256": "ffc94119460599541c114eecf2852d16d46464f598ea0fa8df5292bfa26e838e",
+    "compiled": true,
+    "test_results": [
+      "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 488 filtered out; finished in 1.85s"
+    ],
+    "failed_tests": [],
+    "compile_failure": false
+  },
+  {
+    "name": "context-generic",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "--locked",
+      "--offline",
+      "--",
+      "generic_corpus_past_the_general_ceiling_is_excluded_by_typed_recall",
+      "--exact"
+    ],
+    "shell_command": "cargo test -p kontor-daemon --test loopback_api --locked --offline -- generic_corpus_past_the_general_ceiling_is_excluded_by_typed_recall --exact",
+    "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+    "exit_code": 0,
+    "seconds": 2.508,
+    "log": "docs/evidence/ASMA-8159/receipts/context-generic.log.gz",
+    "log_sha256": "50d3d070959af883078a9ebf87740bd92fc0a16beb0d5eb6fc9a589b5161407c",
+    "raw_sha256": "4e4e93f911054ab19faef25de4869c9d6ddc37a6d1029f231c90eb9b6aaf6ab2",
+    "compiled": true,
+    "test_results": [
+      "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 488 filtered out; finished in 2.19s"
+    ],
+    "failed_tests": [],
+    "compile_failure": false
+  },
+  {
+    "name": "combined-clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "-p",
+      "kontor-core",
+      "-p",
+      "kontor-store",
+      "-p",
+      "kontor-api",
+      "-p",
+      "kontor-daemon",
+      "-p",
+      "kontor-cli",
+      "-p",
+      "kontor-mcp",
+      "-p",
+      "kontor-memory-cognee",
+      "--all-targets",
+      "--locked",
+      "--offline",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "shell_command": "cargo clippy -p kontor-core -p kontor-store -p kontor-api -p kontor-daemon -p kontor-cli -p kontor-mcp -p kontor-memory-cognee --all-targets --locked --offline -- -D warnings",
+    "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+    "exit_code": 0,
+    "seconds": 60.043,
+    "log": "docs/evidence/ASMA-8159/receipts/combined-clippy.log.gz",
+    "log_sha256": "94d4bc847cacf8bd3ad3d6ade3aabfa13b7e2cbc51babf0b8aa6e5f590d4013b",
+    "raw_sha256": "559949d6cf8284ae619f96de03315be2cb9a204641b487ad287ac1ca0a6305e9",
+    "compiled": false,
+    "test_results": [],
+    "failed_tests": [],
+    "compile_failure": false
+  },
+  {
+    "name": "fmt",
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "shell_command": "cargo fmt --all -- --check",
+    "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+    "exit_code": 0,
+    "seconds": 2.88,
+    "log": "docs/evidence/ASMA-8159/receipts/fmt.log.gz",
+    "log_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "compiled": false,
+    "test_results": [],
+    "failed_tests": [],
+    "compile_failure": false
+  },
+  {
+    "name": "accepted-whitespace",
+    "command": [
+      "git",
+      "diff",
+      "--check",
+      "8acdbd17",
+      "HEAD"
+    ],
+    "shell_command": "git diff --check 8acdbd17 HEAD",
+    "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+    "exit_code": 0,
+    "seconds": 0.112,
+    "log": "docs/evidence/ASMA-8159/receipts/accepted-whitespace.log.gz",
+    "log_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "compiled": false,
+    "test_results": [],
+    "failed_tests": [],
+    "compile_failure": false
+  },
+  {
+    "name": "working-whitespace",
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "shell_command": "git diff --check",
+    "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+    "exit_code": 0,
+    "seconds": 0.023,
+    "log": "docs/evidence/ASMA-8159/receipts/working-whitespace.log.gz",
+    "log_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "compiled": false,
+    "test_results": [],
+    "failed_tests": [],
+    "compile_failure": false
+  },
+  {
+    "name": "dependency-policy",
+    "command": [
+      "cargo",
+      "deny",
+      "--offline",
+      "check",
+      "licenses",
+      "bans",
+      "sources"
+    ],
+    "shell_command": "cargo deny --offline check licenses bans sources",
+    "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+    "exit_code": 0,
+    "seconds": 1.746,
+    "log": "docs/evidence/ASMA-8159/receipts/dependency-policy.log.gz",
+    "log_sha256": "c71dd602da63ca75f79c9fa7cad9b8f2924367ebb39c90009b1cd46b2e0dcc37",
+    "raw_sha256": "d1ef6ca4677d438ef4deb43e84e3fabb39b7f8304669726942a071bc9335d2d3",
+    "compiled": false,
+    "test_results": [],
+    "failed_tests": [],
+    "compile_failure": false
+  }
+]

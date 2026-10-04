@@ -1,0 +1,66 @@
+=== mutant M-CTL-control-pair-8910ebc6 (corrected baseline) ===
+baseline commit   : 8910ebc603b5d013861d0793c6f8384f75eaca9d
+mutated file      : crates/kontor-daemon/src/main.rs
+snapshot sha256   : 92015a21f2f8a7e67b70ad1ae7965ba0e3ad2293f293e75fc17db30b03f22881
+mutated  sha256   : 2a2ec0980b5f992a6eaa3008f78389bf4e4152392ec4546266ff79c62a5f9bc1
+patch             : M-CTL-control-pair-8910ebc6.patch (mutation-only, 13 lines)
+  git apply --check: accepted
+  patch --dry-run  : patching file 'crates/kontor-daemon/src/main.rs'
+test command      : cargo test -p kontor-daemon --bin kontor-daemon -- --test-threads=1 a_realm_stopped_before_the_current_schema a_current_realm_reaches
+reproduce (exact) : LIMIT=420 /tmp/asma8187-final/mutate.sh M-CTL-control-pair-8910ebc6 /tmp/asma8187-final/m_ctl.py crates/kontor-daemon/src/main.rs test -p kontor-daemon --bin kontor-daemon -- --test-threads=1 a_realm_stopped_before_the_current_schema a_current_realm_reaches
+limiter           : this harness bounds the run at 420s wall clock and
+                    reports 124 = timeout, inconclusive, never a kill.
+toolchain         : rustc 1.97.1 (8bab26f4f 2026-07-14)
+platform          : Darwin 25.6.0 arm64
+--- raw output ---
+warning: method `epic_control_seat_binding` is never used
+    --> crates/kontor-daemon/src/applications.rs:8485:8
+     |
+ 976 | impl Services {
+     | ------------- method in this implementation
+...
+8485 |     fn epic_control_seat_binding(
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `kontor-daemon` (lib) generated 1 warning
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.00s
+     Running unittests src/main.rs (target/debug/deps/kontor_daemon-a20f67ba496d7207)
+
+running 2 tests
+test tests::a_current_realm_reaches_the_credential_reader_and_fails_after_the_gate ... FAILED
+test tests::a_realm_stopped_before_the_current_schema_refuses_without_reading_or_installing ... ok
+
+failures:
+
+---- tests::a_current_realm_reaches_the_credential_reader_and_fails_after_the_gate stdout ----
+
+thread 'tests::a_current_realm_reaches_the_credential_reader_and_fails_after_the_gate' (24977417) panicked at crates/kontor-daemon/src/main.rs:967:9:
+a current realm did not reach the credential reader: Err(CredentialScope)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    tests::a_current_realm_reaches_the_credential_reader_and_fails_after_the_gate
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 6.92s
+
+error: test failed, to rerun pass `-p kontor-daemon --bin kontor-daemon`
+--- exit status: 101 (non-zero = killed; 124 = timeout, inconclusive) ---
+restored sha256   : 92015a21f2f8a7e67b70ad1ae7965ba0e3ad2293f293e75fc17db30b03f22881
+restoration       : byte-identical to the named snapshot
+MUTANT markers    : 0
+
+--- what the pair shows ---
+Both halves ran under the same mutant, in the same process, serially:
+
+  a_realm_stopped_before_the_current_schema_refuses_...  ok      <- blind
+  a_current_realm_reaches_the_credential_reader_...      FAILED  <- bites
+
+The stopped-schema test passes under a mutant that refuses *every* realm,
+because a refusal is what it already expects; it cannot tell a correct refusal
+from a blanket one. The current-realm test is the half that distinguishes them,
+and it is the control that proves the stopped-schema coverage is not self-
+certifying. Reported together because either half alone misleads.

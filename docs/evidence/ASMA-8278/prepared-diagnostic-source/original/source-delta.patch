@@ -1,0 +1,12 @@
+diff --git a/crates/kontor-runtime/src/planning_pair/attestation.rs b/crates/kontor-runtime/src/planning_pair/attestation.rs
+index 5beb2efc..d6aec31f 100644
+--- a/crates/kontor-runtime/src/planning_pair/attestation.rs
++++ b/crates/kontor-runtime/src/planning_pair/attestation.rs
+@@ -25,6 +25,7 @@ use kontor_core::state::NativeRuntimeIdentity;
+ use serde::{Deserialize, Serialize};
+ 
+ pub mod owner_checks;
++pub mod prepared_diagnostic;
+ pub mod snapshot_codec;
+ 
+ /// The sole application audience accepted by this verifier.

@@ -1,0 +1,422 @@
+{
+  "issue": "ASMA-8159",
+  "scope": "Bounded TPM-authorized F3 schema correction; synthetic verification only",
+  "base_head": "7fa4e06f86611d54a1b0c2943725928b952c6fa6",
+  "branch": "feat/ASMA-8155-kontor-experience-memory-and-analogue-recall",
+  "checkout": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+  "tsw": "wks_b22a010864eaa006",
+  "owned_predecessor_edits_retained": true,
+  "corrections": [
+    {
+      "path": "crates/kontor-store/tests/publication_attestations_immutable.rs",
+      "assertion": "recorded_publication_attestations_are_immutable_at_the_database_boundary: current store schema",
+      "before": "assert_eq!(store.schema_version().expect(\"schema version\"), 119);",
+      "after": "assert_eq!(store.schema_version().expect(\"schema version\"), SCHEMA_VERSION);",
+      "public_import": "kontor_store::SCHEMA_VERSION (migrations module is private)",
+      "current_constant": 121,
+      "intent": "Assert current schema before exercising the unchanged immutability body"
+    },
+    {
+      "path": "crates/kontor-store/tests/repository_roundtrip.rs",
+      "helper": "apply_v115_to_legacy_fixture",
+      "before": "Rewind to 114 omitted all eight 0120/0121 tables; reopen collided on memory_experience_eligibility",
+      "after": "Drop memory_projection_rebuild_results, memory_projection_rebuild_keys, memory_recall_keys, memory_recall_metadata, memory_experience_proposals, memory_projection_active, memory_projection_snapshots, memory_experience_eligibility before the existing rewind",
+      "assertions_changed": 0,
+      "intent": "Preserve exact v115 repair/history/reopen assertions and replay the current chain"
+    }
+  ],
+  "commands_and_results": [
+    {
+      "receipt": "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mechanical-after.json",
+      "command": "cargo test -p kontor-store --test publication_attestations_immutable --test repository_roundtrip --locked --offline -- --test-threads=4",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "publication_attestations_immutable",
+        "--test",
+        "repository_roundtrip",
+        "--locked",
+        "--offline",
+        "--",
+        "--test-threads=4"
+      ],
+      "exit": 0,
+      "tests": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.76s",
+        "test result: ok. 89 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 34.52s"
+      ]
+    },
+    {
+      "receipt": "docs/evidence/ASMA-8159/production-prep/receipts/f3c-f4-forced-rollback.json",
+      "command": "cargo test -p kontor-store --test memory_migration_rollback --locked --offline -- --nocapture",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "memory_migration_rollback",
+        "--locked",
+        "--offline",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "tests": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.26s"
+      ]
+    },
+    {
+      "receipt": "docs/evidence/ASMA-8159/production-prep/receipts/f3c-f4-v119-upgrade.json",
+      "command": "cargo test -p kontor-store --test schema_v1 v120_upgrade_preserves_generic_ledger_and_enforces_immutable_memory_receipts --locked --offline -- --exact",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "schema_v1",
+        "v120_upgrade_preserves_generic_ledger_and_enforces_immutable_memory_receipts",
+        "--locked",
+        "--offline",
+        "--",
+        "--exact"
+      ],
+      "exit": 0,
+      "tests": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 64 filtered out; finished in 3.53s"
+      ]
+    },
+    {
+      "receipt": "docs/evidence/ASMA-8159/production-prep/receipts/f3c-f4-fresh-schema.json",
+      "command": "cargo test -p kontor-store --test schema_v1 an_empty_database_migrates_to_the_current_schema_version --locked --offline -- --exact",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "schema_v1",
+        "an_empty_database_migrates_to_the_current_schema_version",
+        "--locked",
+        "--offline",
+        "--",
+        "--exact"
+      ],
+      "exit": 0,
+      "tests": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 64 filtered out; finished in 5.96s"
+      ]
+    },
+    {
+      "receipt": "docs/evidence/ASMA-8159/production-prep/receipts/f3c-f4-synthetic-backup-recovery.json",
+      "command": "cargo test -p kontor-daemon --test synthetic_census_rehearsal --locked --offline -- --nocapture",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-daemon",
+        "--test",
+        "synthetic_census_rehearsal",
+        "--locked",
+        "--offline",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "tests": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.05s"
+      ]
+    },
+    {
+      "mutant": "MUT-001",
+      "command": "cargo test -p kontor-core --test experience_memory --locked --offline -- strict_experience_roundtrip_and_non_memory_eligibility --exact",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-core",
+        "--test",
+        "experience_memory",
+        "--locked",
+        "--offline",
+        "--",
+        "strict_experience_roundtrip_and_non_memory_eligibility",
+        "--exact"
+      ],
+      "baseline_exit": 0,
+      "seeded_exit": 101,
+      "restored_exit": 0,
+      "verdict": "KILLED",
+      "failed_test": [
+        "strict_experience_roundtrip_and_non_memory_eligibility"
+      ],
+      "baseline_receipt": "f3c-mut-001-baseline.json",
+      "seeded_receipt": "f3c-mut-001-seeded.json",
+      "restored_receipt": "f3c-mut-001-restored.json"
+    },
+    {
+      "mutant": "MUT-002",
+      "command": "cargo test -p kontor-store --lib --locked --offline -- memory::experience_tests::malicious_tuple_project_current_approval_tombstone_hash_policy_and_kind --exact",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--lib",
+        "--locked",
+        "--offline",
+        "--",
+        "memory::experience_tests::malicious_tuple_project_current_approval_tombstone_hash_policy_and_kind",
+        "--exact"
+      ],
+      "baseline_exit": 0,
+      "seeded_exit": 101,
+      "restored_exit": 0,
+      "verdict": "KILLED",
+      "failed_test": [
+        "memory::experience_tests::malicious_tuple_project_current_approval_tombstone_hash_policy_and_kind"
+      ],
+      "baseline_receipt": "f3c-mut-002-baseline.json",
+      "seeded_receipt": "f3c-mut-002-seeded.json",
+      "restored_receipt": "f3c-mut-002-restored.json"
+    },
+    {
+      "mutant": "MUT-003",
+      "command": "cargo test -p kontor-store --lib --locked --offline -- memory::experience_tests::exact_budget_32768_32769_unicode_escaping_and_skip_oversized_top --exact",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--lib",
+        "--locked",
+        "--offline",
+        "--",
+        "memory::experience_tests::exact_budget_32768_32769_unicode_escaping_and_skip_oversized_top",
+        "--exact"
+      ],
+      "baseline_exit": 0,
+      "seeded_exit": 101,
+      "restored_exit": 0,
+      "verdict": "KILLED",
+      "failed_test": [
+        "memory::experience_tests::exact_budget_32768_32769_unicode_escaping_and_skip_oversized_top"
+      ],
+      "baseline_receipt": "f3c-mut-003-baseline.json",
+      "seeded_receipt": "f3c-mut-003-seeded.json",
+      "restored_receipt": "f3c-mut-003-restored.json"
+    },
+    {
+      "mutant": "MUT-004",
+      "command": "cargo test -p kontor-memory-cognee --test fixtures authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text --locked --offline -- --exact",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-memory-cognee",
+        "--test",
+        "fixtures",
+        "authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text",
+        "--locked",
+        "--offline",
+        "--",
+        "--exact"
+      ],
+      "baseline_exit": 0,
+      "seeded_exit": 101,
+      "restored_exit": 0,
+      "verdict": "KILLED",
+      "failed_test": [
+        "authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text"
+      ],
+      "baseline_receipt": "f3c-mut-004-baseline.json",
+      "seeded_receipt": "f3c-mut-004-seeded.json",
+      "restored_receipt": "f3c-mut-004-restored.json"
+    },
+    {
+      "mutant": "MUT-005",
+      "command": "cargo test -p kontor-daemon --test loopback_api experience_launch::degraded_launch_never_lists_the_corpus_and_timeout_keeps_store_unlocked --locked --offline -- --exact",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-daemon",
+        "--test",
+        "loopback_api",
+        "experience_launch::degraded_launch_never_lists_the_corpus_and_timeout_keeps_store_unlocked",
+        "--locked",
+        "--offline",
+        "--",
+        "--exact"
+      ],
+      "baseline_exit": 0,
+      "seeded_exit": 101,
+      "restored_exit": 0,
+      "verdict": "KILLED",
+      "failed_test": [
+        "experience_launch::degraded_launch_never_lists_the_corpus_and_timeout_keeps_store_unlocked"
+      ],
+      "baseline_receipt": "f3c-mut-005-baseline.json",
+      "seeded_receipt": "f3c-mut-005-seeded.json",
+      "restored_receipt": "f3c-mut-005-restored-resumed.json"
+    },
+    {
+      "mutant": "MUT-006",
+      "command": "cargo test -p kontor-daemon --test loopback_api experience_launch::root_launch_contains_exact_frozen_canonical_bytes_and_downstream_cites_same_binding --locked --offline -- --exact",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-daemon",
+        "--test",
+        "loopback_api",
+        "experience_launch::root_launch_contains_exact_frozen_canonical_bytes_and_downstream_cites_same_binding",
+        "--locked",
+        "--offline",
+        "--",
+        "--exact"
+      ],
+      "baseline_exit": 0,
+      "seeded_exit": 101,
+      "restored_exit": 0,
+      "verdict": "KILLED",
+      "failed_test": [
+        "experience_launch::root_launch_contains_exact_frozen_canonical_bytes_and_downstream_cites_same_binding"
+      ],
+      "baseline_receipt": "f3c-mut-006-baseline.json",
+      "seeded_receipt": "f3c-mut-006-seeded.json",
+      "restored_receipt": "f3c-mut-006-restored.json"
+    },
+    {
+      "mutant": "MUT-007",
+      "command": "cargo test -p kontor-daemon --test projection_rebuild --locked --offline -- composed_adverse_qualification_cannot_activate_before_canary --exact",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-daemon",
+        "--test",
+        "projection_rebuild",
+        "--locked",
+        "--offline",
+        "--",
+        "composed_adverse_qualification_cannot_activate_before_canary",
+        "--exact"
+      ],
+      "baseline_exit": 0,
+      "seeded_exit": 101,
+      "restored_exit": 0,
+      "verdict": "KILLED",
+      "failed_test": [
+        "composed_adverse_qualification_cannot_activate_before_canary"
+      ],
+      "baseline_receipt": "f3c-mut-007-baseline.json",
+      "seeded_receipt": "f3c-mut-007-seeded.json",
+      "restored_receipt": "f3c-mut-007-restored.json"
+    }
+  ],
+  "f4_result": {
+    "clean_retry_equal": true,
+    "final_version": 121,
+    "forward_version_refused": true,
+    "history_sha256": "784fe8a5f21c4bf29f87e48ce78725e8d94d2d6c5e86e05d50df8b78c5230060",
+    "injected_failure": "0120 duplicate trigger after four table creations",
+    "prior_version": 119,
+    "rollback_ledger_equal": true,
+    "rollback_schema_equal": true,
+    "typed_backfill_rows": 1
+  },
+  "unexpected_test_failures": 0,
+  "mutation_kills": 7,
+  "baseline_and_restoration_failures": 0,
+  "historical_failure_disposition": "Before-correction failures and the interrupted compilation-only raw log are retained as history, not passing proof. f3c-mutants.json is the interrupted five-row snapshot; f3c-completed-mutants.json is the complete seven-row record.",
+  "bounded_scope_blockers": [],
+  "broader_frontiers_unchanged": "External migration-number/dependency joins, excluded full console/native lanes and live credential/corpus/production qualification remain outside this correction; no broad production-readiness claim.",
+  "commit_command": "asma git commit --auto --auto-provider heuristic",
+  "files_to_commit": [
+    "crates/kontor-store/tests/publication_attestations_immutable.rs",
+    "crates/kontor-store/tests/repository_roundtrip.rs",
+    "docs/evidence/ASMA-8159/production-prep/f3-correction-sweep.py",
+    "docs/evidence/ASMA-8159/production-prep/f3c-resume-verification.py",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-checkpoint-verification.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-completed-checks.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-completed-mutants.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-completion-report.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-corrections.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-f4-forced-rollback.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-f4-forced-rollback.log.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-f4-fresh-schema.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-f4-fresh-schema.log.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-f4-synthetic-backup-recovery.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-f4-synthetic-backup-recovery.log.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-f4-v119-upgrade.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-f4-v119-upgrade.log.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-interrupted-restoration.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mechanical-after.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mechanical-after.log.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-001-baseline.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-001-baseline.log.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-001-restored.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-001-restored.log.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-001-seeded.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-001-seeded.log.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-001.patch.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-002-baseline.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-002-baseline.log.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-002-restored.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-002-restored.log.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-002-seeded.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-002-seeded.log.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-002.patch.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-003-baseline.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-003-baseline.log.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-003-restored.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-003-restored.log.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-003-seeded.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-003-seeded.log.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-003.patch.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-004-baseline.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-004-baseline.log.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-004-restored.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-004-restored.log.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-004-seeded.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-004-seeded.log.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-004.patch.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-005-baseline.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-005-baseline.log.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-005-restored-resumed.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-005-restored-resumed.log.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-005-restored.raw",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-005-seeded.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-005-seeded.log.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-005.patch.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-006-baseline.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-006-baseline.log.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-006-restored.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-006-restored.log.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-006-seeded.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-006-seeded.log.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-006.patch.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-007-baseline.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-007-baseline.log.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-007-restored.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-007-restored.log.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-007-seeded.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-007-seeded.log.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-007.patch.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mutant-source.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mutants.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-publication-before.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-publication-before.log.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-schema-literal-sweep.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-schema-literal-sweep.log.gz",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-schema-sweep-after.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-schema-sweep-before.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-v115-before.json",
+    "docs/evidence/ASMA-8159/production-prep/receipts/f3c-v115-before.log.gz"
+  ]
+}
