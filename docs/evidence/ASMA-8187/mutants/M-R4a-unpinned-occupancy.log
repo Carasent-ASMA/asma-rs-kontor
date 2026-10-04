@@ -1,0 +1,25 @@
+      |
+      = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `kontor-daemon` (lib) generated 1 warning (run `cargo fix --lib -p kontor-daemon` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 33.84s
+     Running tests/loopback_api.rs (target/debug/deps/loopback_api-33d0e6c483a75765)
+
+running 1 test
+test concurrent_applies_under_one_key_converge_on_a_single_successor ... FAILED
+
+failures:
+
+---- concurrent_applies_under_one_key_converge_on_a_single_successor stdout ----
+
+thread 'concurrent_applies_under_one_key_converge_on_a_single_successor' (74045846) panicked at crates/kontor-daemon/tests/loopback_api.rs:62329:9:
+a losing caller prepared a launch intent for an unrecorded occupancy
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    concurrent_applies_under_one_key_converge_on_a_single_successor
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 496 filtered out; finished in 2.00s
+
+error: test failed, to rerun pass `-p kontor-daemon --test loopback_api`

@@ -518,7 +518,7 @@ fn map_authority(state: &ApiState, error: AuthorityError) -> ApiError {
         ),
     }
 }
-fn map(state: &ApiState, error: MemoryError) -> ApiError {
+pub fn map(state: &ApiState, error: MemoryError) -> ApiError {
     match error {
         MemoryError::RevisionConflict { current, .. } => ApiError::new(
             state.realm_id(),
@@ -526,6 +526,20 @@ fn map(state: &ApiState, error: MemoryError) -> ApiError {
             "the memory aggregate moved since the caller read it",
         )
         .with_revision(AggregateRevision::parse(current).ok()),
+        MemoryError::Refused(code) => {
+            use kontor_core::memory::MemoryRefusal;
+            let api_code = match code {
+                MemoryRefusal::InvalidExperience => ApiErrorCode::InvalidExperience,
+                MemoryRefusal::UnresolvedEvidence => ApiErrorCode::UnresolvedEvidence,
+                MemoryRefusal::FrozenPayloadPurged => ApiErrorCode::FrozenPayloadPurged,
+                MemoryRefusal::FrozenPayloadMismatch => ApiErrorCode::FrozenPayloadMismatch,
+                MemoryRefusal::BindingConflict => ApiErrorCode::MemoryBindingConflict,
+                MemoryRefusal::CandidateLimit => ApiErrorCode::MemoryCandidateLimit,
+                MemoryRefusal::ProjectionConflict => ApiErrorCode::ProjectionConflict,
+                MemoryRefusal::ProjectionUnavailable => ApiErrorCode::ProjectionUnavailable,
+            };
+            state.refuse(api_code, code.as_str())
+        }
         MemoryError::NotFound => state.refuse(
             ApiErrorCode::NotFound,
             "no such memory record exists in this project",
@@ -540,4 +554,237 @@ fn map(state: &ApiState, error: MemoryError) -> ApiError {
             "the memory operation was refused",
         ),
     }
+}
+
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RecallRequest {
+    #[schema(value_type = String)]
+    pub task_id: kontor_core::id::TaskId,
+}
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RecallFreezeRequest {
+    #[schema(value_type = String)]
+    pub task_id: kontor_core::id::TaskId,
+    #[schema(value_type = String)]
+    pub agent_run_id: kontor_core::id::AgentRunId,
+}
+#[derive(serde::Serialize, ToSchema)]
+pub struct RecallResponse {
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    #[schema(schema_with = crate::memory_schema::recall)]
+    pub recall: kontor_store::memory::RecalledMemory,
+}
+#[derive(serde::Serialize, ToSchema)]
+pub struct ProjectionResponse {
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    #[schema(schema_with = crate::memory_schema::projection)]
+    pub projection: kontor_store::memory::ProjectionReadback,
+}
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExperienceProposal {
+    pub item_id: String,
+    pub expected_revision: u64,
+    #[schema(schema_with = crate::memory_schema::experience)]
+    pub document: CanonicalDocument,
+    #[schema(schema_with = crate::memory_schema::provenance)]
+    pub provenance: MemoryProvenance,
+    pub proposed_by: String,
+}
+
+#[derive(serde::Serialize, ToSchema)]
+pub struct ExperienceProposalResponse {
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    #[schema(schema_with = crate::memory_schema::revision)]
+    pub revision: kontor_store::memory::MemoryRevision,
+    #[schema(schema_with = crate::memory_schema::receipt)]
+    pub receipt: kontor_store::memory::MemoryReceipt,
+}
+#[derive(serde::Serialize, ToSchema)]
+pub struct ProjectionPreviewResponse {
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    #[schema(schema_with = crate::memory_schema::preview)]
+    pub preview: kontor_store::memory::ProjectionPreview,
+}
+#[derive(serde::Serialize, ToSchema)]
+pub struct ExperienceClassificationResponse {
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    #[schema(schema_with = crate::memory_schema::classifications)]
+    pub classifications: Vec<kontor_store::memory::ExperienceClassification>,
+}
+
+#[utoipa::path(post, path = "/v1/projects/{project_id}/memory/experiences:propose", tag = "memory", params(("project_id" = String, Path), ("Idempotency-Key" = String, Header)), request_body = ExperienceProposal, responses((status = 200, body = ExperienceProposalResponse), (status = 400), (status = 409)))]
+pub async fn propose_experience(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<ExperienceProposal>,
+) -> Result<Json<ExperienceProposalResponse>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project = parse_project(&state, &project)?;
+    let key = crate::control::idempotency_key(&state, &headers)?;
+    let (revision, receipt) = state
+        .with_store(|store| {
+            store.propose_experience_idempotent(
+                project,
+                &key,
+                &body.item_id,
+                body.expected_revision,
+                &body.document,
+                &body.provenance,
+                &body.proposed_by,
+            )
+        })
+        .map_err(|error| map(&state, error))?;
+    Ok(Json(ExperienceProposalResponse {
+        realm_id: state.realm_id(),
+        revision,
+        receipt,
+    }))
+}
+#[utoipa::path(post, path = "/v1/projects/{project_id}/memory/recall:preview", tag = "memory", params(("project_id" = String, Path)), request_body = RecallRequest, responses((status = 200, body = RecallResponse), (status = 400), (status = 404)))]
+pub async fn recall_preview(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project): Path<String>,
+    Json(body): Json<RecallRequest>,
+) -> Result<Json<RecallResponse>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project = parse_project(&state, &project)?;
+    let recall = state
+        .applications()
+        .recall_memory(project, body.task_id, None, None)?;
+    Ok(Json(RecallResponse {
+        realm_id: state.realm_id(),
+        recall,
+    }))
+}
+#[utoipa::path(post, path = "/v1/projects/{project_id}/memory/recall:freeze", tag = "memory", params(("project_id" = String, Path), ("Idempotency-Key" = String, Header)), request_body = RecallFreezeRequest, responses((status = 200, body = RecallResponse), (status = 400), (status = 409), (status = 410)))]
+pub async fn recall_freeze(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<RecallFreezeRequest>,
+) -> Result<Json<RecallResponse>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let key = crate::control::idempotency_key(&state, &headers)?;
+    let project = parse_project(&state, &project)?;
+    let recall = state.applications().recall_memory(
+        project,
+        body.task_id,
+        Some(body.agent_run_id),
+        Some(&key),
+    )?;
+    Ok(Json(RecallResponse {
+        realm_id: state.realm_id(),
+        recall,
+    }))
+}
+#[utoipa::path(get, path = "/v1/projects/{project_id}/memory/recall/{agent_run_id}", tag = "memory", params(("project_id" = String, Path), ("agent_run_id" = String, Path)), responses((status = 200, body = RecallResponse), (status = 404), (status = 410)))]
+pub async fn recall_readback(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project, run)): Path<(String, String)>,
+) -> Result<Json<RecallResponse>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project = parse_project(&state, &project)?;
+    let run = crate::control::parse_id(&state, kontor_core::id::AgentRunId::parse(&run))?;
+    let recall = state
+        .with_store(|store| store.recalled_memory(project, &run.to_string()))
+        .map_err(|error| map(&state, error))?
+        .ok_or_else(|| {
+            state.refuse(
+                ApiErrorCode::NotFound,
+                "no frozen experience recall exists for this run",
+            )
+        })?;
+    Ok(Json(RecallResponse {
+        realm_id: state.realm_id(),
+        recall,
+    }))
+}
+#[utoipa::path(get, path = "/v1/projects/{project_id}/memory/projection:preview", tag = "memory", params(("project_id" = String, Path)), responses((status = 200, body = ProjectionPreviewResponse)))]
+pub async fn projection_preview(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project): Path<String>,
+) -> Result<Json<ProjectionPreviewResponse>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project = parse_project(&state, &project)?;
+    let preview = state
+        .with_store(|store| store.projection_preview(project))
+        .map_err(|error| map(&state, error))?;
+    Ok(Json(ProjectionPreviewResponse {
+        realm_id: state.realm_id(),
+        preview,
+    }))
+}
+#[utoipa::path(get, path = "/v1/projects/{project_id}/memory/projection", tag = "memory", params(("project_id" = String, Path)), responses((status = 200, body = ProjectionResponse)))]
+pub async fn projection_readback(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project): Path<String>,
+) -> Result<Json<ProjectionResponse>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project = parse_project(&state, &project)?;
+    let projection = state
+        .with_store(|store| store.projection_readback(project))
+        .map_err(|error| map(&state, error))?;
+    Ok(Json(ProjectionResponse {
+        realm_id: state.realm_id(),
+        projection,
+    }))
+}
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectionRebuildRequest {
+    pub expected_generation: u64,
+    pub expected_memory_cursor: i64,
+    #[schema(value_type = String)]
+    pub preview_digest: ContentHash,
+}
+#[utoipa::path(post, path = "/v1/projects/{project_id}/memory/projection:rebuild", tag = "memory", params(("project_id" = String, Path), ("Idempotency-Key" = String, Header)), request_body = ProjectionRebuildRequest, responses((status = 200, body = ProjectionResponse), (status = 409), (status = 503)))]
+pub async fn projection_rebuild(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<ProjectionRebuildRequest>,
+) -> Result<Json<ProjectionResponse>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project = parse_project(&state, &project)?;
+    let key = crate::control::idempotency_key(&state, &headers)?;
+    let projection = state
+        .applications()
+        .rebuild_memory_projection(project, &key, &body)
+        .await?;
+    Ok(Json(ProjectionResponse {
+        realm_id: state.realm_id(),
+        projection,
+    }))
+}
+#[utoipa::path(get, path = "/v1/projects/{project_id}/memory/experiences:classify", tag = "memory", params(("project_id" = String, Path)), responses((status = 200, body = ExperienceClassificationResponse)))]
+pub async fn classify(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project): Path<String>,
+) -> Result<Json<ExperienceClassificationResponse>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project = parse_project(&state, &project)?;
+    let classifications = state
+        .with_store(|store| store.classify_experiences(project))
+        .map_err(|error| map(&state, error))?;
+    Ok(Json(ExperienceClassificationResponse {
+        realm_id: state.realm_id(),
+        classifications,
+    }))
 }

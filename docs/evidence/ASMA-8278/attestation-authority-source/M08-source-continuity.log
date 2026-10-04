@@ -1,0 +1,23 @@
+   Compiling kontor-store v0.2.1 (/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/isolated-source/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.47s
+     Running tests/backup_snapshot.rs (/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/mutation-target/debug/deps/backup_snapshot-ba16d7a45b9280c9)
+
+running 1 test
+test a_nonempty_public_authority_snapshot_is_refused_before_destination_creation ... FAILED
+
+failures:
+
+---- a_nonempty_public_authority_snapshot_is_refused_before_destination_creation stdout ----
+
+thread 'a_nonempty_public_authority_snapshot_is_refused_before_destination_creation' (26808586) panicked at crates/kontor-store/tests/backup_snapshot.rs:155:5:
+assertion failed: matches!(restore_snapshot(&snapshot.snapshot, &destination,
+    at("2026-10-03T18:02:00Z")), Err(BackupError::Verification { .. }))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    a_nonempty_public_authority_snapshot_is_refused_before_destination_creation
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 19 filtered out; finished in 2.20s
+
+error: test failed, to rerun pass `-p kontor-store --test backup_snapshot`

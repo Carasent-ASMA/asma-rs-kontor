@@ -1,0 +1,4 @@
+cmd=cargo test -p kontor-store --locked --no-fail-fast
+start=2026-10-04T05:52:33Z
+exit=101
+finish=2026-10-04T06:10:39Z

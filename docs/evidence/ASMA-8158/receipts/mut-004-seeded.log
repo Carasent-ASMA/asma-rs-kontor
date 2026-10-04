@@ -1,0 +1,24 @@
+
+running 1 test
+test authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text ... FAILED
+
+failures:
+
+---- authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text stdout ----
+
+thread 'authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text' (12567732) panicked at crates/kontor-memory-cognee/tests/fixtures.rs:336:5:
+assertion `left == right` failed
+  left: "{\"cues\":[\"upstream cue\"],\"identity\":{\"content_hash\":\"07981030d100184e22cf71a65b4d36edacafb26da2f79eac7adf2eca0d4c202c\",\"item_id\":\"foreign\",\"project_id\":\"01a0febc-7074-79f2-8df1-47b438e09eff\",\"revision_id\":\"01a0febc-7078-70c1-881b-91bb56a2a143\"},\"lesson\":\"FOREIGN_CANARY\"}\n{\"cues\":[\"upstream cue\"],\"identity\":{\"content_hash\":\"3b8dbef9d117ad8ff0655c72b5c2f0f65f65a349c5556941383c61868f87399e\",\"item_id\":\"local\",\"project_id\":\"01a0febc-7074-79f2-8df1-47a43bd0f9b7\",\"revision_id\":\"01a0febc-7079-72d2-ad18-c85ab9830c56\"},\"lesson\":\"LOCAL_COGNEE_CANARY\"}\n{\"cues\":[\"upstream cue\"],\"identity\":{\"content_hash\":\"508f107eba1885bd165f4ef75c1b8cf914cf9eda6365f93214bb0cc39bd07ddd\",\"item_id\":\"valid\",\"project_id\":\"01a0febc-7074-79f2-8df1-47a43bd0f9b7\",\"revision_id\":\"01a0febc-7076-7f70-87b2-c6289a097876\"},\"lesson\":\"HASH_CANARY\"}\n{\"cues\":[\"upstream cue\"],\"identity\":{\"content_hash\":\"07981030d100184e22cf71a65b4d36edacafb26da2f79eac7adf2eca0d4c202c\",\"item_id\":\"valid\",\"project_id\":\"01a0febc-7074-79f2-8df1-47a43bd0f9b7\",\"revision_id\":\"01a0febc-7076-7f70-87b2-c6289a097876\"},\"lesson\":\"COGNEE_TEXT_CANARY\"}\n{\"cues\":[\"upstream cue\"],\"identity\":{\"content_hash\":\"07981030d100184e22cf71a65b4d36edacafb26da2f79eac7adf2eca0d4c202c\",\"item_id\":\"valid\",\"project_id\":\"01a0febc-7074-79f2-8df1-47a43bd0f9b7\",\"revision_id\":\"01a0febc-7076-7f70-87b2-c6289a097876\"},\"lesson\":\"DUPLICATE_CANARY\"}\n{\"cues\":[\"upstream cue\"],\"identity\":{\"content_hash\":\"07981030d100184e22cf71a65b4d36edacafb26da2f79eac7adf2eca0d4c202c\",\"item_id\":\"pending\",\"project_id\":\"01a0febc-7074-79f2-8df1-47a43bd0f9b7\",\"revision_id\":\"01a0febc-707b-7ed1-943f-0e5993992bab\"},\"lesson\":\"PENDING_CANARY\"}\n{\"cues\":[\"upstream cue\"],\"identity\":{\"content_hash\":\"07981030d100184e22cf71a65b4d36edacafb26da2f79eac7adf2eca0d4c202c\",\"item_id\":\"tomb\",\"project_id\":\"01a0febc-7074-79f2-8df1-47a43bd0f9b7\",\"revision_id\":\"01a0febc-707c-70e3-8913-8e144fab2b2b\"},\"lesson\":\"TOMBSTONE_CANARY\"}\n{\"cues\":[\"upstream cue\"],\"identity\":{\"content_hash\":\"07981030d100184e22cf71a65b4d36edacafb26da2f79eac7adf2eca0d4c202c\",\"item_id\":\"stale\",\"project_id\":\"01a0febc-7074-79f2-8df1-47a43bd0f9b7\",\"revision_id\":\"01a0febc-707e-7991-828a-f18c2012bcbb\"},\"lesson\":\"STALE_REVISION_CANARY\"}\n{\"cues\":[\"upstream cue\"],\"identity\":{\"content_hash\":\"1e1c1e40e2aa2f9c94746294132d648d2ebc38bc40afaa2a01bee3478c9a8390\",\"item_id\":\"generic\",\"project_id\":\"01a0febc-7074-79f2-8df1-47a43bd0f9b7\",\"revision_id\":\"01a0febc-7080-7de1-92e4-5b97fd8a0ca1\"},\"lesson\":\"GENERIC_CANARY\"}"
+ right: "[{\"actions\":[\"Read the deployed artifact digest\",\"Compare it with the immutable source receipt\"],\"avoid\":[\"Inferring deployment from a merge receipt\"],\"confidence\":\"observed\",\"document_type\":\"experience_memory\",\"domains\":[\"delivery\"],\"evidence_refs\":[{\"content_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"locator\":\"synthetic/deployed-readback.json\",\"type\":\"artifact\"}],\"future_cues\":[\"needle\"],\"intent\":\"Confirm the artifact that serves the application.\",\"kind\":\"experience\",\"lesson\":\"Verify deployed readback before reporting a publication as installed.\",\"occurred_at\":\"2026-10-02T12:00:00Z\",\"outcome\":{\"kind\":\"success\",\"summary\":\"The deployed artifact matched the intended digest.\"},\"projection_policy\":\"provider_eligible\",\"schema_version\":1,\"situation\":\"Synthetic fixture: an immutable publication check ran before deployed readback.\",\"went_well\":[\"The readback supplied an exact digest\"],\"went_wrong\":[\"Source completion alone did not prove deployment\"]}]"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 1.81s
+
+   Compiling kontor-memory-cognee v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8158-cognee-projection-and-task-launch/crates/kontor-memory-cognee)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.22s
+     Running tests/fixtures.rs (target/debug/deps/fixtures-8d800cf2c429aa74)
+error: test failed, to rerun pass `-p kontor-memory-cognee --test fixtures`

@@ -1,0 +1,38 @@
+=== mutant M-P25-unchanged-answers-before-proof ===
+baseline commit : e5aea100209277b55fa65f34f9569047db304eea
+baseline tree   : e0453b8e88339c5fc84ccb3f179bf0f95bdb5bf0
+command         : cargo test -p kontor-store --test hosted_seat_autonomy -- a_succession_cannot_bind_a_receipt_recorded_for_another_command
+toolchain       : rustc 1.97.1 (8bab26f4f 2026-07-14)
+platform        : Darwin 25.6.0 arm64
+--- preimage sha256 (files this mutant touches, at baseline) ---
+6af69a55ec0140e3240281d02d296c5afbfd858dcf7871f65fed349b73b71349  crates/kontor-store/src/repository.rs
+--- mutated sha256 ---
+355726a22d518aed81106ffe2a4c9439ee9e70462aaefa85d4ee51fc81b4c6a8  crates/kontor-store/src/repository.rs
+--- raw output ---
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.02s
+     Running tests/hosted_seat_autonomy.rs (target/debug/deps/hosted_seat_autonomy-37350dd3fcfb6d32)
+
+running 1 test
+test a_succession_cannot_bind_a_receipt_recorded_for_another_command ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 1.71s
+
+--- exit status: 0 (non-zero = mutant killed) ---
+--- restored sha256 ---
+6af69a55ec0140e3240281d02d296c5afbfd858dcf7871f65fed349b73b71349  crates/kontor-store/src/repository.rs
+restoration: byte-identical to baseline e5aea100209277b55fa65f34f9569047db304eea
+
+--- outcome: SURVIVED, retained rather than discarded ---
+Baseline 129466cc. The ordering guard was moved back before the receipt join and
+`a_succession_cannot_bind_a_receipt_recorded_for_another_command` still passed,
+because that test binds an *unbound* row: `bound` is `None`, so the early return
+it reinstates is never reached. Ordering cannot be proved by a test that never
+arrives at the branch whose order changed.
+
+`a_replayed_binding_is_proved_before_it_answers_unchanged` was added to reach
+it: a row already bound, repointed at a receipt recorded for another command,
+then replayed with that receipt. Re-run as M-P25-unchanged-answers-before-proof
+against the later baseline: killed.
+
+Kept because the kill is only meaningful beside it.

@@ -1,0 +1,20 @@
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-store)
+   Compiling kontor-api v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-api)
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-daemon)
+warning: unused variable: `reloaded`
+     --> crates/kontor-daemon/src/applications.rs:25123:21
+      |
+25123 |                 let reloaded = state
+      |                     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_reloaded`
+      |
+      = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `kontor-daemon` (lib) generated 1 warning (run `cargo fix --lib -p kontor-daemon` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 59.11s
+     Running tests/loopback_api.rs (target/debug/deps/loopback_api-33d0e6c483a75765)
+
+running 1 test
+test a_pending_succession_the_seat_outran_is_refused_rather_than_receipted ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 489 filtered out; finished in 2.12s
+

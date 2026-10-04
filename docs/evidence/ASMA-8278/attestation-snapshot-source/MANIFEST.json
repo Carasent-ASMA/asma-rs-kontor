@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "source_candidate": "845e36c36efa9bbf3912c61f91fb7fdb2b590ea9",
+  "root_specification": "68626851460916488be6613084ca0d33118fcb4d",
+  "source_sha256": {
+    "crates/kontor-runtime/src/planning_pair/attestation.rs": "bb7edb6717ccc21acb952f9a695936e0c9332563f090abfe34536479a701ab7e",
+    "crates/kontor-runtime/src/planning_pair/attestation/snapshot_codec.rs": "c3b83275d8e346e000810388cbf11376dd9e6d0052f49f6eadf10db76b8b660e",
+    "crates/kontor-runtime/src/planning_pair/attestation/snapshot_codec/tests.rs": "6ddbdc8a89b1971b90d19c37bea19984ac21fae097ad37ae924ee8822bb38010"
+  },
+  "files_sha256": {
+    ".gitattributes": "c890d66e3b7c8b6304348f5d00efc768cd8bbf881731a292b790c8dc2997c7cf",
+    "MANIFEST.worker.json": "d58d6bf74dbe0d124349afd8f312afaace6b4af0da690b1891cda5125414e40f",
+    "PUBLISHED-CANDIDATE-READBACK.json": "c441cafeb6f24f168f78d8b356a4db24e80897bf65351754799af35dff0232e4",
+    "README.md": "a9ba6e399ef5c97c68f93d4ad618f35c19c7e10410414e4ff04dc0370c25ff4b",
+    "baseline-after.log": "3c7ffef66b77d4fc858833444854af52c29b62ac533e41fd804d9ab36f2b7af3",
+    "baseline-before.log": "e56dd1eb0a989cd977b27c837f4c383b8e3a5bde87c260286ec1e35b66235285",
+    "clippy.log": "0ed4c3d71566e6ffcc2c0265f64033923a07ad1372cd6d595cb0da4ad2fb0c10",
+    "count-characters-not-bytes.log": "221310d74175bafe32b9df33dcc2d43eb34ecee4193d4e68a985931a15d301f7",
+    "diff.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "focused.log": "cabb6d24d65f3b4964fe58b48466157f3624a71c2d8d3e256f8b094aaf6f8bd7",
+    "review-codec-source.md": "d2e6d0ff535435444c490cee2428df4ea3f9b54bc25d829282f694fe16b3da75",
+    "runtime.log": "9a788991690913ea3de5a83ba36a78eccb186de94cbf67742631458269d3b2d1",
+    "skip-preparse-size.log": "3703a6fa68b456a906cb9eabccff3a6e7f2d7b463364523fe8446a1e339314a9",
+    "skip-schema.log": "c77cfe2ca5cea936ff7767a305172193939555bf976c40ffe4c248e29ca13e29",
+    "skip-shared-validation.log": "f87afaacc2abbf08c4b623d2067a34286d5410c917ab1adca1bb9a64efbfac26"
+  },
+  "checks": {
+    "unit": 141,
+    "integration": 20,
+    "compile_fail_privacy": 2,
+    "codec_tests": 7,
+    "assertion_killed_mutants": 4
+  },
+  "source_only": true,
+  "original_worker_files_unchanged": true,
+  "independent_review_pending": false,
+  "bounded_source_review_only": true,
+  "review_sha256": "d2e6d0ff535435444c490cee2428df4ea3f9b54bc25d829282f694fe16b3da75"
+}

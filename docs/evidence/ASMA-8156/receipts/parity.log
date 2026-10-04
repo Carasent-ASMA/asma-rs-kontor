@@ -1,0 +1,62 @@
+   Compiling kontor-scheduler v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8156-typed-experience-contract-and/crates/kontor-scheduler)
+   Compiling kontor-runtime-paseo v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8156-typed-experience-contract-and/crates/kontor-runtime-paseo)
+   Compiling kontor-mcp v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8156-typed-experience-contract-and/crates/kontor-mcp)
+   Compiling kontor-tests-contract v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8156-typed-experience-contract-and/tests/contract)
+   Compiling kontor-calendar v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8156-typed-experience-contract-and/crates/kontor-calendar)
+   Compiling kontor-accounts v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8156-typed-experience-contract-and/crates/kontor-accounts)
+   Compiling kontor-store v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8156-typed-experience-contract-and/crates/kontor-store)
+   Compiling kontor-jira v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8156-typed-experience-contract-and/crates/kontor-jira)
+   Compiling kontor-api v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8156-typed-experience-contract-and/crates/kontor-api)
+   Compiling kontor-daemon v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8156-typed-experience-contract-and/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 53.91s
+     Running mcp_cardinality.rs (target/debug/deps/mcp_cardinality-6b3f86a287dee18d)
+
+running 11 tests
+test an_operator_cannot_reach_an_admin_tool ... ok
+test an_observer_is_refused_before_a_request_exists ... ok
+test a_daemon_failure_is_not_retried ... ok
+test an_operator_may_not_waive_a_gate_but_may_record_an_ordinary_verdict ... ok
+test an_admitted_call_makes_exactly_one_request_and_no_retry ... ok
+test a_refusal_and_a_malformed_call_both_dispatch_nothing ... ok
+test a_streamed_read_stops_at_the_frame_bound_it_was_given ... ok
+test the_daemons_status_and_body_are_returned_unchanged ... ok
+test a_streamed_read_returns_frames_from_one_response_and_never_reconnects ... ok
+test a_replayed_write_returns_the_original_receipt_untouched_and_is_not_cached ... ok
+test every_tool_makes_exactly_one_authenticated_request_with_its_declared_shape ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+
+     Running mcp_mutants.rs (target/debug/deps/mcp_mutants-1dc56870eba26ea3)
+
+running 11 tests
+test a_non_loopback_endpoint_is_refused_before_a_client_exists ... ok
+test the_comment_mirror_can_carry_no_prose_and_sends_nothing ... ok
+test every_schema_bypass_is_refused_with_nothing_dispatched ... ok
+test a_hostile_path_argument_cannot_move_the_route ... ok
+test no_tool_names_a_store_a_database_or_a_migration ... ok
+test no_tool_names_a_tracker_field_a_status_or_an_assignee ... ok
+test no_tool_can_name_a_credential_an_address_or_a_proxy ... ok
+test no_tool_names_a_runtime_endpoint_or_a_provider ... ok
+test a_redirect_off_loopback_is_not_followed_and_carries_no_credential ... ok
+test no_secret_can_appear_in_a_tool_schema ... ok
+test kontor_mcp_has_no_dependency_path_to_a_forbidden_crate ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+
+     Running mcp_parity.rs (target/debug/deps/mcp_parity-86660a903fdebfbf)
+
+running 12 tests
+test the_local_documents_and_default_port_match_the_daemons ... ok
+test the_permission_decisions_match_the_runtimes_own_spelling ... ok
+test the_tier_of_every_tool_is_the_one_the_daemon_requires ... ok
+test every_tool_schema_is_closed_and_types_its_properties ... ok
+test every_tool_targets_an_operation_that_exists ... ok
+test every_documented_operation_is_mapped_once_or_allowlisted_once ... ok
+test the_snapshot_canary_holds_at_this_base ... ok
+test every_tool_declares_the_same_parameters_the_contract_does ... ok
+test every_declared_nested_object_matches_the_contracts_own_dto ... ok
+test the_lifecycle_actions_match_the_contracts_own_enum ... ok
+test the_allowlist_holds_only_real_routes_and_the_contract_document_itself ... ok
+test every_tool_declares_the_same_body_properties_the_contract_does ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
