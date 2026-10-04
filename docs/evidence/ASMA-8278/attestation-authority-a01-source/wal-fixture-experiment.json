@@ -1,0 +1,14 @@
+{
+  "donor_main_size": 4096,
+  "wal_size": 12392,
+  "shm_size": 32768,
+  "cases": {
+    "nonempty": [
+      [
+        "committed fixture row"
+      ]
+    ],
+    "zero": "no such table: committed_state",
+    "missing": "no such table: committed_state"
+  }
+}

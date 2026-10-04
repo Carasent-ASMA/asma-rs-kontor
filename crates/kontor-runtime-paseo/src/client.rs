@@ -157,6 +157,16 @@ pub(crate) fn permission_mode(provider: &str) -> RuntimeResult<Option<&'static s
     }
 }
 
+/// The Claude creation restriction every contained consultation-family seat
+/// gets: the file-reading tools and tool discovery, and every write, shell,
+/// delegation, skill, plan transition and user prompt denied.
+fn claude_contained_tools() -> serde_json::Value {
+    serde_json::json!({
+        "allowedTools": ["Read", "Glob", "Grep", "ToolSearch"],
+        "disallowedTools": ["Bash", "Write", "Edit", "NotebookEdit", "Agent", "Task", "Skill", "EnterPlanMode", "ExitPlanMode", "AskUserQuestion"]
+    })
+}
+
 /// The provider-native contained mode used by ordinary consultation seats.
 ///
 /// Cursor is deliberately absent. Mode names and provider metadata are not
@@ -1236,16 +1246,67 @@ impl PaseoRpc {
         )?;
         let provider = built_in_provider(&model_rung.provider.0);
         if provider == "claude" {
-            request.message["config"]["providerOptions"] = serde_json::json!({
-                "allowedTools": ["Read", "Glob", "Grep", "ToolSearch"],
-                "disallowedTools": ["Bash", "Write", "Edit", "NotebookEdit", "Agent", "Task", "Skill", "EnterPlanMode", "ExitPlanMode", "AskUserQuestion"]
-            });
+            request.message["config"]["providerOptions"] = claude_contained_tools();
         } else if provider == "codex" {
             request.message["config"]["providerOptions"] = serde_json::json!({
                 "sandbox_mode": "read-only", "approval_policy": "never"
             });
         }
         Ok(request)
+    }
+
+    /// `create_agent_request` for one planning pair member (ASMA-8282 D-3).
+    ///
+    /// Only a provider whose closed member surface Kontor composes is
+    /// constructible, and today that is Claude alone: its default mode under
+    /// the composed member guard, with the contained file-reading tools and
+    /// every write, shell, delegation and plan transition denied at creation.
+    /// Every other provider is refused here, before a frame exists, and is
+    /// never substituted or launched under the consultation surface. The
+    /// credential travels only in the frame's secret environment.
+    #[allow(clippy::too_many_arguments)]
+    pub fn planning_pair_member_agent_create(
+        request_id: String,
+        workspace_id: &str,
+        canonical_cwd: &str,
+        model_rung: &ModelRung,
+        title: &str,
+        labels: &BTreeMap<String, String>,
+        prompt: &str,
+        credential: &str,
+    ) -> RuntimeResult<Self> {
+        if built_in_provider(&model_rung.provider.0) != "claude" {
+            return Err(RuntimeError::PermissionModeUnsupported {
+                provider: model_rung.provider.0.clone(),
+            });
+        }
+        let mut request = Self::scoped_seat_agent_create(
+            request_id,
+            workspace_id,
+            canonical_cwd,
+            model_rung,
+            title,
+            labels,
+            prompt,
+            credential,
+            Some("default"),
+        )?;
+        request.message["config"]["providerOptions"] = claude_contained_tools();
+        Ok(request)
+    }
+
+    /// Inject a planning pair member's credential-scoped MCP under its closed
+    /// serve profile, and preapprove exactly the domain's three member
+    /// operations, generated from the one member surface list.
+    pub fn with_planning_pair_member_mcp(&mut self, seat: &crate::seat_mcp::SeatMcp) {
+        self.message["config"]["mcpServers"] =
+            seat.server_config(kontor_core::planning_pair::MEMBER_SERVE_PROFILE);
+        self.message["config"]["toolPolicy"] = serde_json::json!({
+            "preapproved": kontor_core::planning_pair::MEMBER_MCP_TOOLS
+                .iter()
+                .map(|tool| serde_json::json!({"kind": "mcp", "server": "kontor", "tool": tool}))
+                .collect::<Vec<_>>()
+        });
     }
 
     /// Inject the credential-scoped consultation MCP and approve only its four

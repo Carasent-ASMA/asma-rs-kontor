@@ -1,0 +1,8 @@
+ M crates/kontor-runtime/src/planning_pair/attestation.rs
+?? .agents/
+?? .asma/
+?? .cursor/
+?? AGENTS.md
+?? CLAUDE.md
+?? crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic.rs
+?? crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic/

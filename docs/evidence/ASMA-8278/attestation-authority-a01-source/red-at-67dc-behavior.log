@@ -1,0 +1,31 @@
+   Compiling kontor-store v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.18s
+     Running tests/backup_snapshot.rs (target/debug/deps/backup_snapshot-ba16d7a45b9280c9)
+
+running 2 tests
+test missing_main_with_committed_wal_refuses_without_changing_destination_files ... FAILED
+test zero_main_with_committed_wal_refuses_without_changing_destination_files ... FAILED
+
+failures:
+
+---- missing_main_with_committed_wal_refuses_without_changing_destination_files stdout ----
+
+thread 'missing_main_with_committed_wal_refuses_without_changing_destination_files' (27088296) panicked at crates/kontor-store/tests/backup_snapshot.rs:338:5:
+assertion failed: matches!(restore_snapshot(&snapshot.snapshot, &destination,
+    at("2026-10-03T19:01:00Z")), Err(BackupError::Verification { .. }))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- zero_main_with_committed_wal_refuses_without_changing_destination_files stdout ----
+
+thread 'zero_main_with_committed_wal_refuses_without_changing_destination_files' (27088297) panicked at crates/kontor-store/tests/backup_snapshot.rs:338:5:
+assertion failed: matches!(restore_snapshot(&snapshot.snapshot, &destination,
+    at("2026-10-03T19:01:00Z")), Err(BackupError::Verification { .. }))
+
+
+failures:
+    missing_main_with_committed_wal_refuses_without_changing_destination_files
+    zero_main_with_committed_wal_refuses_without_changing_destination_files
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 21 filtered out; finished in 12.39s
+
+error: test failed, to rerun pass `-p kontor-store --test backup_snapshot`

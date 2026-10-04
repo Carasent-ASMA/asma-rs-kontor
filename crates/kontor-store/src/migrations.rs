@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 122;
+pub const SCHEMA_VERSION: i64 = 128;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -425,6 +425,19 @@ const MIGRATIONS: &[&str] = &[
     // Schema v122. A succession's receipt is proved to be its own, binds at most
     // one succession, and the instant it bound at is as frozen as the binding.
     include_str!("../migrations/0122_core_team_route_succession_receipt_identity.sql"),
+    // Schema v123. Realm idempotency bindings for fleet policy publication and
+    // activation, and the permanence triggers the v28 rebuild dropped
+    // (ASMA-8280).
+    include_str!("../migrations/0123_fleet_policy_operations.sql"),
+    // Schema v124. Realm idempotency bindings for fleet bundle publication and
+    // activation (ASMA-8280 S-1).
+    include_str!("../migrations/0124_fleet_bundle_operations.sql"),
+    include_str!("../migrations/0125_planning_pair_family.sql"),
+    // The planning pair member's immutable known native session and the
+    // caller's same-native member recovery kind (ASMA-8282 frontier A).
+    include_str!("../migrations/0126_planning_pair_member_natives.sql"),
+    include_str!("../migrations/0127_attestation_authority_keys.sql"),
+    include_str!("../migrations/0128_prepared_attestation_tokens.sql"),
 ];
 
 const _: () = assert!(
@@ -981,4 +994,80 @@ fn verify_applied(connection: &Connection) -> Result<(), StoreError> {
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod release_integration_tests {
+    use super::*;
+
+    /// Exercise a real released schema before applying the appended generations.
+    #[test]
+    fn released_122_upgrades_without_replacing_realm_or_existing_bindings() {
+        let directory = tempfile::tempdir().expect("fixture directory");
+        let path = directory.path().join("kontor.db");
+        let connection = Connection::open(&path).expect("released fixture");
+        for migration in &MIGRATIONS[..122] {
+            connection
+                .execute_batch(migration)
+                .expect("released migration");
+        }
+        let realm = RealmMetadata::create(RealmId::generate(), Timestamp::now());
+        connection.execute(
+            "INSERT INTO realm_metadata (singleton, realm_id, schema_version, created_at, display_label)
+             VALUES (1, ?1, ?2, ?3, NULL)",
+            rusqlite::params![realm.realm_id.to_string(), i64::from(realm.schema_version.get()), realm.created_at.to_string()],
+        ).expect("released realm identity");
+        connection.execute(
+            "INSERT INTO realm_idempotency_bindings (idempotency_key, operation, fingerprint, bound_at)
+             VALUES ('released-key', 'register_profile_pack', ?1, '2026-10-04T00:00:00Z')",
+            [ContentHash::of(b"released").as_str()],
+        ).expect("released idempotency row");
+        assert_eq!(
+            read_user_version(&connection).expect("released version"),
+            122
+        );
+        drop(connection);
+
+        let store = crate::SqliteStore::open(&path).expect("additive upgrade");
+        assert_eq!(store.realm_metadata().realm_id, realm.realm_id);
+        assert_eq!(store.schema_version().expect("upgraded version"), 128);
+        drop(store);
+        let connection = Connection::open(&path).expect("upgraded readback");
+        let fingerprint: String = connection.query_row(
+            "SELECT fingerprint FROM realm_idempotency_bindings WHERE idempotency_key='released-key' AND operation='register_profile_pack'",
+            [], |row| row.get(0),
+        ).expect("released binding survives both rebuilds");
+        assert_eq!(fingerprint, ContentHash::of(b"released").as_str());
+        assert!(
+            connection
+                .execute(
+                    "DELETE FROM realm_idempotency_bindings WHERE idempotency_key='released-key'",
+                    []
+                )
+                .is_err()
+        );
+        for table in [
+            "core_team_route_successions",
+            "imported_record_evidence",
+            "planning_pair_placements",
+            "attestation_authority_keys",
+            "prepared_attestation_tokens",
+        ] {
+            let exists: bool = connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                    [table],
+                    |row| row.get(0),
+                )
+                .expect("union table readback");
+            assert!(exists, "union schema lost {table}");
+        }
+        assert!(
+            !connection
+                .prepare("PRAGMA foreign_key_check")
+                .expect("foreign key check")
+                .exists([])
+                .expect("foreign key result")
+        );
+    }
 }

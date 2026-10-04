@@ -52,7 +52,7 @@ fn realm_preflight_accepts_the_joined_schema_version() {
         store.schema_version().unwrap(),
         kontor_store::SCHEMA_VERSION
     );
-    assert_eq!(kontor_store::SCHEMA_VERSION, 122);
+    assert_eq!(kontor_store::SCHEMA_VERSION, 128);
     let expected = store.realm_metadata().clone();
     drop(store);
 

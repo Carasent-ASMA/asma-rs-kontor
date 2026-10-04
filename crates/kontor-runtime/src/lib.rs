@@ -43,6 +43,8 @@ pub mod capability;
 pub mod container;
 pub mod fake;
 pub mod observation;
+pub mod planning_pair;
+pub mod provenance;
 pub mod refusal;
 pub mod request;
 pub mod scope;
@@ -76,6 +78,7 @@ pub use observation::{
     ControlPlaneObservation, CorrelationEvidence, NativeSession, ObservationSource,
     ReconciliationAction, ReconciliationFinding, ReconciliationReport, reconcile,
 };
+pub use provenance::{FleetLaunchProvenance, FleetProvenanceObservation, LaunchEligibility};
 pub use request::{
     AdoptRequest, CancelRequest, CorrelationLabel, HistoryRequest, InspectRequest, LaunchParts,
     LaunchPlacement, LaunchRequest, LiveSubscribeRequest, MessageId, PermissionDecision,

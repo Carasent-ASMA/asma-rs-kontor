@@ -106,6 +106,8 @@ pub enum ArgType {
     AdvisorRunId,
     /// A canonical v7 UUID naming one Committee consultation.
     CommitteeRunId,
+    /// A canonical v7 UUID naming one planning pair consultation.
+    PlanningPairRunId,
     /// An open, deployment-defined key.
     ///
     /// Its lexical rule — lowercase ASCII, digits, `.`, `_`, `-` — is also what
@@ -182,6 +184,153 @@ pub struct FieldSpec {
     pub about: &'static str,
 }
 
+/// One slot of a joint fleet allocation (`kontor_fleet_policy_resolve`).
+const FLEET_ALLOCATION_SLOT: &[FieldSpec] = &[
+    field(
+        "slot_id",
+        ArgType::OpenKey,
+        "The slot's stable id; unique within the allocation.",
+    ),
+    field(
+        "role",
+        ArgType::Enum(&["reviewer", "judge"]),
+        "reviewer slots are held to the diversity rule; a judge only to its own eligibility.",
+    ),
+    field(
+        "binding_key",
+        ArgType::Text,
+        "The canonical binding this slot resolves, such as committee/<template>/<seat>.",
+    ),
+    optional_field(
+        "unavailable_accounts",
+        ArgType::TextArray,
+        "Account aliases that cannot take this slot now.",
+    ),
+    optional_field(
+        "excluded_vendors",
+        ArgType::TextArray,
+        "Vendors this slot must avoid.",
+    ),
+];
+
+/// A joint fleet allocation: the diversity rule and the ordered slots.
+const FLEET_ALLOCATION: &[FieldSpec] = &[
+    field(
+        "diversity",
+        ArgType::Enum(&["distinct_vendor_per_reviewer"]),
+        "Every reviewer's policy vendor is known and no two reviewers share one.",
+    ),
+    field(
+        "slots",
+        ArgType::ObjectArray(FLEET_ALLOCATION_SLOT),
+        "The slots, in the order the allocation is decided.",
+    ),
+];
+
+/// One member of a planning pair placement (`kontor_fleet_policy_resolve`).
+///
+/// A member has no role and the pair has no diversity field: both members are
+/// always held to distinct actual vendors, and neither is a Committee reviewer
+/// or Judge.
+const FLEET_PLANNING_PAIR_MEMBER: &[FieldSpec] = &[
+    field(
+        "slot",
+        ArgType::Enum(&["seat-a", "seat-b"]),
+        "The member slot: seat-a (SEAT A) then seat-b (SEAT B).",
+    ),
+    field(
+        "binding_key",
+        ArgType::Text,
+        "The existing canonical binding this member resolves, such as advisor/<profile> or committee/<template>/<seat>.",
+    ),
+    optional_field(
+        "unavailable_accounts",
+        ArgType::TextArray,
+        "Account aliases that cannot take this member now.",
+    ),
+    optional_field(
+        "excluded_vendors",
+        ArgType::TextArray,
+        "Vendors this member must avoid.",
+    ),
+];
+
+/// A `planning_pair@1` placement: exactly its two members, in slot order.
+const FLEET_PLANNING_PAIR: &[FieldSpec] = &[field(
+    "members",
+    ArgType::ObjectArray(FLEET_PLANNING_PAIR_MEMBER),
+    "Exactly two members, seat-a then seat-b.",
+)];
+
+/// The exact published planning pair document an invocation pins.
+const PLANNING_PAIR_PROFILE_REF: &[FieldSpec] = &[
+    field(
+        "id",
+        ArgType::Text,
+        "The document id shared by every revision.",
+    ),
+    field("version", ArgType::U32, "The pinned revision."),
+    field(
+        "definition_hash",
+        ArgType::Text,
+        "The canonical hash the caller read; a different published hash refuses.",
+    ),
+];
+
+/// One exact native session a member recovery asserts.
+const PLANNING_PAIR_NATIVE_IDENTITY: &[FieldSpec] = &[
+    field("runtime_kind", ArgType::OpenKey, "The runtime family."),
+    field(
+        "host",
+        ArgType::ExternalName,
+        "The runtime host that owns the generation.",
+    ),
+    field("generation", ArgType::U64, "The runtime generation."),
+    field(
+        "native_id",
+        ArgType::ExternalId,
+        "The native session id within that generation.",
+    ),
+];
+
+/// What the caller decided about one member's advice.
+const PLANNING_PAIR_MEMBER_DISPOSITION: &[FieldSpec] = &[
+    field(
+        "slot",
+        ArgType::Enum(&["seat-a", "seat-b"]),
+        "The member: seat-a then seat-b.",
+    ),
+    field(
+        "finding",
+        ArgType::Text,
+        "The exact finding hash the decision is about.",
+    ),
+    optional_field(
+        "answer",
+        ArgType::Text,
+        "The exact clarification answer hash, when the member gave one.",
+    ),
+    field(
+        "disposition",
+        ArgType::Enum(&["accepted", "partially_accepted", "rejected", "superseded"]),
+        "Accepted, partially accepted or rejected. Superseded is refused: this is the only decision.",
+    ),
+];
+
+/// The standing activation a bundle activation names (`kontor_fleet_bundle_activate`).
+const FLEET_ACTIVATION_FENCE: &[FieldSpec] = &[
+    field(
+        "policy_hash",
+        ArgType::Text,
+        "The policy the standing record names.",
+    ),
+    optional_field(
+        "source_bundle_hash",
+        ArgType::Text,
+        "The bundle the standing record names, for a schema_version 2 record.",
+    ),
+];
+
 /// A shorthand for one required field of a declared object.
 const fn field(name: &'static str, ty: ArgType, about: &'static str) -> FieldSpec {
     FieldSpec {
@@ -224,6 +373,7 @@ impl ArgType {
             | Self::QuickSessionId
             | Self::AdvisorRunId
             | Self::CommitteeRunId
+            | Self::PlanningPairRunId
             | Self::OpenKey
             | Self::ExternalName
             | Self::ExternalId
@@ -622,17 +772,57 @@ pub enum OpKind {
     Stream,
 }
 
-/// One tool: one name, one authority, one `/v1` operation.
+/// How one registered operation is carried out: its transport, declared on
+/// the row itself so every surface branches on the same fact.
+///
+/// Almost every operation is [`Execution::Http`]: one request to one `/v1`
+/// route, advertised and dispatched over MCP and called by the CLI through the
+/// same dispatcher. [`Execution::Local`] is the other class — one in-process
+/// handler the `kontor` CLI runs against its state root before any connection
+/// exists. A local operation has no `/v1` route, so MCP neither advertises nor
+/// dispatches it; that follows from its class, not from a hiding list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Execution {
+    /// Exactly one request to one daemon route.
+    Http {
+        /// The method of the one request this tool makes.
+        method: Method,
+        /// The `/v1` path template. `{name}` segments are filled from path
+        /// arguments.
+        path: &'static str,
+    },
+    /// Exactly one in-process handler, and no route.
+    Local(LocalOperation),
+}
+
+/// The closed set of in-process handlers a local operation names.
+///
+/// Each is implemented once, in the `kontor` CLI, over a daemon-free library:
+/// a local operation is the same command surface reading the same state root,
+/// never a second control plane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LocalOperation {
+    /// Read `fleet-activation.json` and exactly the immutable artifacts it
+    /// names, resolve one canonical binding through the one fleet resolver and
+    /// choose under stated eligibility (ASMA-8280 B-1).
+    FleetPolicyResolve,
+}
+
+impl LocalOperation {
+    /// Every handler, so the parity oracle can prove each is declared once.
+    pub const ALL: &'static [Self] = &[Self::FleetPolicyResolve];
+}
+
+/// One tool: one name, one authority, one operation — a `/v1` route or an
+/// in-process handler, never both.
 #[derive(Debug, Clone, Copy)]
 pub struct ToolSpec {
     /// The MCP tool name, which is also the CLI command name.
     pub name: &'static str,
     /// The minimum authority. Higher tiers inherit it.
     pub tier: CallerTier,
-    /// The method of the one request this tool makes.
-    pub method: Method,
-    /// The `/v1` path template. `{name}` segments are filled from path arguments.
-    pub path: &'static str,
+    /// How the operation is carried out.
+    pub execution: Execution,
     /// What it does to the Realm.
     pub kind: OpKind,
     /// Every argument, in schema order.
@@ -646,6 +836,26 @@ impl ToolSpec {
     #[must_use]
     pub fn find(name: &str) -> Option<&'static Self> {
         REGISTRY.iter().find(|tool| tool.name == name)
+    }
+
+    /// The one `/v1` route an HTTP operation makes its request to, and `None`
+    /// for a local operation, which has no route.
+    #[must_use]
+    pub const fn route(&self) -> Option<(Method, &'static str)> {
+        match self.execution {
+            Execution::Http { method, path } => Some((method, path)),
+            Execution::Local(_) => None,
+        }
+    }
+
+    /// The one in-process handler a local operation runs, and `None` for an
+    /// HTTP operation.
+    #[must_use]
+    pub const fn local(&self) -> Option<LocalOperation> {
+        match self.execution {
+            Execution::Http { .. } => None,
+            Execution::Local(operation) => Some(operation),
+        }
     }
 
     /// The arguments that go to one place.
@@ -789,6 +999,24 @@ pub static SERVE_PROFILES: &[ServeProfile] = &[
             "kontor_committee_findings_record",
         ],
     },
+    // ASMA-8282: a planning pair member reads its own run and makes only its
+    // two seat-authored writes. It cannot invoke, ask for clarification,
+    // record a disposition, publish, or reach any gate or permission surface.
+    // The list is the domain's one closed member surface, which the guard and
+    // every runtime's creation policy are generated from too.
+    ServeProfile {
+        name: kontor_core::planning_pair::MEMBER_SERVE_PROFILE,
+        tools: &kontor_core::planning_pair::MEMBER_MCP_TOOLS,
+    },
+    // ASMA-8282: a planning pair's caller, opt-in and selected only by name.
+    // It reads its run, invokes the pair, asks the one clarification and
+    // records the disposition. It is not the leadership profile and widens
+    // it nowhere; it records no finding or answer, and reaches no publication,
+    // gate, permission or delegation tool.
+    ServeProfile {
+        name: kontor_core::planning_pair::CALLER_SERVE_PROFILE,
+        tools: &kontor_core::planning_pair::CALLER_MCP_TOOLS,
+    },
     ServeProfile {
         name: "leadership",
         tools: &[
@@ -811,8 +1039,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_open_questions_list",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/open-questions",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/open-questions",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -833,8 +1063,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_open_question_record",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/open-questions:record",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/open-questions:record",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -881,8 +1113,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_realm_get",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/realm",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/realm",
+        },
         kind: OpKind::Read,
         args: &[],
         about: "This realm's identity, locality and freshness.",
@@ -890,8 +1124,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_run_get",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/runs/{agent_run_id}",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/runs/{agent_run_id}",
+        },
         kind: OpKind::Read,
         args: &[req(
             "agent_run_id",
@@ -904,8 +1140,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_task_get",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/tasks/{task_id}",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/tasks/{task_id}",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -926,8 +1164,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_events_list",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/events",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/events",
+        },
         kind: OpKind::Stream,
         args: &[
             opt(
@@ -944,8 +1184,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_profile_packs_list",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/catalog/packs",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/catalog/packs",
+        },
         kind: OpKind::Read,
         args: &[],
         about: "Every profile pack this realm resolves categories from: the compiled seeds and \
@@ -954,8 +1196,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_profile_pack_register",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/catalog/packs:register",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/catalog/packs:register",
+        },
         kind: OpKind::Write,
         // The key is bound to a fingerprint of the whole logical operation
         // rather than carried by a command receipt: a receipt is written against
@@ -976,8 +1220,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_work_profiles_list",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/catalog/work-profiles",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/catalog/work-profiles",
+        },
         kind: OpKind::Read,
         args: &[],
         about: "The work profiles a caller may select.",
@@ -985,8 +1231,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_work_profile_get",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/catalog/work-profiles/{category}",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/catalog/work-profiles/{category}",
+        },
         kind: OpKind::Read,
         args: &[req(
             "category",
@@ -999,8 +1247,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_work_profile_validate",
         tier: CallerTier::Observer,
-        method: Method::Post,
-        path: "/v1/catalog/work-profiles/{category}/validate",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/catalog/work-profiles/{category}/validate",
+        },
         kind: OpKind::Read,
         // A `POST` that commits nothing and takes no key: validation *reports* a
         // finding rather than changing anything, so a caller asking "is this
@@ -1016,8 +1266,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_team_templates_list",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/catalog/team-templates",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/catalog/team-templates",
+        },
         kind: OpKind::Read,
         args: &[],
         about: "The team template revisions a work profile may pin.",
@@ -1025,8 +1277,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_model_catalog_get",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/catalog",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/catalog",
+        },
         kind: OpKind::Read,
         args: &[],
         about: "The realm-qualified provider and model catalog used by Teams.",
@@ -1034,8 +1288,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_teams_get",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/teams",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/teams",
+        },
         kind: OpKind::Read,
         args: &[],
         about: "Current Teams drafts and immutable revisions at one projection cursor.",
@@ -1043,8 +1299,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_team_draft_save",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/teams/drafts:save",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/teams/drafts:save",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -1072,8 +1330,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_team_publish",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/teams/{team_id}/publish",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/teams/{team_id}/publish",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -1089,8 +1349,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_runtime_capabilities_list",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/runtime-capabilities",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/runtime-capabilities",
+        },
         kind: OpKind::Read,
         args: &[],
         about: "What every configured runtime family can currently prove.",
@@ -1098,8 +1360,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_account_profiles_list",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/provider-account-profiles",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/provider-account-profiles",
+        },
         kind: OpKind::Read,
         args: &[req(
             "project_id",
@@ -1112,8 +1376,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_epic_get",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/epics/{epic_id}",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/epics/{epic_id}",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -1134,8 +1400,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_session_timeline_get",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/sessions/{agent_run_id}/timeline",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/sessions/{agent_run_id}/timeline",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -1157,8 +1425,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_session_stream_read",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/sessions/{agent_run_id}/stream",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/sessions/{agent_run_id}/stream",
+        },
         kind: OpKind::Stream,
         args: &[
             req(
@@ -1181,8 +1451,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_projects_list",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects",
+        },
         kind: OpKind::Read,
         args: &[],
         about: "Every project in this Realm, with the revision needed by later writes.",
@@ -1190,8 +1462,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_project_get",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}",
+        },
         kind: OpKind::Read,
         args: &[req(
             "project_id",
@@ -1205,8 +1479,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_project_ensure",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects:ensure",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects:ensure",
+        },
         kind: OpKind::Write,
         args: &[
             IDEMPOTENCY,
@@ -1244,8 +1520,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_account_profile_amend",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/provider-account-profiles/{account_profile_id}/settings:amend",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/provider-account-profiles/{account_profile_id}/settings:amend",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -1287,8 +1565,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_account_profile_ensure",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/provider-account-profiles:ensure",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/provider-account-profiles:ensure",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -1334,8 +1614,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_publication_preview",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/publication:preview",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/publication:preview",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -1386,8 +1668,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_publication_attest",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/publication:attest",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/publication:attest",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -1439,8 +1723,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_publication_get",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/publication/{attestation_id}",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/publication/{attestation_id}",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -1461,8 +1747,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_publication_merge",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/publication:merge",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/publication:merge",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -1496,8 +1784,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_epic_preview",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics:preview",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics:preview",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -1572,8 +1862,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_epic_apply",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics:apply",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics:apply",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -1649,8 +1941,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_backlog_import_preview",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/backlog/import:preview",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/backlog/import:preview",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -1683,8 +1977,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_backlog_import_apply",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/backlog/import:apply",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/backlog/import:apply",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -1712,8 +2008,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_execution_arm",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/execution:arm",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/execution:arm",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -1786,8 +2084,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_execution_disarm",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/execution:disarm",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/execution:disarm",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -1827,8 +2127,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_profile_select",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/tasks/{task_id}/profile-selection",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/tasks/{task_id}/profile-selection",
+        },
         kind: OpKind::Write,
         args: SELECTION_ARGS,
         about: "Set or correct one task's pinned work profile before a run snapshots it.",
@@ -1836,8 +2138,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_team_select",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/tasks/{task_id}/team-selection",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/tasks/{task_id}/team-selection",
+        },
         kind: OpKind::Write,
         args: SELECTION_ARGS,
         about: "Set or correct one task's pinned team template.",
@@ -1845,8 +2149,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_account_select",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/tasks/{task_id}/account-selection",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/tasks/{task_id}/account-selection",
+        },
         kind: OpKind::Write,
         args: SELECTION_ARGS,
         about: "Set or correct the account profile one task's runs are pinned to.",
@@ -1855,8 +2161,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_scheduler_plan",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/scheduler:plan",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/scheduler:plan",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -1878,8 +2186,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_scheduler_start",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/scheduler:start",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/scheduler:start",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -1908,8 +2218,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_scheduler_resume",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/scheduler:resume",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/scheduler:resume",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -1943,8 +2255,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_team_run_admission_adopt",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/admission:adopt",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/admission:adopt",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -1996,8 +2310,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_team_run_seat_fill",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/seat",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/seat",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -2043,8 +2359,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_lifecycle_transition",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/lifecycle",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/lifecycle",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -2096,8 +2414,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_context_resolve",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/tasks/{task_id}/context:resolve",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/tasks/{task_id}/context:resolve",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -2126,8 +2446,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_gate_record",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/tasks/{task_id}/gates/{gate_id}/record",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/tasks/{task_id}/gates/{gate_id}/record",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -2193,8 +2515,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_workflow_phase_recover",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/tasks/{task_id}/workflow:recover-phase",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/tasks/{task_id}/workflow:recover-phase",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -2221,8 +2545,10 @@ pub static REGISTRY: &[ToolSpec] = &[
         // inside it, and neither belongs on an ordinary worker seat -- which is
         // also why this tool is absent from the `worker` profile above.
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/tasks/{task_id}/gates/{gate_id}/rejections:recover",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/tasks/{task_id}/gates/{gate_id}/rejections:recover",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -2288,8 +2614,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_turn_correlation_challenge_preview",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turn-correlation:challenge-preview",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turn-correlation:challenge-preview",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -2352,8 +2680,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_turn_correlation_challenge_apply",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turn-correlation:challenge-apply",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turn-correlation:challenge-apply",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -2387,8 +2717,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_artifact_record",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/tasks/{task_id}/artifacts:record",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/tasks/{task_id}/artifacts:record",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -2452,8 +2784,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_turn_settle",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turns:settle",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turns:settle",
+        },
         kind: OpKind::Write,
         // A *turn* is smaller than a run: this closes Kontor's bounded piece of
         // work and leaves the seat's native session live and reusable. It takes
@@ -2509,8 +2843,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_runtime_settle",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:settle",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:settle",
+        },
         kind: OpKind::Write,
         // No body argument exists, and that is the contract rather than an
         // omission: settlement reads the runtime's own verdict. A caller-supplied
@@ -2535,8 +2871,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_late_handoff_attest",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/agent-runs/{agent_run_id}/handoffs:attest-late",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/agent-runs/{agent_run_id}/handoffs:attest-late",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -2588,8 +2926,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_seat_replace",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/agent-runs/{agent_run_id}/successors:replace",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/agent-runs/{agent_run_id}/successors:replace",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -2653,8 +2993,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_seat_recover",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/agent-runs/{agent_run_id}/successors:recover",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/agent-runs/{agent_run_id}/successors:recover",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -2676,8 +3018,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_session_labels_reconcile",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/agent-runs/{agent_run_id}/labels:reconcile",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/agent-runs/{agent_run_id}/labels:reconcile",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -2711,8 +3055,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_runtime_abandon",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:abandon",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:abandon",
+        },
         kind: OpKind::Write,
         // The sibling of settlement, for the one case settlement cannot serve: a
         // run whose launch was refused holds no session, so there is no runtime
@@ -2752,8 +3098,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_ticket_reconcile_plan",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/tasks/{task_id}/ticket:reconcile-plan",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/tasks/{task_id}/ticket:reconcile-plan",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -2774,8 +3122,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_ticket_reconcile_apply",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/tasks/{task_id}/ticket:reconcile-apply",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/tasks/{task_id}/ticket:reconcile-apply",
+        },
         kind: OpKind::Write,
         // The only body property is the hash of a plan the daemon computed. There
         // is deliberately no status, transition, assignee or comment argument:
@@ -2807,8 +3157,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_task_worktree_claim_preview",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/tasks/{task_id}/worktree-claim:preview",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/tasks/{task_id}/worktree-claim:preview",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -2847,8 +3199,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_task_worktree_claim_apply",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/tasks/{task_id}/worktree-claim:apply",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/tasks/{task_id}/worktree-claim:apply",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -2901,8 +3255,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_task_description_preview",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/tasks/{task_id}/ticket/description:preview",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/tasks/{task_id}/ticket/description:preview",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -2929,8 +3285,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_task_description_apply",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/tasks/{task_id}/ticket/description:apply",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/tasks/{task_id}/ticket/description:apply",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -2970,8 +3328,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_epic_description_preview",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/jira/description:preview",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/jira/description:preview",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -2998,8 +3358,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_epic_description_apply",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/jira/description:apply",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/jira/description:apply",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -3040,8 +3402,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_trigger_get",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/triggers/{trigger}/{version}",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/triggers/{trigger}/{version}",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -3065,8 +3429,10 @@ pub static REGISTRY: &[ToolSpec] = &[
         // Admin, and not operator: a trigger may declare a bounded auto-arm, and
         // that is the capability to start work with no human in the loop.
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/triggers:publish",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/triggers:publish",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -3093,8 +3459,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_intake_submit",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/intake:submit",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/intake:submit",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -3143,8 +3511,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_intake_receipt_get",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/intake/{receipt_id}",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/intake/{receipt_id}",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -3166,8 +3536,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_connector_field_specs_list",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/connectors/{connector}/field-specs",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/connectors/{connector}/field-specs",
+        },
         kind: OpKind::Read,
         args: CONNECTOR_ARGS,
         about: "The ticket field-spec revisions this build ships, and whether the project pinned each.",
@@ -3175,8 +3547,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_connector_workflow_specs_list",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/connectors/{connector}/workflow-specs",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/connectors/{connector}/workflow-specs",
+        },
         kind: OpKind::Read,
         args: CONNECTOR_ARGS,
         about: "The external-workflow spec revisions this build ships, and whether the project pinned each.",
@@ -3184,8 +3558,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_connector_workflow_spec_install",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/connectors/{connector}/workflow-specs:install",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/connectors/{connector}/workflow-specs:install",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -3231,8 +3607,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_ticket_conflicts_list",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/tasks/{task_id}/ticket:conflicts",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/tasks/{task_id}/ticket:conflicts",
+        },
         kind: OpKind::Read,
         args: TASK_SCOPE_ARGS,
         about: "The unresolved external-status conflicts one task's links hold.",
@@ -3240,8 +3618,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_epic_ticket_conflicts_list",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/jira:conflicts",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/jira:conflicts",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -3268,8 +3648,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_epic_ticket_conflict_resolve",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/jira:resolve-conflict",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/jira:resolve-conflict",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -3297,8 +3679,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_ticket_conflict_resolve",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/tasks/{task_id}/ticket:resolve-conflict",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/tasks/{task_id}/ticket:resolve-conflict",
+        },
         kind: OpKind::Write,
         // The only body property is which conflict is being resolved. There is no
         // status, assignee or comment argument: what the resolution *does* is the
@@ -3330,8 +3714,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_ticket_comments_pull",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/tasks/{task_id}/ticket:pull-comments",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/tasks/{task_id}/ticket:pull-comments",
+        },
         kind: OpKind::Write,
         // No body: a pull reads the external system and mirrors what it finds. A
         // caller-supplied comment here would make this a push wearing a pull's name.
@@ -3355,8 +3741,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_ticket_comments_list",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/tasks/{task_id}/ticket:comments",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/tasks/{task_id}/ticket:comments",
+        },
         kind: OpKind::Read,
         args: TASK_SCOPE_ARGS,
         about: "The mirrored inbound comments for one task: authors and digests, never bodies.",
@@ -3365,8 +3753,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_ticket_claim",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/tasks/{task_id}/ticket:claim",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/tasks/{task_id}/ticket:claim",
+        },
         kind: OpKind::Write,
         // No assignee argument exists, and that is the contract rather than an
         // omission: a claim can name only the principal Kontor authenticates as.
@@ -3390,8 +3780,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_context_policy_preview",
         tier: CallerTier::Observer,
-        method: Method::Post,
-        path: "/v1/context-policy/preview",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/context-policy/preview",
+        },
         kind: OpKind::Read,
         args: &[
             opt(
@@ -3442,8 +3834,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_session_compact",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/sessions/{agent_run_id}/compact",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/sessions/{agent_run_id}/compact",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -3489,8 +3883,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_turn_observe",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/sessions/{agent_run_id}/turns/current",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/sessions/{agent_run_id}/turns/current",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -3517,8 +3913,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_session_message_send",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/sessions/{agent_run_id}/messages",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/sessions/{agent_run_id}/messages",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -3535,8 +3933,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_session_message_reconcile",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/sessions/{agent_run_id}/messages:reconcile",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/sessions/{agent_run_id}/messages:reconcile",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -3564,8 +3964,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_session_message_proof_get",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/sessions/{agent_run_id}/messages/proof",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/sessions/{agent_run_id}/messages/proof",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -3586,8 +3988,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_topology_seat_message_send",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/seat-bindings/{seat_binding_id}/messages",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/seat-bindings/{seat_binding_id}/messages",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -3615,8 +4019,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_session_permission_respond",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/sessions/{agent_run_id}/permissions/{request_id}",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/sessions/{agent_run_id}/permissions/{request_id}",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -3645,8 +4051,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_role_slot_waive",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/waivers",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/waivers",
+        },
         kind: OpKind::Write,
         // Admin for the same reason a gate waiver is: it discharges an obligation
         // the frozen template imposed. Unlike `kontor_gate_record` the authority
@@ -3703,8 +4111,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_memory_search",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/memory",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/memory",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -3726,8 +4136,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_memory_history",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/memory/{item_id}/history",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/memory/{item_id}/history",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -3748,8 +4160,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_memory_propose",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/memory/revisions:propose",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/memory/revisions:propose",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -3795,8 +4209,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_memory_approve",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/memory/revisions/{revision_id}/approval",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/memory/revisions/{revision_id}/approval",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -3836,8 +4252,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_memory_tombstone",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/memory/{item_id}/tombstone",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/memory/{item_id}/tombstone",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -3877,8 +4295,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_memory_purge",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/memory/{item_id}/purge",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/memory/{item_id}/purge",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -3906,8 +4326,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_memory_ingest_preview",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/memory/import:preview",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/memory/import:preview",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -3941,8 +4363,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_memory_ingest_apply",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/memory/import:apply",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/memory/import:apply",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -3977,8 +4401,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_memory_cutover_freeze",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/memory/cutover:freeze",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/memory/cutover:freeze",
+        },
         kind: OpKind::Write,
         args: &[IDEMPOTENCY],
         // Kept so an existing caller is answered rather than 404'd, and declared
@@ -3989,8 +4415,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_subject_authority_get",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/subjects/authority",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/subjects/authority",
+        },
         kind: OpKind::Read,
         args: &[req(
             "project_id",
@@ -4004,8 +4432,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_subject_authority_attest",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/subjects/authority:attest",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/subjects/authority:attest",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -4046,8 +4476,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_memory_cutover_switch",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/memory/cutover:switch",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/memory/cutover:switch",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -4082,8 +4514,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_backlog_cutover_switch",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/backlog/cutover:switch",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/backlog/cutover:switch",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -4123,8 +4557,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_topology_spec_draft",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/topology-specs:draft",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/topology-specs:draft",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -4169,8 +4605,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_topology_spec_validate",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/topology-specs:validate",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/topology-specs:validate",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -4191,8 +4629,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_topology_spec_publish",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/topology-specs:publish",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/topology-specs:publish",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -4226,8 +4666,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_topology_spec_get",
         tier: CallerTier::Admin,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/topology-specs/{spec_id}/{version}",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/topology-specs/{spec_id}/{version}",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -4254,8 +4696,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_team_definition_validate",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/team-definitions:validate",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/team-definitions:validate",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -4276,8 +4720,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_team_definition_publish",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/team-definitions:publish",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/team-definitions:publish",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -4311,8 +4757,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_team_definition_get",
         tier: CallerTier::Admin,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/team-definitions/{definition_id}/{version}",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/team-definitions/{definition_id}/{version}",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -4339,8 +4787,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_team_definitions_list",
         tier: CallerTier::Admin,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/team-definitions",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/team-definitions",
+        },
         kind: OpKind::Read,
         args: &[req(
             "project_id",
@@ -4353,8 +4803,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_role_catalog_get",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/catalog/role-catalogs/{catalog_id}/{version}",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/catalog/role-catalogs/{catalog_id}/{version}",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -4375,8 +4827,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_role_get",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/catalog/role-catalogs/{catalog_id}/{version}/roles/{role_code}",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/catalog/role-catalogs/{catalog_id}/{version}/roles/{role_code}",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -4403,8 +4857,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_code_help_get",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/code-help",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/code-help",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -4426,8 +4882,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_topology_inspect",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/topology:inspect",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/topology:inspect",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -4448,8 +4906,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_topology_drift",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/topology:drift",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/topology:drift",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -4478,8 +4938,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_topology_ensure",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/topology:ensure",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/topology:ensure",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -4508,8 +4970,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_topology_materialize",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/topology:materialize",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/topology:materialize",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -4538,8 +5002,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_topology_retire",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/retire",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/retire",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -4573,8 +5039,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_topology_archive",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/archive",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/archive",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -4608,8 +5076,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_project_topology_selection_preview",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/topology-selection:preview",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/topology-selection:preview",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -4630,8 +5100,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_project_topology_selection_apply",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/topology-selection:apply",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/topology-selection:apply",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -4659,8 +5131,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_project_team_definition_selection_preview",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/team-definition-selection:preview",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/team-definition-selection:preview",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -4681,8 +5155,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_project_team_definition_selection_apply",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/team-definition-selection:apply",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/team-definition-selection:apply",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -4710,8 +5186,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_jira_materialization_preview",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/jira:preview",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/jira:preview",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -4744,8 +5222,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_jira_materialization_apply",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/jira:apply",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/jira:apply",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -4785,8 +5265,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_topology_upgrade_preview",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/topology:upgrade-preview",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/topology:upgrade-preview",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -4813,8 +5295,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_topology_upgrade_apply",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/topology:upgrade-apply",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/topology:upgrade-apply",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -4848,8 +5332,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_team_definition_upgrade_preview",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/team-definition:upgrade-preview",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/team-definition:upgrade-preview",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -4888,8 +5374,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_team_definition_upgrade_apply",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/team-definition:upgrade-apply",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/team-definition:upgrade-apply",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -4923,8 +5411,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_container_retitle_preview",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:retitle-preview",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:retitle-preview",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -4953,8 +5443,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_container_retitle_apply",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:retitle-apply",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:retitle-apply",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -4982,8 +5474,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_committee_topic_correction_preview",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/committee-runs/{committee_run_id}/topic:correction-preview",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/committee-runs/{committee_run_id}/topic:correction-preview",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -5034,8 +5528,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_committee_topic_correction_apply",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/committee-runs/{committee_run_id}/topic:correction-apply",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/committee-runs/{committee_run_id}/topic:correction-apply",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -5093,8 +5589,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_container_recovery_preview",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:recovery-preview",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:recovery-preview",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -5121,8 +5619,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_container_recovery_apply",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:recovery-apply",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:recovery-apply",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -5156,8 +5656,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_epic_backlog_code_correction_preview",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/backlog-code:correction-preview",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/backlog-code:correction-preview",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -5202,8 +5704,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_epic_backlog_code_correction_apply",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/backlog-code:correction-apply",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/backlog-code:correction-apply",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -5255,8 +5759,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_native_names_preview",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/native-names:preview",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/native-names:preview",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -5283,8 +5789,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_native_names_apply",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/native-names:apply",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/native-names:apply",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -5325,8 +5833,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_provider_quota_states_list",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/provider-quota-states",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/provider-quota-states",
+        },
         kind: OpKind::Read,
         args: &[req(
             "project_id",
@@ -5339,8 +5849,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_seat_quota_states_list",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/seat-quota-states",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/seat-quota-states",
+        },
         kind: OpKind::Read,
         args: &[req(
             "project_id",
@@ -5353,8 +5865,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_provider_quota_record",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/provider-quota-states:record",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/provider-quota-states:record",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -5414,8 +5928,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_provider_quota_probe",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/provider-account-profiles/{account_profile_id}/quota:probe",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/provider-account-profiles/{account_profile_id}/quota:probe",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -5444,8 +5960,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_capacity_config_get",
         tier: CallerTier::Admin,
-        method: Method::Get,
-        path: "/v1/capacity/configuration",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/capacity/configuration",
+        },
         kind: OpKind::Read,
         args: &[],
         about: "The current immutable capacity configuration revision and its effective values.",
@@ -5453,8 +5971,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_capacity_config_preview",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/capacity/configuration:preview",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/capacity/configuration:preview",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -5475,8 +5995,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_capacity_config_apply",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/capacity/configuration:apply",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/capacity/configuration:apply",
+        },
         kind: OpKind::Write,
         args: &[
             IDEMPOTENCY,
@@ -5495,11 +6017,250 @@ pub static REGISTRY: &[ToolSpec] = &[
         ],
         about: "Apply a full capacity replacement under the expected revision.",
     },
+    // ---- Fleet policy: publication selects nothing; activation selects -----
+    //
+    // Realm-wide like capacity: the key is bound to a fingerprint of the logical
+    // operation, not carried by a project receipt. The policy text is authored
+    // in the project checkout; Kontor only validates, publishes and selects it.
+    ToolSpec {
+        name: "kontor_fleet_policy_get",
+        tier: CallerTier::Admin,
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/fleet/policy",
+        },
+        kind: OpKind::Read,
+        args: &[],
+        about: "Which fleet policy decides routing: the activation record and its hash, or the unmigrated fleet.yml.",
+    },
+    ToolSpec {
+        name: "kontor_fleet_policy_preview",
+        tier: CallerTier::Admin,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/fleet/policy:preview",
+        },
+        kind: OpKind::Read,
+        args: &[req(
+            "document",
+            Place::Body,
+            ArgType::Text,
+            "The exact YAML bytes of a schema_version 1 or 2 fleet policy.",
+        )],
+        about: "Validate one fleet policy and return its content hash. Writes nothing.",
+    },
+    ToolSpec {
+        name: "kontor_fleet_policy_publish",
+        tier: CallerTier::Admin,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/fleet/policy:publish",
+        },
+        kind: OpKind::Write,
+        args: &[
+            IDEMPOTENCY,
+            req(
+                "document",
+                Place::Body,
+                ArgType::Text,
+                "The exact YAML bytes that were previewed.",
+            ),
+            req(
+                "preview_hash",
+                Place::Body,
+                ArgType::Text,
+                "The hash preview returned for these bytes.",
+            ),
+        ],
+        about: "Publish one previewed fleet policy as an immutable artifact. Selects nothing.",
+    },
+    ToolSpec {
+        name: "kontor_fleet_policy_activate",
+        tier: CallerTier::Admin,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/fleet/policy:activate",
+        },
+        kind: OpKind::Write,
+        args: &[
+            IDEMPOTENCY,
+            req(
+                "policy_hash",
+                Place::Body,
+                ArgType::Text,
+                "The content hash of the published policy to activate.",
+            ),
+            opt(
+                "expected_active_policy_hash",
+                Place::Body,
+                ArgType::Text,
+                "The policy hash the caller read as active; omit when none was.",
+            ),
+        ],
+        about: "Select one published fleet policy for every later placement, under the expected current selection.",
+    },
+    ToolSpec {
+        name: "kontor_fleet_bundle_get",
+        tier: CallerTier::Admin,
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/fleet/bundle",
+        },
+        kind: OpKind::Read,
+        args: &[],
+        about: "The activation record as a bundle: v1 (a policy alone) or v2 (policy, bundle and Core Team revision), and the bundle manifest a v2 record names.",
+    },
+    ToolSpec {
+        name: "kontor_fleet_bundle_preview",
+        tier: CallerTier::Admin,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/fleet/bundle:preview",
+        },
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "orchestration",
+                Place::Body,
+                ArgType::Text,
+                "The exact bytes of orchestration.yml.",
+            ),
+            req(
+                "fleet",
+                Place::Body,
+                ArgType::Text,
+                "The exact bytes of fleet.yml.",
+            ),
+            req(
+                "core_team",
+                Place::Body,
+                ArgType::Text,
+                "The exact bytes of teams/core-team.yml.",
+            ),
+        ],
+        about: "Resolve one orchestration bundle against the catalog revision its Core Team source pins and return its manifest and preview hash. Writes nothing.",
+    },
+    ToolSpec {
+        name: "kontor_fleet_bundle_publish",
+        tier: CallerTier::Admin,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/fleet/bundle:publish",
+        },
+        kind: OpKind::Write,
+        args: &[
+            IDEMPOTENCY,
+            req(
+                "orchestration",
+                Place::Body,
+                ArgType::Text,
+                "The exact orchestration.yml bytes that were previewed.",
+            ),
+            req(
+                "fleet",
+                Place::Body,
+                ArgType::Text,
+                "The exact fleet.yml bytes that were previewed.",
+            ),
+            req(
+                "core_team",
+                Place::Body,
+                ArgType::Text,
+                "The exact teams/core-team.yml bytes that were previewed.",
+            ),
+            req(
+                "preview_hash",
+                Place::Body,
+                ArgType::Text,
+                "The hash the preview answered with.",
+            ),
+        ],
+        about: "Publish one previewed orchestration bundle as immutable policy, roster and manifest artifacts. Selects nothing.",
+    },
+    ToolSpec {
+        name: "kontor_fleet_bundle_activate",
+        tier: CallerTier::Admin,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/fleet/bundle:activate",
+        },
+        kind: OpKind::Write,
+        args: &[
+            IDEMPOTENCY,
+            req(
+                "source_bundle_hash",
+                Place::Body,
+                ArgType::Text,
+                "The content hash of the published bundle to activate.",
+            ),
+            opt(
+                "expected_active",
+                Place::Body,
+                ArgType::Object(FLEET_ACTIVATION_FENCE),
+                "The standing activation the caller read; omit only when none stood.",
+            ),
+        ],
+        about: "Verify every artifact of one published bundle and replace the activation pointer, fenced on the standing activation the caller read.",
+    },
+    ToolSpec {
+        name: "kontor_fleet_bundle_propose",
+        tier: CallerTier::Admin,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/fleet/bundle:propose",
+        },
+        kind: OpKind::Read,
+        args: &[],
+        about: "Propose an initial orchestration.yml and teams/core-team.yml, with the exact catalog revision they pin, for review. Writes and activates nothing.",
+    },
+    ToolSpec {
+        name: "kontor_fleet_policy_resolve",
+        // Actionable placement selection is operator work: an observer reads
+        // the realm but does not choose where a seat runs. Admin inherits it.
+        tier: CallerTier::Operator,
+        execution: Execution::Local(LocalOperation::FleetPolicyResolve),
+        kind: OpKind::Read,
+        args: &[
+            opt(
+                "binding_key",
+                Place::Body,
+                ArgType::Text,
+                "Single mode: the canonical binding team/<template>/<slot>, committee/<template>/<seat>, advisor/<profile> or leadership/<core-team-revision-hash>/<role-slot-id>. Exactly one of binding_key, allocation and planning_pair.",
+            ),
+            opt(
+                "unavailable_accounts",
+                Place::Body,
+                ArgType::TextArray,
+                "Single mode only: account aliases that cannot take the seat now, as observed by the caller.",
+            ),
+            opt(
+                "excluded_vendors",
+                Place::Body,
+                ArgType::TextArray,
+                "Single mode only: vendors the seat must avoid, such as the vendor of the seat it must be independent of.",
+            ),
+            opt(
+                "allocation",
+                Place::Body,
+                ArgType::Object(FLEET_ALLOCATION),
+                "Joint mode: allocate every slot of one Committee together, each under its own eligibility. Exactly one of binding_key, allocation and planning_pair.",
+            ),
+            opt(
+                "planning_pair",
+                Place::Body,
+                ArgType::Object(FLEET_PLANNING_PAIR),
+                "planning_pair@1 mode: place both members of one planning pair on distinct actual vendors through the shared allocator, each under its own eligibility. Placement evidence only, never a gate. Exactly one of binding_key, allocation and planning_pair.",
+            ),
+        ],
+        about: "Resolve one binding, allocate one Committee jointly, or place one planning_pair@1 pair, against the activated fleet policy in --state-root, with no daemon: the policy's choice under the stated eligibility and its provenance. Refuses anything unverifiable; never reads fleet.yml.",
+    },
     ToolSpec {
         name: "kontor_capacity_get",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/capacity",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/capacity",
+        },
         kind: OpKind::Read,
         args: &[req(
             "project_id",
@@ -5512,8 +6273,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_capacity_refresh",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/capacity:refresh",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/capacity:refresh",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -5535,8 +6298,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_capacity_observation_get",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/capacity/observations/{observation_id}",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/capacity/observations/{observation_id}",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -5557,8 +6322,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_capacity_override",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/provider-account-profiles/{account_profile_id}/availability:override",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/provider-account-profiles/{account_profile_id}/availability:override",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -5604,8 +6371,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_seat_attention",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/seat-bindings/{seat_binding_id}/attention",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/seat-bindings/{seat_binding_id}/attention",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -5639,8 +6408,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_seat_retire",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/seat-bindings/{seat_binding_id}/retire",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/seat-bindings/{seat_binding_id}/retire",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -5675,8 +6446,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_core_team_get",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/core-team",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/core-team",
+        },
         kind: OpKind::Read,
         args: &[req(
             "project_id",
@@ -5689,8 +6462,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_core_team_preview",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/core-team:preview",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/core-team:preview",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -5699,11 +6474,17 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req(
+            opt(
                 "seats",
                 Place::Body,
                 ArgType::Json,
-                "The roles the Core Team should seat, in order.",
+                "The roles the Core Team should seat, in order. Exactly one of seats and source_bundle_hash.",
+            ),
+            opt(
+                "source_bundle_hash",
+                Place::Body,
+                ArgType::Text,
+                "A published orchestration bundle whose verified Core Team revision supplies the seats instead.",
             ),
         ],
         about: "What a Core Team change would do. Commits nothing.",
@@ -5711,8 +6492,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_core_team_apply",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/core-team:apply",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/core-team:apply",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -5722,11 +6505,17 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "The owning project.",
             ),
             IDEMPOTENCY,
-            req(
+            opt(
                 "seats",
                 Place::Body,
                 ArgType::Json,
-                "The roles the Core Team should seat, in order.",
+                "The roles the Core Team should seat, in order: the seats that were previewed.",
+            ),
+            opt(
+                "source_bundle_hash",
+                Place::Body,
+                ArgType::Text,
+                "The published orchestration bundle that was previewed, instead of seats.",
             ),
             req(
                 "preview_hash",
@@ -5746,8 +6535,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_epic_core_team_get",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/core-team",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/core-team",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -5768,8 +6559,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_epic_core_team_seat_occupancies_get",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/core-team/seats/{seat_binding_id}/occupancies",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/core-team/seats/{seat_binding_id}/occupancies",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -5796,8 +6589,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_core_team_materialize",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/core-team/seats:materialize",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/core-team/seats:materialize",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -5823,7 +6618,7 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "routes",
                 Place::Body,
                 ArgType::Json,
-                "Explicit provider/model/effort routes for native LSA/TPM attachment.",
+                "Native LSA/TPM routes: each names role_code and exactly one of model_route (an exact provider/model/effort route the activated policy admits or refuses) or eligibility ({unavailable_accounts, excluded_vendors}: the activated policy chooses).",
             ),
         ],
         about: "Materialize the Core Team's seats for one epic.",
@@ -5831,8 +6626,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_core_team_route_preview",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/core-team/routes:preview",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/core-team/routes:preview",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -5883,8 +6680,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_core_team_route_apply",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/core-team/routes:apply",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/core-team/routes:apply",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -5942,8 +6741,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_core_team_launch_intent_supersede",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/core-team/launch-intents:supersede",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/core-team/launch-intents:supersede",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -6025,8 +6826,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_seat_claim_preview",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/core-team/seat-claims:preview",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/core-team/seat-claims:preview",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -6071,8 +6874,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_seat_claim_apply",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/core-team/seat-claims:apply",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/core-team/seat-claims:apply",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -6124,8 +6929,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_quick_roles_list",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/quick-roles",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/quick-roles",
+        },
         kind: OpKind::Read,
         args: &[req(
             "project_id",
@@ -6138,8 +6945,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_quick_session_ensure",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/quick-sessions:ensure",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/quick-sessions:ensure",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -6167,8 +6976,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_promotion_preview",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/quick-sessions/{quick_session_id}/promotion:preview",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/quick-sessions/{quick_session_id}/promotion:preview",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -6189,8 +7000,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_promotion_apply",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/quick-sessions/{quick_session_id}/promotion:apply",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/quick-sessions/{quick_session_id}/promotion:apply",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -6230,8 +7043,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_roster_upgrade_preview",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/roster:upgrade-preview",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/roster:upgrade-preview",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -6258,8 +7073,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_roster_upgrade_apply",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/roster:upgrade-apply",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/roster:upgrade-apply",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -6293,8 +7110,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_advisor_profiles_list",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/advisor-profiles",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/advisor-profiles",
+        },
         kind: OpKind::Read,
         args: &[req(
             "project_id",
@@ -6307,8 +7126,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_advisor_profile_preview",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/advisor-profiles:preview",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/advisor-profiles:preview",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -6329,8 +7150,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_advisor_profile_apply",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/advisor-profiles:apply",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/advisor-profiles:apply",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -6364,8 +7187,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_advisor_run_invoke",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/advisor-runs:invoke",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/advisor-runs:invoke",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -6423,8 +7248,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_advisor_run_settle",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/advisor-runs/{advisor_run_id}/settle",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/advisor-runs/{advisor_run_id}/settle",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -6494,8 +7321,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_advisor_run_get",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/advisor-runs/{advisor_run_id}",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/advisor-runs/{advisor_run_id}",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -6516,8 +7345,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_committee_templates_list",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/committee-templates",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/committee-templates",
+        },
         kind: OpKind::Read,
         args: &[req(
             "project_id",
@@ -6530,8 +7361,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_committee_template_preview",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/committee-templates:preview",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/committee-templates:preview",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -6552,8 +7385,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_committee_template_apply",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/committee-templates:apply",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/committee-templates:apply",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -6587,8 +7422,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_committee_run_invoke",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/committee-runs:invoke",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/committee-runs:invoke",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -6658,8 +7495,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_committee_findings_record",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/committee-runs/{committee_run_id}/findings:record",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/committee-runs/{committee_run_id}/findings:record",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -6712,8 +7551,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_committee_run_get",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/committee-runs/{committee_run_id}",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/committee-runs/{committee_run_id}",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -6734,8 +7575,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_committee_artifact_get",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/committee-runs/{committee_run_id}/artifacts/{evidence_id}",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/committee-runs/{committee_run_id}/artifacts/{evidence_id}",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -6768,8 +7611,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_committee_permissions_inspect",
         tier: CallerTier::Operator,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/committee-runs/{committee_run_id}/seats/{seat_binding_id}/permissions",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/committee-runs/{committee_run_id}/seats/{seat_binding_id}/permissions",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -6796,8 +7641,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_committee_permission_respond",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/committee-runs/{committee_run_id}/seats/{seat_binding_id}/permissions/{permission_id}",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/committee-runs/{committee_run_id}/seats/{seat_binding_id}/permissions/{permission_id}",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -6837,8 +7684,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_consultation_seat_recover",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/committee-runs/{committee_run_id}/seats/{seat_binding_id}/recover",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/committee-runs/{committee_run_id}/seats/{seat_binding_id}/recover",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -6890,8 +7739,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_committee_seat_reroute_unmaterialized",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/committee-runs/{committee_run_id}/seats/{seat_binding_id}/reroute-unmaterialized",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/committee-runs/{committee_run_id}/seats/{seat_binding_id}/reroute-unmaterialized",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -6949,8 +7800,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_committee_run_settle",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/committee-runs/{committee_run_id}/settle",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/committee-runs/{committee_run_id}/settle",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -7018,10 +7871,390 @@ pub static REGISTRY: &[ToolSpec] = &[
         about: "Settle one Committee consultation.",
     },
     ToolSpec {
+        name: "kontor_planning_pair_profiles_list",
+        tier: CallerTier::Observer,
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/planning-pair-profiles",
+        },
+        kind: OpKind::Read,
+        args: &[req(
+            "project_id",
+            Place::Path,
+            ArgType::ProjectId,
+            "The owning project.",
+        )],
+        about: "Every published planning_pair@1 document revision.",
+    },
+    ToolSpec {
+        name: "kontor_planning_pair_profile_preview",
+        tier: CallerTier::Admin,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/planning-pair-profiles:preview",
+        },
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "definition",
+                Place::Body,
+                ArgType::Json,
+                "The complete candidate planning_pair@1 document.",
+            ),
+        ],
+        about: "Judge one planning_pair@1 document. Commits nothing.",
+    },
+    ToolSpec {
+        name: "kontor_planning_pair_profile_apply",
+        tier: CallerTier::Admin,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/planning-pair-profiles:apply",
+        },
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "definition",
+                Place::Body,
+                ArgType::Json,
+                "The complete candidate planning_pair@1 document.",
+            ),
+            req(
+                "preview_hash",
+                Place::Body,
+                ArgType::Text,
+                "The hash the preview answered with.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The revision the caller read.",
+            ),
+        ],
+        about: "Publish one planning_pair@1 document revision.",
+    },
+    ToolSpec {
+        name: "kontor_planning_pair_run_invoke",
+        tier: CallerTier::Operator,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/planning-pair-runs:invoke",
+        },
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req("epic_id", Place::Path, ArgType::EpicSelector, "The epic."),
+            IDEMPOTENCY,
+            req(
+                "protocol",
+                Place::Body,
+                ArgType::Enum(&["planning_pair@1"]),
+                "The protocol, named explicitly; nothing substitutes another.",
+            ),
+            req(
+                "profile",
+                Place::Body,
+                ArgType::Object(PLANNING_PAIR_PROFILE_REF),
+                "The exact published document revision, including its hash.",
+            ),
+            req(
+                "topic",
+                Place::Body,
+                ArgType::Text,
+                "Short semantic subject the pinned Team Definition renders.",
+            ),
+            req(
+                "question",
+                Place::Body,
+                ArgType::Text,
+                "What the caller asks.",
+            ),
+            opt(
+                "task_id",
+                Place::Body,
+                ArgType::TaskId,
+                "Optional ticket scope inside the epic.",
+            ),
+            req(
+                "members",
+                Place::Body,
+                ArgType::ObjectArray(FLEET_PLANNING_PAIR_MEMBER),
+                "Exactly two members, seat-a then seat-b, each naming an existing binding and its eligibility.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The epic revision the caller read.",
+            ),
+        ],
+        about: "Invoke one planning_pair@1 pair as the authenticated caller seat. Advice only; never a review gate.",
+    },
+    ToolSpec {
+        name: "kontor_planning_pair_run_get",
+        tier: CallerTier::Observer,
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}",
+        },
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "planning_pair_run_id",
+                Place::Path,
+                ArgType::PlanningPairRunId,
+                "The planning pair.",
+            ),
+        ],
+        about: "Read one planning pair. A member sees only its own contributions; the caller sees findings and answers only once released; an observer sees none.",
+    },
+    ToolSpec {
+        name: "kontor_planning_pair_findings_record",
+        tier: CallerTier::Operator,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/findings:record",
+        },
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "planning_pair_run_id",
+                Place::Path,
+                ArgType::PlanningPairRunId,
+                "The planning pair.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "advice",
+                Place::Body,
+                ArgType::Text,
+                "The member's one finding.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The run revision the member read.",
+            ),
+        ],
+        about: "Record the authenticated member's one sealed finding.",
+    },
+    ToolSpec {
+        name: "kontor_planning_pair_clarification_request",
+        tier: CallerTier::Operator,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/clarification:request",
+        },
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "planning_pair_run_id",
+                Place::Path,
+                ArgType::PlanningPairRunId,
+                "The planning pair.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "question",
+                Place::Body,
+                ArgType::Text,
+                "What the caller needs clarified.",
+            ),
+            req(
+                "addressed",
+                Place::Body,
+                ArgType::TextArray,
+                "One or both of seat-a and seat-b, each once.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The run revision the caller read.",
+            ),
+        ],
+        about: "Ask the authenticated caller's one clarification question.",
+    },
+    ToolSpec {
+        name: "kontor_planning_pair_answer_record",
+        tier: CallerTier::Operator,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/answers:record",
+        },
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "planning_pair_run_id",
+                Place::Path,
+                ArgType::PlanningPairRunId,
+                "The planning pair.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "advice",
+                Place::Body,
+                ArgType::Text,
+                "The addressed member's one answer.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The run revision the member read.",
+            ),
+        ],
+        about: "Record the authenticated addressed member's one sealed clarification answer.",
+    },
+    ToolSpec {
+        name: "kontor_planning_pair_disposition_record",
+        tier: CallerTier::Operator,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/disposition:record",
+        },
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "planning_pair_run_id",
+                Place::Path,
+                ArgType::PlanningPairRunId,
+                "The planning pair.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "members",
+                Place::Body,
+                ArgType::ObjectArray(PLANNING_PAIR_MEMBER_DISPOSITION),
+                "seat-a then seat-b, each with its exact finding and answer hashes; omitting or rewriting one is refused.",
+            ),
+            req(
+                "rationale",
+                Place::Body,
+                ArgType::Text,
+                "Why the caller decided as it did.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The run revision the caller read.",
+            ),
+        ],
+        about: "Record the authenticated caller's disposition. A decision with retained dissent; never a verdict, a settlement or a gate.",
+    },
+    ToolSpec {
+        name: "kontor_planning_pair_seat_recover",
+        tier: CallerTier::Operator,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/seats/{seat_binding_id}/recover",
+        },
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "planning_pair_run_id",
+                Place::Path,
+                ArgType::PlanningPairRunId,
+                "The planning pair.",
+            ),
+            req(
+                "seat_binding_id",
+                Place::Path,
+                ArgType::SeatBindingId,
+                "The member seat to requalify.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "expected_run_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The run revision the caller read.",
+            ),
+            req(
+                "expected_member_occupancy_generation",
+                Place::Body,
+                ArgType::U64,
+                "The member's occupancy generation the caller read.",
+            ),
+            req(
+                "expected_native_identity",
+                Place::Body,
+                ArgType::Object(PLANNING_PAIR_NATIVE_IDENTITY),
+                "The member's known native session the caller read; an assertion, never its source.",
+            ),
+            opt(
+                "expected_provider_session_id",
+                Place::Body,
+                ArgType::ExternalId,
+                "The provider conversation, exactly when one is recorded for the known session.",
+            ),
+        ],
+        about: "Requalify one planning pair member on its exact known native session, as the authenticated frozen caller. The same seat, generation and session read back again; never a replacement, a new session or a reroute.",
+    },
+    ToolSpec {
         name: "kontor_completion_profiles_list",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/completion-profiles",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/completion-profiles",
+        },
         kind: OpKind::Read,
         args: &[req(
             "project_id",
@@ -7034,8 +8267,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_completion_profile_preview",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/completion-profiles:preview",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/completion-profiles:preview",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -7056,8 +8291,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_completion_profile_apply",
         tier: CallerTier::Admin,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/completion-profiles:apply",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/completion-profiles:apply",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -7091,8 +8328,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_completion_get",
         tier: CallerTier::Observer,
-        method: Method::Get,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/completion",
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/completion",
+        },
         kind: OpKind::Read,
         args: &[
             req(
@@ -7113,8 +8352,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_completion_advance",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/completion:advance",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/completion:advance",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -7159,8 +8400,10 @@ pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
         name: "kontor_completion_remediate",
         tier: CallerTier::Operator,
-        method: Method::Post,
-        path: "/v1/projects/{project_id}/epics/{epic_id}/completion:remediate",
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/completion:remediate",
+        },
         kind: OpKind::Write,
         args: &[
             req(
@@ -7407,29 +8650,121 @@ mod tests {
         let names: BTreeSet<_> = REGISTRY.iter().map(|tool| tool.name).collect();
         assert_eq!(names.len(), REGISTRY.len(), "two tools share a name");
 
-        let routes: BTreeSet<_> = REGISTRY
-            .iter()
-            .map(|tool| (tool.method, tool.path))
-            .collect();
+        let http: Vec<_> = REGISTRY.iter().filter_map(ToolSpec::route).collect();
+        let routes: BTreeSet<_> = http.iter().collect();
         assert_eq!(
             routes.len(),
-            REGISTRY.len(),
+            http.len(),
             "two tools target the same operation"
         );
+    }
+
+    /// ASMA-8280 B-1: the execution class partitions the registry. Every
+    /// HTTP operation has one `/v1` route and no handler; every local
+    /// operation has exactly one in-process handler, declared once, and no
+    /// route; and the hiding list holds only real routes, so nothing local is
+    /// kept off MCP by being hidden.
+    #[test]
+    fn every_operation_is_exactly_one_route_or_exactly_one_local_handler() {
+        let mut handlers = BTreeSet::new();
+        for tool in REGISTRY {
+            match (tool.route(), tool.local()) {
+                (Some(_), None) => {}
+                (None, Some(operation)) => {
+                    assert!(
+                        handlers.insert(operation),
+                        "{} declares a handler another operation already declares",
+                        tool.name
+                    );
+                }
+                (route, local) => panic!("{}: route {route:?} and handler {local:?}", tool.name),
+            }
+        }
+        assert_eq!(
+            handlers.into_iter().collect::<Vec<_>>(),
+            LocalOperation::ALL,
+            "every local handler is declared by exactly one operation"
+        );
+        for name in CLI_ONLY {
+            let tool = ToolSpec::find(name).expect("a hidden tool is a real tool");
+            assert!(tool.route().is_some(), "{name} is hidden, not local");
+        }
+        let resolve = ToolSpec::find("kontor_fleet_policy_resolve").expect("the local read");
+        assert_eq!(
+            resolve.execution,
+            Execution::Local(LocalOperation::FleetPolicyResolve)
+        );
+        assert_eq!(resolve.kind, OpKind::Read);
+        assert_eq!(resolve.tier, CallerTier::Operator);
+        assert_eq!(resolve.args_in(Place::Header).count(), 0);
+        // Exactly one of the three modes is required, so no mode argument is.
+        for mode in ["binding_key", "allocation", "planning_pair"] {
+            let argument = resolve
+                .args
+                .iter()
+                .find(|argument| argument.name == mode)
+                .unwrap_or_else(|| panic!("{mode} is declared"));
+            assert!(!argument.required, "{mode}");
+        }
+        // The joint mode is a declared nested object, advertised in full.
+        let schema = resolve.input_schema();
+        let allocation = &schema["properties"]["allocation"];
+        assert_eq!(allocation["additionalProperties"], false);
+        assert_eq!(
+            allocation["properties"]["diversity"]["enum"],
+            serde_json::json!(["distinct_vendor_per_reviewer"])
+        );
+        let slot = &allocation["properties"]["slots"]["items"];
+        assert_eq!(
+            slot["properties"]["role"]["enum"],
+            serde_json::json!(["reviewer", "judge"])
+        );
+        assert_eq!(
+            slot["required"],
+            serde_json::json!(["slot_id", "role", "binding_key"])
+        );
+        // The planning pair mode is declared too, and has no diversity, role
+        // or Judge to set.
+        let pair = &schema["properties"]["planning_pair"];
+        assert_eq!(pair["additionalProperties"], false);
+        assert_eq!(pair["required"], serde_json::json!(["members"]));
+        let member = &pair["properties"]["members"]["items"];
+        assert_eq!(member["additionalProperties"], false);
+        assert_eq!(
+            member["properties"]["slot"]["enum"],
+            serde_json::json!(["seat-a", "seat-b"])
+        );
+        assert_eq!(
+            member["required"],
+            serde_json::json!(["slot", "binding_key"])
+        );
+        for absent in ["diversity", "role", "judge"] {
+            assert!(pair["properties"][absent].is_null(), "{absent}");
+            assert!(member["properties"][absent].is_null(), "{absent}");
+        }
+        assert!(!CLI_ONLY.contains(&resolve.name));
     }
 
     #[test]
     fn every_tool_targets_a_v1_route_and_declares_its_path_arguments() {
         for tool in REGISTRY {
+            let Some((_, path)) = tool.route() else {
+                assert_eq!(
+                    tool.args_in(Place::Path).count(),
+                    0,
+                    "{} has no route to template",
+                    tool.name
+                );
+                continue;
+            };
             assert!(
-                tool.path.starts_with("/v1/"),
+                path.starts_with("/v1/"),
                 "{} targets {}, which is not a /v1 route",
                 tool.name,
-                tool.path
+                path
             );
             let declared: BTreeSet<_> = tool.args_in(Place::Path).map(|arg| arg.name).collect();
-            let templated: BTreeSet<_> = tool
-                .path
+            let templated: BTreeSet<_> = path
                 .split('/')
                 .filter_map(|segment| segment.strip_prefix('{')?.strip_suffix('}'))
                 .collect();
@@ -7516,12 +8851,16 @@ mod tests {
         assert_eq!(apply.tier, CallerTier::Operator);
         assert_eq!(apply.kind, OpKind::Write);
         assert_eq!(
-            preview.path,
-            "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turn-correlation:challenge-preview"
+            preview.route().map(|(_, path)| path),
+            Some(
+                "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turn-correlation:challenge-preview"
+            )
         );
         assert_eq!(
-            apply.path,
-            "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turn-correlation:challenge-apply"
+            apply.route().map(|(_, path)| path),
+            Some(
+                "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turn-correlation:challenge-apply"
+            )
         );
         assert!(preview.args.iter().all(|argument| {
             argument.name != "idempotency_key" && argument.name != "message_position"
@@ -7575,10 +8914,12 @@ mod tests {
     fn seat_recovery_is_an_admin_resume_of_one_exact_predecessor() {
         let recover = ToolSpec::find("kontor_seat_recover").expect("the seat recovery tool");
         assert_eq!(recover.tier, CallerTier::Admin);
-        assert_eq!(recover.method, Method::Post);
         assert_eq!(
-            recover.path,
-            "/v1/projects/{project_id}/agent-runs/{agent_run_id}/successors:recover"
+            recover.route(),
+            Some((
+                Method::Post,
+                "/v1/projects/{project_id}/agent-runs/{agent_run_id}/successors:recover"
+            ))
         );
         assert_eq!(recover.args_in(Place::Body).count(), 0);
         assert_eq!(
@@ -7596,8 +8937,10 @@ mod tests {
             .expect("the live-seat quota projection tool");
         assert_eq!(list.tier, CallerTier::Observer);
         assert_eq!(list.kind, OpKind::Read);
-        assert_eq!(list.method, Method::Get);
-        assert_eq!(list.path, "/v1/projects/{project_id}/seat-quota-states");
+        assert_eq!(
+            list.route(),
+            Some((Method::Get, "/v1/projects/{project_id}/seat-quota-states"))
+        );
         assert_eq!(list.args_in(Place::Body).count(), 0);
     }
 
@@ -7695,6 +9038,158 @@ mod tests {
         }
     }
 
+    /// ASMA-8282 D2: a planning pair member reads its run and records its own
+    /// finding or answer. The caller's writes, every verdict or settlement and
+    /// the other consultation families stay off this surface.
+    #[test]
+    fn the_planning_pair_member_profile_is_the_exact_member_surface() {
+        let member = ServeProfile::find("planning_pair_member")
+            .expect("the planning pair member profile is declared");
+        assert_eq!(
+            member.tools,
+            [
+                "kontor_planning_pair_run_get",
+                "kontor_planning_pair_findings_record",
+                "kontor_planning_pair_answer_record",
+            ],
+        );
+        for excluded in [
+            "kontor_planning_pair_run_invoke",
+            "kontor_planning_pair_clarification_request",
+            "kontor_planning_pair_disposition_record",
+            "kontor_planning_pair_profile_apply",
+            "kontor_committee_run_settle",
+            "kontor_advisor_run_settle",
+            "kontor_committee_findings_record",
+            "kontor_gate_record",
+        ] {
+            assert!(
+                !member.allows(excluded),
+                "the planning pair member profile must not serve {excluded}"
+            );
+        }
+    }
+
+    /// ASMA-8282: the opt-in caller profile is exactly the four caller tools,
+    /// generated from the domain's one closed list, and nothing a member,
+    /// publisher, gate or permission holder uses.
+    #[test]
+    fn the_planning_pair_caller_profile_is_the_exact_caller_surface() {
+        let caller = ServeProfile::find("planning_pair_caller")
+            .expect("the planning pair caller profile is declared");
+        assert_eq!(
+            caller.tools,
+            [
+                "kontor_planning_pair_run_get",
+                "kontor_planning_pair_run_invoke",
+                "kontor_planning_pair_clarification_request",
+                "kontor_planning_pair_disposition_record",
+            ],
+        );
+        assert_eq!(caller.tools, kontor_core::planning_pair::CALLER_MCP_TOOLS);
+        for excluded in [
+            "kontor_planning_pair_findings_record",
+            "kontor_planning_pair_answer_record",
+            "kontor_planning_pair_profile_apply",
+            "kontor_planning_pair_profile_preview",
+            "kontor_planning_pair_profiles_list",
+            "kontor_committee_run_settle",
+            "kontor_committee_permission_respond",
+            "kontor_advisor_run_settle",
+            "kontor_gate_record",
+            "kontor_completion_remediate",
+            "kontor_session_message_send",
+        ] {
+            assert!(
+                !caller.allows(excluded),
+                "the caller profile must not serve {excluded}"
+            );
+        }
+        // A member and the caller share only the read.
+        let member = ServeProfile::find("planning_pair_member").expect("the member profile");
+        let shared: Vec<&&str> = caller
+            .tools
+            .iter()
+            .filter(|tool| member.allows(tool))
+            .collect();
+        assert_eq!(shared, [&"kontor_planning_pair_run_get"]);
+    }
+
+    /// No other profile reaches a planning pair caller write: the leadership,
+    /// worker, consultation and member surfaces are exactly what they were.
+    #[test]
+    fn no_other_profile_serves_a_planning_pair_caller_write() {
+        for profile in SERVE_PROFILES {
+            if profile.name == "planning_pair_caller" {
+                continue;
+            }
+            for tool in [
+                "kontor_planning_pair_run_invoke",
+                "kontor_planning_pair_clarification_request",
+                "kontor_planning_pair_disposition_record",
+            ] {
+                assert!(
+                    !profile.allows(tool),
+                    "`{}` must not serve {tool}",
+                    profile.name
+                );
+            }
+        }
+    }
+
+    /// Frontier A: the caller's same-native member recovery is one Operator
+    /// write on its own route with a closed compare-and-swap body, and no
+    /// declared profile serves it: not the caller's exact four, not the
+    /// member's three, not leadership, worker or consultation.
+    #[test]
+    fn the_member_recovery_is_an_operator_write_no_profile_serves() {
+        let tool = ToolSpec::find("kontor_planning_pair_seat_recover")
+            .expect("the member recovery is registered");
+        assert_eq!(tool.tier, CallerTier::Operator);
+        assert_eq!(tool.kind, OpKind::Write);
+        assert_eq!(
+            tool.execution,
+            Execution::Http {
+                method: Method::Post,
+                path: "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/seats/{seat_binding_id}/recover",
+            }
+        );
+        let names: Vec<&str> = tool.args.iter().map(|arg| arg.name).collect();
+        assert_eq!(
+            names,
+            [
+                "project_id",
+                "planning_pair_run_id",
+                "seat_binding_id",
+                "idempotency_key",
+                "expected_run_revision",
+                "expected_member_occupancy_generation",
+                "expected_native_identity",
+                "expected_provider_session_id",
+            ],
+            "only compare-and-swap assertions: no route, provider, profile, generation or credential"
+        );
+        for profile in SERVE_PROFILES {
+            assert!(
+                !profile.allows(tool.name),
+                "`{}` must not serve the member recovery",
+                profile.name
+            );
+        }
+        assert_eq!(
+            ServeProfile::find("planning_pair_caller")
+                .expect("the caller profile")
+                .tools,
+            kontor_core::planning_pair::CALLER_MCP_TOOLS
+        );
+        assert_eq!(
+            ServeProfile::find("planning_pair_member")
+                .expect("the member profile")
+                .tools,
+            kontor_core::planning_pair::MEMBER_MCP_TOOLS
+        );
+    }
+
     #[test]
     fn the_leadership_profile_is_the_exact_identity_bound_completion_surface() {
         let leadership =
@@ -7724,7 +9219,7 @@ mod tests {
             assert!(
                 !REGISTRY
                     .iter()
-                    .any(|tool| tool.method == route.method && tool.path == route.path),
+                    .any(|tool| tool.route() == Some((route.method, route.path))),
                 "{} is both mapped and allowlisted",
                 route.path
             );

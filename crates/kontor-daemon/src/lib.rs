@@ -50,6 +50,7 @@ pub mod github_publication;
 pub mod jira_sync;
 pub mod lock;
 pub mod logging;
+pub mod orchestration;
 pub mod provider_config;
 pub mod quota_observation;
 pub mod recovery;
@@ -634,6 +635,24 @@ impl Daemon {
     /// resident process also invokes the same seam from its wake/backstop loop.
     pub async fn reconcile_jira_once(&self) -> applications::JiraReconcileReport {
         self.applications.reconcile_jira_once().await
+    }
+
+    /// Hold every planning pair invocation at its receipt write until the
+    /// returned hold is released. A black-box contract seam only: nothing this
+    /// daemon composes installs one.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn hold_planning_pair_invocation_receipts(&self) -> applications::PlanningPairReceiptHold {
+        self.applications.hold_planning_pair_invocation_receipts()
+    }
+
+    /// Hold every planning pair member recovery at its compare-and-swap, for a
+    /// black-box test that lines requests up after their readback. No
+    /// composed daemon installs one.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn hold_planning_pair_recovery_writes(&self) -> applications::PlanningPairReceiptHold {
+        self.applications.hold_planning_pair_recovery_writes()
     }
 
     /// The concrete Jira reconciliation services owned by this daemon.
