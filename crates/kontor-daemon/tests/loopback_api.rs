@@ -63352,6 +63352,9 @@ async fn a_fresh_key_cannot_freeze_the_same_semantic_consultation_concurrently()
         let family_label = match family {
             ConsultationFamily::Advisor => "Advisor",
             ConsultationFamily::Committee => "Committee",
+            ConsultationFamily::PlanningPair => {
+                unreachable!("this fixture enumerates only Advisor and Committee")
+            }
         };
         let epic_read = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
             .signed_as(world, "observer")
@@ -63368,6 +63371,9 @@ async fn a_fresh_key_cannot_freeze_the_same_semantic_consultation_concurrently()
                 serde_json::json!({"id": committee_profile, "version": template.version.get()}),
                 "committee_run_id",
             ),
+            ConsultationFamily::PlanningPair => {
+                unreachable!("this fixture enumerates only Advisor and Committee")
+            }
         };
         let body = serde_json::json!({
             "profile": profile,
@@ -63517,6 +63523,9 @@ async fn concurrent_daemon_insert_losers_render_the_exact_sequential_envelope() 
         let family_label = match family {
             ConsultationFamily::Advisor => "Advisor",
             ConsultationFamily::Committee => "Committee",
+            ConsultationFamily::PlanningPair => {
+                unreachable!("this fixture enumerates only Advisor and Committee")
+            }
         };
         let (profile_id, profile_version, definition_hash) =
             world.daemon.state().with_store(|store| {
@@ -63539,6 +63548,9 @@ async fn concurrent_daemon_insert_losers_render_the_exact_sequential_envelope() 
                 ConsultationFamily::Advisor => ConsultationRunId::Advisor(AdvisorRunId::generate()),
                 ConsultationFamily::Committee => {
                     ConsultationRunId::Committee(CommitteeRunId::generate())
+                }
+                ConsultationFamily::PlanningPair => {
+                    unreachable!("this fixture enumerates only Advisor and Committee")
                 }
             };
             let question = BoundedText::parse("Which run owns this semantic identity?")
@@ -63587,6 +63599,9 @@ async fn concurrent_daemon_insert_losers_render_the_exact_sequential_envelope() 
                 kind: TopologyKindKey::parse(match family {
                     ConsultationFamily::Advisor => "ASW",
                     ConsultationFamily::Committee => "CSW",
+                    ConsultationFamily::PlanningPair => {
+                        unreachable!("this fixture enumerates only Advisor and Committee")
+                    }
                 })
                 .expect("the consultation kind"),
                 parent_id: Some(epic_node),

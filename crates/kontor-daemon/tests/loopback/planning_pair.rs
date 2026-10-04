@@ -1025,6 +1025,7 @@ fn retire_caller_generation(realm: &PairRealm) {
                 &successor,
                 kontor_api::now(),
                 "test the planning pair caller generation fence",
+                None, // Fixture-only route replacement; no Core Team succession receipt.
             )
             .expect("the caller occupancy is replaced");
     });
