@@ -1,0 +1,22 @@
+   Compiling kontor-runtime v0.2.1 (/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-attestation-mutations-gvnm3zs2/source/crates/kontor-runtime)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.46s
+     Running unittests src/lib.rs (/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-attestation-mutations-gvnm3zs2/target/debug/deps/kontor_runtime-38fd6bad31f23716)
+
+running 1 test
+test planning_pair::attestation::tests::token_interval_is_inclusive_at_start_exclusive_at_expiry_and_policy_bounded ... FAILED
+
+failures:
+
+---- planning_pair::attestation::tests::token_interval_is_inclusive_at_start_exclusive_at_expiry_and_policy_bounded stdout ----
+
+thread 'planning_pair::attestation::tests::token_interval_is_inclusive_at_start_exclusive_at_expiry_and_policy_bounded' (23397080) panicked at crates/kontor-runtime/src/planning_pair/attestation/tests.rs:281:55:
+outside token interval: VerifiedAttestation { claims: AttestationClaims { schema_version: 1, issuer: ExternalId("dedicated-test-issuer"), key_id: ExternalId("test-key-1"), audience: "asma.planning-pair.application.v1", scope: AttestationScope { realm_id: RealmId(01a10226-7ee4-7533-9375-491f3e5b2cac), project_id: ProjectId(01a10226-7ee4-7533-9375-492c12c5acf5), epic_id: MiniProjectId(01a10226-7ee4-7533-9375-493077abb60f), task_id: Some(TaskId(01a10226-7ee4-7533-9375-494368cdabb7)) }, seat_binding_id: SeatBindingId(01a10226-7ee4-7533-9375-49543edf5e5f), occupancy_generation: 7, native_identity: AttestationNativeIdentity { runtime_kind: RuntimeKindKey("paseo"), host: ExternalName("test-host"), generation: 3, native_id: ExternalId("native-test-session") }, allowed_operations: [InvokePlanningPairRun], token_id: ExternalId("test-token-1"), not_before: 1000, expires_at: 1060 }, snapshot_revision: 9 }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    planning_pair::attestation::tests::token_interval_is_inclusive_at_start_exclusive_at_expiry_and_policy_bounded
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 121 filtered out; finished in 0.37s
+
+error: test failed, to rerun pass `-p kontor-runtime --lib`

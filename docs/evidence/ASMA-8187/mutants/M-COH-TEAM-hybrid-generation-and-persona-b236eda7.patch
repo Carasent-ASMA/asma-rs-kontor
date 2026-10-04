@@ -1,0 +1,89 @@
+--- a/crates/kontor-daemon/src/applications.rs
++++ b/crates/kontor-daemon/src/applications.rs
+@@ -8427,7 +8427,6 @@
+                         Some(node) => store.list_seat_bindings(project_id, node.id)?,
+                         None => Vec::new(),
+                     };
+-                    projection_barrier_pause();
+                     let mut captured = Vec::with_capacity(role_codes.len());
+                     for role_code in &role_codes {
+                         // Scoped by the epic in the route, which is what makes
+@@ -8443,14 +8442,9 @@
+                             Some(seat_binding_id) => {
+                                 let native =
+                                     store.get_hosted_topology_seat(project_id, seat_binding_id)?;
+-                                // The store's own definition of the current
+-                                // occupancy -- `1 + count(history)` -- which is
+-                                // what the occupancy chain derives positionally.
+-                                // One rule, read twice, never two.
+-                                let generation = store.hosted_topology_seat_occupancy_generation(
+-                                    project_id,
+-                                    seat_binding_id,
+-                                )?;
++                                // MUTANT: generation deferred to a later
++                                // acquisition, as the pre-correction code did.
++                                let generation: Option<u64> = None;
+                                 // Read for the occupancy actually filling the
+                                 // seat, so a replaced seat reports the persona
+                                 // *its own* generation was launched under rather
+@@ -8460,14 +8454,7 @@
+                                 // predecessor's; a current generation with no row
+                                 // is null, which is the same answer the chain
+                                 // gives and the only honest one.
+-                                let persona = match generation {
+-                                    Some(generation) => store.get_hosted_seat_role_persona(
+-                                        project_id,
+-                                        seat_binding_id,
+-                                        generation,
+-                                    )?,
+-                                    None => None,
+-                                };
++                                let persona = None;
+                                 (native, generation, persona)
+                             }
+                             None => (None, None, None),
+@@ -8485,7 +8472,29 @@
+             )
+             .map_err(|error| self.refuse(&error))?;
+ 
+-        // Pure mapping, after the release.
++        // MUTANT: the gap, with the generation and persona read inside it.
++        projection_barrier_pause();
++        let mut captured = captured;
++        for entry in &mut captured {
++            if let Some(seat_binding_id) = entry.seat_binding_id {
++                entry.occupancy_generation = state
++                    .with_store(|store| {
++                        store.hosted_topology_seat_occupancy_generation(project_id, seat_binding_id)
++                    })
++                    .map_err(|error| self.refuse(&error))?;
++                if let Some(generation) = entry.occupancy_generation {
++                    entry.persona = state
++                        .with_store(|store| {
++                            store.get_hosted_seat_role_persona(
++                                project_id,
++                                seat_binding_id,
++                                generation,
++                            )
++                        })
++                        .map_err(|error| self.refuse(&error))?;
++                }
++            }
++        }
+         for (seat, captured) in seats.iter_mut().zip(captured) {
+             seat.seat_binding_id = captured.seat_binding_id;
+             seat.native_seat = captured.native.map(|native| CoreTeamNativeSeatDto {
+@@ -44775,10 +44784,9 @@
+         let before = reader.join().expect("the projection completes");
+         writing.join().expect("the writer completes");
+ 
+-        assert!(
+-            !escaped,
+-            "a succession committed while the projection held the store lock"
+-        );
++        // MUTANT: escape guard silenced, so the persona/native agreement
++        // assertions must be what catches the hybrid.
++        let _ = escaped;
+         assert!(committed.load(Ordering::SeqCst));
+ 
+         // (4) the first answer is wholly pre-succession.

@@ -1,0 +1,23 @@
+   Compiling kontor-store v0.2.1 (/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/isolated-source/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.92s
+     Running tests/attestation_authority.rs (/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/mutation-target/debug/deps/attestation_authority-56fe9fa166913f8c)
+
+running 1 test
+test exact_expected_head_is_required_and_failed_writes_leave_no_partial_mutation ... FAILED
+
+failures:
+
+---- exact_expected_head_is_required_and_failed_writes_leave_no_partial_mutation stdout ----
+
+thread 'exact_expected_head_is_required_and_failed_writes_leave_no_partial_mutation' (26776430) panicked at crates/kontor-store/tests/attestation_authority.rs:107:5:
+assertion failed: matches!(store.register_attestation_key(&registration(&scope, Some(1),
+    "key-1")), Err(RepositoryError::Conflict { .. }))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    exact_expected_head_is_required_and_failed_writes_leave_no_partial_mutation
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 2.08s
+
+error: test failed, to rerun pass `-p kontor-store --test attestation_authority`

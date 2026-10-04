@@ -1,0 +1,217 @@
+[
+  {
+    "name": "client-generate",
+    "command": [
+      "node",
+      "/Users/igor/.npm/_npx/f1e70922fc87e24a/node_modules/openapi-typescript/bin/cli.js",
+      "crates/kontor-api/contract/openapi.json",
+      "-o",
+      "target/mem04-schema.d.ts"
+    ],
+    "shell_command": "node /Users/igor/.npm/_npx/f1e70922fc87e24a/node_modules/openapi-typescript/bin/cli.js crates/kontor-api/contract/openapi.json -o target/mem04-schema.d.ts",
+    "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+    "exit_code": 0,
+    "seconds": 0.832,
+    "log": "docs/evidence/ASMA-8159/receipts/client-generate.log.gz",
+    "log_sha256": "74a14dd8342724b4d228b44de790ec67195a240d5e5f02d633d5a40ca89ecca3",
+    "raw_sha256": "1a4c938d216e216ebb69a4b828e85952a37477e24df1c752e57e6b61d77db6ae",
+    "compiled": false,
+    "test_results": [],
+    "failed_tests": [],
+    "compile_failure": false
+  },
+  {
+    "name": "client-byte-parity",
+    "command": [
+      "cmp",
+      "apps/console/src/api/schema.d.ts",
+      "target/mem04-schema.d.ts"
+    ],
+    "shell_command": "cmp apps/console/src/api/schema.d.ts target/mem04-schema.d.ts",
+    "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+    "exit_code": 0,
+    "seconds": 0.008,
+    "log": "docs/evidence/ASMA-8159/receipts/client-byte-parity.log.gz",
+    "log_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "compiled": false,
+    "test_results": [],
+    "failed_tests": [],
+    "compile_failure": false
+  },
+  {
+    "name": "client-typecheck",
+    "command": [
+      "/opt/homebrew/bin/tsc",
+      "--noEmit",
+      "--strict",
+      "--skipLibCheck",
+      "--lib",
+      "ES2022",
+      "apps/console/src/api/schema.d.ts"
+    ],
+    "shell_command": "/opt/homebrew/bin/tsc --noEmit --strict --skipLibCheck --lib ES2022 apps/console/src/api/schema.d.ts",
+    "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+    "exit_code": 0,
+    "seconds": 0.415,
+    "log": "docs/evidence/ASMA-8159/receipts/client-typecheck.log.gz",
+    "log_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "compiled": false,
+    "test_results": [],
+    "failed_tests": [],
+    "compile_failure": false
+  },
+  {
+    "name": "kontor_experience_propose-help",
+    "command": [
+      "target/debug/kontor",
+      "experience-propose",
+      "--help"
+    ],
+    "shell_command": "target/debug/kontor experience-propose --help",
+    "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+    "exit_code": 0,
+    "seconds": 0.011,
+    "log": "docs/evidence/ASMA-8159/receipts/kontor_experience_propose-help.log.gz",
+    "log_sha256": "0d2568a304e35cf126697aa4c1db28f1ecb1b60d3566e289f63aba97901aa042",
+    "raw_sha256": "768c543c3b3ca39139a9bba9b86d7b25f1f4bf1325243e64f2cec51267e71e28",
+    "compiled": false,
+    "test_results": [],
+    "failed_tests": [],
+    "compile_failure": false
+  },
+  {
+    "name": "kontor_memory_recall_preview-help",
+    "command": [
+      "target/debug/kontor",
+      "memory-recall-preview",
+      "--help"
+    ],
+    "shell_command": "target/debug/kontor memory-recall-preview --help",
+    "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+    "exit_code": 0,
+    "seconds": 0.01,
+    "log": "docs/evidence/ASMA-8159/receipts/kontor_memory_recall_preview-help.log.gz",
+    "log_sha256": "f48615b46139d7eeebfbbfeab07917396ee6f6be9f363d31ff23272c3e5ea656",
+    "raw_sha256": "d90e40c6505836eef6f6a236024b887ba7f9cc3dd9244823b332599abe9adf76",
+    "compiled": false,
+    "test_results": [],
+    "failed_tests": [],
+    "compile_failure": false
+  },
+  {
+    "name": "kontor_memory_recall_freeze-help",
+    "command": [
+      "target/debug/kontor",
+      "memory-recall-freeze",
+      "--help"
+    ],
+    "shell_command": "target/debug/kontor memory-recall-freeze --help",
+    "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+    "exit_code": 0,
+    "seconds": 0.01,
+    "log": "docs/evidence/ASMA-8159/receipts/kontor_memory_recall_freeze-help.log.gz",
+    "log_sha256": "a816e741dad230fdbc82f01eaa54b75a5eb2e5419c77025d54624efbbba19a06",
+    "raw_sha256": "553faa23d944bb4a9c73f76f5eae22ece73290107cbf5b14e1216d4c4a05c70e",
+    "compiled": false,
+    "test_results": [],
+    "failed_tests": [],
+    "compile_failure": false
+  },
+  {
+    "name": "kontor_memory_recall_get-help",
+    "command": [
+      "target/debug/kontor",
+      "memory-recall-get",
+      "--help"
+    ],
+    "shell_command": "target/debug/kontor memory-recall-get --help",
+    "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+    "exit_code": 0,
+    "seconds": 0.009,
+    "log": "docs/evidence/ASMA-8159/receipts/kontor_memory_recall_get-help.log.gz",
+    "log_sha256": "cf07ae1476e96cd58cab9458cbd0fd8e4e78c8f9d65b61150a6ac8a128ba57b3",
+    "raw_sha256": "8901be12416e16cb628dff4477594461a9ac492e533ce9db499de61ea01e91b2",
+    "compiled": false,
+    "test_results": [],
+    "failed_tests": [],
+    "compile_failure": false
+  },
+  {
+    "name": "kontor_memory_projection_preview-help",
+    "command": [
+      "target/debug/kontor",
+      "memory-projection-preview",
+      "--help"
+    ],
+    "shell_command": "target/debug/kontor memory-projection-preview --help",
+    "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+    "exit_code": 0,
+    "seconds": 0.01,
+    "log": "docs/evidence/ASMA-8159/receipts/kontor_memory_projection_preview-help.log.gz",
+    "log_sha256": "8a86dce24562333d138536ec8cb8a303ff66dac6c336f69b160e46b9de17fc83",
+    "raw_sha256": "01165ca50bc4e7be77f18637c3d75d7323cf99b29dffd74865867082ba7c9963",
+    "compiled": false,
+    "test_results": [],
+    "failed_tests": [],
+    "compile_failure": false
+  },
+  {
+    "name": "kontor_memory_projection_get-help",
+    "command": [
+      "target/debug/kontor",
+      "memory-projection-get",
+      "--help"
+    ],
+    "shell_command": "target/debug/kontor memory-projection-get --help",
+    "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+    "exit_code": 0,
+    "seconds": 0.012,
+    "log": "docs/evidence/ASMA-8159/receipts/kontor_memory_projection_get-help.log.gz",
+    "log_sha256": "349139fe825c6264e09359ef3316fdfd8a38d0339190e05d343b4fa0319e954e",
+    "raw_sha256": "c9ab82f67afa935f9b1422ccb18ba3ee5028dc60d38f5c36c0f8fa10168b1f71",
+    "compiled": false,
+    "test_results": [],
+    "failed_tests": [],
+    "compile_failure": false
+  },
+  {
+    "name": "kontor_memory_projection_rebuild-help",
+    "command": [
+      "target/debug/kontor",
+      "memory-projection-rebuild",
+      "--help"
+    ],
+    "shell_command": "target/debug/kontor memory-projection-rebuild --help",
+    "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+    "exit_code": 0,
+    "seconds": 0.01,
+    "log": "docs/evidence/ASMA-8159/receipts/kontor_memory_projection_rebuild-help.log.gz",
+    "log_sha256": "43d7d1f81be4aa053184c360974c80918f287573a7c44000233504bd3628c557",
+    "raw_sha256": "1608e95ccce84aca21254ba8df4573cc34016863bc29d107ab0692696cf70988",
+    "compiled": false,
+    "test_results": [],
+    "failed_tests": [],
+    "compile_failure": false
+  },
+  {
+    "name": "kontor_experience_classify-help",
+    "command": [
+      "target/debug/kontor",
+      "experience-classify",
+      "--help"
+    ],
+    "shell_command": "target/debug/kontor experience-classify --help",
+    "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+    "exit_code": 0,
+    "seconds": 0.01,
+    "log": "docs/evidence/ASMA-8159/receipts/kontor_experience_classify-help.log.gz",
+    "log_sha256": "7b8cf498777b004bf5b9485639763fddc5c1fbf2eae7708a33d15361c51daa49",
+    "raw_sha256": "1e5d87f2a7ae88bd119b3478d3e41501a7d7d2b8be9cd4a43e33634d7edfa553",
+    "compiled": false,
+    "test_results": [],
+    "failed_tests": [],
+    "compile_failure": false
+  }
+]

@@ -1,0 +1,8 @@
+ M crates/kontor-store/src/backup/restore.rs
+ M crates/kontor-store/tests/backup_snapshot.rs
+?? .agents/
+?? .asma/
+?? .claude/
+?? .cursor/
+?? AGENTS.md
+?? CLAUDE.md

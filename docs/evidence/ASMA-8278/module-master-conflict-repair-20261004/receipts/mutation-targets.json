@@ -1,0 +1,33 @@
+{
+  "epic": "ASMA-8278",
+  "head": "ced6db99bf8b8ef6b483f84389bd141ba36bde17",
+  "targets": [
+    {
+      "path": "crates/kontor-fleet/src/allocation.rs",
+      "prior_sha256": "3b964b061e4aede88adc5be23f4ecce3d552e4663e796f2f8efbab5a43ed8ef7",
+      "current_sha256": "3b964b061e4aede88adc5be23f4ecce3d552e4663e796f2f8efbab5a43ed8ef7",
+      "byte_equal": true
+    },
+    {
+      "path": "crates/kontor-runtime/src/planning_pair/application/commands/contribution.rs",
+      "prior_sha256": "45b947965a26048e7be43cba9ddc62dd28222b076e2b92c9c70dbd4b574cbbe8",
+      "current_sha256": "45b947965a26048e7be43cba9ddc62dd28222b076e2b92c9c70dbd4b574cbbe8",
+      "byte_equal": true
+    },
+    {
+      "path": "crates/kontor-runtime/src/planning_pair/application/commands/recovery.rs",
+      "prior_sha256": "48c119623e0e9cb0ca3f574c0ce570a31efbc54c60b2e8ffbc641e5f209b6950",
+      "current_sha256": "48c119623e0e9cb0ca3f574c0ce570a31efbc54c60b2e8ffbc641e5f209b6950",
+      "byte_equal": true
+    },
+    {
+      "path": "_tools/ai-orchestration/tpm_supervision.py",
+      "prior_sha256": "77546a71d11170dcb0fd504898f4fe6f2c69549789e22dc2dc3db57b416733da",
+      "current_sha256": null,
+      "byte_equal": null,
+      "note": "Outside this module checkout (workspace root tooling); not read or written by this child assignment."
+    }
+  ],
+  "seeded_defect_reruns_required": false,
+  "reason": "All in-module mutation targets remain byte-equal to the prior reviewed manifest, so no seeded-defect rerun or restored-baseline verification was triggered. No old kill counts are re-claimed."
+}

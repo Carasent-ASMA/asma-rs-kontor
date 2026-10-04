@@ -1,0 +1,5 @@
+{
+  "crates/kontor-runtime/src/planning_pair/attestation.rs": "4902114724206f4581ca055b47a1e7c18444c449b7ae61094df46d8380e57260",
+  "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic.rs": "8d4b5040642c68b58986fb8d3d8614584e48bb70ff5ac3ba7728b9679efd1a2d",
+  "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic/tests.rs": "6ca6a95663ed4d875f04844b82cc39db5d5e6678e989ce2433f749dc843523ff"
+}
