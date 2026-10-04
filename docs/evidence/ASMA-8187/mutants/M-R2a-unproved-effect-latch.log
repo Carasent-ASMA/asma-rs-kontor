@@ -1,0 +1,22 @@
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.35s
+     Running tests/hosted_seat_autonomy.rs (target/debug/deps/hosted_seat_autonomy-37350dd3fcfb6d32)
+
+running 1 test
+test succession_effects_and_readback_are_proved_before_a_receipt_binds ... FAILED
+
+failures:
+
+---- succession_effects_and_readback_are_proved_before_a_receipt_binds stdout ----
+
+thread 'succession_effects_and_readback_are_proved_before_a_receipt_binds' (73867835) panicked at crates/kontor-store/tests/hosted_seat_autonomy.rs:1116:5:
+unlanded effects were latched anyway
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    succession_effects_and_readback_are_proved_before_a_receipt_binds
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 1.76s
+
+error: test failed, to rerun pass `-p kontor-store --test hosted_seat_autonomy`

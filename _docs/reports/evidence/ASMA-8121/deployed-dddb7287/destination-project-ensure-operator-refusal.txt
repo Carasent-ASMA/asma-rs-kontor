@@ -1,0 +1,9 @@
+{
+  "action": "present a credential carrying the tier this tool requires",
+  "code": "forbidden",
+  "dispatched": false,
+  "rule": "tool `kontor_project_ensure` requires admin authority and this server was configured with operator",
+  "tool": "kontor_project_ensure"
+}
+
+PROCESS_EXIT_CODE=3

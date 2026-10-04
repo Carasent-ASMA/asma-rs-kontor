@@ -1,0 +1,57 @@
+   Compiling kontor-store v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.41s
+     Running tests/backup_export.rs (target/debug/deps/backup_export-5d232defd55375de)
+
+running 25 tests
+test a_canary_inside_a_stored_document_aborts_the_export ... ok
+test a_generation_three_export_from_a_quota_capable_database_is_refused_as_incomplete ... ok
+test a_future_export_generation_is_refused_and_this_one_parses ... ok
+test a_round_trip_preserves_the_versioned_specifications_and_the_source_evidence ... ok
+test a_realm_never_imports_its_own_export_and_never_imports_into_no_project ... ok
+test an_export_carries_no_credential_reference_no_comment_body_and_no_secret ... ok
+test an_export_of_unchanged_state_is_byte_identical_and_hashes_the_same ... ok
+test an_import_mints_a_destination_receipt_and_replays_no_source_receipt ... ok
+test an_import_refuses_an_outcome_that_does_not_match_its_source_policy ... ok
+test command_events_refuse_an_unrelated_payload_even_with_its_own_valid_hash ... ok
+test an_unchanged_selection_preserves_the_older_created_workflow_binding ... ok
+test command_events_refuse_hashes_that_do_not_identify_the_payload ... ok
+test command_events_refuse_missing_or_wrong_project_receipts ... ok
+test command_intent_payloads_still_receive_the_embedded_canary_scan ... ok
+test command_intent_import_preserves_its_non_executable_source_lineage ... ok
+test command_intents_export_under_their_own_document_contract ... ok
+test export_generations_are_closed_over_the_fields_and_summaries_they_define ... ok
+test generation_two_without_profile_selection_outcomes_remains_importable ... ok
+test import_preflight_and_transaction_leave_no_orphan_specification ... ok
+test imported_task_lifecycle_provenance_survives_export_serialization_and_parse ... ok
+test profile_selection_outcomes_cannot_predate_the_generation_that_stored_them ... ok
+test profile_selection_outcomes_round_trip_as_exact_non_executable_lineage ... ok
+test profile_selection_receipt_must_be_confirmed_local_effect_evidence ... ok
+test profile_selection_import_rejects_every_incomplete_or_swapped_frozen_binding has been running for over 60 seconds
+test runtime_and_census_payloads_still_refuse_session_content ... ok
+test profile_selection_import_rejects_every_incomplete_or_swapped_frozen_binding ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 148.93s
+
+     Running tests/consultation_profiles.rs (target/debug/deps/consultation_profiles-0b226a5ddd9b4cb8)
+
+running 9 tests
+test a_first_revision_that_skips_version_one_is_refused ... ok
+test a_catalog_reads_in_a_stable_order ... ok
+test a_published_definition_reads_back_byte_for_byte ... ok
+test another_projects_revisions_do_not_resolve ... ok
+test each_profile_versions_independently ... ok
+test republishing_a_version_is_refused ... ok
+test the_first_revision_of_a_profile_is_version_one ... ok
+test revisions_must_be_consecutive ... ok
+test the_two_families_are_separate_catalogs ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.03s
+
+     Running tests/team_definition_backup_contract.rs (target/debug/deps/team_definition_backup_contract-e079a1c72192f838)
+
+running 2 tests
+test typed_export_carries_every_team_definition_surface ... ok
+test a_verified_snapshot_restore_preserves_the_team_definition_surfaces ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.22s
+

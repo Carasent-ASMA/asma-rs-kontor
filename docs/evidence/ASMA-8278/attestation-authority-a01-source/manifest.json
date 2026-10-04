@@ -1,0 +1,518 @@
+{
+  "schema_version": 1,
+  "epic": "ASMA-8278",
+  "finding": "A-01 Medium stated-contract defect",
+  "result": "bounded source-ready correction; no live qualification or closure",
+  "created_at_utc": "2026-10-03T19:20:16.900973+00:00",
+  "source_behavior_base": "67dc4a7f7302d8e94101eb3786571af6d930c737",
+  "actual_entry_head": "1e9b7d3b87a70fb03e3546d9351bd3e1c826312e",
+  "mutation_copy_base_head": "1e9b7d3b87a70fb03e3546d9351bd3e1c826312e",
+  "actual_final_parent_head": "1e9b7d3b87a70fb03e3546d9351bd3e1c826312e",
+  "owned_paths_sha256": {
+    "crates/kontor-store/src/backup/restore.rs": "14ae5e6ff4cba2ffb0b7c94fdf250279ee88c8b8d7d2f932d2d253b60449d74c",
+    "crates/kontor-store/tests/backup_snapshot.rs": "12836f084f708eaa41c78ed900048a4693ce4b76dfd7b7ee42ba933aebe24a76"
+  },
+  "source_root": "/tmp/asma-8278-module-consolidation-20261002.Mcrugq",
+  "source_candidate_root": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-ledger-a01-wal-validation-2i033aws/source-candidate",
+  "exclusive_source_writes_finished": true,
+  "change": "Refuse destination nonempty WAL unconditionally before main-file metadata/classification; retain immutable ledger inspection only for nonempty readable main and retain source/nonempty-main guards.",
+  "red_proof": {
+    "log": "red-at-67dc-behavior.log",
+    "compiled_successfully": true,
+    "passed": 0,
+    "failed": 2,
+    "original_restore_source_sha256": "45dddeb7d22651d878614e485623889af75191a815269acd55a3c1d521cd8fed",
+    "assertion_lines": [
+      {
+        "path": "crates/kontor-store/tests/backup_snapshot.rs",
+        "line": 338,
+        "column": 5,
+        "text": "assert!(matches!("
+      },
+      {
+        "path": "crates/kontor-store/tests/backup_snapshot.rs",
+        "line": 338,
+        "column": 5,
+        "text": "assert!(matches!("
+      }
+    ],
+    "source_pin": "restore.rs bytes were asserted identical to immutable67dc before tests/fix; docs-only descendants do not change that behavior",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-store",
+      "--test",
+      "backup_snapshot",
+      "main_with_committed_wal",
+      "--offline",
+      "--jobs",
+      "2"
+    ],
+    "environment": {
+      "RUST_TEST_THREADS": "2"
+    }
+  },
+  "final_validation": {
+    "new_case_tests": 3,
+    "affected_backup_tests": 23,
+    "missing_zero_positive_subcases": 4,
+    "clippy": "store all-targets offline jobs2 -Dwarnings",
+    "format": "cargo fmt --all -- --check",
+    "diff": "git diff --check",
+    "unaffected_990_broad_tests_repeated": false,
+    "commands": [
+      {
+        "name": "green-new-cases",
+        "command": [
+          "cargo",
+          "test",
+          "-p",
+          "kontor-store",
+          "--test",
+          "backup_snapshot",
+          "main_",
+          "--offline",
+          "--jobs",
+          "2"
+        ],
+        "environment": {
+          "RUST_TEST_THREADS": "2"
+        },
+        "started_at_utc": "2026-10-03T19:12:54.840932+00:00",
+        "finished_at_utc": "2026-10-03T19:13:22.487799+00:00",
+        "seconds": 27.647,
+        "exit": 0,
+        "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-ledger-a01-wal-validation-2i033aws/green-new-cases.log"
+      },
+      {
+        "name": "backup-full",
+        "command": [
+          "cargo",
+          "test",
+          "-p",
+          "kontor-store",
+          "--test",
+          "backup_snapshot",
+          "--offline",
+          "--jobs",
+          "2"
+        ],
+        "environment": {
+          "RUST_TEST_THREADS": "2"
+        },
+        "started_at_utc": "2026-10-03T19:13:22.488295+00:00",
+        "finished_at_utc": "2026-10-03T19:14:46.858334+00:00",
+        "seconds": 84.37,
+        "exit": 0,
+        "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-ledger-a01-wal-validation-2i033aws/backup-full.log"
+      },
+      {
+        "name": "clippy",
+        "command": [
+          "cargo",
+          "clippy",
+          "-p",
+          "kontor-store",
+          "--all-targets",
+          "--offline",
+          "--jobs",
+          "2",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        "environment": {
+          "RUST_TEST_THREADS": "2"
+        },
+        "started_at_utc": "2026-10-03T19:14:46.859048+00:00",
+        "finished_at_utc": "2026-10-03T19:15:10.779894+00:00",
+        "seconds": 23.921,
+        "exit": 0,
+        "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-ledger-a01-wal-validation-2i033aws/clippy.log"
+      },
+      {
+        "name": "fmt",
+        "command": [
+          "cargo",
+          "fmt",
+          "--all",
+          "--",
+          "--check"
+        ],
+        "environment": {
+          "RUST_TEST_THREADS": "2"
+        },
+        "started_at_utc": "2026-10-03T19:15:10.780588+00:00",
+        "finished_at_utc": "2026-10-03T19:15:14.304669+00:00",
+        "seconds": 3.524,
+        "exit": 0,
+        "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-ledger-a01-wal-validation-2i033aws/fmt.log"
+      },
+      {
+        "name": "diff",
+        "command": [
+          "git",
+          "diff",
+          "--check"
+        ],
+        "environment": {
+          "RUST_TEST_THREADS": "2"
+        },
+        "started_at_utc": "2026-10-03T19:15:14.305297+00:00",
+        "finished_at_utc": "2026-10-03T19:15:14.480447+00:00",
+        "seconds": 0.175,
+        "exit": 0,
+        "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-ledger-a01-wal-validation-2i033aws/diff.log"
+      }
+    ],
+    "per_log_counts": {
+      "isolated-baseline.log": [
+        {
+          "status": "ok",
+          "passed": 3,
+          "failed": 0,
+          "ignored": 0,
+          "filtered": 20
+        }
+      ],
+      "isolated-A01-mutant.log": [
+        {
+          "status": "FAILED",
+          "passed": 0,
+          "failed": 2,
+          "ignored": 0,
+          "filtered": 21
+        }
+      ],
+      "backup-full.log": [
+        {
+          "status": "ok",
+          "passed": 23,
+          "failed": 0,
+          "ignored": 0,
+          "filtered": 0
+        }
+      ],
+      "fmt.log": [],
+      "red-at-67dc-behavior.log": [
+        {
+          "status": "FAILED",
+          "passed": 0,
+          "failed": 2,
+          "ignored": 0,
+          "filtered": 21
+        }
+      ],
+      "clippy.log": [],
+      "isolated-restored-baseline.log": [
+        {
+          "status": "ok",
+          "passed": 3,
+          "failed": 0,
+          "ignored": 0,
+          "filtered": 20
+        }
+      ],
+      "mutation-driver.log": [],
+      "diff.log": [],
+      "green-new-cases.log": [
+        {
+          "status": "ok",
+          "passed": 3,
+          "failed": 0,
+          "ignored": 0,
+          "filtered": 20
+        }
+      ]
+    }
+  },
+  "mutation": {
+    "id": "A01-skip-unconditional-destination-wal",
+    "base_head": "1e9b7d3b87a70fb03e3546d9351bd3e1c826312e",
+    "definition": "mutation-definition.json",
+    "runner": "run_mutation.py",
+    "commands": [
+      {
+        "name": "isolated-baseline",
+        "command": [
+          "cargo",
+          "test",
+          "-p",
+          "kontor-store",
+          "--test",
+          "backup_snapshot",
+          "main_",
+          "--offline",
+          "--jobs",
+          "2"
+        ],
+        "environment": {
+          "CARGO_TARGET_DIR": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/mutation-target",
+          "RUST_TEST_THREADS": "2"
+        },
+        "started_at_utc": "2026-10-03T19:15:43.861964+00:00",
+        "finished_at_utc": "2026-10-03T19:16:28.009893+00:00",
+        "seconds": 44.148,
+        "exit": 0,
+        "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-ledger-a01-wal-validation-2i033aws/isolated-baseline.log"
+      },
+      {
+        "name": "isolated-A01-mutant",
+        "command": [
+          "cargo",
+          "test",
+          "-p",
+          "kontor-store",
+          "--test",
+          "backup_snapshot",
+          "main_with_committed_wal",
+          "--offline",
+          "--jobs",
+          "2"
+        ],
+        "environment": {
+          "CARGO_TARGET_DIR": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/mutation-target",
+          "RUST_TEST_THREADS": "2"
+        },
+        "started_at_utc": "2026-10-03T19:16:28.011658+00:00",
+        "finished_at_utc": "2026-10-03T19:16:53.831203+00:00",
+        "seconds": 25.82,
+        "exit": 101,
+        "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-ledger-a01-wal-validation-2i033aws/isolated-A01-mutant.log"
+      },
+      {
+        "name": "isolated-restored-baseline",
+        "command": [
+          "cargo",
+          "test",
+          "-p",
+          "kontor-store",
+          "--test",
+          "backup_snapshot",
+          "main_",
+          "--offline",
+          "--jobs",
+          "2"
+        ],
+        "environment": {
+          "CARGO_TARGET_DIR": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/mutation-target",
+          "RUST_TEST_THREADS": "2"
+        },
+        "started_at_utc": "2026-10-03T19:16:53.833002+00:00",
+        "finished_at_utc": "2026-10-03T19:17:09.528414+00:00",
+        "seconds": 15.695,
+        "exit": 0,
+        "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-ledger-a01-wal-validation-2i033aws/isolated-restored-baseline.log"
+      }
+    ],
+    "verdict": "KILLED",
+    "compiled_successfully": true,
+    "intended_failed_tests": [
+      "missing_main_with_committed_wal_refuses_without_changing_destination_files",
+      "zero_main_with_committed_wal_refuses_without_changing_destination_files"
+    ],
+    "assertion_proof": [
+      {
+        "path": "crates/kontor-store/tests/backup_snapshot.rs",
+        "line": 338,
+        "column": 5,
+        "text": "assert!(matches!(",
+        "is_assertion": true
+      },
+      {
+        "path": "crates/kontor-store/tests/backup_snapshot.rs",
+        "line": 338,
+        "column": 5,
+        "text": "assert!(matches!(",
+        "is_assertion": true
+      }
+    ],
+    "mutant_sha256": "5f6da9d8cb3477d3a8f096a66a9be6705f110359802dfd7d08e3adead2ec2392",
+    "source_before_sha256": {
+      "crates/kontor-store/src/backup/restore.rs": "14ae5e6ff4cba2ffb0b7c94fdf250279ee88c8b8d7d2f932d2d253b60449d74c",
+      "crates/kontor-store/tests/backup_snapshot.rs": "12836f084f708eaa41c78ed900048a4693ce4b76dfd7b7ee42ba933aebe24a76"
+    },
+    "source_after_sha256": {
+      "crates/kontor-store/src/backup/restore.rs": "14ae5e6ff4cba2ffb0b7c94fdf250279ee88c8b8d7d2f932d2d253b60449d74c",
+      "crates/kontor-store/tests/backup_snapshot.rs": "12836f084f708eaa41c78ed900048a4693ce4b76dfd7b7ee42ba933aebe24a76"
+    },
+    "isolated_after_sha256": {
+      "crates/kontor-store/src/backup/restore.rs": "14ae5e6ff4cba2ffb0b7c94fdf250279ee88c8b8d7d2f932d2d253b60449d74c",
+      "crates/kontor-store/tests/backup_snapshot.rs": "12836f084f708eaa41c78ed900048a4693ce4b76dfd7b7ee42ba933aebe24a76"
+    },
+    "restored_baseline_passed": true
+  },
+  "prior_evidence_preservation": {
+    "root": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_",
+    "manifest_sha256": "ce009be367771e8fbe0a323b95106ce041fb1acea4831322013a31ea36b312c6",
+    "every_recorded_artifact_hash_unchanged": {
+      "baseline-a_nonempty_public_authority_snapshot_is_refused_before_destination_creation.log": true,
+      "build_manifest.py": true,
+      "restored-an_old_empty_snapshot_cannot_rollback_current_public_key_revocation.log": true,
+      "M07-destination-continuity.log": true,
+      "v115-final.log": true,
+      "baseline-realm_project_and_application_scopes_never_leak_or_create_unknown_rows.log": true,
+      "fmt.log": true,
+      "reclassify_saved_results.py": true,
+      "backup-final.log": true,
+      "restored-ledger.log": true,
+      "source-summary.json": true,
+      "mutation-assertion-proof.json": true,
+      "restored-nonempty_public_authority_ledger_is_not_silently_omitted_from_export.log": true,
+      "M03-immutable-material.log": true,
+      "M06-export-continuity.log": true,
+      "backup-focused.log": true,
+      "run_mutations.executed-v1.py": true,
+      "focused-final.log": true,
+      "clippy.log": true,
+      "baseline-nonempty_public_authority_ledger_is_not_silently_omitted_from_export.log": true,
+      "baseline-an_old_empty_snapshot_cannot_rollback_current_public_key_revocation.log": true,
+      "fmt-complete.log": true,
+      "diff-check.log": true,
+      "run_mutations.py": true,
+      "owned-paths.json": true,
+      "mutation-results-first-classifier.json": true,
+      "isolated-mutations.log": true,
+      "core-store-doctests.log": true,
+      "remaining-and-repaired-regression.log": true,
+      "restored-a_nonempty_public_authority_snapshot_is_refused_before_destination_creation.log": true,
+      "fmt-final.log": true,
+      "M08-source-continuity.log": true,
+      "remaining-store-targets.json": true,
+      "final-status.log": true,
+      "focused-fixed.log": true,
+      "check-results.json": true,
+      "backup-fixed.log": true,
+      "M04-monotonic-head.log": true,
+      "classifier-correction.log": true,
+      "baseline-direct_sql_cannot_change_material_unrevoke_delete_or_jump_the_head.log": true,
+      "mutation-definitions.json": true,
+      "baseline-exact_expected_head_is_required_and_failed_writes_leave_no_partial_mutation.log": true,
+      "M05-one-way-revocation.log": true,
+      "remaining-final-regression.log": true,
+      "focused.log": true,
+      "M01-expected-head.log": true,
+      "M02-project-scope.log": true,
+      "core-store-regression.log": true,
+      "mutation-results.json": true
+    },
+    "every_prior_source_candidate_hash_unchanged": {
+      "crates/kontor-core/src/repository.rs": true,
+      "crates/kontor-core/src/repository/attestation_authority.rs": true,
+      "crates/kontor-store/src/repository.rs": true,
+      "crates/kontor-store/src/repository/attestation_authority.rs": true,
+      "crates/kontor-store/src/migrations.rs": true,
+      "crates/kontor-store/migrations/0124_attestation_authority_keys.sql": true,
+      "crates/kontor-store/tests/attestation_authority.rs": true,
+      "crates/kontor-store/tests/schema_v1.rs": true,
+      "crates/kontor-store/tests/repository_roundtrip.rs": true,
+      "crates/kontor-store/src/backup/export.rs": true,
+      "crates/kontor-store/src/backup/restore.rs": true,
+      "crates/kontor-store/tests/backup_snapshot.rs": true
+    },
+    "no_original_evidence_file_written": true
+  },
+  "review_receipt": {
+    "path": "/Users/igor/.local/state/codex-takeovers/d70d8a8f-b219-4ada-b1a9-40f99d79fd4c/deepseek-ledger-67dc-source-findings.md",
+    "sha256": "231cd1857f374ffedcdf22c6ebc4aa76aba564cf40a5055b76c2ce39e197919f"
+  },
+  "fixture_provenance": {
+    "construction": "Committed real public-key metadata WAL/SHM generated by disposable SqliteStore and independently read. Destination main absent/zero is explicitly simulated; no live/crash/WAL-alone-recovery proof.",
+    "independent_commit_check": "A separate read-only SQLite connection reads one actual committed issuer/key/public-DER row in donor before WAL/SHM bytes are copied unchanged. WAL magic and nonempty frame payload/SHM are asserted. Target main is deliberately absent or zero; target before/after main optional bytes, WAL bytes, SHM bytes and directory inventory are compared.",
+    "simulation": "Missing/zero main is explicitly simulated, not a captured production crash.",
+    "recoverability_limit": "A separate tiny Python SQLite experiment did not recover a copied WAL after manually removing/truncating main. Neither these tests nor this correction establish WAL-alone recovery or live native proof.",
+    "experiment": "wal-fixture-experiment.json",
+    "production_key_material": "None; existing public DER fixture [1,2,3] is public metadata only and has no RSA-validity/issuance claim."
+  },
+  "boundaries": [
+    "Only two owned source paths changed; no Cargo/dependency/schema/authority changes",
+    "Existing offline-caller-lock contract remains required",
+    "Ordinary missing/zero main with no nonempty WAL retains supported restore; no blind immutable open of absent/empty main",
+    "Nonempty ledger/current-target/source refusals, schema123 exact-schema refusal and URI/no-sidecar behavior retained by full affected suite",
+    "No stage/commit/push, installed database, signing/keychain/provider/native/Jira effects",
+    "Root publishes and re-reviews; live/full qualification and epic closure remain reserved"
+  ],
+  "artifacts": {
+    "build_manifest.py": {
+      "sha256": "75cb069837664b10412267bc34ab2fb7516299f415d9aaa34f7ff0710eac7404",
+      "bytes": 6661
+    },
+    "isolated-baseline.log": {
+      "sha256": "4b41ebfa098fec6938d515cc4bf65882283f2a437d05b513fc5f098a2f2ef05a",
+      "bytes": 2216
+    },
+    "isolated-A01-mutant.log": {
+      "sha256": "f3d89e05add6637450b361cb404bd16692eced2bc000bd75e6076af4a4234e14",
+      "bytes": 1867
+    },
+    "backup-full.log": {
+      "sha256": "4cb5f5a516062d7ac03645e4369edebf9f38e1a782df29bbc85d43561f095151",
+      "bytes": 2079
+    },
+    "fmt.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "provenance.json": {
+      "sha256": "f22614e32744ff3ea279efadb07a6f632724a3e151a69af455054e15af86cdf4",
+      "bytes": 691
+    },
+    "red-at-67dc-behavior.log": {
+      "sha256": "4f0f064f37fbea384483631d5551246e92d655191bcb4cde604e786ea25bf130",
+      "bytes": 1708
+    },
+    "mutation-driver.json": {
+      "sha256": "9a567431807eeefcf8b917b25454cab11c183b7779ac55a404759e764f1a17dc",
+      "bytes": 301
+    },
+    "clippy.log": {
+      "sha256": "a07ad594bf51c12029487337336b69e539559d387a7a1bb40b7f3f30d902ec71",
+      "bytes": 309
+    },
+    "isolated-restored-baseline.log": {
+      "sha256": "6ffacd5bb50c3ac819a717ead31a55062c851b30087c90945705dcc97eb759e7",
+      "bytes": 803
+    },
+    "run_mutation.py": {
+      "sha256": "d2b71f54d922800cf2da6611527c00e2487e5e017257fdcabbcd68b0d53c1455",
+      "bytes": 4171
+    },
+    "mutation-definition.json": {
+      "sha256": "ce9ff64ef012a4402b064d8f143bbec92390cb5dc5006cabe40e7e638ac98bdf",
+      "bytes": 536
+    },
+    "root-path.txt": {
+      "sha256": "47aa876057fbd3d38905dbae09743d6b4ff5b674e7935f9ce28dff1bd7080066",
+      "bytes": 94
+    },
+    "final-status.log": {
+      "sha256": "9fe682e1226f6f6833c10b8cfa4039a497a49dba1379b3c44a457826c04cb946",
+      "bytes": 165
+    },
+    "check-results.json": {
+      "sha256": "f4bc57e3de61f0b1a5866ba2bd981cf29bc4bd0b4469af00e44646cf501b2bd6",
+      "bytes": 2555
+    },
+    "wal-fixture-experiment.json": {
+      "sha256": "2edb4b28730d8baac0e4aba48c9d1ebda2efa387f61f335d386055cf3802e0f5",
+      "bytes": 257
+    },
+    "mutation-result.json": {
+      "sha256": "995513ee8c15730f07ae6dccb45b38ee08d1864708d6ae49c378aa66fd7c8de6",
+      "bytes": 4100
+    },
+    "mutation-driver.log": {
+      "sha256": "bf56dc39883e6d9a22ae4640fc5bea38c74c7061734f02063e1e1e3776543e36",
+      "bytes": 1879
+    },
+    "diff.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "green-new-cases.log": {
+      "sha256": "0f33d9261492ec21b20886ae56b791c687d00a6d091dddae76ccf4ea0e2dcf92",
+      "bytes": 646
+    }
+  }
+}

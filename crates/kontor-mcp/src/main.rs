@@ -63,12 +63,37 @@ fn resolve_profile(name: &str) -> Result<&'static ServeProfile, String> {
     })
 }
 
+/// The serve profile this process narrows to: exactly the one named, and none
+/// at all when none is named.
+///
+/// Selection is explicit. An omitted `--serve-profile` is the tier's whole
+/// surface, as it always was; no profile is ever chosen for a seat by its
+/// role, its title or a pinned document, and none is a fallback for another.
+fn selected_profile(requested: Option<&str>) -> Result<Option<&'static ServeProfile>, String> {
+    requested.map(resolve_profile).transpose()
+}
+
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     // A local permission hook has no credential and opens no control-plane
-    // connection. Keep its protocol separate from MCP argument parsing.
-    if std::env::args().skip(1).eq(["--consultation-tool-guard"]) {
-        return consultation_guard::run();
+    // connection. Keep its protocol separate from MCP argument parsing: every
+    // argument list that begins with the guard flag is the guard's, so a
+    // malformed one is a guard that denies every tool rather than a clap error
+    // a hook runner might not treat as a refusal. An argument that is not
+    // UTF-8 is malformed the same way.
+    let argv: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    if argv
+        .first()
+        .is_some_and(|flag| flag == "--consultation-tool-guard")
+    {
+        let rest: Vec<String> = argv[1..]
+            .iter()
+            .map(|arg| {
+                arg.to_str()
+                    .map_or_else(|| "\u{fffd}".to_owned(), str::to_owned)
+            })
+            .collect();
+        return consultation_guard::run(&rest);
     }
     let args = Args::parse();
     let tier = match CallerTier::parse(&args.credential_tier) {
@@ -78,10 +103,9 @@ async fn main() -> std::process::ExitCode {
     // An unknown profile fails here, before the protocol starts, for the same
     // reason a bad tier does: a misconfigured seat should die with a message on
     // standard error rather than serve a surface nobody chose.
-    let profile = match args.serve_profile.as_deref().map(resolve_profile) {
-        None => None,
-        Some(Ok(profile)) => Some(profile),
-        Some(Err(error)) => return fail(&error),
+    let profile = match selected_profile(args.serve_profile.as_deref()) {
+        Ok(profile) => profile,
+        Err(error) => return fail(&error),
     };
     // Everything local is resolved before the protocol starts, so a misconfigured
     // seat fails with a message on standard error rather than as a tool refusal a
@@ -138,6 +162,39 @@ mod tests {
             error.contains("consultation"),
             "the refusal lists every valid profile: {error}"
         );
+    }
+
+    /// ASMA-8282: the planning pair caller profile is served only when named,
+    /// exactly; an omitted profile is the old whole-tier path, and a near
+    /// spelling is refused rather than resolved to the nearest profile.
+    #[test]
+    fn the_caller_profile_is_selected_only_by_its_exact_name() {
+        assert!(
+            selected_profile(None)
+                .expect("no profile is valid")
+                .is_none(),
+            "an omitted profile selects nothing"
+        );
+        assert_eq!(
+            selected_profile(Some("planning_pair_caller"))
+                .expect("the caller profile is declared")
+                .map(|profile| profile.name),
+            Some("planning_pair_caller")
+        );
+        for near in [
+            "planning_pair_callers",
+            "Planning_Pair_Caller",
+            "planning-pair-caller",
+            "planning_pair",
+            "caller",
+            "",
+        ] {
+            let error = selected_profile(Some(near)).expect_err("not a declared profile");
+            assert!(
+                error.contains("planning_pair_caller"),
+                "the refusal lists the declared caller profile: {error}"
+            );
+        }
     }
 
     #[test]

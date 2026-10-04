@@ -1,0 +1,7 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
+     Running tests/experience_memory.rs (target/debug/deps/experience_memory-d2397e2136ac7c8a)
+
+running 1 test
+test strict_experience_roundtrip_and_non_memory_eligibility ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.01s

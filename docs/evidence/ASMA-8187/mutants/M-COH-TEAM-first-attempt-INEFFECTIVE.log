@@ -1,0 +1,53 @@
+=== mutant M-COH-TEAM-persona-second-acquisition (corrected baseline) ===
+baseline commit   : 8910ebc603b5d013861d0793c6f8384f75eaca9d
+mutated file      : crates/kontor-daemon/src/applications.rs
+snapshot sha256   : 3c679d0a574753fe3f40cfe4359860ea4e9e64445fa6d40056c456d38fedb517
+mutated  sha256   : e354430c464ae845d3ac11561d988974cc36e9d12a6377680e1984327109a59e
+patch             : M-COH-TEAM-first-attempt-INEFFECTIVE.patch (mutation-only, 42 lines)
+  filename note   : the harness recorded this as
+                    'M-COH-TEAM-persona-second-acquisition.patch', the id the run
+                    was launched under. The carrier was renamed to match its
+                    verdict when the mutation turned out to be ineffective; the
+                    reference is corrected here rather than the file renamed back.
+  git apply --check: accepted
+  patch --dry-run  : patching file 'crates/kontor-daemon/src/applications.rs'
+command           : cargo test -p kontor-daemon --lib -- coherence::the_core_team --test-threads=1   (hard limit 420s)
+toolchain         : rustc 1.97.1 (8bab26f4f 2026-07-14)
+platform          : Darwin 25.6.0 arm64
+--- raw output ---
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-daemon)
+warning: method `epic_control_seat_binding` is never used
+    --> crates/kontor-daemon/src/applications.rs:8493:8
+     |
+ 976 | impl Services {
+     | ------------- method in this implementation
+...
+8493 |     fn epic_control_seat_binding(
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `kontor-daemon` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 27.49s
+     Running unittests src/lib.rs (target/debug/deps/kontor_daemon-efbe81bf64c053fc)
+
+running 1 test
+test applications::coherence::the_core_team_projection_answers_from_one_instant ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 124 filtered out; finished in 4.11s
+
+--- exit status: 0 (non-zero = killed; 124 = timeout, inconclusive) ---
+restored sha256   : 3c679d0a574753fe3f40cfe4359860ea4e9e64445fa6d40056c456d38fedb517
+restoration       : byte-identical to the named snapshot
+MUTANT markers    : 0
+
+--- outcome: SURVIVED, and the mutation is at fault, not the test ---
+The mutant deferred the persona read to a second acquisition but left the
+barrier where it was -- before the per-seat capture loop. With the reader paused
+there, the writer commits first, so the natives *and* the deferred personas are
+both read post-succession: a consistent answer, and no hybrid to catch.
+
+A mutation that does not reach the gap it claims to open proves nothing about
+the test. Superseded by M-COH-TEAM-persona-after-release, which relocates the
+barrier into the gap so the split is actually exercised. Retained because a
+survival that was the mutation's own fault is still a fact about this campaign.

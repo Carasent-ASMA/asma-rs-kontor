@@ -1,0 +1,6 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on build directory
+    Checking kontor-memory-cognee v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8158-cognee-projection-and-task-launch/crates/kontor-memory-cognee)
+    Checking kontor-daemon v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8158-cognee-projection-and-task-launch/crates/kontor-daemon)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 22s

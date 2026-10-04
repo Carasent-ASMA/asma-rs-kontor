@@ -1,0 +1,28 @@
+=== mutant M-CTL (control validation) ===
+baseline commit : 132058ece195cfbf47274d6b4bfe74adb45b6f46
+baseline tree   : 2c1be687cb499a6d6ef8932767c571e6e1bfc2e9
+file            : crates/kontor-daemon/src/main.rs
+preimage sha256 : 92015a21f2f8a7e67b70ad1ae7965ba0e3ad2293f293e75fc17db30b03f22881
+restored sha256 : 92015a21f2f8a7e67b70ad1ae7965ba0e3ad2293f293e75fc17db30b03f22881
+restoration     : byte-identical
+toolchain       : rustc 1.97.1 (8bab26f4f 2026-07-14)
+platform        : Darwin 25.6.0 arm64
+
+Purpose: QA observed that the stopped-schema assertions are all about what does
+not happen, so an implementation refusing every Realm at the schema boundary
+would satisfy them. This mutant is that implementation.
+
+--- cargo test -p kontor-daemon --bin kontor-daemon -- a_realm_stopped_before_the_current_schema
+test tests::a_realm_stopped_before_the_current_schema_refuses_without_reading_or_installing ... ok
+test result: ok. 1 passed; 0 failed; 9 filtered out
+
+    ^ exactly QA's point: the stopped-schema test cannot tell the difference.
+
+--- cargo test -p kontor-daemon --bin kontor-daemon -- a_current_realm_reaches_the_credential_reader
+thread 'tests::a_current_realm_reaches_the_credential_reader_and_fails_after_the_gate' panicked at
+crates/kontor-daemon/src/main.rs:967:9:
+a current realm did not reach the credential reader: Err(CredentialScope)
+test result: FAILED. 0 passed; 1 failed; 9 filtered out
+
+    ^ the hardened control catches it. That is what makes the pair evidence
+      rather than a restatement.

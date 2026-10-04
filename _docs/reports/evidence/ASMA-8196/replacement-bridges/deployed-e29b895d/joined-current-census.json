@@ -1,0 +1,1761 @@
+{
+  "recordedAt": "2026-09-26T10:54:09.437030+00:00",
+  "sourceCommit": "e29b895d0f045c499144870a2fa610fc642b6cc0",
+  "previewTargets": 99,
+  "uniqueSeatNatives": 43,
+  "uniqueContainers": 56,
+  "requestedNativeReadbacks": 58,
+  "foundReadbacks": 58,
+  "currentSeatRows": [
+    {
+      "epic": "ASMA-8111",
+      "seatBindingId": "01a07495-e5f3-74f0-9503-a03b9f748697",
+      "agentRunId": null,
+      "nativeId": "2b5a5045-cf30-4ace-aed7-fc171480bf95",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": false,
+      "archivedAt": null,
+      "status": "closed",
+      "cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a07495-e5e0-7ef2-b285-878ee7fb2bd9",
+      "provider": "codex-personal",
+      "model": "gpt-5.6-sol",
+      "parentWorkspaceId": "wks_288a1c4e7d357fa2",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8098",
+      "seatBindingId": "01a070e5-7909-7c31-8843-9705948f4f9e",
+      "agentRunId": null,
+      "nativeId": "2484cd30-516d-4a36-91b2-b5993d6c3760",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": true,
+      "archivedAt": "2026-09-26T04:58:27.063Z",
+      "status": "closed",
+      "cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a06e13-878a-7aa3-8a08-bfad07cc8c4c",
+      "provider": "claude-work",
+      "model": "claude-opus-5",
+      "parentWorkspaceId": "wks_32f1f3d29ab252b3",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8098",
+      "seatBindingId": "01a070e7-bd07-7a03-84fe-cb9f41f29fd6",
+      "agentRunId": null,
+      "nativeId": "5e8f5f98-1a90-48cc-82e5-e6576c522102",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": true,
+      "archivedAt": "2026-09-26T03:21:16.257Z",
+      "status": "closed",
+      "cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a06e13-878a-7aa3-8a08-bfad07cc8c4c",
+      "provider": "claude-work",
+      "model": "claude-opus-5",
+      "parentWorkspaceId": "wks_32f1f3d29ab252b3",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8098",
+      "seatBindingId": "01a0c355-350f-71d1-beef-fcca20613057",
+      "agentRunId": null,
+      "nativeId": "af611832-27be-45f3-ab4a-e73853fa76be",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": true,
+      "archivedAt": "2026-09-21T13:06:40.204Z",
+      "status": "closed",
+      "cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-8098-consultation-01a0c355-34dd-7ca3-bd89-8eb16a346564",
+      "provider": "opencode",
+      "model": "deepseek/deepseek-flash",
+      "parentWorkspaceId": "wks_b988eb024731d6cf",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8098",
+      "seatBindingId": "01a0c355-350f-71d1-beef-fcd6dbd0452b",
+      "agentRunId": null,
+      "nativeId": "d786b06d-ef6a-4ec8-9dbd-e23f45aebbdd",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": true,
+      "archivedAt": "2026-09-21T13:06:44.827Z",
+      "status": "closed",
+      "cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-8098-consultation-01a0c355-34dd-7ca3-bd89-8eb16a346564",
+      "provider": "codex-work",
+      "model": "gpt-5.6-sol",
+      "parentWorkspaceId": "wks_b988eb024731d6cf",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8098",
+      "seatBindingId": "01a0c355-350f-71d1-beef-fce5165bc5e5",
+      "agentRunId": null,
+      "nativeId": "d123d325-6a34-495e-bfc6-2a53f622dda0",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": true,
+      "archivedAt": "2026-09-21T13:06:48.975Z",
+      "status": "closed",
+      "cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-8098-consultation-01a0c355-34dd-7ca3-bd89-8eb16a346564",
+      "provider": "codex-personal",
+      "model": "gpt-5.6-sol",
+      "parentWorkspaceId": "wks_b988eb024731d6cf",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8098",
+      "seatBindingId": "01a0c623-f85b-7673-a5e6-8384dd57367a",
+      "agentRunId": null,
+      "nativeId": "1ff4009d-03b7-4328-8948-a5958934524c",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": true,
+      "archivedAt": "2026-09-21T22:48:05.434Z",
+      "status": "idle",
+      "cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-8098-consultation-01a0c623-f855-7702-9a85-758c0e285ed8",
+      "provider": "opencode",
+      "model": "deepseek/deepseek-flash",
+      "parentWorkspaceId": "wks_8a951e74680556f4",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8098",
+      "seatBindingId": "01a0c623-f85b-7673-a5e6-83962e5b051c",
+      "agentRunId": null,
+      "nativeId": "8c927869-425c-4160-b8db-aba54ea3e161",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": false,
+      "archivedAt": null,
+      "status": "idle",
+      "cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-8098-consultation-01a0c623-f855-7702-9a85-758c0e285ed8",
+      "provider": "codex-work",
+      "model": "gpt-5.6-sol",
+      "parentWorkspaceId": "wks_8a951e74680556f4",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8108",
+      "seatBindingId": "01a072f5-f98d-77d2-8a95-5b5d076cd9c0",
+      "agentRunId": null,
+      "nativeId": "728c1c58-0bdf-4bf6-b5b3-6b9987eac765",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": false,
+      "archivedAt": null,
+      "status": "idle",
+      "cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a072f5-f35c-7cc2-8367-43cba653a951",
+      "provider": "opencode",
+      "model": "deepseek/deepseek-flash",
+      "parentWorkspaceId": "wks_2bb8868f11cb5595",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8049",
+      "seatBindingId": "01a0539a-51e6-7d33-93d7-de8d116b7179",
+      "agentRunId": null,
+      "nativeId": "6301c2d4-7fbd-4f08-b61c-9f12183ada82",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": false,
+      "archivedAt": null,
+      "status": "idle",
+      "cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0539a-51c9-7301-9bd7-26c09167b23e",
+      "provider": "codex-personal",
+      "model": "gpt-5.6-sol",
+      "parentWorkspaceId": "wks_dbba8b9698eb6b66",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8049",
+      "seatBindingId": "01a0539a-51ee-7f33-b6f7-0dde35b1f3a4",
+      "agentRunId": null,
+      "nativeId": "9f98a668-f547-4f6e-9c8d-12789624a923",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": false,
+      "archivedAt": null,
+      "status": "idle",
+      "cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0539a-51c9-7301-9bd7-26c09167b23e",
+      "provider": "opencode",
+      "model": "deepseek/deepseek-flash",
+      "parentWorkspaceId": "wks_dbba8b9698eb6b66",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8049",
+      "seatBindingId": "01a0bb61-bb87-7ee1-89b7-af6b0c4b4ce5",
+      "agentRunId": "01a0bb61-b8e0-7bf0-a14f-b450a46dafdc",
+      "nativeId": "6aabb528-8cbf-4941-9718-1f933c053fed",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": false,
+      "archivedAt": null,
+      "status": "closed",
+      "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8120/asma-rs-kontor",
+      "provider": "codex",
+      "model": "gpt-5.6-sol",
+      "parentWorkspaceId": "wks_240446460981b853",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8049",
+      "seatBindingId": "01a0bb61-bbbd-7af3-846e-b111e8c3aff1",
+      "agentRunId": "01a0bb74-ee78-7aa3-b6bc-bd9c43733496",
+      "nativeId": "6426ec59-57d0-4001-922c-86fc0f2de258",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": false,
+      "archivedAt": null,
+      "status": "closed",
+      "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8120/asma-rs-kontor",
+      "provider": "claude",
+      "model": "claude-opus-5",
+      "parentWorkspaceId": "wks_240446460981b853",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8186",
+      "seatBindingId": "01a0a946-b1d3-7e61-aaa3-6df57168c740",
+      "agentRunId": "01a0a9d2-c70e-7f03-b2fb-395b78164d58",
+      "nativeId": "55d91dfc-a02e-4d59-a913-7b6cc72b1395",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": false,
+      "archivedAt": null,
+      "status": "idle",
+      "cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession",
+      "provider": "codex",
+      "model": "gpt-5.6-sol",
+      "parentWorkspaceId": "wks_810373445e9f4d2b",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8186",
+      "seatBindingId": "01a0a946-b1ee-7570-9aff-28ac294cdc29",
+      "agentRunId": "01a0a9d2-d304-7060-b00e-5340732521f1",
+      "nativeId": "19b7107d-ce1c-46e5-89e4-0d2413a1c50d",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": false,
+      "archivedAt": null,
+      "status": "closed",
+      "cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession",
+      "provider": "claude",
+      "model": "claude-opus-5",
+      "parentWorkspaceId": "wks_810373445e9f4d2b",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8186",
+      "seatBindingId": "01a0a946-b227-77a1-811b-a626d80f7abc",
+      "agentRunId": "01a0a9f6-3a5d-7640-ba9b-63807b31ef70",
+      "nativeId": "8a00958e-34ec-46b0-b7d3-500fe33e2bdb",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": false,
+      "archivedAt": null,
+      "status": "idle",
+      "cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession",
+      "provider": "codex-personal",
+      "model": "gpt-5.6-sol",
+      "parentWorkspaceId": "wks_810373445e9f4d2b",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8109",
+      "seatBindingId": "01a07391-32b2-7710-9e7e-5a9be1570a0b",
+      "agentRunId": null,
+      "nativeId": "650b7bba-dd17-43ed-a242-0b26997d6cc3",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": false,
+      "archivedAt": null,
+      "status": "idle",
+      "cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a07391-328d-7352-a321-4e88cbbd14eb",
+      "provider": "codex-personal",
+      "model": "gpt-5.6-sol",
+      "parentWorkspaceId": "wks_1a02b5a58f47f82e",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8109",
+      "seatBindingId": "01a07391-338a-76e2-9d0a-1586df322201",
+      "agentRunId": null,
+      "nativeId": "8f09b502-a406-4b1a-87ca-4236f6eb6cc0",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": false,
+      "archivedAt": null,
+      "status": "idle",
+      "cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a07391-328d-7352-a321-4e88cbbd14eb",
+      "provider": "opencode",
+      "model": "deepseek/deepseek-flash",
+      "parentWorkspaceId": "wks_1a02b5a58f47f82e",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8190",
+      "seatBindingId": "01a0abdd-b878-78e3-a204-18ae66747545",
+      "agentRunId": null,
+      "nativeId": "dd06ac41-7931-438a-b381-65f2e87be5c0",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": true,
+      "archivedAt": "2026-09-21T12:49:04.202Z",
+      "status": "closed",
+      "cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0abdd-b84e-7be2-a1f6-b9f34aae8c23",
+      "provider": "codex-personal",
+      "model": "gpt-5.6-sol",
+      "parentWorkspaceId": "wks_f52df2f585a60b68",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8190",
+      "seatBindingId": "01a0b033-1d41-7731-838c-aea8fe669e19",
+      "agentRunId": "01a0b032-fe68-70c2-8cd7-e5c65207640e",
+      "nativeId": "bf8b7ea4-3f20-4754-a7c9-a2f03a5bdbce",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": false,
+      "archivedAt": null,
+      "status": "idle",
+      "cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8190-lsa-persona-launch",
+      "provider": "codex",
+      "model": "gpt-5.6-sol",
+      "parentWorkspaceId": "wks_8d363e5f3188d323",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8190",
+      "seatBindingId": "01a0b033-1d62-7422-9b34-b37da8939421",
+      "agentRunId": "01a0b033-5331-7bc2-919a-5e9c90fbfa2c",
+      "nativeId": "ba4ded2e-4943-45d3-b267-7eca5ee5440f",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": false,
+      "archivedAt": null,
+      "status": "idle",
+      "cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8190-lsa-persona-launch",
+      "provider": "claude",
+      "model": "claude-opus-5",
+      "parentWorkspaceId": "wks_8d363e5f3188d323",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8190",
+      "seatBindingId": "01a0b033-1d67-7bc2-b5e4-e5dd3ad9c72b",
+      "agentRunId": "01a0cf81-50ec-7822-8f3a-bd60690a9bfe",
+      "nativeId": "a526c5cc-e399-43c9-8a5e-830e5834a27b",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": false,
+      "archivedAt": null,
+      "status": "idle",
+      "cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8190-lsa-persona-launch",
+      "provider": "cursor",
+      "model": "auto-smart",
+      "parentWorkspaceId": "wks_8d363e5f3188d323",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8190",
+      "seatBindingId": "01a0b621-043a-7c43-a9ba-0b2d9a1385be",
+      "agentRunId": "01a0b61f-a943-7f01-923b-0c954df06ba0",
+      "nativeId": "26041ede-9f19-4c54-95fa-056272778efc",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": false,
+      "archivedAt": null,
+      "status": "closed",
+      "cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8234-generalize-turn-correlation-challenge-evidence-beyond-asma-8118-settle-reachable-but-history-less-pa",
+      "provider": "codex",
+      "model": "gpt-5.6-sol",
+      "parentWorkspaceId": "wks_5f39de488c2b5a9c",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8190",
+      "seatBindingId": "01a0b621-0458-7a02-a4f2-e68e32a25e6d",
+      "agentRunId": "01a0b621-c9f6-7503-816b-5b321432b3e7",
+      "nativeId": "6b25bd35-2566-4d12-affc-e9be11452969",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": false,
+      "archivedAt": null,
+      "status": "idle",
+      "cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8234-generalize-turn-correlation-challenge-evidence-beyond-asma-8118-settle-reachable-but-history-less-pa",
+      "provider": "claude",
+      "model": "claude-opus-5",
+      "parentWorkspaceId": "wks_5f39de488c2b5a9c",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-7869",
+      "seatBindingId": "01a02b8e-8f63-7161-b043-cf8cc6d1297e",
+      "agentRunId": null,
+      "nativeId": "96e93f41-1546-452d-8e08-efc8f7b6c5d8",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": false,
+      "archivedAt": null,
+      "status": "closed",
+      "cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0074f-6719-7570-adf7-95ee3ec69875",
+      "provider": "codex-personal",
+      "model": "gpt-5.6-sol",
+      "parentWorkspaceId": "wks_900499bd8e2e59cb",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-7869",
+      "seatBindingId": "01a05308-db30-7453-a083-8b5973343416",
+      "agentRunId": null,
+      "nativeId": "b8600680-5681-48df-817b-6a54934abbcb",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": false,
+      "archivedAt": null,
+      "status": "closed",
+      "cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0074f-6719-7570-adf7-95ee3ec69875",
+      "provider": "opencode",
+      "model": "deepseek/deepseek-flash",
+      "parentWorkspaceId": "wks_900499bd8e2e59cb",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-7869",
+      "seatBindingId": "01a0d818-ed82-7200-bccc-edc585ea0a4c",
+      "agentRunId": null,
+      "nativeId": "1d0179b5-4f66-4d39-b033-c909ea5e2f02",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": false,
+      "archivedAt": null,
+      "status": "idle",
+      "cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-7869-consultation-01a0d818-ed77-7852-8246-2d0c599416d2",
+      "provider": "codex-personal",
+      "model": "gpt-5.6-sol",
+      "parentWorkspaceId": "wks_e680ac27670bc766",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8188",
+      "seatBindingId": "01a0aaa3-64b2-7523-a753-442fb914b660",
+      "agentRunId": null,
+      "nativeId": "48abda4d-583a-4ed2-ade7-bb34c049bd98",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": false,
+      "archivedAt": null,
+      "status": "closed",
+      "cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0aaa3-64a2-7de1-ab2d-8f40bad733ad",
+      "provider": "codex-personal",
+      "model": "gpt-5.6-sol",
+      "parentWorkspaceId": "wks_27c396dcf1f579b9",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8188",
+      "seatBindingId": "01a0aaa3-64ba-7123-9e61-4a8abf707950",
+      "agentRunId": null,
+      "nativeId": "e213330b-5cca-48eb-949f-9e72b370da6c",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": false,
+      "archivedAt": null,
+      "status": "idle",
+      "cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0aaa3-64a2-7de1-ab2d-8f40bad733ad",
+      "provider": "codex-personal",
+      "model": "gpt-5.6-sol",
+      "parentWorkspaceId": "wks_27c396dcf1f579b9",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8188",
+      "seatBindingId": "01a0c02a-ca73-7b71-a70e-6fc8568761e3",
+      "agentRunId": null,
+      "nativeId": "e5b2e5d7-fa35-4e14-99cc-49770a0faf08",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": true,
+      "archivedAt": "2026-09-21T09:34:43.113Z",
+      "status": "idle",
+      "cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-8188-consultation-01a0c02a-ca46-7cf3-8b0d-0eca663dab79",
+      "provider": "claude-work",
+      "model": "claude-opus-5",
+      "parentWorkspaceId": "wks_ffec35130f8ee1c1",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8188",
+      "seatBindingId": "01a0c02a-ca73-7b71-a70e-6fd4afd42e6c",
+      "agentRunId": null,
+      "nativeId": "9156c0ce-5851-4371-b419-fdcd6569f4d1",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": true,
+      "archivedAt": "2026-09-21T09:34:46.931Z",
+      "status": "closed",
+      "cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-8188-consultation-01a0c02a-ca46-7cf3-8b0d-0eca663dab79",
+      "provider": "codex-personal",
+      "model": "gpt-5.6-sol",
+      "parentWorkspaceId": "wks_ffec35130f8ee1c1",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8188",
+      "seatBindingId": "01a0c02a-ca73-7b71-a70e-6fe4792346d3",
+      "agentRunId": null,
+      "nativeId": "a805e24f-d2fe-4ded-a497-b4b59633d195",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": true,
+      "archivedAt": "2026-09-21T09:34:51.233Z",
+      "status": "closed",
+      "cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-8188-consultation-01a0c02a-ca46-7cf3-8b0d-0eca663dab79",
+      "provider": "claude-work",
+      "model": "claude-opus-5",
+      "parentWorkspaceId": "wks_ffec35130f8ee1c1",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8188",
+      "seatBindingId": "01a0c647-7cea-7973-9e1f-70c6930a2076",
+      "agentRunId": null,
+      "nativeId": "c409d2a2-8134-467e-b098-c6b1b80112dd",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": true,
+      "archivedAt": "2026-09-23T20:33:38.119Z",
+      "status": "closed",
+      "cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-8188-consultation-01a0c647-7ce2-7540-b8c2-4df12eeee137",
+      "provider": "claude-personal",
+      "model": "claude-opus-5",
+      "parentWorkspaceId": "wks_215e19893f19fb95",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8188",
+      "seatBindingId": "01a0c647-7cea-7973-9e1f-70df5ada9108",
+      "agentRunId": null,
+      "nativeId": "2b7fcd71-7e02-4bdd-8a7b-6a65273cf7a0",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": true,
+      "archivedAt": "2026-09-23T20:33:40.419Z",
+      "status": "closed",
+      "cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-8188-consultation-01a0c647-7ce2-7540-b8c2-4df12eeee137",
+      "provider": "codex-work",
+      "model": "gpt-5.6-sol",
+      "parentWorkspaceId": "wks_215e19893f19fb95",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8188",
+      "seatBindingId": "01a0c647-7cea-7973-9e1f-70e5d8e813d9",
+      "agentRunId": null,
+      "nativeId": "4cf1dc50-085f-43c7-88fb-882fd7bfe61b",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": true,
+      "archivedAt": "2026-09-23T20:33:43.526Z",
+      "status": "closed",
+      "cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-8188-consultation-01a0c647-7ce2-7540-b8c2-4df12eeee137",
+      "provider": "claude-personal",
+      "model": "claude-opus-5",
+      "parentWorkspaceId": "wks_215e19893f19fb95",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8101",
+      "seatBindingId": "01a0721b-ea52-7e32-a8af-ddd7efbd05c2",
+      "agentRunId": null,
+      "nativeId": "cd234e2c-4c26-403e-a031-fb39dbce35bb",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": false,
+      "archivedAt": null,
+      "status": "closed",
+      "cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0721b-ea30-7fe3-88a5-4d33ca613414",
+      "provider": "cursor",
+      "model": "grok-4.6",
+      "parentWorkspaceId": "wks_fa0c5c9f12959482",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8101",
+      "seatBindingId": "01a0721b-ea59-7a53-877b-fba43496ff4b",
+      "agentRunId": null,
+      "nativeId": "cfc11421-932a-4563-9d17-f88a0c6cc33f",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": false,
+      "archivedAt": null,
+      "status": "closed",
+      "cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0721b-ea30-7fe3-88a5-4d33ca613414",
+      "provider": "codex-personal",
+      "model": "gpt-5.6-sol",
+      "parentWorkspaceId": "wks_fa0c5c9f12959482",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8101",
+      "seatBindingId": "01a07636-cf29-73a1-8c88-86e23ba90877",
+      "agentRunId": "01a0c348-e77d-7470-be3d-7415116b7abb",
+      "nativeId": "4247e5db-25d2-435c-b851-f32e21ee99a3",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": true,
+      "archivedAt": "2026-09-21T20:16:32.000Z",
+      "status": "idle",
+      "cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8115-pub-07-fail-closed-scheduler-placement-admission-and-native-readback",
+      "provider": "codex-personal",
+      "model": "gpt-5.6-sol",
+      "parentWorkspaceId": "wks_7d16eeb2a644d90f",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8101",
+      "seatBindingId": "01a07636-cf32-7e90-b5ab-381cc8dae3ba",
+      "agentRunId": "01a0cf7b-2324-7a60-a1d2-16bd01f6ed0f",
+      "nativeId": "1f8388f4-f793-401b-b208-b197dc434586",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": false,
+      "archivedAt": null,
+      "status": "idle",
+      "cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8115-pub-07-fail-closed-scheduler-placement-admission-and-native-readback",
+      "provider": "cursor",
+      "model": "auto-smart",
+      "parentWorkspaceId": "wks_7d16eeb2a644d90f",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8101",
+      "seatBindingId": "01a07636-cf3b-77d0-8ad7-4fc19cc189d5",
+      "agentRunId": "01a0cfc0-dcbb-7ba1-91ae-41fdd4b00034",
+      "nativeId": "0104f3c1-05e0-46a1-a849-1240c699c7e9",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": false,
+      "archivedAt": null,
+      "status": "idle",
+      "cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8115-pub-07-fail-closed-scheduler-placement-admission-and-native-readback",
+      "provider": "cursor",
+      "model": "grok-4.6",
+      "parentWorkspaceId": "wks_7d16eeb2a644d90f",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8101",
+      "seatBindingId": "01a0bbc2-fabb-74f0-b65d-cf7b9c6c2227",
+      "agentRunId": "01a0bbc2-fa0f-7932-a6c6-888c9b799700",
+      "nativeId": "eed100a9-9cc3-491c-923b-1e16a7dd8b8f",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": false,
+      "archivedAt": null,
+      "status": "idle",
+      "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8239/asma-rs-kontor",
+      "provider": "codex",
+      "model": "gpt-5.6-sol",
+      "parentWorkspaceId": "wks_c1cd9a959277d94e",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8101",
+      "seatBindingId": "01a0bbc2-fac4-7d51-b705-411bd6eb4b80",
+      "agentRunId": "01a0bbc3-1184-7ce0-9204-452107d52371",
+      "nativeId": "4a123f4b-739f-43ae-a495-f8e66771f38d",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": false,
+      "archivedAt": null,
+      "status": "idle",
+      "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8239/asma-rs-kontor",
+      "provider": "claude",
+      "model": "claude-opus-5",
+      "parentWorkspaceId": "wks_c1cd9a959277d94e",
+      "parentFound": true,
+      "wouldChange": false
+    },
+    {
+      "epic": "ASMA-8101",
+      "seatBindingId": "01a0bbc2-faca-7902-95ce-f2f0b0aeb7c1",
+      "agentRunId": "01a0c055-7bb6-75b3-aaa8-e47b4668f3b4",
+      "nativeId": "a3be3c4c-e29e-461c-8118-17ed4a7aed55",
+      "generation": 1,
+      "found": true,
+      "nameMatches": true,
+      "archived": true,
+      "archivedAt": "2026-09-21T13:30:14.037Z",
+      "status": "closed",
+      "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8239/asma-rs-kontor",
+      "provider": "codex-personal",
+      "model": "gpt-5.6-sol",
+      "parentWorkspaceId": "wks_c1cd9a959277d94e",
+      "parentFound": true,
+      "wouldChange": false
+    }
+  ],
+  "containerRows": [
+    {
+      "nativeId": "prj_0b22d920befb2d85",
+      "epics": [
+        "ASMA-8111"
+      ],
+      "found": true,
+      "observed": {
+        "projectId": "prj_0b22d920befb2d85",
+        "name": "ESW \u2022 ASMA-8111",
+        "kind": "non_git",
+        "path": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a07495-e5e0-7ef2-b285-878ee7fb2bd9"
+      },
+      "previewNames": [
+        "ESW \u2022 ASMA-8111"
+      ]
+    },
+    {
+      "nativeId": "wks_288a1c4e7d357fa2",
+      "epics": [
+        "ASMA-8111"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_288a1c4e7d357fa2",
+        "project": "ESW \u2022 ASMA-8111",
+        "name": "ECP \u2022 ASMA-8111",
+        "isolation": "local",
+        "cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a07495-e5e0-7ef2-b285-878ee7fb2bd9"
+      },
+      "previewNames": [
+        "ECP \u2022 ASMA-8111"
+      ]
+    },
+    {
+      "nativeId": "prj_4646bde847b1057a",
+      "epics": [
+        "ASMA-8098"
+      ],
+      "found": true,
+      "observed": {
+        "projectId": "prj_4646bde847b1057a",
+        "name": "ESW \u2022 ASMA-8098",
+        "kind": "git",
+        "path": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a06e13-878a-7aa3-8a08-bfad07cc8c4c"
+      },
+      "previewNames": [
+        "ESW \u2022 ASMA-8098"
+      ]
+    },
+    {
+      "nativeId": "wks_32f1f3d29ab252b3",
+      "epics": [
+        "ASMA-8098"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_32f1f3d29ab252b3",
+        "project": "ESW \u2022 ASMA-8098",
+        "name": "ECP \u2022 ASMA-8098",
+        "isolation": "local",
+        "cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a06e13-878a-7aa3-8a08-bfad07cc8c4c"
+      },
+      "previewNames": [
+        "ECP \u2022 ASMA-8098"
+      ]
+    },
+    {
+      "nativeId": "wks_3a1d96c424753599",
+      "epics": [
+        "ASMA-8098"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_3a1d96c424753599",
+        "project": "ESW \u2022 ASMA-8098",
+        "name": "CSW \u2022 ASMA-8098 \u2022 Release readiness",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-8098-consultation-01a0bfd0-f92c-7b12-afd3-6263dd2af5db"
+      },
+      "previewNames": [
+        "CSW \u2022 ASMA-8098 \u2022 Release readiness"
+      ]
+    },
+    {
+      "nativeId": "wks_b988eb024731d6cf",
+      "epics": [
+        "ASMA-8098"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_b988eb024731d6cf",
+        "project": "ESW \u2022 ASMA-8098",
+        "name": "CSW \u2022 ASMA-8098 \u2022 Generation-2 release readiness",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-8098-consultation-01a0c355-34dd-7ca3-bd89-8eb16a346564"
+      },
+      "previewNames": [
+        "CSW \u2022 ASMA-8098 \u2022 Generation-2 release readiness"
+      ]
+    },
+    {
+      "nativeId": "wks_8a951e74680556f4",
+      "epics": [
+        "ASMA-8098"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_8a951e74680556f4",
+        "project": "ESW \u2022 ASMA-8098",
+        "name": "CSW \u2022 ASMA-8098 \u2022 Generation-2 post-remediation release readiness",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-8098-consultation-01a0c623-f855-7702-9a85-758c0e285ed8"
+      },
+      "previewNames": [
+        "CSW \u2022 ASMA-8098 \u2022 Generation-2 post-remediation release readiness"
+      ]
+    },
+    {
+      "nativeId": "prj_fc87bc1f96af0ed3",
+      "epics": [
+        "ASMA-8108"
+      ],
+      "found": true,
+      "observed": {
+        "projectId": "prj_fc87bc1f96af0ed3",
+        "name": "ESW \u2022 ASMA-8108",
+        "kind": "non_git",
+        "path": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a072f5-f35c-7cc2-8367-43cba653a951"
+      },
+      "previewNames": [
+        "ESW \u2022 ASMA-8108"
+      ]
+    },
+    {
+      "nativeId": "wks_2bb8868f11cb5595",
+      "epics": [
+        "ASMA-8108"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_2bb8868f11cb5595",
+        "project": "ESW \u2022 ASMA-8108",
+        "name": "ECP \u2022 ASMA-8108",
+        "isolation": "local",
+        "cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a072f5-f35c-7cc2-8367-43cba653a951"
+      },
+      "previewNames": [
+        "ECP \u2022 ASMA-8108"
+      ]
+    },
+    {
+      "nativeId": "prj_c393c7173c5a4b19",
+      "epics": [
+        "ASMA-8049"
+      ],
+      "found": true,
+      "observed": {
+        "projectId": "prj_c393c7173c5a4b19",
+        "name": "ESW \u2022 ASMA-8049",
+        "kind": "non_git",
+        "path": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0539a-51c9-7301-9bd7-26c09167b23e"
+      },
+      "previewNames": [
+        "ESW \u2022 ASMA-8049"
+      ]
+    },
+    {
+      "nativeId": "wks_dbba8b9698eb6b66",
+      "epics": [
+        "ASMA-8049"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_dbba8b9698eb6b66",
+        "project": "ESW \u2022 ASMA-8049",
+        "name": "ECP \u2022 ASMA-8049",
+        "isolation": "local",
+        "cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0539a-51c9-7301-9bd7-26c09167b23e"
+      },
+      "previewNames": [
+        "ECP \u2022 ASMA-8049"
+      ]
+    },
+    {
+      "nativeId": "wks_ae58a58825d07e12",
+      "epics": [
+        "ASMA-8049"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_ae58a58825d07e12",
+        "project": "ESW \u2022 ASMA-8049",
+        "name": "TSW \u2022 ASMA-8116",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8116/asma-rs-kontor"
+      },
+      "previewNames": [
+        "TSW \u2022 ASMA-8116"
+      ]
+    },
+    {
+      "nativeId": "wks_ed2ba2b56094f14d",
+      "epics": [
+        "ASMA-8049"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_ed2ba2b56094f14d",
+        "project": "ESW \u2022 ASMA-8049",
+        "name": "TSW \u2022 ASMA-8117",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8117/asma-rs-kontor"
+      },
+      "previewNames": [
+        "TSW \u2022 ASMA-8117"
+      ]
+    },
+    {
+      "nativeId": "wks_5ec1eb84e5d2782c",
+      "epics": [
+        "ASMA-8049"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_5ec1eb84e5d2782c",
+        "project": "ESW \u2022 ASMA-8049",
+        "name": "TSW \u2022 ASMA-8118",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8049-jira-key-governance"
+      },
+      "previewNames": [
+        "TSW \u2022 ASMA-8118"
+      ]
+    },
+    {
+      "nativeId": "wks_a177fd8f877b54d5",
+      "epics": [
+        "ASMA-8049"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_a177fd8f877b54d5",
+        "project": "ESW \u2022 ASMA-8049",
+        "name": "TSW \u2022 ASMA-8119",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8049-jira-key-integration"
+      },
+      "previewNames": [
+        "TSW \u2022 ASMA-8119"
+      ]
+    },
+    {
+      "nativeId": "wks_240446460981b853",
+      "epics": [
+        "ASMA-8049"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_240446460981b853",
+        "project": "ESW \u2022 ASMA-8049",
+        "name": "TSW \u2022 ASMA-8120",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8120/asma-rs-kontor"
+      },
+      "previewNames": [
+        "TSW \u2022 ASMA-8120"
+      ]
+    },
+    {
+      "nativeId": "prj_578f857216afb7c7",
+      "epics": [
+        "ASMA-8186"
+      ],
+      "found": true,
+      "observed": {
+        "projectId": "prj_578f857216afb7c7",
+        "name": "ESW \u2022 ASMA-8186",
+        "kind": "non_git",
+        "path": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0a943-652a-7711-b00c-e20bbb3c3fed"
+      },
+      "previewNames": [
+        "ESW \u2022 ASMA-8186"
+      ]
+    },
+    {
+      "nativeId": "wks_810373445e9f4d2b",
+      "epics": [
+        "ASMA-8186"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_810373445e9f4d2b",
+        "project": "ESW \u2022 ASMA-8186",
+        "name": "TSW \u2022 ASMA-8187",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession"
+      },
+      "previewNames": [
+        "TSW \u2022 ASMA-8187"
+      ]
+    },
+    {
+      "nativeId": "prj_05dc53a8921003a9",
+      "epics": [
+        "ASMA-8109"
+      ],
+      "found": true,
+      "observed": {
+        "projectId": "prj_05dc53a8921003a9",
+        "name": "ESW \u2022 ASMA-8109",
+        "kind": "non_git",
+        "path": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a07391-328d-7352-a321-4e88cbbd14eb"
+      },
+      "previewNames": [
+        "ESW \u2022 ASMA-8109"
+      ]
+    },
+    {
+      "nativeId": "wks_1a02b5a58f47f82e",
+      "epics": [
+        "ASMA-8109"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_1a02b5a58f47f82e",
+        "project": "ESW \u2022 ASMA-8109",
+        "name": "ECP \u2022 ASMA-8109",
+        "isolation": "local",
+        "cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a07391-328d-7352-a321-4e88cbbd14eb"
+      },
+      "previewNames": [
+        "ECP \u2022 ASMA-8109"
+      ]
+    },
+    {
+      "nativeId": "wks_058ee54112ca8cc0",
+      "epics": [
+        "ASMA-8109"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_058ee54112ca8cc0",
+        "project": "ESW \u2022 ASMA-8109",
+        "name": "TSW \u2022 ASMA-8110",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/kontor-gate-verdict-recovery/asma-rs-kontor"
+      },
+      "previewNames": [
+        "TSW \u2022 ASMA-8110"
+      ]
+    },
+    {
+      "nativeId": "wks_824e72779cb86816",
+      "epics": [
+        "ASMA-8109"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_824e72779cb86816",
+        "project": "ESW \u2022 ASMA-8109",
+        "name": "CSW \u2022 ASMA-8110 \u2022 ASMA-8109 completion verdict",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-8109-consultation-01a0b01f-c239-7593-9d5d-f497e0dfb157"
+      },
+      "previewNames": [
+        "CSW \u2022 ASMA-8110 \u2022 ASMA-8109 completion verdict"
+      ]
+    },
+    {
+      "nativeId": "wks_8eedc28c4e85513a",
+      "epics": [
+        "ASMA-8109"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_8eedc28c4e85513a",
+        "project": "ESW \u2022 ASMA-8109",
+        "name": "CSW \u2022 ASMA-8109 \u2022 Gate-verdict recovery completion",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-8109-consultation-01a0b039-efd8-76e2-be67-8daf94767a26"
+      },
+      "previewNames": [
+        "CSW \u2022 ASMA-8109 \u2022 Gate-verdict recovery completion"
+      ]
+    },
+    {
+      "nativeId": "prj_4753af28789677eb",
+      "epics": [
+        "ASMA-8190"
+      ],
+      "found": true,
+      "observed": {
+        "projectId": "prj_4753af28789677eb",
+        "name": "ESW \u2022 ASMA-8190",
+        "kind": "non_git",
+        "path": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0abdd-b84e-7be2-a1f6-b9f34aae8c23"
+      },
+      "previewNames": [
+        "ESW \u2022 ASMA-8190"
+      ]
+    },
+    {
+      "nativeId": "wks_f52df2f585a60b68",
+      "epics": [
+        "ASMA-8190"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_f52df2f585a60b68",
+        "project": "ESW \u2022 ASMA-8190",
+        "name": "ECP \u2022 ASMA-8190",
+        "isolation": "local",
+        "cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0abdd-b84e-7be2-a1f6-b9f34aae8c23"
+      },
+      "previewNames": [
+        "ECP \u2022 ASMA-8190"
+      ]
+    },
+    {
+      "nativeId": "wks_81172e37f584ef60",
+      "epics": [
+        "ASMA-8190"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_81172e37f584ef60",
+        "project": "ESW \u2022 ASMA-8190",
+        "name": "TSW \u2022 ASMA-8192",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8190-autonomous-epic-delivery"
+      },
+      "previewNames": [
+        "TSW \u2022 ASMA-8192"
+      ]
+    },
+    {
+      "nativeId": "wks_b2e8a30109c3d56e",
+      "epics": [
+        "ASMA-8190"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_b2e8a30109c3d56e",
+        "project": "ESW \u2022 ASMA-8190",
+        "name": "TSW \u2022 ASMA-8191",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/fix/ASMA-8190-seat-handoff-idempotency"
+      },
+      "previewNames": [
+        "TSW \u2022 ASMA-8191"
+      ]
+    },
+    {
+      "nativeId": "wks_b21a7886082b871f",
+      "epics": [
+        "ASMA-8190"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_b21a7886082b871f",
+        "project": "ESW \u2022 ASMA-8190",
+        "name": "TSW \u2022 ASMA-8205",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/docs/ASMA-8205-reconcile-autonomous-delivery-plan-with-recovery-backlog"
+      },
+      "previewNames": [
+        "TSW \u2022 ASMA-8205"
+      ]
+    },
+    {
+      "nativeId": "wks_8afeb4ec53cb77e4",
+      "epics": [
+        "ASMA-8190"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_8afeb4ec53cb77e4",
+        "project": "ESW \u2022 ASMA-8190",
+        "name": "TSW \u2022 ASMA-8203",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8203/asma-rs-kontor"
+      },
+      "previewNames": [
+        "TSW \u2022 ASMA-8203"
+      ]
+    },
+    {
+      "nativeId": "wks_3b16a0d72b1994fd",
+      "epics": [
+        "ASMA-8190"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_3b16a0d72b1994fd",
+        "project": "ESW \u2022 ASMA-8190",
+        "name": "TSW \u2022 ASMA-8193",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8190-leadership-autonomy"
+      },
+      "previewNames": [
+        "TSW \u2022 ASMA-8193"
+      ]
+    },
+    {
+      "nativeId": "wks_65816469d55dbb60",
+      "epics": [
+        "ASMA-8190"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_65816469d55dbb60",
+        "project": "ESW \u2022 ASMA-8190",
+        "name": "TSW \u2022 ASMA-8199",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8190-ecp-native-materialization"
+      },
+      "previewNames": [
+        "TSW \u2022 ASMA-8199"
+      ]
+    },
+    {
+      "nativeId": "wks_1cfd30d074ba2997",
+      "epics": [
+        "ASMA-8190"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_1cfd30d074ba2997",
+        "project": "ESW \u2022 ASMA-8190",
+        "name": "CSW \u2022 ASMA-8193 \u2022 Leadership seat autonomy lifetime",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-8190-consultation-01a0ad20-6ffd-7022-91a4-0f8388095c72"
+      },
+      "previewNames": [
+        "CSW \u2022 ASMA-8193 \u2022 Leadership seat autonomy lifetime"
+      ]
+    },
+    {
+      "nativeId": "wks_479843d94033d377",
+      "epics": [
+        "ASMA-8190"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_479843d94033d377",
+        "project": "ESW \u2022 ASMA-8190",
+        "name": "TSW \u2022 ASMA-8202",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8202/asma-rs-kontor"
+      },
+      "previewNames": [
+        "TSW \u2022 ASMA-8202"
+      ]
+    },
+    {
+      "nativeId": "wks_d5503584a3b22f17",
+      "epics": [
+        "ASMA-8190"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_d5503584a3b22f17",
+        "project": "ESW \u2022 ASMA-8190",
+        "name": "TSW \u2022 ASMA-8194",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8190-self-lifting-holds"
+      },
+      "previewNames": [
+        "TSW \u2022 ASMA-8194"
+      ]
+    },
+    {
+      "nativeId": "wks_bd2b6c7e5149f4f6",
+      "epics": [
+        "ASMA-8190"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_bd2b6c7e5149f4f6",
+        "project": "ESW \u2022 ASMA-8190",
+        "name": "TSW \u2022 ASMA-8201",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8201/asma-rs-kontor"
+      },
+      "previewNames": [
+        "TSW \u2022 ASMA-8201"
+      ]
+    },
+    {
+      "nativeId": "wks_8d363e5f3188d323",
+      "epics": [
+        "ASMA-8190"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_8d363e5f3188d323",
+        "project": "ESW \u2022 ASMA-8190",
+        "name": "TSW \u2022 ASMA-8196",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8190-lsa-persona-launch"
+      },
+      "previewNames": [
+        "TSW \u2022 ASMA-8196"
+      ]
+    },
+    {
+      "nativeId": "wks_c718c243452d9036",
+      "epics": [
+        "ASMA-8190"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_c718c243452d9036",
+        "project": "ESW \u2022 ASMA-8190",
+        "name": "TSW \u2022 ASMA-8200",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8200/asma-rs-kontor"
+      },
+      "previewNames": [
+        "TSW \u2022 ASMA-8200"
+      ]
+    },
+    {
+      "nativeId": "wks_cd2f87a7ba42ee51",
+      "epics": [
+        "ASMA-8190"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_cd2f87a7ba42ee51",
+        "project": "ESW \u2022 ASMA-8190",
+        "name": "TSW \u2022 ASMA-8204",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8204/asma-rs-kontor"
+      },
+      "previewNames": [
+        "TSW \u2022 ASMA-8204"
+      ]
+    },
+    {
+      "nativeId": "wks_f1852c8e6c0d72f5",
+      "epics": [
+        "ASMA-8190"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_f1852c8e6c0d72f5",
+        "project": "ESW \u2022 ASMA-8190",
+        "name": "TSW \u2022 ASMA-8195",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8190-hold-visibility"
+      },
+      "previewNames": [
+        "TSW \u2022 ASMA-8195"
+      ]
+    },
+    {
+      "nativeId": "wks_5f39de488c2b5a9c",
+      "epics": [
+        "ASMA-8190"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_5f39de488c2b5a9c",
+        "project": "ESW \u2022 ASMA-8190",
+        "name": "TSW \u2022 ASMA-8234",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8234-generalize-turn-correlation-challenge-evidence-beyond-asma-8118-settle-reachable-but-history-less-pa"
+      },
+      "previewNames": [
+        "TSW \u2022 ASMA-8234"
+      ]
+    },
+    {
+      "nativeId": "wks_f4bc61a339794e3a",
+      "epics": [
+        "ASMA-8190"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_f4bc61a339794e3a",
+        "project": "ESW \u2022 ASMA-8190",
+        "name": "TSW \u2022 ASMA-8237",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8237/asma-rs-kontor"
+      },
+      "previewNames": [
+        "TSW \u2022 ASMA-8237"
+      ]
+    },
+    {
+      "nativeId": "prj_b95f6d73b8de6c59",
+      "epics": [
+        "ASMA-7869"
+      ],
+      "found": true,
+      "observed": {
+        "projectId": "prj_b95f6d73b8de6c59",
+        "name": "ESW \u2022 ASMA-7869",
+        "kind": "non_git",
+        "path": "/Users/igor/.local/share/paseo/epic-projects/Epic \u00b7 ASMA-7869 \u00b7 Kontor Operational MVP"
+      },
+      "previewNames": [
+        "ESW \u2022 ASMA-7869"
+      ]
+    },
+    {
+      "nativeId": "wks_900499bd8e2e59cb",
+      "epics": [
+        "ASMA-7869"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_900499bd8e2e59cb",
+        "project": "ESW \u2022 ASMA-7869",
+        "name": "ECP \u2022 ASMA-7869",
+        "isolation": "local",
+        "cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0074f-6719-7570-adf7-95ee3ec69875"
+      },
+      "previewNames": [
+        "ECP \u2022 ASMA-7869"
+      ]
+    },
+    {
+      "nativeId": "wks_01f84dff19a896a9",
+      "epics": [
+        "ASMA-7869"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_01f84dff19a896a9",
+        "project": "ESW \u2022 ASMA-7869",
+        "name": "CSW \u2022 ASMA-7869 \u2022 Closure certificate review",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-7869-consultation-01a0aaf0-1c89-7f31-989c-b707b0be1054"
+      },
+      "previewNames": [
+        "CSW \u2022 ASMA-7869 \u2022 Closure certificate review"
+      ]
+    },
+    {
+      "nativeId": "wks_e680ac27670bc766",
+      "epics": [
+        "ASMA-7869"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_e680ac27670bc766",
+        "project": "ESW \u2022 ASMA-7869",
+        "name": "CSW \u2022 ASMA-7869 \u2022 Operational MVP closeout final review",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-7869-consultation-01a0d818-ed77-7852-8246-2d0c599416d2"
+      },
+      "previewNames": [
+        "CSW \u2022 ASMA-7869 \u2022 Operational MVP closeout final review"
+      ]
+    },
+    {
+      "nativeId": "prj_7e987b162a93f9b9",
+      "epics": [
+        "ASMA-8188"
+      ],
+      "found": true,
+      "observed": {
+        "projectId": "prj_7e987b162a93f9b9",
+        "name": "ESW \u2022 ASMA-8188",
+        "kind": "non_git",
+        "path": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0aaa3-64a2-7de1-ab2d-8f40bad733ad"
+      },
+      "previewNames": [
+        "ESW \u2022 ASMA-8188"
+      ]
+    },
+    {
+      "nativeId": "wks_27c396dcf1f579b9",
+      "epics": [
+        "ASMA-8188"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_27c396dcf1f579b9",
+        "project": "ESW \u2022 ASMA-8188",
+        "name": "ECP \u2022 ASMA-8188",
+        "isolation": "local",
+        "cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0aaa3-64a2-7de1-ab2d-8f40bad733ad"
+      },
+      "previewNames": [
+        "ECP \u2022 ASMA-8188"
+      ]
+    },
+    {
+      "nativeId": "wks_871c9a5a4a498443",
+      "epics": [
+        "ASMA-8188"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_871c9a5a4a498443",
+        "project": "ESW \u2022 ASMA-8188",
+        "name": "TSW \u2022 ASMA-8189",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/fix/ASMA-8189-gate-rejection-role-slot-fence"
+      },
+      "previewNames": [
+        "TSW \u2022 ASMA-8189"
+      ]
+    },
+    {
+      "nativeId": "wks_ffec35130f8ee1c1",
+      "epics": [
+        "ASMA-8188"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_ffec35130f8ee1c1",
+        "project": "ESW \u2022 ASMA-8188",
+        "name": "CSW \u2022 ASMA-8188 \u2022 Completion verdict round 1",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-8188-consultation-01a0c02a-ca46-7cf3-8b0d-0eca663dab79"
+      },
+      "previewNames": [
+        "CSW \u2022 ASMA-8188 \u2022 Completion verdict round 1"
+      ]
+    },
+    {
+      "nativeId": "wks_215e19893f19fb95",
+      "epics": [
+        "ASMA-8188"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_215e19893f19fb95",
+        "project": "ESW \u2022 ASMA-8188",
+        "name": "CSW \u2022 ASMA-8188 \u2022 Completion verdict round 2",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-8188-consultation-01a0c647-7ce2-7540-b8c2-4df12eeee137"
+      },
+      "previewNames": [
+        "CSW \u2022 ASMA-8188 \u2022 Completion verdict round 2"
+      ]
+    },
+    {
+      "nativeId": "prj_178ec14a1071b271",
+      "epics": [
+        "ASMA-8101"
+      ],
+      "found": true,
+      "observed": {
+        "projectId": "prj_178ec14a1071b271",
+        "name": "ESW \u2022 ASMA-8101",
+        "kind": "non_git",
+        "path": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0721b-ea30-7fe3-88a5-4d33ca613414"
+      },
+      "previewNames": [
+        "ESW \u2022 ASMA-8101"
+      ]
+    },
+    {
+      "nativeId": "wks_fa0c5c9f12959482",
+      "epics": [
+        "ASMA-8101"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_fa0c5c9f12959482",
+        "project": "ESW \u2022 ASMA-8101",
+        "name": "ECP \u2022 ASMA-8101",
+        "isolation": "local",
+        "cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0721b-ea30-7fe3-88a5-4d33ca613414"
+      },
+      "previewNames": [
+        "ECP \u2022 ASMA-8101"
+      ]
+    },
+    {
+      "nativeId": "wks_8e0745748a009493",
+      "epics": [
+        "ASMA-8101"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_8e0745748a009493",
+        "project": "ESW \u2022 ASMA-8101",
+        "name": "TSW \u2022 ASMA-8102",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8101-publication-identity-enforcement"
+      },
+      "previewNames": [
+        "TSW \u2022 ASMA-8102"
+      ]
+    },
+    {
+      "nativeId": "wks_7d16eeb2a644d90f",
+      "epics": [
+        "ASMA-8101"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_7d16eeb2a644d90f",
+        "project": "ESW \u2022 ASMA-8101",
+        "name": "TSW \u2022 ASMA-8115",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8115-pub-07-fail-closed-scheduler-placement-admission-and-native-readback"
+      },
+      "previewNames": [
+        "TSW \u2022 ASMA-8115"
+      ]
+    },
+    {
+      "nativeId": "wks_4f82950cbef8dcc7",
+      "epics": [
+        "ASMA-8101"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_4f82950cbef8dcc7",
+        "project": "ESW \u2022 ASMA-8101",
+        "name": "TSW \u2022 ASMA-8104",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8104-pub-03-asma-cli-and-hook-enforcement"
+      },
+      "previewNames": [
+        "TSW \u2022 ASMA-8104"
+      ]
+    },
+    {
+      "nativeId": "wks_c1cd9a959277d94e",
+      "epics": [
+        "ASMA-8101"
+      ],
+      "found": true,
+      "observed": {
+        "workspaceId": "wks_c1cd9a959277d94e",
+        "project": "ESW \u2022 ASMA-8101",
+        "name": "TSW \u2022 ASMA-8239",
+        "isolation": "worktree",
+        "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8239/asma-rs-kontor"
+      },
+      "previewNames": [
+        "TSW \u2022 ASMA-8239"
+      ]
+    }
+  ],
+  "oldCancelledVerifyNative": {
+    "requestedId": "5750a5be-8399-4360-a9af-4f9594eac006",
+    "found": true,
+    "exitCode": 0,
+    "native": {
+      "Id": "5750a5be-8399-4360-a9af-4f9594eac006",
+      "Name": "QA",
+      "Provider": "codex-personal",
+      "Model": "gpt-5.6-sol",
+      "Thinking": "xhigh",
+      "Status": "closed",
+      "Archived": true,
+      "ArchivedAt": "2026-09-21T20:16:32.587Z",
+      "Mode": "full-access",
+      "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8190-lsa-persona-launch",
+      "CreatedAt": "2026-09-20T17:50:35.792Z",
+      "UpdatedAt": "2026-09-21T20:16:32.587Z",
+      "LastUsage": null,
+      "Capabilities": {
+        "Streaming": false,
+        "Persistence": true,
+        "DynamicModes": false,
+        "McpServers": false
+      },
+      "AvailableModes": [],
+      "PendingPermissions": [],
+      "Worktree": null,
+      "ParentAgentId": null
+    },
+    "stderr": ""
+  },
+  "boundary": "Exact-ID native readback joined to fresh previews. Archived referenced natives remain recorded as archived; no active authority invented. Historical-before/apply/after temporal reconciliation and workflow/epic acceptance remain separate."
+}

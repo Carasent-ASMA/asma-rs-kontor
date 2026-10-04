@@ -1,0 +1,15 @@
+{
+  "tool": "kontor_runtime_settle",
+  "status": 200,
+  "body": {
+    "agent_run_id": "01a0cf81-50ec-7822-8f3a-bd60690a9bfe",
+    "applied": "created",
+    "evidence_cursor": 4868,
+    "observed": "waiting_input",
+    "outcome": null,
+    "realm_id": "01a00649-9ee6-73e0-ba1b-6a6c35cfd065",
+    "receipt_id": "01a0dd53-3874-7ed3-bb86-ffa197d48739",
+    "team_pending": "a declared role slot is still live or produced no terminal run",
+    "team_run_closed": null
+  }
+}

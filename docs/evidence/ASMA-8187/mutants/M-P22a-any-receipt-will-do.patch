@@ -1,0 +1,34 @@
+diff --git a/crates/kontor-store/src/repository.rs b/crates/kontor-store/src/repository.rs
+index 54b692a9..d70b3b65 100644
+--- a/crates/kontor-store/src/repository.rs
++++ b/crates/kontor-store/src/repository.rs
+@@ -5905,18 +5905,17 @@ impl SqliteStore {
+                 subject: "command receipt",
+             });
+         };
+-        if receipt_project != project_id
+-            || receipt_key != key.as_str()
+-            || receipt_kind != "correct_core_team_route"
+-            || receipt_intent != intent_hash.as_str()
+-            || target_kind.as_deref() != Some("mini_project")
+-            || target_epic.as_deref() != Some(mini_project_id.as_str())
+-        {
+-            return Err(RepositoryError::Conflict {
+-                subject: "core team route succession",
+-                rule: "the receipt was recorded for another command",
+-            });
+-        }
++        // MUTANT M-P22a: any recorded receipt will do.
++        let _ = (
++            receipt_project,
++            receipt_key,
++            receipt_kind,
++            receipt_intent,
++            target_kind,
++            target_epic,
++            &project_id,
++            &mini_project_id,
++        );
+         // The receipt is the last moment anything reads this row before it
+         // becomes the answer to every replay, so the evidence is re-proved
+         // here rather than assumed from the write that produced it. The digest

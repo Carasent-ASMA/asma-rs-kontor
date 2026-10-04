@@ -1,0 +1,42 @@
+--- crates/kontor-store/src/repository.rs
++++ crates/kontor-store/src/repository.rs
+@@ -21960,29 +21960,18 @@
+                     -- descendants. A trailing abandoned-only chain does not
+                     -- hide its bound predecessor.
+                     AND NOT EXISTS (
+-                        WITH RECURSIVE descendants(id, terminal_outcome, terminal_source_kind) AS (
+-                            SELECT child.id, child.terminal_outcome, child.terminal_source_kind
+-                              FROM agent_runs AS child
+-                             WHERE child.project_id = run.project_id
+-                               AND child.team_run_id = run.team_run_id
+-                               AND child.role_key = run.role_key
+-                               AND child.parent_agent_run_id = run.id
+-                            UNION
+-                            SELECT child.id, child.terminal_outcome, child.terminal_source_kind
+-                              FROM agent_runs AS child
+-                              JOIN descendants AS parent ON child.parent_agent_run_id = parent.id
+-                             WHERE child.project_id = run.project_id
+-                               AND child.team_run_id = run.team_run_id
+-                               AND child.role_key = run.role_key
+-                        )
+-                        SELECT 1 FROM descendants AS descendant
+-                         WHERE NOT (
+-                               descendant.terminal_outcome IS 'abandoned'
+-                               AND descendant.terminal_source_kind IS 'operator_abandon'
++                        SELECT 1 FROM agent_runs AS child
++                         WHERE child.project_id = run.project_id
++                           AND child.team_run_id = run.team_run_id
++                           AND child.role_key = run.role_key
++                           AND child.parent_agent_run_id = run.id
++                           AND NOT (
++                               child.terminal_outcome IS 'abandoned'
++                               AND child.terminal_source_kind IS 'operator_abandon'
+                                AND NOT EXISTS (
+                                    SELECT 1 FROM runtime_bindings AS child_binding
+-                                    WHERE child_binding.project_id = run.project_id
+-                                      AND child_binding.agent_run_id = descendant.id
++                                    WHERE child_binding.project_id = child.project_id
++                                      AND child_binding.agent_run_id = child.id
+                                )
+                            )
+                     )
