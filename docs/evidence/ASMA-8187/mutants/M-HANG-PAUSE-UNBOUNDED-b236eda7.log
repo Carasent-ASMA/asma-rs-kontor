@@ -1,0 +1,41 @@
+=== mutant M-HANG-PAUSE-UNBOUNDED-b236eda7 (corrected baseline) ===
+baseline commit   : b236eda75b6d95f96442ad37224030d7de753195
+mutated file      : crates/kontor-daemon/src/applications.rs
+snapshot sha256   : 729d5346cc51c19d82afbd0953c3d2be4990d6bb48d73a8104028f35fce20092
+mutated  sha256   : 26420295818004ca9216dfd1251f2c1a74ac0694f048b53010f0a7701fdb8cc2
+patch             : M-HANG-PAUSE-UNBOUNDED-b236eda7.patch (mutation-only, 27 lines)
+  git apply --check: accepted
+  patch --dry-run  : patching file 'crates/kontor-daemon/src/applications.rs'
+test command      : cargo test -p kontor-daemon --lib -- coherence::a_projection_left_unreleased --test-threads=1
+reproduce (exact) : LIMIT=150 docs/evidence/ASMA-8187/mutants/harness/mutate.sh M-HANG-PAUSE-UNBOUNDED-b236eda7 docs/evidence/ASMA-8187/mutants/harness/m_hang_pause_unbounded.py crates/kontor-daemon/src/applications.rs test -p kontor-daemon --lib -- coherence::a_projection_left_unreleased --test-threads=1
+limiter           : this harness bounds the run at 150s wall clock and
+                    reports 124 = timeout, inconclusive, never a kill.
+toolchain         : rustc 1.97.1 (8bab26f4f 2026-07-14)
+platform          : Darwin 25.6.0 arm64
+--- raw output ---
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.97s
+     Running unittests src/lib.rs (target/debug/deps/kontor_daemon-efbe81bf64c053fc)
+
+running 1 test
+test applications::coherence::a_projection_left_unreleased_stops_waiting_at_its_deadline ... FAILED
+
+failures:
+
+---- applications::coherence::a_projection_left_unreleased_stops_waiting_at_its_deadline stdout ----
+
+thread 'applications::coherence::a_projection_left_unreleased_stops_waiting_at_its_deadline' (27023641) panicked at crates/kontor-daemon/src/applications.rs:44867:9:
+pause must bound its own wait even when nothing ever releases it
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    applications::coherence::a_projection_left_unreleased_stops_waiting_at_its_deadline
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 127 filtered out; finished in 5.01s
+
+error: test failed, to rerun pass `-p kontor-daemon --lib`
+--- exit status: 101 (non-zero = killed; 124 = timeout, inconclusive) ---
+restored sha256   : 729d5346cc51c19d82afbd0953c3d2be4990d6bb48d73a8104028f35fce20092
+restoration       : byte-identical to the named snapshot
+MUTANT markers    : 0

@@ -1,0 +1,20 @@
+manifest-declared artifacts: sha256  bytes  blob  blob-exists  path
+4cab4ea6693c452cdcec8d75750473fafe6b1a0597b3b28e1e65a8d39b3f1212      6048  511ed9b99fbb55e32c9fb00d683d805eb5b8840b  yes  docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/README.md
+5234e972635977aabe7018050bc9da44e7f662bea85488fdb93f59922ebbc885      5721  801894409fbb69195a63fd35a29f12604ef23e4c  yes  docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/manifest.json
+5e816f280e8ae45b4850c74e7729828f34ad685ac04862700c4e20b13acdf993      1262  86476ca286ca6c631267f5368c16ddaa0f5aae2b  yes  docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/clippy.log
+37f42845667faf9d557ba4c1be33ac56077e86c33bf5282ef8bff3362ec0d59e       193  03726a075e159932bd47274ba0eaee732fa5c268  yes  docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/clippy.meta
+690568777a1e092574580f594a4b39cf5dd7d242e52fc418a8bda029b3342665      1901  df89f063601a3c0e582ad3bf6c6ae3a3de6d2436  yes  docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/committed-source-pin.json
+eed19d137f0e286feef82194ebe9383958af62291839151fd989f414e68f72a8       737  9ea8315ef7fb2a1b1d4d53fe68fd13890329e3be  yes  docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/corrected-files-old-and-new.txt
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855         0  e69de29bb2d1d6434b8b29ae775ad8c2e48c5391  yes  docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/fmt-check.log
+300b39ee9fd7a78c5f4e06cc61ae51e5b23ff0a02c7ff4ec20019c47d2bf710c       154  17ef12c68d84a6f770e51d6479195556a4492e1e  yes  docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/fmt-check.meta
+a2359911d8d9a0b6bb3aac32b50c0e647817a971dcca33b044b698691b5d4d71     16417  b19db94554598317cfc4cc6904afdfe40794544a  yes  docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/new-released-124-test.rs
+4721670c6c94531691eb3649ac43ee048c880bc3846fe936df71624614a0bdc3      3398  ecd6ccbd266cdb23e0a7250548a2ff08f4900939  yes  docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/precommit-binding.json
+0d5105350c4679ad1a3266f7296325b74e343b1f6b22f65e36328875beb966d5      5071  0b3728418234996eccbdbf7cb7ad5199059ea1a5  yes  docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/prior-artifact-preservation.txt
+b0dbed36f9ac8e935d49a46dfbef8ff84b66cb54885b832bcf6a47a5ea9f3e0b       603  bdf65822724894a073edaf04ce15437f62c91e66  yes  docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/released-124-focused.log
+a42806988914587932406216cbdca384005f2422463a8b3a529c3736a8189a5c       239  6b779ea93fdd3d0e68a3abaeb98db6cc9c0d90c2  yes  docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/released-124-focused.meta
+76a4af910a6e84cb77739c21fd39d12299769e5b8a0ecee2b60e631f98d4106c      2397  dedfaef22faf13f97a886c13ab95231348ad444f  yes  docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/released-migrations-byteequal.txt
+f95ddf3d8b54c78635def199af97c2ff125c289c9a9dfc41f9b69aad74e4d73c       642  96d133917e719d100542d117f636e615a2a9e113  yes  docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/source-equivalence.txt
+7e4ce0f0da914dbfd61ab06a19c326ce1045c55f58f174de2591bb90c552537c     71054  9cef4e62a79b388c4dfd8ee9aa81119609a43bb7  yes  docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/store-full.log
+1b19c69eb647e53280003b5442ec330ac340732cfbd30e9d7e27384a3c2d5d83       163  7144d7a80e6810d1c6964df8a5dd6b8c1e824f80  yes  docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/store-full.meta
+declared_artifacts=17 all_blobs_exist=True
+note: this verification file and manifest.json are excluded from the manifest's own artifact list to avoid self-reference; manifest.json is verified here.

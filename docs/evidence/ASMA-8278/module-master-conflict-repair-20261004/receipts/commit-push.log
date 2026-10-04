@@ -1,0 +1,17 @@
+cmd=asma git commit --repo external-repo::<worktree> -m 'feat(orchestration): Integrate released master abe990ac for ASMA-8278' --push
+start=2026-10-04T06:24:30Z
+ℹ Submodule target: asma-8278-module-release-integration (external repo)
+ℹ Commit message for asma-8278-module-release-integration (manual):
+› feat(orchestration): Integrate released master abe990ac for ASMA-8278
+› git: [feat/ASMA-8278-shared-orchestration-release-integration ced6db99] feat(orchestration): Integrate released master abe990ac for ASMA-8278
+ℹ Git [asma-8278-module-release-integration]: commit created (ced6db99)
+⚠ Kontor could not attest 'feat/ASMA-8278-shared-orchestration-release-integration' (kontor answered 5: ['{']); publishing on the local branch grammar (paseo-direct surface; ASMA_ORCHESTRATION_SURFACE=kontor fails closed)
+› git: remote:
+› git: remote: GitHub found 19 vulnerabilities on Carasent-ASMA/asma-rs-kontor's default branch (6 high, 10 moderate, 3 low). To find out more, visit:
+› git: remote:      https://github.com/Carasent-ASMA/asma-rs-kontor/security/dependabot
+› git: remote:
+› git: To github.com:Carasent-ASMA/asma-rs-kontor.git
+› git:    c76351f6..ced6db99  feat/ASMA-8278-shared-orchestration-release-integration -> feat/ASMA-8278-shared-orchestration-release-integration
+ℹ Git [asma-8278-module-release-integration]: push succeeded (origin) (c76351f6..ced6db99  feat/ASMA-8278-shared-orchestration-release-integration -> feat/ASMA-8278-shared-orchestration-release-integration)
+✅ Commit flow complete for asma-8278-module-release-integration
+finish=2026-10-04T06:24:35Z

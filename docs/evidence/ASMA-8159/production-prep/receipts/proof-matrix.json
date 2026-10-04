@@ -1,0 +1,503 @@
+{
+  "records": [
+    {
+      "name": "f1-composed-baseline",
+      "command": "cargo test -p kontor-daemon --test projection_rebuild --locked --offline",
+      "exit": 101,
+      "raw_sha256": "a4f6d577851d23dcc8e9a0049645a032bcc7d837cda1662ea03d641678f944c0",
+      "source_manifest_sha256": "2596cc293631ce4cc97c25efe137565e1f9eceda359f65b6dd4efdb76a03703e"
+    },
+    {
+      "name": "f1-composed-envelope-corrected",
+      "command": "cargo test -p kontor-daemon --test projection_rebuild --locked --offline",
+      "exit": 0,
+      "raw_sha256": "09484bcded821b5a9ba2db5a705030ae4161de233977c9f71a6ddf181d6b064b",
+      "source_manifest_sha256": "b08b888b9acfd5abfd9f900e4d6426ff1f6894405deb2413e0fd5edd9b3231a9"
+    },
+    {
+      "name": "f1-composed-final-baseline",
+      "command": "cargo test -p kontor-daemon --test projection_rebuild --locked --offline",
+      "exit": 101,
+      "raw_sha256": "a36cf6416317452a8dd51e2985694de4dfd03e1be6e644672c4e6ded46693950",
+      "source_manifest_sha256": "7a2b31764110d1211bae89768b69d568d3edc9f03686060121b46d5e14b626a4"
+    },
+    {
+      "name": "f1-composed-atomicity-corrected",
+      "command": "cargo test -p kontor-daemon --test projection_rebuild --locked --offline",
+      "exit": 0,
+      "raw_sha256": "1bd44bb755e3bf9485513861ecbfde9e956197d11c4b35ba76d8db3578c8360b",
+      "source_manifest_sha256": "8555d7e44a35ebb86888aba3bbccf3b76d3f4f0d574d902d9acead2fa9223593"
+    },
+    {
+      "name": "mut-007-baseline",
+      "command": "cargo test -p kontor-daemon --test projection_rebuild --locked --offline -- composed_adverse_qualification_cannot_activate_before_canary --exact",
+      "exit": 0,
+      "raw_sha256": "d815c3db3a98c53fb586b1ce06e3ed19a8a3ee34c754db3724b6d1315575802c",
+      "source_manifest_sha256": "8555d7e44a35ebb86888aba3bbccf3b76d3f4f0d574d902d9acead2fa9223593"
+    },
+    {
+      "name": "mut-007-seeded",
+      "command": "cargo test -p kontor-daemon --test projection_rebuild --locked --offline -- composed_adverse_qualification_cannot_activate_before_canary --exact",
+      "exit": 101,
+      "raw_sha256": "98dd4f1a79db71c83abb41407dae661b77348f3d07619d312afcee7ffa7465bd",
+      "source_manifest_sha256": "e724d02bfc2434280d3211c2b4f596e0d5637eba7cd19cd3b4b2711361f21e4a"
+    },
+    {
+      "name": "mut-007-restored",
+      "command": "cargo test -p kontor-daemon --test projection_rebuild --locked --offline -- composed_adverse_qualification_cannot_activate_before_canary --exact",
+      "exit": 0,
+      "raw_sha256": "ff7ed47091cc36edd360e283211006dfcb1f533226c3d7da8b77c636246291d1",
+      "source_manifest_sha256": "8555d7e44a35ebb86888aba3bbccf3b76d3f4f0d574d902d9acead2fa9223593"
+    },
+    {
+      "name": "mut-001-baseline",
+      "command": "cargo test -p kontor-core --test experience_memory --locked --offline -- strict_experience_roundtrip_and_non_memory_eligibility --exact",
+      "exit": 0,
+      "raw_sha256": "c7e7182217e5809fe39c68a326b51cdc0e926fe7abc713901dcc9cd36eede8d3",
+      "source_manifest_sha256": "8555d7e44a35ebb86888aba3bbccf3b76d3f4f0d574d902d9acead2fa9223593"
+    },
+    {
+      "name": "mut-001-seeded",
+      "command": "cargo test -p kontor-core --test experience_memory --locked --offline -- strict_experience_roundtrip_and_non_memory_eligibility --exact",
+      "exit": 101,
+      "raw_sha256": "0e0ebcb783dc10d275352c5ef9bf753441026e1e6c7f2661b8dc09e144e11c40",
+      "source_manifest_sha256": "d782259f16e0fbdbf68f679e5a615a169a236ae791137a9fd2424631c3fa9fb8"
+    },
+    {
+      "name": "mut-001-restored",
+      "command": "cargo test -p kontor-core --test experience_memory --locked --offline -- strict_experience_roundtrip_and_non_memory_eligibility --exact",
+      "exit": 0,
+      "raw_sha256": "79f1394fde6621b95ede9dd0b3029e9f952f7aa6d52e26522c749369912cc664",
+      "source_manifest_sha256": "8555d7e44a35ebb86888aba3bbccf3b76d3f4f0d574d902d9acead2fa9223593"
+    },
+    {
+      "name": "mut-002-baseline",
+      "command": "cargo test -p kontor-store --lib --locked --offline -- memory::experience_tests::malicious_tuple_project_current_approval_tombstone_hash_policy_and_kind --exact",
+      "exit": 0,
+      "raw_sha256": "fc0de11a01a7930a7112ecfd5e104be2d33a1dba47f33cb0e541dc73c6f6ffd6",
+      "source_manifest_sha256": "8555d7e44a35ebb86888aba3bbccf3b76d3f4f0d574d902d9acead2fa9223593"
+    },
+    {
+      "name": "mut-002-seeded",
+      "command": "cargo test -p kontor-store --lib --locked --offline -- memory::experience_tests::malicious_tuple_project_current_approval_tombstone_hash_policy_and_kind --exact",
+      "exit": 101,
+      "raw_sha256": "2b271a3f0376302daa3175804c6260a944a3f6df2bb4b03ee7aa85f583df5879",
+      "source_manifest_sha256": "f64857c0af7828c20667fdbc02ce9c2c74d848c8604509b5c208c67b1ccd17c9"
+    },
+    {
+      "name": "mut-002-restored",
+      "command": "cargo test -p kontor-store --lib --locked --offline -- memory::experience_tests::malicious_tuple_project_current_approval_tombstone_hash_policy_and_kind --exact",
+      "exit": 0,
+      "raw_sha256": "5f47c5164224b2e55f7dc3a354213d845aa951932a0a5ba607d4027525e2a903",
+      "source_manifest_sha256": "8555d7e44a35ebb86888aba3bbccf3b76d3f4f0d574d902d9acead2fa9223593"
+    },
+    {
+      "name": "mut-003-baseline",
+      "command": "cargo test -p kontor-store --lib --locked --offline -- memory::experience_tests::exact_budget_32768_32769_unicode_escaping_and_skip_oversized_top --exact",
+      "exit": 0,
+      "raw_sha256": "32b502afe63d429440fc1d5c44f0b2e2a02766ed0314fcbea45b58523895f6b7",
+      "source_manifest_sha256": "8555d7e44a35ebb86888aba3bbccf3b76d3f4f0d574d902d9acead2fa9223593"
+    },
+    {
+      "name": "mut-003-seeded",
+      "command": "cargo test -p kontor-store --lib --locked --offline -- memory::experience_tests::exact_budget_32768_32769_unicode_escaping_and_skip_oversized_top --exact",
+      "exit": 101,
+      "raw_sha256": "3a929873a273de1bae8623bb42612133c31ebfb588d1144b9fc2689be798aa70",
+      "source_manifest_sha256": "a3c0630748c98b67ce1d2ee51d9a3b86c571ff84b7a0f483847e5444b1880a79"
+    },
+    {
+      "name": "mut-003-restored",
+      "command": "cargo test -p kontor-store --lib --locked --offline -- memory::experience_tests::exact_budget_32768_32769_unicode_escaping_and_skip_oversized_top --exact",
+      "exit": 0,
+      "raw_sha256": "91dd11ed4172a532174f01973cf060e3b2f3fbd570ae97c610cb1e49b924fa48",
+      "source_manifest_sha256": "8555d7e44a35ebb86888aba3bbccf3b76d3f4f0d574d902d9acead2fa9223593"
+    },
+    {
+      "name": "mut-004-baseline",
+      "command": "cargo test -p kontor-memory-cognee --test fixtures authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text --locked --offline -- --exact",
+      "exit": 0,
+      "raw_sha256": "8005c882a7a769bff0fbb962d78faafdfa546190e4406a937fed47c89526683c",
+      "source_manifest_sha256": "8555d7e44a35ebb86888aba3bbccf3b76d3f4f0d574d902d9acead2fa9223593"
+    },
+    {
+      "name": "mut-004-seeded",
+      "command": "cargo test -p kontor-memory-cognee --test fixtures authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text --locked --offline -- --exact",
+      "exit": 101,
+      "raw_sha256": "f466d2d7c16752c761498963b7df5baddbc48fe4bfebc99aa1823cc2485dd38e",
+      "source_manifest_sha256": "f7570fdc1c06e70f3702ead388a662b0009d0e9a639f40a68c22783a7d99f36f"
+    },
+    {
+      "name": "mut-004-restored",
+      "command": "cargo test -p kontor-memory-cognee --test fixtures authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text --locked --offline -- --exact",
+      "exit": 0,
+      "raw_sha256": "d2bc626617aa83305ffc71a54bd2153b921917134f46870d1122dc77c1837adb",
+      "source_manifest_sha256": "8555d7e44a35ebb86888aba3bbccf3b76d3f4f0d574d902d9acead2fa9223593"
+    },
+    {
+      "name": "mut-005-baseline",
+      "command": "cargo test -p kontor-daemon --test loopback_api experience_launch::degraded_launch_never_lists_the_corpus_and_timeout_keeps_store_unlocked --locked --offline -- --exact",
+      "exit": 0,
+      "raw_sha256": "14f9ee1b22db7916fa0136c9511d98226d9de34a89b132a8ba0b7f5d1980f4cf",
+      "source_manifest_sha256": "8555d7e44a35ebb86888aba3bbccf3b76d3f4f0d574d902d9acead2fa9223593"
+    },
+    {
+      "name": "primary-upstream-inspection",
+      "command": "python3 docs/evidence/ASMA-8159/production-prep/inspect-upstream.py",
+      "exit": 0,
+      "raw_sha256": "564ab93220eecaeeeca38846a13aa1d37b45025c3259e359fde4424ebced705a",
+      "source_manifest_sha256": "8555d7e44a35ebb86888aba3bbccf3b76d3f4f0d574d902d9acead2fa9223593"
+    },
+    {
+      "name": "mut-005-seeded",
+      "command": "cargo test -p kontor-daemon --test loopback_api experience_launch::degraded_launch_never_lists_the_corpus_and_timeout_keeps_store_unlocked --locked --offline -- --exact",
+      "exit": 101,
+      "raw_sha256": "a49d8c0b4b443c8c11ef7ac49be3e26fad83163e59e1396d1a00d20561526af6",
+      "source_manifest_sha256": "332dce14b111a7b1485001a6a3f9f70beb17fe284aaf54f13a0d8140533ae8f1"
+    },
+    {
+      "name": "mut-005-restored",
+      "command": "cargo test -p kontor-daemon --test loopback_api experience_launch::degraded_launch_never_lists_the_corpus_and_timeout_keeps_store_unlocked --locked --offline -- --exact",
+      "exit": 0,
+      "raw_sha256": "ada5e6c65c51c0845dcae3046caebfeb48dc9e289eae468d3343f1f30c0a5ebc",
+      "source_manifest_sha256": "8555d7e44a35ebb86888aba3bbccf3b76d3f4f0d574d902d9acead2fa9223593"
+    },
+    {
+      "name": "mut-006-baseline",
+      "command": "cargo test -p kontor-daemon --test loopback_api experience_launch::root_launch_contains_exact_frozen_canonical_bytes_and_downstream_cites_same_binding --locked --offline -- --exact",
+      "exit": 0,
+      "raw_sha256": "98e3a4482974a3493e42cf271b48c3e159bf05c09618d5fd59b3b77a045834e3",
+      "source_manifest_sha256": "8555d7e44a35ebb86888aba3bbccf3b76d3f4f0d574d902d9acead2fa9223593"
+    },
+    {
+      "name": "mut-006-seeded",
+      "command": "cargo test -p kontor-daemon --test loopback_api experience_launch::root_launch_contains_exact_frozen_canonical_bytes_and_downstream_cites_same_binding --locked --offline -- --exact",
+      "exit": 101,
+      "raw_sha256": "d741ec28d83cc59a1df62dbc8e10097719b40887c05e87c7d97789f4a9ef6439",
+      "source_manifest_sha256": "784939e32d83dab61c0def9b2283fa9327881a00a20c73f91ddbd3276e36ff45"
+    },
+    {
+      "name": "mut-006-restored",
+      "command": "cargo test -p kontor-daemon --test loopback_api experience_launch::root_launch_contains_exact_frozen_canonical_bytes_and_downstream_cites_same_binding --locked --offline -- --exact",
+      "exit": 0,
+      "raw_sha256": "5e788b849a4b6cee263af24029120baba5b70a7a3209a455d163acdf26bd1377",
+      "source_manifest_sha256": "8555d7e44a35ebb86888aba3bbccf3b76d3f4f0d574d902d9acead2fa9223593"
+    },
+    {
+      "name": "f4-migration-0120-forced-rollback",
+      "command": "cargo test -p kontor-store --test memory_migration_rollback --locked --offline -- --nocapture",
+      "exit": 0,
+      "raw_sha256": "dec79d3a1a91d6e0e107b6f8f1321dfcf1b677308c7335c1adf3412a5ebb3776",
+      "source_manifest_sha256": "505df01e06c9073a4a516e723bcd09149dcd23056c6d42e119d07bf0a978adab"
+    },
+    {
+      "name": "f4-v119-upgrade",
+      "command": "cargo test -p kontor-store --test schema_v1 v120_upgrade_preserves_generic_ledger_and_enforces_immutable_memory_receipts --locked --offline -- --exact",
+      "exit": 0,
+      "raw_sha256": "ca0c77a4179c06f054db07f1d95e65afada0d44fb08123490ac4f3e7014b21ee",
+      "source_manifest_sha256": "505df01e06c9073a4a516e723bcd09149dcd23056c6d42e119d07bf0a978adab"
+    },
+    {
+      "name": "f4-fresh-schema",
+      "command": "cargo test -p kontor-store --test schema_v1 an_empty_database_migrates_to_the_current_schema_version --locked --offline -- --exact",
+      "exit": 0,
+      "raw_sha256": "6afd9e93ac3e0ee034aaa504058246223d89de65826abfabacf5415dcf7707cf",
+      "source_manifest_sha256": "bbb39d3d308644f9654b51e5d24b06b2c8d9ea0808641a4bc91c83677dd19998"
+    },
+    {
+      "name": "synthetic-census-rehearsal",
+      "command": "cargo test -p kontor-daemon --test synthetic_census_rehearsal --locked --offline -- --nocapture",
+      "exit": 0,
+      "raw_sha256": "1dc61070a990b814501f29d548550a5bc3cf241e38436da868c419beb0c2cf03",
+      "source_manifest_sha256": "bbb39d3d308644f9654b51e5d24b06b2c8d9ea0808641a4bc91c83677dd19998"
+    },
+    {
+      "name": "f3-clippy-workspace-contract",
+      "command": "cargo clippy --workspace --all-targets --locked --offline -- -D warnings",
+      "exit": 0,
+      "raw_sha256": "74208ca9b3491e96995ec441cd13726c1f87fbd2e7e22dbd3fa5d7832078c9bb",
+      "source_manifest_sha256": "bbb39d3d308644f9654b51e5d24b06b2c8d9ea0808641a4bc91c83677dd19998"
+    },
+    {
+      "name": "f3-build-workspace",
+      "command": "cargo build --workspace --locked --offline",
+      "exit": 0,
+      "raw_sha256": "249ff57fd2c97f5af49280cf233335b269d04e0f619428ae9cdae474eb645d86",
+      "source_manifest_sha256": "bbb39d3d308644f9654b51e5d24b06b2c8d9ea0808641a4bc91c83677dd19998"
+    },
+    {
+      "name": "f3-fast-lane-plan",
+      "command": "env CARGO_NET_OFFLINE=true python3 scripts/test-lanes.py --lane fast --base 29c81346 --dry-run",
+      "exit": 0,
+      "raw_sha256": "fd6e3a14221435456487bb88c1e3ff0ade39c0134e86566bfc76b145703e649d",
+      "source_manifest_sha256": "bbb39d3d308644f9654b51e5d24b06b2c8d9ea0808641a4bc91c83677dd19998"
+    },
+    {
+      "name": "f3-light-and-contract-breadth",
+      "command": "cargo test -p kontor-core -p kontor-api -p kontor-cli -p kontor-mcp -p kontor-memory-cognee -p kontor-tests-contract --locked --offline",
+      "exit": 0,
+      "raw_sha256": "9f4b0dc8a7a79b5062e5d6610f3580f25faa74ddcc39c6bed3357023ed313247",
+      "source_manifest_sha256": "bbb39d3d308644f9654b51e5d24b06b2c8d9ea0808641a4bc91c83677dd19998"
+    },
+    {
+      "name": "final-mut-007-baseline",
+      "command": "cargo test -p kontor-daemon --test projection_rebuild --locked --offline -- composed_adverse_qualification_cannot_activate_before_canary --exact",
+      "exit": 0,
+      "raw_sha256": "9febdf71084746327b43615dc44ab06f818e66528c55a491193116adf1121020",
+      "source_manifest_sha256": "e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5"
+    },
+    {
+      "name": "f3-heavy-lane-plan",
+      "command": "env CARGO_NET_OFFLINE=true python3 scripts/test-lanes.py --lane heavy --base 29c81346 --dry-run",
+      "exit": 0,
+      "raw_sha256": "53f2ba82062435a74954ae9ae7a9aaf42705c35c5527a31c9e9b527977b58055",
+      "source_manifest_sha256": "e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5"
+    },
+    {
+      "name": "f3-cargo-deny-policy",
+      "command": "cargo deny --offline check licenses bans sources",
+      "exit": 0,
+      "raw_sha256": "d1ef6ca4677d438ef4deb43e84e3fabb39b7f8304669726942a071bc9335d2d3",
+      "source_manifest_sha256": "e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5"
+    },
+    {
+      "name": "actual-default-heads-and-docs",
+      "command": "python3 docs/evidence/ASMA-8159/production-prep/inspect-integration.py",
+      "exit": 0,
+      "raw_sha256": "15f9a93c4ca1a6385644ec5d3375f285c78e172749396f874c64933328fc8ce4",
+      "source_manifest_sha256": "e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5"
+    },
+    {
+      "name": "supported-git-operations",
+      "command": "asma git --help",
+      "exit": 0,
+      "raw_sha256": "f34be16f9bc018b44d01e5fc07537720854381f122b6e04a69dfd3bbc3a1a161",
+      "source_manifest_sha256": "e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5"
+    },
+    {
+      "name": "f3-generated-console-contract-parity",
+      "command": "python3 docs/evidence/ASMA-8159/production-prep/check-contract-parity.py",
+      "exit": 0,
+      "raw_sha256": "25cebdfaecad933ad14755387618056b3f64eade3341edd70ba98fe0857ee506",
+      "source_manifest_sha256": "e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5"
+    },
+    {
+      "name": "final-mut-007-seeded",
+      "command": "cargo test -p kontor-daemon --test projection_rebuild --locked --offline -- composed_adverse_qualification_cannot_activate_before_canary --exact",
+      "exit": 101,
+      "raw_sha256": "dd922e113307c237bc6cbb266bb9cb15374e4c1652930243211c2ee3c50a33a3",
+      "source_manifest_sha256": "293bacceaa46b0e64c83c83679cc077b6e4900949eaf3211445e6eaaca9e0b96"
+    },
+    {
+      "name": "final-mut-007-restored",
+      "command": "cargo test -p kontor-daemon --test projection_rebuild --locked --offline -- composed_adverse_qualification_cannot_activate_before_canary --exact",
+      "exit": 0,
+      "raw_sha256": "953cac2860653f6be6e222a8071a8aad79a09b7a47ee59e6c928513eb69fb54a",
+      "source_manifest_sha256": "e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5"
+    },
+    {
+      "name": "final-mut-001-baseline",
+      "command": "cargo test -p kontor-core --test experience_memory --locked --offline -- strict_experience_roundtrip_and_non_memory_eligibility --exact",
+      "exit": 0,
+      "raw_sha256": "2218988aa98ad04f5e727efcdd88beda618bd0f99e69215522faafce54acf770",
+      "source_manifest_sha256": "e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5"
+    },
+    {
+      "name": "final-mut-001-seeded",
+      "command": "cargo test -p kontor-core --test experience_memory --locked --offline -- strict_experience_roundtrip_and_non_memory_eligibility --exact",
+      "exit": 101,
+      "raw_sha256": "173b1cff417d8cfdafb11485506a36fe2ff5288651045817658a1e50d56d4d92",
+      "source_manifest_sha256": "d84d4071a9a61f2d1e23fd3169779aceea4f7083500e4bf01d15718fef0d2d1d"
+    },
+    {
+      "name": "final-mut-001-restored",
+      "command": "cargo test -p kontor-core --test experience_memory --locked --offline -- strict_experience_roundtrip_and_non_memory_eligibility --exact",
+      "exit": 0,
+      "raw_sha256": "7824345b5ff44d05b1a4fe1a3f2f21bebec7ba99d0144f0762a867dc788310c3",
+      "source_manifest_sha256": "e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5"
+    },
+    {
+      "name": "final-mut-002-baseline",
+      "command": "cargo test -p kontor-store --lib --locked --offline -- memory::experience_tests::malicious_tuple_project_current_approval_tombstone_hash_policy_and_kind --exact",
+      "exit": 0,
+      "raw_sha256": "357600d5a055ac8f9832aec9fcf93e71f3a9a221ae8bb1c080e57d8a95465b82",
+      "source_manifest_sha256": "e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5"
+    },
+    {
+      "name": "final-mut-002-seeded",
+      "command": "cargo test -p kontor-store --lib --locked --offline -- memory::experience_tests::malicious_tuple_project_current_approval_tombstone_hash_policy_and_kind --exact",
+      "exit": 101,
+      "raw_sha256": "b47665ed36a84cc444064af3616c46926afcf69774de19e8fc83dee95f8cb4fe",
+      "source_manifest_sha256": "3170ce559c21c089e826442808f1df715c25f4cb8d5a7338a9a56e1b74f4a907"
+    },
+    {
+      "name": "final-mut-002-restored",
+      "command": "cargo test -p kontor-store --lib --locked --offline -- memory::experience_tests::malicious_tuple_project_current_approval_tombstone_hash_policy_and_kind --exact",
+      "exit": 0,
+      "raw_sha256": "bf1cf316e1fed27cc51d8ea1d760986059b12dc5760f805bbc2b59b208572f2d",
+      "source_manifest_sha256": "e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5"
+    },
+    {
+      "name": "final-mut-003-baseline",
+      "command": "cargo test -p kontor-store --lib --locked --offline -- memory::experience_tests::exact_budget_32768_32769_unicode_escaping_and_skip_oversized_top --exact",
+      "exit": 0,
+      "raw_sha256": "c3be51d39e8d0b92c4b8ec7b0c8c9834c55272968cefbb473dfe5ffcfb45cbe4",
+      "source_manifest_sha256": "e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5"
+    },
+    {
+      "name": "final-mut-003-seeded",
+      "command": "cargo test -p kontor-store --lib --locked --offline -- memory::experience_tests::exact_budget_32768_32769_unicode_escaping_and_skip_oversized_top --exact",
+      "exit": 101,
+      "raw_sha256": "53be52fbaecb1477e7a658c28cd326af214586264aa3454b48d14f60ccdac0ce",
+      "source_manifest_sha256": "a9278531ade1e40d4bd6e14a23fe8d28f8777ffc98e63169d748bf7a0034804c"
+    },
+    {
+      "name": "final-mut-003-restored",
+      "command": "cargo test -p kontor-store --lib --locked --offline -- memory::experience_tests::exact_budget_32768_32769_unicode_escaping_and_skip_oversized_top --exact",
+      "exit": 0,
+      "raw_sha256": "11824594ce61fdb45fb791e09b6cfd57445399544e0cea7c31612f305e38ad7b",
+      "source_manifest_sha256": "e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5"
+    },
+    {
+      "name": "f3-safe-isolation-inventory",
+      "command": "python3 docs/evidence/ASMA-8159/production-prep/safety-inventory.py",
+      "exit": 0,
+      "raw_sha256": "6a88362e59eacd2a6542c56a87de750ed33d86fa815f0d31e1e07712786e3e86",
+      "source_manifest_sha256": "e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5"
+    },
+    {
+      "name": "final-mut-004-baseline",
+      "command": "cargo test -p kontor-memory-cognee --test fixtures authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text --locked --offline -- --exact",
+      "exit": 0,
+      "raw_sha256": "8777d622f609783524ec1c7c7f7ea1f2d3eee5d84938d408faf0b31003a0900d",
+      "source_manifest_sha256": "e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5"
+    },
+    {
+      "name": "final-mut-004-seeded",
+      "command": "cargo test -p kontor-memory-cognee --test fixtures authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text --locked --offline -- --exact",
+      "exit": 101,
+      "raw_sha256": "86c030f709ced794debd9b8eeef8034e666cd3107e88c624afcb5aefa6c00fd1",
+      "source_manifest_sha256": "d3103c57020878287e04ac5440f7823f9cc87c5eb85b59d8c39a7964cd5c00ef"
+    },
+    {
+      "name": "final-mut-004-restored",
+      "command": "cargo test -p kontor-memory-cognee --test fixtures authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text --locked --offline -- --exact",
+      "exit": 0,
+      "raw_sha256": "97ade12ec0bb103e681caab450a6a277961aceb46b3cbfaba7e6629f386490cb",
+      "source_manifest_sha256": "e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5"
+    },
+    {
+      "name": "final-mut-005-baseline",
+      "command": "cargo test -p kontor-daemon --test loopback_api experience_launch::degraded_launch_never_lists_the_corpus_and_timeout_keeps_store_unlocked --locked --offline -- --exact",
+      "exit": 0,
+      "raw_sha256": "96beb49cde60fc563547073a410c680faf490a5e0636e511afb3e7b3ccee46d1",
+      "source_manifest_sha256": "e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5"
+    },
+    {
+      "name": "final-mut-005-seeded",
+      "command": "cargo test -p kontor-daemon --test loopback_api experience_launch::degraded_launch_never_lists_the_corpus_and_timeout_keeps_store_unlocked --locked --offline -- --exact",
+      "exit": 101,
+      "raw_sha256": "5ad73e94a8c566d0ea9342848a7388ba78bbd14bdff71e28c2d6d78f64a8b75c",
+      "source_manifest_sha256": "7a6275426f13a227bd334cc11a02b2981ba54866a18267d31b912f2e713c559c"
+    },
+    {
+      "name": "final-mut-005-restored",
+      "command": "cargo test -p kontor-daemon --test loopback_api experience_launch::degraded_launch_never_lists_the_corpus_and_timeout_keeps_store_unlocked --locked --offline -- --exact",
+      "exit": 0,
+      "raw_sha256": "c1ce361eee032ee0347d9d876f7f04a0fe9dfbd36c09835a926deddd74949fb9",
+      "source_manifest_sha256": "e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5"
+    },
+    {
+      "name": "final-mut-006-baseline",
+      "command": "cargo test -p kontor-daemon --test loopback_api experience_launch::root_launch_contains_exact_frozen_canonical_bytes_and_downstream_cites_same_binding --locked --offline -- --exact",
+      "exit": 0,
+      "raw_sha256": "c54a64e1c1a01f6e08e5fe2fdc636d8db6ecd03b773450bbc04b521afca599ce",
+      "source_manifest_sha256": "e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5"
+    },
+    {
+      "name": "final-mut-006-seeded",
+      "command": "cargo test -p kontor-daemon --test loopback_api experience_launch::root_launch_contains_exact_frozen_canonical_bytes_and_downstream_cites_same_binding --locked --offline -- --exact",
+      "exit": 101,
+      "raw_sha256": "d31fa0640fc82daef5685932c24f8c8f9a4cfd81205f8d4709e880135f40efcf",
+      "source_manifest_sha256": "ee50380d61770a64c5b56611ccf13c8b202de2f0633806e2be18f3c23f7f49c5"
+    },
+    {
+      "name": "final-mut-006-restored",
+      "command": "cargo test -p kontor-daemon --test loopback_api experience_launch::root_launch_contains_exact_frozen_canonical_bytes_and_downstream_cites_same_binding --locked --offline -- --exact",
+      "exit": 0,
+      "raw_sha256": "fca377d53729eb1c6ba41b95cf0b8a499e698b7185301a64019d89298e5d1736",
+      "source_manifest_sha256": "e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5"
+    },
+    {
+      "name": "f3-full-safe-loopback",
+      "command": "cargo test -p kontor-daemon --test loopback_api --locked --offline -- --test-threads=4",
+      "exit": 0,
+      "raw_sha256": "98edac33bcddd89ebf6b2821164dc3a3d20ec854b485e0339ab1faf0efb966f1",
+      "source_manifest_sha256": "e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5"
+    },
+    {
+      "name": "f3-store-library",
+      "command": "cargo test -p kontor-store --lib --locked --offline",
+      "exit": 0,
+      "raw_sha256": "4e9dec276006d94e8927a0f6ced208973b1ac7e21b22002d95d6d17f77f34e0b",
+      "source_manifest_sha256": "e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5"
+    },
+    {
+      "name": "f3-fmt",
+      "command": "cargo fmt --all -- --check",
+      "exit": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_manifest_sha256": "e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5"
+    },
+    {
+      "name": "f3-composed-memory-and-recovery",
+      "command": "cargo test -p kontor-daemon --test projection_rebuild --test experience_memory --test recovery_security --locked --offline -- --test-threads=4",
+      "exit": 0,
+      "raw_sha256": "ec18e2153a5d51f935a5517a570045f345c3639ec56e50bd8e4935cdcda4b03b",
+      "source_manifest_sha256": "e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5"
+    },
+    {
+      "name": "f3-whitespace",
+      "command": "git diff --check",
+      "exit": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_manifest_sha256": "e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5"
+    },
+    {
+      "name": "f3-full-schema-v1",
+      "command": "cargo test -p kontor-store --test schema_v1 --locked --offline -- --test-threads=4",
+      "exit": 0,
+      "raw_sha256": "0e1da0c50752e46ebb866f42d3e61aa755503f3d1c8a993e81aa17feabe1e9c7",
+      "source_manifest_sha256": "e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5"
+    },
+    {
+      "name": "f3-runtime-synthetic-contracts",
+      "command": "cargo test -p kontor-runtime-paseo -p kontor-runtime-codex -p kontor-runtime-ao --test contract --locked --offline",
+      "exit": 0,
+      "raw_sha256": "f6809d2e030cb7ef64f4a42440f522bf7446eff224791bd972c69c4361fc880d",
+      "source_manifest_sha256": "e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5"
+    },
+    {
+      "name": "f3-jira-fake-boundary",
+      "command": "cargo test -p kontor-jira --test credential_scope --test native_connector --locked --offline",
+      "exit": 0,
+      "raw_sha256": "df27d3a9f72e5f974a19a88f6fd88bbd9340689869e81cfe3aa48dcd57ec4e72",
+      "source_manifest_sha256": "e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5"
+    },
+    {
+      "name": "f3-publication-immutable-boundary",
+      "command": "cargo test -p kontor-store --test publication_attestations_immutable --locked --offline",
+      "exit": 101,
+      "raw_sha256": "31d66613dc4f6e1a1355fd06eee8fe0993168767d7ff35fd418ea690736d847c",
+      "source_manifest_sha256": "e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5"
+    }
+  ],
+  "final_source_sha256": "e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5",
+  "outcome": {
+    "F1": "source/fake pass",
+    "mutants": "seven compiled kills, exact restoration",
+    "F4": "synthetic SQL rollback/fresh/upgrade pass, backup/restore pass",
+    "synthetic_rehearsal": "55 artificial cohort/current N57; local same-Realm copy; teardown pass",
+    "F3": "blocked on unchanged inherited schema-119 assertion; named breadth passes, live/install gates unperformed"
+  },
+  "release": "not authorized or claimed"
+}

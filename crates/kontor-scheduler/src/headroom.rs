@@ -285,11 +285,179 @@ pub struct EligibleAccount {
     pub selectable_providers: BTreeSet<String>,
 }
 
+/// What the quota evidence says about one rung: the translation of one exact
+/// observation, before any rung is chosen.
+///
+/// The evidence depends only on the rung's provider alias and the accounts
+/// that can be selected for it, so two rungs on one alias always agree. That is
+/// what lets a caller state it as an explicit eligibility — the aliases with no
+/// `admissible` account are the ones unavailable now — and hand the choice to
+/// another resolver without a second filter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RungEvidence {
+    /// The first account, in ascending profile-id order, whose headroom admits
+    /// a new seat on this rung now.
+    pub admissible: Option<AccountProfileId>,
+    /// Whether the provider is enabled and any account can be selected for it.
+    pub had_candidate: bool,
+    /// When each blocked account's headroom returns, in account order, up to
+    /// the first admissible account.
+    pub resets: Vec<Timestamp>,
+}
+
+/// Translate one exact quota observation into per-rung evidence, in rung
+/// order, with the thresholds of `seat`.
+///
+/// `provider_enabled` is the deployment's own standing exclusion — an operator
+/// who turned a provider off in settings, which no stored observation
+/// overrides. A disabled provider's rung has no candidate and no reset.
+#[allow(clippy::too_many_arguments)]
+pub fn rung_evidence<F>(
+    rungs: &[ModelRung],
+    accounts: &[EligibleAccount],
+    states: &[ProviderQuotaState],
+    config: &HeadroomConfig,
+    seat: SeatClass,
+    now: Timestamp,
+    freshness: jiff::SignedDuration,
+    provider_enabled: F,
+) -> Vec<RungEvidence>
+where
+    F: Fn(&str) -> bool,
+{
+    let thresholds = config.thresholds_for(seat);
+    let mut ordered: Vec<&EligibleAccount> = accounts.iter().collect();
+    ordered.sort_by_key(|account| account.account_profile_id);
+    rungs
+        .iter()
+        .map(|rung| {
+            let provider = rung.provider.0.as_str();
+            let mut evidence = RungEvidence {
+                admissible: None,
+                had_candidate: false,
+                resets: Vec::new(),
+            };
+            if !provider_enabled(provider) {
+                return evidence;
+            }
+            for account in &ordered {
+                if !account.selectable_providers.contains(provider) {
+                    continue;
+                }
+                evidence.had_candidate = true;
+                match headroom_of(
+                    states,
+                    account.account_profile_id,
+                    provider,
+                    &thresholds,
+                    now,
+                    freshness,
+                ) {
+                    // Account before rung: the first account with room takes
+                    // the launch, and no later account is consulted.
+                    ProviderHeadroom::Admissible => {
+                        evidence.admissible = Some(account.account_profile_id);
+                        break;
+                    }
+                    ProviderHeadroom::Blocked { blocked_until } => {
+                        evidence.resets.push(blocked_until);
+                    }
+                    // No instant to record: a drained balance, or a currency pair
+                    // nobody can compare, is not something a timer resolves.
+                    ProviderHeadroom::Unavailable => {}
+                }
+            }
+            evidence
+        })
+        .collect()
+}
+
+/// The placement a walk over `rungs` reaches once a rung has been chosen.
+///
+/// `admitted` is the index of the chosen rung, whose evidence must name an
+/// admissible account, or `None` when nothing was chosen. Every rung before it
+/// is one the walk would rather have had: a near reset on any of them means
+/// waiting instead of descending. With nothing chosen, the earliest reset
+/// anywhere decides between waiting and escalating. [`resolve`] chooses the
+/// first admissible rung; a caller that chose through an explicit eligibility
+/// passes its own choice and the same rules apply.
+///
+/// # Errors
+/// Returns [`DomainError`] for an empty chain, evidence that does not match
+/// the rungs, or a chosen rung with no admissible account.
+pub fn placement(
+    rungs: &[ModelRung],
+    evidence: &[RungEvidence],
+    admitted: Option<usize>,
+    accounts: usize,
+    config: &HeadroomConfig,
+    now: Timestamp,
+) -> DomainResult<Placement> {
+    if rungs.is_empty() {
+        return Err(DomainError::invalid(
+            "ModelChainPolicy",
+            "a model chain must declare at least one rung",
+        ));
+    }
+    if evidence.len() != rungs.len() || admitted.is_some_and(|index| index >= rungs.len()) {
+        return Err(DomainError::invalid(
+            "ProviderHeadroom",
+            "the headroom evidence does not describe this chain",
+        ));
+    }
+    for (index, (rung, evidence)) in rungs.iter().zip(evidence).enumerate() {
+        if admitted == Some(index) {
+            let account = evidence.admissible.ok_or_else(|| {
+                DomainError::invalid(
+                    "ProviderHeadroom",
+                    "the chosen rung has no account with admissible headroom",
+                )
+            })?;
+            return Ok(Placement::Admit {
+                rung: rung.clone(),
+                account,
+            });
+        }
+        // Wait for a near reset on a rung we would rather have than descend past
+        // it. `min` here and `max` inside a single account's windows are
+        // different questions: the account is usable once its *last* spent
+        // window returns, and the rung is usable once its *first* account does.
+        if evidence.had_candidate
+            && let Some(soonest) = evidence.resets.iter().copied().min()
+            && within(now, soonest, config.short_horizon_seconds)
+        {
+            return Ok(Placement::Wait {
+                until: soonest,
+                reason: WaitReason::NearReset,
+            });
+        }
+    }
+
+    // Every rung walked and nothing admitted.
+    match evidence
+        .iter()
+        .flat_map(|evidence| evidence.resets.iter().copied())
+        .min()
+    {
+        Some(earliest) if within(now, earliest, config.escalation_horizon_seconds) => {
+            Ok(Placement::Wait {
+                until: earliest,
+                reason: WaitReason::Exhausted,
+            })
+        }
+        earliest_reset => Ok(Placement::NeedsHuman {
+            earliest_reset,
+            escalation: quota_escalation(rungs.len(), accounts, earliest_reset)?,
+        }),
+    }
+}
+
 /// Resolve one launch: which account, on which rung, or what to do instead.
 ///
 /// The walk is deterministic. Accounts are taken in ascending profile-id order
 /// within each rung, so the same inputs always place the same launch and a
-/// replay of a plan selects what the plan selected.
+/// replay of a plan selects what the plan selected. It is [`rung_evidence`]
+/// followed by [`placement`] of the first admissible rung.
 ///
 /// `provider_enabled` is the deployment's own standing exclusion — an operator
 /// who turned a provider off in settings, which no stored observation overrides.
@@ -311,91 +479,20 @@ pub fn resolve<F>(
 where
     F: Fn(&str) -> bool,
 {
-    if rungs.is_empty() {
-        return Err(DomainError::invalid(
-            "ModelChainPolicy",
-            "a model chain must declare at least one rung",
-        ));
-    }
-    let thresholds = config.thresholds_for(seat);
-    let mut ordered: Vec<&EligibleAccount> = accounts.iter().collect();
-    ordered.sort_by_key(|account| account.account_profile_id);
-
-    // Every reset seen anywhere in the walk, so total exhaustion can name the
-    // earliest one without a second pass.
-    let mut all_resets: Vec<Timestamp> = Vec::new();
-
-    for rung in rungs {
-        let provider = rung.provider.0.as_str();
-        if !provider_enabled(provider) {
-            continue;
-        }
-        // The resets blocking *this* rung specifically. Kept separate from
-        // `all_resets`: the short-horizon wait is a statement about the rung the
-        // launch would rather have, and a near reset three rungs down is no
-        // reason to refuse a rung that is free right now.
-        let mut rung_resets: Vec<Timestamp> = Vec::new();
-        let mut had_candidate = false;
-
-        for account in &ordered {
-            if !account.selectable_providers.contains(provider) {
-                continue;
-            }
-            had_candidate = true;
-            match headroom_of(
-                states,
-                account.account_profile_id,
-                provider,
-                &thresholds,
-                now,
-                freshness,
-            ) {
-                // Account before rung: the first account with room takes the
-                // launch, and no lower rung is consulted at all.
-                ProviderHeadroom::Admissible => {
-                    return Ok(Placement::Admit {
-                        rung: rung.clone(),
-                        account: account.account_profile_id,
-                    });
-                }
-                ProviderHeadroom::Blocked { blocked_until } => {
-                    rung_resets.push(blocked_until);
-                    all_resets.push(blocked_until);
-                }
-                // No instant to record: a drained balance, or a currency pair
-                // nobody can compare, is not something a timer resolves.
-                ProviderHeadroom::Unavailable => {}
-            }
-        }
-
-        // Wait for a near reset on a rung we would rather have than descend past
-        // it. `min` here and `max` inside a single account's windows are
-        // different questions: the account is usable once its *last* spent
-        // window returns, and the rung is usable once its *first* account does.
-        if had_candidate
-            && let Some(soonest) = rung_resets.iter().copied().min()
-            && within(now, soonest, config.short_horizon_seconds)
-        {
-            return Ok(Placement::Wait {
-                until: soonest,
-                reason: WaitReason::NearReset,
-            });
-        }
-    }
-
-    // Every rung walked and nothing admitted.
-    match all_resets.iter().copied().min() {
-        Some(earliest) if within(now, earliest, config.escalation_horizon_seconds) => {
-            Ok(Placement::Wait {
-                until: earliest,
-                reason: WaitReason::Exhausted,
-            })
-        }
-        earliest_reset => Ok(Placement::NeedsHuman {
-            earliest_reset,
-            escalation: quota_escalation(rungs.len(), ordered.len(), earliest_reset)?,
-        }),
-    }
+    let evidence = rung_evidence(
+        rungs,
+        accounts,
+        states,
+        config,
+        seat,
+        now,
+        freshness,
+        provider_enabled,
+    );
+    let admitted = evidence
+        .iter()
+        .position(|evidence| evidence.admissible.is_some());
+    placement(rungs, &evidence, admitted, accounts.len(), config, now)
 }
 
 /// New admission needs an exact current quota observation. A runtime capability
@@ -835,6 +932,125 @@ mod tests {
                 account: profile(1),
             }
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Evidence, then placement (ASMA-8280 G-4)
+    // -----------------------------------------------------------------------
+
+    fn evidence(accounts: &[EligibleAccount], states: &[ProviderQuotaState]) -> Vec<RungEvidence> {
+        rung_evidence(
+            &chain(),
+            accounts,
+            states,
+            &config(),
+            SeatClass::Delivery,
+            now(),
+            jiff::SignedDuration::from_secs(60),
+            |provider| provider != "deepseek",
+        )
+    }
+
+    #[test]
+    fn the_walk_is_its_evidence_and_its_first_admissible_rung() {
+        let accounts = [account(1, &["codex", "claude", "openrouter", "deepseek"])];
+        let states = [
+            state(profile(1), "codex", ProviderQuotaKind::Exhausted)
+                .resets_at(NOW + 5_000)
+                .build(),
+            state(profile(1), "claude", ProviderQuotaKind::Available).build(),
+            state(profile(1), "deepseek", ProviderQuotaKind::Available).build(),
+        ];
+        let evidence = evidence(&accounts, &states);
+        assert_eq!(
+            evidence,
+            [
+                RungEvidence {
+                    admissible: None,
+                    had_candidate: true,
+                    resets: vec![at(NOW + 5_000)],
+                },
+                RungEvidence {
+                    admissible: Some(profile(1)),
+                    had_candidate: true,
+                    resets: Vec::new(),
+                },
+                RungEvidence {
+                    admissible: None,
+                    had_candidate: true,
+                    resets: Vec::new(),
+                },
+                // A disabled provider has no candidate, whatever its row says.
+                RungEvidence {
+                    admissible: None,
+                    had_candidate: false,
+                    resets: Vec::new(),
+                },
+            ]
+        );
+        let walked = resolve(
+            &chain(),
+            &accounts,
+            &states,
+            &config(),
+            SeatClass::Delivery,
+            now(),
+            jiff::SignedDuration::from_secs(60),
+            |provider| provider != "deepseek",
+        )
+        .expect("a chain");
+        assert_eq!(
+            placement(
+                &chain(),
+                &evidence,
+                Some(1),
+                accounts.len(),
+                &config(),
+                now()
+            )
+            .expect("a chain"),
+            walked
+        );
+    }
+
+    #[test]
+    fn an_explicit_choice_keeps_the_wait_and_escalation_rules() {
+        let accounts = [account(1, &["codex", "claude", "openrouter"])];
+        let states = [
+            state(profile(1), "codex", ProviderQuotaKind::Exhausted)
+                .resets_at(NOW + 300)
+                .build(),
+            state(profile(1), "claude", ProviderQuotaKind::Available).build(),
+        ];
+        let evidence = evidence(&accounts, &states);
+        // A near reset on a rung before the choice still means waiting.
+        assert_eq!(
+            placement(&chain(), &evidence, Some(1), 1, &config(), now()).expect("a chain"),
+            Placement::Wait {
+                until: at(NOW + 300),
+                reason: WaitReason::NearReset,
+            }
+        );
+        // No choice at all parks on the earliest reset.
+        assert_eq!(
+            placement(&chain(), &evidence, None, 1, &config(), now()).expect("a chain"),
+            Placement::Wait {
+                until: at(NOW + 300),
+                reason: WaitReason::NearReset,
+            }
+        );
+        // A choice the evidence does not admit, or evidence for another chain,
+        // is refused rather than placed.
+        let nothing = vec![
+            RungEvidence {
+                admissible: None,
+                had_candidate: false,
+                resets: Vec::new(),
+            };
+            4
+        ];
+        assert!(placement(&chain(), &nothing, Some(2), 1, &config(), now()).is_err());
+        assert!(placement(&chain(), &evidence[..2], None, 1, &config(), now()).is_err());
     }
 
     // -----------------------------------------------------------------------

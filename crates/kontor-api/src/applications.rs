@@ -858,6 +858,56 @@ pub struct CoreTeamNativeSeatDto {
     pub observed_at: Timestamp,
 }
 
+/// One occupancy of a logical hosted seat: the native that filled it and the
+/// persona that occupancy was opened under.
+///
+/// A seat outlives its natives. Reporting only the current one answers "who is
+/// here" but not "what was this seat ever opened under", and the second question
+/// is the one a no-overwrite qualification has to ask.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct HostedSeatOccupancyDto {
+    /// The occupancy generation this native filled.
+    pub occupancy_generation: u64,
+    /// `current` for the occupancy filling the seat now, `retired` for one it
+    /// superseded. Stated rather than inferred from position, so a reader does
+    /// not have to know the ordering rule to know which native is live.
+    pub lifecycle: String,
+    /// Exact native session that filled this occupancy.
+    pub native: CoreTeamNativeSeatDto,
+    /// The persona this occupancy was opened under, when its role seeds one.
+    ///
+    /// Never carries the persona text. The digest is the identity a reader
+    /// needs in order to compare two occupancies; the bytes are launch input,
+    /// and a read contract that disclosed them would be publishing a system
+    /// prompt rather than evidencing one.
+    pub role_persona: Option<CoreTeamSeatPersonaDto>,
+}
+
+/// The immutable occupancy chain of one logical hosted seat inside one epic.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct HostedSeatOccupancyChainDto {
+    /// The Realm it was read in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The project it serves.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// The epic whose control plane owns the seat.
+    #[schema(value_type = String)]
+    pub epic_id: kontor_core::id::MiniProjectId,
+    /// The logical seat whose occupancies these are.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// The standard role the seat is held under.
+    #[schema(value_type = String)]
+    pub role_code: kontor_core::id::RoleCode,
+    /// Every occupancy, oldest generation first.
+    pub occupancies: Vec<HostedSeatOccupancyDto>,
+    /// The position this read is consistent with.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
 /// One project's Core Team.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct CoreTeamDto {
@@ -900,12 +950,20 @@ pub struct CoreTeamSeatSelectionDto {
     pub ad_hoc_allowed: bool,
 }
 
-/// A proposed Core Team composition.
+/// A proposed Core Team composition: the caller's seats, or the Core Team
+/// revision one published orchestration bundle declares (ASMA-8280 S-3).
+/// Exactly one of the two.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CoreTeamPreviewRequest {
     /// The roles the Core Team should seat, in order.
-    pub seats: Vec<CoreTeamSeatSelectionDto>,
+    #[serde(default)]
+    pub seats: Option<Vec<CoreTeamSeatSelectionDto>>,
+    /// A published orchestration bundle whose verified Core Team revision
+    /// supplies the seats instead.
+    #[serde(default)]
+    #[schema(value_type = Option<String>)]
+    pub source_bundle_hash: Option<ContentHash>,
 }
 
 /// What a Core Team change would do.
@@ -916,17 +974,27 @@ pub struct CoreTeamPreviewDto {
     pub realm_id: kontor_core::id::RealmId,
     /// Every effect, in a stable order.
     pub effects: Vec<TopologyUpgradeEffectDto>,
+    /// The published bundle the seats came from, when they came from one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub source_bundle_hash: Option<ContentHash>,
     /// The hash the corresponding apply must name.
     #[schema(value_type = String)]
     pub preview_hash: ContentHash,
 }
 
-/// Apply a named Core Team preview.
+/// Apply a named Core Team preview: the same seats, or the same bundle, it was
+/// previewed with.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CoreTeamApplyRequest {
     /// The roles the Core Team should seat, in order.
-    pub seats: Vec<CoreTeamSeatSelectionDto>,
+    #[serde(default)]
+    pub seats: Option<Vec<CoreTeamSeatSelectionDto>>,
+    /// The published orchestration bundle the preview was made from.
+    #[serde(default)]
+    #[schema(value_type = Option<String>)]
+    pub source_bundle_hash: Option<ContentHash>,
     /// The hash the preview answered with.
     #[schema(value_type = String)]
     pub preview_hash: ContentHash,
@@ -949,13 +1017,36 @@ pub struct CoreTeamMaterializeRequest {
 }
 
 /// One authorized native route for a persistent Core Team role.
+///
+/// Exactly one of `model_route` and `eligibility`: the caller's exact route,
+/// which the activated fleet policy may admit or refuse but never replaces, or
+/// — when the caller names none — the policy's own choice under the
+/// eligibility the caller states (ASMA-8280).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CoreTeamSeatRouteRequest {
     /// Stable role code in the epic's frozen Core Team roster.
     pub role_code: String,
     /// Exact provider/model/effort route to launch or recover.
-    pub model_route: RuntimeModelRouteRequest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_route: Option<RuntimeModelRouteRequest>,
+    /// The runtime facts the activated fleet policy chooses this seat's route
+    /// under, when no `model_route` is named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eligibility: Option<FleetEligibilityRequest>,
+}
+
+/// The runtime facts one fleet policy choice is made under: stated by the
+/// caller, applied in chain order, and recorded with the decision.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FleetEligibilityRequest {
+    /// Account aliases that cannot take the seat now.
+    #[serde(default)]
+    pub unavailable_accounts: Vec<String>,
+    /// Vendors the seat must avoid.
+    #[serde(default)]
+    pub excluded_vendors: Vec<String>,
 }
 
 /// Exact in-place route correction or stale-native recovery for one persistent Core Team seat.
@@ -1045,6 +1136,83 @@ impl CoreTeamRouteApplyRequest {
     }
 }
 
+/// One exact native occupant of a logical Core Team seat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CoreTeamRouteOccupantDto {
+    /// Exact native session identity.
+    #[schema(value_type = String)]
+    pub native_id: ExternalId,
+    /// Runtime that holds it.
+    pub runtime_kind: String,
+    /// Host it was placed on.
+    pub host: String,
+    /// Runtime generation of this native.
+    pub generation: u64,
+    /// Provider conversation, when the runtime exposes one.
+    #[schema(value_type = Option<String>)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_session_id: Option<ExternalId>,
+    /// Which occupancy of the logical seat this native is.
+    pub occupancy_generation: u64,
+    /// Frozen provider/model/effort route it runs on.
+    pub model_route: RuntimeModelRouteRequest,
+}
+
+/// The successor's grant subject, as non-secret identity only.
+///
+/// A seat credential is bearer material derived from the operator secret, so
+/// neither it nor any digest *of it* appears here or anywhere else. What is
+/// recorded is the subject the grant is scoped to — the logical seat and the
+/// occupancy generation — and a digest over exactly that public pair. A reader
+/// can therefore prove which generation-scoped grant the successor derived
+/// without the record ever having held anything secret (ASMA-8187).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CoreTeamRouteGrantSubjectDto {
+    /// The generation this successor's grant is scoped to.
+    pub generation: u64,
+    /// The logical seat the grant is scoped to.
+    #[schema(value_type = String)]
+    pub subject_seat_binding_id: SeatBindingId,
+    /// Digest over the non-secret (seat, generation) subject pair. Never over
+    /// credential material.
+    #[schema(value_type = String)]
+    pub subject_digest: ContentHash,
+}
+
+/// Which trailing effects of a committed succession have landed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CoreTeamRouteEffectsDto {
+    /// The launch intent has been reconciled against the native it produced.
+    pub launch_intent_installed: bool,
+    /// The SeatBinding has been observed against the successor.
+    pub seat_binding_observed: bool,
+}
+
+/// The complete durable evidence one Core Team succession produced.
+///
+/// Persisted in the same transaction as the route transition and answered with
+/// verbatim thereafter. Recomputing it would describe the seat's *current*
+/// occupant, which is precisely the wrong answer to "what did this command do"
+/// once a later succession has moved the seat on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CoreTeamRouteSuccessionReadbackDto {
+    /// The preserved logical seat.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// Exact archived predecessor.
+    pub predecessor: CoreTeamRouteOccupantDto,
+    /// Exact installed successor.
+    pub successor: CoreTeamRouteOccupantDto,
+    /// The successor's generation-scoped grant subject, never any credential.
+    ///
+    /// Named `grant_subject` rather than `credential` deliberately: the realm's
+    /// canonical-document guard forbids a node called `credential` outright, and
+    /// this node is the subject a grant is scoped to rather than a grant.
+    pub grant_subject: CoreTeamRouteGrantSubjectDto,
+    /// Instant the predecessor was retired.
+    pub retired_at: String,
+}
+
 /// Completed in-place route correction with exact identity readback.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct CoreTeamRouteOutcomeDto {
@@ -1059,6 +1227,30 @@ pub struct CoreTeamRouteOutcomeDto {
     /// Active successor native identity; equal to predecessor for an unchanged route.
     #[schema(value_type = String)]
     pub successor_native_id: ExternalId,
+    /// The complete durable readback this succession produced.
+    ///
+    /// Present for every succession that replaced a native, including an exact
+    /// replay of one: the bytes come from the succession ledger rather than
+    /// from the seat's current state. An unchanged-route correction replaced
+    /// nothing and carries none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub readback: Option<CoreTeamRouteSuccessionReadbackDto>,
+    /// Digest of that readback.
+    ///
+    /// Covers the immutable outcome only. The trailing effects below are live
+    /// ledger state rather than evidence of what the command did, so they are
+    /// deliberately outside the hashed document — a digest that moved when an
+    /// effect landed would not be a digest of the outcome.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub readback_hash: Option<ContentHash>,
+    /// Which trailing effects have landed, read at answer time.
+    ///
+    /// A committed route with a pending launch intent or an unobserved
+    /// SeatBinding is not a complete succession, and this is where a caller
+    /// sees that rather than inferring it from a readback that cannot change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub succession_effects: Option<CoreTeamRouteEffectsDto>,
     /// Audited mutation receipt.
     pub receipt: MutationReceiptDto,
 }
@@ -1279,6 +1471,11 @@ pub struct CoreTeamOutcomeDto {
     pub core_team: CoreTeamDto,
     /// The receipt it was committed under.
     pub receipt: MutationReceiptDto,
+    /// The published orchestration bundle a Core Team apply took its seats
+    /// from, when it took them from one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub source_bundle_hash: Option<ContentHash>,
 }
 
 /// The roles a Quick session may be opened against.
@@ -2594,6 +2791,309 @@ pub struct CapacityConfigurationPreviewDto {
     /// The hash the corresponding apply must name.
     #[schema(value_type = String)]
     pub preview_hash: ContentHash,
+}
+
+/// The Realm's fleet policy selection (ASMA-8280).
+///
+/// Exactly one source decides fleet routing: an activation record naming one
+/// published policy by content hash, or — when none exists — the unmigrated
+/// state-root `fleet.yml`. An activation that cannot be verified is reported
+/// here and refuses placement; it never falls back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct FleetPolicyDto {
+    /// The Realm it governs.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Which source decides fleet routing.
+    pub selection: FleetPolicySelectionDto,
+    /// The activation record, when one exists and can be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation: Option<FleetActivationDto>,
+    /// SHA-256 of the policy bytes placement reads now, when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub active_policy_hash: Option<ContentHash>,
+    /// The schema version of that policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_schema_version: Option<u32>,
+    /// Why the selected activation cannot be served, when it cannot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<String>,
+}
+
+/// Which source decides a Realm's fleet routing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FleetPolicySelectionDto {
+    /// An activation record selects one published policy.
+    Activation,
+    /// No activation record exists; the unmigrated `fleet.yml`, if any, decides.
+    FleetYml,
+}
+
+/// One activation record: the published policy placement reads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct FleetActivationDto {
+    /// SHA-256 of exactly the activated policy bytes.
+    #[schema(value_type = String)]
+    pub policy_hash: ContentHash,
+    /// The schema those bytes validate under.
+    pub policy_schema_version: u32,
+    /// When activation replaced the record.
+    pub activated_at: String,
+    /// The orchestration bundle an aligned (schema_version 2) activation
+    /// names; absent for a schema_version 1 record.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub source_bundle_hash: Option<ContentHash>,
+    /// The Core Team revision an aligned activation selects; absent for a
+    /// schema_version 1 record.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub core_team_revision_hash: Option<ContentHash>,
+}
+
+/// One candidate fleet policy, as authored.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FleetPolicyPreviewRequest {
+    /// The exact YAML bytes of a schema_version 1 or 2 fleet policy.
+    pub document: String,
+}
+
+/// What a candidate policy is, before anything is written.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct FleetPolicyPreviewDto {
+    /// The Realm it was validated for.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// SHA-256 of exactly the validated bytes: the policy's identity.
+    #[schema(value_type = String)]
+    pub policy_hash: ContentHash,
+    /// The schema those bytes validate under.
+    pub schema_version: u32,
+    /// The hash the corresponding publish must name.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+/// Publish one previewed policy as an immutable, content-addressed artifact.
+///
+/// Publication selects nothing: placement keeps reading the current selection
+/// until an activation names this policy.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FleetPolicyPublishRequest {
+    /// The exact YAML bytes that were previewed.
+    pub document: String,
+    /// The hash preview returned for these bytes.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+/// One published policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct FleetPolicyPublishedDto {
+    /// The Realm it was published in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// SHA-256 of exactly the published bytes.
+    #[schema(value_type = String)]
+    pub policy_hash: ContentHash,
+    /// The schema those bytes validate under.
+    pub schema_version: u32,
+    /// Whether this call wrote the artifact or found it already published.
+    pub applied: AppliedDto,
+}
+
+/// Select one published policy for every later placement.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FleetPolicyActivateRequest {
+    /// The published policy to activate.
+    #[schema(value_type = String)]
+    pub policy_hash: ContentHash,
+    /// The policy the caller read as active; omit when none was.
+    #[serde(default)]
+    #[schema(value_type = Option<String>)]
+    pub expected_active_policy_hash: Option<ContentHash>,
+}
+
+/// The activation one activate call left standing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct FleetPolicyActivatedDto {
+    /// The Realm it governs.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The standing activation record.
+    pub activation: FleetActivationDto,
+    /// `created` when this call replaced the record, `unchanged` when the
+    /// policy was already active.
+    pub applied: AppliedDto,
+}
+
+/// The Realm's orchestration bundle selection (ASMA-8280 S-1).
+///
+/// The same single activation pointer [`FleetPolicyDto`] reports, read for its
+/// bundle: a schema_version 1 record names a policy alone; a schema_version 2
+/// record also names the orchestration bundle and Core Team revision, whose
+/// manifest is reported here when it verifies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct FleetBundleDto {
+    /// The Realm it governs.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Which source decides fleet routing.
+    pub selection: FleetPolicySelectionDto,
+    /// The activation record's format, `1` or `2`, when one can be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation_schema_version: Option<u32>,
+    /// The activation record, when one exists and can be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation: Option<FleetActivationDto>,
+    /// The bundle manifest a schema_version 2 record names, when it verifies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<FleetBundleManifestDto>,
+    /// Why the selected activation cannot be served, when it cannot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<String>,
+}
+
+/// One immutable orchestration bundle manifest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct FleetBundleManifestDto {
+    /// The manifest's canonical content hash: the bundle's identity.
+    #[schema(value_type = String)]
+    pub source_bundle_hash: ContentHash,
+    /// The resolver that produced the bundle.
+    pub resolver: String,
+    /// SHA-256 of each authoring source's exact bytes, by bundle-relative path.
+    #[schema(value_type = std::collections::BTreeMap<String, String>)]
+    pub sources: std::collections::BTreeMap<String, ContentHash>,
+    /// The bundle's policy.
+    #[schema(value_type = String)]
+    pub policy_hash: ContentHash,
+    /// The schema that policy validates under.
+    pub policy_schema_version: u32,
+    /// The role catalog the Core Team revision was resolved against.
+    pub role_catalog: FleetRoleCatalogPinDto,
+    /// The bundle's canonical Core Team revision.
+    #[schema(value_type = String)]
+    pub core_team_revision_hash: ContentHash,
+}
+
+/// The exact role catalog revision a bundle pins.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct FleetRoleCatalogPinDto {
+    /// The catalog's stable identity.
+    #[schema(value_type = String)]
+    pub catalog_id: kontor_core::id::RoleCatalogId,
+    /// The catalog revision.
+    #[schema(value_type = u32)]
+    pub version: SpecVersion,
+    /// The canonical content hash of that revision.
+    #[schema(value_type = String)]
+    pub content_hash: ContentHash,
+}
+
+/// One candidate orchestration bundle, as authored: the exact bytes of its
+/// three sources.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FleetBundlePreviewRequest {
+    /// The exact bytes of `orchestration.yml`.
+    pub orchestration: String,
+    /// The exact bytes of `fleet.yml`.
+    pub fleet: String,
+    /// The exact bytes of `teams/core-team.yml`.
+    pub core_team: String,
+}
+
+/// What a candidate bundle resolves to, before anything is written.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct FleetBundlePreviewDto {
+    /// The Realm it was resolved for.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The manifest publication would write.
+    pub manifest: FleetBundleManifestDto,
+    /// The hash the corresponding publish must name: the three exact source
+    /// documents and the selected catalog revision.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+/// Publish one previewed bundle as immutable, content-addressed artifacts.
+///
+/// Publication selects nothing: placement keeps reading the current selection
+/// until an activation names this bundle.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FleetBundlePublishRequest {
+    /// The exact bytes of `orchestration.yml` that were previewed.
+    pub orchestration: String,
+    /// The exact bytes of `fleet.yml` that were previewed.
+    pub fleet: String,
+    /// The exact bytes of `teams/core-team.yml` that were previewed.
+    pub core_team: String,
+    /// The hash preview returned for these bytes.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+/// One published bundle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct FleetBundlePublishedDto {
+    /// The Realm it was published in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The manifest as published.
+    pub manifest: FleetBundleManifestDto,
+    /// Whether this call wrote any artifact or found them all published.
+    pub applied: AppliedDto,
+}
+
+/// The standing activation a caller read, as an activation must name it.
+///
+/// Omitted entirely only when no activation record stands; a schema_version 1
+/// record is named by its policy alone.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FleetActivationFenceDto {
+    /// The policy the standing record names.
+    #[schema(value_type = String)]
+    pub policy_hash: ContentHash,
+    /// The bundle the standing record names, for a schema_version 2 record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub source_bundle_hash: Option<ContentHash>,
+}
+
+/// Select one published bundle — its policy and its Core Team revision
+/// together — for every later placement.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FleetBundleActivateRequest {
+    /// The published bundle to activate.
+    #[schema(value_type = String)]
+    pub source_bundle_hash: ContentHash,
+    /// The standing activation the caller read; omit when none stood.
+    #[serde(default)]
+    pub expected_active: Option<FleetActivationFenceDto>,
+}
+
+/// A proposed initial orchestration bundle for review (ASMA-8280 S-2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct FleetBundleProposalDto {
+    /// The Realm it was proposed for.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The proposed `orchestration.yml` bytes.
+    pub orchestration: String,
+    /// The proposed `teams/core-team.yml` bytes: the mandatory roles alone.
+    pub core_team: String,
+    /// The exact catalog revision the proposal pins.
+    pub role_catalog: FleetRoleCatalogPinDto,
 }
 
 /// One provider account's availability, as the realm currently reads it.
@@ -7002,6 +7502,22 @@ pub struct TicketClaimDto {
 /// different bytes is a conflict.
 #[async_trait]
 pub trait ApplicationOperations: Send + Sync {
+    /// Derive recall from authoritative task state; a run replays its frozen binding first.
+    fn recall_memory(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        run: Option<AgentRunId>,
+        key: Option<&IdempotencyKey>,
+    ) -> Result<kontor_store::memory::RecalledMemory, ApiError>;
+    /// Rebuild through the qualified optional adapter, never claiming success while absent.
+    async fn rebuild_memory_projection(
+        &self,
+        project_id: ProjectId,
+        key: &IdempotencyKey,
+        request: &crate::memory::ProjectionRebuildRequest,
+    ) -> Result<kontor_store::memory::ProjectionReadback, ApiError>;
+
     /// Close the local command recorded under `key` after its application route
     /// has produced a successful response.
     ///
@@ -7427,6 +7943,55 @@ pub trait ApplicationOperations: Send + Sync {
         request: &CapacityConfigurationRequest,
     ) -> Result<CapacityConfigurationDto, ApiError>;
 
+    /// The Realm's fleet policy selection.
+    fn fleet_policy_selection(&self) -> Result<FleetPolicyDto, ApiError>;
+
+    /// Validate one candidate fleet policy without writing anything.
+    fn preview_fleet_policy(
+        &self,
+        request: &FleetPolicyPreviewRequest,
+    ) -> Result<FleetPolicyPreviewDto, ApiError>;
+
+    /// Publish one previewed policy; this selects nothing.
+    async fn publish_fleet_policy(
+        &self,
+        key: &IdempotencyKey,
+        request: &FleetPolicyPublishRequest,
+    ) -> Result<FleetPolicyPublishedDto, ApiError>;
+
+    /// Activate one published policy under the expected current selection.
+    async fn activate_fleet_policy(
+        &self,
+        key: &IdempotencyKey,
+        request: &FleetPolicyActivateRequest,
+    ) -> Result<FleetPolicyActivatedDto, ApiError>;
+
+    /// The Realm's orchestration bundle selection.
+    fn fleet_bundle(&self) -> Result<FleetBundleDto, ApiError>;
+
+    /// Resolve one candidate bundle without writing anything.
+    fn preview_fleet_bundle(
+        &self,
+        request: &FleetBundlePreviewRequest,
+    ) -> Result<FleetBundlePreviewDto, ApiError>;
+
+    /// Publish one previewed bundle; this selects nothing.
+    async fn publish_fleet_bundle(
+        &self,
+        key: &IdempotencyKey,
+        request: &FleetBundlePublishRequest,
+    ) -> Result<FleetBundlePublishedDto, ApiError>;
+
+    /// Activate one published bundle under the expected standing activation.
+    async fn activate_fleet_bundle(
+        &self,
+        key: &IdempotencyKey,
+        request: &FleetBundleActivateRequest,
+    ) -> Result<FleetPolicyActivatedDto, ApiError>;
+
+    /// Propose an initial bundle for review. Writes nothing.
+    fn propose_fleet_bundle(&self) -> Result<FleetBundleProposalDto, ApiError>;
+
     /// One project's admission picture.
     fn project_capacity(&self, project_id: ProjectId) -> Result<ProjectCapacityDto, ApiError>;
 
@@ -7474,6 +8039,23 @@ pub trait ApplicationOperations: Send + Sync {
 
     /// One project's Core Team.
     fn core_team(&self, project_id: ProjectId) -> Result<CoreTeamDto, ApiError>;
+    /// One epic's materialized Core Team, as the server currently owns it.
+    ///
+    /// The same projection the mutating epic routes already return. Exposing it
+    /// as a read is the whole point: until now the only way to observe a seat's
+    /// native and persona was to change something.
+    fn epic_core_team(
+        &self,
+        project_id: ProjectId,
+        epic_id: kontor_core::id::MiniProjectId,
+    ) -> Result<CoreTeamDto, ApiError>;
+    /// The immutable occupancy chain of one hosted seat in one epic.
+    fn epic_hosted_seat_occupancies(
+        &self,
+        project_id: ProjectId,
+        epic_id: kontor_core::id::MiniProjectId,
+        seat_binding_id: SeatBindingId,
+    ) -> Result<HostedSeatOccupancyChainDto, ApiError>;
     /// What a Core Team change would do. Commits nothing.
     fn preview_core_team(
         &self,
@@ -7579,6 +8161,84 @@ pub trait ApplicationOperations: Send + Sync {
         epic_id: MiniProjectId,
         request: &TopologyUpgradeApplyRequest,
     ) -> Result<CoreTeamOutcomeDto, ApiError>;
+    /// Every published `planning_pair@1` document revision.
+    fn planning_pair_profiles(&self, project_id: ProjectId) -> Result<ProfileCatalogDto, ApiError>;
+    /// Judge one planning pair document. Commits nothing.
+    fn preview_planning_pair_profile(
+        &self,
+        project_id: ProjectId,
+        request: &ProfilePreviewRequest,
+    ) -> Result<ProfilePreviewDto, ApiError>;
+    /// Publish one planning pair document revision.
+    async fn apply_planning_pair_profile(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &ProfileApplyRequest,
+    ) -> Result<AppliedProfileDto, ApiError>;
+    /// Invoke one planning pair as the authenticated caller seat.
+    async fn invoke_planning_pair_run(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        caller: crate::planning_pair::PlanningPairSeat,
+        request: &crate::planning_pair::InvokePlanningPairRequest,
+    ) -> Result<crate::planning_pair::PlanningPairRunDto, ApiError>;
+    /// One planning pair as its reader may see it.
+    fn planning_pair_run(
+        &self,
+        project_id: ProjectId,
+        run_id: kontor_core::id::PlanningPairRunId,
+        reader: crate::planning_pair::PlanningPairReader,
+    ) -> Result<crate::planning_pair::PlanningPairRunDto, ApiError>;
+    /// Record the authenticated member's sealed finding.
+    async fn record_planning_pair_finding(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        run_id: kontor_core::id::PlanningPairRunId,
+        member: crate::planning_pair::PlanningPairSeat,
+        request: &crate::planning_pair::RecordPlanningPairContributionRequest,
+    ) -> Result<crate::planning_pair::PlanningPairRunDto, ApiError>;
+    /// Record the authenticated caller's one clarification question.
+    async fn request_planning_pair_clarification(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        run_id: kontor_core::id::PlanningPairRunId,
+        caller: crate::planning_pair::PlanningPairSeat,
+        request: &crate::planning_pair::RequestPlanningPairClarificationRequest,
+    ) -> Result<crate::planning_pair::PlanningPairRunDto, ApiError>;
+    /// Record the authenticated addressed member's sealed answer.
+    async fn record_planning_pair_answer(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        run_id: kontor_core::id::PlanningPairRunId,
+        member: crate::planning_pair::PlanningPairSeat,
+        request: &crate::planning_pair::RecordPlanningPairContributionRequest,
+    ) -> Result<crate::planning_pair::PlanningPairRunDto, ApiError>;
+    /// Record the authenticated caller's disposition. Terminal.
+    async fn record_planning_pair_disposition(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        run_id: kontor_core::id::PlanningPairRunId,
+        caller: crate::planning_pair::PlanningPairSeat,
+        request: &crate::planning_pair::RecordPlanningPairDispositionRequest,
+    ) -> Result<crate::planning_pair::PlanningPairRunDto, ApiError>;
+    /// Requalify one member on its exact known native session, as the
+    /// authenticated frozen caller.
+    async fn recover_planning_pair_seat(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        run_id: kontor_core::id::PlanningPairRunId,
+        seat_binding_id: SeatBindingId,
+        caller: crate::planning_pair::PlanningPairSeat,
+        request: &crate::planning_pair::RecoverPlanningPairSeatRequest,
+    ) -> Result<crate::planning_pair::PlanningPairSeatRecoveryDto, ApiError>;
     /// Every published Advisor profile revision.
     fn advisor_profiles(&self, project_id: ProjectId) -> Result<ProfileCatalogDto, ApiError>;
     /// Judge one Advisor profile definition. Commits nothing.
@@ -9907,6 +10567,168 @@ pub async fn apply_capacity_configuration(
     ))
 }
 
+/// The Realm's fleet policy selection.
+#[utoipa::path(
+    get, path = "/v1/fleet/policy", tag = "applications",
+    responses((status = 200, body = FleetPolicyDto), (status = 401), (status = 403))
+)]
+pub async fn fleet_policy_selection(
+    State(state): State<ApiState>,
+    caller: Caller,
+) -> Result<Json<FleetPolicyDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    Ok(Json(state.applications().fleet_policy_selection()?))
+}
+
+/// Validate one candidate fleet policy. Writes nothing.
+#[utoipa::path(
+    post, path = "/v1/fleet/policy:preview", tag = "applications",
+    request_body = FleetPolicyPreviewRequest,
+    responses((status = 200, body = FleetPolicyPreviewDto), (status = 400), (status = 401), (status = 403))
+)]
+pub async fn preview_fleet_policy(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Json(request): Json<FleetPolicyPreviewRequest>,
+) -> Result<Json<FleetPolicyPreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    Ok(Json(state.applications().preview_fleet_policy(&request)?))
+}
+
+/// Publish one previewed fleet policy. Selects nothing.
+#[utoipa::path(
+    post, path = "/v1/fleet/policy:publish", tag = "applications",
+    params(("Idempotency-Key" = String, Header, description = "The caller's stable key")),
+    request_body = FleetPolicyPublishRequest,
+    responses((status = 200, body = FleetPolicyPublishedDto), (status = 400), (status = 401), (status = 403), (status = 409))
+)]
+pub async fn publish_fleet_policy(
+    State(state): State<ApiState>,
+    caller: Caller,
+    headers: HeaderMap,
+    Json(request): Json<FleetPolicyPublishRequest>,
+) -> Result<Json<FleetPolicyPublishedDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .publish_fleet_policy(&key, &request)
+            .await?,
+    ))
+}
+
+/// Activate one published fleet policy under the expected current selection.
+#[utoipa::path(
+    post, path = "/v1/fleet/policy:activate", tag = "applications",
+    params(("Idempotency-Key" = String, Header, description = "The caller's stable key")),
+    request_body = FleetPolicyActivateRequest,
+    responses((status = 200, body = FleetPolicyActivatedDto), (status = 400), (status = 401), (status = 403), (status = 409))
+)]
+pub async fn activate_fleet_policy(
+    State(state): State<ApiState>,
+    caller: Caller,
+    headers: HeaderMap,
+    Json(request): Json<FleetPolicyActivateRequest>,
+) -> Result<Json<FleetPolicyActivatedDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .activate_fleet_policy(&key, &request)
+            .await?,
+    ))
+}
+
+/// The Realm's orchestration bundle selection.
+#[utoipa::path(
+    get, path = "/v1/fleet/bundle", tag = "applications",
+    responses((status = 200, body = FleetBundleDto), (status = 401), (status = 403))
+)]
+pub async fn fleet_bundle(
+    State(state): State<ApiState>,
+    caller: Caller,
+) -> Result<Json<FleetBundleDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    Ok(Json(state.applications().fleet_bundle()?))
+}
+
+/// Resolve one candidate orchestration bundle. Writes nothing.
+#[utoipa::path(
+    post, path = "/v1/fleet/bundle:preview", tag = "applications",
+    request_body = FleetBundlePreviewRequest,
+    responses((status = 200, body = FleetBundlePreviewDto), (status = 400), (status = 401), (status = 403), (status = 404))
+)]
+pub async fn preview_fleet_bundle(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Json(request): Json<FleetBundlePreviewRequest>,
+) -> Result<Json<FleetBundlePreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    Ok(Json(state.applications().preview_fleet_bundle(&request)?))
+}
+
+/// Publish one previewed orchestration bundle. Selects nothing.
+#[utoipa::path(
+    post, path = "/v1/fleet/bundle:publish", tag = "applications",
+    params(("Idempotency-Key" = String, Header, description = "The caller's stable key")),
+    request_body = FleetBundlePublishRequest,
+    responses((status = 200, body = FleetBundlePublishedDto), (status = 400), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn publish_fleet_bundle(
+    State(state): State<ApiState>,
+    caller: Caller,
+    headers: HeaderMap,
+    Json(request): Json<FleetBundlePublishRequest>,
+) -> Result<Json<FleetBundlePublishedDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .publish_fleet_bundle(&key, &request)
+            .await?,
+    ))
+}
+
+/// Activate one published orchestration bundle under the expected standing
+/// activation.
+#[utoipa::path(
+    post, path = "/v1/fleet/bundle:activate", tag = "applications",
+    params(("Idempotency-Key" = String, Header, description = "The caller's stable key")),
+    request_body = FleetBundleActivateRequest,
+    responses((status = 200, body = FleetPolicyActivatedDto), (status = 400), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn activate_fleet_bundle(
+    State(state): State<ApiState>,
+    caller: Caller,
+    headers: HeaderMap,
+    Json(request): Json<FleetBundleActivateRequest>,
+) -> Result<Json<FleetPolicyActivatedDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .activate_fleet_bundle(&key, &request)
+            .await?,
+    ))
+}
+
+/// Propose an initial orchestration bundle for review. Writes nothing.
+#[utoipa::path(
+    post, path = "/v1/fleet/bundle:propose", tag = "applications",
+    responses((status = 200, body = FleetBundleProposalDto), (status = 401), (status = 403))
+)]
+pub async fn propose_fleet_bundle(
+    State(state): State<ApiState>,
+    caller: Caller,
+) -> Result<Json<FleetBundleProposalDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    Ok(Json(state.applications().propose_fleet_bundle()?))
+}
+
 /// One project's admission picture.
 #[utoipa::path(
     get, path = "/v1/projects/{project_id}/capacity", tag = "applications",
@@ -10094,6 +10916,73 @@ pub async fn core_team(
     caller.require(&state, CallerCapability::Observer)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
     Ok(Json(state.applications().core_team(project_id)?))
+}
+
+/// One epic's materialized Core Team.
+///
+/// Pure. It records no command, calls no runtime, and changes nothing; the
+/// mutating epic routes already return this projection and this route only
+/// stops a caller from having to mutate in order to see it.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/epics/{epic_id}/core-team", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic whose control plane holds the seats")
+    ),
+    responses(
+        (status = 200, body = CoreTeamDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn epic_core_team(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+) -> Result<Json<CoreTeamDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, kontor_core::id::MiniProjectId::parse(&epic_id))?;
+    Ok(Json(
+        state.applications().epic_core_team(project_id, epic_id)?,
+    ))
+}
+
+/// Every occupancy one hosted seat has had, oldest first.
+///
+/// Pure, and deliberately a separate route from the roster: the roster answers
+/// what is true now, and carrying every seat's whole history inside it would
+/// make the common read pay for the rare one.
+#[utoipa::path(
+    get,
+    path = "/v1/projects/{project_id}/epics/{epic_id}/core-team/seats/{seat_binding_id}/occupancies",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic whose control plane holds the seat"),
+        ("seat_binding_id" = String, Path, description = "The logical seat")
+    ),
+    responses(
+        (status = 200, body = HostedSeatOccupancyChainDto),
+        (status = 401), (status = 403),
+        (status = 404, description = "No such seat in this epic"),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn epic_hosted_seat_occupancies(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id, seat_binding_id)): Path<(String, String, String)>,
+) -> Result<Json<HostedSeatOccupancyChainDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, kontor_core::id::MiniProjectId::parse(&epic_id))?;
+    let seat_binding_id = parse_id(&state, SeatBindingId::parse(&seat_binding_id))?;
+    Ok(Json(state.applications().epic_hosted_seat_occupancies(
+        project_id,
+        epic_id,
+        seat_binding_id,
+    )?))
 }
 
 /// What a Core Team change would do. Commits nothing.

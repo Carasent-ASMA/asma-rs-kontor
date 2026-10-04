@@ -1,0 +1,16 @@
+   Compiling kontor-core v0.2.1 (/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-snapshot-codec-validation-ga911_7m/mutation-source/crates/kontor-core)
+   Compiling kontor-runtime v0.2.1 (/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-snapshot-codec-validation-ga911_7m/mutation-source/crates/kontor-runtime)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.19s
+     Running unittests src/lib.rs (/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/mutation-target/debug/deps/kontor_runtime-38fd6bad31f23716)
+
+running 7 tests
+test planning_pair::attestation::snapshot_codec::tests::roundtrip_preserves_public_fields_without_establishing_trust_or_der_validity ... ok
+test planning_pair::attestation::snapshot_codec::tests::only_schema_version_one_is_accepted ... ok
+test planning_pair::attestation::snapshot_codec::tests::identifier_bounds_measure_utf8_bytes_for_both_issuer_and_key ... ok
+test planning_pair::attestation::snapshot_codec::tests::shared_snapshot_guards_refuse_encode_and_decode_without_divergence ... ok
+test planning_pair::attestation::snapshot_codec::tests::unknown_duplicate_missing_and_invalid_typed_fields_are_refused ... ok
+test planning_pair::attestation::snapshot_codec::tests::input_ceiling_is_checked_before_parsing_and_exact_ceiling_is_accepted ... ok
+test planning_pair::attestation::snapshot_codec::tests::key_and_der_count_boundaries_keep_maximum_output_below_ceiling ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 134 filtered out; finished in 0.03s
+

@@ -1,0 +1,42 @@
+diff --git a/crates/kontor-store/src/repository.rs b/crates/kontor-store/src/repository.rs
+index 2a017574..4eb9063e 100644
+--- a/crates/kontor-store/src/repository.rs
++++ b/crates/kontor-store/src/repository.rs
+@@ -5905,6 +5905,18 @@ impl SqliteStore {
+                 rule: "a receipt cannot bind a succession whose effects have not all landed",
+             });
+         }
++        // MUTANT M-P25: an identical binding answers before anything is proved.
++        if let Some(bound) = bound {
++            transaction.rollback().map_err(backend)?;
++            return if bound == receipt_id.to_string() {
++                Ok(Applied::Unchanged)
++            } else {
++                Err(RepositoryError::Conflict {
++                    subject: "core team route succession",
++                    rule: "the succession is already bound to another receipt",
++                })
++            };
++        }
+         // A foreign key proves the receipt exists; it says nothing about whose
+         // it is. Read it here, inside the same transaction, and require it to be
+         // the receipt this exact command produced: same project, same key, same
+@@ -5977,17 +5989,7 @@ impl SqliteStore {
+         // readback ever being read. A replay is the most common way this row is
+         // looked at, so it has to be the most verified, not the least
+         // (ASMA-8187 P2).
+-        if let Some(bound) = bound {
+-            transaction.rollback().map_err(backend)?;
+-            return if bound == receipt_id.to_string() {
+-                Ok(Applied::Unchanged)
+-            } else {
+-                Err(RepositoryError::Conflict {
+-                    subject: "core team route succession",
+-                    rule: "the succession is already bound to another receipt",
+-                })
+-            };
+-        }
++
+         transaction
+             .execute(
+                 "UPDATE core_team_route_successions

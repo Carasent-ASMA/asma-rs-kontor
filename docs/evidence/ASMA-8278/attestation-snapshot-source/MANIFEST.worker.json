@@ -1,0 +1,214 @@
+{
+  "source_head": "26b1c8713d14684a6a3483c00fe4b74f4ed3d223",
+  "owned_sha256": {
+    "crates/kontor-runtime/src/planning_pair/attestation.rs": "bb7edb6717ccc21acb952f9a695936e0c9332563f090abfe34536479a701ab7e",
+    "crates/kontor-runtime/src/planning_pair/attestation/snapshot_codec.rs": "c3b83275d8e346e000810388cbf11376dd9e6d0052f49f6eadf10db76b8b660e",
+    "crates/kontor-runtime/src/planning_pair/attestation/snapshot_codec/tests.rs": "6ddbdc8a89b1971b90d19c37bea19984ac21fae097ad37ae924ee8822bb38010"
+  },
+  "checks": [
+    {
+      "name": "runtime",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-runtime",
+        "--offline",
+        "--jobs",
+        "2"
+      ],
+      "cwd": "/tmp/asma-8278-module-consolidation-20261002.Mcrugq",
+      "exit": 0,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-snapshot-codec-validation-ga911_7m/runtime.log"
+    },
+    {
+      "name": "fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "cwd": "/tmp/asma-8278-module-consolidation-20261002.Mcrugq",
+      "exit": 0,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-snapshot-codec-validation-ga911_7m/fmt.log"
+    },
+    {
+      "name": "diff",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "cwd": "/tmp/asma-8278-module-consolidation-20261002.Mcrugq",
+      "exit": 0,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-snapshot-codec-validation-ga911_7m/diff.log"
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "-p",
+        "kontor-runtime",
+        "--all-targets",
+        "--offline",
+        "--jobs",
+        "2",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cwd": "/tmp/asma-8278-module-consolidation-20261002.Mcrugq",
+      "exit": 0,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-snapshot-codec-validation-ga911_7m/clippy.log"
+    },
+    {
+      "name": "baseline-before",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-runtime",
+        "--lib",
+        "--offline",
+        "--jobs",
+        "2",
+        "planning_pair::attestation::snapshot_codec"
+      ],
+      "cwd": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-snapshot-codec-validation-ga911_7m/mutation-source",
+      "exit": 0,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-snapshot-codec-validation-ga911_7m/baseline-before.log"
+    },
+    {
+      "name": "skip-preparse-size",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-runtime",
+        "--lib",
+        "--offline",
+        "--jobs",
+        "2",
+        "planning_pair::attestation::snapshot_codec::tests::input_ceiling_is_checked_before_parsing_and_exact_ceiling_is_accepted"
+      ],
+      "cwd": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-snapshot-codec-validation-ga911_7m/mutation-source",
+      "exit": 101,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-snapshot-codec-validation-ga911_7m/skip-preparse-size.log"
+    },
+    {
+      "name": "skip-schema",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-runtime",
+        "--lib",
+        "--offline",
+        "--jobs",
+        "2",
+        "planning_pair::attestation::snapshot_codec::tests::only_schema_version_one_is_accepted"
+      ],
+      "cwd": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-snapshot-codec-validation-ga911_7m/mutation-source",
+      "exit": 101,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-snapshot-codec-validation-ga911_7m/skip-schema.log"
+    },
+    {
+      "name": "skip-shared-validation",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-runtime",
+        "--lib",
+        "--offline",
+        "--jobs",
+        "2",
+        "planning_pair::attestation::snapshot_codec::tests::shared_snapshot_guards_refuse_encode_and_decode_without_divergence"
+      ],
+      "cwd": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-snapshot-codec-validation-ga911_7m/mutation-source",
+      "exit": 101,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-snapshot-codec-validation-ga911_7m/skip-shared-validation.log"
+    },
+    {
+      "name": "count-characters-not-bytes",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-runtime",
+        "--lib",
+        "--offline",
+        "--jobs",
+        "2",
+        "planning_pair::attestation::snapshot_codec::tests::identifier_bounds_measure_utf8_bytes_for_both_issuer_and_key"
+      ],
+      "cwd": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-snapshot-codec-validation-ga911_7m/mutation-source",
+      "exit": 101,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-snapshot-codec-validation-ga911_7m/count-characters-not-bytes.log"
+    },
+    {
+      "name": "baseline-after",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-runtime",
+        "--lib",
+        "--offline",
+        "--jobs",
+        "2",
+        "planning_pair::attestation::snapshot_codec"
+      ],
+      "cwd": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-snapshot-codec-validation-ga911_7m/mutation-source",
+      "exit": 0,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-snapshot-codec-validation-ga911_7m/baseline-after.log"
+    }
+  ],
+  "mutants": [
+    {
+      "name": "skip-preparse-size",
+      "test": "input_ceiling_is_checked_before_parsing_and_exact_ceiling_is_accepted",
+      "result": "KILLED",
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-snapshot-codec-validation-ga911_7m/skip-preparse-size.log"
+    },
+    {
+      "name": "skip-schema",
+      "test": "only_schema_version_one_is_accepted",
+      "result": "KILLED",
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-snapshot-codec-validation-ga911_7m/skip-schema.log"
+    },
+    {
+      "name": "skip-shared-validation",
+      "test": "shared_snapshot_guards_refuse_encode_and_decode_without_divergence",
+      "result": "KILLED",
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-snapshot-codec-validation-ga911_7m/skip-shared-validation.log"
+    },
+    {
+      "name": "count-characters-not-bytes",
+      "test": "identifier_bounds_measure_utf8_bytes_for_both_issuer_and_key",
+      "result": "KILLED",
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-snapshot-codec-validation-ga911_7m/count-characters-not-bytes.log"
+    }
+  ],
+  "isolated_target": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/mutation-target",
+  "baseline_after": 0,
+  "originals_preserved": true,
+  "isolated_source_restored": true,
+  "runtime_test_summaries": [
+    "test result: ok. 141 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s",
+    "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+    "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+    "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+    "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s"
+  ],
+  "focused_log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-snapshot-codec-validation-ga911_7m/focused.log",
+  "limits": [
+    "untrusted public configuration only",
+    "no authenticity, freshness or cryptographic DER validity established",
+    "no caller/signing/keychain/store/CanonicalDocument/native wiring",
+    "no staging, commits, push or live effects"
+  ]
+}

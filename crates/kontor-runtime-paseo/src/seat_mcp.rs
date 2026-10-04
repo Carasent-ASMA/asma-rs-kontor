@@ -90,6 +90,13 @@ pub fn kontor_mcp_command() -> String {
         )
 }
 
+/// The guard arguments a planning pair member's hook runs with.
+const MEMBER_GUARD_ARGS: [&str; 3] = [
+    "--consultation-tool-guard",
+    "--serve-profile",
+    kontor_core::planning_pair::MEMBER_SERVE_PROFILE,
+];
+
 /// Everything seat MCP composition needs to know, resolved once by the daemon.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeatMcp {
@@ -121,11 +128,88 @@ impl SeatMcp {
         Ok(())
     }
 
+    /// Refuse a guard binary that does not enforce the planning pair member
+    /// profile (ASMA-8282 D-3).
+    ///
+    /// The probe attests the profile rather than a deny-everything guard: under
+    /// `--serve-profile planning_pair_member` every member tool must be allowed
+    /// and a consultation tool, a caller tool and a shell must be denied. An
+    /// older binary, which does not accept the profile argument, and one that
+    /// falls back to or unions with the consultation surface both fail it.
+    pub fn verify_planning_pair_member_guard(&self) -> io::Result<()> {
+        let decide = |tool: &str| -> io::Result<String> {
+            use std::io::Write as _;
+            let mut child = std::process::Command::new(&self.command)
+                .args(MEMBER_GUARD_ARGS)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()?;
+            child
+                .stdin
+                .take()
+                .ok_or_else(|| io::Error::other("the guard probe has no stdin"))?
+                .write_all(
+                    serde_json::json!({"hook_event_name": "PreToolUse", "tool_name": tool})
+                        .to_string()
+                        .as_bytes(),
+                )?;
+            let output = child.wait_with_output()?;
+            let reply = serde_json::from_slice::<serde_json::Value>(&output.stdout).ok();
+            match reply {
+                Some(reply)
+                    if output.status.success()
+                        && reply["hookSpecificOutput"]["hookEventName"] == "PreToolUse" =>
+                {
+                    Ok(reply["hookSpecificOutput"]["permissionDecision"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned())
+                }
+                _ => Err(io::Error::other(
+                    "the MCP binary does not implement the consultation guard",
+                )),
+            }
+        };
+        let members = kontor_core::planning_pair::MEMBER_MCP_TOOLS
+            .iter()
+            .map(|tool| (format!("mcp__kontor__{tool}"), "allow"));
+        let foreign = [
+            "mcp__kontor__kontor_committee_findings_record",
+            "mcp__kontor__kontor_planning_pair_disposition_record",
+            "Bash",
+        ]
+        .into_iter()
+        .map(|tool| (tool.to_owned(), "deny"));
+        for (tool, expected) in members.chain(foreign) {
+            if decide(&tool)? != expected {
+                return Err(io::Error::other(
+                    "the MCP binary does not enforce the planning pair member guard",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Compose the consultation-only tool guard before starting Claude.
     pub fn compose_consultation(&self, cwd: &Path) -> io::Result<()> {
         self.compose(cwd, "consultation")?;
+        self.compose_guard_hook(cwd, "--consultation-tool-guard")
+    }
+
+    /// Compose a planning pair member's surface before starting Claude: the
+    /// member serve profile in `.mcp.json` and the member guard, which permits
+    /// only that profile's three tools (ASMA-8282 D-3).
+    pub fn compose_planning_pair_member(&self, cwd: &Path) -> io::Result<()> {
+        self.compose(cwd, kontor_core::planning_pair::MEMBER_SERVE_PROFILE)?;
+        self.compose_guard_hook(cwd, &MEMBER_GUARD_ARGS.join(" "))
+    }
+
+    /// Merge one Kontor-owned `PreToolUse` guard into the cwd's Claude
+    /// settings, preserving unrelated hook events and settings.
+    fn compose_guard_hook(&self, cwd: &Path, guard_args: &str) -> io::Result<()> {
         let command = format!(
-            "'{}' --consultation-tool-guard || exit 2",
+            "'{}' {guard_args} || exit 2",
             self.command.replace('\'', "'\\''")
         );
         merge_json(&cwd.join(".claude/settings.local.json"), |document| {

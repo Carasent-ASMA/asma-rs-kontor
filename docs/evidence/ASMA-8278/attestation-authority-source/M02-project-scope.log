@@ -1,0 +1,23 @@
+   Compiling kontor-store v0.2.1 (/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/isolated-source/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.37s
+     Running tests/attestation_authority.rs (/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/mutation-target/debug/deps/attestation_authority-56fe9fa166913f8c)
+
+running 1 test
+test realm_project_and_application_scopes_never_leak_or_create_unknown_rows ... FAILED
+
+failures:
+
+---- realm_project_and_application_scopes_never_leak_or_create_unknown_rows stdout ----
+
+thread 'realm_project_and_application_scopes_never_leak_or_create_unknown_rows' (26780644) panicked at crates/kontor-store/tests/attestation_authority.rs:209:9:
+assertion failed: store.read_attestation_key_authority(&foreign, &id("issuer"),
+            &id("key-1")).expect("read").is_none()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    realm_project_and_application_scopes_never_leak_or_create_unknown_rows
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 2.39s
+
+error: test failed, to rerun pass `-p kontor-store --test attestation_authority`

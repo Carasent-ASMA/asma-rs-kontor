@@ -1,0 +1,9 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "function: Users-igor-.paseo-worktrees-0n8yzbno-asma-8278-module-restart-20261004.crates.kontor-runtime.src.planning_pair.attestation.verify\ndirection: both\ncallees_total: 8\ncallees: 8  (rows: name hop; qn = group prefix + \".\" + name)\nUsers-igor-.paseo-worktrees-0n8yzbno-asma-8278-module-restart-20261004.crates.kontor-daemon.src.lib.DaemonConfig:\n  with_capacity 1\nUsers-igor-.paseo-worktrees-0n8yzbno-asma-8278-module-restart-20261004.crates.kontor-runtime-codex.src.client.PreparedCommand:\n  contains 1\nUsers-igor-.paseo-worktrees-0n8yzbno-asma-8278-module-restart-20261004.crates.kontor-runtime.src.adapter.ScopedSeatCredential:\n  new 1\nUsers-igor-.paseo-worktrees-0n8yzbno-asma-8278-module-restart-20261004.crates.kontor-runtime.src.planning_pair.attestation:\n  select_key 1\n  validate_claims 1\nUsers-igor-.paseo-worktrees-0n8yzbno-asma-8278-module-restart-20261004.crates.kontor-runtime.src.request.PlacementClaim:\n  verify 1\nUsers-igor-.paseo-worktrees-0n8yzbno-asma-8278-module-restart-20261004.crates.kontor-runtime.src.timeline.MessageLedger:\n  is_empty 1\n  len 1\ncallers_total: 0\ncallers: 0  (rows: name hop; qn = group prefix + \".\" + name)\n"
+    }
+  ],
+  "isError": false
+}

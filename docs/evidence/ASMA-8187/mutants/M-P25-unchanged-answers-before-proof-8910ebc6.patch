@@ -1,0 +1,40 @@
+--- a/crates/kontor-store/src/repository.rs
++++ b/crates/kontor-store/src/repository.rs
+@@ -5904,6 +5904,18 @@
+                 subject: "core team route succession",
+                 rule: "a receipt cannot bind a succession whose effects have not all landed",
+             });
++        }
++        // MUTANT M-P25: an identical binding answers before anything is proved.
++        if let Some(bound) = bound {
++            transaction.rollback().map_err(backend)?;
++            return if bound == receipt_id.to_string() {
++                Ok(Applied::Unchanged)
++            } else {
++                Err(RepositoryError::Conflict {
++                    subject: "core team route succession",
++                    rule: "the succession is already bound to another receipt",
++                })
++            };
+         }
+         // A foreign key proves the receipt exists; it says nothing about whose
+         // it is. Read it here, inside the same transaction, and require it to be
+@@ -5977,17 +5989,7 @@
+         // readback ever being read. A replay is the most common way this row is
+         // looked at, so it has to be the most verified, not the least
+         // (ASMA-8187 P2).
+-        if let Some(bound) = bound {
+-            transaction.rollback().map_err(backend)?;
+-            return if bound == receipt_id.to_string() {
+-                Ok(Applied::Unchanged)
+-            } else {
+-                Err(RepositoryError::Conflict {
+-                    subject: "core team route succession",
+-                    rule: "the succession is already bound to another receipt",
+-                })
+-            };
+-        }
++
+         transaction
+             .execute(
+                 "UPDATE core_team_route_successions
