@@ -1,0 +1,40 @@
+start=2026-10-04T05:39:48Z
+cmd=git merge --no-commit --no-ff abe990acf754f66be66c3f5564077bb5d3333288
+Auto-merging Cargo.lock
+Auto-merging Cargo.toml
+Auto-merging apps/console/src/api/schema.d.ts
+CONFLICT (content): Merge conflict in apps/console/src/api/schema.d.ts
+Auto-merging crates/kontor-api/contract/openapi.json
+CONFLICT (content): Merge conflict in crates/kontor-api/contract/openapi.json
+Auto-merging crates/kontor-api/src/applications.rs
+Auto-merging crates/kontor-api/src/error.rs
+Auto-merging crates/kontor-api/src/lib.rs
+Auto-merging crates/kontor-api/src/openapi.rs
+Auto-merging crates/kontor-core/src/id.rs
+Auto-merging crates/kontor-core/src/lib.rs
+Auto-merging crates/kontor-daemon/Cargo.toml
+Auto-merging crates/kontor-daemon/src/applications.rs
+CONFLICT (content): Merge conflict in crates/kontor-daemon/src/applications.rs
+Auto-merging crates/kontor-daemon/src/lib.rs
+Auto-merging crates/kontor-daemon/tests/loopback_api.rs
+CONFLICT (content): Merge conflict in crates/kontor-daemon/tests/loopback_api.rs
+Auto-merging crates/kontor-mcp/src/registry.rs
+Auto-merging crates/kontor-mcp/src/server.rs
+Auto-merging crates/kontor-store/src/migrations.rs
+CONFLICT (content): Merge conflict in crates/kontor-store/src/migrations.rs
+Auto-merging crates/kontor-store/tests/hosted_seat_autonomy.rs
+Auto-merging crates/kontor-store/tests/publication_attestations_immutable.rs
+CONFLICT (content): Merge conflict in crates/kontor-store/tests/publication_attestations_immutable.rs
+Auto-merging crates/kontor-store/tests/realm_preflight.rs
+CONFLICT (content): Merge conflict in crates/kontor-store/tests/realm_preflight.rs
+Auto-merging crates/kontor-store/tests/repository_roundtrip.rs
+Auto-merging crates/kontor-store/tests/schema_v1.rs
+CONFLICT (content): Merge conflict in crates/kontor-store/tests/schema_v1.rs
+Auto-merging docs/CONFIGURATION.md
+CONFLICT (content): Merge conflict in docs/CONFIGURATION.md
+Auto-merging tests/contract/mcp_parity.rs
+CONFLICT (content): Merge conflict in tests/contract/mcp_parity.rs
+Automatic merge failed; fix conflicts and then commit the result.
+exit=1
+finish=2026-10-04T05:39:48Z
+MERGE_HEAD=abe990acf754f66be66c3f5564077bb5d3333288

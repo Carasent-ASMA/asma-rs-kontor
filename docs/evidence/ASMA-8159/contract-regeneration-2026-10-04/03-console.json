@@ -1,0 +1,77 @@
+{
+  "argv": [
+    "node",
+    "/Users/igor/.npm/_npx/f1e70922fc87e24a/node_modules/openapi-typescript/bin/cli.js",
+    "crates/kontor-api/contract/openapi.json",
+    "-o",
+    "apps/console/src/api/schema.d.ts"
+  ],
+  "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+  "started_at_utc": "2026-10-04T01:30:48.342840+00:00",
+  "status": "PASS",
+  "exit_code": 0,
+  "contracts_before": [
+    {
+      "path": "crates/kontor-api/contract/openapi.json",
+      "bytes": 877755,
+      "sha256": "30e66d56acadd5d6e7c97ce406e2dc3bc46597ae7ffb9973302dcd9ada898ff0"
+    },
+    {
+      "path": "apps/console/src/api/schema.d.ts",
+      "bytes": 760653,
+      "sha256": "440a199e2da1cca30606fa8105d149f709887d5e0ea2b977b20c784d6fe55e9a"
+    }
+  ],
+  "stdout_path": "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/03-console.stdout.log",
+  "stderr_path": "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/03-console.stderr.log",
+  "target_cap_bytes": 10737418240,
+  "target_stop_threshold_bytes": 8589934592,
+  "disk_samples": [
+    {
+      "argv": [
+        "du",
+        "-sk",
+        "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
+      ],
+      "started_at_utc": "2026-10-04T01:30:48.347272+00:00",
+      "completed_at_utc": "2026-10-04T01:30:48.369711+00:00",
+      "exit_code": 0,
+      "stdout": "743508\t/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
+      "stderr": "",
+      "bytes": 761352192
+    },
+    {
+      "argv": [
+        "du",
+        "-sk",
+        "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
+      ],
+      "started_at_utc": "2026-10-04T01:31:08.375887+00:00",
+      "completed_at_utc": "2026-10-04T01:31:08.400864+00:00",
+      "exit_code": 0,
+      "stdout": "743508\t/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
+      "stderr": "",
+      "bytes": 761352192
+    }
+  ],
+  "external_processes_signaled": false,
+  "pid": 65134,
+  "completed_at_utc": "2026-10-04T01:31:08.401310+00:00",
+  "contracts_after": [
+    {
+      "path": "crates/kontor-api/contract/openapi.json",
+      "bytes": 877755,
+      "sha256": "30e66d56acadd5d6e7c97ce406e2dc3bc46597ae7ffb9973302dcd9ada898ff0"
+    },
+    {
+      "path": "apps/console/src/api/schema.d.ts",
+      "bytes": 760653,
+      "sha256": "440a199e2da1cca30606fa8105d149f709887d5e0ea2b977b20c784d6fe55e9a"
+    }
+  ],
+  "stdout_bytes": 122,
+  "stdout_sha256": "209e6f0d15bc787567ace5c41907e95e96853a818875353b84931117f5357cb3",
+  "stderr_bytes": 0,
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "max_recorded_target_bytes": 761352192
+}

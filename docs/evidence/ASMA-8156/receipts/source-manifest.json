@@ -1,0 +1,30 @@
+{
+  "base_commit": "8acdbd17e83d9d7ec545221c4b957e0325916997",
+  "branch": "feat/ASMA-8156-typed-experience-contract-and-recall-core",
+  "files": {
+    "apps/console/src/api/schema.d.ts": "f139d5ac32ddfc6d12fe7f07d4e22f9c9256c555a8db11e2ed00f8918afa5af4",
+    "crates/kontor-api/contract/openapi.json": "43a09454b1661bab879c5cc76a9b9a9f6d22d17116d22329a9f21bee22a2ea6b",
+    "crates/kontor-api/src/applications.rs": "857ea2fd439e8a6b2fb4e2c0c306011425a91a5fec8620b4137eecd0d0a7ef2a",
+    "crates/kontor-api/src/error.rs": "a5217a7a882f4804b56ffe36d47fe3a66a98ed67546623aa169377a0860d8e3f",
+    "crates/kontor-api/src/lib.rs": "c65db1c8f636502f652a33268bb37dedd90cb24a4b74044011bddd04adef31e3",
+    "crates/kontor-api/src/memory.rs": "4fe5a42203d5f014171afbad40fb68550700c3171c3d60eee0eefa23b629c148",
+    "crates/kontor-api/src/memory_schema.rs": "2a3e7098865e472f4d3512f64495a6e798968c4593a270cc16eaa133c5c19b4c",
+    "crates/kontor-api/src/openapi.rs": "58307172696d95e4f1f630d70ddc1e46508669b31cfa2082824f06b976935d53",
+    "crates/kontor-api/tests/openapi_contract.rs": "65ab27fb00d51a4c5e3353a97301a29ff6ce85e6d800a1c476d64c931c940a53",
+    "crates/kontor-cli/tests/memory_parity.rs": "00c48f609422f32282af4ef1af018d96a0f563afdd1be7c4ba940877f8c105d4",
+    "crates/kontor-core/src/id.rs": "65e72c6deede720d695260fa5bc9047b9e5e9cb16830d5cde5fe2952abfe7223",
+    "crates/kontor-core/src/lib.rs": "cc49b7022391822cd071dd00d4da765311d10b028431beecd324cc8f6a08bc56",
+    "crates/kontor-core/src/memory.rs": "d441653116bfeb841fe322ebffb84820a843a1ed47cffff313f2bd06c2d0876f",
+    "crates/kontor-core/tests/experience_memory.rs": "633cc1c50b1c0443869f55ff5dfb2c21b2e52a771a2d29607b6515809b7812d8",
+    "crates/kontor-core/tests/fixtures/experience-v1.json": "2e61802621515979c0e745d72302caaf6d560d477bd7ae0a470a13501464337e",
+    "crates/kontor-daemon/src/applications.rs": "3002c9dde27b3f26279b5d92c05da9ec8193729dbd79ff0473a2b60b7c0e473a",
+    "crates/kontor-daemon/tests/experience_memory.rs": "907fff8b41c46769673f4805d98297d1cccbf9eb4781244a937244580fd59793",
+    "crates/kontor-mcp/src/registry.rs": "a3979118e6ba1b1f67f64886f0aa8dace3aa321b7618ab96565a801c97a27c69",
+    "crates/kontor-mcp/src/server.rs": "9379ff7134bc9b259e6f7616a8b8f153a8526f8f565bfbeb17040d4a96104d77",
+    "crates/kontor-store/migrations/0120_experience_memory_projection.sql": "bbad30ea8f311c79a5c044b863e2998ddafa7be9ccc7322aed39a639ed532031",
+    "crates/kontor-store/src/memory.rs": "6ef3e31eec386f70fbe3099f63555299a6ae6ef4a90a32b45b5b353cad126a88",
+    "crates/kontor-store/src/migrations.rs": "716814bbe2e1f5c87ab6e84b49a4d12c6ad2b2f19d8d1048cb918d08d753b278",
+    "crates/kontor-store/tests/schema_v1.rs": "bb982fa706e071689db908b3c5a1c690f753b7bc94192c6ed71fcc7603d7afd6",
+    "tests/contract/mcp_parity.rs": "d7bd57ca9598b1b8351aea11b2148fb3513d3ef7c3b921320998925b7e8f1048"
+  }
+}

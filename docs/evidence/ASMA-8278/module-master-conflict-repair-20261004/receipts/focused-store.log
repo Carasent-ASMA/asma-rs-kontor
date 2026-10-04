@@ -1,0 +1,999 @@
+   Compiling kontor-core v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-release-integration/crates/kontor-core)
+   Compiling kontor-runtime v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-release-integration/crates/kontor-runtime)
+   Compiling kontor-policy v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-release-integration/crates/kontor-policy)
+   Compiling kontor-context v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-release-integration/crates/kontor-context)
+   Compiling kontor-scheduler v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-release-integration/crates/kontor-scheduler)
+   Compiling kontor-teams v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-release-integration/crates/kontor-teams)
+   Compiling kontor-profiles v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-release-integration/crates/kontor-profiles)
+   Compiling kontor-calendar v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-release-integration/crates/kontor-calendar)
+   Compiling kontor-store v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-release-integration/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 37.38s
+     Running unittests src/lib.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/kontor_store-faf5f54623ec0389)
+
+running 28 tests
+test backup::export::attestation_ledger_tests::historical_table_absence_is_allowed_only_before_129 ... ok
+test backup::restore::tests::a_failed_publish_puts_the_occupant_back_and_leaves_no_superseded_name ... ok
+test backup::export::attestation_ledger_tests::token_tables_are_required_at130_and_legacy129_absence_never_skips_keys ... ok
+test backup::restore::tests::a_taken_superseded_name_is_refused_and_nothing_moves ... ok
+test memory::experience_tests::lexical_limit_joins_exact_current_eligible_revision_and_never_lists ... ok
+test memory::experience_tests::malicious_tuple_project_current_approval_tombstone_hash_policy_and_kind ... ok
+test memory::experience_tests::deterministic_score_confidence_ties_duplicates_and_ninth_item ... ok
+test memory::experience_tests::typed_proposal_evidence_idempotency_secret_refusal_and_generic_history ... ok
+test memory::experience_tests::replay_after_restart_task_edit_rebuild_tombstone_and_purge_preserves_receipt ... ok
+test memory::experience_tests::exact_budget_32768_32769_unicode_escaping_and_skip_oversized_top ... ok
+test memory::experience_tests::validation_and_freeze_transaction_excludes_concurrent_tombstone ... ok
+test memory::experience_tests::projection_minimal_payload_failures_freshness_and_compare_and_swap ... ok
+test memory::experience_tests::every_degraded_reason_empty_foreign_only_candidate_limit_and_preview_rollback ... ok
+test memory::tests::an_import_that_fails_while_recording_its_manifest_leaves_nothing_and_resumes ... ok
+test memory::tests::first_proposal_history_is_readable_before_approval_and_after_restart ... ok
+test memory::tests::concurrent_approvers_get_one_commit_and_one_typed_conflict ... ok
+test memory::tests::current_retrieval_does_not_decode_superseded_history_or_unapproved_drafts ... ok
+test memory::tests::ledger_conflicts_filters_rebuilds_and_freezes_context ... ok
+test query::tests::the_assembled_priority_is_a_stated_constant_rather_than_a_guess ... ok
+test memory::tests::reproposal_never_resets_the_aggregate_revision ... ok
+test memory::tests::frozen_revision_hash_is_the_approved_stored_hash ... ok
+test memory::tests::proposal_never_enters_fts_before_approval ... ok
+test memory::tests::cutover_is_attested_hashed_transactional_and_idempotent ... ok
+test memory::tests::purge_removes_payload_approval_and_index_but_keeps_receipts ... ok
+test memory::tests::two_approvals_leave_exactly_one_current_revision ... ok
+test query::tests::a_fresh_realm_has_no_projects_and_no_calendar_assignment ... ok
+test query::tests::a_calendar_assignment_flips_the_flag_the_plan_route_refuses_on ... ok
+test migrations::release_integration_tests::released_122_upgrades_without_replacing_realm_or_existing_bindings ... ok
+
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 94.46s
+
+     Running tests/advisor_multi_seat_advice.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/advisor_multi_seat_advice-cf3e17ee025e4e34)
+
+running 3 tests
+test advice_is_idempotent_per_exact_seat_and_immutable_per_seat ... ok
+test two_advisor_seats_each_record_their_own_advice_without_settling_the_run ... ok
+test settled_sessions_are_released_durably_without_changing_advice_or_bindings ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.09s
+
+     Running tests/attestation_authority.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/attestation_authority-071a50281e298867)
+
+running 10 tests
+test key_identity_is_never_reused_and_revocation_is_irreversible_under_replay ... ok
+test realm_project_and_application_scopes_never_leak_or_create_unknown_rows ... ok
+test invalid_bounds_intervals_and_sqlite_integer_overflow_do_not_create_a_head ... ok
+test exact_expected_head_is_required_and_failed_writes_leave_no_partial_mutation ... ok
+test direct_sql_cannot_change_material_unrevoke_delete_or_jump_the_head ... ok
+test first_registration_advances_once_and_read_projection_survives_reopen ... ok
+test historical_ledger_is_not_limited_to_the_transport_key_count ... ok
+test checked_revision_overflow_refuses_registration_and_revocation_atomically ... ok
+test two_store_writers_cannot_both_satisfy_the_same_absent_head_expectation ... ok
+test failed_migration_129_rolls_back_its_new_head_and_version ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.58s
+
+     Running tests/attestation_token_metadata.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/attestation_token_metadata-16ae24aaf7cf190a)
+
+running 22 tests
+test guards::hosted_generation_is_history_count_plus_one_not_runtime_generation ... ok
+test guards::a_container_native_identity_cannot_masquerade_as_seat_provenance ... ok
+test guards::migration130_transaction_rolls_back_all_tables_and_version_on_ddl_failure ... ok
+test fresh_checks_precede_identity_reuse_and_leave_existing_commitment_unchanged ... ok
+test guards::consultation_uses_stored_run_slot_revisions_and_its_own_generation ... ok
+test guards::checked_token_revision_overflow_leaves_no_partial_preparation_or_revocation ... ok
+test guards::all_family_qualified_registry_metadata_is_retained_and_disposed_pairs_refuse ... ok
+test guards::two_store_preparation_race_has_one_cas_winner_and_one_unchanged_conflict ... ok
+test hosted_preparation_is_coherent_durable_and_does_not_advance_key_head ... ok
+test both_heads_use_exact_cas_and_failed_preparation_rolls_back ... ok
+test guards::unknown_native_and_missing_consultation_never_imply_hosted_provenance ... ok
+test irreversible_revocation_remains_available_after_key_revocation_and_seat_retirement ... ok
+test guards::raw_sql_cannot_replace_rewrite_unrevoke_or_delete_metadata_or_heads ... ok
+test guards::consultation_eligible_phases_are_explicit_and_terminal_or_needs_human_refuse ... ok
+test guards::consultation_slot_node_cross_run_and_ambiguous_domain_refuse_unchanged ... ok
+test guards::raw_sql_insert_refuses_false_key_commitments_and_invalid_bounds_atomically ... ok
+test permanent_issuer_token_identity_refuses_even_identical_reuse_across_rotation ... ok
+test guards::inactive_binding_and_node_each_refuse_unchanged ... ok
+test guards::prepared_and_revoked_history_cannot_be_exported_or_restored_to_an_older_head ... ok
+test scope_and_absent_task_are_exact_and_cross_scope_reads_do_not_leak ... ok
+test selected_key_absence_revocation_and_exact_native_components_are_checked ... ok
+test bounds_intervals_and_native_generation_refuse_without_token_head ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.58s
+
+     Running tests/backlog_identity.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/backlog_identity-e365ab8691faee7c)
+
+running 7 tests
+test migration_preserves_valid_legacy_codes_and_quarantines_duplicates_and_invalid_values ... ok
+test automatic_codes_expand_deterministically_inside_one_project ... ok
+test a_manual_epic_code_is_durable_immutable_and_project_scoped ... ok
+test derived_item_codes_are_not_persisted_as_a_second_jira_identity ... ok
+test racing_automatic_allocators_commit_distinct_deterministic_codes ... ok
+test database_triggers_forbid_updating_or_deleting_an_assignment ... ok
+test a_quarantined_legacy_value_does_not_block_a_new_active_assignment ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.25s
+
+     Running tests/backup_export.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/backup_export-4fbdd86371a8c50b)
+
+running 25 tests
+test a_generation_three_export_from_a_quota_capable_database_is_refused_as_incomplete ... ok
+test an_export_of_unchanged_state_is_byte_identical_and_hashes_the_same ... ok
+test an_export_carries_no_credential_reference_no_comment_body_and_no_secret ... ok
+test a_canary_inside_a_stored_document_aborts_the_export ... ok
+test a_future_export_generation_is_refused_and_this_one_parses ... ok
+test command_events_refuse_an_unrelated_payload_even_with_its_own_valid_hash ... ok
+test a_realm_never_imports_its_own_export_and_never_imports_into_no_project has been running for over 60 seconds
+test a_round_trip_preserves_the_versioned_specifications_and_the_source_evidence has been running for over 60 seconds
+test an_import_mints_a_destination_receipt_and_replays_no_source_receipt has been running for over 60 seconds
+test an_import_refuses_an_outcome_that_does_not_match_its_source_policy has been running for over 60 seconds
+test an_unchanged_selection_preserves_the_older_created_workflow_binding has been running for over 60 seconds
+test an_unchanged_selection_preserves_the_older_created_workflow_binding ... ok
+test a_round_trip_preserves_the_versioned_specifications_and_the_source_evidence ... ok
+test an_import_refuses_an_outcome_that_does_not_match_its_source_policy ... ok
+test a_realm_never_imports_its_own_export_and_never_imports_into_no_project ... ok
+test an_import_mints_a_destination_receipt_and_replays_no_source_receipt ... ok
+test command_intents_export_under_their_own_document_contract ... ok
+test command_intent_payloads_still_receive_the_embedded_canary_scan ... ok
+test command_events_refuse_hashes_that_do_not_identify_the_payload has been running for over 60 seconds
+test command_events_refuse_missing_or_wrong_project_receipts has been running for over 60 seconds
+test command_intent_import_preserves_its_non_executable_source_lineage has been running for over 60 seconds
+test export_generations_are_closed_over_the_fields_and_summaries_they_define ... ok
+test command_intent_import_preserves_its_non_executable_source_lineage ... ok
+test imported_task_lifecycle_provenance_survives_export_serialization_and_parse ... ok
+test command_events_refuse_hashes_that_do_not_identify_the_payload ... ok
+test command_events_refuse_missing_or_wrong_project_receipts ... ok
+test profile_selection_outcomes_cannot_predate_the_generation_that_stored_them ... ok
+test generation_two_without_profile_selection_outcomes_remains_importable has been running for over 60 seconds
+test import_preflight_and_transaction_leave_no_orphan_specification has been running for over 60 seconds
+test profile_selection_import_rejects_every_incomplete_or_swapped_frozen_binding has been running for over 60 seconds
+test profile_selection_outcomes_round_trip_as_exact_non_executable_lineage has been running for over 60 seconds
+test generation_two_without_profile_selection_outcomes_remains_importable ... ok
+test import_preflight_and_transaction_leave_no_orphan_specification ... ok
+test profile_selection_outcomes_round_trip_as_exact_non_executable_lineage ... ok
+test runtime_and_census_payloads_still_refuse_session_content ... ok
+test profile_selection_receipt_must_be_confirmed_local_effect_evidence has been running for over 60 seconds
+test profile_selection_receipt_must_be_confirmed_local_effect_evidence ... ok
+test profile_selection_import_rejects_every_incomplete_or_swapped_frozen_binding ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 220.12s
+
+     Running tests/backup_snapshot.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/backup_snapshot-97c547a62c2b8917)
+
+running 25 tests
+test a_nonempty_public_authority_snapshot_is_refused_before_destination_creation ... ok
+test an_uncheckpointed_public_ledger_refusal_leaves_all_target_files_unchanged ... ok
+test a_snapshot_taken_while_the_database_is_written_is_a_consistent_point ... ok
+test a_published_snapshot_is_never_overwritten ... ok
+test a_manifest_that_does_not_describe_its_snapshot_is_refused ... ok
+test an_old_empty_snapshot_cannot_rollback_current_public_key_revocation ... ok
+test corrupted127_destination_ledger_tables_refuse_without_directory_changes ... ok
+test a_restore_refuses_a_taken_superseded_name_and_leaves_the_destination_intact ... ok
+test a_damaged_database_is_never_copied_and_replaces_nothing has been running for over 60 seconds
+test a_restore_reinstates_the_same_realm_and_refuses_a_different_one has been running for over 60 seconds
+test historical_pre129_files_retain_schema_refusal_and_additive_open_behavior ... ok
+test corrupted127_missing_ledger_tables_is_not_an_empty_restore_fallback ... ok
+test empty_historical129_token_absence_preserves_schema_refusal_and_additive_open ... ok
+test empty_ledger_restore_handles_uri_delimiters_in_the_target_path ... ok
+test a_restore_reinstates_the_same_realm_and_refuses_a_different_one ... ok
+test memory_ledger_and_import_evidence_restore_while_fts_is_rebuilt ... ok
+test missing_and_zero_main_without_nonempty_wal_retain_supported_restore ... ok
+test corrupted128_missing_token_tables_refuse_source_and_target_without_mutation has been running for over 60 seconds
+test missing_main_with_committed_wal_refuses_without_changing_destination_files has been running for over 60 seconds
+test nonempty_public_authority_ledger_is_not_silently_omitted_from_export ... ok
+test a_damaged_database_is_never_copied_and_replaces_nothing ... ok
+test retention_never_empties_a_directory_that_holds_one_backup ... ok
+test snapshot_preserves_exact_k_and_k2_profile_selection_bindings ... ok
+test missing_main_with_committed_wal_refuses_without_changing_destination_files ... ok
+test two_simultaneous_publishers_of_one_name_produce_one_snapshot ... ok
+test the_gate_rejection_route_schema_migrates_and_survives_a_snapshot ... ok
+test corrupted128_missing_token_tables_refuse_source_and_target_without_mutation ... ok
+test retention_keeps_the_newest_seven_of_this_realm_and_touches_nothing_else ... ok
+test zero_main_with_committed_wal_refuses_without_changing_destination_files ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 150.73s
+
+     Running tests/calendar_imports.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/calendar_imports-9d36086f173f48c2)
+
+running 10 tests
+test an_import_applies_its_revision_provenance_and_exceptions_together ... ok
+test the_categories_a_request_selected_are_recorded_with_the_apply ... ok
+test a_manual_exception_survives_a_refresh_that_drops_every_import ... ok
+test an_imported_exception_must_name_a_holiday_source_that_exists ... ok
+test an_applied_import_cannot_be_rewritten_or_deleted_through_direct_sql ... ok
+test a_replayed_idempotency_key_returns_the_original_apply ... ok
+test a_refresh_stops_a_withdrawn_holiday_without_deleting_its_history ... ok
+test a_second_import_must_supersede_the_one_already_applied ... ok
+test an_import_whose_exceptions_belong_elsewhere_is_refused_before_any_write ... ok
+test a_preview_alone_changes_no_row ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.67s
+
+     Running tests/child_calendar_windows.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/child_calendar_windows-773c7185397a37de)
+
+running 2 tests
+test a_persisted_task_narrowing_changes_production_calendar_admission ... ok
+test a_persisted_task_widening_is_refused_without_a_scoped_override ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.99s
+
+     Running tests/command_recovery.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/command_recovery-447cf603fffdc63b)
+
+running 20 tests
+test confirmed_receipt_is_restart_terminal ... ok
+test acknowledgement_is_nonterminal_and_confirmation_needs_evidence ... ok
+test a_retry_needs_proof_of_no_effect_and_reuses_the_original_command ... ok
+test a_local_command_is_never_dispatchable_and_completes_only_after_success ... ok
+test a_receipt_that_queued_nothing_is_settled_rather_than_a_missing_outbox_entry ... ok
+test duplicate_or_out_of_order_receipt_transition_does_not_regress ... ok
+test a_repeat_of_the_current_state_still_has_to_prove_its_correlation ... ok
+test startup_confirms_a_legacy_launch_only_from_its_durable_binding ... ok
+test lost_ack_is_resolved_by_persisted_correlation ... ok
+test intent_failure_rolls_back_every_effect ... ok
+test intent_outbox_desired_and_event_commit_atomically ... ok
+test the_local_completion_boundary_ignores_a_dispatch_receipt ... ok
+test a_reused_idempotency_key_must_name_the_same_durable_command ... ok
+test idempotency_replay_returns_original_receipt_and_cursor ... ok
+test startup_fails_a_legacy_launch_only_from_terminal_run_evidence ... ok
+test receipt_transition_history_survives_reopen ... ok
+test the_correlation_is_the_claim_token_and_nothing_else ... ok
+test two_claimers_never_receive_the_same_work ... ok
+test ambiguous_dispatch_never_becomes_fresh_launch ... ok
+test every_command_crash_point_recovers_without_second_native_launch ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.62s
+
+     Running tests/consultation_profiles.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/consultation_profiles-e32e6925ec60cc31)
+
+running 9 tests
+test a_catalog_reads_in_a_stable_order ... ok
+test revisions_must_be_consecutive ... ok
+test a_first_revision_that_skips_version_one_is_refused ... ok
+test another_projects_revisions_do_not_resolve ... ok
+test a_published_definition_reads_back_byte_for_byte ... ok
+test the_first_revision_of_a_profile_is_version_one ... ok
+test each_profile_versions_independently ... ok
+test the_two_families_are_separate_catalogs ... ok
+test republishing_a_version_is_refused ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.16s
+
+     Running tests/consultation_subject.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/consultation_subject-18f6634ecd1f9577)
+
+running 13 tests
+test an_impossible_stored_pairing_is_refused_rather_than_guessed ... ok
+test a_consultation_about_a_task_never_claims_the_delivery_workspaces_node ... ok
+test a_subject_from_a_sibling_epic_in_the_same_project_is_refused ... ok
+test a_run_recorded_before_the_subject_existed_reads_back_absent ... ok
+test a_subject_from_another_project_is_refused ... ok
+test an_epic_and_a_task_subject_both_round_trip_through_the_store ... ok
+test every_subject_state_survives_a_restart_under_its_own_identity ... ok
+test storage_refuses_an_uncontained_subject_even_without_the_repository_check ... ok
+test a_frozen_subject_cannot_be_moved_after_invocation ... ok
+test the_run_node_and_subject_must_all_describe_one_scope ... ok
+test the_database_refuses_every_impossible_subject_pairing ... ok
+test the_redacted_export_carries_no_consultation_subject ... ok
+test every_subject_state_survives_a_backup_and_restore_under_its_own_identity ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.63s
+
+     Running tests/crash_reopen.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/crash_reopen-f56d5c31064f91cf)
+
+running 5 tests
+test crash_child_worker ... ok
+test migration_crash_child_worker ... ok
+
+running 1 test
+
+running 1 test
+test committed_work_survives_an_abrupt_exit_and_an_interrupted_transaction_does_not ... ok
+test an_interrupted_migration_leaves_no_schema_or_realm_and_reopens_cleanly ... ok
+test two_connections_may_share_one_file ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.20s
+
+     Running tests/epic_jira_reconciliation.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/epic_jira_reconciliation-dfaac80155388fa1)
+
+running 4 tests
+test epic_transition_key_cannot_authorize_different_intent ... ok
+test one_open_epic_conflict_is_kept_until_operator_resolution ... ok
+test epic_transition_authority_replays_and_recovers_from_confirmed_readback ... ok
+test epic_conflict_schema_refuses_unknown_kinds_bad_timestamps_and_second_resolution ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.11s
+
+     Running tests/event_replay.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/event_replay-2924e3e33ff1b760)
+
+running 47 tests
+test a_record_that_disagrees_with_its_row_is_refused_per_column ... ok
+test a_newer_runtime_refusal_still_blocks_over_an_older_report ... ok
+test a_record_citing_a_binding_the_store_does_not_hold_is_refused ... ok
+test a_recorded_decision_reads_back_exactly_including_its_range_set ... ok
+test a_duplicate_replay_cannot_mutate_quota ... ok
+test a_late_runtime_refusal_cannot_overwrite_a_newer_provider_report ... ok
+test a_document_may_only_claim_the_quota_chain_its_generation_had ... ok
+test a_non_runtime_row_that_happens_to_agree_is_not_forced_to_cite ... ok
+test a_quota_row_cannot_cite_another_projects_provenance ... ok
+test a_reducible_observation_writes_its_event_projection_and_quota_together ... ok
+test a_runtime_observation_without_provenance_is_refused_even_when_a_row_exists ... ok
+test a_sequence_too_large_to_store_exactly_is_refused_rather_than_clamped ... ok
+test an_inconsistent_or_empty_range_set_is_refused ... ok
+test an_older_refusal_cannot_regress_a_newer_availability_row ... ok
+test a_failure_after_the_record_but_before_the_row_leaves_neither ... ok
+test a_source_range_cannot_be_appended_after_its_record_is_written ... ok
+test a_refused_quota_write_rolls_back_the_event_and_the_projection ... ok
+test an_unlisted_alias_does_not_walk_session_content_past_the_boundary ... ok
+test consumer_cursor_survives_restart ... ok
+test concurrent_appenders_allocate_unique_monotonic_control_cursors ... ok
+test content_epoch_gap_returns_timeline_refetch_required ... ok
+test content_gap_persists_only_binding_continuity_and_audit_ref ... ok
+test duplicate_and_out_of_order_never_regress_effects ... ok
+test control_sequence_jump_records_typed_control_gap ... ok
+test control_gap_never_infers_terminal_state ... ok
+test empty_origin_snapshot_does_not_skip_first_event ... ok
+test duplicate_native_id_returns_original_cursor ... ok
+test content_sequence_gap_changes_no_lifecycle_or_projection ... ok
+test control_gap_is_idempotent_on_replay ... ok
+test no_refusal_text_reaches_the_database ... ok
+test identical_payloads_without_native_ids_stay_distinct_observations ... ok
+test on_an_equal_instant_the_provider_report_outranks_a_runtime_refusal ... ok
+test every_stored_integer_refuses_rather_than_clamps ... ok
+test persisted_consumer_pages_without_gap_or_overlap ... ok
+test older_distinct_observation_appends_but_does_not_reduce ... ok
+test replay_after_n_returns_only_greater_cursors_in_order ... ok
+test raw_and_normalized_observation_exist_before_projection_effect ... ok
+test projection_effect_always_cites_persisted_event ... ok
+test normalization_or_cas_failure_leaves_no_event_or_effect ... ok
+test one_native_event_id_may_not_carry_two_payloads ... ok
+test same_sequence_conflicting_payload_is_rejected ... ok
+test transcript_and_token_deltas_are_rejected ... ok
+test the_session_content_boundary_holds_on_every_append_path ... ok
+test two_sessions_may_share_one_native_event_id ... ok
+test provenance_cardinality_matches_what_was_actually_accepted ... ok
+test a_rehashed_document_cannot_forge_the_quota_chain ... ok
+test the_exported_quota_chain_is_exact_and_carries_no_refusal_text ... ok
+
+test result: ok. 47 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.95s
+
+     Running tests/hosted_seat_autonomy.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/hosted_seat_autonomy-92d3838217b4b1d4)
+
+running 35 tests
+test a_readback_naming_another_successor_never_becomes_durable ... ok
+test a_hosted_seat_reads_back_the_authority_it_was_launched_under ... ok
+test a_prepared_intent_holds_the_authority_before_any_occupancy_exists ... ok
+test a_changed_default_applies_to_the_successor_and_not_the_predecessor ... ok
+test a_live_generation_cannot_change_its_authority_in_place ... ok
+test a_legacy_export_generation_can_neither_carry_nor_conceal_a_succession ... ok
+test a_contradictory_authority_is_refused_by_the_schema ... ok
+test a_bound_succession_cannot_have_its_completion_instant_rewritten ... ok
+test a_readback_whose_derived_or_redundant_values_are_wrong_is_refused ... ok
+test a_succession_cannot_bind_a_receipt_recorded_for_another_command ... ok
+test a_real_format_seat_bearer_is_refused_by_value_wherever_it_appears ... ok
+test a_reused_native_id_in_a_later_occupancy_cannot_complete_an_older_succession ... ok
+test a_succession_readback_is_refused_at_the_store_boundary ... ok
+test an_installed_intent_refuses_a_second_native ... ok
+test archival_refuses_a_predecessor_whose_authority_does_not_match ... ok
+test binding_an_occupancy_reconciles_its_intent ... ok
+test a_mismatched_historical_binding_stops_the_upgrade_at_0122 ... ok
+test a_replayed_binding_is_proved_before_it_answers_unchanged ... ok
+test an_active_native_of_another_runtime_generation_is_not_this_successor ... ok
+test pre_feature_hosted_rows_migrate_to_the_least_authority ... ok
+test history_retains_the_authority_the_retired_generation_ran_under ... ok
+test one_generation_cannot_be_prepared_under_a_second_authority ... ok
+test preparing_the_same_launch_twice_is_one_intent ... ok
+test replaying_an_unacknowledged_launch_is_idempotent ... ok
+test imported_evidence_cannot_accompany_a_live_disposition ... ok
+test seat_history_reads_back_every_predecessor_in_retirement_order ... ok
+test seat_launch_intents_read_back_across_every_generation ... ok
+test one_receipt_cannot_be_bound_to_two_successions ... ok
+test succession_effects_and_readback_are_proved_before_a_receipt_binds ... ok
+test the_schema_refuses_to_rewrite_a_recorded_decision ... ok
+test every_readback_field_is_bound_to_the_transition_it_commits ... ok
+test a_valid_historical_binding_survives_the_upgrade_to_0122 ... ok
+test a_foreign_document_carrying_a_seat_bearer_is_refused_before_any_write ... ok
+test an_authentic_schema_twelve_document_verifies_and_imports_with_an_empty_backfill ... ok
+test a_succession_crosses_a_realm_boundary_as_evidence_and_not_as_authority ... ok
+
+test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 16.92s
+
+     Running tests/intake_lineage.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/intake_lineage-8c0914629a628400)
+
+running 14 tests
+test a_bounded_auto_arm_creates_work_with_its_authorization_in_the_lineage ... ok
+test an_approval_required_trigger_cannot_be_auto_armed ... ok
+test the_intake_module_starts_no_run_and_dispatches_no_command ... ok
+test auto_armed_work_still_faces_every_ordinary_blocker ... ok
+test intake_created_work_reaches_the_scheduler_as_event_origin ... ok
+test a_decision_about_an_unknown_or_changed_event_is_refused ... ok
+test a_newer_trigger_revision_appends_a_successor_and_mutates_nothing ... ok
+test an_approval_receipt_must_authorize_this_intake_decision ... ok
+test an_event_is_durable_before_a_decision_exists ... ok
+test one_event_delivered_concurrently_produces_one_event_one_decision_and_one_graph ... ok
+test an_approval_creates_one_graph_with_lineage_and_a_replay_creates_none ... ok
+test the_same_identity_with_different_bytes_is_a_conflict_and_writes_nothing ... ok
+test a_rejection_is_terminal_receipt_backed_and_creates_nothing ... ok
+test the_store_refuses_every_auto_arm_the_policy_refuses ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.13s
+
+     Running tests/jira_link_ledger.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/jira_link_ledger-77adc4bdc7c288a4)
+
+running 5 tests
+test jira_aliases_share_one_idempotent_task_link_ledger ... ok
+test jira_task_and_issue_identity_are_both_exclusive ... ok
+test v81_keeps_a_legacy_only_confirmed_binding_visible_through_the_canonical_ledger ... ok
+test v81_selects_an_exact_canonical_duplicate_without_rewriting_legacy_evidence ... ok
+test v81_fails_closed_for_each_irreconcilable_historical_identity ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.28s
+
+     Running tests/jira_materialization.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/jira_materialization-185b74ac68b5ebba)
+
+running 30 tests
+test a_confirmed_epic_binding_cannot_be_replaced_by_a_later_batch ... ok
+test a_different_immutable_issue_cannot_take_over_a_confirmed_binding ... ok
+test a_safe_link_batch_can_recover_the_scope_of_an_unconfirmed_create_batch ... ok
+test a_canonical_task_key_cannot_be_changed_by_direct_sql ... ok
+test a_rewound_rename_sequence_cannot_reactivate_spent_epic_authority ... ok
+test a_committed_rename_is_never_reported_as_a_failure_by_its_own_caller ... ok
+test a_same_issue_rename_moves_the_key_without_moving_the_subject ... ok
+test a_rename_reports_what_it_committed_even_when_the_row_moves_underneath_it ... ok
+test a_binding_without_an_immutable_issue_stays_fail_closed_for_renames ... ok
+test a_rewound_rename_sequence_cannot_reactivate_spent_task_authority ... ok
+test a_stale_epic_rename_authority_cannot_restore_an_earlier_destination ... ok
+test a_task_key_cycle_does_not_reactivate_the_authority_of_an_earlier_occurrence ... ok
+test a_stale_task_rename_authority_cannot_restore_an_earlier_destination ... ok
+test an_epic_key_cycle_does_not_reactivate_the_authority_of_an_earlier_occurrence ... ok
+test confirmation_adopts_an_exact_existing_task_binding_after_transport_recovery ... ok
+test a_uniqueness_violation_establishing_an_immutable_issue_is_a_typed_conflict ... ok
+test activation_requires_every_confirmed_binding_and_survives_readback ... ok
+test planning_refuses_a_non_exact_item_set_without_persisting_a_partial_batch ... ok
+test resolution_is_project_scoped_and_never_reaches_a_foreign_projects_binding ... ok
+test an_ambiguous_cross_ledger_key_is_a_typed_conflict_rather_than_a_backend_error ... ok
+test v73_migrates_an_empty_confirmed_link_batch_without_losing_incident_evidence ... ok
+test link_recovery_adopts_the_original_pending_create_batch_in_place ... ok
+test confirmation_adopts_a_migrated_legacy_jira_alias_binding ... ok
+test a_confirmed_binding_and_its_immutable_issue_survive_a_backup_and_restore ... ok
+test two_issues_racing_for_one_key_settle_on_exactly_one_typed_winner ... ok
+test two_direct_sql_updates_cannot_forge_the_tail_of_a_proven_rename ... ok
+test resolution_returns_the_immutable_kontor_uuid_and_reads_legacy_state_without_writing ... ok
+test recovery_postcondition_failure_rolls_back_ledger_and_legacy_items ... ok
+test a_legacy_exact_replay_cannot_claim_an_issue_already_bound_in_the_other_ledger ... ok
+test recovery_adopts_exact_non_overlapping_legacy_batch_fragments_without_rewriting_them ... ok
+
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.13s
+
+     Running tests/legacy_naming_recovery.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/legacy_naming_recovery-f6e1ce463c922451)
+
+running 2 tests
+test a_stale_container_recovery_cas_preserves_logical_identity_and_history ... ok
+test a_legacy_epic_code_correction_is_atomic_append_only_and_replay_safe ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.05s
+
+     Running tests/memory_migration_rollback.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/memory_migration_rollback-b67247ce611c59ff)
+
+running 1 test
+test migration_0123_failure_preserves_v119_schema_history_and_clean_retry ... FAILED
+
+failures:
+
+---- migration_0123_failure_preserves_v119_schema_history_and_clean_retry stdout ----
+
+thread 'migration_0123_failure_preserves_v119_schema_history_and_clean_retry' (6198010) panicked at crates/kontor-store/tests/memory_migration_rollback.rs:128:49:
+called `Result::unwrap()` on an `Err` value: Sqlite(SqlInputError { error: Error { code: Unknown, extended_code: 1 }, msg: "table planning_pair_placements already exists", sql: "\n\n-- 3. Protocol payload, keyed by run. Not an identity or a run registry.\n\n-- The frozen placement: the shared allocator's receipt from one activated\n-- snapshot, and its canonical hash, which every contribution is bound to.\nCREATE TABLE planning_pair_placements (\n    run_id          TEXT    NOT NULL PRIMARY KEY,\n    project_id      TEXT    NOT NULL,\n    protocol        TEXT    NOT NULL CHECK (protocol = 'planning_pair@1'),\n    placement       TEXT    NOT NULL CHECK (json_valid(placement)),\n    placement_hash  TEXT    NOT NULL\n                            CHECK (length(placement_hash) = 64\n                                   AND placement_hash NOT GLOB '*[^0-9a-f]*'),\n    created_at      TEXT    NOT NULL\n                            CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*Z'),\n    FOREIGN KEY (project_id, run_id) REFERENCES consultation_runs(project_id, run_id)\n        ON DELETE RESTRICT\n) STRICT;\n\nCREATE TRIGGER planning_pair_placements_belong_to_a_planning_pair\nBEFORE INSERT ON planning_pair_placements\nWHEN NOT EXISTS (\n    SELECT 1 FROM consultation_runs\n     WHERE run_id = NEW.run_id AND project_id = NEW.project_id AND family = 'planning_pair'\n)\nBEGIN\n    SELECT RAISE(ABORT, 'a planning pair placement belongs only to a planning_pair run');\nEND;\n\nCREATE TRIGGER planning_pair_placements_are_immutable\nBEFORE UPDATE ON planning_pair_placements\nBEGIN\n    SELECT RAISE(ABORT, 'a frozen planning pair placement is immutable');\nEND;\n\nCREATE TRIGGER planning_pair_placements_are_permanent\nBEFORE DELETE ON planning_pair_placements\nBEGIN\n    SELECT RAISE(ABORT, 'a frozen planning pair placement cannot be withdrawn');\nEND;\n\n-- The canonical record, one immutable revision per accepted transition, in\n-- lockstep with the run's own revision. Restore replays the latest through the\n-- domain transitions; nothing here interprets it.\nCREATE TABLE planning_pair_record_revisions (\n    run_id      TEXT    NOT NULL,\n    project_id  TEXT    NOT NULL,\n    revision    INTEGER NOT NULL CHECK (revision >= 1),\n    phase       TEXT    NOT NULL CHECK (phase IN (\n                        'awaiting_findings', 'findings_released', 'awaiting_answers',\n                        'answers_released', 'disposed')),\n    record      TEXT    NOT NULL CHECK (json_valid(record)),\n    record_hash TEXT    NOT NULL\n                        CHECK (length(record_hash) = 64 AND record_hash NOT GLOB '*[^0-9a-f]*'),\n    created_at  TEXT    NOT NULL\n                        CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*Z'),\n    PRIMARY KEY (run_id, revision),\n    FOREIGN KEY (run_id) REFERENCES planning_pair_placements(run_id) ON DELETE RESTRICT,\n    FOREIGN KEY (project_id, run_id) REFERENCES consultation_runs(project_id, run_id)\n        ON DELETE RESTRICT\n) STRICT;\n\n-- A record revision is written only beside the run revision it describes, and\n-- nothing follows a disposed record: the disposition is the last revision.\nCREATE TRIGGER planning_pair_record_revisions_follow_their_run\nBEFORE INSERT ON planning_pair_record_revisions\nWHEN NOT EXISTS (\n    SELECT 1 FROM consultation_runs\n     WHERE run_id = NEW.run_id\n       AND project_id = NEW.project_id\n       AND family = 'planning_pair'\n       AND revision = NEW.revision\n)\n  OR EXISTS (\n    SELECT 1 FROM planning_pair_record_revisions\n     WHERE run_id = NEW.run_id AND phase = 'disposed'\n)\nBEGIN\n    SELECT RAISE(ABORT,\n        'a planning pair record revision follows its run revision exactly and never a disposition');\nEND;\n\nCREATE TRIGGER planning_pair_record_revisions_are_immutable\nBEFORE UPDATE ON planning_pair_record_revisions\nBEGIN\n    SELECT RAISE(ABORT, 'a planning pair record revision is immutable');\nEND;\n\nCREATE TRIGGER planning_pair_record_revisions_are_permanent\nBEFORE DELETE ON planning_pair_record_revisions\nBEGIN\n    SELECT RAISE(ABORT, 'a planning pair record revision cannot be withdrawn');\nEND;\n\n-- Each finding and answer, independently durable: one per round and slot, with\n-- the exact authenticated member and occupancy generation that recorded it. The\n-- advice itself is in the record; this row proves who gave it and that it was\n-- never rewritten.\nCREATE TABLE planning_pair_contributions (\n    run_id               TEXT    NOT NULL,\n    project_id           TEXT    NOT NULL,\n    round                TEXT    NOT NULL CHECK (round IN ('findings', 'clarification')),\n    slot                 TEXT    NOT NULL CHECK (slot IN ('seat-a', 'seat-b')),\n    document_hash        TEXT    NOT NULL\n                                 CHECK (length(document_hash) = 64\n                                        AND document_hash NOT GLOB '*[^0-9a-f]*'),\n    seat_binding_id      TEXT    NOT NULL REFERENCES seat_bindings(id) ON DELETE RESTRICT,\n    occupancy_generation INTEGER NOT NULL CHECK (occupancy_generation >= 1),\n    record_revision      INTEGER NOT NULL CHECK (record_revision >= 1),\n    created_at           TEXT    NOT NULL\n                                 CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*Z'),\n    PRIMARY KEY (run_id, round, slot),\n    FOREIGN KEY (run_id, record_revision)\n        REFERENCES planning_pair_record_revisions(run_id, revision) ON DELETE RESTRICT,\n    FOREIGN KEY (project_id, run_id) REFERENCES consultation_runs(project_id, run_id)\n        ON DELETE RESTRICT\n) STRICT;\n\nCREATE TRIGGER planning_pair_contributions_are_immutable\nBEFORE UPDATE ON planning_pair_contributions\nBEGIN\n    SELECT RAISE(ABORT, 'a planning pair contribution is immutable');\nEND;\n\nCREATE TRIGGER planning_pair_contributions_are_permanent\nBEFORE DELETE ON planning_pair_contributions\nBEGIN\n    SELECT RAISE(ABORT, 'a planning pair contribution cannot be withdrawn');\nEND;\n\n-- 4. The v108 receipt shape with exactly six additional kinds.\nCREATE TABLE command_receipts_v127 (\n    id TEXT NOT NULL PRIMARY KEY CHECK (length(id) = 36 AND id NOT GLOB '*[^0-9a-f-]*'),\n    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,\n    idempotency_key TEXT NOT NULL UNIQUE CHECK (length(idempotency_key) BETWEEN 1 AND 256),\n    kind TEXT NOT NULL CHECK (kind IN (\n        'launch_run','cancel_run','park_run','abandon_run','resume_task','record_gate_verdict',\n        'approve_intake','sync_ticket','assign_ticket','transition_ticket','authorize_execution',\n        'approve_schedule_override','revoke_schedule_override','resolve_status_conflict',\n        'assign_work_calendar','revoke_execution_authorization','ensure_project',\n        'ensure_account_profile','apply_epic_graph','import_backlog','transition_epic',\n        'start_scheduled_work','transition_task','resolve_context','select_task_profile',\n        'select_task_team','select_task_account','correct_task_worktree','reconcile_ticket',\n        'materialize_jira','activate_asma_epic','settle_runtime','submit_intake',\n        'pull_ticket_comments','claim_ticket','replace_seat','refresh_capacity',\n        'override_availability','observe_seat','retire_seat','publish_topology_spec',\n        'select_project_topology','upgrade_topology','retitle_container',\n        'reconcile_native_names','apply_core_team','ensure_quick_session',\n        'promote_quick_session','materialize_core_team','correct_core_team_route',\n        'claim_core_team_seat','upgrade_epic_roster','apply_advisor_profile',\n        'apply_committee_template','apply_completion_profile','advance_completion',\n        'remediate_completion','invoke_advisor_run','settle_advisor_run','invoke_committee_run',\n        'record_committee_findings','settle_committee_run','recover_consultation_seat',\n        'reroute_unmaterialized_consultation_seat','publish_trigger','install_workflow_spec',\n        'withdraw_task','publish_team_definition','select_project_team_definition',\n        'upgrade_team_definition','correct_epic_backlog_code','recover_topology_container',\n        'recover_gate_rejection','publish_ticket_description','publish_epic_description',\n        'attest_retired_evaluator_evidence',\n        'apply_planning_pair_profile','invoke_planning_pair_run','record_planning_pair_finding',\n        'request_planning_pair_clarification','record_planning_pair_answer',\n        'record_planning_pair_disposition')),\n    target TEXT NOT NULL CHECK (json_valid(target)),\n    target_revision INTEGER NOT NULL CHECK (target_revision >= 1),\n    intent TEXT NOT NULL CHECK (json_valid(intent)),\n    intent_hash TEXT NOT NULL CHECK (length(intent_hash) = 64 AND intent_hash NOT GLOB '*[^0-9a-f]*'),\n    state TEXT NOT NULL CHECK (state IN ('intent_persisted','dispatch_pending','dispatched',\n        'acknowledged','confirmation_unknown','confirmed','failed')),\n    correlation TEXT NULL CHECK (correlation IS NULL OR length(correlation) BETWEEN 1 AND 256),\n    native_identity TEXT NULL CHECK (native_identity IS NULL OR json_valid(native_identity)),\n    result_ref TEXT NULL CHECK (result_ref IS NULL OR length(result_ref) BETWEEN 1 AND 256),\n    attempts INTEGER NOT NULL CHECK (attempts >= 0),\n    created_at TEXT NOT NULL,\n    updated_at TEXT NOT NULL,\n    execution_mode TEXT NOT NULL DEFAULT 'dispatch' CHECK (execution_mode IN ('local','dispatch')),\n    UNIQUE (project_id, id)\n) STRICT;\n\nINSERT INTO command_receipts_v127 SELECT * FROM command_receipts;\nPRAGMA legacy_alter_table = ON;\nDROP TABLE command_receipts;\nALTER TABLE command_receipts_v127 RENAME TO command_receipts;\nPRAGMA legacy_alter_table = OFF;\nCREATE INDEX ix_command_receipts_state ON command_receipts(project_id, state);\nCREATE TRIGGER command_receipts_identity_immutable BEFORE UPDATE ON command_receipts\nWHEN OLD.idempotency_key <> NEW.idempotency_key OR OLD.target <> NEW.target\n  OR OLD.intent <> NEW.intent OR OLD.intent_hash <> NEW.intent_hash\n  OR OLD.kind <> NEW.kind OR OLD.project_id <> NEW.project_id\n  OR OLD.state IN ('confirmed','failed')\nBEGIN SELECT RAISE(ABORT, 'a command receipt identity is immutable'); END;\nCREATE TRIGGER command_receipts_no_delete BEFORE DELETE ON command_receipts\nBEGIN SELECT RAISE(ABORT, 'command receipts are not deletable'); END;\n\nPRAGMA user_version = 127;\n", offset: 239 })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    migration_0123_failure_preserves_v119_schema_history_and_clean_retry
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.17s
+
+error: test failed, to rerun pass `-p kontor-store --test memory_migration_rollback`
+     Running tests/native_capacity.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/native_capacity-1e6c4e0f47679e80)
+
+running 16 tests
+test an_override_stands_beside_the_evidence_and_never_rewrites_it ... ok
+test a_reset_instant_belongs_to_an_exhausted_allowance_and_to_nothing_else ... ok
+test a_new_reading_replaces_the_window_set_rather_than_merging_into_it ... ok
+test a_quota_state_written_against_a_revision_that_has_moved_is_refused ... ok
+test a_balance_and_a_reserve_in_two_currencies_cannot_be_stored_at_all ... ok
+test an_override_written_against_a_revision_that_has_moved_is_refused ... ok
+test a_stored_observation_keeps_its_raw_reading_alongside_what_was_derived ... ok
+test an_explicit_probe_key_replays_one_immutable_observation_and_conflicts_on_new_intent ... ok
+test a_lapsed_override_is_still_a_record_that_someone_made_it ... ok
+test the_same_collector_reading_cannot_be_recorded_twice ... ok
+test the_latest_reading_per_account_is_the_one_a_projection_reports ... ok
+test a_provider_that_cannot_report_headroom_is_storable_and_does_not_block ... ok
+test one_window_kind_cannot_be_observed_twice_on_one_pair ... ok
+test one_account_holds_a_separate_quota_state_per_provider ... ok
+test an_unchanged_provider_report_appends_fresh_evidence_without_projection_churn ... ok
+test every_window_balance_and_reserve_survives_a_restart ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.54s
+
+     Running tests/open_questions.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/open_questions-f873594c2de68966)
+
+running 12 tests
+test an_append_from_a_stale_revision_is_refused ... ok
+test a_question_of_another_project_does_not_resolve ... ok
+test only_the_current_deferral_reopens_and_it_reopens_once ... ok
+test the_ledger_exports_deterministically_and_completely ... ok
+test a_deferral_without_a_trigger_and_a_firing_without_a_deferral_are_both_refused ... ok
+test a_child_row_can_be_neither_updated_nor_deleted ... ok
+test a_firing_that_names_the_wrong_trigger_is_refused_by_the_schema ... ok
+test only_the_revision_of_a_header_may_move ... ok
+test every_round_disposition_and_firing_survives_a_restart ... ok
+test the_ledger_lands_in_the_declared_schema_generation ... ok
+test the_ledger_survives_a_snapshot_restore ... ok
+test an_import_records_every_ledger_row_as_lineage ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.94s
+
+     Running tests/operational_liveness.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/operational_liveness-bbc067d19b37f503)
+
+running 11 tests
+test a_disagreeing_identity_is_reported_rather_than_silently_repaired ... ok
+test re_confirming_a_binding_advances_the_readback_without_rebinding ... ok
+test an_observation_records_what_was_seen_and_erases_nothing_else ... ok
+test a_confirmation_and_a_self_report_are_not_activity ... ok
+test a_task_resolves_to_at_most_one_active_topology_node ... ok
+test one_native_container_cannot_be_claimed_by_two_nodes ... ok
+test an_orphan_is_concluded_from_the_owning_epic_seat ... ok
+test newest_completion_wake_is_stable_per_hosted_tpm_occupancy ... ok
+test the_attach_deadline_is_the_one_fixed_at_creation ... ok
+test seat_liveness_evidence_survives_restart_and_export ... ok
+test a_native_container_binding_survives_restart_and_export ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.59s
+
+     Running tests/operational_promotion.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/operational_promotion-60cd9a06c07e6aba)
+
+running 3 tests
+test a_promotion_that_cannot_freeze_its_roster_leaves_the_source_promotable ... ok
+test a_second_command_for_one_session_is_a_conflict_rather_than_a_backend_error ... ok
+test authorizing_a_promotion_records_the_epic_and_its_roster_together ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.02s
+
+     Running tests/operational_topology.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/operational_topology-941800fcd628ffbb)
+
+running 9 tests
+test a_published_topology_revision_cannot_be_replaced_even_with_the_same_bytes ... ok
+test publishing_refuses_a_class_nobody_chose ... ok
+test a_human_override_is_stored_whole_and_read_back ... ok
+test a_retired_but_unarchived_child_blocks_its_parents_archive ... ok
+test an_unattributed_override_is_refused_by_the_schema ... ok
+test a_published_classification_cannot_be_revised_after_the_fact ... ok
+test repinning_an_epic_migrates_compatible_nodes_without_changing_their_identities_or_revisions ... ok
+test operational_state_survives_restart_and_typed_export ... ok
+test a_new_epic_can_share_its_lineages_historical_project_root ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.58s
+
+     Running tests/planning_pair_store.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/planning_pair_store-3b2ed84a497ad851)
+
+running 8 tests
+test a_planning_pair_is_frozen_with_its_placement_and_first_record ... ok
+test a_planning_pair_shares_the_one_semantic_identity_index ... ok
+test a_disposed_pair_is_terminal_in_storage ... ok
+test storage_refuses_an_unknown_family_and_a_state_outside_the_family ... ok
+test a_transition_moves_the_run_and_its_record_together_under_compare_and_swap ... ok
+test a_recorded_contribution_cannot_be_rewritten ... ok
+test placement_and_records_belong_only_to_a_planning_pair ... ok
+test a_member_role_outside_the_epics_selected_catalog_is_refused_in_storage ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.46s
+
+     Running tests/policy_evidence.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/policy_evidence-a1397e5b1682b63d)
+
+running 22 tests
+test a_waiver_receipt_must_name_a_real_waiver ... ok
+test a_pass_resets_only_its_own_reviewer_and_gate_stream ... ok
+test a_refused_dispatch_records_no_successor_on_its_step ... ok
+test a_replayed_recovery_step_produces_no_second_effect ... ok
+test a_second_follow_up_may_not_reuse_the_successor_the_first_one_dispatched ... ok
+test a_successor_whose_lineage_does_not_reach_the_parked_run_is_refused ... ok
+test a_started_or_waived_verdict_does_not_reset_a_rejection_stream ... ok
+test an_approval_is_spent_once_and_only_on_the_action_it_names ... ok
+test an_expired_approval_cannot_be_spent ... ok
+test only_two_dispatched_follow_ups_are_admitted ... ok
+test a_step_appended_without_its_advance_does_not_close_the_episode_either ... ok
+test recovery_runs_as_a_linked_successor_and_never_touches_the_parked_run ... ok
+test parking_an_imported_task_clears_its_historical_lifecycle_provenance ... ok
+test another_reviewer_and_another_gate_keep_their_own_counters ... ok
+test an_episode_cannot_advance_without_appending_the_step_that_caused_it ... ok
+test the_advisor_and_committee_budgets_hold_against_the_database ... ok
+test stored_evidence_refuses_update_and_delete_from_direct_sql ... ok
+test a_parked_run_is_terminal_and_never_reopens ... ok
+test recovery_advice_can_never_be_stored_as_an_approval ... ok
+test two_rejections_by_one_principal_park_the_task_even_across_relaunches ... ok
+test a_park_plan_that_is_not_a_park_verdict_is_refused_and_rolls_the_rejection_back ... ok
+test an_unauthorized_role_cannot_reject_and_leaves_nothing_behind ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.98s
+
+     Running tests/publication_attestations_immutable.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/publication_attestations_immutable-e4ba2b4335656a1b)
+
+running 1 test
+test recorded_publication_attestations_are_immutable_at_the_database_boundary ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.97s
+
+     Running tests/realm_preflight.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/realm_preflight-ca7c9cc84ba6e5dc)
+
+running 5 tests
+test realm_preflight_reads_existing_identity_without_changing_database_bytes ... ok
+test realm_preflight_accepts_the_joined_schema_version ... ok
+test realm_preflight_refuses_absent_empty_or_unsupported_databases_without_repair ... ok
+test realm_preflight_refuses_a_realm_stopped_before_the_8187_migrations ... ok
+test realm_preflight_refuses_a_newer_schema_without_touching_it ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 24.63s
+
+     Running tests/reconciliation.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/reconciliation-850b97058f9d561d)
+
+running 16 tests
+test an_observation_from_a_control_path_and_a_census_share_one_cursor_space ... ok
+test failed_census_does_not_mark_missing ... ok
+test later_positive_epoch_can_restore_freshness ... ok
+test a_census_observation_is_evidence_before_it_is_a_conclusion ... ok
+test absence_never_sets_terminal_outcome ... ok
+test missing_bound_session_becomes_lost_contact_not_completed ... ok
+test a_census_admits_only_the_scope_it_censuses ... ok
+test generation_change_is_persisted_without_rebinding ... ok
+test an_unbound_native_session_is_recorded_but_never_attached ... ok
+test repeating_completed_epoch_does_not_increment_revision ... ok
+test completed_epoch_records_membership_and_completion_cursor ... ok
+test partial_epoch_cannot_apply_absence ... ok
+test the_scripted_census_sequence_reaches_its_recorded_conclusions ... ok
+test reconciliation_preserves_distinct_desired_observed_derived_and_lifecycle ... ok
+test reconciliation_epoch_survives_restart ... ok
+test repeating_same_epoch_duplicates_no_facts_or_effects ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.59s
+
+     Running tests/repository_roundtrip.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/repository_roundtrip-15d5803dc1742bd5)
+
+running 89 tests
+test a_completion_transition_from_a_superseded_revision_changes_nothing ... ok
+test a_completion_commit_refuses_command_scope_and_unchanged_state_mismatches ... ok
+test a_confirmed_receipt_whose_session_moved_never_reaches_storage ... ok
+test a_completion_whose_wake_cannot_be_stored_commits_neither ... ok
+test a_changed_claim_under_the_same_receipt_is_refused ... ok
+test a_closed_run_is_immutable_and_recovery_creates_a_successor ... ok
+test a_compaction_receipt_is_idempotent_by_id_and_conflicts_on_different_content ... ok
+test a_gate_may_only_be_decided_by_the_authority_the_profile_names ... ok
+test a_disappeared_process_never_closes_a_run ... ok
+test a_disposition_closure_reproves_itself_and_round_trips_as_its_own_source ... ok
+test a_conflict_keeps_its_inputs_and_resolves_exactly_once ... ok
+test a_context_policy_survives_crash_reopen_with_its_clamp_evidence ... ok
+test a_conflict_resolution_receipt_must_resolve_this_conflicted_link ... ok
+test a_capability_receipt_must_record_this_command_over_this_exact_scope ... ok
+test a_phase_advances_only_along_a_declared_edge_and_only_under_a_compare_and_swap ... ok
+test a_done_tasks_settled_turn_claim_counts_and_a_missing_key_stays_absent ... ok
+test a_pinned_calendar_revision_is_never_silently_upgraded ... ok
+test a_project_with_no_calendar_is_unrestricted_not_closed ... ok
+test a_gate_rejection_route_and_exact_receipt_commit_or_roll_back_together ... ok
+test a_published_completion_profile_revision_cannot_be_republished ... ok
+test a_raw_event_is_appended_before_state_is_reduced_and_replays_are_idempotent ... ok
+test a_gate_verdict_and_its_exact_receipt_result_commit_or_roll_back_together ... ok
+test a_referenced_account_profile_cannot_be_deleted ... ok
+test a_replayed_completion_wake_reuses_its_intent_instead_of_adding_a_second ... ok
+test a_retired_evaluator_proof_replays_onto_exactly_one_row ... ok
+test a_recorded_proof_is_append_only ... ok
+test a_run_context_policy_is_written_once_and_cannot_be_revised ... ok
+test a_second_remediation_proposal_for_one_round_is_refused ... ok
+test a_dependency_cycle_is_refused_and_writes_nothing ... ok
+test a_settled_turns_labels_are_not_addressable_artifact_evidence ... ok
+test a_task_closes_only_when_its_pinned_profile_says_it_may ... ok
+test a_valid_id_from_another_project_never_resolves ... ok
+test a_receipt_backed_native_closure_certifies_only_its_latest_passed_gate_artifacts ... ok
+test a_settled_turn_closure_missing_a_slots_turn_is_refused_by_the_store ... ok
+test a_refused_intent_rolls_back_receipt_outbox_desired_state_and_event_together ... ok
+test a_waiver_is_refused_without_policy_authority_evidence_or_an_unbound_slot ... ok
+test a_waiver_replays_on_its_key_and_is_never_appended_to ... ok
+test a_waived_slot_is_refused_a_run_a_binding_a_turn_and_an_update ... ok
+test account_profiles_are_listed_and_read_per_project ... ok
+test an_account_profile_change_from_a_foreign_realm_is_refused_before_any_write ... ok
+test a_historical_rejection_recovery_is_source_unique_append_only_and_survives_reopen ... ok
+test an_account_profile_from_another_project_is_never_updated ... ok
+test a_slot_that_both_settled_and_was_waived_is_refused_by_the_store ... ok
+test an_account_profile_credential_identity_cannot_be_edited_by_direct_sql ... ok
+test an_account_profile_update_is_a_compare_and_swap ... ok
+test a_repeated_source_event_returns_the_original_decision ... ok
+test a_task_from_a_sibling_goal_is_not_armed_by_a_goal_authorization ... ok
+test an_empty_ledger_snapshot_resumes_without_a_gap_or_an_overlap ... ok
+test an_execution_authorization_is_bounded_and_arms_only_its_scope ... ok
+test an_account_profile_round_trips_through_a_reopen ... ok
+test an_exact_orphaned_route_effect_recovers_receipt_and_wake_once ... ok
+test an_exact_orphaned_proposal_claim_recovers_once_and_rejects_impostors ... ok
+test an_override_is_bounded_by_its_scope_ceiling_and_revocation ... ok
+test an_unknown_dispatch_result_blocks_a_retry_until_it_is_reconciled ... ok
+test an_unreferenced_account_profile_is_deleted_under_a_compare_and_swap ... ok
+test another_project_can_neither_read_nor_target_a_context_policy ... ok
+test calendar_exceptions_are_append_only_and_scoped_to_their_project ... ok
+test an_incompatible_command_kind_and_target_never_reaches_sql ... ok
+test compaction_receipts_survive_crash_reopen_and_report_the_most_recent ... ok
+test desired_observed_and_derived_all_survive_a_restart_with_different_values ... ok
+test every_team_closure_source_round_trips_as_itself ... ok
+test an_override_approval_and_its_revocation_each_need_their_own_receipt ... ok
+test external_comments_deduplicate_replays_and_keep_edits ... ok
+test no_gate_verdict_can_turn_its_citations_into_producer_evidence ... ok
+test atomic_local_gate_and_done_survive_restart_and_replay_after_reopen ... ok
+test concurrent_recovery_keys_both_observe_no_route_before_either_commits ... ok
+test an_existing_source_event_can_create_one_linked_receipt_per_newer_trigger_revision ... ok
+test orphaned_remediation_effects_without_claims_cannot_be_adopted ... ok
+test cross_project_targets_tasks_evidence_pins_and_trigger_refs_fail_without_partial_rows ... ok
+test intent_desired_state_outbox_and_event_commit_together ... ok
+test replayed_or_out_of_order_native_events_never_regress_projection_or_revision ... ok
+test stale_atomic_withdrawal_leaves_no_receipt_and_preserves_the_moved_task ... ok
+test team_run_advances_and_closes_with_cas_and_bound_evidence ... ok
+test sensitive_material_is_rejected_from_every_persisted_string_category_without_echo ... ok
+test persona_snapshot_persists_reopens_and_rejects_cross_project_or_wrong_gate ... ok
+test the_gate_state_map_reduces_the_whole_append_only_history ... ok
+test two_epics_reuse_the_same_exact_derived_completion_profile ... ok
+test terminal_evidence_must_belong_to_the_closed_run_and_match_its_hash ... ok
+test every_refused_write_leaves_zero_partial_rows_revisions_events_or_outbox_entries ... ok
+test the_stored_command_vocabulary_is_exactly_the_domain_vocabulary ... ok
+test two_legacy_receipts_for_one_native_closure_are_marked_ambiguous ... ok
+test workflow_installation_rolls_back_when_its_authority_receipt_is_refused ... ok
+test v115_never_confirms_rejected_gates_or_revives_a_stale_pass ... ok
+test v115_confirms_exact_local_mutations_with_typed_provenance_and_preserves_history ... ok
+test v115_preserves_ambiguous_claimed_attempted_and_native_command_receipts ... ok
+test both_external_workflow_fixtures_persist_reopen_and_hash_identically ... ok
+test a_mismatched_realm_envelope_or_foreign_id_fails_atomically ... ok
+test specifications_and_snapshots_survive_a_restart_byte_for_byte ... ok
+test the_arbitrary_profile_and_persona_fixtures_persist_reopen_and_hash_identically ... ok
+
+test result: ok. 89 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 31.84s
+
+     Running tests/scheduler_admission.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/scheduler_admission-fe2ddf32778b80fb)
+
+running 34 tests
+test a_dependency_that_has_not_finished_blocks_the_admission ... ok
+test a_ceiling_is_recounted_from_the_rows_rather_than_trusted ... ok
+test a_lapsed_lease_is_reclaimable_and_says_nothing_about_the_run_that_held_it ... ok
+test a_canonical_repository_path_is_one_module_through_the_store_and_back ... ok
+test a_blocked_first_page_cannot_hide_later_admissions ... ok
+test a_lease_may_not_be_renewed_once_the_run_it_protects_has_closed ... ok
+test a_lease_history_entry_can_be_neither_updated_nor_deleted ... ok
+test a_lapsed_dotted_holdout_is_reclaimable_by_the_canonical_slash_key ... ok
+test a_live_dotted_holdout_refuses_a_slash_admission_and_keeps_its_row ... ok
+test a_renewal_rotates_the_token_and_an_old_token_can_neither_renew_nor_release ... ok
+test a_refused_admission_writes_nothing_at_all ... ok
+test a_release_must_record_the_instant_its_event_recorded ... ok
+test a_renewed_lease_that_lapses_is_reclaimable_at_the_token_it_ended_on ... ok
+test a_pre_fix_module_lease_recovers_its_declared_task_worktree ... ok
+test a_reused_launch_key_naming_a_different_task_is_refused ... ok
+test a_task_that_left_ready_is_refused_even_at_the_admitted_revision ... ok
+test a_serialization_peer_with_an_open_run_blocks_the_admission ... ok
+test admissions_sharing_a_decided_at_are_not_skipped_by_the_resume_point ... ok
+test a_replayed_admission_produces_one_durable_admission_and_no_second_launch ... ok
+test a_termination_may_not_also_rotate_the_token_or_move_the_expiry ... ok
+test distinct_verified_trees_may_hold_one_module_and_a_shared_tree_may_not ... ok
+test exact_recovery_decodes_the_durable_qnr_admission_shape ... ok
+test each_reclaimed_place_gives_its_own_lease_its_own_lineage ... ok
+test an_admission_writes_the_run_the_lease_the_intent_and_the_decision_together ... ok
+test every_changed_module_takes_a_lease_and_the_secondary_contends ... ok
+test ending_a_lease_by_direct_sql_without_its_event_is_refused ... ok
+test four_five_seat_teams_spend_four_capacity_envelopes ... ok
+test one_task_is_never_admitted_twice_even_with_a_fresh_key_and_no_module ... ok
+test the_stores_own_release_and_expiry_paths_still_succeed_and_leave_their_evidence ... ok
+test the_decision_records_the_ordering_the_capacity_and_the_evidence_digest ... ok
+test refusals_are_recorded_and_neither_the_decision_nor_the_history_can_be_rewritten ... ok
+test two_schedulers_never_admit_the_same_module_twice_even_across_projects ... ok
+test the_exclusion_holds_against_direct_sql_that_never_came_through_the_store ... ok
+test unconfirmed_admissions_are_unknown_unbound_queued_roots_only ... ok
+
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.68s
+
+     Running tests/schema_v1.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/schema_v1-17980260c3e2fa1c)
+
+running 69 tests
+test a_failing_migration_leaves_version_zero_and_no_partial_schema ... ok
+test a_failure_in_the_second_migration_rolls_the_first_one_back ... ok
+test a_message_issuance_is_unique_per_id_and_recognises_its_own_replay ... ok
+test a_needs_human_row_cannot_be_written_without_its_brief ... ok
+test a_content_gap_has_nowhere_to_put_session_content ... ok
+test a_newer_schema_is_refused_rather_than_downgraded ... ok
+test a_migrated_v1_account_profile_carries_no_invented_state ... ok
+test a_normalized_observation_cannot_be_stored_in_pieces_or_claim_a_used_sequence ... ok
+test a_derived_state_may_only_be_terminal_together_with_an_outcome ... ok
+test a_concurrent_first_open_initializes_exactly_one_realm ... ok
+test a_pinned_snapshot_cannot_be_rewritten_by_direct_sql ... ok
+test a_busy_writer_waits_then_times_out_without_partial_state ... ok
+test a_replay_checkpoint_and_a_finished_census_never_move_backwards ... ok
+test a_profile_selection_outcome_is_an_immutable_receipt_to_policy_binding ... ok
+test a_schema_v1_database_is_upgraded_in_place_and_keeps_its_realm ... ok
+test a_terminal_run_cannot_be_reopened_or_edited_by_direct_sql ... ok
+test a_task_may_not_depend_on_itself ... ok
+test a_terminal_team_run_cannot_be_reopened_or_edited_by_direct_sql ... ok
+test all_logical_relationships_are_project_scoped_and_fk_backed ... ok
+test a_terminal_task_cannot_be_changed_by_direct_sql ... ok
+test an_account_profile_insert_without_explicit_state_is_refused ... ok
+test a_profile_missing_only_its_enabled_or_revision_still_refuses_to_load has been running for over 60 seconds
+test an_empty_database_migrates_to_the_current_schema_version ... ok
+test append_only_tables_reject_update_and_delete_from_direct_sql ... ok
+test issuance_boundary_is_frozen_across_replay_and_reopen ... ok
+test documents_published_before_the_classification_existed_adopt_the_tier_default ... ok
+test a_profile_missing_only_its_enabled_or_revision_still_refuses_to_load ... ok
+test imported_profile_selection_outcome_lineage_is_immutable_and_non_authoritative ... ok
+test an_observation_with_no_native_id_is_identified_by_its_sequence_not_its_payload ... ok
+test every_connection_reports_wal_foreign_keys_and_a_bounded_busy_timeout ... ok
+test migration_0010_rebuilds_command_receipts_without_losing_a_row_or_a_reference ... ok
+test an_empty_database_creates_exactly_one_immutable_realm has been running for over 60 seconds
+test an_empty_database_creates_exactly_one_immutable_realm ... ok
+test only_one_active_workflow_and_one_active_calendar_may_exist ... ok
+test rolled_back_cursor_is_never_reused_after_reopen ... ok
+test opening_an_already_migrated_database_is_idempotent ... ok
+test strict_typing_and_check_constraints_reject_impossible_rows ... ok
+test realm_identity_survives_reopen_and_cannot_be_replaced ... ok
+test realm_metadata_rejects_update_delete_and_duplicate ... ok
+test v106_preserves_legacy_container_identity_and_leaves_new_readback_unknown ... ok
+test the_deployed_op03_v31_lineage_converges_without_losing_its_receipts ... ok
+test v113_preserves_known_artifacts_and_their_existing_references ... ok
+test the_deployed_consultation_v36_lineage_upgrades_forward ... ok
+test the_integrity_and_foreign_key_checks_pass_on_a_fresh_database ... ok
+test the_merged_op12_v41_lineage_upgrades_through_epic_execution_scopes_v43 ... ok
+test v127_preserves_every_advisor_and_committee_row_and_rule ... ok
+test v128_keeps_every_receipt_and_admits_only_a_current_members_immutable_claim ... ok
+test tier_a_operational_tables_have_nowhere_to_store_a_classification ... ok
+test the_operational_hardening_v35_lineage_converges_without_losing_its_receipt ... ok
+test the_runtime_event_cursor_is_monotonic_and_never_reused ... ok
+test v108_worktree_correction_evidence_is_append_only ... ok
+test the_schema_has_no_outbound_comment_representation ... ok
+test v64_preserves_published_committee_remediation_and_its_immutability ... ok
+test v65_backfills_published_proposals_and_fences_new_generations ... ok
+test v66_claims_remediation_commands_and_re_review_provenance_immutably ... ok
+test v67_keeps_every_provider_usage_heartbeat_immutable_and_permanent ... ok
+test the_schema_contains_exactly_the_expected_tables_and_they_are_all_strict ... ok
+test v69_preserves_global_round_rows_and_opens_the_positive_u8_domain ... ok
+test v80_backfills_only_provable_v79_command_intents_and_fences_the_rest ... ok
+test v83_preserves_era_one_remediation_and_separates_reopened_rounds ... ok
+test v95_adds_immutable_jira_identity_without_losing_or_inventing_a_single_v94_row ... ok
+test v125_fleet_policy_keys_bind_once_and_stay_bound ... ok
+test v123_upgrade_preserves_generic_ledger_and_enforces_immutable_memory_receipts ... FAILED
+test v126_fleet_bundle_keys_bind_once_and_every_binding_stays_bound ... ok
+test v46_to_v47_canonicalizes_only_the_known_builtin_hash_and_every_reference ... ok
+test v47_refuses_the_builtin_identity_when_its_prior_hash_is_unknown ... ok
+test v47_refuses_an_unknown_reference_hash_before_rewriting_the_builtin ... ok
+test v68_materialization_reroute_lineage_is_immutable_and_has_distinct_receipt_authority ... ok
+test v99_records_a_hold_lift_condition_that_can_neither_be_edited_nor_withdrawn ... ok
+test v49_backfills_a_confirmed_receipt_without_tripping_the_immutability_trigger ... ok
+test v54_seeds_each_existing_project_without_claiming_pending_memory ... ok
+
+failures:
+
+---- v123_upgrade_preserves_generic_ledger_and_enforces_immutable_memory_receipts stdout ----
+
+thread 'v123_upgrade_preserves_generic_ledger_and_enforces_immutable_memory_receipts' (6228514) panicked at crates/kontor-store/tests/schema_v1.rs:6836:46:
+called `Result::unwrap()` on an `Err` value: Sqlite(SqlInputError { error: Error { code: Unknown, extended_code: 1 }, msg: "table planning_pair_placements already exists", sql: "\n\n-- 3. Protocol payload, keyed by run. Not an identity or a run registry.\n\n-- The frozen placement: the shared allocator's receipt from one activated\n-- snapshot, and its canonical hash, which every contribution is bound to.\nCREATE TABLE planning_pair_placements (\n    run_id          TEXT    NOT NULL PRIMARY KEY,\n    project_id      TEXT    NOT NULL,\n    protocol        TEXT    NOT NULL CHECK (protocol = 'planning_pair@1'),\n    placement       TEXT    NOT NULL CHECK (json_valid(placement)),\n    placement_hash  TEXT    NOT NULL\n                            CHECK (length(placement_hash) = 64\n                                   AND placement_hash NOT GLOB '*[^0-9a-f]*'),\n    created_at      TEXT    NOT NULL\n                            CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*Z'),\n    FOREIGN KEY (project_id, run_id) REFERENCES consultation_runs(project_id, run_id)\n        ON DELETE RESTRICT\n) STRICT;\n\nCREATE TRIGGER planning_pair_placements_belong_to_a_planning_pair\nBEFORE INSERT ON planning_pair_placements\nWHEN NOT EXISTS (\n    SELECT 1 FROM consultation_runs\n     WHERE run_id = NEW.run_id AND project_id = NEW.project_id AND family = 'planning_pair'\n)\nBEGIN\n    SELECT RAISE(ABORT, 'a planning pair placement belongs only to a planning_pair run');\nEND;\n\nCREATE TRIGGER planning_pair_placements_are_immutable\nBEFORE UPDATE ON planning_pair_placements\nBEGIN\n    SELECT RAISE(ABORT, 'a frozen planning pair placement is immutable');\nEND;\n\nCREATE TRIGGER planning_pair_placements_are_permanent\nBEFORE DELETE ON planning_pair_placements\nBEGIN\n    SELECT RAISE(ABORT, 'a frozen planning pair placement cannot be withdrawn');\nEND;\n\n-- The canonical record, one immutable revision per accepted transition, in\n-- lockstep with the run's own revision. Restore replays the latest through the\n-- domain transitions; nothing here interprets it.\nCREATE TABLE planning_pair_record_revisions (\n    run_id      TEXT    NOT NULL,\n    project_id  TEXT    NOT NULL,\n    revision    INTEGER NOT NULL CHECK (revision >= 1),\n    phase       TEXT    NOT NULL CHECK (phase IN (\n                        'awaiting_findings', 'findings_released', 'awaiting_answers',\n                        'answers_released', 'disposed')),\n    record      TEXT    NOT NULL CHECK (json_valid(record)),\n    record_hash TEXT    NOT NULL\n                        CHECK (length(record_hash) = 64 AND record_hash NOT GLOB '*[^0-9a-f]*'),\n    created_at  TEXT    NOT NULL\n                        CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*Z'),\n    PRIMARY KEY (run_id, revision),\n    FOREIGN KEY (run_id) REFERENCES planning_pair_placements(run_id) ON DELETE RESTRICT,\n    FOREIGN KEY (project_id, run_id) REFERENCES consultation_runs(project_id, run_id)\n        ON DELETE RESTRICT\n) STRICT;\n\n-- A record revision is written only beside the run revision it describes, and\n-- nothing follows a disposed record: the disposition is the last revision.\nCREATE TRIGGER planning_pair_record_revisions_follow_their_run\nBEFORE INSERT ON planning_pair_record_revisions\nWHEN NOT EXISTS (\n    SELECT 1 FROM consultation_runs\n     WHERE run_id = NEW.run_id\n       AND project_id = NEW.project_id\n       AND family = 'planning_pair'\n       AND revision = NEW.revision\n)\n  OR EXISTS (\n    SELECT 1 FROM planning_pair_record_revisions\n     WHERE run_id = NEW.run_id AND phase = 'disposed'\n)\nBEGIN\n    SELECT RAISE(ABORT,\n        'a planning pair record revision follows its run revision exactly and never a disposition');\nEND;\n\nCREATE TRIGGER planning_pair_record_revisions_are_immutable\nBEFORE UPDATE ON planning_pair_record_revisions\nBEGIN\n    SELECT RAISE(ABORT, 'a planning pair record revision is immutable');\nEND;\n\nCREATE TRIGGER planning_pair_record_revisions_are_permanent\nBEFORE DELETE ON planning_pair_record_revisions\nBEGIN\n    SELECT RAISE(ABORT, 'a planning pair record revision cannot be withdrawn');\nEND;\n\n-- Each finding and answer, independently durable: one per round and slot, with\n-- the exact authenticated member and occupancy generation that recorded it. The\n-- advice itself is in the record; this row proves who gave it and that it was\n-- never rewritten.\nCREATE TABLE planning_pair_contributions (\n    run_id               TEXT    NOT NULL,\n    project_id           TEXT    NOT NULL,\n    round                TEXT    NOT NULL CHECK (round IN ('findings', 'clarification')),\n    slot                 TEXT    NOT NULL CHECK (slot IN ('seat-a', 'seat-b')),\n    document_hash        TEXT    NOT NULL\n                                 CHECK (length(document_hash) = 64\n                                        AND document_hash NOT GLOB '*[^0-9a-f]*'),\n    seat_binding_id      TEXT    NOT NULL REFERENCES seat_bindings(id) ON DELETE RESTRICT,\n    occupancy_generation INTEGER NOT NULL CHECK (occupancy_generation >= 1),\n    record_revision      INTEGER NOT NULL CHECK (record_revision >= 1),\n    created_at           TEXT    NOT NULL\n                                 CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*Z'),\n    PRIMARY KEY (run_id, round, slot),\n    FOREIGN KEY (run_id, record_revision)\n        REFERENCES planning_pair_record_revisions(run_id, revision) ON DELETE RESTRICT,\n    FOREIGN KEY (project_id, run_id) REFERENCES consultation_runs(project_id, run_id)\n        ON DELETE RESTRICT\n) STRICT;\n\nCREATE TRIGGER planning_pair_contributions_are_immutable\nBEFORE UPDATE ON planning_pair_contributions\nBEGIN\n    SELECT RAISE(ABORT, 'a planning pair contribution is immutable');\nEND;\n\nCREATE TRIGGER planning_pair_contributions_are_permanent\nBEFORE DELETE ON planning_pair_contributions\nBEGIN\n    SELECT RAISE(ABORT, 'a planning pair contribution cannot be withdrawn');\nEND;\n\n-- 4. The v108 receipt shape with exactly six additional kinds.\nCREATE TABLE command_receipts_v127 (\n    id TEXT NOT NULL PRIMARY KEY CHECK (length(id) = 36 AND id NOT GLOB '*[^0-9a-f-]*'),\n    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,\n    idempotency_key TEXT NOT NULL UNIQUE CHECK (length(idempotency_key) BETWEEN 1 AND 256),\n    kind TEXT NOT NULL CHECK (kind IN (\n        'launch_run','cancel_run','park_run','abandon_run','resume_task','record_gate_verdict',\n        'approve_intake','sync_ticket','assign_ticket','transition_ticket','authorize_execution',\n        'approve_schedule_override','revoke_schedule_override','resolve_status_conflict',\n        'assign_work_calendar','revoke_execution_authorization','ensure_project',\n        'ensure_account_profile','apply_epic_graph','import_backlog','transition_epic',\n        'start_scheduled_work','transition_task','resolve_context','select_task_profile',\n        'select_task_team','select_task_account','correct_task_worktree','reconcile_ticket',\n        'materialize_jira','activate_asma_epic','settle_runtime','submit_intake',\n        'pull_ticket_comments','claim_ticket','replace_seat','refresh_capacity',\n        'override_availability','observe_seat','retire_seat','publish_topology_spec',\n        'select_project_topology','upgrade_topology','retitle_container',\n        'reconcile_native_names','apply_core_team','ensure_quick_session',\n        'promote_quick_session','materialize_core_team','correct_core_team_route',\n        'claim_core_team_seat','upgrade_epic_roster','apply_advisor_profile',\n        'apply_committee_template','apply_completion_profile','advance_completion',\n        'remediate_completion','invoke_advisor_run','settle_advisor_run','invoke_committee_run',\n        'record_committee_findings','settle_committee_run','recover_consultation_seat',\n        'reroute_unmaterialized_consultation_seat','publish_trigger','install_workflow_spec',\n        'withdraw_task','publish_team_definition','select_project_team_definition',\n        'upgrade_team_definition','correct_epic_backlog_code','recover_topology_container',\n        'recover_gate_rejection','publish_ticket_description','publish_epic_description',\n        'attest_retired_evaluator_evidence',\n        'apply_planning_pair_profile','invoke_planning_pair_run','record_planning_pair_finding',\n        'request_planning_pair_clarification','record_planning_pair_answer',\n        'record_planning_pair_disposition')),\n    target TEXT NOT NULL CHECK (json_valid(target)),\n    target_revision INTEGER NOT NULL CHECK (target_revision >= 1),\n    intent TEXT NOT NULL CHECK (json_valid(intent)),\n    intent_hash TEXT NOT NULL CHECK (length(intent_hash) = 64 AND intent_hash NOT GLOB '*[^0-9a-f]*'),\n    state TEXT NOT NULL CHECK (state IN ('intent_persisted','dispatch_pending','dispatched',\n        'acknowledged','confirmation_unknown','confirmed','failed')),\n    correlation TEXT NULL CHECK (correlation IS NULL OR length(correlation) BETWEEN 1 AND 256),\n    native_identity TEXT NULL CHECK (native_identity IS NULL OR json_valid(native_identity)),\n    result_ref TEXT NULL CHECK (result_ref IS NULL OR length(result_ref) BETWEEN 1 AND 256),\n    attempts INTEGER NOT NULL CHECK (attempts >= 0),\n    created_at TEXT NOT NULL,\n    updated_at TEXT NOT NULL,\n    execution_mode TEXT NOT NULL DEFAULT 'dispatch' CHECK (execution_mode IN ('local','dispatch')),\n    UNIQUE (project_id, id)\n) STRICT;\n\nINSERT INTO command_receipts_v127 SELECT * FROM command_receipts;\nPRAGMA legacy_alter_table = ON;\nDROP TABLE command_receipts;\nALTER TABLE command_receipts_v127 RENAME TO command_receipts;\nPRAGMA legacy_alter_table = OFF;\nCREATE INDEX ix_command_receipts_state ON command_receipts(project_id, state);\nCREATE TRIGGER command_receipts_identity_immutable BEFORE UPDATE ON command_receipts\nWHEN OLD.idempotency_key <> NEW.idempotency_key OR OLD.target <> NEW.target\n  OR OLD.intent <> NEW.intent OR OLD.intent_hash <> NEW.intent_hash\n  OR OLD.kind <> NEW.kind OR OLD.project_id <> NEW.project_id\n  OR OLD.state IN ('confirmed','failed')\nBEGIN SELECT RAISE(ABORT, 'a command receipt identity is immutable'); END;\nCREATE TRIGGER command_receipts_no_delete BEFORE DELETE ON command_receipts\nBEGIN SELECT RAISE(ABORT, 'command receipts are not deletable'); END;\n\nPRAGMA user_version = 127;\n", offset: 239 })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    v123_upgrade_preserves_generic_ledger_and_enforces_immutable_memory_receipts
+
+test result: FAILED. 68 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 261.90s
+
+error: test failed, to rerun pass `-p kontor-store --test schema_v1`
+     Running tests/succession_attempts.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/succession_attempts-424b3cd07cc78c12)
+
+running 8 tests
+test due_deferred_refresh_admits_at_the_elapsed_exhausted_reset_boundary ... ok
+test identical_runtime_refusal_refreshes_the_current_cursor_once_and_replay_is_inert ... ok
+test due_deferred_refresh_can_record_another_exact_future_wait ... ok
+test handoff_retirement_successor_readback_and_receipt_advance_once ... ok
+test a_typed_refusal_frees_the_slot_without_a_handoff_unavailable_escape ... ok
+test schema_rejects_route_only_mutation_that_bypasses_the_due_refresh_cas ... ok
+test exact_quota_cursor_and_one_active_slot_are_durable_across_restart ... ok
+test succession_attempts_round_trip_only_as_non_executable_lineage ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.06s
+
+     Running tests/team_definition_backup_contract.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/team_definition_backup_contract-cbc2019f0b602a57)
+
+running 2 tests
+test typed_export_carries_every_team_definition_surface ... ok
+test a_verified_snapshot_restore_preserves_the_team_definition_surfaces ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.41s
+
+     Running tests/team_definition_migration_completeness.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/team_definition_migration_completeness-5660b6e055e5a399)
+
+running 24 tests
+test a_crash_between_the_pin_commit_and_the_receipt_recovers_from_the_same_key ... ok
+test a_delivery_replacement_census_uses_only_its_current_native_leaf ... ok
+test a_target_definition_that_does_not_declare_a_live_node_kind_is_refused ... ok
+test a_migration_must_match_the_live_census_in_both_subject_and_identity_directions ... ok
+test a_genuine_delivery_fork_refuses_the_native_migration_census ... ok
+test a_migration_that_omits_a_live_delivery_seat_is_refused ... ok
+test a_fork_with_an_unbound_current_leaf_also_refuses_the_migration_census ... ok
+test a_migration_recorded_before_a_seatless_session_appears_cannot_confirm ... ok
+test a_live_delivery_session_with_no_seat_at_its_slot_fails_closed ... ok
+test a_migration_that_omits_a_live_native_subject_is_refused_before_any_mutation ... ok
+test a_terminal_team_run_makes_legacy_seatless_bound_sessions_history ... ok
+test an_epic_team_run_with_no_seat_bindings_at_all_cannot_advance_the_pin ... ok
+test an_empty_requested_census_cannot_hide_existing_native_subjects ... ok
+test an_in_flight_migration_atomically_fences_node_and_seat_lifecycle ... ok
+test an_ordinary_multi_seat_team_run_censuses_each_seat_exactly_once ... ok
+test an_empty_native_census_can_upgrade_and_replay_after_reopen ... ok
+test an_inactive_delivery_seat_is_history_and_does_not_block_apply ... ok
+test an_exact_rename_pending_seat_can_be_retired_before_migration_confirmation ... ok
+test an_operator_abandoned_unbound_attempt_does_not_hide_the_current_native ... ok
+test abandoned_bridges_preserve_current_delivery_migration_record_and_confirmation has been running for over 60 seconds
+test an_unbound_delivery_leaf_never_substitutes_its_bound_predecessor ... ok
+test confirmation_re_proves_parity_against_the_live_census ... ok
+test consecutive_trailing_abandoned_attempts_keep_the_bound_predecessor_current ... ok
+test the_census_lists_every_live_native_bearing_subject_of_the_epic ... ok
+test abandoned_bridges_preserve_current_delivery_migration_record_and_confirmation ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 113.52s
+
+     Running tests/team_definition_persistence.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/team_definition_persistence-675efe0d1cbdcfc8)
+
+running 32 tests
+test a_definition_naming_an_unpublished_topology_revision_is_refused ... ok
+test a_migration_with_runtime_effects_stays_resumable_instead_of_going_terminal ... ok
+test a_seat_target_and_its_container_do_not_share_a_key ... ok
+test a_placement_must_describe_the_subject_it_is_recorded_against ... ok
+test a_published_team_definition_revision_cannot_be_replaced_even_with_the_same_bytes ... ok
+test a_legacy_consultation_without_a_topic_stays_readable_and_renders_nothing ... ok
+test a_fresh_invocation_key_cannot_freeze_the_same_semantic_consultation_twice ... ok
+test a_consultation_topic_round_trips_and_is_reachable_from_its_topology_node ... ok
+test a_legacy_topic_correction_preserves_the_run_and_replays_one_authority ... ok
+test a_migration_replays_under_its_key_instead_of_recording_a_rival ... ok
+test a_migration_cannot_enumerate_a_node_of_another_project_or_epic ... ok
+test a_second_pin_for_the_same_epic_is_refused ... ok
+test a_stale_selection_preview_cannot_overwrite_a_newer_choice ... ok
+test an_epic_keeps_its_frozen_definition_when_the_project_default_moves ... ok
+test a_success_state_cannot_be_claimed_without_the_exact_desired_placement ... ok
+test a_settled_migration_can_no_longer_supply_a_topic ... ok
+test an_epic_may_have_only_one_migration_in_flight ... ok
+test all_three_target_kinds_persist_and_confirm_under_their_own_identities ... ok
+test a_recorded_migration_and_its_pin_survive_a_restart ... ok
+test definitions_round_trip_byte_exactly_and_list_deterministically ... ok
+test publication_composes_against_the_exact_topology_bytes_and_rules ... ok
+test an_operator_supplied_topic_is_written_once_with_its_migration_provenance ... ok
+test an_observation_whose_native_id_changed_is_refused ... ok
+test one_key_cannot_stand_for_two_different_migrations ... ok
+test a_topic_cannot_be_supplied_across_a_project_boundary ... ok
+test several_seats_on_one_node_are_distinct_targets_that_survive_preview_and_confirmation ... ok
+test the_fence_reports_the_in_flight_migration_and_clears_when_it_is_abandoned ... ok
+test the_project_default_is_re_selectable_and_refuses_a_hash_that_was_never_published ... ok
+test the_pin_moves_only_after_every_target_reads_back_its_desired_title ... ok
+test an_unreceipted_v79_migration_is_explicitly_unrecoverable_not_not_found ... ok
+test the_settled_topic_correction_may_not_also_move_the_subject ... ok
+test concurrent_semantic_identity_losers_get_the_typed_duplicate_naming_the_survivor ... ok
+
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.24s
+
+     Running tests/team_run_admission_adoption.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/team_run_admission_adoption-30233936ad276d2c)
+
+running 18 tests
+test a_run_that_moved_since_the_caller_read_it_is_refused ... ok
+test a_slot_the_frozen_snapshot_does_not_declare_is_refused ... ok
+test a_run_that_is_not_an_unstarted_admission_is_refused ... ok
+test a_terminal_team_cannot_adopt_a_run ... ok
+test a_closed_task_cannot_adopt_a_run ... ok
+test a_slot_that_already_owes_a_dispatch_needs_no_adoption ... ok
+test a_refused_adoption_writes_nothing_at_all ... ok
+test a_run_the_scheduler_already_admitted_is_refused ... ok
+test a_run_a_runtime_already_bound_is_not_adoptable ... ok
+test a_run_from_another_team_or_holding_another_role_is_refused ... ok
+test an_adoption_can_be_neither_edited_nor_removed ... ok
+test the_same_command_replays_onto_the_same_adoption ... ok
+test an_unclaimed_run_is_adopted_into_its_declared_slot ... ok
+test a_waived_slot_is_refused ... ok
+test one_slot_and_one_run_are_adopted_exactly_once ... ok
+test the_same_receipt_carrying_a_different_claim_is_refused ... ok
+test local_adoption_replay_after_reopen_preserves_original_evidence_and_refuses_changed_intent ... ok
+test local_adoption_refusal_rolls_back_receipt_result_and_confirmation_then_same_key_succeeds ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.11s
+
+   Doc-tests kontor_store
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: 2 targets failed:
+    `-p kontor-store --test memory_migration_rollback`
+    `-p kontor-store --test schema_v1`

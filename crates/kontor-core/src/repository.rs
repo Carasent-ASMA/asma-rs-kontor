@@ -72,6 +72,13 @@ use crate::ticket::{
 };
 use crate::{DomainError, DomainResult};
 
+pub mod attestation_authority;
+pub use attestation_authority::{
+    AttestationAuthorityProjection, AttestationAuthorityRepository, AttestationAuthorityScope,
+    AttestationSeatProvenance, AttestationTokenProjection, PrepareAttestationToken,
+    RegisterAttestationKey, StoredAttestationKey, StoredPreparedAttestationToken,
+};
+
 /// One recorded proof that an exact retired evaluator already rendered its
 /// verdict.
 ///
@@ -195,6 +202,25 @@ pub enum RepositoryError {
         subject: &'static str,
         /// The rule that refused.
         rule: &'static str,
+    },
+    /// A uniqueness rule refused a new consultation because one server-derived
+    /// semantic identity is already owned by an existing run.
+    ///
+    /// Deliberately *not* the generic [`RepositoryError::Conflict`]: a semantic
+    /// duplicate is the one conflict whose correct caller action is to read or
+    /// resume the surviving run, and only the store can prove which run that is
+    /// out of the atomic insert that lost. Carrying the exact identity is what
+    /// lets the transport answer with the sequential pre-check's refusal shape
+    /// instead of a generic persistence conflict.
+    #[error(
+        "consultation semantic identity conflict: this {family} scope and topic already has one run ({})",
+        .run_id.as_text()
+    )]
+    DuplicateConsultation {
+        /// Which consultation family owns the surviving run.
+        family: ConsultationFamily,
+        /// The existing run that already owns the semantic identity.
+        run_id: ConsultationRunId,
     },
     /// A configured concurrency ceiling is already spent.
     ///
@@ -496,6 +522,124 @@ pub struct StoredConsultationSeat {
     pub observed_at: Option<Timestamp>,
 }
 
+/// One planning pair's frozen placement (ASMA-8282): the shared allocator's
+/// receipt from one activated snapshot, under its canonical content address.
+///
+/// Protocol payload keyed by the consultation run, not a second identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredPlanningPairPlacement {
+    /// The planning pair's consultation run.
+    pub run_id: ConsultationRunId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The canonical placement document; its hash is the placement hash every
+    /// frozen member and contribution is bound to.
+    pub placement: CanonicalDocument,
+    /// When the placement was frozen.
+    pub created_at: Timestamp,
+}
+
+/// One immutable revision of a planning pair's canonical record, written
+/// beside the run revision it describes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredPlanningPairRecord {
+    /// The planning pair's consultation run.
+    pub run_id: ConsultationRunId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The run revision this record describes.
+    pub revision: AggregateRevision,
+    /// The protocol phase the record restores to.
+    pub phase: crate::planning_pair::PlanningPairState,
+    /// The canonical record document.
+    pub record: CanonicalDocument,
+    /// When the revision was written.
+    pub created_at: Timestamp,
+}
+
+/// One member's finding or answer as storage proves it: its round, slot and
+/// address, the exact authenticated seat and generation that gave it, and the
+/// record revision that first held it. The advice itself is in the record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredPlanningPairContribution {
+    /// The planning pair's consultation run.
+    pub run_id: ConsultationRunId,
+    /// Findings or clarification.
+    pub round: crate::planning_pair::PlanningPairRound,
+    /// The member slot.
+    pub slot: crate::planning_pair::PlanningPairSlot,
+    /// The contribution's canonical address.
+    pub document_hash: ContentHash,
+    /// The authenticated member seat that recorded it.
+    pub seat_binding_id: SeatBindingId,
+    /// The occupancy generation it was recorded under.
+    pub occupancy_generation: u64,
+    /// The record revision that first held it.
+    pub record_revision: AggregateRevision,
+    /// When it was recorded.
+    pub created_at: Timestamp,
+}
+
+/// What one trusted runtime outcome proved about a planning pair member's
+/// native session at one occupancy generation: its known-native claim.
+///
+/// Immutable, and never a qualification. A member is qualified only by its
+/// bound seat; this keeps the exact session a launch, or a verified
+/// exact-session readback, reported, so a replay, a restart or a recovery meets
+/// that same session instead of discovering or creating another. Only a
+/// runtime outcome writes one. No caller body, label or alias ever does, and
+/// nothing in it is secret.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredPlanningPairKnownNative {
+    /// The planning pair's consultation run.
+    pub run_id: ConsultationRunId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The member seat.
+    pub seat_binding_id: SeatBindingId,
+    /// The occupancy generation the session was launched under.
+    pub occupancy_generation: u64,
+    /// The exact native session.
+    pub identity: NativeRuntimeIdentity,
+    /// The provider conversation, when the runtime reported one.
+    pub provider_session_id: Option<ExternalId>,
+    /// Canonical hash of the frozen member context the session was launched
+    /// under.
+    pub context_hash: ContentHash,
+    /// The frozen placement the member was launched on.
+    pub placement_hash: ContentHash,
+    /// Why that readback did not qualify the member, or `None` when it did.
+    pub readback_refusal: Option<crate::planning_pair::PlanningPairReadbackRefusal>,
+    /// When the session was read back.
+    pub observed_at: Timestamp,
+}
+
+/// One planning pair member's current readback of its exact known native
+/// session, as storage applies it under compare-and-swap.
+///
+/// Storage holds the run at `expected_revision`, the member at its current
+/// `occupancy_generation`, and the session at the known one: the bound seat's,
+/// or else the known-native claim's. `verified` is what the runtime read back
+/// of that session. It becomes the claim when none is kept yet, and never
+/// replaces one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanningPairMemberReadback {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The planning pair's consultation run.
+    pub run_id: ConsultationRunId,
+    /// The member seat.
+    pub seat_binding_id: SeatBindingId,
+    /// The run revision the readback was taken against.
+    pub expected_revision: AggregateRevision,
+    /// The member's current occupancy generation.
+    pub occupancy_generation: u64,
+    /// The trusted runtime readback of the exact known session.
+    pub verified: StoredPlanningPairKnownNative,
+    /// When the change is applied.
+    pub applied_at: Timestamp,
+}
+
 /// Durable receipt-first intent for replacing one consultation native filler.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredConsultationRecoveryAttempt {
@@ -632,6 +776,317 @@ pub struct NewConsultationMaterializationReroute {
     pub headroom_fresh_after: Timestamp,
     /// Commit instant.
     pub rerouted_at: Timestamp,
+}
+
+/// One caller's exclusive claim on a Core Team route succession.
+///
+/// Recorded *before* the retire and the launch, because the launch is the
+/// duplicable effect: two callers holding two fresh idempotency keys would each
+/// create a native and the seat would end with two owners. The claim's
+/// uniqueness per (project, seat, predecessor occupancy) is what makes exactly
+/// one of them proceed, and the loser refuses having launched nothing
+/// (ASMA-8187).
+///
+/// Nothing here is a credential. `successor_credential_generation` is a number
+/// identifying which generation-scoped grant the successor will derive, so the
+/// predecessor's authority is neither copied nor widened — it is not recorded
+/// at all.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NewCoreTeamRouteSuccessionClaim {
+    /// The apply key a replay arrives holding.
+    pub idempotency_key: IdempotencyKey,
+    /// Digest of the exact pre-effect intent this claim was admitted under.
+    pub intent_hash: ContentHash,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Epic whose control plane hosts the seat.
+    pub mini_project_id: MiniProjectId,
+    /// The logical seat the succession preserves.
+    pub seat_binding_id: SeatBindingId,
+    /// Exact predecessor native this succession retires.
+    pub predecessor_native_id: ExternalId,
+    /// Runtime generation of that predecessor.
+    pub predecessor_generation: u64,
+    /// Occupancy generation the predecessor holds.
+    pub predecessor_occupancy_generation: u64,
+    /// Occupancy generation this command will install.
+    pub successor_occupancy_generation: u64,
+    /// Credential generation the successor derives its own grant under.
+    pub successor_credential_generation: u64,
+    /// Claim instant.
+    pub claimed_at: Timestamp,
+}
+
+/// One occupant of a logical seat, as a succession recorded it.
+///
+/// Every field is required. A readback is evidence, and evidence with a hole in
+/// it is a claim: an absent `host` or `generation` would let two different
+/// natives produce the same document (ASMA-8187 P2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CoreTeamRouteOccupant {
+    /// Exact native session identity.
+    pub native_id: ExternalId,
+    /// Runtime that holds it.
+    pub runtime_kind: String,
+    /// Host it was placed on.
+    pub host: String,
+    /// Runtime generation of this native.
+    pub generation: u64,
+    /// Provider conversation, when the runtime exposes one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_session_id: Option<ExternalId>,
+    /// Which occupancy of the logical seat this native is.
+    pub occupancy_generation: u64,
+    /// Frozen provider/model/effort route it runs on.
+    pub model_route: crate::spec::ModelRung,
+}
+
+/// The successor's grant subject: non-secret identity, never a credential.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CoreTeamRouteGrantSubject {
+    /// The generation this successor's grant is scoped to.
+    pub generation: u64,
+    /// The logical seat the grant is scoped to.
+    pub subject_seat_binding_id: SeatBindingId,
+    /// Digest over the non-secret (seat, generation) pair, and nothing else.
+    pub subject_digest: ContentHash,
+}
+
+/// The complete durable evidence one Core Team succession produced.
+///
+/// One definition, shared by the layer that builds it, the layer that persists
+/// it and the layer that answers with it. `deny_unknown_fields` throughout is
+/// half the point: a readback that carries something nobody declared is a
+/// readback nobody validated, and the free-form JSON this replaces was exactly
+/// where an undeclared field could hide (ASMA-8187 P2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CoreTeamRouteSuccessionReadback {
+    /// The preserved logical seat.
+    pub seat_binding_id: SeatBindingId,
+    /// Exact archived predecessor.
+    pub predecessor: CoreTeamRouteOccupant,
+    /// Exact installed successor.
+    pub successor: CoreTeamRouteOccupant,
+    /// The successor's generation-scoped grant subject, never any credential.
+    pub grant_subject: CoreTeamRouteGrantSubject,
+    /// Instant the predecessor was retired.
+    pub retired_at: String,
+}
+
+impl CoreTeamRouteSuccessionReadback {
+    /// Whether this occupant *is* the seat row handed to the transition.
+    ///
+    /// Every field, not the identifying few. Runtime kind, host, provider
+    /// session and model route are carried by the readback and by nothing else
+    /// durable, so if they are never compared they are never evidence — a
+    /// coherent, correctly hashed document could describe a different placement
+    /// on a different host running a different route, and nothing downstream
+    /// would ever notice (ASMA-8187 P2).
+    #[must_use]
+    pub fn occupant_describes(
+        occupant: &CoreTeamRouteOccupant,
+        seat: &StoredHostedTopologySeat,
+        occupancy_generation: u64,
+    ) -> bool {
+        occupant.native_id == seat.native_identity.native_id
+            && occupant.runtime_kind == seat.native_identity.runtime_kind.as_str()
+            && occupant.host == seat.native_identity.host.as_str()
+            && occupant.generation == seat.native_identity.generation
+            && occupant.provider_session_id == seat.provider_session_id
+            && occupant.occupancy_generation == occupancy_generation
+            && occupant.model_route == seat.model_rung
+    }
+
+    /// Whether this readback describes the exact transition it is committed with.
+    ///
+    /// Asked *before* the transition, against the same values the transition
+    /// writes, so the document cannot describe one succession while the route
+    /// performs another. Afterwards the row is immutable, which is what lets
+    /// every later check treat it as evidence rather than as a claim.
+    ///
+    /// # Errors
+    /// Returns the rule that failed, as a stable `&'static str`.
+    pub fn check_describes_transition(
+        &self,
+        predecessor: &StoredHostedTopologySeat,
+        predecessor_occupancy: u64,
+        successor: &StoredHostedTopologySeat,
+        successor_occupancy: u64,
+        credential_generation: u64,
+        retired_at: Timestamp,
+    ) -> Result<(), &'static str> {
+        if self.seat_binding_id != predecessor.seat_binding_id {
+            return Err("the succession readback names another logical seat");
+        }
+        if !Self::occupant_describes(&self.predecessor, predecessor, predecessor_occupancy) {
+            return Err("the succession readback does not describe the predecessor being retired");
+        }
+        if !Self::occupant_describes(&self.successor, successor, successor_occupancy) {
+            return Err("the succession readback does not describe the successor being installed");
+        }
+        if self.grant_subject.generation != credential_generation
+            || self.grant_subject.subject_seat_binding_id != predecessor.seat_binding_id
+        {
+            return Err("the succession readback names another grant subject than the claim");
+        }
+        if self.retired_at != retired_at.to_string() {
+            return Err("the succession readback records another retirement instant");
+        }
+        Ok(())
+    }
+
+    /// Whether this seat row is the successor this readback already recorded.
+    ///
+    /// The readback was proved against the transition before it became durable,
+    /// so comparing against it is comparing against validated immutable
+    /// evidence rather than re-deriving a weaker answer from the two identity
+    /// columns the ledger happens to carry.
+    #[must_use]
+    pub fn successor_is(&self, seat: &StoredHostedTopologySeat) -> bool {
+        Self::occupant_describes(&self.successor, seat, self.successor.occupancy_generation)
+    }
+
+    /// Whether this readback is coherent on its own terms.
+    ///
+    /// Everything here is checkable without reading anything else: the grant
+    /// subject is derived from values the document already carries, the two
+    /// occupants must be two natives, and a retirement instant is not optional.
+    /// Ledger agreement is a separate question, asked where the ledger is.
+    ///
+    /// # Errors
+    /// Returns the rule that failed, as a stable `&'static str`.
+    pub fn check_internal_consistency(&self) -> Result<(), &'static str> {
+        if self.grant_subject.subject_digest
+            != core_team_grant_subject_digest(
+                self.grant_subject.subject_seat_binding_id,
+                self.grant_subject.generation,
+            )
+        {
+            return Err(
+                "the succession readback's grant subject digest is not the one it describes",
+            );
+        }
+        if self.predecessor.native_id == self.successor.native_id
+            && self.predecessor.generation == self.successor.generation
+        {
+            return Err("the succession readback names one native as both occupants");
+        }
+        if self.retired_at.trim().is_empty() {
+            return Err("the succession readback records no retirement instant");
+        }
+        Ok(())
+    }
+}
+
+/// The public digest a successor's generation-scoped grant is proved by.
+///
+/// Over the seat and the generation, with a domain separator and an explicit
+/// version, and over nothing else. A seat credential is derived from the
+/// operator secret; neither it nor any digest *of it* is recorded anywhere, so
+/// this value can be recomputed by any reader and proves only which grant the
+/// successor was entitled to derive.
+#[must_use]
+pub fn core_team_grant_subject_digest(
+    seat_binding_id: SeatBindingId,
+    occupancy_generation: u64,
+) -> ContentHash {
+    let mut subject = Vec::new();
+    subject.extend_from_slice(b"kontor-core-team-seat-grant-subject-v1\0");
+    subject.extend_from_slice(seat_binding_id.to_string().as_bytes());
+    subject.push(0);
+    subject.extend_from_slice(occupancy_generation.to_string().as_bytes());
+    ContentHash::of(&subject)
+}
+
+/// The committed outcome of one claimed succession.
+///
+/// Written in the same transaction as the history append and the active-row
+/// replacement, so the transition and the evidence that reconstructs it commit
+/// together or not at all.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CoreTeamRouteSuccessionCommit {
+    /// The claim this commits.
+    pub idempotency_key: IdempotencyKey,
+    /// The complete final readback, persisted rather than recomputed.
+    pub readback: serde_json::Value,
+    /// Digest of that readback.
+    pub readback_hash: ContentHash,
+    /// Commit instant.
+    pub route_committed_at: Timestamp,
+}
+
+/// Which of a committed succession's trailing effects have landed.
+///
+/// A route commit alone is not the whole succession: the launch intent still
+/// has to be installed and the SeatBinding observed. Recording them separately
+/// is what stops a replay reporting a complete result whose pending effects
+/// never happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CoreTeamRouteSuccessionEffects {
+    /// The launch intent has been reconciled against the native it produced.
+    pub launch_intent_installed: bool,
+    /// The SeatBinding has been observed against the successor.
+    pub seat_binding_observed: bool,
+}
+
+/// One recorded Core Team route succession, at whatever stage it has reached.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredCoreTeamRouteSuccession {
+    /// The apply key this succession was admitted under.
+    pub idempotency_key: IdempotencyKey,
+    /// Digest of the exact pre-effect intent.
+    pub intent_hash: ContentHash,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Epic whose control plane hosts the seat.
+    pub mini_project_id: MiniProjectId,
+    /// The preserved logical seat.
+    pub seat_binding_id: SeatBindingId,
+    /// Exact predecessor this succession retires.
+    pub predecessor_native_id: ExternalId,
+    /// Runtime generation of that predecessor.
+    pub predecessor_generation: u64,
+    /// Occupancy generation the predecessor held.
+    pub predecessor_occupancy_generation: u64,
+    /// Occupancy generation this command installs.
+    pub successor_occupancy_generation: u64,
+    /// Credential generation the successor derives under.
+    pub successor_credential_generation: u64,
+    /// Claim instant.
+    pub claimed_at: Timestamp,
+    /// Exact installed successor, once the transition committed.
+    pub successor_native_id: Option<ExternalId>,
+    /// Runtime generation of that successor.
+    pub successor_generation: Option<u64>,
+    /// The complete final readback this command produced.
+    pub readback: Option<serde_json::Value>,
+    /// Digest of that readback.
+    pub readback_hash: Option<ContentHash>,
+    /// Commit instant of the route transition.
+    pub route_committed_at: Option<Timestamp>,
+    /// Which trailing effects have landed.
+    pub effects: CoreTeamRouteSuccessionEffects,
+    /// The receipt this succession was finally bound to.
+    pub receipt_id: Option<CommandReceiptId>,
+    /// Instant the receipt binding completed.
+    pub receipted_at: Option<Timestamp>,
+}
+
+impl StoredCoreTeamRouteSuccession {
+    /// Whether every effect this succession owes has landed.
+    ///
+    /// A committed route with a pending launch intent or an unobserved
+    /// SeatBinding is *not* complete, and answering a replay as though it were
+    /// is the misleading result this distinction exists to prevent.
+    #[must_use]
+    pub const fn is_complete(&self) -> bool {
+        self.route_committed_at.is_some()
+            && self.effects.launch_intent_installed
+            && self.effects.seat_binding_observed
+    }
 }
 
 /// Exact runtime readback filling a persistent non-delivery topology seat.

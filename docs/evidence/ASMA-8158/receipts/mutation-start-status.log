@@ -1,0 +1,15 @@
+ M Cargo.lock
+ M Cargo.toml
+ M crates/kontor-daemon/Cargo.toml
+ M crates/kontor-daemon/src/applications.rs
+ M crates/kontor-daemon/src/lib.rs
+ M crates/kontor-daemon/tests/loopback_api.rs
+ M docs/CONFIGURATION.md
+?? .agents/
+?? .asma/
+?? .cursor/
+?? AGENTS.md
+?? CLAUDE.md
+?? crates/kontor-daemon/tests/loopback/experience_launch.rs
+?? crates/kontor-memory-cognee/
+?? docs/evidence/ASMA-8158/

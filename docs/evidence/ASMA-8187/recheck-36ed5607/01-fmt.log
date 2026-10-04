@@ -1,0 +1,12 @@
+=== 01-fmt ===
+head        : 36ed5607753bb749a3a3f12f785fe632c3092650
+tree        : d802479a71bdefa6dc2f0bee4332ee9237fc546d
+dirty       : 1 path(s)
+command     : cargo fmt --all -- --check
+toolchain   : rustc 1.97.1 (8bab26f4f 2026-07-14)
+started     : 2026-10-03T16:23:19Z
+disk free   : 16Gi
+--- raw output ---
+--- exit status: 0 (3s) ---
+finished    : 2026-10-03T16:23:22Z
+disk free   : 16Gi

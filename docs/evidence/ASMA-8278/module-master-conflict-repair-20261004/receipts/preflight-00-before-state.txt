@@ -1,0 +1,8 @@
+start=2026-10-04T05:38:50Z
+cwd=/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-release-integration
+branch=feat/ASMA-8278-shared-orchestration-release-integration
+head=c76351f68d7f8c9a904bee52c1d7fe4668460e00
+tree=ee94dc309ee629732d6a237f77644a4689cebced
+master_target=abe990acf754f66be66c3f5564077bb5d3333288
+master_tree=47615df224379bc0c8e42ee6d2d6fd85689d8aea
+merge_base=1d7a71dde5214774dd35153f1a31435e129cbd01

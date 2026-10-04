@@ -153,6 +153,19 @@ impl CoreTeamRevision {
         })
     }
 
+    /// The canonical document of this complete immutable revision.
+    ///
+    /// Version, catalog hash and the ordered seat snapshots, in this crate's
+    /// one hashing envelope. Its hash is the revision identity a fleet
+    /// leadership binding names, so it deliberately carries no project id: the
+    /// same roster is the same revision wherever it is pinned.
+    ///
+    /// # Errors
+    /// Canonical-document limits.
+    pub fn canonicalize(&self) -> DomainResult<CanonicalDocument> {
+        canonical_document(self)
+    }
+
     /// Roles visible in the Quick-session picker.
     #[must_use]
     pub fn quick_roles(&self) -> Vec<CatalogRoleRef> {
@@ -1147,18 +1160,20 @@ fn handoff_for(quick: &QuickSession) -> DomainResult<HandoffCapsule> {
 }
 
 fn canonical_hash<T: Serialize>(value: &T) -> DomainResult<ContentHash> {
+    Ok(canonical_document(value)?.hash().clone())
+}
+
+fn canonical_document<T: Serialize>(value: &T) -> DomainResult<CanonicalDocument> {
     #[derive(Serialize)]
     struct Envelope<'a, T> {
         schema_version: SchemaVersion,
         value: &'a T,
     }
 
-    Ok(CanonicalDocument::from_serializable(&Envelope {
+    CanonicalDocument::from_serializable(&Envelope {
         schema_version: SCHEMA_VERSION,
         value,
-    })?
-    .hash()
-    .clone())
+    })
 }
 
 fn reused_key() -> DomainError {

@@ -1,0 +1,17 @@
+diff --git a/crates/kontor-api/src/auth.rs b/crates/kontor-api/src/auth.rs
+index 2cda18f7..468021a7 100644
+--- a/crates/kontor-api/src/auth.rs
++++ b/crates/kontor-api/src/auth.rs
+@@ -231,10 +231,11 @@ impl RealmCredentials {
+             let seat_binding_id = SeatBindingId::parse(binding).ok()?;
+             let expected = self.seat_credential_for_generation(seat_binding_id, generation);
+             let expected_signature = expected.rsplit_once('.')?.1;
++            // MUTANT M-R5d: authenticate a v2 bearer without its generation.
+             return constant_time_eq(expected_signature.as_bytes(), signature.as_bytes())
+                 .then_some(ScopedSeatSubject {
+                     seat_binding_id,
+-                    occupancy_generation: generation,
++                    occupancy_generation: 1,
+                 });
+         }
+         let rest = presented.strip_prefix("kontor-seat-v1.")?;

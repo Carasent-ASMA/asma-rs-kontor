@@ -1,0 +1,82 @@
+[
+  {
+    "id": "M01-key-head",
+    "path": "crates/kontor-store/src/repository/attestation_authority/token_metadata.rs",
+    "old": "    require_head(\n        head_in(&transaction, &request.scope)?,\n        Some(request.expected_key_head_revision),\n    )?;",
+    "new": "    // Seeded isolated mutation: skip current key-head expectation.",
+    "test": "fresh_checks_precede_identity_reuse_and_leave_existing_commitment_unchanged",
+    "target": "attestation_token_metadata"
+  },
+  {
+    "id": "M02-token-head",
+    "path": "crates/kontor-store/src/repository/attestation_authority/token_metadata.rs",
+    "old": "    require_head(head, request.expected_token_head_revision)?;",
+    "new": "    // Seeded isolated mutation: skip token-head expectation.",
+    "test": "both_heads_use_exact_cas_and_failed_preparation_rolls_back",
+    "target": "attestation_token_metadata"
+  },
+  {
+    "id": "M03-permanent-identity",
+    "path": "crates/kontor-store/migrations/0125_prepared_attestation_tokens.sql",
+    "old": "CREATE TRIGGER attestation_tokens_registration_next\nBEFORE INSERT ON prepared_attestation_tokens\nWHEN EXISTS (SELECT 1 FROM prepared_attestation_tokens\n             WHERE project_id = NEW.project_id AND application = NEW.application\n               AND issuer = NEW.issuer AND token_id = NEW.token_id)\n  OR NEW.revoked_revision IS NOT NULL OR NEW.registered_revision <>\n    COALESCE((SELECT revision FROM attestation_token_heads\n              WHERE project_id = NEW.project_id AND application = NEW.application), 0) + 1\nBEGIN SELECT RAISE(ABORT, 'token registration requires a new identity and next token head'); END;\n",
+    "new": "-- Seeded isolated mutation: no permanent replacement/registration guard.\n",
+    "test": "raw_sql_cannot_replace_rewrite_unrevoke_or_delete_metadata_or_heads",
+    "target": "attestation_token_metadata"
+  },
+  {
+    "id": "M04-hosted-generation",
+    "path": "crates/kontor-store/src/repository/attestation_authority/token_metadata.rs",
+    "old": "generation.map(unsigned).transpose()? != Some(request.expected_occupancy_generation)",
+    "new": "generation.map(unsigned).transpose()?.is_none()",
+    "test": "hosted_generation_is_history_count_plus_one_not_runtime_generation",
+    "target": "attestation_token_metadata"
+  },
+  {
+    "id": "M05-active-state",
+    "path": "crates/kontor-store/src/repository/attestation_authority/token_metadata.rs",
+    "old": "        || binding_state != \"active\"\n        || node_state != \"active\"",
+    "new": "        || (binding_state.is_empty() && node_state.is_empty())",
+    "test": "inactive_binding_and_node_each_refuse_unchanged",
+    "target": "attestation_token_metadata"
+  },
+  {
+    "id": "M06-exact-task",
+    "path": "crates/kontor-store/src/repository/attestation_authority/token_metadata.rs",
+    "old": "member.binding_task != request.task_id || member.node_task != request.task_id",
+    "new": "member.binding_task.is_some() && member.node_task.is_some() && request.task_id.is_none()",
+    "test": "scope_and_absent_task_are_exact_and_cross_scope_reads_do_not_leak",
+    "target": "attestation_token_metadata"
+  },
+  {
+    "id": "M07-native-subject",
+    "path": "crates/kontor-store/src/repository/attestation_authority/token_metadata.rs",
+    "old": "    if count != 1 {",
+    "new": "    if count < 1 {",
+    "test": "a_container_native_identity_cannot_masquerade_as_seat_provenance",
+    "target": "attestation_token_metadata"
+  },
+  {
+    "id": "M08-backup-token-schema",
+    "path": "crates/kontor-store/src/backup/export.rs",
+    "old": "        (\n            125,\n            \"attestation_token_heads\",\n            \"prepared_attestation_tokens\",\n        ),",
+    "new": "        // Seeded isolated mutation: omit the token-ledger continuity guard.",
+    "test": "backup::export::attestation_ledger_tests::token_tables_are_required_at125_and_legacy124_absence_never_skips_keys",
+    "target": "lib"
+  },
+  {
+    "id": "M09-unrevocation",
+    "path": "crates/kontor-store/migrations/0125_prepared_attestation_tokens.sql",
+    "old": "  OR OLD.revoked_revision IS NOT NULL OR NEW.revoked_revision IS NULL\n  OR NEW.revoked_revision IS NOT (SELECT revision + 1 FROM attestation_token_heads\n      WHERE project_id = OLD.project_id AND application = OLD.application)",
+    "new": "  OR 0",
+    "test": "raw_sql_cannot_replace_rewrite_unrevoke_or_delete_metadata_or_heads",
+    "target": "attestation_token_metadata"
+  },
+  {
+    "id": "M10-key-commitment",
+    "path": "crates/kontor-store/migrations/0125_prepared_attestation_tokens.sql",
+    "old": "CREATE TRIGGER attestation_tokens_key_commitment BEFORE INSERT ON prepared_attestation_tokens\nWHEN NOT EXISTS (SELECT 1 FROM attestation_authority_keys k\n    JOIN attestation_authority_heads h ON h.project_id=k.project_id AND h.application=k.application\n    WHERE k.project_id=NEW.project_id AND k.application=NEW.application\n      AND k.issuer=NEW.issuer AND k.key_id=NEW.key_id AND k.revoked_revision IS NULL\n      AND k.material_digest=NEW.key_material_digest AND k.registered_revision=NEW.key_registered_revision\n      AND h.revision=NEW.preparation_key_head_revision\n      AND NEW.not_before>=k.not_before AND NEW.expires_at<=k.expires_at)\nBEGIN SELECT RAISE(ABORT, 'prepared key commitment must match the current immutable key'); END;\n",
+    "new": "-- Seeded isolated mutation: no coherent key-commitment guard.\n",
+    "test": "raw_sql_insert_refuses_false_key_commitments_and_invalid_bounds_atomically",
+    "target": "attestation_token_metadata"
+  }
+]

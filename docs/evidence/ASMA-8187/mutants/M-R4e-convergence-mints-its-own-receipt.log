@@ -1,0 +1,32 @@
+
+failures:
+
+---- a_lost_receipt_binding_rebinds_the_same_receipt stdout ----
+
+thread 'a_lost_receipt_binding_rebinds_the_same_receipt' (74091154) panicked at crates/kontor-daemon/tests/loopback_api.rs:62786:5:
+assertion `left == right` failed: {"realm_id":"01a0e6e8-99bb-77b0-9edd-65ba92364d62","code":"revision_conflict","rule":"a persistence rule refused the write against the presented state","current_revision":null,"oldest_retained_cursor":null,"newest_cursor":null,"action":"re-read the aggregate and retry with the revision it reports"}
+  left: 409
+ right: 200
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    a_lost_receipt_binding_rebinds_the_same_receipt
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 496 filtered out; finished in 1.97s
+
+error: test failed, to rerun pass `-p kontor-daemon --test loopback_api`
+
+--- outcome: KILLED, with a stated qualification ---
+The test fails, but on `assert_eq!(replayed.status, 200)` rather than on the
+receipt-identity comparison: the ledger's `receipt_id` is a foreign key into
+`command_receipts`, so a fabricated identifier cannot bind at all and the write
+refuses before the comparison is reached.
+
+The identity assertion that follows it is therefore not independent evidence.
+`command_receipts` holds `UNIQUE (project_id, idempotency_key)` (0001_init),
+so one key can never own two receipts, and `settled.receipt_id == recorded.id`
+is guaranteed by that constraint rather than by the convergence path. What this
+test does prove independently is that the replay reaches 200 at all after the
+binding was lost — that is, that the recorded-but-unbound receipt is found and
+bound rather than refused or duplicated.

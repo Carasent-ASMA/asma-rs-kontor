@@ -1,0 +1,11 @@
+   Compiling kontor-store v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.57s
+     Running tests/backup_snapshot.rs (target/debug/deps/backup_snapshot-ba16d7a45b9280c9)
+
+running 3 tests
+test missing_and_zero_main_without_nonempty_wal_retain_supported_restore ... ok
+test missing_main_with_committed_wal_refuses_without_changing_destination_files ... ok
+test zero_main_with_committed_wal_refuses_without_changing_destination_files ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 20 filtered out; finished in 13.27s
+

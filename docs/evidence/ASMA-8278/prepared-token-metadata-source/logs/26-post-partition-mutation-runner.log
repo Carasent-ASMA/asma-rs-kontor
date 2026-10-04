@@ -1,0 +1,6 @@
+{"baseline": "attestation_token_metadata", "exit": 0}
+Traceback (most recent call last):
+  File "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-prepared-token-validation-da8llp8_/post-partition/run_mutations.py", line 20, in <module>
+    r=run('baseline-'+target,target,test);report['baseline'].append(r);save();assert r['exit_code']==0,r
+                                                                                     ^^^^^^^^^^^^^^^^^
+AssertionError: {'command': ['cargo', 'test', '--offline', '--jobs', '2', '-p', 'kontor-store', '--lib', 'backup::export::attestation_ledger_tests::token_tables_are_required_at125_and_legacy124_absence_never_skips_keys', '--', '--nocapture'], 'started_utc': '2026-10-03T21:18:29.272694+00:00', 'elapsed_seconds': 0.31, 'exit_code': 101, 'log': '/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-prepared-token-validation-da8llp8_/post-partition/mutation-logs/baseline-lib.log', 'log_sha256': '2886c8d8bc54183236f4428a59c616513a61ec04a616ceffd67654544ed7ef77'}

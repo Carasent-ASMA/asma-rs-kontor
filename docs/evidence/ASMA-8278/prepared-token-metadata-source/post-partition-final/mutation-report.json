@@ -1,0 +1,497 @@
+{
+  "baseline": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_token_metadata",
+        "--",
+        "--nocapture"
+      ],
+      "started_utc": "2026-10-03T21:23:03.736675+00:00",
+      "elapsed_seconds": 82.246,
+      "exit_code": 0,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-prepared-token-validation-da8llp8_/post-partition-final/mutation-logs/baseline-attestation_token_metadata.log",
+      "log_sha256": "002926bbec5f5d9f508e5771bafb113c0300f748d3b1b00b4125565284603d6d"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-store",
+        "--lib",
+        "backup::export::attestation_ledger_tests::token_tables_are_required_at125_and_legacy124_absence_never_skips_keys",
+        "--",
+        "--nocapture"
+      ],
+      "started_utc": "2026-10-03T21:24:25.983901+00:00",
+      "elapsed_seconds": 8.445,
+      "exit_code": 0,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-prepared-token-validation-da8llp8_/post-partition-final/mutation-logs/baseline-lib.log",
+      "log_sha256": "9d67de1f8a25aa11a42a7575024b8c1fb144715eff531b7c2c955abfb8f4f139"
+    }
+  ],
+  "mutants": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_token_metadata",
+        "fresh_checks_precede_identity_reuse_and_leave_existing_commitment_unchanged",
+        "--",
+        "--nocapture"
+      ],
+      "started_utc": "2026-10-03T21:24:34.437525+00:00",
+      "elapsed_seconds": 15.139,
+      "exit_code": 101,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-prepared-token-validation-da8llp8_/post-partition-final/mutation-logs/M01-key-head.log",
+      "log_sha256": "75bbcbdbd568b4a9ee7d48e0c1e1a23e7786a5def3efa301dcf7e15e0ac6d7a7",
+      "id": "M01-key-head",
+      "path": "crates/kontor-store/src/repository/attestation_authority/token_metadata.rs",
+      "mutant_sha256": "326f4b1b2729e767f03dba13e4df31b2d0e7cba90674554ae815d0dc1907bc51",
+      "successful_compilation": true,
+      "intended_test_failed": true,
+      "panics": [
+        {
+          "path": "crates/kontor-store/tests/attestation_token_metadata.rs",
+          "line": 178,
+          "column": 5,
+          "source_excerpt": "175:     ));\n176:     r.expected_occupancy_generation = 1;\n177:     r.expected_key_head_revision = 2;\n178:     assert!(matches!(\n179:         f.refuse_unchanged(&r),\n180:         RepositoryError::Conflict {\n181:             rule: \"expected head revision does not match\",",
+          "assertion_or_expect_err": true
+        }
+      ],
+      "result": "KILLED",
+      "isolated_restored": true,
+      "original_unchanged": true
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_token_metadata",
+        "both_heads_use_exact_cas_and_failed_preparation_rolls_back",
+        "--",
+        "--nocapture"
+      ],
+      "started_utc": "2026-10-03T21:24:49.582509+00:00",
+      "elapsed_seconds": 17.649,
+      "exit_code": 101,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-prepared-token-validation-da8llp8_/post-partition-final/mutation-logs/M02-token-head.log",
+      "log_sha256": "aeef68cb0bc28042bae68a98355e92341e8fefce796d09b81426c7ab8a3c9470",
+      "id": "M02-token-head",
+      "path": "crates/kontor-store/src/repository/attestation_authority/token_metadata.rs",
+      "mutant_sha256": "feb00503aead42650c9361f6fb2cdb21ca9a60ea83fd870b1649fcbd18b73405",
+      "successful_compilation": true,
+      "intended_test_failed": true,
+      "panics": [
+        {
+          "path": "crates/kontor-store/tests/attestation_token_metadata/fixture.rs",
+          "line": 392,
+          "column": 14,
+          "source_excerpt": "389:         let error = self\n390:             .store\n391:             .prepare_attestation_token(request)\n392:             .expect_err(\"must refuse\");\n393:         assert_eq!(self.counts(), before, \"refusal changed token state\");\n394:         error\n395:     }",
+          "assertion_or_expect_err": true
+        }
+      ],
+      "result": "KILLED",
+      "isolated_restored": true,
+      "original_unchanged": true
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_token_metadata",
+        "raw_sql_cannot_replace_rewrite_unrevoke_or_delete_metadata_or_heads",
+        "--",
+        "--nocapture"
+      ],
+      "started_utc": "2026-10-03T21:25:07.237485+00:00",
+      "elapsed_seconds": 15.041,
+      "exit_code": 101,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-prepared-token-validation-da8llp8_/post-partition-final/mutation-logs/M03-permanent-identity.log",
+      "log_sha256": "25b040cc6237038e97c3836066358c13fbc6567372cf819ede42d1565a1a6bc7",
+      "id": "M03-permanent-identity",
+      "path": "crates/kontor-store/migrations/0125_prepared_attestation_tokens.sql",
+      "mutant_sha256": "7b423be84b6bab9a7db8fb356602f2b3ed07726bf986ad38ba009439777b7715",
+      "successful_compilation": true,
+      "intended_test_failed": true,
+      "panics": [
+        {
+          "path": "crates/kontor-store/tests/attestation_token_metadata/guards.rs",
+          "line": 132,
+          "column": 9,
+          "source_excerpt": "129:         \"INSERT OR REPLACE INTO prepared_attestation_tokens SELECT * FROM prepared_attestation_tokens\",\n130:         \"INSERT OR REPLACE INTO attestation_token_heads SELECT * FROM attestation_token_heads\",\n131:     ] {\n132:         assert!(\n133:             sql.execute_batch(statement).is_err(),\n134:             \"unguarded SQL: {statement}\"\n135:         );",
+          "assertion_or_expect_err": true
+        }
+      ],
+      "result": "KILLED",
+      "isolated_restored": true,
+      "original_unchanged": true
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_token_metadata",
+        "hosted_generation_is_history_count_plus_one_not_runtime_generation",
+        "--",
+        "--nocapture"
+      ],
+      "started_utc": "2026-10-03T21:25:22.283979+00:00",
+      "elapsed_seconds": 17.964,
+      "exit_code": 101,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-prepared-token-validation-da8llp8_/post-partition-final/mutation-logs/M04-hosted-generation.log",
+      "log_sha256": "1719561d159ed11610135e9304dcf6c3d216c1e71b8ce903746ddbd428286b36",
+      "id": "M04-hosted-generation",
+      "path": "crates/kontor-store/src/repository/attestation_authority/token_metadata.rs",
+      "mutant_sha256": "111061006feafd8539324a8688ea1ce749ca62517a9288a6c316edc93720c9b0",
+      "successful_compilation": true,
+      "intended_test_failed": true,
+      "panics": [
+        {
+          "path": "crates/kontor-store/tests/attestation_token_metadata/fixture.rs",
+          "line": 392,
+          "column": 14,
+          "source_excerpt": "389:         let error = self\n390:             .store\n391:             .prepare_attestation_token(request)\n392:             .expect_err(\"must refuse\");\n393:         assert_eq!(self.counts(), before, \"refusal changed token state\");\n394:         error\n395:     }",
+          "assertion_or_expect_err": true
+        }
+      ],
+      "result": "KILLED",
+      "isolated_restored": true,
+      "original_unchanged": true
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_token_metadata",
+        "inactive_binding_and_node_each_refuse_unchanged",
+        "--",
+        "--nocapture"
+      ],
+      "started_utc": "2026-10-03T21:25:40.253546+00:00",
+      "elapsed_seconds": 15.09,
+      "exit_code": 101,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-prepared-token-validation-da8llp8_/post-partition-final/mutation-logs/M05-active-state.log",
+      "log_sha256": "36abeb4a91d520438ee4bd4f572fe00c599a8d767040b1a22ee166be98d59b61",
+      "id": "M05-active-state",
+      "path": "crates/kontor-store/src/repository/attestation_authority/token_metadata.rs",
+      "mutant_sha256": "ae385c3ab3d8c712207689b74658a302ab9359a8265af28197c0380b01c13812",
+      "successful_compilation": true,
+      "intended_test_failed": true,
+      "panics": [
+        {
+          "path": "crates/kontor-store/tests/attestation_token_metadata/fixture.rs",
+          "line": 392,
+          "column": 14,
+          "source_excerpt": "389:         let error = self\n390:             .store\n391:             .prepare_attestation_token(request)\n392:             .expect_err(\"must refuse\");\n393:         assert_eq!(self.counts(), before, \"refusal changed token state\");\n394:         error\n395:     }",
+          "assertion_or_expect_err": true
+        }
+      ],
+      "result": "KILLED",
+      "isolated_restored": true,
+      "original_unchanged": true
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_token_metadata",
+        "scope_and_absent_task_are_exact_and_cross_scope_reads_do_not_leak",
+        "--",
+        "--nocapture"
+      ],
+      "started_utc": "2026-10-03T21:25:55.349568+00:00",
+      "elapsed_seconds": 16.316,
+      "exit_code": 101,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-prepared-token-validation-da8llp8_/post-partition-final/mutation-logs/M06-exact-task.log",
+      "log_sha256": "a2cddb052f04defa69ac18e42fa5a85fe86023473cb3dcc75ba258062b2f68db",
+      "id": "M06-exact-task",
+      "path": "crates/kontor-store/src/repository/attestation_authority/token_metadata.rs",
+      "mutant_sha256": "020fcd84a76bd511edf40b3baa36d51c597018f1f66ea5af7ba2aaebe9416762",
+      "successful_compilation": true,
+      "intended_test_failed": true,
+      "panics": [
+        {
+          "path": "crates/kontor-store/tests/attestation_token_metadata/fixture.rs",
+          "line": 392,
+          "column": 14,
+          "source_excerpt": "389:         let error = self\n390:             .store\n391:             .prepare_attestation_token(request)\n392:             .expect_err(\"must refuse\");\n393:         assert_eq!(self.counts(), before, \"refusal changed token state\");\n394:         error\n395:     }",
+          "assertion_or_expect_err": true
+        }
+      ],
+      "result": "KILLED",
+      "isolated_restored": true,
+      "original_unchanged": true
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_token_metadata",
+        "a_container_native_identity_cannot_masquerade_as_seat_provenance",
+        "--",
+        "--nocapture"
+      ],
+      "started_utc": "2026-10-03T21:26:11.671752+00:00",
+      "elapsed_seconds": 16.582,
+      "exit_code": 101,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-prepared-token-validation-da8llp8_/post-partition-final/mutation-logs/M07-native-subject.log",
+      "log_sha256": "eb8332d969b83159930fb6c780905d2f37d725325cad5e19784620726e36e1cb",
+      "id": "M07-native-subject",
+      "path": "crates/kontor-store/src/repository/attestation_authority/token_metadata.rs",
+      "mutant_sha256": "5a1063caa827a39dc65700330d57a4159b55bc56547265729adba44d56a4a696",
+      "successful_compilation": true,
+      "intended_test_failed": true,
+      "panics": [
+        {
+          "path": "crates/kontor-store/tests/attestation_token_metadata/fixture.rs",
+          "line": 392,
+          "column": 14,
+          "source_excerpt": "389:         let error = self\n390:             .store\n391:             .prepare_attestation_token(request)\n392:             .expect_err(\"must refuse\");\n393:         assert_eq!(self.counts(), before, \"refusal changed token state\");\n394:         error\n395:     }",
+          "assertion_or_expect_err": true
+        }
+      ],
+      "result": "KILLED",
+      "isolated_restored": true,
+      "original_unchanged": true
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-store",
+        "--lib",
+        "backup::export::attestation_ledger_tests::token_tables_are_required_at125_and_legacy124_absence_never_skips_keys",
+        "--",
+        "--nocapture"
+      ],
+      "started_utc": "2026-10-03T21:26:28.259780+00:00",
+      "elapsed_seconds": 8.388,
+      "exit_code": 101,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-prepared-token-validation-da8llp8_/post-partition-final/mutation-logs/M08-backup-token-schema.log",
+      "log_sha256": "e10b077c7f3e3165ff21952b41ad01ebb5f6629271a7ca5543618fbafef40077",
+      "id": "M08-backup-token-schema",
+      "path": "crates/kontor-store/src/backup/export.rs",
+      "mutant_sha256": "b7efa88c871d39260f84ac77c0d12c655f0d46777b01e0315e0d755a44a67ffb",
+      "successful_compilation": true,
+      "intended_test_failed": true,
+      "panics": [
+        {
+          "path": "crates/kontor-store/src/backup/export.rs",
+          "line": 2985,
+          "column": 9,
+          "source_excerpt": "2982:         connection\n2983:             .execute_batch(\"DELETE FROM attestation_authority_keys; PRAGMA user_version=125;\")\n2984:             .expect(\"corrupt fixture only\");\n2985:         assert!(ensure_empty_attestation_ledger(&connection).is_err());\n2986:         connection\n2987:             .execute_batch(\"CREATE TABLE attestation_token_heads (revision INTEGER);\")\n2988:             .expect(\"partial schema\");",
+          "assertion_or_expect_err": true
+        }
+      ],
+      "result": "KILLED",
+      "isolated_restored": true,
+      "original_unchanged": true
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_token_metadata",
+        "raw_sql_cannot_replace_rewrite_unrevoke_or_delete_metadata_or_heads",
+        "--",
+        "--nocapture"
+      ],
+      "started_utc": "2026-10-03T21:26:36.654279+00:00",
+      "elapsed_seconds": 24.401,
+      "exit_code": 101,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-prepared-token-validation-da8llp8_/post-partition-final/mutation-logs/M09-unrevocation.log",
+      "log_sha256": "697cf731589fc9b892251d35483875cb9166061e05ac4ce8e63a5206780ea425",
+      "id": "M09-unrevocation",
+      "path": "crates/kontor-store/migrations/0125_prepared_attestation_tokens.sql",
+      "mutant_sha256": "5a357ad3dcd324f5e6285f05347f44c9d879efc96f9f8d7bc5d26ff473267632",
+      "successful_compilation": true,
+      "intended_test_failed": true,
+      "panics": [
+        {
+          "path": "crates/kontor-store/tests/attestation_token_metadata/guards.rs",
+          "line": 141,
+          "column": 5,
+          "source_excerpt": "138:     f.store\n139:         .revoke_prepared_attestation_token(&f.scope, &r.issuer, &r.token_id, 1)\n140:         .expect(\"revoke\");\n141:     assert!(\n142:         sql.execute_batch(\"UPDATE prepared_attestation_tokens SET revoked_revision=NULL\")\n143:             .is_err()\n144:     );",
+          "assertion_or_expect_err": true
+        }
+      ],
+      "result": "KILLED",
+      "isolated_restored": true,
+      "original_unchanged": true
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_token_metadata",
+        "raw_sql_insert_refuses_false_key_commitments_and_invalid_bounds_atomically",
+        "--",
+        "--nocapture"
+      ],
+      "started_utc": "2026-10-03T21:27:01.060848+00:00",
+      "elapsed_seconds": 14.573,
+      "exit_code": 101,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-prepared-token-validation-da8llp8_/post-partition-final/mutation-logs/M10-key-commitment.log",
+      "log_sha256": "8669fe302c7a49439e3934ef62511713c84999d96be76835cf91e978afd02263",
+      "id": "M10-key-commitment",
+      "path": "crates/kontor-store/migrations/0125_prepared_attestation_tokens.sql",
+      "mutant_sha256": "baff806b217e0133c64bff56915d171851005ce4a1feff69514878624680c1c5",
+      "successful_compilation": true,
+      "intended_test_failed": true,
+      "panics": [
+        {
+          "path": "crates/kontor-store/tests/attestation_token_metadata/guards.rs",
+          "line": 392,
+          "column": 9,
+          "source_excerpt": "389:                 name => name.to_owned(),\n390:             })\n391:             .collect();\n392:         assert!(sql.execute_batch(&format!(\"INSERT INTO prepared_attestation_tokens SELECT {} FROM prepared_attestation_tokens\",expressions.join(\",\"))).is_err(),\"false SQL commitment accepted: {field}\");\n393:         assert_eq!(f.counts(), (1, 1, 1));\n394:     }\n395: }",
+          "assertion_or_expect_err": true
+        }
+      ],
+      "result": "KILLED",
+      "isolated_restored": true,
+      "original_unchanged": true
+    }
+  ],
+  "limits": "Isolated source/disposable fixture SQLite proof only. SQL guard mutations explicitly assigned by root; no production/install/live effects. No compiler failure counted as kill.",
+  "restored_baseline": {
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--jobs",
+      "2",
+      "-p",
+      "kontor-store",
+      "--test",
+      "attestation_token_metadata",
+      "--",
+      "--nocapture"
+    ],
+    "started_utc": "2026-10-03T21:27:15.637193+00:00",
+    "elapsed_seconds": 7.529,
+    "exit_code": 0,
+    "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-prepared-token-validation-da8llp8_/post-partition-final/mutation-logs/restored-baseline.log",
+    "log_sha256": "073ed6320f1de545509212c289bcba902ef4d05b79189bfc898041f0f162e00f"
+  },
+  "restored_unit_guard": {
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--jobs",
+      "2",
+      "-p",
+      "kontor-store",
+      "--lib",
+      "backup::export::attestation_ledger_tests::token_tables_are_required_at125_and_legacy124_absence_never_skips_keys",
+      "--",
+      "--nocapture"
+    ],
+    "started_utc": "2026-10-03T21:27:23.166663+00:00",
+    "elapsed_seconds": 7.75,
+    "exit_code": 0,
+    "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-prepared-token-validation-da8llp8_/post-partition-final/mutation-logs/restored-unit-guard.log",
+    "log_sha256": "31d6b16e6bd8b91b21997bcd2ac6c302dccb9b0d4e75e7b3abae73983ee3d0f5"
+  },
+  "final_isolated_hashes": {
+    "crates/kontor-core/src/repository.rs": "347b17d654fb90d87a8896e53c66d9582dc50578b472cbd1452f6627e422a412",
+    "crates/kontor-core/src/repository/attestation_authority.rs": "8f220d51c1f513d9e7087d13b2079d76073151d996513c6045c42664e01ab0a2",
+    "crates/kontor-store/src/repository/attestation_authority.rs": "8a270dae01029fae5584b697c2a94c6be175f63bb494ed12182a3a7d1ab11382",
+    "crates/kontor-store/src/repository/attestation_authority/token_metadata.rs": "d37392428f1ab49b6121fb4231cb963017b8c8bec730322faa9c23db779392ea",
+    "crates/kontor-store/src/migrations.rs": "9b55206ca7e0d8a898f27e535a0d4cf7bd75bb79ee77a304b259b161968c102f",
+    "crates/kontor-store/migrations/0125_prepared_attestation_tokens.sql": "2db8150e9e5f3e1586f4a2add3905c5f0726a4c226d3663dc7cc117cdc9f5826",
+    "crates/kontor-store/tests/attestation_token_metadata.rs": "674950d9796c396cbd50d88bbdd81c90a304436e4c626266ff94bf52114c0fa9",
+    "crates/kontor-store/tests/schema_v1.rs": "16eb7724ccbb343e651f07c7e33e602ac17c52059e15b1c344d36ef63c8c75ad",
+    "crates/kontor-store/tests/repository_roundtrip.rs": "15177b3dacde34d7b9e39b287b233ae4b2f050b1e032b3a4ac55e1cd0c8e9716",
+    "crates/kontor-store/src/backup/export.rs": "28c9fd6f5d54206944a5b4b7168229569a10d6645a9115a7dfb515d338140d89",
+    "crates/kontor-store/tests/backup_snapshot.rs": "9a953b7d75ea4b9c4fc976835caeaa51fa6a60b00faca9a6c03de3068fe42169",
+    "crates/kontor-store/tests/attestation_token_metadata/fixture.rs": "c8b7ee73c11f08d1e3843d42600aba05d64438670d7af1024411fca65fb1dcad",
+    "crates/kontor-store/tests/attestation_token_metadata/guards.rs": "b85a014b1b65ef4d75b6d276aa9f64733b146467f52c18217e35c608f1f48e41"
+  },
+  "final_original_hashes": {
+    "crates/kontor-core/src/repository.rs": "347b17d654fb90d87a8896e53c66d9582dc50578b472cbd1452f6627e422a412",
+    "crates/kontor-core/src/repository/attestation_authority.rs": "8f220d51c1f513d9e7087d13b2079d76073151d996513c6045c42664e01ab0a2",
+    "crates/kontor-store/src/repository/attestation_authority.rs": "8a270dae01029fae5584b697c2a94c6be175f63bb494ed12182a3a7d1ab11382",
+    "crates/kontor-store/src/repository/attestation_authority/token_metadata.rs": "d37392428f1ab49b6121fb4231cb963017b8c8bec730322faa9c23db779392ea",
+    "crates/kontor-store/src/migrations.rs": "9b55206ca7e0d8a898f27e535a0d4cf7bd75bb79ee77a304b259b161968c102f",
+    "crates/kontor-store/migrations/0125_prepared_attestation_tokens.sql": "2db8150e9e5f3e1586f4a2add3905c5f0726a4c226d3663dc7cc117cdc9f5826",
+    "crates/kontor-store/tests/attestation_token_metadata.rs": "674950d9796c396cbd50d88bbdd81c90a304436e4c626266ff94bf52114c0fa9",
+    "crates/kontor-store/tests/schema_v1.rs": "16eb7724ccbb343e651f07c7e33e602ac17c52059e15b1c344d36ef63c8c75ad",
+    "crates/kontor-store/tests/repository_roundtrip.rs": "15177b3dacde34d7b9e39b287b233ae4b2f050b1e032b3a4ac55e1cd0c8e9716",
+    "crates/kontor-store/src/backup/export.rs": "28c9fd6f5d54206944a5b4b7168229569a10d6645a9115a7dfb515d338140d89",
+    "crates/kontor-store/tests/backup_snapshot.rs": "9a953b7d75ea4b9c4fc976835caeaa51fa6a60b00faca9a6c03de3068fe42169",
+    "crates/kontor-store/tests/attestation_token_metadata/fixture.rs": "c8b7ee73c11f08d1e3843d42600aba05d64438670d7af1024411fca65fb1dcad",
+    "crates/kontor-store/tests/attestation_token_metadata/guards.rs": "b85a014b1b65ef4d75b6d276aa9f64733b146467f52c18217e35c608f1f48e41"
+  },
+  "all_restored": true
+}
