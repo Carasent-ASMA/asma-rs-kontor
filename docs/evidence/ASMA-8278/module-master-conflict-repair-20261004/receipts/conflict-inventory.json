@@ -123,12 +123,12 @@
     {
       "id": "M2-c",
       "what": "This file credited schema_v1/'69/69 green' as the migrations verification.",
-      "correction": "Attributed to the focused schema_v1 run and the pinned full log; explicitly not a released-124 qualification."
+      "correction": "The focused schema_v1 run is historical red (68 passed, 1 failed); only the pinned full suite at ced6db99 supports 69/69. Neither qualifies a released-124 fixture."
     },
     {
       "id": "M1",
       "what": "The owning plan required a real released-124 upgrade fixture; none existed.",
-      "correction": "Added released_124_upgrade_preserves_realm_bindings_and_memory_content in crates/kontor-store/src/migrations.rs (test-only), applying MIGRATIONS[..124] and seeding Realm/binding/0123-0124 memory rows; green immediately (no production bug revealed). Bound with raw receipts in docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/."
+      "correction": "Added the test-only exact released124-to130 regression. It passes within the bound whole-store run (40 summaries,697/0/0). Focused metadata exit101 conflicts with its one-passed log, so no immediate or successful focused invocation is established. Failure cause/intermediate test edits UNKNOWN. See C1-ERRATUM.json."
     }
   ]
 }

@@ -12,7 +12,8 @@
   "correction_head": "pending; see committed-source-pin.json after the correction commit",
   "corrections": [
     "M1: real released-124 upgrade fixture added in migrations.rs test module",
-    "M2: original packet README and conflict-inventory re-attributed; errata added"
+    "M2: original packet README and conflict-inventory re-attributed; errata added",
+    "C1: inconsistent focused receipt is non-qualifying; full-store supports test pass, combined ced6 alone supports schema_v1 69/69; cause/intermediate edits UNKNOWN."
   ],
   "source_delta": {
     "only": "crates/kontor-store/src/migrations.rs (#[cfg(test)] module)",
@@ -29,9 +30,9 @@
   "artifacts": [
     {
       "path": "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/README.md",
-      "bytes": 6048,
-      "sha256": "4cab4ea6693c452cdcec8d75750473fafe6b1a0597b3b28e1e65a8d39b3f1212",
-      "git_blob": "511ed9b99fbb55e32c9fb00d683d805eb5b8840b"
+      "bytes": 6897,
+      "sha256": "0d962dc925c05b3c4f4da107b37003e4a9d5428964b02f12e05e7faa97b2f83d",
+      "git_blob": "11bc33493a89b381968fd4fda6c4ef8481778625"
     },
     {
       "path": "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/clippy.log",
@@ -47,9 +48,9 @@
     },
     {
       "path": "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/committed-source-pin.json",
-      "bytes": 1901,
-      "sha256": "690568777a1e092574580f594a4b39cf5dd7d242e52fc418a8bda029b3342665",
-      "git_blob": "df89f063601a3c0e582ad3bf6c6ae3a3de6d2436"
+      "bytes": 2277,
+      "sha256": "28eaa0c19595b8652e6ff9a88227574cc2d9ad02954e4bbea1783398698e1a82",
+      "git_blob": "e83469ce7b2efc0457cbcf61dc9fff502fabf12a"
     },
     {
       "path": "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/corrected-files-old-and-new.txt",
@@ -122,8 +123,16 @@
       "bytes": 163,
       "sha256": "1b19c69eb647e53280003b5442ec330ac340732cfbd30e9d7e27384a3c2d5d83",
       "git_blob": "7144d7a80e6810d1c6964df8a5dd6b8c1e824f80"
+    },
+    {
+      "path": "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/C1-ERRATUM.json",
+      "bytes": 5279,
+      "sha256": "9451c489bbeca4e5d62a1f194712832744a16ecded32b50477c453d5a2730d80",
+      "git_blob": "7b5e53edaecce10eb3104c9430442fec15972263"
     }
   ],
-  "artifact_count": 16,
-  "source_pin_supplement": "receipts/committed-source-pin.json"
+  "artifact_count": 17,
+  "source_pin_supplement": "receipts/committed-source-pin.json",
+  "C1_erratum": "C1-ERRATUM.json",
+  "prior_manifest_sha256": "5234e972635977aabe7018050bc9da44e7f662bea85488fdb93f59922ebbc885"
 }

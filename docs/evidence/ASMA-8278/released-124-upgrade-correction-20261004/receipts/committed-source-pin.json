@@ -12,14 +12,20 @@
       "equal": true
     }
   },
-  "equivalence": "The focused test and whole-store logs were produced from the pre-commit working tree; that source blob equals the committed blob, so the logs bind the published commit.",
+  "equivalence": "The whole-store source binding is asserted through precommit-to-committed blob equality. The focused log/meta pair is inconsistent and does not qualify a successful invocation. See C1-ERRATUM.json; original result label is preserved at 00a0e94c.",
   "production_inputs_unchanged": "All non-test production source and generated API inputs are byte-equal to d0d27332 (see receipts/source-equivalence.txt).",
   "origin_head": "3a6eb0b9d98fe8a7c083068cf953b01d45cb6912",
   "results": {
     "released_124_focused": {
-      "exit": 0,
+      "exit": 101,
       "log": "receipts/released-124-focused.log",
-      "sha256": "b0dbed36f9ac8e935d49a46dfbef8ff84b66cb54885b832bcf6a47a5ea9f3e0b"
+      "sha256": "b0dbed36f9ac8e935d49a46dfbef8ff84b66cb54885b832bcf6a47a5ea9f3e0b",
+      "disposition": "INCONSISTENT_LOG_META_NOT_QUALIFYING",
+      "log_result": "1 passed",
+      "finish_line_present": false,
+      "failure_cause": "UNKNOWN",
+      "intermediate_test_edits": "UNKNOWN",
+      "qualification": "New test passes in results.store_full; no immediate-pass claim."
     },
     "store_full": {
       "suites": 40,

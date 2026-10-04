@@ -108,16 +108,20 @@ them with fresh raw receipts. Every other artifact in this packet is unchanged.
   a commit; the rest are labeled unpinned (E1/E2).
 - **M2-c (citation).** `receipts/conflict-inventory.json` credited
   "schema_v1 v123 upgrade test green" and "69/69 green" as the migrations
-  verification. The honest attribution is the focused schema_v1 run and the
-  pinned full log, and neither is a released-124 qualification.
+  verification. The focused schema_v1 run was historical red (68 passed,
+  1 failed); only the pinned full log at `ced6db99` supports 69/69. Neither
+  is a released-124 qualification.
 - **M1 (missing released-124 check).** No real released-124 upgrade fixture
   existed. The correction adds
   `released_124_upgrade_preserves_realm_bindings_and_memory_content`, which
   applies the exact `MIGRATIONS[..124]` chain, seeds a Realm, a permanent
   binding and representative 0123/0124 memory/experience/projection/recall/
   rebuild rows, then opens through `SqliteStore` to 130 and asserts identity,
-  content, permanence and guard preservation. It passed immediately: it is a
-  required regression net, not evidence of a production bug. Details and raw
+  content, permanence and guard preservation. It passes in the bound
+  whole-store run (697/0/0), not through the inconsistent focused receipt
+  pair (meta exit=101 versus log 1 passed). Immediate success is unproven;
+  failure cause and intermediate edits remain UNKNOWN. It is a required
+  regression net, not evidence of a production bug. Details and raw
   logs are in the correction packet; migrations 0115-0124 are verified
   byte-identical to `abe990acf754f66be66c3f5564077bb5d3333288`.
 - **Self-reference note.** `manifest.json` in this packet describes the bytes
@@ -146,3 +150,13 @@ Child is implement-only: this evidence does not self-certify PASS, does not move
 Jira, does not merge PR #292, does not adopt the release, and does not activate
 live capabilities. Root owns revised independent review, merge gates, released
 adoption and worktree synchronization.
+
+### C1 evidence erratum
+
+The focused released-124 meta records exit=101 with no finish line while its
+log reports one passed test. Neither an immediate pass nor a successful
+focused invocation can be established. Cause and intermediate test edits
+remain UNKNOWN. The unchanged bound whole-store log proves the new test
+passes. The old focused schema_v1 run is red (68/1); only the pinned combined
+log supports 69/69. See the correction packet `C1-ERRATUM.json`. Original
+receipts/history remain unchanged; no source edit or rerun was performed.

@@ -51,8 +51,8 @@ The test:
    `memory_revisions`), a clean `PRAGMA foreign_key_check` and
    `PRAGMA integrity_check = ok`.
 
-Result: **passes immediately** (no production bug revealed — the reviewer
-predicted none; this is the required regression net, not a bug report). The
+Result: the test is **passing in the whole-store run below**. The focused
+log and meta disagree (C1 erratum); an immediate pass is not established. The
 negative/refusal assertions make it fail if an upgrade ever corrupts seeded
 identity, content or binding permanence.
 
@@ -62,7 +62,11 @@ Command (source-target, shared target dir, `--locked`, `CARGO_BUILD_JOBS=2`):
 cargo test -p kontor-store --lib released_124_upgrade_preserves_realm_bindings_and_memory_content --locked
 ```
 
-Raw log: `receipts/released-124-focused.log` (exit 0, 1 passed).
+Focused log: `receipts/released-124-focused.log` reports 1 passed, but its
+`.meta` records exit=101 and no finish line. This inconsistent pair is
+**not a qualifying successful invocation**. Failure cause and any intermediate
+test edits are UNKNOWN; the retained bytes do not establish them. The bound
+whole-store run below independently includes the new test passing.
 
 Released-migration bytes: `receipts/released-migrations-byteequal.txt` verifies
 `0115`–`0124` are byte-identical to `abe990acf754f66be66c3f5564077bb5d3333288`
@@ -121,3 +125,13 @@ superseded by the pinned full suite at `ced6db99` (E2 retained honestly).
   fresh independent correction review and Sol Judge belong to root.
 - No mutants were rerun; all in-module mutation targets remain byte-equal and no
   historical kill count is re-claimed.
+
+### C1 evidence erratum
+
+The focused released-124 meta records exit=101 with no finish line while its
+log reports one passed test. Neither an immediate pass nor a successful
+focused invocation can be established. Cause and intermediate test edits
+remain UNKNOWN. The unchanged bound whole-store log proves the new test
+passes. The old focused schema_v1 run is red (68/1); only the pinned combined
+log supports 69/69. See the correction packet `C1-ERRATUM.json`. Original
+receipts/history remain unchanged; no source edit or rerun was performed.
