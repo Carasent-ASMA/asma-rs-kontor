@@ -1,0 +1,30 @@
+**ASMA-8278 — SEAT B bounded source review: verification-only attestation delta**
+Method: `git show` only at module `c708701b6b8f80ef4db57b0b0410976dfd4dc482` (predecessor `dfeaa8a…`) and root `b84af82c976faaf02791ad5e04b38de570806441`; worker-evidence reads only. No tests run, no writes, prior findings and R-01 correction preserved unchanged.
+
+**Identity/scope confirmed**
+- Delta is exactly five paths (+864): `Cargo.lock`, `crates/kontor-runtime/Cargo.toml`, `src/planning_pair.rs`, `src/planning_pair/attestation.rs`, `attestation/tests.rs`. Verified sha256: attestation.rs `8c2bdc50…` ✓, tests.rs `83b75333…` ✓ (both stated values).
+- No production caller: `git grep attestation::` outside the module returns nothing; only `pub mod attestation;` added (`planning_pair.rs:34`).
+- Dependency reuse: workspace already pinned `aws-lc-rs = "=1.18.1"` (predecessor `Cargo.toml:93`), lock package pre-existing (`dfeaa8a Cargo.lock:376`), `kontor-daemon` already depends; the delta only adds the dep edge to `kontor-runtime`. No new third-party package.
+
+**Worker evidence (read-only)**
+- `run_mutations.py:16-46`: isolated copy, unique mutation targets, per-mutant restore with sha assertion; four mutants KILLED by real panics: signature `tests.rs:119`, revocation/audience `:97`, token-time `:281`; baselines pass (`baseline-before/after.log` `15 passed; 107 filtered` = 122 unit total). `MANIFEST.json` matches logs; `original_preserved`/`isolated_source_restored` true.
+- `SOURCE-VALIDATION.json` declares 122 unit / 20 integration / 2 compile-fail, fmt/git-diff-check/Clippy exit 0. I did not re-run; suppression-of-tests or ignored failures would be invisible in the supplied bundle (no full-suite log), but mutation logs and test file independently corroborate 15 attestation tests and the 122-unit total.
+
+**Findings**
+- **A-01 · Info/Low · Pre-signature key-state refusals.** `verify` runs `validate_claims` → `select_key` → `revoked`/key-interval checks (`attestation.rs:291-302`) before signature verification (`:303-308`). Trigger: any caller able to invoke `verify` may submit an arbitrarily chosen ≤8 KiB payload naming an issuer/key/time and observe `UnknownKey` vs `RevokedKey` vs `KeyValidity` vs `Signature`, i.e., probe snapshot key existence/revocation/validity without a valid signature. Impact bounded: key metadata is public, no production caller or endpoint exists in this slice, and the refusal set is spec-required (SEC-002). Disposition: hardening note, not a defect; signature-first ordering would silence it if snapshots later become sensitive.
+- **A-02 · Info · Token-level revocation/replay absent.** `token_id` is parsed and exposed (`:118-119`, `:204-206`) but `verify` has no revoked-token/replay input (`:270-275`). Spec assigns this to the owner (`spec §4 :91-95`; module docs `:5-8`; `§8 :147-150`). Disposition: intended owner gate — explicitly unsupported, not a defect.
+- **A-03 · Info · Evidence provenance label.** `SOURCE-VALIDATION.json:3` / `MANIFEST.json:2` say `source_head: dfeaa8a…`, but all five recorded sha256 values match the `c708701b` delta (e.g., Cargo.lock `b62db275…` at `c708701b` vs `cdedd842…` at `dfeaa8a`). Content is pinned correctly; only the head label names the base. Disposition: evidence hygiene note for root's record; no source impact.
+- **A-04 · Info · Full-suite counts not independently reproducible.** 122/20/2 counts are declared (`SOURCE-VALIDATION.json:13-18`) but the corresponding log is not in the bundle; only focused mutation/baseline logs exist. Disposition: not a blocker; noted as an evidence limit.
+- **A-05 · Info · Doc path.** `attestation.rs:15` cites `asma-modules/_docs/...`; repo path is `_docs/...`. Nit only.
+
+**Correctness/security checks that hold**
+- **Public-only**: production code uses only `UnparsedPublicKey`/`RSA_PKCS1_2048_8192_SHA256` (`:306`); `RsaKeyPair::generate`/`sign` appear only in tests (`tests.rs:9-11,70-83`). Fixed algorithm, no `alg` field, no token key/URL discovery; exact-bytes signing over `asma-seat-attestation-v1\0` + raw payload (`:303-308`).
+- **Bounded parse/claims/snapshot/request**: sizes before parse/crypto (`:276-281`); version/positive generations/unique ≤6 ops/positive lifetime (`:338-358`); snapshot revision/≤64 keys/DER bounds/interval/duplicate-pair (`:364-376`); explicit policy/audience/expected generations (`:282-288`). `deny_unknown_fields` on claims/scope/native (`:57,72,98`); duplicate/unknown/invalid-id refusals tested (`tests.rs:323-374`).
+- **Exact matching**: audience, scope (all four components incl. task Some/None), seat+generation, native identity (all four components), operation membership, inclusive-start/exclusive-end with policy lifetime (`:309-331`; tests `:188-299`).
+- **Private result / no authority conversion**: `VerifiedAttestation` private fields, no constructor, no `Deserialize`/`Serialize`, accessors only (`:195-213`); two compile_fail doctests (`:184-194`); no `From`/`Into` authority impl; `AttestationRefusal` fieldless.
+- **Fixtures/mutations**: real RSA-2048 generated test key signing real payloads; AC-004 mutants genuinely killed with source restored (above).
+
+**Inspection limits**
+No test/compile/Clippy re-execution (prohibited); integration and compile-fail counts rely on the declared log; isolated `source/` copy contents not re-read (hashes matched); no exploration of future owner-composition code since none exists in the delta; no DB/keychain/native/credential paths touched by the reviewed change.
+
+**Disposition:** No substantiated blocker to this non-authorizing SOURCE slice. A-01/A-02 are postures by design or evidence hygiene, not reachable authority defects; A-01 would merit a one-line owner note only. Owner-gated prerequisites named in the spec (authentic fresh snapshot/revocation revision, current occupancy and active seat/node, actual native possession, atomic CAS/generation/effect fence, drain/finality, restrictions) remain unresolved and are not supplied by these tests. This is a bounded source finding for one verification-only delta — not a full independent review, live acceptance, or epic PASS.

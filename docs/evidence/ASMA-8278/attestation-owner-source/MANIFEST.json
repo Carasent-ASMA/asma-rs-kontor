@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "source_candidate": "26b1c8713d14684a6a3483c00fe4b74f4ed3d223",
+  "root_specification": "68626851460916488be6613084ca0d33118fcb4d",
+  "source_sha256": {
+    "crates/kontor-runtime/src/planning_pair/attestation.rs": "ceec30023360a91a6dfa4a6eb4d50fd74e6d515ea58d8b6c7d02ea9a2418d7a3",
+    "crates/kontor-runtime/src/planning_pair/attestation/owner_checks.rs": "23eeffe3a100d2d8553ab6b4c24af9a99c064f713fa394a8ea0de320e8dd171c",
+    "crates/kontor-runtime/src/planning_pair/attestation/owner_checks/tests.rs": "a1a64c3494716a9ba0e31f9d0631127faf895377c10daf86ba51470c18093ded"
+  },
+  "files_sha256": {
+    ".gitattributes": "c890d66e3b7c8b6304348f5d00efc768cd8bbf881731a292b790c8dc2997c7cf",
+    "MANIFEST.worker.json": "c3871b7786cfe4409adcb0702185b1cff35376820ee3dab19e2f734d6e9bbb88",
+    "PUBLISHED-CANDIDATE-READBACK.json": "38c28f41aa9a1cbfc012cf7519301e910732d8649b3029ffa6ac5edc70c7e7ef",
+    "README.md": "96fed350d3105e0b95ee4dfdf64791867c3b089be62bf51118b4aed7e319c007",
+    "RUN.worker.json": "65a1aca0e71971d544888ef43d10088b643fb4bc0b479f019d6939e693d990f9",
+    "focused-owner-current.log": "879f246878301b9d950455d3dad823e5da7ccbd314bc30829b9a289f7f198ece",
+    "focused.log": "bd7824b87c3769150210a54bc50c4e71733b25c0a35728c99e7512a05cce5ee7",
+    "mutation-baseline-after.log": "376fadb66defe2bb855b1d3ad82392d190ee6eb6302b77b89f9a1d37e4676a7f",
+    "mutation-baseline-before.log": "0ddd2a9122860aee166ab4df18f131a80931387a85216b5c98b6c24362a97523",
+    "owner-clippy.log": "e7f616632a6fe6e2f5c88c60c56c35a805b560cc89702bfb58d8411ace38a703",
+    "owner-diff-check.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "owner-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "owner-runtime-regression.log": "f24145e693cced35e2c73fd644fe1c0d1dda6d7077f80d123ce64dcb799645c7",
+    "review-owner-source.md": "655db4aec1b5d3afef8face476695c71c15c1206b7008edcf36de8bb142f4e81",
+    "run_mutations_only.py": "1ab812c3ebf21d83662087d4db3905d95dce2d1e60f40ffa8899050b45141f73",
+    "run_validation.py": "ed59175dfd0e81659cd26f310f61fc088ff6cb32a5713a1bab592d5d27a866c2",
+    "skip-active-seat.log": "dfa96005acc6c7fd47db016aa38ab92fadf6ea880f4c13c17a1f0b95a7b1c719",
+    "skip-current-operation.log": "28e3e16aba711b31fa2932b2de564d88bd55e6b17d9f8a5e7a80c467019e3782",
+    "skip-current-revision.log": "7853041c20f0a4bf093a44953ad833e1e52e35365f172487c776f2c2b6e5ef17",
+    "skip-generation.log": "c794bafd0891c3ee162a4d8faec835df6debfba8162e17d5785eeb76e06089d8",
+    "skip-native-identity.log": "f854d5508f720a51b7d7bf7cd26dd6c6e48362ab83c60592d29ccd94a9f9d623",
+    "skip-token-revocation.log": "a4810b3b76694bb433bfce9688f8ba4563db8381f9a76448cc8fdcd317737803",
+    "skip-token-time.log": "abb0e2f010a6ac3eed7fb6666f8d1c9473fb830dd223579d5acf8edd2dc41bf1"
+  },
+  "checks": {
+    "unit": 134,
+    "integration": 20,
+    "compile_fail_privacy": 2,
+    "owner_tests": 12,
+    "assertion_killed_mutants": 7
+  },
+  "source_only": true,
+  "original_worker_files_unchanged": true,
+  "review_sha256": "655db4aec1b5d3afef8face476695c71c15c1206b7008edcf36de8bb142f4e81"
+}

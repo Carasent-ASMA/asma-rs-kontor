@@ -1,0 +1,51 @@
+=== M-COH hang evidence, captured 2026-10-03T14:36:03Z ===
+--- ps -o pid,ppid,stat,etime,time,command for the exact PIDs ---
+31077 90675 Ss   48:42   0:00.01 /bin/zsh -c source /Users/igor/.local/state/kontor/asma/provider-homes/claude-work/shell-snapshots/snapshot-zsh-1790894663008-0b9m7s.sh 2>/dev/null || true && setopt N
+31096 31077 S    48:42   0:00.30 /Users/igor/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo test -p kontor-daemon --lib -- coherence::the_occupancy_chain --test-threads=1
+31097 31077 S    48:42   0:00.00 /bin/zsh -c source /Users/igor/.local/state/kontor/asma/provider-homes/claude-work/shell-snapshots/snapshot-zsh-1790894663008-0b9m7s.sh 2>/dev/null || true && setopt N
+31098 31077 S    48:42   0:00.00 head -16
+31099 31097 S    48:42   0:03.41 ugrep -G --ignore-files --hidden -I --exclude-dir=.git --exclude-dir=.svn --exclude-dir=.hg --exclude-dir=.bzr --exclude-dir=.jj --exclude-dir=.sl -E ^error|^test |^te
+31941 31096 S    48:28   0:01.72 /Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/target/debug/deps/kontor
+--- which are still alive ---
+  31077 alive
+  31097 alive
+  31096 alive
+  31941 alive
+  31098 alive
+  31099 alive
+--- disk ---
+/dev/disk3s5   926Gi   889Gi    15Gi    99%     18M  160M   10%   /System/Volumes/Data
+--- working file identity ---
+c4d349a2514bf6829d8330ccc7f231bd646f69fc72abba3bdead089328235077  /Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-daemon/src/applications.rs
+e870233701f79ed1cae0d65c3bb375e8decc97ab959e7cab366462b116cd3c4e  /tmp/asma8187-coh/main.snapshot
+
+--- after termination 2026-10-03T14:36:17Z ---
+  31077 terminated
+  31097 terminated
+  31096 terminated
+  31941 terminated
+  31098 terminated
+  31099 terminated
+--- no other lane disturbed: remaining cargo ---
+
+--- restoration 2026-10-03T14:36:26Z ---
+restored sha256 : e870233701f79ed1cae0d65c3bb375e8decc97ab959e7cab366462b116cd3c4e
+expected sha256 : e870233701f79ed1cae0d65c3bb375e8decc97ab959e7cab366462b116cd3c4e
+MUTANT markers  : 0
+git tracked diff: 1
+
+=== M-COH, second attempt — deterministic ===
+preimage sha256 : 3a9f16873b39ad41a70c4aaefac303d62492b88406b4c97dcdf0befd050217f2
+restored sha256 : 3a9f16873b39ad41a70c4aaefac303d62492b88406b4c97dcdf0befd050217f2
+byte-identical  : YES
+MUTANT markers  : 0
+verdict         : KILLED in 4.78s (exit 101), on
+                  'a succession committed while the projection held the store lock'
+first attempt   : INCONCLUSIVE (hang, ~48m, no verdict) — the hang evidence is
+                  the first section of this same file,
+                  M-COH-first-attempt-INCONCLUSIVE.txt. An earlier revision
+                  pointed at 'hang-evidence.txt', which never existed under
+                  that name.
+second attempt  : M-COH-split-lock-boundary.{patch,log}
+root cause      : the harness asserted inside thread::scope before releasing
+                  the barrier, so the scope joined a reader nobody would wake.

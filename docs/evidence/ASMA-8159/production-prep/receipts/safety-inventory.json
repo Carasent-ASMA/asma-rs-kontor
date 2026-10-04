@@ -1,0 +1,313 @@
+{
+  "source": [
+    {
+      "path": "crates/kontor-daemon/src/usage.rs",
+      "sha256": "6ac16d84f2b0845b519cc1c4e49d8a61a9669771fff58570475eee7afdb1076d",
+      "boundary_lines": [
+        [
+          64,
+          "pub const PROVIDER_HOMES_DIR: &str = \"provider-homes\";"
+        ],
+        [
+          212,
+          "    /// Read every subdirectory of `<state_root>/provider-homes` as one approval."
+        ],
+        [
+          310,
+          "        .args([\"find-generic-password\", \"-s\", &service, \"-w\"])"
+        ],
+        [
+          349,
+          "    exact_reporter: Option<Arc<dyn ExactProviderUsageReporter>>,"
+        ],
+        [
+          393,
+          "            homes: ProviderHomes::discover(state_root),"
+        ],
+        [
+          401,
+          "            exact_reporter: None,"
+        ],
+        [
+          419,
+          "    pub fn with_exact_reporter("
+        ],
+        [
+          424,
+          "        poller.exact_reporter = Some(reporter);"
+        ],
+        [
+          530,
+          "        if let Some(reporter) = self.exact_reporter.as_ref() {"
+        ],
+        [
+          607,
+          "    if poller.homes().is_empty() && poller.exact_reporter.is_none() {"
+        ],
+        [
+          1017,
+          "            UsagePoller::with_exact_reporter(directory.path(), Arc::clone(&reporter) as Arc<_>);"
+        ],
+        [
+          1054,
+          "            UsagePoller::with_exact_reporter(directory.path(), Arc::clone(&reporter) as Arc<_>);"
+        ],
+        [
+          1102,
+          "            UsagePoller::with_exact_reporter(directory.path(), Arc::clone(&reporter) as Arc<_>);"
+        ],
+        [
+          1137,
+          "        let poller = UsagePoller::with_exact_reporter(directory.path(), reporter as Arc<_>);"
+        ],
+        [
+          1165,
+          "        let homes = ProviderHomes::discover(directory.path());"
+        ],
+        [
+          1177,
+          "        let homes = ProviderHomes::discover(directory.path());"
+        ],
+        [
+          1188,
+          "        let homes = ProviderHomes::discover(directory.path());"
+        ],
+        [
+          1202,
+          "        let homes = ProviderHomes::discover(directory.path());"
+        ],
+        [
+          1272,
+          "            claude_keychain_service(Path::new(\"/tmp/kontor/provider-homes/claude-work\"))"
+        ],
+        [
+          1277,
+          "            claude_keychain_service(Path::new(\"/tmp/kontor/provider-homes/claude-personal\"))"
+        ]
+      ],
+      "test_names": [
+        "provider",
+        "for_provider",
+        "credential",
+        "endpoint",
+        "read",
+        "read_strict",
+        "poll_interval",
+        "retry_after_seconds",
+        "fmt",
+        "discover",
+        "get",
+        "is_empty",
+        "len",
+        "file_access_token",
+        "token_from_document",
+        "claude_keychain_service",
+        "claude_keychain_access_token",
+        "claude_keychain_access_token",
+        "access_token",
+        "detect",
+        "probe",
+        "discover",
+        "homes",
+        "with_exact_reporter",
+        "poll",
+        "probe",
+        "probe_provider",
+        "probe_provider_unthrottled",
+        "request",
+        "decode_usage_response",
+        "poll_once",
+        "log_poll_failure",
+        "record_for_profile",
+        "record",
+        "record_exact",
+        "unchanged",
+        "poll_until_stopped",
+        "probe_profile",
+        "probe",
+        "usage_http_429_is_a_retry_instruction_not_quota_exhaustion_or_network_failure",
+        "usage_throttle_survives_restart_and_does_not_starve_other_accounts",
+        "usage_throttle_expires_then_requires_a_new_actual_report",
+        "probe",
+        "usage_collector_refreshes_unchanged_evidence_automatically_inside_the_window",
+        "an_absent_provider_homes_directory_approves_nothing",
+        "each_subdirectory_is_approved_under_its_own_name_and_files_are_not",
+        "an_alias_is_looked_up_and_never_joined_so_traversal_matches_nothing",
+        "the_approved_paths_are_not_printed_at_any_verbosity",
+        "a_home_with_no_credential_yields_no_token_for_any_vendor",
+        "a_token_is_read_but_never_rendered",
+        "a_claude_home_is_recognised_by_its_own_credential_shape",
+        "a_claude_custom_home_selects_its_scoped_keychain_service",
+        "every_vendor_endpoint_is_https_and_distinct",
+        "an_exact_account_alias_selects_only_its_vendor_family",
+        "an_operator_window_set_survives_a_later_poller_record_of_the_same_header",
+        "an_observed_window_set_replaces_the_stored_one",
+        "alias"
+      ]
+    },
+    {
+      "path": "crates/kontor-daemon/tests/harness/mod.rs",
+      "sha256": "57e6a84605e5f7da8a5cffe47e14f7e422daeaa5c6c378d5143a427b3eeff892",
+      "boundary_lines": [
+        [
+          146,
+          "        let root = TempDir::new().expect(\"a template state root\");"
+        ],
+        [
+          456,
+          "        let directory = TempDir::new().expect(\"a temporary directory\");"
+        ],
+        [
+          493,
+          "                let poller = UsagePoller::with_exact_reporter(directory.path(), reporter);"
+        ]
+      ],
+      "test_names": []
+    },
+    {
+      "path": "crates/kontor-daemon/tests/loopback_api.rs",
+      "sha256": "949bfbf57c7a6cca40d28261e40be2a272d6dcc53f7f722db08d66510f785959",
+      "boundary_lines": [
+        [
+          2233,
+          "    let directory = tempfile::TempDir::new().expect(\"a temporary directory\");"
+        ],
+        [
+          3752,
+          "    let directory = tempfile::TempDir::new().expect(\"a temporary directory\");"
+        ],
+        [
+          3798,
+          "    let directory = tempfile::TempDir::new().expect(\"a temporary directory\");"
+        ],
+        [
+          3811,
+          "    let directory = tempfile::TempDir::new().expect(\"a temporary directory\");"
+        ],
+        [
+          3840,
+          "    let directory = tempfile::TempDir::new().expect(\"a temporary directory\");"
+        ],
+        [
+          11735,
+          "    let connector_dir = tempfile::TempDir::new().expect(\"a connector directory\");"
+        ]
+      ],
+      "test_names": []
+    },
+    {
+      "path": "scripts/test-lanes.py",
+      "sha256": "430d0a3c39be0aa3e64db04dad3fc04d98d30d4c35ed8e5d4f26624467c9a285",
+      "boundary_lines": [
+        [
+          414,
+          "        console.append([\"pnpm\", \"--filter\", \"kontor-console\", \"verify:api\"])"
+        ],
+        [
+          416,
+          "        console += [[\"pnpm\", \"-r\", \"typecheck\"], [\"pnpm\", \"-r\", \"test\"]]"
+        ],
+        [
+          423,
+          "            commands.append([\"pnpm\", \"install\", \"--frozen-lockfile\"])"
+        ],
+        [
+          428,
+          "        commands.append([\"pnpm\", \"install\", \"--frozen-lockfile\"])"
+        ],
+        [
+          429,
+          "        commands.append([\"pnpm\", \"-r\", \"typecheck\"])"
+        ],
+        [
+          430,
+          "        commands.append([\"pnpm\", \"-r\", \"test\"])"
+        ],
+        [
+          466,
+          "    if args.lane == \"full\":"
+        ],
+        [
+          489,
+          "    if args.dry_run:"
+        ]
+      ],
+      "test_names": []
+    },
+    {
+      "path": "scripts/verify-tree.py",
+      "sha256": "48aa01253c0b25feda4003886202f3cf145ce8df2157461198875199e3c79090",
+      "boundary_lines": [
+        [
+          16,
+          "workspace tests, cargo audit, cargo deny check, frozen pnpm install,"
+        ],
+        [
+          108,
+          "        [\"cargo\", \"clippy\", \"--workspace\", \"--all-targets\", \"--\", \"-D\", \"warnings\"],"
+        ],
+        [
+          111,
+          "    run([\"cargo\", \"test\", \"--workspace\", \"--locked\"], tree)"
+        ],
+        [
+          115,
+          "    pnpm = shutil.which(\"pnpm\")"
+        ],
+        [
+          116,
+          "    if pnpm is None:"
+        ],
+        [
+          118,
+          "            \"pnpm not found on PATH: the console gates (frozen install, \""
+        ],
+        [
+          122,
+          "    run([pnpm, \"install\", \"--frozen-lockfile\"], tree)"
+        ],
+        [
+          123,
+          "    run([pnpm, \"-r\", \"typecheck\"], tree)"
+        ],
+        [
+          124,
+          "    run([pnpm, \"-r\", \"test\"], tree)"
+        ],
+        [
+          125,
+          "    run([pnpm, \"audit\", \"--prod\"], tree)"
+        ]
+      ],
+      "test_names": []
+    },
+    {
+      "path": "crates/kontor-memory-cognee/src/lib.rs",
+      "sha256": "f461effcda17a460a0939ef2bb077f74de1bd0b26ee5b6c44b997fcd3ec84c40",
+      "boundary_lines": [],
+      "test_names": []
+    },
+    {
+      "path": "crates/kontor-daemon/src/applications/memory_projection.rs",
+      "sha256": "e0a594eb0b54834cdce84f7bae3c83f0836e42af3ac71a634d1e5eb41bada87f",
+      "boundary_lines": [],
+      "test_names": []
+    }
+  ],
+  "search": {
+    "argv": [
+      "rg",
+      "-n",
+      "SystemKeychain|provider-homes|ProviderHomes|ExactProviderUsageReporter",
+      "crates/kontor-daemon/tests",
+      "--glob",
+      "*.rs"
+    ],
+    "exit": 0,
+    "stdout": "crates/kontor-daemon/tests/harness/mod.rs:39:use kontor_daemon::usage::{ExactProviderUsageReporter, UsagePoller};\ncrates/kontor-daemon/tests/harness/mod.rs:215:    usage_reporter: Option<Arc<dyn ExactProviderUsageReporter>>,\ncrates/kontor-daemon/tests/harness/mod.rs:334:        reporter: Arc<dyn ExactProviderUsageReporter>,\ncrates/kontor-daemon/tests/synthetic_census_rehearsal.rs:168:    assert!(!copy_path.join(\"provider-homes\").exists());\ncrates/kontor-daemon/tests/loopback_api.rs:277:use kontor_daemon::usage::{ExactProviderUsageReporter, ProviderUsageProbeFailure};\ncrates/kontor-daemon/tests/loopback_api.rs:2106:impl ExactProviderUsageReporter for ScriptedUsageReporter {\n"
+  },
+  "executed_scope": "full loopback_api target, all its modules, in TempDir harness; default provider homes empty; exact-provider tests inject ScriptedUsageReporter; Jira credential tests use fixture ports; fake runtime only",
+  "excluded": "entire kontor-daemon --lib including usage module on macOS; unisolated blanket workspace/accounts/e2e execution; install/audit/live provider steps of native full lane",
+  "console": "full app typecheck/vitest unavailable without dependencies; no install authorized; generated schema parity and standalone TypeScript verified",
+  "claim": "static isolation plus exact executed target receipts; ignored cases receive no executed credit"
+}

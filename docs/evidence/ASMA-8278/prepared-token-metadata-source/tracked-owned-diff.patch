@@ -1,0 +1,527 @@
+diff --git a/crates/kontor-core/src/repository.rs b/crates/kontor-core/src/repository.rs
+index 8edcac0..98c03c4 100644
+--- a/crates/kontor-core/src/repository.rs
++++ b/crates/kontor-core/src/repository.rs
+@@ -75,7 +75,8 @@ use crate::{DomainError, DomainResult};
+ pub mod attestation_authority;
+ pub use attestation_authority::{
+     AttestationAuthorityProjection, AttestationAuthorityRepository, AttestationAuthorityScope,
+-    RegisterAttestationKey, StoredAttestationKey,
++    AttestationSeatProvenance, AttestationTokenProjection, PrepareAttestationToken,
++    RegisterAttestationKey, StoredAttestationKey, StoredPreparedAttestationToken,
+ };
+ 
+ /// One recorded proof that an exact retired evaluator already rendered its
+diff --git a/crates/kontor-core/src/repository/attestation_authority.rs b/crates/kontor-core/src/repository/attestation_authority.rs
+index 7817370..1bbf26c 100644
+--- a/crates/kontor-core/src/repository/attestation_authority.rs
++++ b/crates/kontor-core/src/repository/attestation_authority.rs
+@@ -1,11 +1,16 @@
+ //! Durable public issuer-key metadata port (ASMA-8278).
+ //!
+ //! These operations persist public key identity and irreversible revocation;
+-//! they create no actor, permission, token, receipt or native effect. Returned
++//! they create no actor, permission, issued token, receipt or native effect. Returned
+ //! projections are detached metadata, not proof of current transaction-held
+ //! freshness, authentic acquisition, possession or admission authority.
+ 
+-use crate::id::{ContentHash, ExternalId, ProjectId, RealmId};
++use crate::consultation::ConsultationRunId;
++use crate::id::{
++    AggregateRevision, ContentHash, ExternalId, MiniProjectId, ProjectId, RealmId, RoleSlotId,
++    SeatBindingId, TaskId, TopologyNodeId,
++};
++use crate::state::NativeRuntimeIdentity;
+ 
+ use super::RepositoryResult;
+ 
+@@ -72,6 +77,114 @@ pub struct AttestationAuthorityProjection {
+     pub selected_key: Option<StoredAttestationKey>,
+ }
+ 
++/// Expectations for a non-authorizing prepared payload commitment.
++/// No signature, bearer bytes, key material or generation-domain selector is accepted.
++#[derive(Debug, Clone)]
++pub struct PrepareAttestationToken {
++    /// Existing store Realm, project and exact application namespace.
++    pub scope: AttestationAuthorityScope,
++    /// Exact positive current key-set head.
++    pub expected_key_head_revision: u64,
++    /// `None` expects no token head; `Some` expects its exact positive revision.
++    pub expected_token_head_revision: Option<u64>,
++    /// Bounded issuer identity.
++    pub issuer: ExternalId,
++    /// Known immutable key identity.
++    pub key_id: ExternalId,
++    /// Permanent issuer-scoped identity, never reused across key rotations.
++    pub token_id: ExternalId,
++    /// Exact owning epic expected from stored membership.
++    pub mini_project_id: MiniProjectId,
++    /// Exact task scope, including absence; `None` is never a wildcard.
++    pub task_id: Option<TaskId>,
++    /// Actual logical seat whose stored provenance is resolved by the writer.
++    pub seat_binding_id: SeatBindingId,
++    /// Expected positive occupancy generation (not runtime generation).
++    pub expected_occupancy_generation: u64,
++    /// Expected exact current native metadata, not a possession proof.
++    pub expected_native_identity: NativeRuntimeIdentity,
++    /// Inclusive Unix-second start, contained in the selected key's interval.
++    pub not_before: u64,
++    /// Exclusive end, strictly later and contained in the key interval.
++    pub expires_at: u64,
++    /// Unqualified digest of intended payload bytes; authenticates nothing.
++    pub payload_digest: ContentHash,
++}
++
++/// Stored-derived occupancy domain. Detached provenance is never authority.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum AttestationSeatProvenance {
++    /// An actual hosted row, with generation derived from retained history + 1.
++    Hosted,
++    /// An actual consultation seat joined to its exact run, slot and node.
++    Consultation {
++        /// Family-qualified stored run identity.
++        run_id: ConsultationRunId,
++        /// Exact stored seat slot, also matching its binding.
++        role_slot_id: RoleSlotId,
++        /// Run revision observed inside preparation's writer transaction.
++        run_revision: AggregateRevision,
++    },
++}
++
++/// Permanent prepared metadata. This value can be freely constructed and
++/// neither proves issuance/signature validity nor authorizes admission/effects.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct StoredPreparedAttestationToken {
++    /// Immutable issuer identity.
++    pub issuer: ExternalId,
++    /// Immutable selected key identity.
++    pub key_id: ExternalId,
++    /// Permanent identity within project/application/issuer.
++    pub token_id: ExternalId,
++    /// Unqualified payload commitment.
++    pub payload_digest: ContentHash,
++    /// Digest of the selected immutable public material.
++    pub key_material_digest: ContentHash,
++    /// Selected key's registration revision, not today's key head.
++    pub key_registered_revision: u64,
++    /// Key-set head observed at preparation, retained only as provenance.
++    pub preparation_key_head_revision: u64,
++    /// Inclusive intended token validity start.
++    pub not_before: u64,
++    /// Exclusive intended token validity end.
++    pub expires_at: u64,
++    /// Exact stored owning epic.
++    pub mini_project_id: MiniProjectId,
++    /// Exact stored task, including absence.
++    pub task_id: Option<TaskId>,
++    /// Exact stored logical seat.
++    pub seat_binding_id: SeatBindingId,
++    /// Exact hosting node observed inside preparation.
++    pub topology_node_id: TopologyNodeId,
++    /// Binding revision observed inside preparation.
++    pub binding_revision: AggregateRevision,
++    /// Node revision observed inside preparation.
++    pub node_revision: AggregateRevision,
++    /// Actual stored-derived occupancy domain and run provenance.
++    pub provenance: AttestationSeatProvenance,
++    /// Positive current occupancy generation observed at preparation.
++    pub occupancy_generation: u64,
++    /// Exact native metadata observed at preparation; proves no possession.
++    pub native_identity: NativeRuntimeIdentity,
++    /// Positive separate token-ledger revision at preparation.
++    pub registered_revision: u64,
++    /// Permanent later token-ledger revocation revision, if present.
++    pub revoked_revision: Option<u64>,
++}
++
++/// One coherent token head and selected permanent commitment. A detached
++/// read is not authentic acquisition or transaction-held freshness.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct AttestationTokenProjection {
++    /// Exact store scope.
++    pub scope: AttestationAuthorityScope,
++    /// Positive current token-ledger head (independent of the key head).
++    pub head_revision: u64,
++    /// Selected issuer/token, or absence inside an existing token head.
++    pub selected_token: Option<StoredPreparedAttestationToken>,
++}
++
+ /// Public-key ledger operations behind the existing single state writer.
+ /// History is never capped at the verifier's 64-key transport bound.
+ pub trait AttestationAuthorityRepository {
+@@ -111,4 +224,40 @@ pub trait AttestationAuthorityRepository {
+         issuer: &ExternalId,
+         key_id: &ExternalId,
+     ) -> RepositoryResult<Option<AttestationAuthorityProjection>>;
++    /// Prepare metadata after fresh scope, heads, key and actual seat checks.
++    /// Every identity reuse refuses, even with identical fields, after those
++    /// checks. This is never replay, issuance or admission.
++    ///
++    /// # Errors
++    /// Refuses invalid bounds, stale heads, revoked/absent key, invalid interval,
++    /// ambiguous or mismatched stored membership/native, reuse and overflow.
++    fn prepare_attestation_token(
++        &self,
++        request: &PrepareAttestationToken,
++    ) -> RepositoryResult<AttestationTokenProjection>;
++
++    /// Permanently revoke with the exact current token head. Expired tokens,
++    /// revoked keys and retired seats remain revocable. A matching-head repeat
++    /// is unchanged; a stale-head repeat conflicts.
++    ///
++    /// # Errors
++    /// Refuses invalid bounds, unknown scope/token, stale head and overflow.
++    fn revoke_prepared_attestation_token(
++        &self,
++        scope: &AttestationAuthorityScope,
++        issuer: &ExternalId,
++        token_id: &ExternalId,
++        expected_token_head_revision: u64,
++    ) -> RepositoryResult<AttestationTokenProjection>;
++
++    /// Read coherent detached metadata within this Realm/project/application.
++    ///
++    /// # Errors
++    /// Refuses invalid bounds and malformed persisted metadata.
++    fn read_prepared_attestation_token(
++        &self,
++        scope: &AttestationAuthorityScope,
++        issuer: &ExternalId,
++        token_id: &ExternalId,
++    ) -> RepositoryResult<Option<AttestationTokenProjection>>;
+ }
+diff --git a/crates/kontor-store/src/backup/export.rs b/crates/kontor-store/src/backup/export.rs
+index 28da9d5..066ba42 100644
+--- a/crates/kontor-store/src/backup/export.rs
++++ b/crates/kontor-store/src/backup/export.rs
+@@ -1204,40 +1204,55 @@ pub fn export_realm(store: &SqliteStore, now: Timestamp) -> Result<KontorExportV
+     Ok(export)
+ }
+ 
+-/// Ledger continuity is not implemented by modeled export or raw restore.
+-/// Historical pre-v124 files legitimately lack both tables; a missing or
+-/// partial v124 ledger is corruption and must never become an empty fallback.
++/// Qualified key/token continuity is unsupported by modeled export and restore.
++/// Legitimate pre-124/pre-125 absence is distinct from corrupt missing tables.
++/// Every present key ledger is inspected before any token-absence fallback.
+ pub(crate) fn ensure_empty_attestation_ledger(connection: &Connection) -> Result<(), BackupError> {
+     let refusal = || BackupError::Verification {
+-        detail: "public key authority ledger continuity is unsupported",
++        detail: "public attestation ledger continuity is unsupported",
+     };
+     let version: i64 = connection
+         .query_row("PRAGMA user_version", [], |row| row.get(0))
+         .map_err(|_| refusal())?;
+-    let tables: i64 = connection
+-        .query_row(
+-            "SELECT count(*) FROM sqlite_master WHERE type='table'
+-           AND name IN ('attestation_authority_heads','attestation_authority_keys')",
+-            [],
+-            |row| row.get(0),
+-        )
+-        .map_err(|_| refusal())?;
+-    if tables == 0 && (1..=123).contains(&version) {
+-        return Ok(());
+-    }
+-    if tables != 2 {
++    if version < 1 {
+         return Err(refusal());
+     }
+-    let nonempty: bool = connection
+-        .query_row(
+-            "SELECT EXISTS(SELECT 1 FROM attestation_authority_heads)
+-             OR EXISTS(SELECT 1 FROM attestation_authority_keys)",
+-            [],
+-            |row| row.get(0),
+-        )
+-        .map_err(|_| refusal())?;
+-    if nonempty {
+-        return Err(refusal());
++    for (introduced, head, rows) in [
++        (
++            124,
++            "attestation_authority_heads",
++            "attestation_authority_keys",
++        ),
++        (
++            125,
++            "attestation_token_heads",
++            "prepared_attestation_tokens",
++        ),
++    ] {
++        let tables: i64 = connection
++            .query_row(
++                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN (?1,?2)",
++                [head, rows],
++                |row| row.get(0),
++            )
++            .map_err(|_| refusal())?;
++        if tables == 0 && version < introduced {
++            continue;
++        }
++        if tables != 2 {
++            return Err(refusal());
++        }
++        // Names above are fixed schema identifiers, never caller input.
++        let nonempty: bool = connection
++            .query_row(
++                &format!("SELECT EXISTS(SELECT 1 FROM {head}) OR EXISTS(SELECT 1 FROM {rows})"),
++                [],
++                |row| row.get(0),
++            )
++            .map_err(|_| refusal())?;
++        if nonempty {
++            return Err(refusal());
++        }
+     }
+     Ok(())
+ }
+@@ -2953,4 +2968,40 @@ mod attestation_ledger_tests {
+             Err(BackupError::Verification { .. })
+         ));
+     }
++    #[test]
++    fn token_tables_are_required_at125_and_legacy124_absence_never_skips_keys() {
++        let connection = Connection::open_in_memory().expect("fixture");
++        connection
++            .execute_batch(
++                "PRAGMA user_version=124;
++            CREATE TABLE attestation_authority_heads (revision INTEGER);
++            CREATE TABLE attestation_authority_keys (revoked_revision INTEGER);",
++            )
++            .expect("empty legacy ledger");
++        assert!(ensure_empty_attestation_ledger(&connection).is_ok());
++        connection
++            .execute_batch("INSERT INTO attestation_authority_keys VALUES (2);")
++            .expect("revoked history");
++        assert!(ensure_empty_attestation_ledger(&connection).is_err());
++        connection
++            .execute_batch("DELETE FROM attestation_authority_keys; PRAGMA user_version=125;")
++            .expect("corrupt fixture only");
++        assert!(ensure_empty_attestation_ledger(&connection).is_err());
++        connection
++            .execute_batch("CREATE TABLE attestation_token_heads (revision INTEGER);")
++            .expect("partial schema");
++        assert!(ensure_empty_attestation_ledger(&connection).is_err());
++        connection
++            .execute_batch("CREATE TABLE prepared_attestation_tokens (revoked_revision INTEGER);")
++            .expect("empty schema");
++        assert!(ensure_empty_attestation_ledger(&connection).is_ok());
++        // Deliberately orphaned metadata isolates each continuity guard; no
++        // production preparation path can create this corruption fixture.
++        connection
++            .execute_batch("INSERT INTO attestation_token_heads VALUES (2);")
++            .expect("orphaned head fixture");
++        assert!(ensure_empty_attestation_ledger(&connection).is_err());
++        connection.execute_batch("DELETE FROM attestation_token_heads; INSERT INTO prepared_attestation_tokens VALUES (2);").expect("orphaned row fixture");
++        assert!(ensure_empty_attestation_ledger(&connection).is_err());
++    }
+ }
+diff --git a/crates/kontor-store/src/migrations.rs b/crates/kontor-store/src/migrations.rs
+index e0e9c7a..7caf18e 100644
+--- a/crates/kontor-store/src/migrations.rs
++++ b/crates/kontor-store/src/migrations.rs
+@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+ use crate::StoreError;
+ 
+ /// The schema generation this binary implements.
+-pub const SCHEMA_VERSION: i64 = 124;
++pub const SCHEMA_VERSION: i64 = 125;
+ 
+ /// The bounded busy timeout applied to every connection.
+ ///
+@@ -427,6 +427,7 @@ const MIGRATIONS: &[&str] = &[
+     // caller's same-native member recovery kind (ASMA-8282 frontier A).
+     include_str!("../migrations/0123_planning_pair_member_natives.sql"),
+     include_str!("../migrations/0124_attestation_authority_keys.sql"),
++    include_str!("../migrations/0125_prepared_attestation_tokens.sql"),
+ ];
+ 
+ const _: () = assert!(
+diff --git a/crates/kontor-store/src/repository/attestation_authority.rs b/crates/kontor-store/src/repository/attestation_authority.rs
+index fe9bd44..3698eb6 100644
+--- a/crates/kontor-store/src/repository/attestation_authority.rs
++++ b/crates/kontor-store/src/repository/attestation_authority.rs
+@@ -14,6 +14,8 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
+ 
+ use super::{SqliteStore, backend, conflict};
+ 
++mod token_metadata;
++
+ const SUBJECT: &str = "attestation key authority";
+ type KeyRow = (String, String, Vec<u8>, String, i64, i64, i64, Option<i64>);
+ 
+@@ -295,4 +297,29 @@ impl AttestationAuthorityRepository for SqliteStore {
+         }
+         projection_in(&self.connection, scope, issuer, key_id)
+     }
++    fn prepare_attestation_token(
++        &self,
++        request: &kontor_core::repository::PrepareAttestationToken,
++    ) -> RepositoryResult<kontor_core::repository::AttestationTokenProjection> {
++        token_metadata::prepare(self, request)
++    }
++
++    fn revoke_prepared_attestation_token(
++        &self,
++        scope: &AttestationAuthorityScope,
++        issuer: &ExternalId,
++        token_id: &ExternalId,
++        expected_token_head_revision: u64,
++    ) -> RepositoryResult<kontor_core::repository::AttestationTokenProjection> {
++        token_metadata::revoke(self, scope, issuer, token_id, expected_token_head_revision)
++    }
++
++    fn read_prepared_attestation_token(
++        &self,
++        scope: &AttestationAuthorityScope,
++        issuer: &ExternalId,
++        token_id: &ExternalId,
++    ) -> RepositoryResult<Option<kontor_core::repository::AttestationTokenProjection>> {
++        token_metadata::read(self, scope, issuer, token_id)
++    }
+ }
+diff --git a/crates/kontor-store/tests/backup_snapshot.rs b/crates/kontor-store/tests/backup_snapshot.rs
+index ddd107d..e9dd943 100644
+--- a/crates/kontor-store/tests/backup_snapshot.rs
++++ b/crates/kontor-store/tests/backup_snapshot.rs
+@@ -173,7 +173,7 @@ fn historical_pre124_files_retain_schema_refusal_and_additive_open_behavior() {
+     let realm = store.realm_id();
+     drop(store);
+     let connection = rusqlite::Connection::open(&database).expect("fixture connection");
+-    connection.execute_batch("DROP TABLE attestation_authority_keys; DROP TABLE attestation_authority_heads; PRAGMA user_version=123;").expect("exact pre124 fixture");
++    connection.execute_batch("DROP TABLE prepared_attestation_tokens; DROP TABLE attestation_token_heads; DROP TABLE attestation_authority_keys; DROP TABLE attestation_authority_heads; PRAGMA user_version=123;").expect("exact pre124 fixture");
+     drop(connection);
+     let manifest = SnapshotManifest::describe(&database, realm, 123, at("2026-10-03T18:00:00Z"))
+         .expect("legacy fixture manifest");
+@@ -418,6 +418,85 @@ fn corrupted124_missing_ledger_tables_is_not_an_empty_restore_fallback() {
+     assert!(!destination.exists());
+ }
+ 
++#[test]
++fn corrupted125_missing_token_tables_refuse_source_and_target_without_mutation() {
++    for missing in ["prepared_attestation_tokens", "attestation_token_heads"] {
++        let home = TempDir::new().expect("home");
++        let database = home.path().join("kontor.db");
++        drop(SqliteStore::open(&database).expect("store"));
++        let clean = create_snapshot(
++            &database,
++            &home.path().join("clean"),
++            at("2026-10-03T20:00:00Z"),
++        )
++        .expect("clean snapshot");
++        let connection = rusqlite::Connection::open(&database).expect("fixture");
++        connection
++            .execute_batch(&format!("DROP TABLE {missing};"))
++            .expect("corrupt target only");
++        drop(connection);
++        let bytes = std::fs::read(&database).expect("bytes");
++        let names = listing(home.path());
++        assert!(matches!(
++            restore_snapshot(&clean.snapshot, &database, at("2026-10-03T20:01:00Z")),
++            Err(BackupError::Verification { .. })
++        ));
++        assert_eq!(std::fs::read(&database).expect("unchanged bytes"), bytes);
++        assert_eq!(listing(home.path()), names);
++        let corrupted = create_snapshot(
++            &database,
++            &home.path().join("corrupted"),
++            at("2026-10-03T20:02:00Z"),
++        )
++        .expect("structural snapshot");
++        let source_bytes = std::fs::read(&corrupted.snapshot).expect("source");
++        let source_names = listing(&home.path().join("corrupted"));
++        let target = home.path().join("absent-target/kontor.db");
++        assert!(matches!(
++            restore_snapshot(&corrupted.snapshot, &target, at("2026-10-03T20:03:00Z")),
++            Err(BackupError::Verification { .. })
++        ));
++        assert!(!target.parent().expect("parent").exists());
++        assert_eq!(
++            std::fs::read(&corrupted.snapshot).expect("unchanged source"),
++            source_bytes
++        );
++        assert_eq!(listing(&home.path().join("corrupted")), source_names);
++    }
++}
++
++#[test]
++fn empty_historical124_token_absence_preserves_schema_refusal_and_additive_open() {
++    let home = TempDir::new().expect("home");
++    let database = home.path().join("kontor.db");
++    let store = SqliteStore::open(&database).expect("store");
++    let realm = store.realm_id();
++    drop(store);
++    let connection = rusqlite::Connection::open(&database).expect("fixture");
++    connection.execute_batch("DROP TABLE prepared_attestation_tokens; DROP TABLE attestation_token_heads; PRAGMA user_version=124;").expect("historical fixture");
++    drop(connection);
++    let manifest = SnapshotManifest::describe(&database, realm, 124, at("2026-10-03T20:00:00Z"))
++        .expect("manifest");
++    std::fs::write(
++        SnapshotManifest::path_for(&database),
++        manifest.to_bytes().expect("bytes"),
++    )
++    .expect("manifest");
++    let destination = home.path().join("target/kontor.db");
++    assert!(matches!(
++        restore_snapshot(&database, &destination, at("2026-10-03T20:01:00Z")),
++        Err(BackupError::Verification { .. })
++    ));
++    assert!(!destination.exists());
++    assert_eq!(
++        SqliteStore::open(&database)
++            .expect("additive open")
++            .schema_version()
++            .expect("version"),
++        125
++    );
++}
++
+ fn name(text: &str) -> ExternalName {
+     ExternalName::parse(text).expect("a valid external name")
+ }
+diff --git a/crates/kontor-store/tests/repository_roundtrip.rs b/crates/kontor-store/tests/repository_roundtrip.rs
+index ebf68ce..5fbc039 100644
+--- a/crates/kontor-store/tests/repository_roundtrip.rs
++++ b/crates/kontor-store/tests/repository_roundtrip.rs
+@@ -119,6 +119,8 @@ fn remove_v98_shape(connection: &Connection) {
+ const CENSUS_TABLES: &[&str] = &[
+     "attestation_authority_heads",
+     "attestation_authority_keys",
++    "attestation_token_heads",
++    "prepared_attestation_tokens",
+     "account_profiles",
+     "agent_runs",
+     "calendar_exceptions",
+@@ -2827,6 +2829,8 @@ fn apply_v115_to_legacy_fixture(fixture: &Fixture) {
+          DROP TABLE planning_pair_contributions;
+          DROP TABLE planning_pair_record_revisions;
+          DROP TABLE planning_pair_placements;
++         DROP TABLE prepared_attestation_tokens;
++         DROP TABLE attestation_token_heads;
+          DROP TABLE attestation_authority_keys;
+          DROP TABLE attestation_authority_heads;
+          PRAGMA user_version = 114;",
+diff --git a/crates/kontor-store/tests/schema_v1.rs b/crates/kontor-store/tests/schema_v1.rs
+index f0bbc9b..76b8329 100644
+--- a/crates/kontor-store/tests/schema_v1.rs
++++ b/crates/kontor-store/tests/schema_v1.rs
+@@ -28,6 +28,8 @@ use tempfile::TempDir;
+ const EXPECTED_TABLES: &[&str] = &[
+     "attestation_authority_heads",
+     "attestation_authority_keys",
++    "attestation_token_heads",
++    "prepared_attestation_tokens",
+     "account_profiles",
+     "adaptive_admission_state",
+     "agent_runs",
+@@ -773,7 +775,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
+     // contribution payload, and its six command kinds (ASMA-8282).
+     // v123 keeps each planning pair member's immutable known native session
+     // and adds the caller's same-native member recovery kind (ASMA-8282).
+-    assert_eq!(SCHEMA_VERSION, 124);
++    assert_eq!(SCHEMA_VERSION, 125);
+ }
+ 
+ #[test]

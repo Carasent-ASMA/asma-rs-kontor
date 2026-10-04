@@ -1,0 +1,41 @@
+=== mutant M-HANG-WAIT-ASSERTS-b236eda7 (corrected baseline) ===
+baseline commit   : b236eda75b6d95f96442ad37224030d7de753195
+mutated file      : crates/kontor-daemon/src/applications.rs
+snapshot sha256   : 729d5346cc51c19d82afbd0953c3d2be4990d6bb48d73a8104028f35fce20092
+mutated  sha256   : 51ad9de4bdd46bce2f66f5ffab9478a9039f9d1fb62fc6e4543afc9671ceedee
+patch             : M-HANG-WAIT-ASSERTS-b236eda7.patch (mutation-only, 13 lines)
+  git apply --check: accepted
+  patch --dry-run  : patching file 'crates/kontor-daemon/src/applications.rs'
+test command      : cargo test -p kontor-daemon --lib -- coherence::an_unreached_barrier_reports --test-threads=1
+reproduce (exact) : LIMIT=600 docs/evidence/ASMA-8187/mutants/harness/mutate.sh M-HANG-WAIT-ASSERTS-b236eda7 docs/evidence/ASMA-8187/mutants/harness/m_hang_wait_asserts.py crates/kontor-daemon/src/applications.rs test -p kontor-daemon --lib -- coherence::an_unreached_barrier_reports --test-threads=1
+limiter           : this harness bounds the run at 600s wall clock and
+                    reports 124 = timeout, inconclusive, never a kill.
+toolchain         : rustc 1.97.1 (8bab26f4f 2026-07-14)
+platform          : Darwin 25.6.0 arm64
+--- raw output ---
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.50s
+     Running unittests src/lib.rs (target/debug/deps/kontor_daemon-efbe81bf64c053fc)
+
+running 1 test
+test applications::coherence::an_unreached_barrier_reports_instead_of_asserting ... FAILED
+
+failures:
+
+---- applications::coherence::an_unreached_barrier_reports_instead_of_asserting stdout ----
+
+thread 'applications::coherence::an_unreached_barrier_reports_instead_of_asserting' (27036732) panicked at crates/kontor-daemon/src/applications.rs:801:17:
+the projection never reached the barrier
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    applications::coherence::an_unreached_barrier_reports_instead_of_asserting
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 127 filtered out; finished in 0.06s
+
+error: test failed, to rerun pass `-p kontor-daemon --lib`
+--- exit status: 101 (non-zero = killed; 124 = timeout, inconclusive) ---
+restored sha256   : 729d5346cc51c19d82afbd0953c3d2be4990d6bb48d73a8104028f35fce20092
+restoration       : byte-identical to the named snapshot
+MUTANT markers    : 0

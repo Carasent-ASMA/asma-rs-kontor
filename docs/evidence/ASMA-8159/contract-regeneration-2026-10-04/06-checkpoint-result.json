@@ -1,0 +1,259 @@
+{
+  "status": "PASS",
+  "coordinator": "74250c1e",
+  "phase": 1,
+  "base_sha": "8a368041d5c692c301371513c9a51947d659c57e",
+  "commands_and_outputs": [
+    {
+      "argv": [
+        "git",
+        "add",
+        "--",
+        "crates/kontor-api/contract/openapi.json",
+        "apps/console/src/api/schema.d.ts",
+        "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/00-preflight.json",
+        "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/01-census.json",
+        "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/02-openapi.json",
+        "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/02-openapi.stdout.log",
+        "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/02-openapi.stderr.log",
+        "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/02a-openapi-readback.json",
+        "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/03-console.json",
+        "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/03-console.stdout.log",
+        "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/03-console.stderr.log",
+        "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/04-generated-readback.json",
+        "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/record-generation-command.py",
+        "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/verify-generated-readback.py",
+        "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/05-checkpoint-plan.json"
+      ],
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "started_at_utc": "2026-10-04T01:34:26.465324+00:00",
+      "completed_at_utc": "2026-10-04T01:34:26.511970+00:00",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--cached",
+        "--name-only"
+      ],
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "started_at_utc": "2026-10-04T01:34:26.512008+00:00",
+      "completed_at_utc": "2026-10-04T01:34:26.534734+00:00",
+      "exit_code": 0,
+      "stdout": "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/00-preflight.json\ndocs/evidence/ASMA-8159/contract-regeneration-2026-10-04/01-census.json\ndocs/evidence/ASMA-8159/contract-regeneration-2026-10-04/02-openapi.json\ndocs/evidence/ASMA-8159/contract-regeneration-2026-10-04/02-openapi.stderr.log\ndocs/evidence/ASMA-8159/contract-regeneration-2026-10-04/02-openapi.stdout.log\ndocs/evidence/ASMA-8159/contract-regeneration-2026-10-04/02a-openapi-readback.json\ndocs/evidence/ASMA-8159/contract-regeneration-2026-10-04/03-console.json\ndocs/evidence/ASMA-8159/contract-regeneration-2026-10-04/03-console.stderr.log\ndocs/evidence/ASMA-8159/contract-regeneration-2026-10-04/03-console.stdout.log\ndocs/evidence/ASMA-8159/contract-regeneration-2026-10-04/04-generated-readback.json\ndocs/evidence/ASMA-8159/contract-regeneration-2026-10-04/05-checkpoint-plan.json\ndocs/evidence/ASMA-8159/contract-regeneration-2026-10-04/record-generation-command.py\ndocs/evidence/ASMA-8159/contract-regeneration-2026-10-04/verify-generated-readback.py\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "started_at_utc": "2026-10-04T01:34:26.534779+00:00",
+      "completed_at_utc": "2026-10-04T01:34:26.552846+00:00",
+      "exit_code": 0,
+      "stdout": "8a368041d5c692c301371513c9a51947d659c57e\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "asma",
+        "git",
+        "commit",
+        "--auto",
+        "--auto-provider",
+        "heuristic"
+      ],
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "started_at_utc": "2026-10-04T01:34:26.552895+00:00",
+      "completed_at_utc": "2026-10-04T01:34:27.689653+00:00",
+      "exit_code": 0,
+      "stdout": "\u2139 Submodule target: asma-rs-kontor (external repo)\n\u2139 Commit message for asma-rs-kontor (auto:heuristic):\n\u203a docs: Update asma-rs-kontor docs\n\u203a git: [feat/ASMA-8155-kontor-experience-memory-and-analogue-recall a04fc2ff] docs: Update asma-rs-kontor docs\n\u203a git:  13 files changed, 1495 insertions(+)\n\u203a git:  create mode 100644 docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/00-preflight.json\n\u203a git:  create mode 100644 docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/01-census.json\n\u203a git:  create mode 100644 docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/02-openapi.json\n\u203a git:  create mode 100644 docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/02-openapi.stderr.log\n\u203a git:  create mode 100644 docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/02-openapi.stdout.log\n\u203a git:  create mode 100644 docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/02a-openapi-readback.json\n\u203a git:  create mode 100644 docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/03-console.json\n\u203a git:  create mode 100644 docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/03-console.stderr.log\n\u203a git:  create mode 100644 docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/03-console.stdout.log\n\u203a git:  create mode 100644 docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/04-generated-readback.json\n\u203a git:  create mode 100644 docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/05-checkpoint-plan.json\n\u203a git:  create mode 100644 docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/record-generation-command.py\n\u203a git:  create mode 100644 docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/verify-generated-readback.py\n\u2139 Git [feat-asma-8155-kontor-experience-memory-and]: commit created (a04fc2ff)\n\u2705 Commit flow complete for asma-rs-kontor\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "HEAD",
+        "HEAD^{tree}"
+      ],
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "started_at_utc": "2026-10-04T01:34:27.689713+00:00",
+      "completed_at_utc": "2026-10-04T01:34:27.713898+00:00",
+      "exit_code": 0,
+      "stdout": "a04fc2ff0082d6e5650a757bb54a99d14f9d2840\na3e53f8a8cd24eff6a6bef5897b495dcc11b0870\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "show",
+        "-s",
+        "--format=%P",
+        "HEAD"
+      ],
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "started_at_utc": "2026-10-04T01:34:27.713959+00:00",
+      "completed_at_utc": "2026-10-04T01:34:27.736747+00:00",
+      "exit_code": 0,
+      "stdout": "8a368041d5c692c301371513c9a51947d659c57e\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "merge-base",
+        "--is-ancestor",
+        "8a368041d5c692c301371513c9a51947d659c57e",
+        "HEAD"
+      ],
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "started_at_utc": "2026-10-04T01:34:27.736799+00:00",
+      "completed_at_utc": "2026-10-04T01:34:27.760178+00:00",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "merge-base",
+        "--is-ancestor",
+        "95ef03f740e438a1388950a278efe67b082f0944",
+        "HEAD"
+      ],
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "started_at_utc": "2026-10-04T01:34:27.760221+00:00",
+      "completed_at_utc": "2026-10-04T01:34:27.781796+00:00",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "merge-base",
+        "--is-ancestor",
+        "1d7a71dde5214774dd35153f1a31435e129cbd01",
+        "HEAD"
+      ],
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "started_at_utc": "2026-10-04T01:34:27.781851+00:00",
+      "completed_at_utc": "2026-10-04T01:34:27.805409+00:00",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--name-only"
+      ],
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "started_at_utc": "2026-10-04T01:34:27.805541+00:00",
+      "completed_at_utc": "2026-10-04T01:34:27.830173+00:00",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--cached",
+        "--name-only"
+      ],
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "started_at_utc": "2026-10-04T01:34:27.830236+00:00",
+      "completed_at_utc": "2026-10-04T01:34:27.852575+00:00",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "status",
+        "--short"
+      ],
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "started_at_utc": "2026-10-04T01:34:27.854229+00:00",
+      "completed_at_utc": "2026-10-04T01:34:27.898637+00:00",
+      "exit_code": 0,
+      "stdout": "?? .agents/\n?? .asma/\n?? .cursor/\n?? AGENTS.md\n?? CLAUDE.md\n?? docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/06-checkpoint-result.json\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        "--directory",
+        "--no-empty-directory"
+      ],
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "started_at_utc": "2026-10-04T01:34:27.898682+00:00",
+      "completed_at_utc": "2026-10-04T01:34:27.935762+00:00",
+      "exit_code": 0,
+      "stdout": ".agents/\n.asma/\n.cursor/\nAGENTS.md\nCLAUDE.md\ndocs/evidence/ASMA-8159/contract-regeneration-2026-10-04/06-checkpoint-result.json\n",
+      "stderr": ""
+    }
+  ],
+  "exit_code": 0,
+  "checkpoint_sha": "a04fc2ff0082d6e5650a757bb54a99d14f9d2840",
+  "checkpoint_tree": "a3e53f8a8cd24eff6a6bef5897b495dcc11b0870",
+  "checkpoint_parents": [
+    "8a368041d5c692c301371513c9a51947d659c57e"
+  ],
+  "counts": {
+    "mapped_operations": 202,
+    "advertised_tools": 201,
+    "openapi_operations": 203
+  },
+  "contracts": [
+    {
+      "path": "crates/kontor-api/contract/openapi.json",
+      "bytes": 877755,
+      "sha256": "30e66d56acadd5d6e7c97ce406e2dc3bc46597ae7ffb9973302dcd9ada898ff0"
+    },
+    {
+      "path": "apps/console/src/api/schema.d.ts",
+      "bytes": 760653,
+      "sha256": "440a199e2da1cca30606fa8105d149f709887d5e0ea2b977b20c784d6fe55e9a"
+    }
+  ],
+  "generated_contracts_byte_identical_to_static_readback": true,
+  "committed_evidence_paths": [
+    "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/00-preflight.json",
+    "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/01-census.json",
+    "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/02-openapi.json",
+    "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/02-openapi.stderr.log",
+    "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/02-openapi.stdout.log",
+    "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/02a-openapi-readback.json",
+    "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/03-console.json",
+    "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/03-console.stderr.log",
+    "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/03-console.stdout.log",
+    "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/04-generated-readback.json",
+    "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/record-generation-command.py",
+    "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/verify-generated-readback.py",
+    "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/05-checkpoint-plan.json"
+  ],
+  "tracked_and_index_clean": true,
+  "qa_phase_2_started": false,
+  "completion_receipt_is_local_untracked": true,
+  "untracked_paths": [
+    ".agents/",
+    ".asma/",
+    ".cursor/",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/06-checkpoint-result.json"
+  ]
+}

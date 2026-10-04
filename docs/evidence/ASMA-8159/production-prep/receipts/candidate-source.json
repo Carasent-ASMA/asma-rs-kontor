@@ -1,0 +1,26 @@
+{
+  "base": "29c8134646b610234abcb740738979dea84c85fe",
+  "scoped_source_manifest_sha256": "e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5",
+  "scoped_file_count": 761,
+  "source_equal_final_mutant_baseline": true,
+  "changed_or_new_files": {
+    "crates/kontor-api/src/applications.rs": "51a373a09074f74563c820e783bfa65dafd307d0de6a5b37034dee7d4c957ac6",
+    "crates/kontor-api/src/memory.rs": "15f55adb2c37f95686b7bc95a3cc3692b26228a44dbccb1efd9f50746ab24a51",
+    "crates/kontor-daemon/src/applications.rs": "2ea68d4c9ad898ae5faf8c5113d9a1bda1b7d7eb79a41f39b911a23f93bd2111",
+    "crates/kontor-daemon/src/applications/memory_projection.rs": "e0a594eb0b54834cdce84f7bae3c83f0836e42af3ac71a634d1e5eb41bada87f",
+    "crates/kontor-daemon/tests/harness/mod.rs": "57e6a84605e5f7da8a5cffe47e14f7e422daeaa5c6c378d5143a427b3eeff892",
+    "crates/kontor-daemon/tests/projection_rebuild.rs": "2b7f9420446d8e04452f0b70835911144717a4e894efdf1e252db8fa0a6dd634",
+    "crates/kontor-daemon/tests/synthetic_census_rehearsal.rs": "55ac8de500524a8ffaf61cd9528dfff8f189070007cc4d33e32defd02b5aad7d",
+    "crates/kontor-store/migrations/0121_memory_projection_rebuild_receipts.sql": "561ec7e5cb2123983c561f61c39d6755e016328dda29891c701fa296aa54ddb1",
+    "crates/kontor-store/src/memory.rs": "171cefc4b0523cacc68148da4be4900ccb71c44e09f9e17f76669f081e2563ff",
+    "crates/kontor-store/src/memory/projection_rebuild.rs": "ab9cdcb379d79cb46d42594190d2c10a04db58b77dc5193c689fd07f00ee63f2",
+    "crates/kontor-store/src/migrations.rs": "d78c80397f187f6c868f6d736d6560a0f49c073cb2387650a1c4b5b3c40a38e3",
+    "crates/kontor-store/tests/memory_migration_rollback.rs": "ed1871fd005f32fa9dd3b6f268a4b38a7f6d55cc652f92a8b090ad905a2feddd",
+    "crates/kontor-store/tests/schema_v1.rs": "8025dd8e635f17eaec60dc18e48ff78dc28674eed74c4cd102d2a8131da6ff79"
+  },
+  "untouched_protected_hashes": {
+    "Cargo.lock": "df30ba74da6a3ffd42cf5c0c3fc9ba4712e2f8cf96a6a09b4154573b819c5683",
+    "crates/kontor-accounts/src/resolver.rs": "eda5b52aa8c86e369e16c7ecbc622c28cd80f7aa18a4f5397363b4480b77161f",
+    "crates/kontor-store/migrations/0120_experience_memory_projection.sql": "bbad30ea8f311c79a5c044b863e2998ddafa7be9ccc7322aed39a639ed532031"
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "base": "7fa4e06f86611d54a1b0c2943725928b952c6fa6",
+  "corrections": [
+    {
+      "path": "crates/kontor-store/tests/publication_attestations_immutable.rs",
+      "reason": "Current-schema literal 119 is stale; public root re-export SCHEMA_VERSION tracks the current schema without weakening immutability assertions",
+      "failure_evidence": "f3c-publication-before.json",
+      "before_sha256": "33e715193317f3c9be77263bce2705330cc795667b0a5b67cc3d2bbba225c831",
+      "after_sha256": "67441db3dd7c0f7cbfcfdd38704e6a16f59a4c854fe10306b72b468161190452",
+      "diff": "--- crates/kontor-store/tests/publication_attestations_immutable.rs\n+++ crates/kontor-store/tests/publication_attestations_immutable.rs\n@@ -5,8 +5,8 @@\n };\n use kontor_core::publication::{CommitSha, PublicationDecision};\n use kontor_core::repository::{NewProject, ProjectRepository};\n-use kontor_store::SqliteStore;\n use kontor_store::publication::{AttestationRecord, NewPublicationAttestation};\n+use kontor_store::{SCHEMA_VERSION, SqliteStore};\n use rusqlite::params;\n use tempfile::TempDir;\n \n@@ -15,7 +15,10 @@\n     let directory = TempDir::new().expect(\"temp dir\");\n     let path = directory.path().join(\"kontor.db\");\n     let store = SqliteStore::open(&path).expect(\"store opens at current schema\");\n-    assert_eq!(store.schema_version().expect(\"schema version\"), 119);\n+    assert_eq!(\n+        store.schema_version().expect(\"schema version\"),\n+        SCHEMA_VERSION\n+    );\n \n     let project = ProjectId::generate();\n     store\n"
+    },
+    {
+      "path": "crates/kontor-store/tests/repository_roundtrip.rs",
+      "reason": "v115 rewind must remove all eight additive 0120/0121 tables so the real migration chain can replay after restart",
+      "failure_evidence": "f3c-v115-before.json",
+      "before_sha256": "a7830e61369c00735b4d81443a025854afdd2a090fb38a6ae1fdb9230da356f0",
+      "after_sha256": "4b460ada4782960a7ea99f7ce0d70272c35826a3d521b4e69204dd375b3f9674",
+      "diff": "--- crates/kontor-store/tests/repository_roundtrip.rs\n+++ crates/kontor-store/tests/repository_roundtrip.rs\n@@ -2805,14 +2805,24 @@\n /// has to be undone here: the reopen at the end of the v115 test replays them,\n /// and a table or column left behind turns that replay into a collision instead\n /// of a migration. 0116 adds one table, 0117 two columns and 0118 the two\n-/// delivery-proof tables, and 0119 the publication-attestation guards;\n+/// delivery-proof tables, and 0119 the publication-attestation guards. 0120\n+/// adds the six memory projection/eligibility/receipt tables, and 0121 the two\n+/// projection rebuild receipt tables;\n /// a future migration that adds anything must undo it\n /// here too, and the replay is what notices when it does not.\n fn apply_v115_to_legacy_fixture(fixture: &Fixture) {\n     let connection = Connection::open(&fixture.path).expect(\"migration connection\");\n     connection\n         .execute_batch(\n-            \"DROP TABLE local_command_results;\n+            \"DROP TABLE memory_projection_rebuild_results;\n+         DROP TABLE memory_projection_rebuild_keys;\n+         DROP TABLE memory_recall_keys;\n+         DROP TABLE memory_recall_metadata;\n+         DROP TABLE memory_experience_proposals;\n+         DROP TABLE memory_projection_active;\n+         DROP TABLE memory_projection_snapshots;\n+         DROP TABLE memory_experience_eligibility;\n+         DROP TABLE local_command_results;\n          DROP TABLE legacy_dispatch_local_confirmation_provenance;\n          DROP TABLE hosted_seat_role_personas;\n          ALTER TABLE runtime_message_issuances DROP COLUMN boundary_epoch;\n"
+    }
+  ],
+  "protected_unchanged": {
+    "crates/kontor-store/src/migrations.rs": "d78c80397f187f6c868f6d736d6560a0f49c073cb2387650a1c4b5b3c40a38e3",
+    "crates/kontor-store/src/memory.rs": "171cefc4b0523cacc68148da4be4900ccb71c44e09f9e17f76669f081e2563ff",
+    "crates/kontor-store/src/memory/projection_rebuild.rs": "ab9cdcb379d79cb46d42594190d2c10a04db58b77dc5193c689fd07f00ee63f2",
+    "crates/kontor-store/migrations/0120_experience_memory_projection.sql": "bbad30ea8f311c79a5c044b863e2998ddafa7be9ccc7322aed39a639ed532031",
+    "crates/kontor-store/migrations/0121_memory_projection_rebuild_receipts.sql": "561ec7e5cb2123983c561f61c39d6755e016328dda29891c701fa296aa54ddb1",
+    "crates/kontor-store/tests/memory_migration_rollback.rs": "ed1871fd005f32fa9dd3b6f268a4b38a7f6d55cc652f92a8b090ad905a2feddd",
+    "crates/kontor-daemon/src/applications/memory_projection.rs": "e0a594eb0b54834cdce84f7bae3c83f0836e42af3ac71a634d1e5eb41bada87f",
+    "crates/kontor-daemon/tests/projection_rebuild.rs": "2b7f9420446d8e04452f0b70835911144717a4e894efdf1e252db8fa0a6dd634",
+    "crates/kontor-daemon/tests/synthetic_census_rehearsal.rs": "55ac8de500524a8ffaf61cd9528dfff8f189070007cc4d33e32defd02b5aad7d",
+    "Cargo.lock": "df30ba74da6a3ffd42cf5c0c3fc9ba4712e2f8cf96a6a09b4154573b819c5683",
+    "crates/kontor-accounts/src/resolver.rs": "eda5b52aa8c86e369e16c7ecbc622c28cd80f7aa18a4f5397363b4480b77161f"
+  },
+  "authorization": "TPM/user bounded mechanical F3 correction; no semantic change, skip or ignore"
+}

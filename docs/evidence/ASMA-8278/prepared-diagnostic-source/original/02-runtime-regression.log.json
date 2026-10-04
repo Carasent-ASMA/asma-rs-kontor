@@ -1,0 +1,18 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--jobs",
+    "2",
+    "-p",
+    "kontor-runtime"
+  ],
+  "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-restart-20261004",
+  "cargo_target": "/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target",
+  "started_utc": "2026-10-03T22:30:29.115051+00:00",
+  "elapsed_seconds": 5.308,
+  "exit_code": 0,
+  "log": "logs/02-runtime-regression.log",
+  "sha256": "a42770059e58d4ce8237d863904eb42f669c6ed7fada771930739ef23b4fb347"
+}

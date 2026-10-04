@@ -1,0 +1,257 @@
+{
+  "status": "GENERATION_PASS_CHECKPOINT_NEXT",
+  "base_sha": "8a368041d5c692c301371513c9a51947d659c57e",
+  "base_tree": "97ed01c64537c814beaa28cbe8372cc502e9d772",
+  "counts": {
+    "mapped_operations": 202,
+    "advertised_tools": 201,
+    "openapi_operations": 203
+  },
+  "contracts": [
+    {
+      "path": "crates/kontor-api/contract/openapi.json",
+      "bytes": 877755,
+      "sha256": "30e66d56acadd5d6e7c97ce406e2dc3bc46597ae7ffb9973302dcd9ada898ff0",
+      "static_sha256": "30e66d56acadd5d6e7c97ce406e2dc3bc46597ae7ffb9973302dcd9ada898ff0",
+      "byte_identical_to_static_readback": true
+    },
+    {
+      "path": "apps/console/src/api/schema.d.ts",
+      "bytes": 760653,
+      "sha256": "440a199e2da1cca30606fa8105d149f709887d5e0ea2b977b20c784d6fe55e9a",
+      "static_sha256": "440a199e2da1cca30606fa8105d149f709887d5e0ea2b977b20c784d6fe55e9a",
+      "byte_identical_to_static_readback": true
+    }
+  ],
+  "census_start_utc": "2026-10-04T01:22:07.246930+00:00",
+  "census_clear_utc": "2026-10-04T01:24:28.693373+00:00",
+  "census_elapsed_seconds": 141.447,
+  "census_snapshots": 8,
+  "target_peak_bytes": 761352192,
+  "target_cap_bytes": 10737418240,
+  "stage_argv": [
+    "git",
+    "add",
+    "--",
+    "crates/kontor-api/contract/openapi.json",
+    "apps/console/src/api/schema.d.ts",
+    "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/00-preflight.json",
+    "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/01-census.json",
+    "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/02-openapi.json",
+    "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/02-openapi.stdout.log",
+    "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/02-openapi.stderr.log",
+    "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/02a-openapi-readback.json",
+    "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/03-console.json",
+    "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/03-console.stdout.log",
+    "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/03-console.stderr.log",
+    "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/04-generated-readback.json",
+    "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/record-generation-command.py",
+    "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/verify-generated-readback.py",
+    "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/05-checkpoint-plan.json"
+  ],
+  "checkpoint_argv": [
+    "asma",
+    "git",
+    "commit",
+    "--auto",
+    "--auto-provider",
+    "heuristic"
+  ],
+  "staging_and_checkpoint_not_yet_performed": true,
+  "files": [
+    {
+      "path": "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/00-preflight.json",
+      "bytes": 3596,
+      "sha256": "51a182c86191ea1af57864d5b47742dd56f29e56fd27970877a2ac2a6ecebb8d"
+    },
+    {
+      "path": "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/01-census.json",
+      "bytes": 847646,
+      "sha256": "f525717e8c214f28e0156feff4c752d356cf50da1ab74b41fddc74171decc3ed"
+    },
+    {
+      "path": "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/02-openapi.json",
+      "bytes": 6268,
+      "sha256": "1e0c9c6287c5395ea3265c21534be037150c773d2ea087d1532e187de6bb66df"
+    },
+    {
+      "path": "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/02-openapi.stdout.log",
+      "bytes": 185,
+      "sha256": "06c4161c55d66529151ab370f10e833f3ab1ec665359a58ebee67fe7036b46f8"
+    },
+    {
+      "path": "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/02-openapi.stderr.log",
+      "bytes": 6856,
+      "sha256": "44ab02f7a3d9dc9e7e8a7f9b0fe663e0049668e2f35d900bf78269a6a47b2ea3"
+    },
+    {
+      "path": "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/02a-openapi-readback.json",
+      "bytes": 2371,
+      "sha256": "6b424fac510caf49ab57a4ee3c3a187d8e3ecbeb61a08687a95d6b7e1d6c5d66"
+    },
+    {
+      "path": "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/03-console.json",
+      "bytes": 2772,
+      "sha256": "b9413204fdfa232b0c3854885610b17c44f01dca1ef3cfac5d1fed3ac340a98d"
+    },
+    {
+      "path": "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/03-console.stdout.log",
+      "bytes": 122,
+      "sha256": "209e6f0d15bc787567ace5c41907e95e96853a818875353b84931117f5357cb3"
+    },
+    {
+      "path": "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/03-console.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/04-generated-readback.json",
+      "bytes": 2376,
+      "sha256": "4105d60a8e411d4f8641faa31a2319ed1074d0ed78f8c4a6b1a615110117bc3f"
+    },
+    {
+      "path": "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/record-generation-command.py",
+      "bytes": 4825,
+      "sha256": "c2a7466abb41e18d8b533ae1e984584791774ea06f4dbf737a49e8d2e0cbcb6f"
+    },
+    {
+      "path": "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/verify-generated-readback.py",
+      "bytes": 4487,
+      "sha256": "1967c30ee9ad842b6d8ef1bc5cd369ddb75f868891ae99dca36a8581d1117e2a"
+    }
+  ],
+  "commands_and_outputs": [
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "started_at_utc": "2026-10-04T01:33:16.433993+00:00",
+      "completed_at_utc": "2026-10-04T01:33:16.455691+00:00",
+      "exit_code": 0,
+      "stdout": "8a368041d5c692c301371513c9a51947d659c57e\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--name-only"
+      ],
+      "started_at_utc": "2026-10-04T01:33:16.455753+00:00",
+      "completed_at_utc": "2026-10-04T01:33:16.501561+00:00",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--cached",
+        "--name-only"
+      ],
+      "started_at_utc": "2026-10-04T01:33:16.501604+00:00",
+      "completed_at_utc": "2026-10-04T01:33:16.530496+00:00",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "655e07ea",
+        "655e07ea^{tree}"
+      ],
+      "started_at_utc": "2026-10-04T01:33:16.531729+00:00",
+      "completed_at_utc": "2026-10-04T01:33:16.557929+00:00",
+      "exit_code": 0,
+      "stdout": "655e07ead8b87bebf3a5d43ddccc15c860114e05\naf6ec2b5a0f0aaed1054618c75688e35b28745d0\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "831dd7c1",
+        "831dd7c1^{tree}"
+      ],
+      "started_at_utc": "2026-10-04T01:33:16.557982+00:00",
+      "completed_at_utc": "2026-10-04T01:33:16.582735+00:00",
+      "exit_code": 0,
+      "stdout": "831dd7c1dc95a57258c75f5896bff5b76f3830fa\nae9bcea100575e5bfa295cf57865139b08b9ab70\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "fe5373f2",
+        "fe5373f2^{tree}"
+      ],
+      "started_at_utc": "2026-10-04T01:33:16.582785+00:00",
+      "completed_at_utc": "2026-10-04T01:33:16.609001+00:00",
+      "exit_code": 0,
+      "stdout": "fe5373f2d2a2c147a6e2b6398c07b5091eaa1ca0\nc95275e6ecb307a24d0fb0d2accd63fa127099e1\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "29c81346",
+        "29c81346^{tree}"
+      ],
+      "started_at_utc": "2026-10-04T01:33:16.609047+00:00",
+      "completed_at_utc": "2026-10-04T01:33:16.633762+00:00",
+      "exit_code": 0,
+      "stdout": "29c8134646b610234abcb740738979dea84c85fe\nc8b03ad2a0694a0b48500d2c0e397c83bc6a0a03\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "7fa4e06f",
+        "7fa4e06f^{tree}"
+      ],
+      "started_at_utc": "2026-10-04T01:33:16.633809+00:00",
+      "completed_at_utc": "2026-10-04T01:33:16.659291+00:00",
+      "exit_code": 0,
+      "stdout": "7fa4e06f86611d54a1b0c2943725928b952c6fa6\nd33a2a4bbd83bc8300d36d066ed68c67d30ba369\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "95ef03f7",
+        "95ef03f7^{tree}"
+      ],
+      "started_at_utc": "2026-10-04T01:33:16.659333+00:00",
+      "completed_at_utc": "2026-10-04T01:33:16.682905+00:00",
+      "exit_code": 0,
+      "stdout": "95ef03f740e438a1388950a278efe67b082f0944\n3c5bb408067cda4088c49cb1706844a0809beb14\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "stash",
+        "list",
+        "--format=%H"
+      ],
+      "started_at_utc": "2026-10-04T01:33:16.682959+00:00",
+      "completed_at_utc": "2026-10-04T01:33:16.716611+00:00",
+      "exit_code": 0,
+      "stdout": "79d8d5436d70d35fac4b8411f5305c2271517acd\n4c888615e3fc4d20f57e4ad5ace40ede07ac09fb\nfcd72ab96045c6dcc8783fe53b05f7560cf1273c\n93058075785ccbf97bf55f83288d3a7040476c1f\n5b7b8fd648732ee1aeaac59f25544b1aa08e8dec\n0f09fc3b7bc51264e2b4a02af9ab76fee73768e9\n403d199386c2160d7cb377662a7145de43d66311\n9a81ebf45b31f37120f2c6c4cd717eea487acc2a\n37780c593078b9c44b876532ebc649d8b5e1e9b9\nc219bd70a62320145e0729e3a7a7064f4de80ad9\n",
+      "stderr": ""
+    }
+  ],
+  "preservation_pins_and_stash_baseline_unchanged": true,
+  "qa_phase_2_started": false,
+  "actual_checkpoint_completion_receipt": "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/06-checkpoint-result.json",
+  "completion_receipt_note": "Recorded after the checkpoint as a durable local file; it cannot be included in its own commit."
+}

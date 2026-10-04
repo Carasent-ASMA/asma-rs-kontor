@@ -1,0 +1,27 @@
+--- a/crates/kontor-daemon/src/applications.rs
++++ b/crates/kontor-daemon/src/applications.rs
+@@ -763,21 +763,12 @@
+             .unwrap_or_else(std::sync::PoisonError::into_inner);
+         state.0 = true;
+         self.entered.notify_all();
+-        let deadline = std::time::Instant::now() + self.deadline;
++        // MUTANT M-HANG-PAUSE-UNBOUNDED: no deadline at all.
+         while !state.1 {
+-            let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
+-                state.2 = true;
+-                break;
+-            };
+-            let (next, timeout) = self
++            state = self
+                 .released
+-                .wait_timeout(state, remaining)
++                .wait(state)
+                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+-            state = next;
+-            if timeout.timed_out() && !state.1 {
+-                state.2 = true;
+-                break;
+-            }
+         }
+     }
+ 

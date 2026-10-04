@@ -1,0 +1,12 @@
+
+running 1 test
+test experience_launch::degraded_launch_never_lists_the_corpus_and_timeout_keeps_store_unlocked ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 488 filtered out; finished in 2.37s
+
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling kontor-daemon v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8158-cognee-projection-and-task-launch/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 21.30s
+     Running tests/loopback_api.rs (target/debug/deps/loopback_api-93f16ff36fadeb39)

@@ -1,0 +1,65 @@
+=== mutant M-COH-TEAM-hybrid-generation-and-persona (corrected baseline) ===
+baseline commit   : 8910ebc603b5d013861d0793c6f8384f75eaca9d
+mutated file      : crates/kontor-daemon/src/applications.rs
+snapshot sha256   : 3c679d0a574753fe3f40cfe4359860ea4e9e64445fa6d40056c456d38fedb517
+mutated  sha256   : 91fbf93a6a7a3e69b25776979d3bc80fbb58ab2feab6b252cbec9e551c47780c
+patch             : M-COH-TEAM-hybrid-generation-and-persona.patch (mutation-only, 89 lines)
+  git apply --check: accepted
+  patch --dry-run  : patching file 'crates/kontor-daemon/src/applications.rs'
+command           : cargo test -p kontor-daemon --lib -- coherence::the_core_team --test-threads=1   (hard limit 420s)
+toolchain         : rustc 1.97.1 (8bab26f4f 2026-07-14)
+platform          : Darwin 25.6.0 arm64
+--- raw output ---
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-daemon)
+warning: method `epic_control_seat_binding` is never used
+    --> crates/kontor-daemon/src/applications.rs:8494:8
+     |
+ 976 | impl Services {
+     | ------------- method in this implementation
+...
+8494 |     fn epic_control_seat_binding(
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `kontor-daemon` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.18s
+     Running unittests src/lib.rs (target/debug/deps/kontor_daemon-efbe81bf64c053fc)
+
+running 1 test
+test applications::coherence::the_core_team_projection_answers_from_one_instant ... FAILED
+
+failures:
+
+---- applications::coherence::the_core_team_projection_answers_from_one_instant stdout ----
+
+thread 'applications::coherence::the_core_team_projection_answers_from_one_instant' (24939631) panicked at crates/kontor-daemon/src/applications.rs:44830:17:
+assertion `left == right` failed: CoreTeamSeatDto { role: ResolvedRoleRefDto { catalog_revision: RevisionRefDto { id: "01936f5a-1000-7000-8000-000000000002", version: SpecVersion(1) }, role_code: RoleCode("LSA"), standard_title: ExternalName("Lead Software Architect"), segment: Architecture, custom_display_name: None }, presence: Required, ad_hoc_allowed: true, seat_binding_id: Some(SeatBindingId(01a1028b-4813-7d73-9702-a6647362f906)), native_seat: Some(CoreTeamNativeSeatDto { runtime_kind: RuntimeKindKey("paseo.agent"), host: "paseo-local", generation: 1, native_id: ExternalId("coherence-first"), provider_session_id: None, model_route: RuntimeModelRouteRequest { provider: "codex", model: "gpt-5.6", effort: None }, observed_at: 2026-10-03T01:01:00Z }), role_persona: Some(CoreTeamSeatPersonaDto { role_code: RoleCode("LSA"), prompt_hash: ContentHash("d28ab2c7145c6507a619314d5c8f19269e1d0d4b71f8f00bd19f2f08eb9f8396"), delivery: "create_only_no_readback", occupancy_generation: 2, frozen_at: 2026-10-03T01:00:30Z }) }
+  left: 2
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    applications::coherence::the_core_team_projection_answers_from_one_instant
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 124 filtered out; finished in 1.82s
+
+error: test failed, to rerun pass `-p kontor-daemon --lib`
+--- exit status: 101 (non-zero = killed; 124 = timeout, inconclusive) ---
+restored sha256   : 3c679d0a574753fe3f40cfe4359860ea4e9e64445fa6d40056c456d38fedb517
+restoration       : byte-identical to the named snapshot
+MUTANT markers    : 0
+
+--- outcome: KILLED by the persona assertion, not by the escape guard ---
+The escape guard is deliberately silenced in this mutant (`let _ = escaped;`),
+so the only thing left to catch the split is the agreement between the native
+seat and its persona. It caught it:
+
+  left: 2   right: 1
+  native_seat.generation = 1, native_id = "coherence-first"
+  role_persona.occupancy_generation = 2
+
+A generation-1 native paired with a generation-2 persona -- a seat that never
+existed at any instant. That is the hybrid the pre-correction split could
+produce, and the regression fails on it without help from the escape guard.
