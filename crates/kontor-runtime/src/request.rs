@@ -340,6 +340,7 @@ pub struct LaunchRequest {
     authority: LaunchAuthority,
     parts: LaunchParts,
     expected_existing_native_id: Option<ExternalId>,
+    fleet_provenance: Option<crate::provenance::FleetLaunchProvenance>,
 }
 
 impl LaunchRequest {
@@ -356,6 +357,7 @@ impl LaunchRequest {
             authority,
             parts,
             expected_existing_native_id: None,
+            fleet_provenance: None,
         }
     }
 
@@ -369,7 +371,29 @@ impl LaunchRequest {
             authority,
             parts,
             expected_existing_native_id: Some(expected_existing_native_id),
+            fleet_provenance: None,
         }
+    }
+
+    /// The same request, naming the fleet policy's authority for its route
+    /// (ASMA-8280 G-3).
+    ///
+    /// Not part of what admission compares: the seat, run and binding are the
+    /// reservation; the provenance is what the runtime writes to its native
+    /// surface and reads back.
+    #[must_use]
+    pub fn with_fleet_provenance(
+        mut self,
+        provenance: Option<crate::provenance::FleetLaunchProvenance>,
+    ) -> Self {
+        self.fleet_provenance = provenance;
+        self
+    }
+
+    /// The fleet policy's authority for this launch's route, when one chose it.
+    #[must_use]
+    pub const fn fleet_provenance(&self) -> Option<&crate::provenance::FleetLaunchProvenance> {
+        self.fleet_provenance.as_ref()
     }
 
     /// The authority this launch is spending.
@@ -827,6 +851,69 @@ pub struct PermissionResponseRequest {
     pub decision: PermissionDecision,
     /// When the answer was given.
     pub responded_at: Timestamp,
+}
+
+/// One server-generated correlation challenge delivered after a canonical
+/// history boundary.
+///
+/// This is intentionally narrower than an ordinary message. The stable id,
+/// exact body and pre-dispatch boundary are persisted by the control plane
+/// before an adapter may send. A runtime whose historical user messages carry
+/// no client id may therefore correlate this new effect by the unpredictable
+/// exact body strictly after that boundary without guessing which older turn a
+/// caller meant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CorrelationChallengeRequest {
+    /// Exact issued seat binding.
+    pub binding: RuntimeBindingSnapshot,
+    /// Server-generated, retry-stable message identity.
+    pub message_id: MessageId,
+    /// Frozen challenge body, including its nonce and evidence checksum.
+    pub body: BoundedText,
+    /// Last canonical position observed before the durable intent was claimed.
+    pub after: TimelinePosition,
+    /// Runtime-owned spelling of the epoch containing `after`.
+    ///
+    /// Persisting this opaque identity is what lets a fresh adapter address the
+    /// same canonical transcript after its in-memory epoch map is gone.
+    pub native_epoch: ExternalId,
+    /// Whether this invocation owns the sole first-dispatch claim.
+    ///
+    /// A retry may reconcile and must never send again.
+    pub may_dispatch: bool,
+    /// When the durable challenge was created.
+    pub sent_at: Timestamp,
+}
+
+impl CorrelationChallengeRequest {
+    /// Digest of the exact frozen challenge body.
+    #[must_use]
+    pub fn body_hash(&self) -> ContentHash {
+        ContentHash::of(self.body.as_str().as_bytes())
+    }
+}
+
+/// Read-only proof request for the exact response to a server challenge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CorrelationChallengeCompletionRequest {
+    /// Exact issued seat binding.
+    pub binding: RuntimeBindingSnapshot,
+    /// Server-generated message identity retained with the durable challenge.
+    pub message_id: MessageId,
+    /// Canonical user-message position established by challenge delivery.
+    pub message_position: TimelinePosition,
+    /// Last canonical position observed before the challenge was dispatched.
+    ///
+    /// The proof scans the whole suffix after this boundary so a duplicate
+    /// exact body cannot hide before or after the acknowledged position.
+    pub after: TimelinePosition,
+    /// Runtime-owned spelling of the exact epoch containing the challenge.
+    pub native_epoch: ExternalId,
+    /// Frozen challenge body, rechecked at the stored message position after a
+    /// daemon restart instead of relying on adapter memory.
+    pub body: BoundedText,
+    /// Exact response text the server generated from the frozen evidence.
+    pub expected_response: BoundedText,
 }
 
 impl PermissionResponseRequest {

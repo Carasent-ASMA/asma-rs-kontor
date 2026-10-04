@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "exported_at": "2026-09-20",
+  "exported_by": "Codex direct repair coordinator",
+  "artifact": "high-change",
+  "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+  "realm_id": "01a00649-9ee6-73e0-ba1b-6a6c35cfd065",
+  "item_id": "artifact-asma-8196-high-change-6c88c093",
+  "revision_id": "01a0c052-7f30-7970-ac28-f657ebea7a57",
+  "memory_revision": 1,
+  "approved": true,
+  "current_at_export": true,
+  "proposed_at": "2026-09-20T19:37:07.120745Z",
+  "proposed_by": "ASMA-8196 implement seat 01a0b033-5331-7bc2-919a-5eaccef2f672",
+  "source_provenance": {
+    "history_unavailable": false,
+    "legacy_last_write_wins": false,
+    "source": "operator",
+    "source_id": "SeatBinding 01a0b033-5331-7bc2-919a-5eaccef2f672"
+  },
+  "producer_agent_run_id": "01a0b033-5331-7bc2-919a-5e9c90fbfa2c",
+  "source_candidate": "6c88c09342484d5a11d1f17923ec7446cac1b48b",
+  "body_path": "docs/evidence/ASMA-8196/HIGH-CHANGE-RECORD.approved.json",
+  "serialization": "Exact parsed document returned by supported kontor_memory_history, serialized as UTF-8 JSON with 2-space indentation and one trailing newline. No document field added, removed or changed.",
+  "limitation": "Recovered approved-memory producer document, not a claim that the producer originally committed these file bytes. The corrected producer turn's canonical acknowledgement is currently unconfirmed by the known long-history defect. Registry association requires an honest newly settled producer proof after repair; this export creates no verdict, runtime proof, or deployment claim.",
+  "source_metadata_note": "The source document's affected_files totals and list retained older producer metadata (10 files/+706/-18); the actual ready commit has 11 files/+714/-19 including schema expectations. This operator note preserves that distinction without rewriting producer content."
+}

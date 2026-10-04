@@ -59,9 +59,9 @@ use kontor_runtime::workspace::{
 use kontor_scheduler::{
     AccountAdmissionEvidence, AccountPin, AdaptiveWindow, AdaptiveWindowConfig, AdmissionEventId,
     AdmittedCandidate, AuthorizationEvidence, CalendarAdmission, Candidate, CapacityConfig,
-    CapacityUsage, ExternalWorkEvidence, FleetPreflight, PreflightOutcome, ReconciliationEvidence,
-    ReconciliationScope, RosterGovernance, RuntimeAdmissionEvidence, RuntimeHealth,
-    SchedulingSnapshot, TaskOrigin, minimum_launch_capabilities, plan,
+    CapacityUsage, ExternalWorkEvidence, FleetPreflight, PlacementAdmission, PreflightOutcome,
+    ReconciliationEvidence, ReconciliationScope, RosterGovernance, RuntimeAdmissionEvidence,
+    RuntimeHealth, SchedulingSnapshot, TaskOrigin, minimum_launch_capabilities, plan,
 };
 use kontor_store::{AdmissionCommit, SqliteStore};
 use kontor_teams::run::{SlotLaunch, TeamRunLease, TeamRunSlots};
@@ -317,6 +317,9 @@ impl World {
             mini_project_id: None,
             workflow_id: self.workflow,
             delivery_slots_registered: true,
+            placement: PlacementAdmission::Confirmed {
+                attestation_digest: document("placement").hash().clone(),
+            },
             state: TaskState::Ready,
             revision: AggregateRevision::INITIAL,
             created_at: now(),
@@ -630,6 +633,7 @@ async fn a_lost_launch_and_a_restart_still_leave_exactly_one_durable_admission()
         .expect("the standard fallback freezes"),
         autonomy: kontor_core::spec::SeatAutonomy::standard(),
         requested_at: now(),
+        fleet_provenance: None,
     };
     let authority = world
         .fake

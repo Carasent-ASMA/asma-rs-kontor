@@ -13,6 +13,8 @@
 //!   fact behind, still describing a state Kontor has since taken over;
 //! * evidence that direct SQL can update or delete.
 
+mod support;
+
 use std::collections::BTreeMap;
 
 use kontor_core::id::{
@@ -214,7 +216,7 @@ struct Fixture {
 fn fixture() -> Fixture {
     let directory = TempDir::new().expect("a temporary directory");
     let path = directory.path().join("kontor.db");
-    let store = SqliteStore::open(&path).expect("the store opens");
+    let store = support::store_from_template(&path);
 
     let project = ProjectId::generate();
     store
@@ -1245,7 +1247,7 @@ fn stored_evidence_refuses_update_and_delete_from_direct_sql() {
             key: artifact("zz.output"),
             locator: document("locator"),
             producer_role: role("zz.maker"),
-            producer_account: fixture.account,
+            producer_account: Some(fixture.account),
             recorded_at: now(),
         })
         .expect("the artifact evidence is recorded");

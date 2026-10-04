@@ -22,6 +22,12 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Added an operator-only task worktree-claim preview/apply repair. It binds an
+  exact task revision and old claim to the sole project/Jira/module-derived ASMA
+  catalog target and branch, records an immutable schema-v108 before/after
+  receipt, and leaves the task aggregate, Jira binding, workflow, gates and
+  dependency graph unchanged (ASMA-8120).
+
 - Added the shared publication-branch grammar (`kontor_core::branch`) ported
   from the ASMA CLI — `<type>/<PROJECT>-<number>-<slug>` with stable refusal
   codes — and used it to derive a task's canonical `.worktrees/` placement from
@@ -74,6 +80,18 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Publication policy revision 4 closes two fail-open holes found by ASMA-8102
+  verification. A publication naming a repository outside its binding is
+  refused with `repository_mismatch`, and the authorized set is now derived
+  from the durable Kontor ProjectId the forge mapping governs plus the bound
+  task's module: the project's root repository always, that task's module
+  repository when it owns one, and nothing else. It is never derived from a
+  root path, the request, or the GitHub App's optional configuration, so every
+  other project authorizes nothing and an unknown module widens nothing. A
+  pull request with a null title also skipped title validation entirely and was
+  accepted, so it could publish under no confirmed key; a title is now required
+  whenever `pull_request` is present, while a push carrying no pull request
+  still needs none (ASMA-8102).
 - Canonicalized every newly created Paseo epic project before binding it:
   native-root creation now requires project-rename support, verifies the
   registered directory by exact project ID, applies the Team Definition's ESW

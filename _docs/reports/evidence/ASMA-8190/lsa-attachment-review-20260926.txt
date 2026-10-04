@@ -1,0 +1,22 @@
+Showing 1 of 65 activities (limited to 1)
+
+---
+
+**The original P1 is closed, but one P2 remains. I recommend correcting it before source merge.** Review pinned to `7273196924e1dea5ff8bacfdcf12d0c0e4880e16` against `7ffd650d9091410887a3de6a360296be9d9a88fd`.
+
+**P2 — recovery installs the intent but skips attachment recording.** The normal launch calls `observe_seat_binding` after installation. The new [reuse path](/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-daemon/src/applications.rs:8025) installs the intent and returns; its caller then skips that observation.
+
+Consequently, the supplied crash fixture leaves `last_attached_at` unset even after recovery returns 200. Stored attachment evaluation remains `Pending`, then becomes `AttachmentFailed` after the deadline, until a separate observation repairs it. The same gap occurs after a crash between successful installation and attachment recording. The [regression](/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-daemon/tests/loopback_api.rs:64208) checks installation, native identity, generation and creation count, but not attachment.
+
+Record attachment from the successful exact-native inspection, without inventing activity, and extend the regression to check that durable observation. This finding follows from source control flow; I did not execute a new Rust reproduction.
+
+Otherwise, the bounded repair is supported:
+
+- Exact-native inspection verifies the persisted route and autonomy; divergent intent authority and installed-native mismatch refuse.
+- Recovery uses the current occupancy generation and preserves predecessor history.
+- Legacy adoption creates no replacement or fabricated launch/persona provenance.
+- Fixture rollback removes precisely the v119 triggers; production migrations remain unchanged, and the schema expectation remains independently pinned to `119`.
+
+The [full-gate log](/private/tmp/asma-8190-72731969-full-gate.log) matches the supplied SHA-256. I independently totaled **2,897 Rust passed, zero failed, nine ignored**, and confirmed **305 console passed**. Both reported source hashes match the pinned commit.
+
+No mutations, Cargo runs or agents. Native placement, deployment and whole-epic qualification remain separate.

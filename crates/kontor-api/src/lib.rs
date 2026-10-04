@@ -36,13 +36,18 @@
 //! has nowhere to put.
 
 pub mod applications;
+pub mod artifacts;
 pub mod auth;
 pub mod body;
+pub mod committee_evidence;
 pub mod control;
 pub mod dto;
 pub mod error;
 pub mod memory;
+mod memory_schema;
+pub mod open_questions;
 pub mod openapi;
+pub mod planning_pair;
 pub mod sessions;
 pub mod state;
 
@@ -291,9 +296,19 @@ pub fn router(state: ApiState) -> Router {
         ]);
 
     Router::new()
+        .route("/v1/projects/{project_id}/epics/{epic_id}/open-questions", get(open_questions::list_open_questions))
+        .route("/v1/projects/{project_id}/epics/{epic_id}/open-questions:record", post(open_questions::record_open_question))
         .route("/v1/health", get(control::health))
         .route("/v1/realm", get(control::realm))
         .route("/v1/projects/{project_id}/memory", get(memory::list))
+        .route("/v1/projects/{project_id}/memory/experiences:propose", post(memory::propose_experience))
+        .route("/v1/projects/{project_id}/memory/recall:preview", post(memory::recall_preview))
+        .route("/v1/projects/{project_id}/memory/recall:freeze", post(memory::recall_freeze))
+        .route("/v1/projects/{project_id}/memory/recall/{agent_run_id}", get(memory::recall_readback))
+        .route("/v1/projects/{project_id}/memory/projection:preview", get(memory::projection_preview))
+        .route("/v1/projects/{project_id}/memory/projection", get(memory::projection_readback))
+        .route("/v1/projects/{project_id}/memory/projection:rebuild", post(memory::projection_rebuild))
+        .route("/v1/projects/{project_id}/memory/experiences:classify", get(memory::classify))
         .route(
             "/v1/projects/{project_id}/memory/{item_id}/history",
             get(memory::history),
@@ -557,6 +572,42 @@ pub fn router(state: ApiState) -> Router {
                 "/v1/capacity/configuration:apply",
                 post(applications::apply_capacity_configuration),
             )
+            // The Realm's fleet policy (ASMA-8280). Publication and activation
+            // are separate boundaries: a published policy selects nothing until
+            // an activation names its content hash.
+            .route("/v1/fleet/policy", get(applications::fleet_policy_selection))
+            .route(
+                "/v1/fleet/policy:preview",
+                post(applications::preview_fleet_policy),
+            )
+            .route(
+                "/v1/fleet/policy:publish",
+                post(applications::publish_fleet_policy),
+            )
+            .route(
+                "/v1/fleet/policy:activate",
+                post(applications::activate_fleet_policy),
+            )
+            // The orchestration bundle (ASMA-8280 S-1, S-2): the same one
+            // activation pointer, naming a policy and a Core Team revision
+            // together. Publication selects nothing.
+            .route("/v1/fleet/bundle", get(applications::fleet_bundle))
+            .route(
+                "/v1/fleet/bundle:preview",
+                post(applications::preview_fleet_bundle),
+            )
+            .route(
+                "/v1/fleet/bundle:publish",
+                post(applications::publish_fleet_bundle),
+            )
+            .route(
+                "/v1/fleet/bundle:activate",
+                post(applications::activate_fleet_bundle),
+            )
+            .route(
+                "/v1/fleet/bundle:propose",
+                post(applications::propose_fleet_bundle),
+            )
             .route(
                 "/v1/projects/{project_id}/capacity",
                 get(applications::project_capacity),
@@ -596,6 +647,17 @@ pub fn router(state: ApiState) -> Router {
                 "/v1/projects/{project_id}/core-team:apply",
                 post(applications::apply_core_team),
             )
+            // Pure reads of one epic's control plane. Until these existed the
+            // only way to observe a seat's native and persona was to call a
+            // route that changed something.
+            .route(
+                "/v1/projects/{project_id}/epics/{epic_id}/core-team",
+                get(applications::epic_core_team),
+            )
+            .route(
+                "/v1/projects/{project_id}/epics/{epic_id}/core-team/seats/{seat_binding_id}/occupancies",
+                get(applications::epic_hosted_seat_occupancies),
+            )
             .route(
                 "/v1/projects/{project_id}/epics/{epic_id}/core-team/seats:materialize",
                 post(applications::materialize_core_team),
@@ -607,6 +669,10 @@ pub fn router(state: ApiState) -> Router {
             .route(
                 "/v1/projects/{project_id}/epics/{epic_id}/core-team/routes:apply",
                 post(applications::apply_core_team_route),
+            )
+            .route(
+                "/v1/projects/{project_id}/epics/{epic_id}/core-team/launch-intents:supersede",
+                post(applications::supersede_core_team_launch_intent),
             )
             .route(
                 "/v1/projects/{project_id}/epics/{epic_id}/core-team/seat-claims:preview",
@@ -689,6 +755,10 @@ pub fn router(state: ApiState) -> Router {
                 get(applications::committee_run),
             )
             .route(
+                "/v1/projects/{project_id}/committee-runs/{committee_run_id}/artifacts/{evidence_id}",
+                get(committee_evidence::committee_artifact),
+            )
+            .route(
                 "/v1/projects/{project_id}/committee-runs/{committee_run_id}/seats/{seat_binding_id}/permissions",
                 get(applications::inspect_consultation_permissions),
             )
@@ -711,6 +781,48 @@ pub fn router(state: ApiState) -> Router {
             .route(
                 "/v1/projects/{project_id}/committee-runs/{committee_run_id}/settle",
                 post(applications::settle_committee_run),
+            )
+            // ASMA-8282: the planning pair, beside the unchanged Advisor and
+            // Committee routes.
+            .route(
+                "/v1/projects/{project_id}/planning-pair-profiles",
+                get(planning_pair::planning_pair_profiles),
+            )
+            .route(
+                "/v1/projects/{project_id}/planning-pair-profiles:preview",
+                post(planning_pair::preview_planning_pair_profile),
+            )
+            .route(
+                "/v1/projects/{project_id}/planning-pair-profiles:apply",
+                post(planning_pair::apply_planning_pair_profile),
+            )
+            .route(
+                "/v1/projects/{project_id}/epics/{epic_id}/planning-pair-runs:invoke",
+                post(planning_pair::invoke_planning_pair_run),
+            )
+            .route(
+                "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}",
+                get(planning_pair::planning_pair_run),
+            )
+            .route(
+                "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/findings:record",
+                post(planning_pair::record_planning_pair_finding),
+            )
+            .route(
+                "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/clarification:request",
+                post(planning_pair::request_planning_pair_clarification),
+            )
+            .route(
+                "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/answers:record",
+                post(planning_pair::record_planning_pair_answer),
+            )
+            .route(
+                "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/disposition:record",
+                post(planning_pair::record_planning_pair_disposition),
+            )
+            .route(
+                "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/seats/{seat_binding_id}/recover",
+                post(planning_pair::recover_planning_pair_seat),
             )
             .route(
                 "/v1/projects/{project_id}/completion-profiles",
@@ -821,6 +933,10 @@ pub fn router(state: ApiState) -> Router {
                 post(applications::resume_admissions),
             )
             .route(
+                "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/admission:adopt",
+                post(applications::adopt_team_run_admission),
+            )
+            .route(
                 "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/seat",
                 post(applications::fill_team_run_seat),
             )
@@ -844,6 +960,10 @@ pub fn router(state: ApiState) -> Router {
                 post(applications::recover_gate_rejection),
             )
             .route(
+                "/v1/projects/{project_id}/tasks/{task_id}/workflow:recover-phase",
+                post(applications::recover_workflow_phase),
+            )
+            .route(
                 "/v1/projects/{project_id}/tasks/{task_id}/profile-selection",
                 post(applications::select_profile),
             )
@@ -858,6 +978,14 @@ pub fn router(state: ApiState) -> Router {
             .route(
                 "/v1/projects/{project_id}/tasks/{task_id}/ticket:reconcile-plan",
                 post(applications::ticket_reconcile_plan),
+            )
+            .route(
+                "/v1/projects/{project_id}/tasks/{task_id}/worktree-claim:preview",
+                post(applications::preview_worktree_claim_correction),
+            )
+            .route(
+                "/v1/projects/{project_id}/tasks/{task_id}/worktree-claim:apply",
+                post(applications::apply_worktree_claim_correction),
             )
             .route(
                 "/v1/projects/{project_id}/tasks/{task_id}/ticket/description:preview",
@@ -881,11 +1009,23 @@ pub fn router(state: ApiState) -> Router {
                 "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:abandon",
                 post(applications::abandon_run),
             )
+            .route(
+                "/v1/projects/{project_id}/tasks/{task_id}/artifacts:record",
+                post(artifacts::record_artifact),
+            )
             // A *turn* is smaller than a run: settling one closes Kontor's bounded
             // piece of work and leaves the seat's native session live.
             .route(
                 "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turns:settle",
                 post(applications::settle_turn),
+            )
+            .route(
+                "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turn-correlation:challenge-preview",
+                post(applications::preview_turn_correlation_challenge),
+            )
+            .route(
+                "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turn-correlation:challenge-apply",
+                post(applications::apply_turn_correlation_challenge),
             )
             .route(
                 "/v1/projects/{project_id}/agent-runs/{agent_run_id}/handoffs:attest-late",
@@ -995,11 +1135,17 @@ pub fn router(state: ApiState) -> Router {
             "/v1/sessions/{agent_run_id}/timeline",
             get(sessions::timeline),
         )
+        .route(
+            "/v1/sessions/{agent_run_id}/turns/current",
+            get(sessions::observe_current_turn),
+        )
         .route("/v1/sessions/{agent_run_id}/stream", get(sessions::stream))
         .route(
             "/v1/sessions/{agent_run_id}/messages",
             post(sessions::send_message),
         )
+        .route("/v1/sessions/{agent_run_id}/messages:reconcile", post(sessions::reconcile_message_delivery))
+        .route("/v1/sessions/{agent_run_id}/messages/proof", get(sessions::message_proof))
         .route(
             "/v1/sessions/{agent_run_id}/permissions/{request_id}",
             post(sessions::respond_permission),

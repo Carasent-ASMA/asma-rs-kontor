@@ -937,6 +937,7 @@ impl AoAdapter {
         let lifecycle = normalize_lifecycle(view);
         let observed_at = view.observed_at()?;
         Ok(ControlPlaneObservation {
+            drivable: true,
             agent_run_id,
             contact: lifecycle.contact,
             state: lifecycle.state,
@@ -1263,6 +1264,13 @@ impl AoAdapter {
             state.bindings.record(snapshot.clone());
         }
         Ok(LaunchOutcome {
+            // ASMA-8280 G-3: an Agent Orchestrator session carries no label a launch can write and read back, so a requested fleet provenance is
+            // reported unsupported with the native id — never echoed back.
+            fleet_provenance: kontor_runtime::FleetProvenanceObservation::without_surface(
+                request.fleet_provenance(),
+                "ao.session",
+                &snapshot.identity().native_id,
+            ),
             snapshot,
             observation,
         })
@@ -1634,6 +1642,7 @@ impl RuntimeAdapter for AoAdapter {
             "normalized": { "attention": AoAttention::Unknown.as_str() },
         }))?;
         Ok(ControlPlaneObservation {
+            drivable: true,
             agent_run_id: binding.agent_run_id(),
             contact: RuntimeContact::Reachable,
             state: ObservedRunState::Cancelled,

@@ -1,0 +1,180 @@
+{
+  "argv": [
+    "env",
+    "CARGO_BUILD_JOBS=1",
+    "CARGO_INCREMENTAL=0",
+    "CARGO_PROFILE_DEV_DEBUG=0",
+    "CARGO_PROFILE_TEST_DEBUG=0",
+    "KONTOR_UPDATE_CONTRACT=1",
+    "cargo",
+    "test",
+    "-p",
+    "kontor-api",
+    "--test",
+    "openapi_contract",
+    "--locked",
+    "--offline",
+    "--",
+    "the_committed_contract_document_is_the_one_this_crate_serves",
+    "--exact"
+  ],
+  "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+  "started_at_utc": "2026-10-04T01:26:11.313861+00:00",
+  "status": "PASS",
+  "exit_code": 0,
+  "contracts_before": [
+    {
+      "path": "crates/kontor-api/contract/openapi.json",
+      "bytes": 877755,
+      "sha256": "30e66d56acadd5d6e7c97ce406e2dc3bc46597ae7ffb9973302dcd9ada898ff0"
+    },
+    {
+      "path": "apps/console/src/api/schema.d.ts",
+      "bytes": 760653,
+      "sha256": "440a199e2da1cca30606fa8105d149f709887d5e0ea2b977b20c784d6fe55e9a"
+    }
+  ],
+  "stdout_path": "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/02-openapi.stdout.log",
+  "stderr_path": "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/02-openapi.stderr.log",
+  "target_cap_bytes": 10737418240,
+  "target_stop_threshold_bytes": 8589934592,
+  "disk_samples": [
+    {
+      "argv": [
+        "du",
+        "-sk",
+        "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
+      ],
+      "started_at_utc": "2026-10-04T01:26:31.328051+00:00",
+      "completed_at_utc": "2026-10-04T01:26:31.345228+00:00",
+      "exit_code": 0,
+      "stdout": "100704\t/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
+      "stderr": "",
+      "bytes": 103120896
+    },
+    {
+      "argv": [
+        "du",
+        "-sk",
+        "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
+      ],
+      "started_at_utc": "2026-10-04T01:26:51.350840+00:00",
+      "completed_at_utc": "2026-10-04T01:26:51.367171+00:00",
+      "exit_code": 0,
+      "stdout": "166856\t/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
+      "stderr": "",
+      "bytes": 170860544
+    },
+    {
+      "argv": [
+        "du",
+        "-sk",
+        "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
+      ],
+      "started_at_utc": "2026-10-04T01:27:11.372966+00:00",
+      "completed_at_utc": "2026-10-04T01:27:11.390796+00:00",
+      "exit_code": 0,
+      "stdout": "170164\t/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
+      "stderr": "",
+      "bytes": 174247936
+    },
+    {
+      "argv": [
+        "du",
+        "-sk",
+        "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
+      ],
+      "started_at_utc": "2026-10-04T01:27:31.399704+00:00",
+      "completed_at_utc": "2026-10-04T01:27:31.420870+00:00",
+      "exit_code": 0,
+      "stdout": "207556\t/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
+      "stderr": "",
+      "bytes": 212537344
+    },
+    {
+      "argv": [
+        "du",
+        "-sk",
+        "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
+      ],
+      "started_at_utc": "2026-10-04T01:27:51.427659+00:00",
+      "completed_at_utc": "2026-10-04T01:27:51.450846+00:00",
+      "exit_code": 0,
+      "stdout": "308264\t/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
+      "stderr": "",
+      "bytes": 315662336
+    },
+    {
+      "argv": [
+        "du",
+        "-sk",
+        "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
+      ],
+      "started_at_utc": "2026-10-04T01:28:11.453295+00:00",
+      "completed_at_utc": "2026-10-04T01:28:11.474411+00:00",
+      "exit_code": 0,
+      "stdout": "409296\t/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
+      "stderr": "",
+      "bytes": 419119104
+    },
+    {
+      "argv": [
+        "du",
+        "-sk",
+        "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
+      ],
+      "started_at_utc": "2026-10-04T01:28:31.477251+00:00",
+      "completed_at_utc": "2026-10-04T01:28:31.500766+00:00",
+      "exit_code": 0,
+      "stdout": "527744\t/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
+      "stderr": "",
+      "bytes": 540409856
+    },
+    {
+      "argv": [
+        "du",
+        "-sk",
+        "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
+      ],
+      "started_at_utc": "2026-10-04T01:28:51.509126+00:00",
+      "completed_at_utc": "2026-10-04T01:28:51.530965+00:00",
+      "exit_code": 0,
+      "stdout": "644740\t/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
+      "stderr": "",
+      "bytes": 660213760
+    },
+    {
+      "argv": [
+        "du",
+        "-sk",
+        "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
+      ],
+      "started_at_utc": "2026-10-04T01:29:11.537761+00:00",
+      "completed_at_utc": "2026-10-04T01:29:11.564272+00:00",
+      "exit_code": 0,
+      "stdout": "743508\t/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
+      "stderr": "",
+      "bytes": 761352192
+    }
+  ],
+  "external_processes_signaled": false,
+  "pid": 32714,
+  "completed_at_utc": "2026-10-04T01:29:11.564879+00:00",
+  "contracts_after": [
+    {
+      "path": "crates/kontor-api/contract/openapi.json",
+      "bytes": 877755,
+      "sha256": "30e66d56acadd5d6e7c97ce406e2dc3bc46597ae7ffb9973302dcd9ada898ff0"
+    },
+    {
+      "path": "apps/console/src/api/schema.d.ts",
+      "bytes": 760653,
+      "sha256": "440a199e2da1cca30606fa8105d149f709887d5e0ea2b977b20c784d6fe55e9a"
+    }
+  ],
+  "stdout_bytes": 185,
+  "stdout_sha256": "06c4161c55d66529151ab370f10e833f3ab1ec665359a58ebee67fe7036b46f8",
+  "stderr_bytes": 6856,
+  "stderr_sha256": "44ab02f7a3d9dc9e7e8a7f9b0fe663e0049668e2f35d900bf78269a6a47b2ea3",
+  "max_recorded_target_bytes": 761352192
+}

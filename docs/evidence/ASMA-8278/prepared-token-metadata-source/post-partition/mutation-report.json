@@ -1,0 +1,46 @@
+{
+  "baseline": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_token_metadata",
+        "--",
+        "--nocapture"
+      ],
+      "started_utc": "2026-10-03T21:18:21.717001+00:00",
+      "elapsed_seconds": 7.555,
+      "exit_code": 0,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-prepared-token-validation-da8llp8_/post-partition/mutation-logs/baseline-attestation_token_metadata.log",
+      "log_sha256": "e651a391628bf0a912ea227cee9201a56842434a1da152746846885f4dc6eb95"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-store",
+        "--lib",
+        "backup::export::attestation_ledger_tests::token_tables_are_required_at125_and_legacy124_absence_never_skips_keys",
+        "--",
+        "--nocapture"
+      ],
+      "started_utc": "2026-10-03T21:18:29.272694+00:00",
+      "elapsed_seconds": 0.31,
+      "exit_code": 101,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-prepared-token-validation-da8llp8_/post-partition/mutation-logs/baseline-lib.log",
+      "log_sha256": "2886c8d8bc54183236f4428a59c616513a61ec04a616ceffd67654544ed7ef77"
+    }
+  ],
+  "mutants": [],
+  "limits": "Isolated source/disposable fixture SQLite proof only. SQL guard mutations explicitly assigned by root; no production/install/live effects. No compiler failure counted as kill."
+}

@@ -1,0 +1,18 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.24s
+     Running unittests src/lib.rs (/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-prepared-token-validation-da8llp8_/mutation-target/debug/deps/kontor_store-277147386e385a4d)
+
+running 1 test
+
+thread 'backup::export::attestation_ledger_tests::token_tables_are_required_at125_and_legacy124_absence_never_skips_keys' (28590207) panicked at crates/kontor-store/src/backup/export.rs:2985:9:
+assertion failed: ensure_empty_attestation_ledger(&connection).is_err()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test backup::export::attestation_ledger_tests::token_tables_are_required_at125_and_legacy124_absence_never_skips_keys ... FAILED
+
+failures:
+
+failures:
+    backup::export::attestation_ledger_tests::token_tables_are_required_at125_and_legacy124_absence_never_skips_keys
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p kontor-store --lib`

@@ -1,0 +1,48 @@
+   Compiling kontor-store v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.90s
+     Running tests/backup_snapshot.rs (target/debug/deps/backup_snapshot-ba16d7a45b9280c9)
+
+running 17 tests
+test a_published_snapshot_is_never_overwritten ... ok
+test a_nonempty_public_authority_snapshot_is_refused_before_destination_creation ... ok
+test a_manifest_that_does_not_describe_its_snapshot_is_refused ... ok
+test corrupted124_missing_ledger_tables_is_not_an_empty_restore_fallback ... ok
+test historical_pre124_snapshots_without_ledger_tables_keep_empty_restore_behavior ... FAILED
+test an_old_empty_snapshot_cannot_rollback_current_public_key_revocation ... FAILED
+test a_snapshot_taken_while_the_database_is_written_is_a_consistent_point ... ok
+test a_restore_refuses_a_taken_superseded_name_and_leaves_the_destination_intact ... ok
+test a_damaged_database_is_never_copied_and_replaces_nothing has been running for over 60 seconds
+test a_restore_reinstates_the_same_realm_and_refuses_a_different_one has been running for over 60 seconds
+test nonempty_public_authority_ledger_is_not_silently_omitted_from_export ... ok
+test retention_never_empties_a_directory_that_holds_one_backup ... ok
+test two_simultaneous_publishers_of_one_name_produce_one_snapshot ... ok
+test memory_ledger_and_import_evidence_restore_while_fts_is_rebuilt ... ok
+test snapshot_preserves_exact_k_and_k2_profile_selection_bindings ... ok
+test the_gate_rejection_route_schema_migrates_and_survives_a_snapshot ... ok
+test a_restore_reinstates_the_same_realm_and_refuses_a_different_one ... ok
+test retention_keeps_the_newest_seven_of_this_realm_and_touches_nothing_else ... ok
+test a_damaged_database_is_never_copied_and_replaces_nothing ... ok
+
+failures:
+
+---- historical_pre124_snapshots_without_ledger_tables_keep_empty_restore_behavior stdout ----
+
+thread 'historical_pre124_snapshots_without_ledger_tables_keep_empty_restore_behavior' (26262923) panicked at crates/kontor-store/tests/backup_snapshot.rs:174:6:
+legacy snapshot: Verification { detail: "the database does not carry the schema version this build writes" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- an_old_empty_snapshot_cannot_rollback_current_public_key_revocation stdout ----
+
+thread 'an_old_empty_snapshot_cannot_rollback_current_public_key_revocation' (26262921) panicked at crates/kontor-store/tests/backup_snapshot.rs:129:5:
+assertion `left == right` failed
+  left: ["backups", "kontor.db", "kontor.db-shm", "kontor.db-wal"]
+ right: ["backups", "kontor.db"]
+
+
+failures:
+    an_old_empty_snapshot_cannot_rollback_current_public_key_revocation
+    historical_pre124_snapshots_without_ledger_tables_keep_empty_restore_behavior
+
+test result: FAILED. 15 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 108.76s
+
+error: test failed, to rerun pass `-p kontor-store --test backup_snapshot`

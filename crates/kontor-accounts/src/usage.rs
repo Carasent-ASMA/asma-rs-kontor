@@ -75,6 +75,12 @@ pub enum UsageFailure {
     /// The endpoint could not be reached, or answered with a transport error.
     #[error("the provider's usage endpoint could not be reached")]
     Unreachable,
+    /// Only the usage endpoint throttled its reads; this says nothing about model allowance.
+    #[error("the usage endpoint throttled reads; retry after {retry_after_seconds} seconds")]
+    Throttled {
+        /// Provider retry delay, or the conservative fallback when no usable header was sent.
+        retry_after_seconds: u64,
+    },
     /// The endpoint answered with something this build cannot read.
     #[error("the provider's usage endpoint answered unusably")]
     Unreadable,

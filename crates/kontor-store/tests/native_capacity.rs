@@ -7,6 +7,8 @@
 //! cannot be updated at all — and again at the API boundary in the daemon's
 //! black-box suite.
 
+mod support;
+
 use kontor_core::id::{
     AccountProfileId, AggregateRevision, CanonicalDocument, CapacityObservationId, ContentHash,
     CredentialAlias, ExternalName, IdempotencyKey, ProjectId, ProviderUsageObservationId,
@@ -64,7 +66,7 @@ struct Fixture {
 fn fixture() -> Fixture {
     let home = TempDir::new().expect("a temporary directory");
     let path = home.path().join("kontor.db");
-    let store = SqliteStore::open(&path).expect("the store opens");
+    let store = support::store_from_template(&path);
     let project_id = ProjectId::generate();
     let account_profile_id = AccountProfileId::generate();
     let created_at = at("2026-08-17T09:00:00Z");

@@ -14,6 +14,7 @@
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use kontor_core::consultation::ConsultationFamily;
 use kontor_core::id::{AggregateRevision, EventCursor, ExternalId, RealmId};
 use kontor_core::realm::RealmCursor;
 use kontor_core::repository::RepositoryError;
@@ -45,6 +46,22 @@ closed_enum! {
     /// A client branches on this and on nothing else. The accompanying `rule` is
     /// for a human reading a log.
     ApiErrorCode, "ApiErrorCode" {
+        /// Typed memory document validation refused.
+        InvalidExperience => "invalid_experience",
+        /// Evidence cannot be resolved in this project.
+        UnresolvedEvidence => "unresolved_evidence",
+        /// Explicit purge removed a frozen payload; reselection is refused.
+        FrozenPayloadPurged => "frozen_payload_purged",
+        /// Frozen payload or receipt hash failed verification.
+        FrozenPayloadMismatch => "frozen_payload_mismatch",
+        /// The immutable memory binding or proposal key is already occupied.
+        MemoryBindingConflict => "binding_conflict",
+        /// Upstream candidate work exceeded its bound.
+        MemoryCandidateLimit => "candidate_limit",
+        /// Projection freshness or activation compare-and-swap failed.
+        ProjectionConflict => "projection_conflict",
+        /// A semantic adapter has not qualified a projection.
+        ProjectionUnavailable => "projection_unavailable",
         /// No usable credential was presented.
         Unauthenticated => "unauthenticated",
         /// The credential is valid but does not carry the required authority.
@@ -108,12 +125,44 @@ closed_enum! {
         /// containers, and the repair is a decision a human makes.
         PlacementBlocked => "placement_blocked",
         /// A dependency could not be reached. A fact about the channel only.
+        ///
+        /// Load bearing: this code's action tells a caller *nothing was
+        /// changed*. It may therefore only be used when nothing was — that is,
+        /// when the failure happened before any effect was attempted. A channel
+        /// that died *after* a write was put on the wire is
+        /// [`Self::DeliveryUnconfirmed`], not this.
         Unavailable => "unavailable",
+        /// A settlement's canonical proof scan could not be completed, so the
+        /// proof was neither accepted nor rejected.
+        ///
+        /// Distinct from [`Self::Unavailable`], which blames the channel, and
+        /// from [`Self::RevisionConflict`], which blames the caller's tuple.
+        /// Both were wrong here: the runtime answers bounded reads and reports
+        /// itself reachable, and the tuple may be perfectly valid — the daemon
+        /// simply could not read far enough to decide. Saying "the runtime
+        /// could not be reached" sends an operator to look at a healthy plane,
+        /// and saying the tuple is not the current turn accuses them of a
+        /// forgery they did not commit.
+        ///
+        /// Nothing was changed: the scan runs entirely before any write.
+        ProofScanIncomplete => "proof_scan_incomplete",
+        /// A write was put on the wire and the channel failed before its
+        /// outcome could be confirmed. It may well have landed.
+        ///
+        /// Separate from [`Self::Unavailable`] for one reason, and it is not a
+        /// shade of meaning: the two demand opposite actions. `unavailable`
+        /// says nothing happened, so retry. This says something may have
+        /// happened, so *read before you act* — and never resend under a fresh
+        /// identifier, because that is how one instruction becomes two native
+        /// turns in a seat's transcript.
+        DeliveryUnconfirmed => "delivery_unconfirmed",
         /// The provider rejected the exact configured account credential while
         /// answering its fixed usage endpoint.
         ProviderUnauthorized => "provider_unauthorized",
         /// The fixed provider usage endpoint could not be reached successfully.
         ProviderUnreachable => "provider_unreachable",
+        /// The usage endpoint throttled observation requests, not model execution.
+        ProviderUsageThrottled => "provider_usage_throttled",
         /// The exact account or successful provider response is not supported
         /// by this build's closed usage-reader set.
         ProviderUnsupported => "provider_unsupported",
@@ -134,6 +183,14 @@ impl ApiErrorCode {
     #[must_use]
     pub const fn status(self) -> StatusCode {
         match self {
+            Self::InvalidExperience | Self::UnresolvedEvidence | Self::MemoryCandidateLimit => {
+                StatusCode::BAD_REQUEST
+            }
+            Self::FrozenPayloadPurged => StatusCode::GONE,
+            Self::FrozenPayloadMismatch
+            | Self::MemoryBindingConflict
+            | Self::ProjectionConflict => StatusCode::CONFLICT,
+            Self::ProjectionUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             Self::Unauthenticated => StatusCode::UNAUTHORIZED,
             Self::Forbidden => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
@@ -163,10 +220,12 @@ impl ApiErrorCode {
             // 4xx that blames either would misdirect. "Too many requests" is
             // what a spent ceiling is, and it is the status a client already
             // knows to back off and retry on.
-            Self::CapacityExhausted => StatusCode::TOO_MANY_REQUESTS,
-            Self::ReconciliationPending | Self::Unavailable | Self::ProviderUnreachable => {
-                StatusCode::SERVICE_UNAVAILABLE
-            }
+            Self::CapacityExhausted | Self::ProviderUsageThrottled => StatusCode::TOO_MANY_REQUESTS,
+            Self::ReconciliationPending
+            | Self::Unavailable
+            | Self::DeliveryUnconfirmed
+            | Self::ProofScanIncomplete
+            | Self::ProviderUnreachable => StatusCode::SERVICE_UNAVAILABLE,
             Self::ProviderUnauthorized => StatusCode::BAD_GATEWAY,
             Self::ProviderUnsupported => StatusCode::UNPROCESSABLE_ENTITY,
         }
@@ -181,6 +240,18 @@ impl ApiErrorCode {
     #[must_use]
     pub const fn default_action(self) -> &'static str {
         match self {
+            Self::InvalidExperience | Self::UnresolvedEvidence => {
+                "read the typed experience contract and correct the document or evidence"
+            }
+            Self::MemoryCandidateLimit => "bound candidate work before authoritative selection",
+            Self::FrozenPayloadPurged | Self::FrozenPayloadMismatch => {
+                "preserve the frozen receipt; do not silently reselect memories"
+            }
+            Self::MemoryBindingConflict => "replay the original request with its original identity",
+            Self::ProjectionConflict => "read a fresh projection preview and generation",
+            Self::ProjectionUnavailable => {
+                "configure and qualify the semantic adapter before rebuilding"
+            }
             Self::Unauthenticated => "present a credential for this realm",
             Self::Forbidden => "present a credential carrying the tier this operation requires",
             Self::RealmMismatch => "re-read the value from this realm and retry with that one",
@@ -212,11 +283,20 @@ impl ApiErrorCode {
             Self::HandoffUnsettled => "settle the outstanding turn before terminalizing the run",
             Self::PlacementBlocked => "resolve where the work belongs in the topology, then retry",
             Self::Unavailable => "retry once the dependency answers; nothing was changed",
+            Self::ProofScanIncomplete => {
+                "settle again naming the same turn once the session's canonical history is readable to its end; the proof was neither accepted nor rejected and nothing was changed"
+            }
+            Self::DeliveryUnconfirmed => {
+                "read this session's timeline for the exact idempotency key to learn the outcome, then replay that same key; never resend under a new one"
+            }
             Self::ProviderUnauthorized => {
                 "reauthenticate the exact configured provider account, then retry"
             }
             Self::ProviderUnreachable => {
                 "retry after the provider usage endpoint is reachable; nothing was changed"
+            }
+            Self::ProviderUsageThrottled => {
+                "honor retry_after_seconds before probing again; this is not evidence that model quota is exhausted"
             }
             Self::ProviderUnsupported => {
                 "use an enabled config-home account and provider response supported by this build"
@@ -262,6 +342,9 @@ const fn const_str_eq(left: &str, right: &str) -> bool {
 /// The JSON body every refusal is reported with.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct ApiErrorBody {
+    /// Safe delay before retrying a throttled usage read; quota projections were not changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_seconds: Option<u64>,
     /// The Realm the request was refused in.
     #[schema(value_type = String)]
     pub realm_id: RealmId,
@@ -334,6 +417,8 @@ pub struct ApiError {
 /// Where a refusal happened, in structural terms only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ErrorDiagnostic {
+    /// Delay for a provider-throttled observation, never a quota reset assertion.
+    pub retry_after_seconds: Option<u64>,
     /// The type, field or state machine that refused.
     pub subject: Option<&'static str>,
     /// The structural path of the offending node. Never its value.
@@ -389,10 +474,18 @@ impl ApiError {
     fn diagnostic_mut(&mut self) -> &mut ErrorDiagnostic {
         self.diagnostic.get_or_insert_with(|| {
             Box::new(ErrorDiagnostic {
+                retry_after_seconds: None,
                 subject: None,
                 at: None,
             })
         })
+    }
+
+    /// Attach a safe observation retry delay without asserting a quota reset.
+    #[must_use]
+    pub fn with_retry_after(mut self, seconds: u64) -> Self {
+        self.diagnostic_mut().retry_after_seconds = Some(seconds);
+        self
     }
 
     /// State what the caller can do about it.
@@ -428,6 +521,10 @@ impl ApiError {
     #[must_use]
     pub fn body(&self) -> ApiErrorBody {
         ApiErrorBody {
+            retry_after_seconds: self
+                .diagnostic
+                .as_ref()
+                .and_then(|value| value.retry_after_seconds),
             realm_id: self.realm_id,
             code: self.code,
             rule: self.rule,
@@ -557,11 +654,15 @@ impl ApiError {
             // the transport's side that is always "you were working from a state
             // that has moved", which is what a revision conflict says.
             //
-            // Which rule, on which aggregate, is logged. The caller is told one
-            // thing for every uniqueness and immutability rule in the store —
-            // otherwise a client could enumerate them — but an operator holding
-            // only "a persistence rule refused the write" has nothing to act on,
-            // and both fields are `&'static str` written in this workspace.
+            // Which rule, on which aggregate, is now told to the caller as well
+            // as logged. The previous reading withheld both to stop a client
+            // enumerating the store's rules, and the cost of that was paid in
+            // ASMA-8190: an operator retried one Core Team route apply twice
+            // against `current_revision: null` and "a persistence rule refused
+            // the write", which names nothing to re-read and nothing to change.
+            // Both fields are `&'static str` authored in this workspace, so
+            // there is no caller data in either; what they expose is a design
+            // detail, and a refusal nobody can act on is the worse trade.
             RepositoryError::Conflict { subject, rule } => {
                 warn!(
                     realm_id = %realm_id,
@@ -569,12 +670,32 @@ impl ApiError {
                     rule = %rule,
                     "a persistence rule refused a write"
                 );
-                Self::new(
-                    realm_id,
-                    ApiErrorCode::RevisionConflict,
-                    "a persistence rule refused the write against the presented state",
-                )
+                Self::new(realm_id, ApiErrorCode::RevisionConflict, rule).about(subject)
             }
+            // A semantic duplicate is the one uniqueness refusal whose answer is
+            // not "re-read and retry": the exact existing run is known, and the
+            // caller's next step is to read or resume it. The store carries that
+            // identity out of the failed atomic insert, so a concurrent loser
+            // receives the same typed refusal the sequential pre-check produces
+            // instead of a generic persistence conflict.
+            RepositoryError::DuplicateConsultation { family, run_id } => Self::new(
+                realm_id,
+                ApiErrorCode::IdempotencyConflict,
+                match family {
+                    ConsultationFamily::Advisor => {
+                        "consultation_semantic_duplicate: this Advisor scope and topic already has one run"
+                    }
+                    ConsultationFamily::Committee => {
+                        "consultation_semantic_duplicate: this Committee scope and topic already has one run"
+                    }
+                    ConsultationFamily::PlanningPair => {
+                        "consultation_semantic_duplicate: this planning pair scope and topic already has one run"
+                    }
+                },
+            )
+            .about("consultation semantic identity")
+            .located_at(format!("consultation-runs/{}", run_id.as_text()))
+            .advising("read or resume the existing consultation run"),
             // Which ceiling bound is a fact about this Realm's configuration and
             // its current load, so it is logged for the operator who runs the
             // plane and withheld from the caller who hit it. One static rule for
@@ -702,7 +823,7 @@ impl ApiError {
             ),
             RuntimeError::DeliveryConfirmationUnknown { .. } => Self::new(
                 realm_id,
-                ApiErrorCode::Unavailable,
+                ApiErrorCode::DeliveryUnconfirmed,
                 "the message may have reached the session but canonical history has not confirmed its position",
             )
             .advising(
@@ -749,17 +870,22 @@ impl ApiError {
                     "re-prove the seat's workspace placement, then resume the exact queued run",
                 )
             }
+            // The rule is told, not only logged, for the same reason a
+            // persistence conflict now names its subject: a dozen distinct
+            // workspace conditions collapse to this one variant, and
+            // "the runtime will not work in the workspace this realm asked
+            // for" says nothing about which. ASMA-8190 is what that costs — an
+            // apply refused a route its own preview had accepted, and the
+            // operator had no way to tell a busy terminal from a moved
+            // directory from an uncorrelated setup census. Every rule here is
+            // an `&'static str` written in this workspace.
             RuntimeError::WorkspaceMismatch { rule } => {
                 warn!(
                     realm_id = %realm_id,
                     rule = %rule,
                     "runtime refused the workspace this realm asked for"
                 );
-                Self::new(
-                    realm_id,
-                    ApiErrorCode::UnsupportedCapability,
-                    "the runtime will not work in the workspace this realm asked for",
-                )
+                Self::new(realm_id, ApiErrorCode::UnsupportedCapability, rule)
             }
             RuntimeError::WorkspacePreparationFailed { rule } => {
                 warn!(
@@ -786,6 +912,32 @@ impl ApiError {
                 realm_id,
                 ApiErrorCode::RevisionConflict,
                 "the runtime does not agree the cited predecessor is finished",
+            )
+            .advising(rule),
+            // The same lesson as the arm above, found the same way. A claimant the
+            // runtime already admitted elsewhere is a *conflict* the caller can
+            // act on: release or reuse the seat it already holds. Answering an
+            // unclassified 503 told an operator to upgrade the daemon for a
+            // refusal that is working exactly as designed, and left an
+            // epic-level claim preview looking like a server defect.
+            RuntimeError::SlotAlreadyAdmitted { rule } => Self::new(
+                realm_id,
+                ApiErrorCode::RevisionConflict,
+                "the runtime has already admitted this role slot",
+            )
+            .advising(rule),
+            // A launch the runtime will not admit because it cannot prove a
+            // required capability is not unavailability either: retrying will
+            // not help until the capability is provable.
+            RuntimeError::PlanningPairMemberSurfaceUnsupported { .. } => Self::new(
+                realm_id,
+                ApiErrorCode::UnsupportedCapability,
+                "this runtime cannot establish the closed planning pair member surface for that route",
+            ),
+            RuntimeError::LaunchNotAdmitted { rule } => Self::new(
+                realm_id,
+                ApiErrorCode::UnsupportedCapability,
+                "the runtime would not admit this launch",
             )
             .advising(rule),
             RuntimeError::Domain(domain) => Self::from_domain(realm_id, domain),
@@ -826,7 +978,17 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (self.code.status(), Json(self.body())).into_response()
+        let body = self.body();
+        let retry_after = body.retry_after_seconds;
+        let mut response = (self.code.status(), Json(body)).into_response();
+        if let Some(seconds) = retry_after
+            && let Ok(value) = axum::http::HeaderValue::from_str(&seconds.to_string())
+        {
+            response
+                .headers_mut()
+                .insert(axum::http::header::RETRY_AFTER, value);
+        }
+        response
     }
 }
 
@@ -835,6 +997,86 @@ mod tests {
     use kontor_core::id::AggregateRevision;
 
     use super::*;
+
+    /// A refusal an operator cannot act on is a defect, not discretion.
+    ///
+    /// ASMA-8190: one Core Team route apply was retried twice against
+    /// `current_revision: null` and "a persistence rule refused the write",
+    /// which names nothing to re-read. Both fields are `&'static str` written
+    /// in this workspace, so neither carries caller data.
+    #[test]
+    fn a_persistence_conflict_names_its_subject_and_rule() {
+        let realm = RealmId::generate();
+        let refusal = ApiError::from_repository(
+            realm,
+            &kontor_core::repository::RepositoryError::Conflict {
+                subject: "native container binding",
+                rule: "this topology node is bound to another native container",
+            },
+        );
+        assert_eq!(refusal.code, ApiErrorCode::RevisionConflict);
+        assert_eq!(
+            refusal.rule,
+            "this topology node is bound to another native container"
+        );
+        assert_eq!(refusal.subject(), Some("native container binding"));
+    }
+
+    /// A dozen workspace conditions share one variant; the rule is what tells
+    /// a busy terminal from a moved directory from an uncorrelated census.
+    #[test]
+    fn a_workspace_refusal_names_the_rule_that_fired() {
+        let realm = RealmId::generate();
+        let refusal = ApiError::from_runtime(
+            realm,
+            &RuntimeError::WorkspaceMismatch {
+                rule: "the workspace still reports terminals or another directory",
+            },
+        );
+        assert_eq!(refusal.code, ApiErrorCode::UnsupportedCapability);
+        assert_eq!(
+            refusal.rule,
+            "the workspace still reports terminals or another directory"
+        );
+    }
+
+    /// The 2026-08-22 lesson, applied to the two refusals that were still
+    /// falling through: a conflict and a capability refusal are actionable
+    /// answers, and telling an operator to upgrade the daemon for either one
+    /// hides a working fence behind a server defect.
+    #[test]
+    fn an_already_admitted_slot_is_a_conflict_not_an_unclassified_outage() {
+        let realm = RealmId::generate();
+        let refusal = ApiError::from_runtime(
+            realm,
+            &RuntimeError::SlotAlreadyAdmitted {
+                rule: "the claimant already belongs to another Kontor or native seat",
+            },
+        );
+        assert_eq!(refusal.code, ApiErrorCode::RevisionConflict);
+        assert_ne!(
+            refusal.code,
+            ApiErrorCode::Unavailable,
+            "an already-admitted claimant is not an outage"
+        );
+        assert!(
+            refusal.action.contains("already belongs"),
+            "the runtime's own rule is carried as the action: {refusal:?}"
+        );
+    }
+
+    #[test]
+    fn an_unadmitted_launch_is_an_unsupported_capability_not_an_outage() {
+        let realm = RealmId::generate();
+        let refusal = ApiError::from_runtime(
+            realm,
+            &RuntimeError::LaunchNotAdmitted {
+                rule: "this Paseo does not advertise providerOptionsApplied",
+            },
+        );
+        assert_eq!(refusal.code, ApiErrorCode::UnsupportedCapability);
+        assert_ne!(refusal.code, ApiErrorCode::Unavailable);
+    }
 
     #[test]
     fn a_realm_mismatch_is_reported_as_such_and_echoes_no_payload() {
@@ -1015,7 +1257,17 @@ mod tests {
             },
         );
 
-        assert_eq!(refusal.code, ApiErrorCode::Unavailable);
+        // OG-058. This used to be reported as `unavailable`, and the warning
+        // lived only in the action text. That is not enough: this enum's own
+        // contract is that a client branches on the code "and on nothing else",
+        // so a caller doing exactly what it was told saw the code whose
+        // meaning is *nothing happened* and resent.
+        assert_eq!(refusal.code, ApiErrorCode::DeliveryUnconfirmed);
+        assert_ne!(
+            refusal.code,
+            ApiErrorCode::Unavailable,
+            "a delivery that may have landed must not share a code with one that never left"
+        );
         assert_eq!(refusal.code.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
             refusal.rule,
@@ -1023,5 +1275,42 @@ mod tests {
         );
         assert!(refusal.action.contains("do not resend"));
         assert!(!refusal.action.contains("nothing was changed"));
+    }
+
+    #[test]
+    fn usage_throttle_returns_the_actual_retry_instruction_in_body_and_header() {
+        let error = ApiError::new(
+            RealmId::generate(),
+            ApiErrorCode::ProviderUsageThrottled,
+            "the usage endpoint throttled observation requests",
+        )
+        .with_retry_after(2312);
+        assert_eq!(error.body().retry_after_seconds, Some(2312));
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers()["retry-after"], "2312");
+    }
+
+    /// The two codes are told apart by the one sentence a caller acts on.
+    #[test]
+    fn only_the_pre_effect_code_may_promise_that_nothing_changed() {
+        assert!(
+            ApiErrorCode::Unavailable
+                .default_action()
+                .contains("nothing was changed"),
+            "the channel-only code keeps its promise; that is what makes it useful"
+        );
+        assert!(
+            !ApiErrorCode::DeliveryUnconfirmed
+                .default_action()
+                .contains("nothing was changed"),
+            "the post-effect code must never make that promise"
+        );
+        assert!(
+            ApiErrorCode::DeliveryUnconfirmed
+                .default_action()
+                .contains("never resend under a new one"),
+            "and it has to name the unsafe act, not merely decline to promise"
+        );
     }
 }

@@ -1,0 +1,40 @@
+{
+  "recordedAt": "2026-09-26T09:32:04.983808+00:00",
+  "priorCheckpoint": "eb41560fe3506eb06b43e5f2ab8f47ece61facaf",
+  "sourceSha256": {
+    "crates/kontor-daemon/src/applications.rs": "220483319fe4650a4dc2a17420d32ee78be2492e1b3dffeabac3e105e149d5da",
+    "crates/kontor-daemon/tests/loopback_api.rs": "08ae762e58aedcd6869cacfba35359ce0860dedc256c7469d6d26ed827aedef6",
+    "crates/kontor-daemon/tests/loopback/replacement_bridges.rs": "f9b3382225fdc22d7e0f36af235241e83025b3243a448929ec0b6ff8e8e07f43",
+    "crates/kontor-store/src/repository.rs": "9b7a69c8de5f3fb76b7ecdc6bad081693f832c997953a89ea9d959b349371efd",
+    "crates/kontor-store/tests/team_definition_migration_completeness.rs": "ee388872764cecbed473cfcb98d945bb50ee7e90a48aaa66aebab113b8fbaa4f"
+  },
+  "additionalBoundary": "A meaningful unbound current leaf is still a fork; migration counts all meaningful role leaves before selecting native bindings.",
+  "outcomes": {
+    "unboundForkRed": {
+      "exitCode": 101,
+      "passed": 0,
+      "failed": 1,
+      "boundary": "Additional test on eb41560f production source fails behaviorally"
+    },
+    "storeExpandedGreen": {
+      "exitCode": 0,
+      "passed": 24,
+      "failed": 0,
+      "precision": "Before final refusal-message assertion tightening; source semantics identical"
+    },
+    "daemonExpandedGreen": {
+      "exitCode": 0,
+      "passed": 3,
+      "failed": 0,
+      "forkCases": "bound/bound and bound/unbound"
+    },
+    "finalStoreForkRefusalGreen": {
+      "exitCode": 0,
+      "passed": 2,
+      "failed": 0,
+      "precision": "Final strengthened semantic-refusal assertions"
+    }
+  },
+  "priorMutationQualification": "Four actual compiled kills plus baseline/restored greens at eb41560f are preserved separately; no store mutation/full-gate/deployment credit transfers to this changed source",
+  "boundary": "Focused source correction only; current-head behavioral mutations, full gate, independent review and deployment remain pending"
+}

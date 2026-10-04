@@ -1966,6 +1966,34 @@ crate::closed_enum! {
     }
 }
 
+crate::closed_enum! {
+    /// Native projection the runtime read back for a topology container.
+    ObservedContainerProjection, "ObservedContainerProjection" {
+        /// A native project/root.
+        NativeRoot => "native_root",
+        /// A native child/workspace.
+        NativeChild => "native_child",
+    }
+}
+
+/// Complete native fields that older container rows did not retain.
+///
+/// The outer `Option` on [`NativeContainerBinding::readback`] distinguishes a
+/// complete root (whose parent is correctly `None`) from a legacy row whose
+/// parent, title, projection and correlation were never observed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeContainerReadback {
+    /// Projection reported for the addressed native object.
+    pub projection: ObservedContainerProjection,
+    /// Exact runtime-visible title, including legacy UUID titles.
+    pub visible_title: ExternalName,
+    /// Complete native parent identity for a child; absent for a root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_parent: Option<NativeRuntimeIdentity>,
+    /// Exact topology correlation label established by the adapter.
+    pub topology_correlation: ExternalName,
+}
+
 /// The one current native container bound to a topology node.
 ///
 /// There is no history here on purpose. A node that is rebound has exactly one
@@ -1990,6 +2018,12 @@ pub struct NativeContainerBinding {
     /// The container's canonical working directory, where it has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canonical_cwd: Option<ExternalName>,
+    /// Complete readback added after the original binding schema.
+    ///
+    /// `None` is retained for legacy rows rather than fabricating a title,
+    /// projection, parent or topology correlation from desired state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readback: Option<NativeContainerReadback>,
     /// When the binding was established.
     pub bound_at: Timestamp,
     /// When it was last confirmed against the runtime.

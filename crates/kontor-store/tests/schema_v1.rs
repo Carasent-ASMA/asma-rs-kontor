@@ -26,11 +26,16 @@ use tempfile::TempDir;
 /// Every table the current schema owns, across all generations. The list is
 /// spelled out so that adding or removing one is a deliberate, reviewed change.
 const EXPECTED_TABLES: &[&str] = &[
+    "attestation_authority_heads",
+    "attestation_authority_keys",
+    "attestation_token_heads",
+    "prepared_attestation_tokens",
     "account_profiles",
     "adaptive_admission_state",
     "agent_runs",
     "approval_receipts",
     "artifact_evidence",
+    "artifact_producer_submissions",
     "availability_overrides",
     "calendar_exceptions",
     "calendar_profiles",
@@ -39,6 +44,8 @@ const EXPECTED_TABLES: &[&str] = &[
     "capacity_observations",
     "child_calendar_windows",
     "command_outbox",
+    "local_command_results",
+    "legacy_dispatch_local_confirmation_provenance",
     "command_receipt_transitions",
     "command_receipts",
     "command_targets",
@@ -62,8 +69,15 @@ const EXPECTED_TABLES: &[&str] = &[
     "committee_remediations",
     "committee_re_review_claims",
     "advisor_advice_artifacts",
+    // Schema v127 (ASMA-8282): the planning pair's run-keyed protocol payload.
+    "planning_pair_placements",
+    "planning_pair_record_revisions",
+    "planning_pair_contributions",
+    // Schema v128 (ASMA-8282 frontier A): each member's immutable known native.
+    "planning_pair_member_natives",
     "context_packs",
     "core_team_revisions",
+    "core_team_route_successions",
     // Schema v32 (KON-OP-06): published Completion Profile revisions, one durable
     // completion run per epic, and the TPM wake outbox.
     "completion_profile_revisions",
@@ -82,6 +96,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "execution_authorization_revocations",
     "execution_authorization_tasks",
     "execution_authorizations",
+    "execution_hold_conditions",
     "external_comments",
     "external_ticket_observations",
     "external_workflow_specs",
@@ -92,6 +107,13 @@ const EXPECTED_TABLES: &[&str] = &[
     // topology seats.
     "hosted_topology_seats",
     "hosted_topology_seat_history",
+    // Schema v100 (ASMA-8193): the authority one hosted launch resolved,
+    // written before the native call and consumed when the occupancy binds.
+    "hosted_topology_seat_launch_intents",
+    "hosted_seat_launch_intent_supersessions",
+    // Schema v116 (ASMA-8196): the role persona each launched occupancy was
+    // opened under, frozen before the native call and never re-derived.
+    "hosted_seat_role_personas",
     // Schema v7 (KON-MVP-21): which importer produced a holiday source revision,
     // what the request asked for, and the chain that makes one import current.
     "holiday_import_batches",
@@ -99,6 +121,7 @@ const EXPECTED_TABLES: &[&str] = &[
     // Schema v5 (KON-MVP-19): the destination half of a redacted import.
     "import_receipts",
     "imported_profile_selection_outcomes",
+    "imported_record_evidence",
     "imported_records",
     // Schema v6 (KON-MVP-22): the terminal half of intake and its work lineage.
     "intake_created_work",
@@ -119,6 +142,14 @@ const EXPECTED_TABLES: &[&str] = &[
     "memory_approvals",
     "memory_authority",
     "memory_context_bindings",
+    "memory_experience_eligibility",
+    "memory_experience_proposals",
+    "memory_projection_active",
+    "memory_projection_snapshots",
+    "memory_projection_rebuild_keys",
+    "memory_projection_rebuild_results",
+    "memory_recall_metadata",
+    "memory_recall_keys",
     "memory_fts",
     "memory_fts_config",
     "memory_fts_content",
@@ -135,6 +166,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "mini_project_team_definition_snapshots",
     "mini_project_topology_snapshots",
     "open_questions",
+    "open_question_commands",
     "open_question_dispositions",
     "open_question_rounds",
     "open_question_trigger_firings",
@@ -161,6 +193,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "resource_leases",
     "role_slot_waivers",
     "role_catalog_revisions",
+    "retired_evaluator_attestations",
     "role_turns",
     "run_context_policies",
     "run_park_closures",
@@ -172,7 +205,11 @@ const EXPECTED_TABLES: &[&str] = &[
     "runtime_reconciliation_epochs",
     "runtime_reconciliation_members",
     "runtime_reconciliation_results",
+    "runtime_message_issuances",
+    "runtime_message_delivery_proofs",
+    "runtime_message_delivery_proof_steps",
     "runtime_replay_consumers",
+    "runtime_timeline_epochs",
     "schedule_overrides",
     "scheduler_admission_events",
     "source_events",
@@ -192,6 +229,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "task_persona_snapshots",
     "task_workflows",
     "task_short_codes",
+    "task_worktree_corrections",
     "task_worktrees",
     "tasks",
     "team_command_replays",
@@ -202,6 +240,9 @@ const EXPECTED_TABLES: &[&str] = &[
     "team_definition_migration_targets",
     "team_drafts",
     "team_revisions",
+    // Schema v110 (ASMA-8234): which existing AgentRun was adopted into which
+    // declared TeamRun slot, at the revision the caller proved it had read.
+    "team_run_admission_adoptions",
     "team_runs",
     "team_templates",
     "teams_projection",
@@ -214,6 +255,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "topology_nodes",
     "topology_spec_canonicalization_receipts",
     "topology_specs",
+    "turn_correlation_challenges",
     "turn_dispatches",
     "work_calendars",
     "work_profiles",
@@ -319,6 +361,134 @@ VALUES ('0193f000-0000-7000-8000-000000000040', '0193f000-0000-7000-8000-0000000
 
 fn temp() -> TempDir {
     TempDir::new().expect("a temporary directory")
+}
+
+fn issuance(message_id: &str, binding: &str, session: &str) -> kontor_store::MessageIssuance {
+    kontor_store::MessageIssuance {
+        message_id: message_id.to_owned(),
+        runtime_kind: "fake.agent".to_owned(),
+        host: "fixture-host".to_owned(),
+        runtime_binding_id: binding.to_owned(),
+        native_session_id: session.to_owned(),
+        idempotency_key: message_id.to_owned(),
+        provenance: "session_message_send".to_owned(),
+        issued_at: "2026-09-17T00:00:00Z"
+            .parse::<kontor_core::id::Timestamp>()
+            .expect("a timestamp"),
+        // Recorded before the send, so there is no acknowledged position yet.
+        delivered_at: None,
+        boundary_at: None,
+    }
+}
+
+/// The ledger that makes a bounded observation safe: one id, one issuance, one
+/// binding — enforced by the key rather than checked after the fact.
+///
+/// A replay has to be recognised, because the retry of a send whose
+/// acknowledgement was lost presents the same id again and must not be refused.
+/// A *different* session presenting an already-issued id is the thing that must
+/// never be true, and it is refused inside the transaction.
+#[test]
+fn a_message_issuance_is_unique_per_id_and_recognises_its_own_replay() {
+    let directory = temp();
+    let store = open(&directory);
+    let first = "01a0b000-0000-7000-8000-00000000aaaa";
+    let binding = "01a0b000-0000-7000-8000-00000000bbbb";
+    let session = "native-session-one";
+
+    assert_eq!(
+        store
+            .record_message_issuance(&issuance(first, binding, session))
+            .expect("a first issuance records"),
+        kontor_store::MessageIssuanceOutcome::Recorded
+    );
+    // The same id, binding, session and key: a retry, not a second issuance.
+    assert_eq!(
+        store
+            .record_message_issuance(&issuance(first, binding, session))
+            .expect("a replay is recognised"),
+        kontor_store::MessageIssuanceOutcome::Replayed
+    );
+
+    // The same id claimed by a different session. This is what the bounded
+    // observation trusts the ledger about, so it is refused, not recorded.
+    let elsewhere = store.record_message_issuance(&issuance(
+        first,
+        "01a0b000-0000-7000-8000-00000000cccc",
+        "native-session-two",
+    ));
+    assert!(
+        elsewhere.is_err(),
+        "an issued id may not be claimed by another session: {elsewhere:?}"
+    );
+
+    let held = store
+        .message_issuance(first)
+        .expect("the issuance reads")
+        .expect("it is there");
+    assert_eq!(
+        held.runtime_binding_id, binding,
+        "the first issuance stands"
+    );
+    assert_eq!(held.native_session_id, session);
+
+    // And an id this realm never issued is absent rather than invented.
+    assert!(
+        store
+            .message_issuance("01a0b000-0000-7000-8000-00000000dddd")
+            .expect("the lookup runs")
+            .is_none()
+    );
+
+    // A delivery position arrives later, from the acknowledgement, and once it
+    // is recorded it is the answer. Re-recording the same one is the retry of a
+    // delivery whose acknowledgement was lost and must be accepted; a different
+    // one is the runtime saying the message landed twice, which is the whole
+    // reason the position is kept and is refused rather than overwritten.
+    assert!(
+        store
+            .message_issuance(first)
+            .expect("reads")
+            .expect("there")
+            .delivered_at
+            .is_none(),
+        "an issuance carries no position until a delivery is acknowledged"
+    );
+    store
+        .record_message_delivery(first, 1, 42)
+        .expect("the acknowledged position records");
+    store
+        .record_message_delivery(first, 1, 42)
+        .expect("the same position again is the lost-acknowledgement retry");
+    assert_eq!(
+        store
+            .message_issuance(first)
+            .expect("reads")
+            .expect("there")
+            .delivered_at,
+        Some((1, 42))
+    );
+    let moved = store.record_message_delivery(first, 1, 99);
+    assert!(
+        moved.is_err(),
+        "an id already delivered may not claim a second position: {moved:?}"
+    );
+    assert_eq!(
+        store
+            .message_issuance(first)
+            .expect("reads")
+            .expect("there")
+            .delivered_at,
+        Some((1, 42)),
+        "and the refusal changed nothing"
+    );
+
+    // A delivery for an id this realm never issued is not a row to repair.
+    let unissued = store.record_message_delivery("01a0b000-0000-7000-8000-00000000dddd", 1, 7);
+    assert!(
+        unissued.is_err(),
+        "a delivery with no issuance is refused: {unissued:?}"
+    );
 }
 
 fn open(directory: &TempDir) -> SqliteStore {
@@ -552,7 +722,206 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // delivery workspace, and leaves a pre-v96 run's subject visibly
     // unrecorded. v97 confirms only pre-hook local task/gate receipts whose
     // exact durable mutations prove that their synchronous commands succeeded.
-    assert_eq!(SCHEMA_VERSION, 98);
+    // v98 gives those reconstructed confirmations typed, immutable provenance,
+    // accepted only when one receipt maps to one mutation. v99 adds the
+    // immutable future-turn correlation challenge; no historical runtime
+    // position can enter that ledger.
+    //
+    // The ASMA-8190 integration then lands four lane migrations in one head, so
+    // their numbers are assigned here rather than in the lanes that wrote them.
+    // v100 makes Kontor's timeline-epoch numbering durable, so the same raw
+    // runtime epoch resolves to the same number across a restart (ASMA-8203).
+    // v101 records what would end a kickoff hold beside the revocation that is
+    // the hold, so a hold can state its own terms instead of only its prose
+    // reason, and an absent row still means `manual` (ASMA-8194).
+    // v102 freezes a hosted leadership seat's autonomy beside its occupancy
+    // generation, in both the active and the historical row, and backfills every
+    // pre-feature row to the only launch mode any of them can have had. v103
+    // records that authority *before* the native call and consumes it when the
+    // occupancy binds, so a created native whose acknowledgement was lost is
+    // never left with no durable statement of what it was launched under
+    // (both ASMA-8193). v104 records every client message id Kontor issues
+    // against the exact binding it was issued to, so proving one unambiguous is
+    // a key lookup instead of a walk of the session's whole canonical content —
+    // which is what let observation become bounded (ASMA-8203).
+    // v105 adds the position each issued message was acknowledged at, so a
+    // bounded observation can ask whether an occurrence is *the* delivery rather
+    // than whether it is the *only* one — the second needs a scan (ASMA-8203).
+    // v106 persists the complete exact-id native container readback and
+    // leaves every pre-v106 row's shape, title, ancestry and correlation
+    // unknown rather than reconstructed (ASMA-8115).
+    // v107 adds the retired-evaluator proof ledger and the command kind that
+    // records one, so a gate whose evaluator seat was retired has a supported
+    // evidence path that is not the live-seat challenge (ASMA-8119).
+    // v108 adds exact-old/revision-fenced worktree-claim repair and immutable
+    // before/after evidence without changing the task aggregate (ASMA-8120).
+    // v109 lets an inert launch intent -- prepared before a launch that never
+    // happened -- have its route and prepared instant superseded exactly once,
+    // on recorded evidence, without the intent losing its identity (ASMA-7869).
+    // v110 records which already-created AgentRun was adopted into which
+    // declared TeamRun slot, and at which revision of that run, so a slot with
+    // no owed dispatch has a supported authority that is not a second run
+    // (ASMA-8234).
+    // v112 makes question history and its retry receipt one atomic effect.
+    // v114 preserves the authorized container-recovery disposition on replay.
+    // v115 confirms atomic local effects and preserves their exact results.
+    // v116 freezes, per launched occupancy, the role persona a hosted seat was
+    // opened under, so which persona a seat actually received survives restart
+    // and replacement rather than being re-derived from current configuration
+    // (ASMA-8196).
+    // v117 records, per issuance, the canonical tail a message was sent after,
+    // so a delivery reconciliation can prove itself from a bounded suffix
+    // instead of requiring the whole transcript — which is what refused every
+    // send into a session past the scan's page budget (ASMA-8203).
+    // v118 records bounded runtime-message delivery proof steps.
+    // v119 makes publication attestations immutable, append-only evidence
+    // (ASMA-8102); both guards must survive migration and reopen.
+    // v120 gives one Core Team route succession an exclusive per-seat owner
+    // claimed before its first duplicable effect, and a durable readback plus
+    // pending-effect record so a replay converges instead of re-planning
+    // against a seat that has moved (ASMA-8187).
+    // v121 retains imported records as inspectable evidence without authority.
+    // v122 freezes and verifies each succession receipt binding.
+    // v123 adds typed experience eligibility, projections and recall metadata.
+    // v124 records immutable projection rebuild requests and original results.
+    // v125 binds fleet policy publication and activation keys realm-wide and
+    // restores the binding permanence triggers the v28 rebuild dropped
+    // (ASMA-8280).
+    // v126 binds fleet bundle publication and activation keys the same way.
+    // v127 adds the closed `planning_pair` consultation family, its
+    // family-conditioned run states, its run-keyed placement, record and
+    // contribution payload, and its six command kinds (ASMA-8282).
+    // v128 keeps each planning pair member's immutable known native session
+    // and adds the caller's same-native member recovery kind (ASMA-8282).
+    // v129 adds public attestation issuer-key metadata (ASMA-8278).
+    // v130 records permanent prepared attestation commitments (ASMA-8278).
+    assert_eq!(SCHEMA_VERSION, 130);
+}
+
+#[test]
+fn v108_worktree_correction_evidence_is_append_only() {
+    let directory = temp();
+    let store = open(&directory);
+    // The current version, not the one this feature landed at: the table under
+    // test is unchanged by later migrations, and pinning 108 here would make
+    // every subsequent migration fail a test about worktree corrections.
+    assert_eq!(
+        store.schema_version().expect("the version reads"),
+        SCHEMA_VERSION
+    );
+    drop(store);
+    let connection =
+        Connection::open(directory.path().join("kontor.db")).expect("the migrated database opens");
+    connection
+        .pragma_update(None, "foreign_keys", false)
+        .expect("the isolated trigger fixture disables foreign keys");
+    connection
+        .execute(
+            "INSERT INTO task_worktree_corrections
+                 (project_id, receipt_id, task_id, task_revision, old_worktree,
+                  new_worktree, module_key, branch_name, preview_hash, corrected_at)
+             VALUES (?1, ?2, ?3, 1, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                "project-1",
+                "receipt-1",
+                "task-1",
+                "/old/worktree",
+                "/new/worktree",
+                "_tools/asma-rs-kontor",
+                "feat/ASMA-8120-deploy-jira-key-runtime-and-migrate-current-native-containers",
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "2026-09-19T19:23:28Z",
+            ],
+        )
+        .expect("one historical correction can be recorded");
+    assert!(
+        connection
+            .execute(
+                "UPDATE task_worktree_corrections
+                 SET new_worktree = '/somewhere/else'
+                 WHERE receipt_id = 'receipt-1'",
+                [],
+            )
+            .is_err(),
+        "an audit row cannot be rewritten"
+    );
+    assert!(
+        connection
+            .execute(
+                "DELETE FROM task_worktree_corrections WHERE receipt_id = 'receipt-1'",
+                [],
+            )
+            .is_err(),
+        "an audit row cannot be deleted"
+    );
+}
+
+#[test]
+fn v106_preserves_legacy_container_identity_and_leaves_new_readback_unknown() {
+    let connection = Connection::open_in_memory().expect("the v105 fixture opens");
+    connection
+        .execute_batch(
+            "CREATE TABLE topology_node_containers (
+                 topology_node_id TEXT PRIMARY KEY NOT NULL,
+                 project_id TEXT NOT NULL,
+                 container_binding_id TEXT NOT NULL,
+                 runtime_kind TEXT NOT NULL,
+                 host TEXT NOT NULL,
+                 generation INTEGER NOT NULL,
+                 native_id TEXT NOT NULL,
+                 observed_kind TEXT NOT NULL,
+                 canonical_cwd TEXT,
+                 bound_at TEXT NOT NULL,
+                 last_readback_at TEXT NOT NULL,
+                 revision INTEGER NOT NULL
+             ) STRICT;
+             INSERT INTO topology_node_containers VALUES (
+                 'node-1', 'project-1', 'binding-1', 'paseo.agent', 'host-1', 7,
+                 'prj_01890000-0000-7000-8000-0000000000ff', 'project', '/work',
+                 '2026-09-06T12:00:00Z', '2026-09-06T12:00:00Z', 4
+             );
+             PRAGMA user_version = 105;",
+        )
+        .expect("the legacy row is seeded");
+    connection
+        .execute_batch(include_str!(
+            "../migrations/0106_container_native_readback.sql"
+        ))
+        .expect("v106 migrates the row");
+
+    let preserved: (String, String, i64, String) = connection
+        .query_row(
+            "SELECT container_binding_id, host, generation, native_id
+               FROM topology_node_containers WHERE topology_node_id = 'node-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("the legacy identity reads");
+    assert_eq!(
+        preserved,
+        (
+            "binding-1".to_owned(),
+            "host-1".to_owned(),
+            7,
+            "prj_01890000-0000-7000-8000-0000000000ff".to_owned(),
+        )
+    );
+    let unknown: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM topology_node_containers
+              WHERE observed_projection IS NULL AND visible_title IS NULL
+                AND parent_runtime_kind IS NULL AND parent_host IS NULL
+                AND parent_generation IS NULL AND parent_native_id IS NULL
+                AND topology_correlation IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the nullable readback columns are readable");
+    assert_eq!(unknown, 1, "legacy readback is unknown, never fabricated");
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("the schema version reads");
+    assert_eq!(version, 106);
 }
 
 #[test]
@@ -1764,6 +2133,7 @@ fn the_deployed_op03_v31_lineage_converges_without_losing_its_receipts() {
     let connection = raw(&directory);
     for table in [
         "core_team_revisions",
+        "core_team_route_successions",
         "quick_sessions",
         "quick_session_promotions",
         "epic_rosters",
@@ -2751,6 +3121,81 @@ fn the_schema_contains_exactly_the_expected_tables_and_they_are_all_strict() {
         .map(|name| name.expect("a name"))
         .collect();
     assert!(lax.is_empty(), "every table must be STRICT, found {lax:?}");
+}
+
+/// A recorded hold condition is evidence: it cannot be edited, and it cannot be
+/// withdrawn.
+///
+/// Both halves matter, and the delete half is the quiet one. The read path
+/// treats an absent row as `manual`, so removing the row leaves no gap to
+/// notice — it converts a hold that would have lifted itself into one that
+/// waits for a human forever, and nothing in the projection says so. The closed
+/// vocabulary is checked here too, because a value the domain cannot parse is a
+/// hold that never lifts and never explains why (ASMA-8194).
+#[test]
+fn v99_records_a_hold_lift_condition_that_can_neither_be_edited_nor_withdrawn() {
+    let directory = temp();
+    let _store = open(&directory);
+    let connection = raw(&directory);
+    // The condition's only foreign key is to the revocation that makes an
+    // authorization a hold. This test is about the table's own rules, so the
+    // surrounding graph is deliberately not built.
+    connection
+        .pragma_update(None, "foreign_keys", false)
+        .expect("foreign keys can be disabled");
+
+    let hold = "0193f000-0000-7000-8000-000000000099";
+    connection
+        .execute(
+            "INSERT INTO execution_hold_conditions
+                 (project_id, authorization_id, condition, recorded_at)
+             VALUES ('0193f000-0000-7000-8000-000000000001', ?1, 'kickoff_ready',
+                     '2026-09-17T09:00:00Z')",
+            [hold],
+        )
+        .expect("a hold may record what would end it");
+
+    assert!(
+        connection
+            .execute(
+                "UPDATE execution_hold_conditions SET condition = 'manual'
+                 WHERE authorization_id = ?1",
+                [hold],
+            )
+            .is_err(),
+        "the terms of a hold must not move while it holds"
+    );
+    assert!(
+        connection
+            .execute(
+                "DELETE FROM execution_hold_conditions WHERE authorization_id = ?1",
+                [hold],
+            )
+            .is_err(),
+        "deleting the row would silently demote a self-lifting hold to manual"
+    );
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO execution_hold_conditions
+                     (project_id, authorization_id, condition, recorded_at)
+                 VALUES ('0193f000-0000-7000-8000-000000000001',
+                         '0193f000-0000-7000-8000-000000000098', 'whenever',
+                         '2026-09-17T09:00:00Z')",
+                [],
+            )
+            .is_err(),
+        "a condition outside the closed vocabulary is a hold nothing can evaluate"
+    );
+
+    let stored: String = connection
+        .query_row(
+            "SELECT condition FROM execution_hold_conditions WHERE authorization_id = ?1",
+            [hold],
+            |row| row.get(0),
+        )
+        .expect("the original condition is still readable");
+    assert_eq!(stored, "kickoff_ready");
 }
 
 #[test]
@@ -4655,6 +5100,18 @@ fn all_logical_relationships_are_project_scoped_and_fk_backed() {
             "command_receipts",
             &["project_id", "id"],
         ),
+        (
+            "local_command_results",
+            &["project_id", "receipt_id"],
+            "command_receipts",
+            &["project_id", "id"],
+        ),
+        (
+            "legacy_dispatch_local_confirmation_provenance",
+            &["project_id", "receipt_id"],
+            "command_receipts",
+            &["project_id", "id"],
+        ),
         // --- runtime consistency ---------------------------------------------
         (
             "runtime_control_gaps",
@@ -5576,4 +6033,865 @@ fn read_rows(connection: &Connection, sql: &str) -> Vec<String> {
         .expect("the query runs")
         .collect::<Result<Vec<_>, _>>()
         .expect("every row reads")
+}
+
+/// The nullable extension preserves existing identities and references; it does
+/// not recast known accounts or remove immutable evidence protection.
+#[test]
+fn v113_preserves_known_artifacts_and_their_existing_references() {
+    let connection = Connection::open_in_memory().expect("legacy database");
+    // Match the migration runner's temporary rebuild mode. This focused fixture
+    // contains the evidence table and its child reference, not every parent.
+    connection
+        .pragma_update(None, "foreign_keys", false)
+        .expect("migration rebuild mode");
+    let original = include_str!("../migrations/0003_guardrails_and_recovery.sql");
+    let start = original
+        .find("CREATE TABLE artifact_evidence (")
+        .expect("original table");
+    let end = original[start..].find(") STRICT;").expect("table end") + start + ") STRICT;".len();
+    connection
+        .execute_batch(&original[start..end])
+        .expect("the deployed non-null schema");
+    connection.execute_batch(r#"
+        INSERT INTO artifact_evidence VALUES (
+            '01890000-0000-7000-8000-000000000001', 'project', 'task', 'workflow', NULL,
+            'output', '{"schema_version":1,"kind":"legacy_explicit_locator"}',
+            'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            'maker', 'recorded-account', '2026-09-19T00:00:00Z'
+        );
+        CREATE TABLE existing_reference (id TEXT PRIMARY KEY, artifact_id TEXT REFERENCES artifact_evidence(id));
+        INSERT INTO existing_reference VALUES ('receipt', '01890000-0000-7000-8000-000000000001');
+        PRAGMA user_version=112;
+    "#).expect("known legacy evidence and its existing receipt");
+    connection
+        .execute_batch(include_str!(
+            "../migrations/0113_artifact_unknown_producer_account.sql"
+        ))
+        .expect("the migration applies");
+    let observed: (String, String) = connection.query_row(
+        "SELECT e.producer_account, e.locator FROM artifact_evidence e JOIN existing_reference r ON r.artifact_id=e.id WHERE r.id='receipt'", [], |r| Ok((r.get(0)?,r.get(1)?))
+    ).expect("the original receipt still addresses its evidence");
+    assert_eq!(
+        observed,
+        (
+            "recorded-account".to_owned(),
+            r#"{"schema_version":1,"kind":"legacy_explicit_locator"}"#.to_owned()
+        )
+    );
+    let referenced_table: String = connection
+        .query_row(
+            "SELECT [table] FROM pragma_foreign_key_list('existing_reference')",
+            [],
+            |r| r.get(0),
+        )
+        .expect("reference target");
+    assert_eq!(referenced_table, "artifact_evidence");
+    let required: i64 = connection.query_row("SELECT [notnull] FROM pragma_table_info('artifact_evidence') WHERE name='producer_account'", [], |r| r.get(0)).expect("account nullability");
+    assert_eq!(required, 0);
+    for statement in [
+        "UPDATE artifact_evidence SET producer_account='invented'",
+        "DELETE FROM artifact_evidence",
+    ] {
+        let error = connection
+            .execute(statement, [])
+            .expect_err("evidence remains immutable");
+        assert!(error.to_string().contains("artifact evidence is immutable"));
+    }
+}
+
+#[test]
+fn issuance_boundary_is_frozen_across_replay_and_reopen() {
+    let directory = temp();
+    let store = open(&directory);
+    for (id, boundary) in [
+        ("01a0b000-0000-7000-8000-00000000aaa1", Some((7, 2400))),
+        ("01a0b000-0000-7000-8000-00000000aaa2", Some((7, 0))),
+        ("01a0b000-0000-7000-8000-00000000aaa3", None),
+    ] {
+        let mut original = issuance(
+            id,
+            "01a0b000-0000-7000-8000-00000000bbbb",
+            "native-session-one",
+        );
+        original.boundary_at = boundary;
+        assert_eq!(
+            store.record_message_issuance(&original).unwrap(),
+            kontor_store::MessageIssuanceOutcome::Recorded
+        );
+        let mut retry = original.clone();
+        retry.boundary_at = Some((8, 9000));
+        assert_eq!(
+            store.record_message_issuance(&retry).unwrap(),
+            kontor_store::MessageIssuanceOutcome::Replayed
+        );
+        assert_eq!(
+            store.message_issuance(id).unwrap().unwrap().boundary_at,
+            boundary
+        );
+    }
+    drop(store);
+    let reopened = open(&directory);
+    for (id, boundary) in [
+        ("01a0b000-0000-7000-8000-00000000aaa1", Some((7, 2400))),
+        ("01a0b000-0000-7000-8000-00000000aaa2", Some((7, 0))),
+        ("01a0b000-0000-7000-8000-00000000aaa3", None),
+    ] {
+        assert_eq!(
+            reopened.message_issuance(id).unwrap().unwrap().boundary_at,
+            boundary,
+            "a retry must neither move an original boundary nor invent one for a legacy issuance"
+        );
+    }
+}
+
+/// v125: fleet policy publication and activation bind their keys realm-wide,
+/// once, and a binding can no longer be rebound or released (ASMA-8280).
+#[test]
+fn v125_fleet_policy_keys_bind_once_and_stay_bound() {
+    let directory = temp();
+    let store = open(&directory);
+    let binding =
+        |key: &str, operation: &'static str, fingerprint: &[u8]| kontor_store::IdempotencyBinding {
+            key: key.to_owned(),
+            operation,
+            fingerprint: kontor_core::id::ContentHash::of(fingerprint),
+            bound_at: kontor_core::id::parse_utc_timestamp("2026-09-27T12:00:00Z")
+                .expect("a timestamp"),
+        };
+    for operation in ["publish_fleet_policy", "activate_fleet_policy"] {
+        let key = format!("{operation}-key");
+        assert_eq!(
+            store
+                .bind_realm_operation(&binding(&key, operation, b"one"))
+                .expect("a first use binds"),
+            kontor_store::Applied::Created
+        );
+        assert_eq!(
+            store
+                .bind_realm_operation(&binding(&key, operation, b"one"))
+                .expect("an exact replay is answered"),
+            kontor_store::Applied::Unchanged
+        );
+        assert!(
+            store
+                .bind_realm_operation(&binding(&key, operation, b"two"))
+                .is_err(),
+            "one key cannot name a second {operation}"
+        );
+    }
+    assert!(
+        store
+            .bind_realm_operation(&binding(
+                "publish_fleet_policy-key",
+                "activate_fleet_policy",
+                b"one"
+            ))
+            .is_err(),
+        "one key cannot name a second operation"
+    );
+    drop(store);
+
+    let connection = raw(&directory);
+    let unknown = connection.execute(
+        "INSERT INTO realm_idempotency_bindings (idempotency_key, operation, fingerprint, bound_at)
+         VALUES ('unknown', 'rewrite_fleet_policy', ?1, '2026-09-27T12:00:00Z')",
+        [kontor_core::id::ContentHash::of(b"x").as_str()],
+    );
+    assert!(unknown.is_err(), "the operation list stays closed");
+    for statement in [
+        "UPDATE realm_idempotency_bindings SET fingerprint = fingerprint
+         WHERE idempotency_key = 'activate_fleet_policy-key'",
+        "DELETE FROM realm_idempotency_bindings WHERE idempotency_key = 'activate_fleet_policy-key'",
+    ] {
+        assert!(
+            connection.execute(statement, []).is_err(),
+            "a binding is permanent: {statement}"
+        );
+    }
+}
+
+/// v126: fleet bundle publication and activation bind their keys realm-wide,
+/// once; the v125 bindings survive the rebuild and stay permanent (ASMA-8280).
+#[test]
+fn v126_fleet_bundle_keys_bind_once_and_every_binding_stays_bound() {
+    let directory = temp();
+    let store = open(&directory);
+    let binding =
+        |key: &str, operation: &'static str, fingerprint: &[u8]| kontor_store::IdempotencyBinding {
+            key: key.to_owned(),
+            operation,
+            fingerprint: kontor_core::id::ContentHash::of(fingerprint),
+            bound_at: kontor_core::id::parse_utc_timestamp("2026-09-29T12:00:00Z")
+                .expect("a timestamp"),
+        };
+    for operation in [
+        "publish_fleet_policy",
+        "activate_fleet_policy",
+        "publish_fleet_bundle",
+        "activate_fleet_bundle",
+    ] {
+        let key = format!("{operation}-key");
+        assert_eq!(
+            store
+                .bind_realm_operation(&binding(&key, operation, b"one"))
+                .expect("a first use binds"),
+            kontor_store::Applied::Created
+        );
+        assert_eq!(
+            store
+                .bind_realm_operation(&binding(&key, operation, b"one"))
+                .expect("an exact replay is answered"),
+            kontor_store::Applied::Unchanged
+        );
+        assert!(
+            store
+                .bind_realm_operation(&binding(&key, operation, b"two"))
+                .is_err(),
+            "one key cannot name a second {operation}"
+        );
+    }
+    assert!(
+        store
+            .bind_realm_operation(&binding(
+                "publish_fleet_bundle-key",
+                "activate_fleet_bundle",
+                b"one"
+            ))
+            .is_err(),
+        "one key cannot name a second operation"
+    );
+    drop(store);
+
+    let connection = raw(&directory);
+    let unknown = connection.execute(
+        "INSERT INTO realm_idempotency_bindings (idempotency_key, operation, fingerprint, bound_at)
+         VALUES ('unknown', 'rewrite_fleet_bundle', ?1, '2026-09-29T12:00:00Z')",
+        [kontor_core::id::ContentHash::of(b"x").as_str()],
+    );
+    assert!(unknown.is_err(), "the operation list stays closed");
+    for statement in [
+        "UPDATE realm_idempotency_bindings SET fingerprint = fingerprint
+         WHERE idempotency_key = 'activate_fleet_bundle-key'",
+        "DELETE FROM realm_idempotency_bindings WHERE idempotency_key = 'publish_fleet_bundle-key'",
+    ] {
+        assert!(
+            connection.execute(statement, []).is_err(),
+            "a binding is permanent: {statement}"
+        );
+    }
+}
+
+/// v127 (ASMA-8282) rebuilds the consultation registry, its document catalog
+/// and the receipt ledger to admit the closed `planning_pair` family. Every
+/// Advisor and Committee row, constraint, trigger and index must come through
+/// it byte for byte, including a settled run's terminal evidence.
+#[test]
+fn v127_preserves_every_advisor_and_committee_row_and_rule() {
+    const PROJECT: &str = "0193f000-0000-7000-8000-000000000101";
+    const EPIC: &str = "0193f000-0000-7000-8000-000000000102";
+    const CALLER: &str = "0193f000-0000-7000-8000-000000000103";
+    const ADVISOR_RUN: &str = "0193f000-0000-7000-8000-000000000104";
+    const COMMITTEE_RUN: &str = "0193f000-0000-7000-8000-000000000105";
+    const NODE_A: &str = "0193f000-0000-7000-8000-000000000106";
+    const NODE_C: &str = "0193f000-0000-7000-8000-000000000107";
+    const PROFILE: &str = "0193f000-0000-7000-8000-000000000108";
+    const RECEIPT: &str = "0193f000-0000-7000-8000-000000000109";
+    const HASH_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const HASH_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const HASH_C: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
+    let connection = Connection::open_in_memory().expect("the migration fixture opens");
+    // The parents 0122 references, as stubs; then the exact v126 shapes of the
+    // three tables it rebuilds, with their triggers and indexes.
+    connection
+        .execute_batch(&format!(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY) STRICT;
+             CREATE TABLE mini_projects (id TEXT PRIMARY KEY) STRICT;
+             CREATE TABLE tasks (id TEXT PRIMARY KEY, project_id TEXT, mini_project_id TEXT) STRICT;
+             CREATE TABLE topology_nodes (id TEXT PRIMARY KEY) STRICT;
+             CREATE TABLE seat_bindings (id TEXT PRIMARY KEY) STRICT;
+             {profiles}
+             {runs}
+             {receipts}
+             CREATE TABLE consultation_seats (
+                 run_id TEXT NOT NULL REFERENCES consultation_runs(run_id),
+                 role_slot_id TEXT NOT NULL,
+                 PRIMARY KEY (run_id, role_slot_id)
+             ) STRICT;
+             CREATE TABLE advisor_advice_artifacts (
+                 advisor_run_id TEXT NOT NULL, project_id TEXT NOT NULL
+             ) STRICT;
+             CREATE TRIGGER advisor_advice_belongs_to_its_attested_seat
+             BEFORE INSERT ON advisor_advice_artifacts
+             WHEN NOT EXISTS (
+                 SELECT 1 FROM consultation_runs AS run
+                  WHERE run.project_id = NEW.project_id
+                    AND run.run_id = NEW.advisor_run_id
+                    AND run.family = 'advisor'
+             )
+             BEGIN SELECT RAISE(ABORT, 'advice needs its Advisor run'); END;",
+            profiles = include_str!("../migrations/0034_consultation_profiles.sql")
+                .split("-- Widen the closed command-kind list")
+                .next()
+                .expect("the v34 catalog definition"),
+            runs = V126_CONSULTATION_RUNS,
+            receipts = V108_COMMAND_RECEIPTS,
+        ))
+        .expect("the v126 shapes are created");
+    connection
+        .execute_batch(&format!(
+            "INSERT INTO projects VALUES ('{PROJECT}');
+             INSERT INTO mini_projects VALUES ('{EPIC}');
+             INSERT INTO seat_bindings VALUES ('{CALLER}');
+             INSERT INTO topology_nodes VALUES ('{NODE_A}'), ('{NODE_C}');
+             INSERT INTO consultation_profile_revisions VALUES
+                 ('{PROJECT}', 'advisor', '{PROFILE}', 1, 'Advisor', '{{}}', '{HASH_A}', '2026-10-01T10:00:00Z'),
+                 ('{PROJECT}', 'committee', '{PROFILE}', 1, 'Committee', '{{}}', '{HASH_B}', '2026-10-01T10:00:00Z');
+             INSERT INTO consultation_runs
+                 (run_id, project_id, mini_project_id, family, profile_id, profile_version,
+                  definition_hash, question, question_hash, context, context_hash,
+                  caller_seat_binding_id, topology_node_id, invoke_key, invoke_intent_hash,
+                  state, round, result, result_hash, revision, created_at, updated_at, settled_at,
+                  topic, semantic_identity_hash, subject_kind, subject_task_id)
+             VALUES
+                 ('{ADVISOR_RUN}', '{PROJECT}', '{EPIC}', 'advisor', '{PROFILE}', 1, '{HASH_A}',
+                  'Why?', '{HASH_A}', '{{}}', '{HASH_A}', '{CALLER}', '{NODE_A}', 'advisor-key',
+                  '{HASH_A}', 'running', 1, NULL, NULL, 3, '2026-10-01T10:00:00Z',
+                  '2026-10-01T11:00:00Z', NULL, 'Naming', '{HASH_A}', 'epic', NULL),
+                 ('{COMMITTEE_RUN}', '{PROJECT}', '{EPIC}', 'committee', '{PROFILE}', 1, '{HASH_B}',
+                  'Is it compliant?', '{HASH_B}', '{{}}', '{HASH_B}', '{CALLER}', '{NODE_C}',
+                  'committee-key', '{HASH_B}', 'settled', 2, '{{\"verdict\":\"compliant\"}}', '{HASH_C}',
+                  7, '2026-10-01T10:00:00Z', '2026-10-01T12:00:00Z', '2026-10-01T12:00:00Z',
+                  'Review', '{HASH_B}', 'epic', NULL);
+             INSERT INTO consultation_seats VALUES ('{COMMITTEE_RUN}', 'reviewer-a');
+             INSERT INTO command_receipts
+                 (id, project_id, idempotency_key, kind, target, target_revision, intent,
+                  intent_hash, state, correlation, native_identity, result_ref, attempts,
+                  created_at, updated_at, execution_mode)
+             VALUES ('{RECEIPT}', '{PROJECT}', 'settle-key', 'settle_committee_run', '{{}}', 1,
+                     '{{}}', '{HASH_C}', 'confirmed', NULL, NULL, NULL, 0,
+                     '2026-10-01T12:00:00Z', '2026-10-01T12:00:00Z', 'local');"
+        ))
+        .expect("the historical rows are written");
+
+    let snapshot = |table: &str, order: &str| -> Vec<String> {
+        let mut statement = connection
+            .prepare(&format!("SELECT * FROM {table} ORDER BY {order}"))
+            .expect("the table is readable");
+        let width = statement.column_count();
+        statement
+            .query_map([], |row| {
+                (0..width)
+                    .map(|index| {
+                        row.get::<_, rusqlite::types::Value>(index)
+                            .map(|value| format!("{value:?}"))
+                    })
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map(|values| values.join("|"))
+            })
+            .expect("rows")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("rows")
+    };
+    let before = (
+        snapshot("consultation_runs", "run_id"),
+        snapshot("consultation_profile_revisions", "family"),
+        snapshot("command_receipts", "id"),
+    );
+
+    // Exactly as `migrate()` applies a generation: foreign keys off for the
+    // batch, then a full foreign-key check of the result below.
+    connection
+        .execute_batch("PRAGMA foreign_keys = OFF;")
+        .expect("the migration runner's pragma");
+    connection
+        .execute_batch(include_str!("../migrations/0127_planning_pair_family.sql"))
+        .expect("v127 applies over the historical rows");
+    connection
+        .execute_batch("PRAGMA foreign_keys = ON;")
+        .expect("the runner restores foreign keys");
+
+    assert_eq!(
+        (
+            snapshot("consultation_runs", "run_id"),
+            snapshot("consultation_profile_revisions", "family"),
+            snapshot("command_receipts", "id"),
+        ),
+        before,
+        "every historical row is copied byte for byte"
+    );
+    assert!(
+        connection
+            .prepare("PRAGMA foreign_key_check")
+            .expect("the check runs")
+            .query([])
+            .expect("rows")
+            .next()
+            .expect("readable")
+            .is_none(),
+        "the child seat and every reference still resolve"
+    );
+    let refused = |sql: &str, needle: &str| match connection.execute(sql, []) {
+        Err(error) => assert!(error.to_string().contains(needle), "{sql}: {error}"),
+        Ok(rows) => panic!("{sql}: {rows} rows were accepted"),
+    };
+    // The settled Committee keeps its terminal evidence; the frozen input and
+    // permanence rules survive; the old vocabularies are exactly the old ones.
+    refused(
+        &format!("UPDATE consultation_runs SET result = '{{}}' WHERE run_id = '{COMMITTEE_RUN}'"),
+        "cannot rewrite frozen input or settled evidence",
+    );
+    refused(
+        &format!("UPDATE consultation_runs SET question = 'Who?' WHERE run_id = '{ADVISOR_RUN}'"),
+        "cannot rewrite frozen input or settled evidence",
+    );
+    refused(
+        &format!("UPDATE consultation_runs SET state = 'disposed' WHERE run_id = '{ADVISOR_RUN}'"),
+        "CHECK constraint failed",
+    );
+    refused(
+        "UPDATE consultation_profile_revisions SET name = 'Renamed'",
+        "is immutable",
+    );
+    refused(
+        &format!("DELETE FROM command_receipts WHERE id = '{RECEIPT}'"),
+        "not deletable",
+    );
+    refused(
+        &format!(
+            "INSERT INTO consultation_profile_revisions VALUES
+                 ('{PROJECT}', 'jury', '{PROFILE}', 1, 'Jury', '{{}}', '{HASH_C}', '2026-10-02T10:00:00Z')"
+        ),
+        "CHECK constraint failed",
+    );
+    refused(
+        &format!("INSERT INTO advisor_advice_artifacts VALUES ('{COMMITTEE_RUN}', '{PROJECT}')"),
+        "advice needs its Advisor run",
+    );
+    connection
+        .execute(
+            &format!("INSERT INTO advisor_advice_artifacts VALUES ('{ADVISOR_RUN}', '{PROJECT}')"),
+            [],
+        )
+        .expect("another table's trigger still reads the rebuilt registry");
+    // The shared semantic identity index still refuses a duplicate.
+    refused(
+        &format!(
+            "UPDATE consultation_runs SET semantic_identity_hash = '{HASH_B}', revision = revision + 1
+              WHERE run_id = '{ADVISOR_RUN}'"
+        ),
+        "UNIQUE constraint failed",
+    );
+    // And the third family is admitted only where it was added.
+    connection
+        .execute(
+            &format!(
+                "INSERT INTO consultation_profile_revisions VALUES
+                     ('{PROJECT}', 'planning_pair', '{PROFILE}', 1, 'Pair', '{{}}', '{HASH_C}',
+                      '2026-10-02T10:00:00Z')"
+            ),
+            [],
+        )
+        .expect("a planning_pair document publishes into the shared catalog");
+    let kinds: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM sqlite_master
+              WHERE name = 'command_receipts' AND sql LIKE '%record_planning_pair_disposition%'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the receipt shape is readable");
+    assert_eq!(
+        kinds, 1,
+        "the six planning pair command kinds are closed in"
+    );
+}
+
+/// v128 (ASMA-8282 frontier A) adds one run-keyed planning pair detail, each
+/// member's known native claim, and one receipt kind. The receipt ledger keeps
+/// every row; a claim belongs only to a current member seat of an open planning
+/// pair on its own placement, and is immutable and permanent.
+#[test]
+fn v128_keeps_every_receipt_and_admits_only_a_current_members_immutable_claim() {
+    const PROJECT: &str = "0193f000-0000-7000-8000-000000000201";
+    const RUN: &str = "0193f000-0000-7000-8000-000000000202";
+    const COMMITTEE: &str = "0193f000-0000-7000-8000-000000000203";
+    const SEAT: &str = "0193f000-0000-7000-8000-000000000204";
+    const RECEIPT: &str = "0193f000-0000-7000-8000-000000000205";
+    const PLACEMENT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const CONTEXT: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let v127 = include_str!("../migrations/0127_planning_pair_family.sql");
+    let start = v127
+        .find("CREATE TABLE command_receipts_v127 (")
+        .expect("the v127 receipt shape");
+    let end = start + v127[start..].find(") STRICT;").expect("its end") + ") STRICT;".len();
+    let receipts = v127[start..end].replace("command_receipts_v127", "command_receipts");
+
+    let connection = Connection::open_in_memory().expect("the migration fixture opens");
+    connection
+        .execute_batch(&format!(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY) STRICT;
+             CREATE TABLE seat_bindings (id TEXT PRIMARY KEY) STRICT;
+             CREATE TABLE consultation_runs (
+                 run_id TEXT NOT NULL PRIMARY KEY, project_id TEXT NOT NULL,
+                 family TEXT NOT NULL, state TEXT NOT NULL, UNIQUE (project_id, run_id)
+             ) STRICT;
+             CREATE TABLE consultation_seats (
+                 run_id TEXT NOT NULL, project_id TEXT NOT NULL,
+                 seat_binding_id TEXT NOT NULL UNIQUE, occupancy_generation INTEGER NOT NULL
+             ) STRICT;
+             CREATE TABLE planning_pair_placements (
+                 run_id TEXT NOT NULL PRIMARY KEY, project_id TEXT NOT NULL,
+                 placement_hash TEXT NOT NULL
+             ) STRICT;
+             {receipts}
+             INSERT INTO projects VALUES ('{PROJECT}');
+             INSERT INTO seat_bindings VALUES ('{SEAT}');
+             INSERT INTO consultation_runs VALUES
+                 ('{RUN}', '{PROJECT}', 'planning_pair', 'materializing'),
+                 ('{COMMITTEE}', '{PROJECT}', 'committee', 'running');
+             INSERT INTO consultation_seats VALUES ('{RUN}', '{PROJECT}', '{SEAT}', 2);
+             INSERT INTO planning_pair_placements VALUES ('{RUN}', '{PROJECT}', '{PLACEMENT}');
+             INSERT INTO command_receipts
+                 (id, project_id, idempotency_key, kind, target, target_revision, intent,
+                  intent_hash, state, attempts, created_at, updated_at, execution_mode)
+             VALUES ('{RECEIPT}', '{PROJECT}', 'pp-disposed', 'record_planning_pair_disposition',
+                     '{{}}', 3, '{{}}', '{CONTEXT}', 'intent_persisted', 0,
+                     '2026-10-02T10:00:00Z', '2026-10-02T10:00:00Z', 'local');"
+        ))
+        .expect("the v127 fixture");
+    let before: String = connection
+        .query_row(
+            "SELECT json_group_array(json_array(id, kind, idempotency_key, target_revision, state))
+               FROM command_receipts",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the receipts read");
+    connection
+        .execute_batch(include_str!(
+            "../migrations/0128_planning_pair_member_natives.sql"
+        ))
+        .expect("v128 applies over the historical rows");
+    let after: String = connection
+        .query_row(
+            "SELECT json_group_array(json_array(id, kind, idempotency_key, target_revision, state))
+               FROM command_receipts",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the receipts read");
+    assert_eq!(after, before, "every receipt is copied unchanged");
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("the version reads");
+    assert_eq!(version, 128);
+
+    let receipt = |id: &str, key: &str, kind: &str| {
+        connection.execute(
+            &format!(
+                "INSERT INTO command_receipts
+                     (id, project_id, idempotency_key, kind, target, target_revision, intent,
+                      intent_hash, state, attempts, created_at, updated_at, execution_mode)
+                 VALUES ('{id}', '{PROJECT}', '{key}', '{kind}', '{{}}', 4, '{{}}', '{CONTEXT}',
+                         'intent_persisted', 0, '2026-10-02T10:01:00Z',
+                         '2026-10-02T10:01:00Z', 'local')"
+            ),
+            [],
+        )
+    };
+    receipt(
+        "0193f000-0000-7000-8000-000000000206",
+        "pp-recover",
+        "recover_planning_pair_seat",
+    )
+    .expect("the recovery kind is closed in");
+    assert!(
+        receipt(
+            "0193f000-0000-7000-8000-000000000207",
+            "pp-unknown",
+            "replace_planning_pair_seat",
+        )
+        .is_err(),
+        "the kind list stays closed"
+    );
+
+    let claim = |run: &str, generation: i64, placement: &str| {
+        connection.execute(
+            &format!(
+                "INSERT INTO planning_pair_member_natives
+                     (run_id, project_id, seat_binding_id, occupancy_generation, runtime_kind,
+                      host, runtime_generation, native_id, provider_session_id, context_hash,
+                      placement_hash, readback_refusal, observed_at)
+                 VALUES ('{run}', '{PROJECT}', '{SEAT}', {generation}, 'fake.runtime',
+                         'fake-host', 1, 'native-member-b', NULL, '{CONTEXT}', '{placement}',
+                         'route_unobserved', '2026-10-02T10:02:00Z')"
+            ),
+            [],
+        )
+    };
+    let refused = |result: rusqlite::Result<usize>, why: &str| match result {
+        Err(error) => assert!(
+            error
+                .to_string()
+                .contains("belongs only to a current member seat of an open pair"),
+            "{why}: {error}"
+        ),
+        Ok(_) => panic!("{why}: the claim was admitted"),
+    };
+    refused(claim(RUN, 1, PLACEMENT), "a retired generation");
+    refused(claim(RUN, 2, CONTEXT), "another placement");
+    claim(RUN, 2, PLACEMENT).expect("the current member's claim is kept");
+    let second = claim(RUN, 2, PLACEMENT).expect_err("one claim per member generation");
+    assert!(
+        second.to_string().contains("UNIQUE constraint failed"),
+        "{second}"
+    );
+    for (sql, rule) in [
+        (
+            "UPDATE planning_pair_member_natives SET native_id = 'native-member-c'",
+            "is immutable",
+        ),
+        (
+            "DELETE FROM planning_pair_member_natives",
+            "cannot be withdrawn",
+        ),
+    ] {
+        let error = connection
+            .execute(sql, [])
+            .expect_err("a kept claim never moves");
+        assert!(error.to_string().contains(rule), "{sql}: {error}");
+    }
+    connection
+        .execute(
+            &format!("UPDATE consultation_runs SET state = 'disposed' WHERE run_id = '{RUN}'"),
+            [],
+        )
+        .expect("the fixture disposes the pair");
+    connection
+        .execute(
+            &format!(
+                "UPDATE consultation_seats SET occupancy_generation = 3 WHERE run_id = '{RUN}'"
+            ),
+            [],
+        )
+        .expect("the fixture fences the member");
+    refused(claim(RUN, 3, PLACEMENT), "a disposed pair");
+}
+
+/// The exact v126 shape of `consultation_runs`: the v70 table, the four
+/// columns v77, v91 and v96 added, and the v91 and v96 indexes and triggers.
+const V126_CONSULTATION_RUNS: &str = "
+CREATE TABLE consultation_runs (
+    run_id TEXT NOT NULL PRIMARY KEY CHECK (length(run_id) = 36 AND run_id NOT GLOB '*[^0-9a-f-]*'),
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+    mini_project_id TEXT NOT NULL REFERENCES mini_projects(id) ON DELETE RESTRICT,
+    family TEXT NOT NULL CHECK (family IN ('advisor', 'committee')),
+    profile_id TEXT NOT NULL,
+    profile_version INTEGER NOT NULL CHECK (profile_version >= 1),
+    definition_hash TEXT NOT NULL CHECK (length(definition_hash) = 64 AND definition_hash NOT GLOB '*[^0-9a-f]*'),
+    question TEXT NOT NULL CHECK (length(question) BETWEEN 1 AND 32768),
+    question_hash TEXT NOT NULL CHECK (length(question_hash) = 64 AND question_hash NOT GLOB '*[^0-9a-f]*'),
+    context TEXT NOT NULL CHECK (json_valid(context)),
+    context_hash TEXT NOT NULL CHECK (length(context_hash) = 64 AND context_hash NOT GLOB '*[^0-9a-f]*'),
+    caller_seat_binding_id TEXT NOT NULL REFERENCES seat_bindings(id) ON DELETE RESTRICT,
+    topology_node_id TEXT NOT NULL UNIQUE REFERENCES topology_nodes(id) ON DELETE RESTRICT,
+    invoke_key TEXT NOT NULL UNIQUE CHECK (length(invoke_key) BETWEEN 1 AND 256),
+    invoke_intent_hash TEXT NOT NULL CHECK (length(invoke_intent_hash) = 64 AND invoke_intent_hash NOT GLOB '*[^0-9a-f]*'),
+    state TEXT NOT NULL CHECK (state IN ('materializing', 'running', 'awaiting_judge', 'settled', 'needs_human')),
+    round INTEGER NOT NULL CHECK (round BETWEEN 1 AND 255),
+    result TEXT NULL CHECK (result IS NULL OR json_valid(result)),
+    result_hash TEXT NULL CHECK (result_hash IS NULL OR (length(result_hash) = 64 AND result_hash NOT GLOB '*[^0-9a-f]*')),
+    revision INTEGER NOT NULL CHECK (revision >= 1),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    settled_at TEXT NULL,
+    FOREIGN KEY (project_id, family, profile_id, profile_version)
+        REFERENCES consultation_profile_revisions(project_id, family, profile_id, version)
+        ON DELETE RESTRICT,
+    CHECK ((result IS NULL) = (result_hash IS NULL)),
+    CHECK ((state = 'settled') = (settled_at IS NOT NULL)),
+    UNIQUE (project_id, run_id)
+) STRICT;
+ALTER TABLE consultation_runs ADD COLUMN topic TEXT NULL
+    CHECK (topic IS NULL OR length(topic) BETWEEN 1 AND 512);
+ALTER TABLE consultation_runs ADD COLUMN semantic_identity_hash TEXT NULL
+    CHECK (semantic_identity_hash IS NULL OR (length(semantic_identity_hash) = 64 AND semantic_identity_hash NOT GLOB '*[^0-9a-f]*'));
+ALTER TABLE consultation_runs ADD COLUMN subject_kind TEXT NULL
+    CHECK (subject_kind IS NULL OR subject_kind IN ('epic', 'task'));
+ALTER TABLE consultation_runs ADD COLUMN subject_task_id TEXT NULL
+    REFERENCES tasks(id) ON DELETE RESTRICT
+    CHECK ((subject_kind IS NULL AND subject_task_id IS NULL)
+           OR (subject_kind IS 'epic' AND subject_task_id IS NULL)
+           OR (subject_kind IS 'task' AND subject_task_id IS NOT NULL));
+CREATE INDEX ix_consultation_runs_epic
+    ON consultation_runs(project_id, mini_project_id, family, created_at, run_id);
+CREATE UNIQUE INDEX consultation_runs_by_semantic_identity
+    ON consultation_runs (project_id, semantic_identity_hash)
+    WHERE semantic_identity_hash IS NOT NULL;
+CREATE TRIGGER consultation_run_inputs_are_frozen
+BEFORE UPDATE ON consultation_runs
+WHEN OLD.question <> NEW.question
+  OR (OLD.result IS NOT NULL AND NOT (OLD.result IS NEW.result))
+BEGIN
+    SELECT RAISE(ABORT, 'a consultation run cannot rewrite frozen input or settled evidence');
+END;
+";
+
+/// The exact v108 receipt ledger shape, with its index and triggers.
+const V108_COMMAND_RECEIPTS: &str = "
+CREATE TABLE command_receipts (
+    id TEXT NOT NULL PRIMARY KEY CHECK (length(id) = 36 AND id NOT GLOB '*[^0-9a-f-]*'),
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+    idempotency_key TEXT NOT NULL UNIQUE CHECK (length(idempotency_key) BETWEEN 1 AND 256),
+    kind TEXT NOT NULL CHECK (kind IN ('settle_committee_run', 'invoke_advisor_run')),
+    target TEXT NOT NULL CHECK (json_valid(target)),
+    target_revision INTEGER NOT NULL CHECK (target_revision >= 1),
+    intent TEXT NOT NULL CHECK (json_valid(intent)),
+    intent_hash TEXT NOT NULL CHECK (length(intent_hash) = 64 AND intent_hash NOT GLOB '*[^0-9a-f]*'),
+    state TEXT NOT NULL CHECK (state IN ('intent_persisted','dispatch_pending','dispatched',
+        'acknowledged','confirmation_unknown','confirmed','failed')),
+    correlation TEXT NULL CHECK (correlation IS NULL OR length(correlation) BETWEEN 1 AND 256),
+    native_identity TEXT NULL CHECK (native_identity IS NULL OR json_valid(native_identity)),
+    result_ref TEXT NULL CHECK (result_ref IS NULL OR length(result_ref) BETWEEN 1 AND 256),
+    attempts INTEGER NOT NULL CHECK (attempts >= 0),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    execution_mode TEXT NOT NULL DEFAULT 'dispatch' CHECK (execution_mode IN ('local','dispatch')),
+    UNIQUE (project_id, id)
+) STRICT;
+CREATE INDEX ix_command_receipts_state ON command_receipts(project_id, state);
+CREATE TRIGGER command_receipts_no_delete BEFORE DELETE ON command_receipts
+BEGIN SELECT RAISE(ABORT, 'command receipts are not deletable'); END;
+";
+
+#[test]
+fn v123_upgrade_preserves_generic_ledger_and_enforces_immutable_memory_receipts() {
+    use kontor_core::id::{ExternalName, IdempotencyKey, Timestamp};
+    use kontor_core::memory::{DegradedReason, RecallIntent};
+    use kontor_core::repository::NewProject;
+    use kontor_store::memory::{MemoryProvenance, SemanticRecall};
+    let directory = temp();
+    let store = open(&directory);
+    let project = ProjectId::generate();
+    store
+        .create_project(&NewProject {
+            id: project,
+            name: ExternalName::parse("Memory upgrade").unwrap(),
+            root_path: ExternalName::parse("/tmp/memory-upgrade").unwrap(),
+            created_at: Timestamp::now(),
+        })
+        .unwrap();
+    let document = CanonicalDocument::from_value(
+        &serde_json::json!({"schema_version":1,"text":"generic legacy document"}),
+    )
+    .unwrap();
+    let provenance = MemoryProvenance {
+        source: "synthetic".into(),
+        source_id: None,
+        legacy_last_write_wins: false,
+        history_unavailable: false,
+    };
+    let (revision, _) = store
+        .propose_memory_revision(project, "legacy", 0, &document, &provenance, "author")
+        .unwrap();
+    store
+        .approve_memory_revision(project, "legacy", &revision.revision_id, 1, "reviewer")
+        .unwrap();
+    let original = store
+        .freeze_memory_binding(
+            project,
+            "legacy-run",
+            &document,
+            std::slice::from_ref(&revision.revision_id),
+        )
+        .unwrap();
+    let typed = CanonicalDocument::from_value(
+        &serde_json::from_str::<serde_json::Value>(include_str!(
+            "../../kontor-core/tests/fixtures/experience-v1.json"
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    let (typed_revision, _) = store
+        .propose_memory_revision(project, "typed-existing", 0, &typed, &provenance, "author")
+        .unwrap();
+    store
+        .approve_memory_revision(
+            project,
+            "typed-existing",
+            &typed_revision.revision_id,
+            1,
+            "reviewer",
+        )
+        .unwrap();
+    drop(store);
+    // Remove all post-119 additive tables and the derived cache. The fixture
+    // now has the exact v119 table set and ledger, and opens through the real chain.
+    let database = directory.path().join("kontor.db");
+    let connection = Connection::open(&database).unwrap();
+    connection.execute_batch("DROP TABLE memory_projection_rebuild_results; DROP TABLE memory_projection_rebuild_keys; DROP TABLE memory_recall_keys; DROP TABLE memory_recall_metadata; DROP TABLE memory_experience_proposals; DROP TABLE memory_projection_active; DROP TABLE memory_projection_snapshots; DROP TABLE memory_experience_eligibility; DROP TABLE imported_record_evidence; DROP TABLE core_team_route_successions; PRAGMA user_version=119;").unwrap();
+    // The ASMA-8278 feature generations are additive too: a fixture that replays
+    // the chain from 119 must not leave their tables behind either.
+    connection.execute_batch("DROP TABLE planning_pair_contributions; DROP TABLE planning_pair_record_revisions; DROP TABLE planning_pair_placements; DROP TABLE planning_pair_member_natives; DROP TABLE attestation_authority_keys; DROP TABLE attestation_authority_heads; DROP TABLE prepared_attestation_tokens; DROP TABLE attestation_token_heads;").unwrap();
+    drop(connection);
+    let store = SqliteStore::open(&database).unwrap();
+    assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+    assert_eq!(store.list_memory(project).unwrap()[0].document, document);
+    assert_eq!(
+        store
+            .memory_binding(project, "legacy-run")
+            .unwrap()
+            .unwrap()
+            .result_hash,
+        original.result_hash
+    );
+    let snapshot = store.stage_projection(project).unwrap();
+    assert!(snapshot.entries.is_empty());
+    let intent = RecallIntent {
+        schema_version: 1,
+        task_id: "synthetic".into(),
+        task_title: "publication".into(),
+        module: None,
+        declared_scope: vec![],
+        phase: "verification".into(),
+    };
+    let key = IdempotencyKey::parse("upgrade-recall").unwrap();
+    let recall = store
+        .recall_experiences_idempotent(
+            project,
+            "typed-run",
+            "synthetic",
+            &key,
+            &intent,
+            &SemanticRecall::Degraded(DegradedReason::Absent),
+        )
+        .unwrap();
+    assert_eq!(recall.metadata.identities.len(), 1);
+    assert_eq!(
+        recall.metadata.identities[0].revision_id,
+        typed_revision.revision_id
+    );
+    drop(store);
+    let connection = Connection::open(&database).unwrap();
+    for sql in [
+        "UPDATE memory_projection_snapshots SET dataset='changed'",
+        "DELETE FROM memory_projection_snapshots",
+        "UPDATE memory_recall_metadata SET metadata='{}'",
+        "DELETE FROM memory_recall_metadata",
+        "UPDATE memory_recall_keys SET task_id='changed'",
+        "DELETE FROM memory_recall_keys",
+    ] {
+        assert!(
+            connection.execute(sql, []).is_err(),
+            "immutable evidence must reject {sql}"
+        );
+    }
+    let violations: i64 = connection
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(violations, 0);
 }

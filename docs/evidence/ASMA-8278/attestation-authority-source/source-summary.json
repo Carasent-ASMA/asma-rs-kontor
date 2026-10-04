@@ -1,0 +1,25 @@
+{
+  "base_head": "e3fdbe130b6ec3868d5b7d4dfa558eb9e51c5852",
+  "paths": {
+    "crates/kontor-core/src/repository.rs": "00a3c94d462cc193c2b675f4bd9f59a16e686db14fe819ba631984492e1d595e",
+    "crates/kontor-core/src/repository/attestation_authority.rs": "7a628d7eeaf75b41741620cd83919ed6748492008aa5fcd081990c57b01f90cb",
+    "crates/kontor-store/src/repository.rs": "f457a40568d1470e36e651d367756357abfdf077340f8a6bf0a7e75f06acbf34",
+    "crates/kontor-store/src/repository/attestation_authority.rs": "889e91f20deee4aa6ce85285d45aca8b0876d0f67ab1ec1cbcb3e991c3112705",
+    "crates/kontor-store/src/migrations.rs": "f6bb45d669a7e9caa079acbfc782317b521f8943d6228558a2c32db20eb0d2ea",
+    "crates/kontor-store/migrations/0124_attestation_authority_keys.sql": "fe4564117380dd82d62f369c9f3ab636127859264725ab84657421a26fa00a35",
+    "crates/kontor-store/tests/attestation_authority.rs": "f4ec37000f1338a061eb675dd296c94a55c7ac7da2937b23655f10e44ba258ff",
+    "crates/kontor-store/tests/schema_v1.rs": "31123fe457625586a83d0e079f3c5189c2266a713c5391afe7c4a449f066ff7d",
+    "crates/kontor-store/tests/repository_roundtrip.rs": "ce3fb50a0d1898fdc1ec7ff49c6a509518c312c6216768699e88a6e6212f7cf5",
+    "crates/kontor-store/src/backup/export.rs": "1a8df3e3305afe5f6a58de5237a2cf9e8087cb855d0f7b5751cc5c0619175575",
+    "crates/kontor-store/src/backup/restore.rs": "45dddeb7d22651d878614e485623889af75191a815269acd55a3c1d521cd8fed",
+    "crates/kontor-store/tests/backup_snapshot.rs": "6c08fcde04ecca037778590688ae3ec3a9668e1127e8888bf6c146bdbb49665a"
+  },
+  "limits": [
+    "Public metadata persistence and disposable fixture proof only",
+    "Detached reads grant no authority or freshness",
+    "No issuance/token ledger, owner admission, native possession or fencing",
+    "Nonempty ledger modeled export/raw restore refused; qualified continuity Unsupported",
+    "Historical raw restore retains existing exact-schema refusal",
+    "No installed database, signing/keychain, native/provider effects or staging/commits"
+  ]
+}

@@ -154,6 +154,78 @@ pub fn assert_unsupported<T: std::fmt::Debug>(
     );
 }
 
+/// One planning pair member reconcile request on hypothetical, non-secret
+/// fixture values (ASMA-8282 frontier A). A runtime that has not composed the
+/// seam must refuse it before reading any of them.
+#[must_use]
+pub fn planning_pair_reconcile_request()
+-> kontor_runtime::planning_pair::PlanningPairMemberReconcileRequest {
+    use kontor_core::id::{
+        ContentHash, ExternalId, ExternalName, PlanningPairProfileId, PlanningPairRunId,
+        RoleCatalogId, RuntimeKindKey, SeatBindingId, SpecVersion, TeamDefinitionId,
+        TopologyNodeId, TopologySpecId,
+    };
+    use kontor_core::spec::{ModelRef, ModelRung, ProviderRef};
+    use kontor_runtime::planning_pair::{
+        PlanningPairCatalogPin, PlanningPairLaunchContext, PlanningPairMemberReconcileRequest,
+    };
+    PlanningPairMemberReconcileRequest {
+        context: PlanningPairLaunchContext {
+            run_id: PlanningPairRunId::generate(),
+            seat_binding_id: SeatBindingId::generate(),
+            slot: kontor_core::planning_pair::PlanningPairSlot::SeatB,
+            occupancy_generation: 1,
+            profile: kontor_core::planning_pair::PlanningPairPin {
+                profile_id: PlanningPairProfileId::generate(),
+                version: SpecVersion::FIRST,
+                definition_hash: ContentHash::of(b"planning pair document"),
+            },
+            topology: kontor_core::spec::TopologySnapshot {
+                spec_id: TopologySpecId::generate(),
+                version: SpecVersion::FIRST,
+                canonical_hash: ContentHash::of(b"topology"),
+            },
+            team_definition: kontor_core::spec::TeamDefinitionSnapshot {
+                definition_id: TeamDefinitionId::generate(),
+                version: SpecVersion::FIRST,
+                canonical_hash: ContentHash::of(b"team definition"),
+            },
+            role_catalog: PlanningPairCatalogPin {
+                catalog_id: RoleCatalogId::generate(),
+                version: SpecVersion::FIRST,
+                canonical_hash: ContentHash::of(b"role catalog"),
+            },
+            topology_node_id: TopologyNodeId::generate(),
+            cwd: kontor_runtime::workspace::WorkspaceRoot::parse("/realm/pair")
+                .expect("a member cwd"),
+            route: ModelRung {
+                provider: ProviderRef("claude".to_owned()),
+                model: ModelRef("claude-opus-5".to_owned()),
+                effort: None,
+            },
+            vendor: "anthropic".to_owned(),
+            placement_hash: ContentHash::of(b"placement"),
+            requested_fleet_provenance: kontor_runtime::FleetLaunchProvenance {
+                policy_hash: ContentHash::of(b"activated policy"),
+                source_bundle_hash: None,
+                binding_key: "advisor/pair".to_owned(),
+                chain: "pair".to_owned(),
+                step: 1,
+                sub_step: 1,
+                vendor: "anthropic".to_owned(),
+                eligibility: None,
+            },
+        },
+        identity: kontor_core::state::NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse("contract.runtime").expect("a runtime kind"),
+            host: ExternalName::parse("contract-host").expect("a host"),
+            generation: 1,
+            native_id: ExternalId::parse("native-member").expect("a native id"),
+        },
+        requested_at: at("2026-10-02T09:30:00Z"),
+    }
+}
+
 /// Identity, refusal and evidence rules every adapter must satisfy.
 ///
 /// `Launch` is the one precondition: a runtime that cannot launch has nothing

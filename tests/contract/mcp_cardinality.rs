@@ -56,6 +56,12 @@ fn sample(ty: ArgType, name: &str) -> serde_json::Value {
         ArgType::ProjectId
         | ArgType::MiniProjectId
         | ArgType::TaskId
+        // A selector is sampled as a UUID: these tests assert cardinality and
+        // routing, and the UUID spelling is the one that resolves without a
+        // seeded Jira binding. That it still works here is the compatibility
+        // guarantee ASMA-8119 owes every existing caller.
+        | ArgType::EpicSelector
+        | ArgType::TaskSelector
         | ArgType::TeamRunId
         | ArgType::AgentRunId
         | ArgType::AccountProfileId
@@ -66,7 +72,8 @@ fn sample(ty: ArgType, name: &str) -> serde_json::Value {
         | ArgType::CapacityObservationId
         | ArgType::QuickSessionId
         | ArgType::AdvisorRunId
-        | ArgType::CommitteeRunId => serde_json::Value::String(UUID.to_owned()),
+        | ArgType::CommitteeRunId
+        | ArgType::PlanningPairRunId => serde_json::Value::String(UUID.to_owned()),
         ArgType::IntakeReceiptId => serde_json::Value::String(UUID.to_owned()),
         ArgType::OpenKey => serde_json::Value::String("codex".to_owned()),
         ArgType::ExternalId => serde_json::Value::String("external-event-1".to_owned()),
@@ -115,9 +122,16 @@ fn arguments(tool: &ToolSpec) -> serde_json::Value {
     serde_json::Value::Object(object)
 }
 
+/// Every operation served over HTTP. A local operation has no route, so it
+/// makes no request at all; its own test below says so.
+fn http() -> impl Iterator<Item = &'static ToolSpec> {
+    REGISTRY.iter().filter(|tool| tool.route().is_some())
+}
+
 /// The path a tool's sample arguments resolve its template to.
 fn expected_path(tool: &ToolSpec) -> String {
-    let mut path = tool.path.to_owned();
+    let (_, template) = tool.route().expect("an HTTP operation");
+    let mut path = template.to_owned();
     for arg in tool.args_in(Place::Path) {
         let value = sample(arg.ty, arg.name);
         // The same scalar handling the dispatch path uses: a numeric path argument
@@ -133,7 +147,7 @@ fn expected_path(tool: &ToolSpec) -> String {
 
 #[tokio::test]
 async fn every_tool_makes_exactly_one_authenticated_request_with_its_declared_shape() {
-    for tool in REGISTRY {
+    for tool in http() {
         let server = MockServer::start().await;
         Mock::given(any())
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -164,7 +178,7 @@ async fn every_tool_makes_exactly_one_authenticated_request_with_its_declared_sh
         let request = &received[0];
         assert_eq!(
             request.method.as_str(),
-            tool.method.as_str(),
+            tool.route().expect("an HTTP operation").0.as_str(),
             "{} used the wrong method",
             tool.name
         );
@@ -428,10 +442,7 @@ async fn an_observer_is_refused_before_a_request_exists() {
 
 #[tokio::test]
 async fn an_operator_cannot_reach_an_admin_tool() {
-    for tool in REGISTRY
-        .iter()
-        .filter(|tool| tool.tier == CallerTier::Admin)
-    {
+    for tool in http().filter(|tool| tool.tier == CallerTier::Admin) {
         let (dispatcher, recorder) = recording(CallerTier::Operator);
         let failure = dispatcher
             .call(tool.name, &arguments(tool))
@@ -452,7 +463,7 @@ async fn an_operator_cannot_reach_an_admin_tool() {
 async fn an_admitted_call_makes_exactly_one_request_and_no_retry() {
     // The positive half of the count: every tool an admin may call dispatches once,
     // including the ones whose daemon-side work composes many effects.
-    for tool in REGISTRY {
+    for tool in http() {
         let (dispatcher, recorder) = recording(CallerTier::Admin);
         dispatcher
             .call(tool.name, &arguments(tool))
@@ -465,6 +476,49 @@ async fn an_admitted_call_makes_exactly_one_request_and_no_retry() {
             tool.name,
             recorder.count()
         );
+    }
+}
+
+/// ASMA-8280 B-1: a local operation is an in-process handler of the `kontor`
+/// CLI with no route. At every tier the MCP dispatcher refuses it by that
+/// class — not as a hidden tool — before a request exists, and never lists it.
+#[tokio::test]
+async fn a_local_operation_is_never_listed_or_dispatched_over_mcp() {
+    let local: Vec<_> = REGISTRY
+        .iter()
+        .filter(|tool| tool.route().is_none())
+        .collect();
+    assert!(!local.is_empty(), "the registry declares a local operation");
+    for tool in local {
+        assert!(
+            tool.local().is_some(),
+            "{} has neither route nor handler",
+            tool.name
+        );
+        for tier in CallerTier::ALL {
+            let (dispatcher, recorder) = recording(*tier);
+            assert!(
+                dispatcher.tools().all(|listed| listed.name != tool.name),
+                "{} is listed at {tier}",
+                tool.name
+            );
+            let failure = dispatcher
+                .call(tool.name, &arguments(tool))
+                .await
+                .err()
+                .unwrap_or_else(|| panic!("{} must not dispatch at {tier}", tool.name));
+            assert!(
+                matches!(
+                    &failure,
+                    kontor_mcp::Failure::Denied(kontor_mcp::Denied::LocalOperation { tool: named })
+                        if named == tool.name
+                ),
+                "{} was refused as {failure:?}",
+                tool.name
+            );
+            assert_eq!(failure.code(), "not_found");
+            assert_eq!(recorder.count(), 0, "{} reached the wire", tool.name);
+        }
     }
 }
 

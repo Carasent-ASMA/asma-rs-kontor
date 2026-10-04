@@ -1,0 +1,210 @@
+{
+  "base": "a04fc2ff0082d6e5650a757bb54a99d14f9d2840",
+  "tree": "a3e53f8a8cd24eff6a6bef5897b495dcc11b0870",
+  "procedure": "docs/evidence/ASMA-8159/run-verification.py mutation_cases()",
+  "composed_mut_007": true,
+  "results": [
+    {
+      "mutant": "MUT-001",
+      "path": "crates/kontor-core/src/memory.rs",
+      "verdict": "KILLED",
+      "base_sha256": "d441653116bfeb841fe322ebffb84820a843a1ed47cffff313f2bd06c2d0876f",
+      "seeded_sha256": "e0bc1d21a7824ba032caff04a5e9c02d880d0ca516759555591b3283079f439d",
+      "restored_sha256": "d441653116bfeb841fe322ebffb84820a843a1ed47cffff313f2bd06c2d0876f",
+      "baseline": "final-combined-mut-001-baseline",
+      "seeded": "final-combined-mut-001-seeded",
+      "seeded_composed": null,
+      "restored": "final-combined-mut-001-restored",
+      "witness": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-core",
+        "--test",
+        "experience_memory",
+        "--locked",
+        "--offline",
+        "--",
+        "strict_experience_roundtrip_and_non_memory_eligibility",
+        "--exact"
+      ],
+      "failed_tests": [
+        "strict_experience_roundtrip_and_non_memory_eligibility"
+      ],
+      "composed_failed_tests": null
+    },
+    {
+      "mutant": "MUT-002",
+      "path": "crates/kontor-store/src/memory.rs",
+      "verdict": "KILLED",
+      "base_sha256": "171cefc4b0523cacc68148da4be4900ccb71c44e09f9e17f76669f081e2563ff",
+      "seeded_sha256": "540d44c14a96d44ee593b0e6de555fadc3d371d3ff495e1adaba32a18dbef43b",
+      "restored_sha256": "171cefc4b0523cacc68148da4be4900ccb71c44e09f9e17f76669f081e2563ff",
+      "baseline": "final-combined-mut-002-baseline",
+      "seeded": "final-combined-mut-002-seeded",
+      "seeded_composed": null,
+      "restored": "final-combined-mut-002-restored",
+      "witness": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--lib",
+        "--locked",
+        "--offline",
+        "--",
+        "memory::experience_tests::malicious_tuple_project_current_approval_tombstone_hash_policy_and_kind",
+        "--exact"
+      ],
+      "failed_tests": [
+        "memory::experience_tests::malicious_tuple_project_current_approval_tombstone_hash_policy_and_kind"
+      ],
+      "composed_failed_tests": null
+    },
+    {
+      "mutant": "MUT-003",
+      "path": "crates/kontor-store/src/memory.rs",
+      "verdict": "KILLED",
+      "base_sha256": "171cefc4b0523cacc68148da4be4900ccb71c44e09f9e17f76669f081e2563ff",
+      "seeded_sha256": "9feb0b9781895f7e7984dcf0820ea6b37c1d39cc9fa1a569f7127f36c46cce56",
+      "restored_sha256": "171cefc4b0523cacc68148da4be4900ccb71c44e09f9e17f76669f081e2563ff",
+      "baseline": "final-combined-mut-003-baseline",
+      "seeded": "final-combined-mut-003-seeded",
+      "seeded_composed": null,
+      "restored": "final-combined-mut-003-restored",
+      "witness": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--lib",
+        "--locked",
+        "--offline",
+        "--",
+        "memory::experience_tests::exact_budget_32768_32769_unicode_escaping_and_skip_oversized_top",
+        "--exact"
+      ],
+      "failed_tests": [
+        "memory::experience_tests::exact_budget_32768_32769_unicode_escaping_and_skip_oversized_top"
+      ],
+      "composed_failed_tests": null
+    },
+    {
+      "mutant": "MUT-004",
+      "path": "crates/kontor-memory-cognee/src/lib.rs",
+      "verdict": "KILLED",
+      "base_sha256": "f461effcda17a460a0939ef2bb077f74de1bd0b26ee5b6c44b997fcd3ec84c40",
+      "seeded_sha256": "dc38c8dfa7d31eaf9d9e27145b35b549fa3fd5e86d4df58510192450d3c73f24",
+      "restored_sha256": "f461effcda17a460a0939ef2bb077f74de1bd0b26ee5b6c44b997fcd3ec84c40",
+      "baseline": "final-combined-mut-004-baseline",
+      "seeded": "final-combined-mut-004-seeded",
+      "seeded_composed": null,
+      "restored": "final-combined-mut-004-restored",
+      "witness": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-memory-cognee",
+        "--test",
+        "fixtures",
+        "authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text",
+        "--locked",
+        "--offline",
+        "--",
+        "--exact"
+      ],
+      "failed_tests": [
+        "authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text"
+      ],
+      "composed_failed_tests": null
+    },
+    {
+      "mutant": "MUT-005",
+      "path": "crates/kontor-daemon/src/applications.rs",
+      "verdict": "KILLED",
+      "base_sha256": "4607de3d3d4998552c759e696106322fe16e9cb1beeb32a6f18cc78ae43ff670",
+      "seeded_sha256": "9d6a73f0328bd2152916ee6f5cbe34161906c339e1a10d0c8e196b54611f7a08",
+      "restored_sha256": "4607de3d3d4998552c759e696106322fe16e9cb1beeb32a6f18cc78ae43ff670",
+      "baseline": "final-combined-mut-005-baseline",
+      "seeded": "final-combined-mut-005-seeded",
+      "seeded_composed": null,
+      "restored": "final-combined-mut-005-restored",
+      "witness": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-daemon",
+        "--test",
+        "loopback_api",
+        "experience_launch::degraded_launch_never_lists_the_corpus_and_timeout_keeps_store_unlocked",
+        "--locked",
+        "--offline",
+        "--",
+        "--exact"
+      ],
+      "failed_tests": [
+        "experience_launch::degraded_launch_never_lists_the_corpus_and_timeout_keeps_store_unlocked"
+      ],
+      "composed_failed_tests": null
+    },
+    {
+      "mutant": "MUT-006",
+      "path": "crates/kontor-daemon/src/applications.rs",
+      "verdict": "KILLED",
+      "base_sha256": "4607de3d3d4998552c759e696106322fe16e9cb1beeb32a6f18cc78ae43ff670",
+      "seeded_sha256": "1633c12490ed40f0d3f9346bd8ab175a0d3fe81b17384d4c6089134c79f2989d",
+      "restored_sha256": "4607de3d3d4998552c759e696106322fe16e9cb1beeb32a6f18cc78ae43ff670",
+      "baseline": "final-combined-mut-006-baseline",
+      "seeded": "final-combined-mut-006-seeded",
+      "seeded_composed": null,
+      "restored": "final-combined-mut-006-restored",
+      "witness": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-daemon",
+        "--test",
+        "loopback_api",
+        "experience_launch::root_launch_contains_exact_frozen_canonical_bytes_and_downstream_cites_same_binding",
+        "--locked",
+        "--offline",
+        "--",
+        "--exact"
+      ],
+      "failed_tests": [
+        "experience_launch::root_launch_contains_exact_frozen_canonical_bytes_and_downstream_cites_same_binding"
+      ],
+      "composed_failed_tests": null
+    },
+    {
+      "mutant": "MUT-007",
+      "path": "crates/kontor-store/src/memory.rs",
+      "verdict": "KILLED",
+      "base_sha256": "171cefc4b0523cacc68148da4be4900ccb71c44e09f9e17f76669f081e2563ff",
+      "seeded_sha256": "c784607bfcd9cd6d5089c1d50a47a7b71ebb20e5a2f4c66843e43e277b758f4c",
+      "restored_sha256": "171cefc4b0523cacc68148da4be4900ccb71c44e09f9e17f76669f081e2563ff",
+      "baseline": "final-combined-mut-007-baseline",
+      "seeded": "final-combined-mut-007-seeded",
+      "seeded_composed": "final-combined-mut-007-composed-seeded",
+      "restored": "final-combined-mut-007-restored",
+      "witness": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--lib",
+        "--locked",
+        "--offline",
+        "--",
+        "memory::experience_tests::projection_minimal_payload_failures_freshness_and_compare_and_swap",
+        "--exact"
+      ],
+      "failed_tests": [
+        "memory::experience_tests::projection_minimal_payload_failures_freshness_and_compare_and_swap"
+      ],
+      "composed_failed_tests": [
+        "composed_adverse_qualification_cannot_activate_before_canary"
+      ]
+    }
+  ]
+}

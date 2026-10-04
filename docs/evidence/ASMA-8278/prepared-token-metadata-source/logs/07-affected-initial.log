@@ -1,0 +1,3 @@
+error: no test target named `planning_pair` in `kontor-store` package
+help: available test in `kontor-core` package:
+    planning_pair

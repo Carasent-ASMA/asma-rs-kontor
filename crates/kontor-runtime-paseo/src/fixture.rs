@@ -74,6 +74,7 @@ enum Queued<T> {
 struct Journal {
     epoch: String,
     entries: Vec<serde_json::Value>,
+    accepted_message_ids: BTreeSet<String>,
 }
 
 impl Journal {
@@ -110,10 +111,34 @@ impl Journal {
         } else {
             self.entries.clone()
         };
-        let start = cursor.unwrap_or(0) as usize;
-        let remaining = entries.get(start..).unwrap_or_default();
-        let taken = &remaining[..remaining.len().min(limit.max(1))];
-        let has_newer = taken.len() < remaining.len();
+        let limit = limit.max(1);
+        let entry_start =
+            |entry: &serde_json::Value| entry["seqStart"].as_u64().unwrap_or_default();
+        let entry_end = |entry: &serde_json::Value| entry["seqEnd"].as_u64().unwrap_or_default();
+        let (start, end) = match direction {
+            "tail" => {
+                let end = entries.len();
+                (end.saturating_sub(limit), end)
+            }
+            "before" => {
+                let cursor = cursor.unwrap_or(u64::MAX);
+                let end = entries
+                    .iter()
+                    .position(|entry| entry_start(entry) >= cursor)
+                    .unwrap_or(entries.len());
+                (end.saturating_sub(limit), end)
+            }
+            _ => {
+                let cursor = cursor.unwrap_or(0);
+                let start = entries
+                    .iter()
+                    .position(|entry| entry_end(entry) > cursor)
+                    .unwrap_or(entries.len());
+                (start, (start + limit).min(entries.len()))
+            }
+        };
+        let taken = &entries[start..end];
+        let has_newer = end < entries.len();
         let cursor_at = |entry: Option<&serde_json::Value>, field: &str| {
             entry.map(|entry| {
                 serde_json::json!({
@@ -189,6 +214,7 @@ pub struct RecordedPaseo {
     rpc_sticky: Mutex<BTreeMap<String, serde_json::Value>>,
     stream: Mutex<BTreeMap<String, VecDeque<serde_json::Value>>>,
     journals: Mutex<BTreeMap<String, Journal>>,
+    journal_client_message_ids: bool,
     calls: Mutex<Vec<String>>,
     mutating_routes: Mutex<BTreeSet<String>>,
     titles: Mutex<Vec<(String, String)>>,
@@ -214,6 +240,7 @@ impl RecordedPaseo {
             rpc_sticky: Mutex::new(BTreeMap::new()),
             stream: Mutex::new(BTreeMap::new()),
             journals: Mutex::new(BTreeMap::new()),
+            journal_client_message_ids: true,
             calls: Mutex::new(Vec::new()),
             mutating_routes: Mutex::new(BTreeSet::new()),
             titles: Mutex::new(Vec::new()),
@@ -256,11 +283,13 @@ impl RecordedPaseo {
     /// Give `agent_id` a canonical journal starting empty in `epoch`.
     ///
     /// From here the daemon behaves the way Paseo's own contract says it does:
-    /// an accepted `send_agent_message_request` appends a `user_message`
-    /// carrying the caller's own id as `clientMessageId`, and a canonical fetch
-    /// pages over the result. A queued or standing answer still wins, so a test
-    /// describing a gap, a collapsed projection or an epoch change routes one
-    /// and the journal stays out of its way.
+    /// an accepted `send_agent_message_request` appends the exact `user_message`
+    /// and a canonical fetch pages over the result. By default it carries the
+    /// caller's own id as `clientMessageId`; a test may model the pinned legacy
+    /// null projection while the daemon still deduplicates the request id. A
+    /// queued or standing answer still wins, so a test describing a gap, a
+    /// collapsed projection or an epoch change routes one and the journal stays
+    /// out of its way.
     #[must_use]
     pub fn journaling(self, agent_id: &str, epoch: &str, entries: Vec<serde_json::Value>) -> Self {
         self.journals
@@ -271,9 +300,52 @@ impl RecordedPaseo {
                 Journal {
                     epoch: epoch.to_owned(),
                     entries,
+                    accepted_message_ids: BTreeSet::new(),
                 },
             );
         self
+    }
+
+    /// Model a daemon whose canonical user-message events omit the request id.
+    ///
+    /// The request id remains an idempotency key inside the recorded daemon;
+    /// only the timeline projection uses `clientMessageId: null`, matching the
+    /// historical Paseo 0.8.0 shape this recovery contract must tolerate.
+    #[must_use]
+    pub fn without_journal_client_message_ids(mut self) -> Self {
+        self.journal_client_message_ids = false;
+        self
+    }
+
+    /// Append one native item to an agent's canonical journal.
+    ///
+    /// # Panics
+    /// Panics when the agent was not configured for journaling, which is a
+    /// fixture construction error.
+    pub fn append_journal_item(&self, agent_id: &str, item: serde_json::Value) {
+        self.journals
+            .lock()
+            .expect("the fixture lock is intact")
+            .get_mut(agent_id)
+            .expect("the agent has a journal")
+            .append(item);
+    }
+
+    /// Return the projected client ids in one canonical journal.
+    #[must_use]
+    pub fn journal_client_message_ids(&self, agent_id: &str) -> Vec<Option<String>> {
+        self.journals
+            .lock()
+            .expect("the fixture lock is intact")
+            .get(agent_id)
+            .map(|journal| {
+                journal
+                    .entries
+                    .iter()
+                    .map(|entry| entry["item"]["clientMessageId"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// How many entries `agent_id`'s journal holds.
@@ -568,14 +640,15 @@ impl RecordedPaseo {
             }
             "send_agent_message_request" => {
                 let message_id = message.get("messageId")?.as_str()?.to_owned();
-                let already = journal.entries.iter().any(|entry| {
-                    entry["item"]["clientMessageId"].as_str() == Some(message_id.as_str())
-                });
+                let body = message.get("text")?.as_str()?.to_owned();
+                let already = !journal.accepted_message_ids.insert(message_id.clone());
                 if !already {
                     journal.append(serde_json::json!({
                         "type": "user_message",
-                        "text": "synthetic text",
-                        "clientMessageId": message_id,
+                        "text": body,
+                        "clientMessageId": self
+                            .journal_client_message_ids
+                            .then_some(message_id),
                     }));
                 }
                 Some(serde_json::json!({
@@ -718,9 +791,12 @@ impl PaseoTransport for RecordedPaseo {
             .get_mut(request.request_type)
             .and_then(VecDeque::pop_front);
         match queued {
-            Some(Queued::LoseAcknowledgement) => Err(RuntimeError::Transport {
-                rule: "acknowledgement was lost after the runtime may have accepted it",
-            }),
+            Some(Queued::LoseAcknowledgement) => {
+                let _ = self.journal_answer(request);
+                Err(RuntimeError::Transport {
+                    rule: "acknowledgement was lost after the runtime may have accepted it",
+                })
+            }
             Some(Queued::Refuse) => Ok(PaseoFrame::failed(
                 request.request_id.clone(),
                 "refused".to_owned(),

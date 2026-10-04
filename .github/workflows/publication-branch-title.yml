@@ -1,9 +1,22 @@
+# Publication branch and title identity (ASMA-8101 / ASMA-8103).
+#
+# Trusted-source design: `pull_request_target` runs this workflow from the
+# default branch; the checker is fetched through the GitHub Contents API from
+# the exact immutable workflow revision (`github.workflow_sha`) into the
+# runner temp directory; nothing from the PR head or merge commit is ever
+# fetched or executed. The checker itself refuses any current base ref other
+# than master, so the trigger keeps no base filter and retargeting stays
+# observable via `edited`.
 name: Publication branch and title identity
 
 on:
-  pull_request:
-    branches: [master]
-    types: [opened, edited, reopened, synchronize, ready_for_review]
+  pull_request_target:
+    types:
+      - opened
+      - edited
+      - reopened
+      - synchronize
+      - ready_for_review
 
 permissions:
   contents: read
@@ -17,44 +30,41 @@ jobs:
     name: asma/publication-branch-title
     runs-on: ubuntu-latest
     steps:
-      - name: Require one Jira key across branch and title
+      - name: Fetch the checker from the exact workflow revision
+        shell: bash
         env:
-          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
-          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
+          GH_TOKEN: ${{ github.token }}
+          CHECKER_SOURCE_SHA: ${{ github.workflow_sha }}
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CHECKER_PATH: ${{ runner.temp }}/publication_branch_title.py
         run: |
-          python3 - <<'PY'
-          import os
-          import re
-          import sys
+          set -euo pipefail
 
-          base = os.environ["BASE_BRANCH"]
-          branch = os.environ["HEAD_BRANCH"]
-          title = os.environ["PR_TITLE"]
-          branch_match = re.fullmatch(
-              r"(?:feat|fix|docs|chore|refactor|test|perf|build|ci|releases)/"
-              r"(?P<key>[A-Z][A-Z0-9]*-[1-9][0-9]*)-"
-              r"[a-z0-9]+(?:-[a-z0-9]+)*",
-              branch,
-          )
-          title_match = re.match(
-              r"^(?P<key>[A-Z][A-Z0-9]*-[1-9][0-9]*) (?=\S)", title
-          )
-          errors = []
-          if base != "master":
-              errors.append("base_branch_not_default")
-          if branch_match is None:
-              errors.append("branch_shape_invalid")
-          if title_match is None:
-              errors.append("pr_title_key_missing")
-          if (
-              branch_match is not None
-              and title_match is not None
-              and branch_match.group("key") != title_match.group("key")
-          ):
-              errors.append("pr_title_key_mismatch")
-          if errors:
-              print(", ".join(errors), file=sys.stderr)
-              sys.exit(1)
-          print(f"accepted: {branch_match.group('key')}")
-          PY
+          test "${#CHECKER_SOURCE_SHA}" -eq 40
+          case "$CHECKER_SOURCE_SHA" in
+            *[!0-9a-f]*) exit 1 ;;
+          esac
+
+          printf 'checker_source_sha=%s\n' "$CHECKER_SOURCE_SHA"
+          printf 'event_base_sha=%s\n' "$EVENT_BASE_SHA"
+
+          curl --fail-with-body --silent --show-error --location \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "Accept: application/vnd.github.raw+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/contents/.github/scripts/publication_branch_title.py?ref=${CHECKER_SOURCE_SHA}" \
+            --output "$CHECKER_PATH"
+
+          test -s "$CHECKER_PATH"
+
+      - name: Evaluate the current branch and title
+        shell: bash
+        env:
+          CHECKER_PATH: ${{ runner.temp }}/publication_branch_title.py
+          PR_ACTION: ${{ github.event.action }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: python3 "$CHECKER_PATH"
