@@ -72,6 +72,13 @@ use crate::ticket::{
 };
 use crate::{DomainError, DomainResult};
 
+pub mod attestation_authority;
+pub use attestation_authority::{
+    AttestationAuthorityProjection, AttestationAuthorityRepository, AttestationAuthorityScope,
+    AttestationSeatProvenance, AttestationTokenProjection, PrepareAttestationToken,
+    RegisterAttestationKey, StoredAttestationKey, StoredPreparedAttestationToken,
+};
+
 /// One recorded proof that an exact retired evaluator already rendered its
 /// verdict.
 ///
@@ -513,6 +520,124 @@ pub struct StoredConsultationSeat {
     pub provider_session_id: Option<ExternalId>,
     /// When the native identity was last read back.
     pub observed_at: Option<Timestamp>,
+}
+
+/// One planning pair's frozen placement (ASMA-8282): the shared allocator's
+/// receipt from one activated snapshot, under its canonical content address.
+///
+/// Protocol payload keyed by the consultation run, not a second identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredPlanningPairPlacement {
+    /// The planning pair's consultation run.
+    pub run_id: ConsultationRunId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The canonical placement document; its hash is the placement hash every
+    /// frozen member and contribution is bound to.
+    pub placement: CanonicalDocument,
+    /// When the placement was frozen.
+    pub created_at: Timestamp,
+}
+
+/// One immutable revision of a planning pair's canonical record, written
+/// beside the run revision it describes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredPlanningPairRecord {
+    /// The planning pair's consultation run.
+    pub run_id: ConsultationRunId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The run revision this record describes.
+    pub revision: AggregateRevision,
+    /// The protocol phase the record restores to.
+    pub phase: crate::planning_pair::PlanningPairState,
+    /// The canonical record document.
+    pub record: CanonicalDocument,
+    /// When the revision was written.
+    pub created_at: Timestamp,
+}
+
+/// One member's finding or answer as storage proves it: its round, slot and
+/// address, the exact authenticated seat and generation that gave it, and the
+/// record revision that first held it. The advice itself is in the record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredPlanningPairContribution {
+    /// The planning pair's consultation run.
+    pub run_id: ConsultationRunId,
+    /// Findings or clarification.
+    pub round: crate::planning_pair::PlanningPairRound,
+    /// The member slot.
+    pub slot: crate::planning_pair::PlanningPairSlot,
+    /// The contribution's canonical address.
+    pub document_hash: ContentHash,
+    /// The authenticated member seat that recorded it.
+    pub seat_binding_id: SeatBindingId,
+    /// The occupancy generation it was recorded under.
+    pub occupancy_generation: u64,
+    /// The record revision that first held it.
+    pub record_revision: AggregateRevision,
+    /// When it was recorded.
+    pub created_at: Timestamp,
+}
+
+/// What one trusted runtime outcome proved about a planning pair member's
+/// native session at one occupancy generation: its known-native claim.
+///
+/// Immutable, and never a qualification. A member is qualified only by its
+/// bound seat; this keeps the exact session a launch, or a verified
+/// exact-session readback, reported, so a replay, a restart or a recovery meets
+/// that same session instead of discovering or creating another. Only a
+/// runtime outcome writes one. No caller body, label or alias ever does, and
+/// nothing in it is secret.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredPlanningPairKnownNative {
+    /// The planning pair's consultation run.
+    pub run_id: ConsultationRunId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The member seat.
+    pub seat_binding_id: SeatBindingId,
+    /// The occupancy generation the session was launched under.
+    pub occupancy_generation: u64,
+    /// The exact native session.
+    pub identity: NativeRuntimeIdentity,
+    /// The provider conversation, when the runtime reported one.
+    pub provider_session_id: Option<ExternalId>,
+    /// Canonical hash of the frozen member context the session was launched
+    /// under.
+    pub context_hash: ContentHash,
+    /// The frozen placement the member was launched on.
+    pub placement_hash: ContentHash,
+    /// Why that readback did not qualify the member, or `None` when it did.
+    pub readback_refusal: Option<crate::planning_pair::PlanningPairReadbackRefusal>,
+    /// When the session was read back.
+    pub observed_at: Timestamp,
+}
+
+/// One planning pair member's current readback of its exact known native
+/// session, as storage applies it under compare-and-swap.
+///
+/// Storage holds the run at `expected_revision`, the member at its current
+/// `occupancy_generation`, and the session at the known one: the bound seat's,
+/// or else the known-native claim's. `verified` is what the runtime read back
+/// of that session. It becomes the claim when none is kept yet, and never
+/// replaces one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanningPairMemberReadback {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The planning pair's consultation run.
+    pub run_id: ConsultationRunId,
+    /// The member seat.
+    pub seat_binding_id: SeatBindingId,
+    /// The run revision the readback was taken against.
+    pub expected_revision: AggregateRevision,
+    /// The member's current occupancy generation.
+    pub occupancy_generation: u64,
+    /// The trusted runtime readback of the exact known session.
+    pub verified: StoredPlanningPairKnownNative,
+    /// When the change is applied.
+    pub applied_at: Timestamp,
 }
 
 /// Durable receipt-first intent for replacing one consultation native filler.

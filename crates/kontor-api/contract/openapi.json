@@ -561,6 +561,392 @@
         }
       }
     },
+    "/v1/fleet/bundle": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "The Realm's orchestration bundle selection.",
+        "operationId": "fleet_bundle",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetBundleDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/fleet/bundle:activate": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Activate one published orchestration bundle under the expected standing\nactivation.",
+        "operationId": "activate_fleet_bundle",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FleetBundleActivateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetPolicyActivatedDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/fleet/bundle:preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Resolve one candidate orchestration bundle. Writes nothing.",
+        "operationId": "preview_fleet_bundle",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FleetBundlePreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetBundlePreviewDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/fleet/bundle:propose": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Propose an initial orchestration bundle for review. Writes nothing.",
+        "operationId": "propose_fleet_bundle",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetBundleProposalDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/fleet/bundle:publish": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Publish one previewed orchestration bundle. Selects nothing.",
+        "operationId": "publish_fleet_bundle",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FleetBundlePublishRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetBundlePublishedDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/fleet/policy": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "The Realm's fleet policy selection.",
+        "operationId": "fleet_policy_selection",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetPolicyDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/fleet/policy:activate": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Activate one published fleet policy under the expected current selection.",
+        "operationId": "activate_fleet_policy",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FleetPolicyActivateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetPolicyActivatedDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/fleet/policy:preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Validate one candidate fleet policy. Writes nothing.",
+        "operationId": "preview_fleet_policy",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FleetPolicyPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetPolicyPreviewDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/fleet/policy:publish": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Publish one previewed fleet policy. Selects nothing.",
+        "operationId": "publish_fleet_policy",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FleetPolicyPublishRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetPolicyPublishedDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/health": {
       "get": {
         "tags": [
@@ -5410,6 +5796,81 @@
         }
       }
     },
+    "/v1/projects/{project_id}/epics/{epic_id}/planning-pair-runs:invoke": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Invoke one planning pair as its caller's own scoped seat.",
+        "operationId": "invoke_planning_pair_run",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvokePlanningPairRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanningPairRunDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/epics/{epic_id}/roster:upgrade-apply": {
       "post": {
         "tags": [
@@ -6977,6 +7438,607 @@
         "responses": {
           "200": {
             "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/planning-pair-profiles": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Every published planning pair document revision.",
+        "operationId": "planning_pair_profiles",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileCatalogDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/planning-pair-profiles:apply": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Publish one planning pair document revision.",
+        "operationId": "apply_planning_pair_profile",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppliedProfileDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/planning-pair-profiles:preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Judge one planning pair document. Commits nothing.",
+        "operationId": "preview_planning_pair_profile",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfilePreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfilePreviewDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Read one planning pair as its reader may see it.",
+        "operationId": "planning_pair_run",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "planning_pair_run_id",
+            "in": "path",
+            "description": "The planning pair",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanningPairRunDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/answers:record": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Record the authenticated addressed member's sealed answer.",
+        "operationId": "record_planning_pair_answer",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "planning_pair_run_id",
+            "in": "path",
+            "description": "The planning pair",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The member's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordPlanningPairContributionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanningPairRunDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/clarification:request": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Ask the caller's one clarification question.",
+        "operationId": "request_planning_pair_clarification",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "planning_pair_run_id",
+            "in": "path",
+            "description": "The planning pair",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestPlanningPairClarificationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanningPairRunDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/disposition:record": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Record the caller's disposition. Terminal; never a settlement.",
+        "operationId": "record_planning_pair_disposition",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "planning_pair_run_id",
+            "in": "path",
+            "description": "The planning pair",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordPlanningPairDispositionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanningPairRunDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/findings:record": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Record the authenticated member's sealed finding.",
+        "operationId": "record_planning_pair_finding",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "planning_pair_run_id",
+            "in": "path",
+            "description": "The planning pair",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The member's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordPlanningPairContributionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanningPairRunDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/seats/{seat_binding_id}/recover": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Requalify one member on its exact known native session, as the pair's\nfrozen caller's own scoped seat. Never a replacement or a new session.",
+        "operationId": "recover_planning_pair_seat",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "planning_pair_run_id",
+            "in": "path",
+            "description": "The planning pair",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "seat_binding_id",
+            "in": "path",
+            "description": "The member seat to requalify",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecoverPlanningPairSeatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanningPairSeatRecoveryDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
           }
         }
       }
@@ -16344,9 +17406,8 @@
       },
       "CoreTeamApplyRequest": {
         "type": "object",
-        "description": "Apply a named Core Team preview.",
+        "description": "Apply a named Core Team preview: the same seats, or the same bundle, it was\npreviewed with.",
         "required": [
-          "seats",
           "preview_hash",
           "expected_revision"
         ],
@@ -16362,11 +17423,21 @@
             "description": "The hash the preview answered with."
           },
           "seats": {
-            "type": "array",
+            "type": [
+              "array",
+              "null"
+            ],
             "items": {
               "$ref": "#/components/schemas/CoreTeamSeatSelectionDto"
             },
             "description": "The roles the Core Team should seat, in order."
+          },
+          "source_bundle_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The published orchestration bundle the preview was made from."
           }
         },
         "additionalProperties": false
@@ -16616,6 +17687,13 @@
           "receipt": {
             "$ref": "#/components/schemas/MutationReceiptDto",
             "description": "The receipt it was committed under."
+          },
+          "source_bundle_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The published orchestration bundle a Core Team apply took its seats\nfrom, when it took them from one."
           }
         }
       },
@@ -16642,22 +17720,36 @@
           "realm_id": {
             "type": "string",
             "description": "The Realm that computed it."
+          },
+          "source_bundle_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The published bundle the seats came from, when they came from one."
           }
         }
       },
       "CoreTeamPreviewRequest": {
         "type": "object",
-        "description": "A proposed Core Team composition.",
-        "required": [
-          "seats"
-        ],
+        "description": "A proposed Core Team composition: the caller's seats, or the Core Team\nrevision one published orchestration bundle declares (ASMA-8280 S-3).\nExactly one of the two.",
         "properties": {
           "seats": {
-            "type": "array",
+            "type": [
+              "array",
+              "null"
+            ],
             "items": {
               "$ref": "#/components/schemas/CoreTeamSeatSelectionDto"
             },
             "description": "The roles the Core Team should seat, in order."
+          },
+          "source_bundle_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A published orchestration bundle whose verified Core Team revision\nsupplies the seats instead."
           }
         },
         "additionalProperties": false
@@ -17269,15 +18361,32 @@
       },
       "CoreTeamSeatRouteRequest": {
         "type": "object",
-        "description": "One authorized native route for a persistent Core Team role.",
+        "description": "One authorized native route for a persistent Core Team role.\n\nExactly one of `model_route` and `eligibility`: the caller's exact route,\nwhich the activated fleet policy may admit or refuse but never replaces, or\n— when the caller names none — the policy's own choice under the\neligibility the caller states (ASMA-8280).",
         "required": [
-          "role_code",
-          "model_route"
+          "role_code"
         ],
         "properties": {
+          "eligibility": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/FleetEligibilityRequest",
+                "description": "The runtime facts the activated fleet policy chooses this seat's route\nunder, when no `model_route` is named."
+              }
+            ]
+          },
           "model_route": {
-            "$ref": "#/components/schemas/RuntimeModelRouteRequest",
-            "description": "Exact provider/model/effort route to launch or recover."
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+                "description": "Exact provider/model/effort route to launch or recover."
+              }
+            ]
           },
           "role_code": {
             "type": "string",
@@ -18892,6 +20001,568 @@
           }
         }
       },
+      "FleetActivationDto": {
+        "type": "object",
+        "description": "One activation record: the published policy placement reads.",
+        "required": [
+          "policy_hash",
+          "policy_schema_version",
+          "activated_at"
+        ],
+        "properties": {
+          "activated_at": {
+            "type": "string",
+            "description": "When activation replaced the record."
+          },
+          "core_team_revision_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The Core Team revision an aligned activation selects; absent for a\nschema_version 1 record."
+          },
+          "policy_hash": {
+            "type": "string",
+            "description": "SHA-256 of exactly the activated policy bytes."
+          },
+          "policy_schema_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The schema those bytes validate under.",
+            "minimum": 0
+          },
+          "source_bundle_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The orchestration bundle an aligned (schema_version 2) activation\nnames; absent for a schema_version 1 record."
+          }
+        }
+      },
+      "FleetActivationFenceDto": {
+        "type": "object",
+        "description": "The standing activation a caller read, as an activation must name it.\n\nOmitted entirely only when no activation record stands; a schema_version 1\nrecord is named by its policy alone.",
+        "required": [
+          "policy_hash"
+        ],
+        "properties": {
+          "policy_hash": {
+            "type": "string",
+            "description": "The policy the standing record names."
+          },
+          "source_bundle_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The bundle the standing record names, for a schema_version 2 record."
+          }
+        },
+        "additionalProperties": false
+      },
+      "FleetBundleActivateRequest": {
+        "type": "object",
+        "description": "Select one published bundle — its policy and its Core Team revision\ntogether — for every later placement.",
+        "required": [
+          "source_bundle_hash"
+        ],
+        "properties": {
+          "expected_active": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/FleetActivationFenceDto",
+                "description": "The standing activation the caller read; omit when none stood."
+              }
+            ]
+          },
+          "source_bundle_hash": {
+            "type": "string",
+            "description": "The published bundle to activate."
+          }
+        },
+        "additionalProperties": false
+      },
+      "FleetBundleDto": {
+        "type": "object",
+        "description": "The Realm's orchestration bundle selection (ASMA-8280 S-1).\n\nThe same single activation pointer [`FleetPolicyDto`] reports, read for its\nbundle: a schema_version 1 record names a policy alone; a schema_version 2\nrecord also names the orchestration bundle and Core Team revision, whose\nmanifest is reported here when it verifies.",
+        "required": [
+          "realm_id",
+          "selection"
+        ],
+        "properties": {
+          "activation": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/FleetActivationDto",
+                "description": "The activation record, when one exists and can be read."
+              }
+            ]
+          },
+          "activation_schema_version": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The activation record's format, `1` or `2`, when one can be read.",
+            "minimum": 0
+          },
+          "manifest": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/FleetBundleManifestDto",
+                "description": "The bundle manifest a schema_version 2 record names, when it verifies."
+              }
+            ]
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it governs."
+          },
+          "refusal": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the selected activation cannot be served, when it cannot."
+          },
+          "selection": {
+            "$ref": "#/components/schemas/FleetPolicySelectionDto",
+            "description": "Which source decides fleet routing."
+          }
+        }
+      },
+      "FleetBundleManifestDto": {
+        "type": "object",
+        "description": "One immutable orchestration bundle manifest.",
+        "required": [
+          "source_bundle_hash",
+          "resolver",
+          "sources",
+          "policy_hash",
+          "policy_schema_version",
+          "role_catalog",
+          "core_team_revision_hash"
+        ],
+        "properties": {
+          "core_team_revision_hash": {
+            "type": "string",
+            "description": "The bundle's canonical Core Team revision."
+          },
+          "policy_hash": {
+            "type": "string",
+            "description": "The bundle's policy."
+          },
+          "policy_schema_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The schema that policy validates under.",
+            "minimum": 0
+          },
+          "resolver": {
+            "type": "string",
+            "description": "The resolver that produced the bundle."
+          },
+          "role_catalog": {
+            "$ref": "#/components/schemas/FleetRoleCatalogPinDto",
+            "description": "The role catalog the Core Team revision was resolved against."
+          },
+          "source_bundle_hash": {
+            "type": "string",
+            "description": "The manifest's canonical content hash: the bundle's identity."
+          },
+          "sources": {
+            "type": "object",
+            "description": "SHA-256 of each authoring source's exact bytes, by bundle-relative path.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "FleetBundlePreviewDto": {
+        "type": "object",
+        "description": "What a candidate bundle resolves to, before anything is written.",
+        "required": [
+          "realm_id",
+          "manifest",
+          "preview_hash"
+        ],
+        "properties": {
+          "manifest": {
+            "$ref": "#/components/schemas/FleetBundleManifestDto",
+            "description": "The manifest publication would write."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "The hash the corresponding publish must name: the three exact source\ndocuments and the selected catalog revision."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it was resolved for."
+          }
+        }
+      },
+      "FleetBundlePreviewRequest": {
+        "type": "object",
+        "description": "One candidate orchestration bundle, as authored: the exact bytes of its\nthree sources.",
+        "required": [
+          "orchestration",
+          "fleet",
+          "core_team"
+        ],
+        "properties": {
+          "core_team": {
+            "type": "string",
+            "description": "The exact bytes of `teams/core-team.yml`."
+          },
+          "fleet": {
+            "type": "string",
+            "description": "The exact bytes of `fleet.yml`."
+          },
+          "orchestration": {
+            "type": "string",
+            "description": "The exact bytes of `orchestration.yml`."
+          }
+        },
+        "additionalProperties": false
+      },
+      "FleetBundleProposalDto": {
+        "type": "object",
+        "description": "A proposed initial orchestration bundle for review (ASMA-8280 S-2).",
+        "required": [
+          "realm_id",
+          "orchestration",
+          "core_team",
+          "role_catalog"
+        ],
+        "properties": {
+          "core_team": {
+            "type": "string",
+            "description": "The proposed `teams/core-team.yml` bytes: the mandatory roles alone."
+          },
+          "orchestration": {
+            "type": "string",
+            "description": "The proposed `orchestration.yml` bytes."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it was proposed for."
+          },
+          "role_catalog": {
+            "$ref": "#/components/schemas/FleetRoleCatalogPinDto",
+            "description": "The exact catalog revision the proposal pins."
+          }
+        }
+      },
+      "FleetBundlePublishRequest": {
+        "type": "object",
+        "description": "Publish one previewed bundle as immutable, content-addressed artifacts.\n\nPublication selects nothing: placement keeps reading the current selection\nuntil an activation names this bundle.",
+        "required": [
+          "orchestration",
+          "fleet",
+          "core_team",
+          "preview_hash"
+        ],
+        "properties": {
+          "core_team": {
+            "type": "string",
+            "description": "The exact bytes of `teams/core-team.yml` that were previewed."
+          },
+          "fleet": {
+            "type": "string",
+            "description": "The exact bytes of `fleet.yml` that were previewed."
+          },
+          "orchestration": {
+            "type": "string",
+            "description": "The exact bytes of `orchestration.yml` that were previewed."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "The hash preview returned for these bytes."
+          }
+        },
+        "additionalProperties": false
+      },
+      "FleetBundlePublishedDto": {
+        "type": "object",
+        "description": "One published bundle.",
+        "required": [
+          "realm_id",
+          "manifest",
+          "applied"
+        ],
+        "properties": {
+          "applied": {
+            "$ref": "#/components/schemas/AppliedDto",
+            "description": "Whether this call wrote any artifact or found them all published."
+          },
+          "manifest": {
+            "$ref": "#/components/schemas/FleetBundleManifestDto",
+            "description": "The manifest as published."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it was published in."
+          }
+        }
+      },
+      "FleetEligibilityRequest": {
+        "type": "object",
+        "description": "The runtime facts one fleet policy choice is made under: stated by the\ncaller, applied in chain order, and recorded with the decision.",
+        "properties": {
+          "excluded_vendors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Vendors the seat must avoid."
+          },
+          "unavailable_accounts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Account aliases that cannot take the seat now."
+          }
+        },
+        "additionalProperties": false
+      },
+      "FleetPolicyActivateRequest": {
+        "type": "object",
+        "description": "Select one published policy for every later placement.",
+        "required": [
+          "policy_hash"
+        ],
+        "properties": {
+          "expected_active_policy_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The policy the caller read as active; omit when none was."
+          },
+          "policy_hash": {
+            "type": "string",
+            "description": "The published policy to activate."
+          }
+        },
+        "additionalProperties": false
+      },
+      "FleetPolicyActivatedDto": {
+        "type": "object",
+        "description": "The activation one activate call left standing.",
+        "required": [
+          "realm_id",
+          "activation",
+          "applied"
+        ],
+        "properties": {
+          "activation": {
+            "$ref": "#/components/schemas/FleetActivationDto",
+            "description": "The standing activation record."
+          },
+          "applied": {
+            "$ref": "#/components/schemas/AppliedDto",
+            "description": "`created` when this call replaced the record, `unchanged` when the\npolicy was already active."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it governs."
+          }
+        }
+      },
+      "FleetPolicyDto": {
+        "type": "object",
+        "description": "The Realm's fleet policy selection (ASMA-8280).\n\nExactly one source decides fleet routing: an activation record naming one\npublished policy by content hash, or — when none exists — the unmigrated\nstate-root `fleet.yml`. An activation that cannot be verified is reported\nhere and refuses placement; it never falls back.",
+        "required": [
+          "realm_id",
+          "selection"
+        ],
+        "properties": {
+          "activation": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/FleetActivationDto",
+                "description": "The activation record, when one exists and can be read."
+              }
+            ]
+          },
+          "active_policy_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "SHA-256 of the policy bytes placement reads now, when there is one."
+          },
+          "active_schema_version": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The schema version of that policy.",
+            "minimum": 0
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it governs."
+          },
+          "refusal": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the selected activation cannot be served, when it cannot."
+          },
+          "selection": {
+            "$ref": "#/components/schemas/FleetPolicySelectionDto",
+            "description": "Which source decides fleet routing."
+          }
+        }
+      },
+      "FleetPolicyPreviewDto": {
+        "type": "object",
+        "description": "What a candidate policy is, before anything is written.",
+        "required": [
+          "realm_id",
+          "policy_hash",
+          "schema_version",
+          "preview_hash"
+        ],
+        "properties": {
+          "policy_hash": {
+            "type": "string",
+            "description": "SHA-256 of exactly the validated bytes: the policy's identity."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "The hash the corresponding publish must name."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it was validated for."
+          },
+          "schema_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The schema those bytes validate under.",
+            "minimum": 0
+          }
+        }
+      },
+      "FleetPolicyPreviewRequest": {
+        "type": "object",
+        "description": "One candidate fleet policy, as authored.",
+        "required": [
+          "document"
+        ],
+        "properties": {
+          "document": {
+            "type": "string",
+            "description": "The exact YAML bytes of a schema_version 1 or 2 fleet policy."
+          }
+        },
+        "additionalProperties": false
+      },
+      "FleetPolicyPublishRequest": {
+        "type": "object",
+        "description": "Publish one previewed policy as an immutable, content-addressed artifact.\n\nPublication selects nothing: placement keeps reading the current selection\nuntil an activation names this policy.",
+        "required": [
+          "document",
+          "preview_hash"
+        ],
+        "properties": {
+          "document": {
+            "type": "string",
+            "description": "The exact YAML bytes that were previewed."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "The hash preview returned for these bytes."
+          }
+        },
+        "additionalProperties": false
+      },
+      "FleetPolicyPublishedDto": {
+        "type": "object",
+        "description": "One published policy.",
+        "required": [
+          "realm_id",
+          "policy_hash",
+          "schema_version",
+          "applied"
+        ],
+        "properties": {
+          "applied": {
+            "$ref": "#/components/schemas/AppliedDto",
+            "description": "Whether this call wrote the artifact or found it already published."
+          },
+          "policy_hash": {
+            "type": "string",
+            "description": "SHA-256 of exactly the published bytes."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it was published in."
+          },
+          "schema_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The schema those bytes validate under.",
+            "minimum": 0
+          }
+        }
+      },
+      "FleetPolicySelectionDto": {
+        "type": "string",
+        "description": "Which source decides a Realm's fleet routing.",
+        "enum": [
+          "activation",
+          "fleet_yml"
+        ]
+      },
+      "FleetRoleCatalogPinDto": {
+        "type": "object",
+        "description": "The exact role catalog revision a bundle pins.",
+        "required": [
+          "catalog_id",
+          "version",
+          "content_hash"
+        ],
+        "properties": {
+          "catalog_id": {
+            "type": "string",
+            "description": "The catalog's stable identity."
+          },
+          "content_hash": {
+            "type": "string",
+            "description": "The canonical content hash of that revision."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The catalog revision.",
+            "minimum": 0
+          }
+        }
+      },
       "FrozenRevision": {
         "type": "object",
         "required": [
@@ -19721,6 +21392,57 @@
               "null"
             ],
             "description": "Short semantic subject used by the pinned Team Definition to render the\nCSW name. Supply only the topic: Jira keys, Kontor item codes, container\nprefixes and the configured separator are rejected because the server\ninserts them deterministically."
+          }
+        },
+        "additionalProperties": false
+      },
+      "InvokePlanningPairRequest": {
+        "type": "object",
+        "description": "Invoke one planning pair against an epic, as its frozen caller.",
+        "required": [
+          "protocol",
+          "profile",
+          "topic",
+          "question",
+          "members",
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The epic revision the caller read.",
+            "minimum": 0
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlanningPairMemberPlacementRequest"
+            },
+            "description": "Exactly two members, `seat-a` then `seat-b`."
+          },
+          "profile": {
+            "$ref": "#/components/schemas/PlanningPairProfileRefDto",
+            "description": "The exact document revision, including its canonical hash."
+          },
+          "protocol": {
+            "$ref": "#/components/schemas/PlanningPairProtocolDto",
+            "description": "The protocol, named explicitly. Nothing substitutes another."
+          },
+          "question": {
+            "type": "string",
+            "description": "What the caller asks."
+          },
+          "task_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional ticket scope inside the epic; absent means the epic."
+          },
+          "topic": {
+            "type": "string",
+            "description": "Short semantic subject the pinned Team Definition renders."
           }
         },
         "additionalProperties": false
@@ -21008,6 +22730,560 @@
             "minimum": 0
           }
         }
+      },
+      "PlanningPairClarificationDto": {
+        "type": "object",
+        "description": "The released clarification round.",
+        "required": [
+          "question",
+          "addressed",
+          "answers"
+        ],
+        "properties": {
+          "addressed": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlanningPairSlotDto"
+            },
+            "description": "The members it addressed."
+          },
+          "answers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlanningPairContributionDto"
+            },
+            "description": "Every addressed member's answer."
+          },
+          "question": {
+            "type": "string",
+            "description": "The caller's question."
+          }
+        }
+      },
+      "PlanningPairContributionDto": {
+        "type": "object",
+        "description": "One released finding or answer.",
+        "required": [
+          "round",
+          "slot",
+          "advice",
+          "document_hash"
+        ],
+        "properties": {
+          "advice": {
+            "type": "string",
+            "description": "The advice, verbatim."
+          },
+          "document_hash": {
+            "type": "string",
+            "description": "Its canonical address."
+          },
+          "round": {
+            "type": "string",
+            "description": "`findings` or `clarification`."
+          },
+          "slot": {
+            "$ref": "#/components/schemas/PlanningPairSlotDto",
+            "description": "The member that gave it."
+          }
+        }
+      },
+      "PlanningPairDispositionRecordDto": {
+        "type": "object",
+        "description": "The caller's recorded disposition.",
+        "required": [
+          "members",
+          "rationale"
+        ],
+        "properties": {
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlanningPairMemberDispositionDto"
+            },
+            "description": "One entry per member, `seat-a` then `seat-b`."
+          },
+          "rationale": {
+            "type": "string",
+            "description": "Why the caller decided as it did."
+          }
+        }
+      },
+      "PlanningPairKnownNativeDto": {
+        "type": "object",
+        "description": "One member's known native session: what a trusted runtime readback named,\nnever a qualification.",
+        "required": [
+          "native_identity",
+          "observed_at"
+        ],
+        "properties": {
+          "native_identity": {
+            "$ref": "#/components/schemas/PlanningPairNativeIdentityDto",
+            "description": "The exact session."
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was read back."
+          },
+          "provider_session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its provider conversation, when one was reported."
+          },
+          "readback_refusal": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why its launch readback did not qualify the member, when it did not."
+          }
+        }
+      },
+      "PlanningPairMemberDispositionDto": {
+        "type": "object",
+        "description": "What the caller decided about one member's advice.",
+        "required": [
+          "slot",
+          "finding",
+          "disposition"
+        ],
+        "properties": {
+          "answer": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The exact clarification answer, when the member gave one."
+          },
+          "disposition": {
+            "$ref": "#/components/schemas/AdviceDispositionDto",
+            "description": "Accepted, partially accepted or rejected."
+          },
+          "finding": {
+            "type": "string",
+            "description": "The exact finding the decision is about."
+          },
+          "slot": {
+            "$ref": "#/components/schemas/PlanningPairSlotDto",
+            "description": "The member."
+          }
+        },
+        "additionalProperties": false
+      },
+      "PlanningPairMemberDto": {
+        "type": "object",
+        "description": "One frozen member.",
+        "required": [
+          "slot",
+          "label",
+          "seat_binding_id",
+          "occupancy_generation",
+          "binding_key",
+          "vendor",
+          "model_route"
+        ],
+        "properties": {
+          "binding_key": {
+            "type": "string",
+            "description": "The binding the TPM named."
+          },
+          "known_native": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PlanningPairKnownNativeDto",
+                "description": "The exact native session the member is known by at its current\ngeneration, qualified or not. Only a bound `observed_binding` qualifies\nthe member; this is what its caller names to recover it."
+              }
+            ]
+          },
+          "label": {
+            "type": "string",
+            "description": "The exact native seat title."
+          },
+          "model_route": {
+            "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+            "description": "The route the shared allocator chose."
+          },
+          "observed_binding": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ObservedBindingDto",
+                "description": "The native readback, once a supported runtime launched the member.\nAbsent means no native launch is recorded: persistence alone never\nreports one."
+              }
+            ]
+          },
+          "occupancy_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The native-filler generation scoped credentials are fenced to.",
+            "minimum": 0
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "The persistent SeatBinding."
+          },
+          "slot": {
+            "$ref": "#/components/schemas/PlanningPairSlotDto",
+            "description": "The member slot."
+          },
+          "vendor": {
+            "type": "string",
+            "description": "The actual vendor the shared allocator held distinct."
+          }
+        }
+      },
+      "PlanningPairMemberPlacementRequest": {
+        "type": "object",
+        "description": "One member's placement: the existing binding the TPM names for it and the\neligibility it states. The route is the shared allocator's, never the\ncaller's.",
+        "required": [
+          "slot",
+          "binding_key"
+        ],
+        "properties": {
+          "binding_key": {
+            "type": "string",
+            "description": "The existing canonical binding this member resolves."
+          },
+          "excluded_vendors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Vendors this member must avoid."
+          },
+          "slot": {
+            "$ref": "#/components/schemas/PlanningPairSlotDto",
+            "description": "The member slot."
+          },
+          "unavailable_accounts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Account aliases that cannot take this member now."
+          }
+        },
+        "additionalProperties": false
+      },
+      "PlanningPairNativeIdentityDto": {
+        "type": "object",
+        "description": "One exact native session: its runtime family, host and runtime generation,\nand its native id.",
+        "required": [
+          "runtime_kind",
+          "host",
+          "generation",
+          "native_id"
+        ],
+        "properties": {
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The runtime generation.",
+            "minimum": 0
+          },
+          "host": {
+            "type": "string",
+            "description": "The runtime host that owns the generation."
+          },
+          "native_id": {
+            "type": "string",
+            "description": "The native session id within it."
+          },
+          "runtime_kind": {
+            "type": "string",
+            "description": "The runtime family."
+          }
+        },
+        "additionalProperties": false
+      },
+      "PlanningPairProfileRefDto": {
+        "type": "object",
+        "description": "The exact published document revision an invocation pins.",
+        "required": [
+          "id",
+          "version",
+          "definition_hash"
+        ],
+        "properties": {
+          "definition_hash": {
+            "type": "string",
+            "description": "The canonical hash the caller read; a different published hash refuses."
+          },
+          "id": {
+            "type": "string",
+            "description": "The document id shared by every revision."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The pinned revision.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "PlanningPairProtocolDto": {
+        "type": "string",
+        "description": "The protocol a caller explicitly selects. There is exactly one.",
+        "enum": [
+          "planning_pair@1"
+        ]
+      },
+      "PlanningPairRunDto": {
+        "type": "object",
+        "description": "One planning pair as its reader may see it.",
+        "required": [
+          "realm_id",
+          "planning_pair_run_id",
+          "epic_id",
+          "protocol",
+          "profile",
+          "topic",
+          "question",
+          "caller_seat_binding_id",
+          "topology_node_id",
+          "state",
+          "phase",
+          "placement_hash",
+          "members",
+          "viewer",
+          "record_revision",
+          "revision",
+          "snapshot_cursor"
+        ],
+        "properties": {
+          "caller_seat_binding_id": {
+            "type": "string",
+            "description": "The frozen caller seat."
+          },
+          "clarification": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PlanningPairClarificationDto",
+                "description": "The clarification round, once every addressed member answered, and\nonly to the caller."
+              }
+            ]
+          },
+          "container_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The rendered container name, when the pinned Team Definition names it."
+          },
+          "disposition": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PlanningPairDispositionRecordDto",
+                "description": "The caller's disposition, once recorded."
+              }
+            ]
+          },
+          "epic_id": {
+            "type": "string",
+            "description": "The epic it advises."
+          },
+          "findings": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/PlanningPairContributionDto"
+            },
+            "description": "Both findings, once released and only to the caller."
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlanningPairMemberDto"
+            },
+            "description": "Both frozen members."
+          },
+          "own_contributions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlanningPairContributionDto"
+            },
+            "description": "A member reader's own contributions, sealed or not."
+          },
+          "phase": {
+            "type": "string",
+            "description": "The protocol phase the latest record restores to."
+          },
+          "placement_hash": {
+            "type": "string",
+            "description": "The frozen placement's canonical hash."
+          },
+          "planning_pair_run_id": {
+            "type": "string",
+            "description": "The consultation."
+          },
+          "profile": {
+            "$ref": "#/components/schemas/ProfileRevisionDto",
+            "description": "The pinned document revision."
+          },
+          "protocol": {
+            "$ref": "#/components/schemas/PlanningPairProtocolDto",
+            "description": "Always `planning_pair@1`."
+          },
+          "question": {
+            "type": "string",
+            "description": "The caller's question."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it belongs to."
+          },
+          "receipt": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/MutationReceiptDto",
+                "description": "The receipt, for a write."
+              }
+            ]
+          },
+          "record_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The record revision the projection restored.",
+            "minimum": 0
+          },
+          "retained_dissent": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlanningPairContributionDto"
+            },
+            "description": "The advice the caller did not wholly adopt, kept verbatim; to the\ncaller only."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The run revision.",
+            "minimum": 0
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The control-plane position the answer is consistent with."
+          },
+          "state": {
+            "type": "string",
+            "description": "`materializing`, `running`, `needs_human` or `disposed`."
+          },
+          "task_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The ticket it advises, when it was invoked at one."
+          },
+          "topic": {
+            "type": "string",
+            "description": "The frozen semantic topic."
+          },
+          "topology_node_id": {
+            "type": "string",
+            "description": "The container node."
+          },
+          "viewer": {
+            "$ref": "#/components/schemas/PlanningPairViewerDto",
+            "description": "Who this projection was rendered for."
+          }
+        }
+      },
+      "PlanningPairSeatRecoveryDto": {
+        "type": "object",
+        "description": "One member requalified on its exact known native session.\n\nThe same SeatBinding, generation, session and frozen placement: nothing is\ncreated, replaced or rerouted, and nothing here is a verdict.",
+        "required": [
+          "planning_pair",
+          "seat_binding_id",
+          "slot",
+          "member_occupancy_generation",
+          "native_identity",
+          "placement_hash",
+          "recovered_revision",
+          "receipt"
+        ],
+        "properties": {
+          "member_occupancy_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The member's unchanged occupancy generation.",
+            "minimum": 0
+          },
+          "native_identity": {
+            "$ref": "#/components/schemas/PlanningPairNativeIdentityDto",
+            "description": "The same native session, read back again."
+          },
+          "placement_hash": {
+            "type": "string",
+            "description": "The frozen placement the member's provenance was read back against."
+          },
+          "planning_pair": {
+            "$ref": "#/components/schemas/PlanningPairRunDto",
+            "description": "The pair as its caller now sees it."
+          },
+          "provider_session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The same provider conversation, when one is recorded."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "The recovery's receipt."
+          },
+          "recovered_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The run revision the requalification was recorded at.",
+            "minimum": 0
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "The member's persistent SeatBinding."
+          },
+          "slot": {
+            "$ref": "#/components/schemas/PlanningPairSlotDto",
+            "description": "The member slot."
+          }
+        }
+      },
+      "PlanningPairSlotDto": {
+        "type": "string",
+        "description": "One of the two member slots.",
+        "enum": [
+          "seat-a",
+          "seat-b"
+        ]
+      },
+      "PlanningPairViewerDto": {
+        "type": "string",
+        "description": "Who the projection was rendered for, and so what it may contain.",
+        "enum": [
+          "caller",
+          "member",
+          "observer"
+        ]
       },
       "PreviewEpicDto": {
         "type": "object",
@@ -23585,6 +25861,56 @@
           }
         }
       },
+      "RecordPlanningPairContributionRequest": {
+        "type": "object",
+        "description": "One member's finding or clarification answer.",
+        "required": [
+          "advice",
+          "expected_revision"
+        ],
+        "properties": {
+          "advice": {
+            "type": "string",
+            "description": "The advice, verbatim."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The run revision the member read.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "RecordPlanningPairDispositionRequest": {
+        "type": "object",
+        "description": "The caller's disposition. A decision, not a verdict.",
+        "required": [
+          "members",
+          "rationale",
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The run revision the caller read.",
+            "minimum": 0
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlanningPairMemberDispositionDto"
+            },
+            "description": "One entry per member, `seat-a` then `seat-b`."
+          },
+          "rationale": {
+            "type": "string",
+            "description": "Why the caller decided as it did."
+          }
+        },
+        "additionalProperties": false
+      },
       "RecordProviderQuotaRequest": {
         "type": "object",
         "description": "What `provider-quota-states:record` is asked for.\n\nThere is no free-text note and no place for the provider's own message. The\nmessage is vendor output carrying account hints and URLs; what a record needs\nfrom it is the state and the instant, and those are typed fields.",
@@ -23772,6 +26098,41 @@
             "minimum": 0
           }
         }
+      },
+      "RecoverPlanningPairSeatRequest": {
+        "type": "object",
+        "description": "Requalify one member on its exact known native session, as the pair's\nfrozen caller.\n\nEvery field is a compare-and-swap assertion. The member and the pair come\nfrom the path and the caller from its credential; the session is the one\nalready known for the member, never one named here. There is no route,\nprovider, profile, generation, credential or new-session field.",
+        "required": [
+          "expected_run_revision",
+          "expected_member_occupancy_generation",
+          "expected_native_identity"
+        ],
+        "properties": {
+          "expected_member_occupancy_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The member's occupancy generation the caller read.",
+            "minimum": 0
+          },
+          "expected_native_identity": {
+            "$ref": "#/components/schemas/PlanningPairNativeIdentityDto",
+            "description": "The member's known native session the caller read."
+          },
+          "expected_provider_session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The member's provider conversation, required exactly when one is\nrecorded for the known session."
+          },
+          "expected_run_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The run revision the caller read.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       },
       "RedactionDto": {
         "type": "object",
@@ -24173,6 +26534,35 @@
               "null"
             ],
             "description": "The root-pointer revision, for a module that has one."
+          }
+        },
+        "additionalProperties": false
+      },
+      "RequestPlanningPairClarificationRequest": {
+        "type": "object",
+        "description": "The caller's one clarification question.",
+        "required": [
+          "question",
+          "addressed",
+          "expected_revision"
+        ],
+        "properties": {
+          "addressed": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlanningPairSlotDto"
+            },
+            "description": "One or both members, each once."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The run revision the caller read.",
+            "minimum": 0
+          },
+          "question": {
+            "type": "string",
+            "description": "What the caller needs clarified."
           }
         },
         "additionalProperties": false

@@ -94,6 +94,9 @@ fn migration_0123_failure_preserves_v119_schema_history_and_clean_retry() {
     drop(store);
     let connection = Connection::open(&database).unwrap();
     connection.execute_batch("DROP TABLE memory_projection_rebuild_results; DROP TABLE memory_projection_rebuild_keys; DROP TABLE memory_recall_keys; DROP TABLE memory_recall_metadata; DROP TABLE memory_experience_proposals; DROP TABLE memory_projection_active; DROP TABLE memory_projection_snapshots; DROP TABLE memory_experience_eligibility; DROP TABLE imported_record_evidence; DROP TABLE core_team_route_successions; PRAGMA user_version=119;").unwrap();
+    // The ASMA-8278 feature generations are additive too: a fixture that replays
+    // the chain from 119 must not leave their tables behind either.
+    connection.execute_batch("DROP TABLE planning_pair_contributions; DROP TABLE planning_pair_record_revisions; DROP TABLE planning_pair_placements; DROP TABLE planning_pair_member_natives; DROP TABLE attestation_authority_keys; DROP TABLE attestation_authority_heads; DROP TABLE prepared_attestation_tokens; DROP TABLE attestation_token_heads;").unwrap();
     // A synthetic name collision fails inside unmodified 0123, after four
     // CREATE TABLE statements. Only this deliberate fixture trigger is removed.
     connection.execute_batch("CREATE TRIGGER memory_projection_snapshots_no_update BEFORE UPDATE ON memory_revisions BEGIN SELECT 1; END;").unwrap();

@@ -1,0 +1,170 @@
+[
+  {
+    "id": "M01-expected-head",
+    "verdict": "KILLED",
+    "assertion": {
+      "path": "crates/kontor-store/tests/attestation_authority.rs",
+      "line": 107,
+      "text": "assert!(matches!(",
+      "nearby_source": [
+        "fn exact_expected_head_is_required_and_failed_writes_leave_no_partial_mutation() {",
+        "    let (_root, store, scope) = fixture();",
+        "    assert!(matches!(",
+        "        store.register_attestation_key(&registration(&scope, Some(1), \"key-1\")),",
+        "        Err(RepositoryError::Conflict { .. })",
+        "    ));",
+        "    let before = store"
+      ],
+      "compiled_successfully": true,
+      "intended_existing_test": true,
+      "log_sha256": "f8f53bcb24cac210210582687d8b840a3cbaec3fb0827216a6888d8bd7ee712b"
+    }
+  },
+  {
+    "id": "M02-project-scope",
+    "verdict": "KILLED",
+    "assertion": {
+      "path": "crates/kontor-store/tests/attestation_authority.rs",
+      "line": 209,
+      "text": "assert!(",
+      "nearby_source": [
+        "        },",
+        "    ] {",
+        "        assert!(",
+        "            store",
+        "                .read_attestation_key_authority(&foreign, &id(\"issuer\"), &id(\"key-1\"))",
+        "                .expect(\"read\")",
+        "                .is_none()"
+      ],
+      "compiled_successfully": true,
+      "intended_existing_test": true,
+      "log_sha256": "534659ef6d2dea47536266bda14fea80e0d173a185587c47c60094ce675b0261"
+    }
+  },
+  {
+    "id": "M03-immutable-material",
+    "verdict": "KILLED",
+    "assertion": {
+      "path": "crates/kontor-store/tests/attestation_authority.rs",
+      "line": 393,
+      "text": "assert!(",
+      "nearby_source": [
+        "    assert!(connection.execute(\"INSERT OR REPLACE INTO attestation_authority_heads SELECT project_id,application,revision FROM attestation_authority_heads\", []).is_err());",
+        "    let material_change = connection.execute(\"UPDATE attestation_authority_keys SET public_key_der=?1, material_digest=?2, revoked_revision=2\", params![vec![4_u8, 5], ContentHash::of(&[4, 5]).as_str()]);",
+        "    assert!(",
+        "        material_change.is_err(),",
+        "        \"even a valid next revocation cannot replace immutable material\"",
+        "    );",
+        "    assert!("
+      ],
+      "compiled_successfully": true,
+      "intended_existing_test": true,
+      "log_sha256": "801b41064f719de32339bd2d400d5247afc7648f83fbd0c4a05a0c6d4dca3175"
+    }
+  },
+  {
+    "id": "M04-monotonic-head",
+    "verdict": "KILLED",
+    "assertion": {
+      "path": "crates/kontor-store/tests/attestation_authority.rs",
+      "line": 397,
+      "text": "assert!(",
+      "nearby_source": [
+        "        \"even a valid next revocation cannot replace immutable material\"",
+        "    );",
+        "    assert!(",
+        "        connection",
+        "            .execute(\"UPDATE attestation_authority_heads SET revision=99\", [])",
+        "            .is_err()",
+        "    );"
+      ],
+      "compiled_successfully": true,
+      "intended_existing_test": true,
+      "log_sha256": "869171bc319696d2faa6f1f0d496b6a5e091f48c695fcd08f049af2cafc2e20a"
+    }
+  },
+  {
+    "id": "M05-one-way-revocation",
+    "verdict": "KILLED",
+    "assertion": {
+      "path": "crates/kontor-store/tests/attestation_authority.rs",
+      "line": 412,
+      "text": "assert!(connection.execute(statement, []).is_err(), \"{statement}\");",
+      "nearby_source": [
+        "        \"UPDATE attestation_authority_heads SET revision=1\",",
+        "    ] {",
+        "        assert!(connection.execute(statement, []).is_err(), \"{statement}\");",
+        "    }",
+        "    let projection = store",
+        "        .read_attestation_key_authority(&scope, &id(\"issuer\"), &id(\"key-1\"))",
+        "        .expect(\"read\")"
+      ],
+      "compiled_successfully": true,
+      "intended_existing_test": true,
+      "log_sha256": "2f60ba95418fbf0cef99de81b7bf094b038aebd634d3d24920920689bc05c8f7"
+    }
+  },
+  {
+    "id": "M06-export-continuity",
+    "verdict": "KILLED",
+    "assertion": {
+      "path": "crates/kontor-store/tests/backup_snapshot.rs",
+      "line": 92,
+      "text": "assert!(matches!(",
+      "nearby_source": [
+        "        .read_attestation_key_authority(&scope, &issuer, &key)",
+        "        .expect(\"read\");",
+        "    assert!(matches!(",
+        "        kontor_store::backup::export_realm(&store, at(\"2026-10-03T18:01:00Z\")),",
+        "        Err(BackupError::Verification { .. })",
+        "    ));",
+        "    assert_eq!("
+      ],
+      "compiled_successfully": true,
+      "intended_existing_test": true,
+      "log_sha256": "a05cefeff523c77b3c646d573e476a90c9eb6a3f9552ff355d884789b540d8e2"
+    }
+  },
+  {
+    "id": "M07-destination-continuity",
+    "verdict": "KILLED",
+    "assertion": {
+      "path": "crates/kontor-store/tests/backup_snapshot.rs",
+      "line": 124,
+      "text": "assert!(matches!(",
+      "nearby_source": [
+        "    let bytes = std::fs::read(&database).expect(\"bytes\");",
+        "    let names = listing(home.path());",
+        "    assert!(matches!(",
+        "        restore_snapshot(&old.snapshot, &database, at(\"2026-10-03T18:02:00Z\")),",
+        "        Err(BackupError::Verification { .. })",
+        "    ));",
+        "    assert_eq!(std::fs::read(&database).expect(\"bytes\"), bytes);"
+      ],
+      "compiled_successfully": true,
+      "intended_existing_test": true,
+      "log_sha256": "e55b7d111237722a23c48ba7a23b29b4d42b14396539b4ac0a83aee70a0b2e82"
+    }
+  },
+  {
+    "id": "M08-source-continuity",
+    "verdict": "KILLED",
+    "assertion": {
+      "path": "crates/kontor-store/tests/backup_snapshot.rs",
+      "line": 155,
+      "text": "assert!(matches!(",
+      "nearby_source": [
+        "    let directory = home.path().join(\"new-target\");",
+        "    let destination = directory.join(\"kontor.db\");",
+        "    assert!(matches!(",
+        "        restore_snapshot(&snapshot.snapshot, &destination, at(\"2026-10-03T18:02:00Z\")),",
+        "        Err(BackupError::Verification { .. })",
+        "    ));",
+        "    assert_eq!("
+      ],
+      "compiled_successfully": true,
+      "intended_existing_test": true,
+      "log_sha256": "5b3bf6ce10fadec75d1d7574457c89a94d9b2da982e020199c71fd247332320e"
+    }
+  }
+]

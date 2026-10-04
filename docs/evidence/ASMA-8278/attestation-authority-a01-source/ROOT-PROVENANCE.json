@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "epic": "ASMA-8278",
+  "candidate": "e68310ce08e0e561d8490fe85dcbd1d17a9a96fa",
+  "tree": "53572442a020d575ac4e224d5afd4a6e3704771a",
+  "parent": "1e9b7d3b87a70fb03e3546d9351bd3e1c826312e",
+  "worker_manifest_sha256": "1297d4b11bee7491fe5544f39344c219ca0681912fdf657d319d4189b5a4169f",
+  "original_worker_labels_preserved": true,
+  "owned_paths_sha256": {
+    "crates/kontor-store/src/backup/restore.rs": "14ae5e6ff4cba2ffb0b7c94fdf250279ee88c8b8d7d2f932d2d253b60449d74c",
+    "crates/kontor-store/tests/backup_snapshot.rs": "12836f084f708eaa41c78ed900048a4693ce4b76dfd7b7ee42ba933aebe24a76"
+  },
+  "review_sha256": "862c8b807c10a2ee49a880f4cb7e533ff2f9bebd702ce85c776bb973c71c83d3",
+  "review_scope": "Bounded read-only source findings; A-01 corrected at source, no new source blocker. No rerun/formal/live qualification.",
+  "review_reference_correction": "The unchanged report abbreviates the worker manifest as97d4b11b; the actual independently rehashed full value is1297d4b11bee7491fe5544f39344c219ca0681912fdf657d319d4189b5a4169f.",
+  "portable_artifacts_sha256": {
+    "README.md": "72e1a71f6fb175729e7cf6f4308f7f8dc6c28c1eeae12a3cc0dc4cd4100695b7",
+    "SOURCE-REVIEW.md": "862c8b807c10a2ee49a880f4cb7e533ff2f9bebd702ce85c776bb973c71c83d3",
+    "backup-full.log": "4cb5f5a516062d7ac03645e4369edebf9f38e1a782df29bbc85d43561f095151",
+    "build_manifest.py": "75cb069837664b10412267bc34ab2fb7516299f415d9aaa34f7ff0710eac7404",
+    "check-results.json": "f4bc57e3de61f0b1a5866ba2bd981cf29bc4bd0b4469af00e44646cf501b2bd6",
+    "clippy.log": "a07ad594bf51c12029487337336b69e539559d387a7a1bb40b7f3f30d902ec71",
+    "diff.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "final-status.log": "9fe682e1226f6f6833c10b8cfa4039a497a49dba1379b3c44a457826c04cb946",
+    "fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "green-new-cases.log": "0f33d9261492ec21b20886ae56b791c687d00a6d091dddae76ccf4ea0e2dcf92",
+    "isolated-A01-mutant.log": "f3d89e05add6637450b361cb404bd16692eced2bc000bd75e6076af4a4234e14",
+    "isolated-baseline.log": "4b41ebfa098fec6938d515cc4bf65882283f2a437d05b513fc5f098a2f2ef05a",
+    "isolated-restored-baseline.log": "6ffacd5bb50c3ac819a717ead31a55062c851b30087c90945705dcc97eb759e7",
+    "manifest.json": "1297d4b11bee7491fe5544f39344c219ca0681912fdf657d319d4189b5a4169f",
+    "manifest.sha256": "b3b3a5b15994ddfb0b11a8ca1890cecc51263f9f27e8e2316d5564953a1ecedb",
+    "mutation-definition.json": "ce9ff64ef012a4402b064d8f143bbec92390cb5dc5006cabe40e7e638ac98bdf",
+    "mutation-driver.json": "9a567431807eeefcf8b917b25454cab11c183b7779ac55a404759e764f1a17dc",
+    "mutation-driver.log": "bf56dc39883e6d9a22ae4640fc5bea38c74c7061734f02063e1e1e3776543e36",
+    "mutation-result.json": "995513ee8c15730f07ae6dccb45b38ee08d1864708d6ae49c378aa66fd7c8de6",
+    "provenance.json": "f22614e32744ff3ea279efadb07a6f632724a3e151a69af455054e15af86cdf4",
+    "red-at-67dc-behavior.log": "4f0f064f37fbea384483631d5551246e92d655191bcb4cde604e786ea25bf130",
+    "root-path.txt": "47aa876057fbd3d38905dbae09743d6b4ff5b674e7935f9ce28dff1bd7080066",
+    "run_mutation.py": "d2b71f54d922800cf2da6611527c00e2487e5e017257fdcabbcd68b0d53c1455",
+    "wal-fixture-experiment.json": "2edb4b28730d8baac0e4aba48c9d1ebda2efa387f61f335d386055cf3802e0f5"
+  },
+  "limits": [
+    "Scripts retain original private paths; reproduction requires isolated full candidate checkout and configured paths.",
+    "Build targets/full isolated repository and real WAL/SHM fixture files are excluded.",
+    "Real committed donor WAL/SHM bytes with simulated missing/zero main is residue-preservation proof; standalone WAL recovery experiment failed and no live crash recovery is claimed.",
+    "Original ledger evidence and original Medium review remain unchanged."
+  ]
+}

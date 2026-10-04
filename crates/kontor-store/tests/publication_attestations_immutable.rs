@@ -5,8 +5,8 @@ use kontor_core::id::{
 };
 use kontor_core::publication::{CommitSha, PublicationDecision};
 use kontor_core::repository::{NewProject, ProjectRepository};
+use kontor_store::SqliteStore;
 use kontor_store::publication::{AttestationRecord, NewPublicationAttestation};
-use kontor_store::{SCHEMA_VERSION, SqliteStore};
 use rusqlite::params;
 use tempfile::TempDir;
 
@@ -15,9 +15,11 @@ fn recorded_publication_attestations_are_immutable_at_the_database_boundary() {
     let directory = TempDir::new().expect("temp dir");
     let path = directory.path().join("kontor.db");
     let store = SqliteStore::open(&path).expect("store opens at current schema");
+    // The current version, not the one ASMA-8102 landed at: the guards under
+    // test must survive every later migration.
     assert_eq!(
         store.schema_version().expect("schema version"),
-        SCHEMA_VERSION
+        kontor_store::SCHEMA_VERSION
     );
 
     let project = ProjectId::generate();

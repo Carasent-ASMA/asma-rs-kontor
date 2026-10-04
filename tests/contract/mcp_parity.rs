@@ -9,8 +9,8 @@
 //! contract growing.
 //!
 //! On top of it sits a **snapshot canary**: at this base the contract has exactly
-//! 202 mapped operations and exactly two allowlisted ones. The canary is not a
-//! claim that 202 is forever — it is what makes a later change to the daemon's
+//! 221 mapped operations and exactly two allowlisted ones. The canary is not a
+//! claim that 221 is forever — it is what makes a later change to the daemon's
 //! surface *fail here* rather than pass silently, so somebody has to decide
 //! whether the new operation gets a tool or a recorded deferral.
 //!
@@ -144,9 +144,16 @@ fn documented() -> Vec<Documented> {
     operations
 }
 
-/// The registry's spelling of one tool's operation.
-fn route_of(tool: &ToolSpec) -> (String, String) {
-    (tool.method.as_str().to_owned(), tool.path.to_owned())
+/// The registry's spelling of one tool's operation, and `None` for a local
+/// operation, which has no route.
+fn route_of(tool: &ToolSpec) -> Option<(String, String)> {
+    tool.route()
+        .map(|(method, path)| (method.as_str().to_owned(), path.to_owned()))
+}
+
+/// Every operation served over HTTP: the MCP vocabulary, less nothing.
+fn http() -> impl Iterator<Item = &'static ToolSpec> {
+    REGISTRY.iter().filter(|tool| tool.route().is_some())
 }
 
 #[test]
@@ -154,7 +161,7 @@ fn every_documented_operation_is_mapped_once_or_allowlisted_once() {
     let documented = documented();
     let mapped: BTreeMap<(String, String), &'static str> = REGISTRY
         .iter()
-        .map(|tool| (route_of(tool), tool.name))
+        .filter_map(|tool| Some((route_of(tool)?, tool.name)))
         .collect();
     let allowlisted: BTreeSet<(String, String)> = NON_AGENT_ROUTES
         .iter()
@@ -189,8 +196,8 @@ fn every_tool_targets_an_operation_that_exists() {
         .into_iter()
         .map(|operation| (operation.method, operation.path))
         .collect();
-    for tool in REGISTRY {
-        let route = route_of(tool);
+    for tool in http() {
+        let route = route_of(tool).expect("an HTTP operation");
         assert!(
             existing.contains(&route),
             "{} targets {} {}, which the contract does not declare",
@@ -199,7 +206,7 @@ fn every_tool_targets_an_operation_that_exists() {
             route.1
         );
         assert!(
-            tool.path.starts_with("/v1/"),
+            route.1.starts_with("/v1/"),
             "{} targets a route outside /v1",
             tool.name
         );
@@ -238,8 +245,8 @@ fn the_allowlist_holds_only_real_routes_and_the_contract_document_itself() {
 #[test]
 fn every_tool_declares_the_same_parameters_the_contract_does() {
     let documented = documented();
-    for tool in REGISTRY {
-        let route = route_of(tool);
+    for tool in http() {
+        let route = route_of(tool).expect("an HTTP operation");
         let operation = documented
             .iter()
             .find(|candidate| (candidate.method.clone(), candidate.path.clone()) == route)
@@ -294,8 +301,8 @@ fn every_tool_declares_the_same_parameters_the_contract_does() {
 #[test]
 fn every_tool_declares_the_same_body_properties_the_contract_does() {
     let documented = documented();
-    for tool in REGISTRY {
-        let route = route_of(tool);
+    for tool in http() {
+        let route = route_of(tool).expect("an HTTP operation");
         let operation = documented
             .iter()
             .find(|candidate| (candidate.method.clone(), candidate.path.clone()) == route)
@@ -399,12 +406,12 @@ fn every_tool_schema_is_closed_and_types_its_properties() {
 fn every_declared_nested_object_matches_the_contracts_own_dto() {
     let document = contract();
     let mut checked = 0_usize;
-    for tool in REGISTRY {
-        let route = route_of(tool);
+    for tool in http() {
+        let route = route_of(tool).expect("an HTTP operation");
         let Some(schema) = document
             .pointer(&format!(
                 "/paths/{}/{}/requestBody/content/application~1json/schema",
-                tool.path.replace('/', "~1"),
+                route.1.replace('/', "~1"),
                 route.0.to_lowercase()
             ))
             .map(|schema| resolve(&document, schema))
@@ -537,20 +544,28 @@ fn the_permission_decisions_match_the_runtimes_own_spelling() {
 
 #[test]
 fn the_snapshot_canary_holds_at_this_base() {
-    // Not "202 forever": this is what makes a later contract change fail here, so a
+    // Not "221 forever": this is what makes a later contract change fail here, so a
     // new operation gets a deliberate tool or a recorded deferral instead of
     // slipping past unreviewed.
     assert_eq!(
-        REGISTRY.len(),
-        202,
+        http().count(),
+        221,
         "the mapped-operation count changed; map the new operation or record a deferral"
+    );
+    // ASMA-8280 B-1: the registry's local operations — in-process handlers
+    // of the `kontor` CLI with no route — are counted apart, so one cannot
+    // stand in for a route or slip onto the MCP surface.
+    assert_eq!(
+        REGISTRY.len() - http().count(),
+        1,
+        "the local-operation count changed; a local operation is a registry decision"
     );
     // Not every mapped operation is an advertised one. `CLI_ONLY` is subtracted
     // from `tools/list` and nowhere else, so this second number is what a seat's
     // context is actually charged for — and it has to move deliberately too.
     assert_eq!(
-        REGISTRY.len() - CLI_ONLY.len(),
-        201,
+        http().count() - CLI_ONLY.len(),
+        220,
         "the advertised tool count changed; a tool held off the listing is a budget decision"
     );
     assert_eq!(
@@ -562,7 +577,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // route serves the document itself and is not self-documented.
     assert_eq!(
         documented().len(),
-        203,
+        222,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -790,6 +805,22 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_capacity_config_get", CallerTier::Admin),
         ("kontor_capacity_config_preview", CallerTier::Admin),
         ("kontor_capacity_config_apply", CallerTier::Admin),
+        // The Realm's fleet policy is admin configuration like capacity.
+        ("kontor_fleet_policy_get", CallerTier::Admin),
+        ("kontor_fleet_policy_preview", CallerTier::Admin),
+        ("kontor_fleet_policy_publish", CallerTier::Admin),
+        ("kontor_fleet_policy_activate", CallerTier::Admin),
+        // The orchestration bundle is the same admin configuration: reading or
+        // previewing it exposes and authors policy authority.
+        ("kontor_fleet_bundle_get", CallerTier::Admin),
+        ("kontor_fleet_bundle_preview", CallerTier::Admin),
+        ("kontor_fleet_bundle_publish", CallerTier::Admin),
+        ("kontor_fleet_bundle_activate", CallerTier::Admin),
+        ("kontor_fleet_bundle_propose", CallerTier::Admin),
+        // The local read has no route. Choosing where a seat runs is operator
+        // work, which admin inherits; an observer is not admitted. The CLI
+        // enforces it before it reads the state root.
+        ("kontor_fleet_policy_resolve", CallerTier::Operator),
         ("kontor_capacity_get", CallerTier::Observer),
         ("kontor_capacity_refresh", CallerTier::Operator),
         ("kontor_capacity_observation_get", CallerTier::Observer),
@@ -855,6 +886,29 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_committee_permissions_inspect", CallerTier::Operator),
         ("kontor_committee_permission_respond", CallerTier::Operator),
         ("kontor_committee_run_settle", CallerTier::Operator),
+        // ASMA-8282 D2: a planning pair's member writes sit on the Operator
+        // floor and are then bound to the addressed member credential; the
+        // caller's writes are bound to the frozen caller. Neither tier admits
+        // an ambient Admin as a member or as the caller.
+        ("kontor_planning_pair_profiles_list", CallerTier::Observer),
+        ("kontor_planning_pair_profile_preview", CallerTier::Admin),
+        ("kontor_planning_pair_profile_apply", CallerTier::Admin),
+        ("kontor_planning_pair_run_invoke", CallerTier::Operator),
+        ("kontor_planning_pair_run_get", CallerTier::Observer),
+        ("kontor_planning_pair_findings_record", CallerTier::Operator),
+        (
+            "kontor_planning_pair_clarification_request",
+            CallerTier::Operator,
+        ),
+        ("kontor_planning_pair_answer_record", CallerTier::Operator),
+        (
+            "kontor_planning_pair_disposition_record",
+            CallerTier::Operator,
+        ),
+        // ASMA-8282 frontier A: the frozen caller's same-native member
+        // recovery sits on the same Operator floor and is bound to the exact
+        // frozen caller at its current generation, never an ambient tier.
+        ("kontor_planning_pair_seat_recover", CallerTier::Operator),
         ("kontor_completion_profiles_list", CallerTier::Observer),
         ("kontor_completion_profile_preview", CallerTier::Admin),
         ("kontor_completion_profile_apply", CallerTier::Admin),

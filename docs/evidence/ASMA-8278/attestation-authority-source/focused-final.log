@@ -1,0 +1,18 @@
+   Compiling kontor-store v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 16.73s
+     Running tests/attestation_authority.rs (target/debug/deps/attestation_authority-56fe9fa166913f8c)
+
+running 10 tests
+test direct_sql_cannot_change_material_unrevoke_delete_or_jump_the_head ... ok
+test checked_revision_overflow_refuses_registration_and_revocation_atomically ... ok
+test exact_expected_head_is_required_and_failed_writes_leave_no_partial_mutation ... ok
+test failed_migration_124_rolls_back_its_new_head_and_version ... ok
+test first_registration_advances_once_and_read_projection_survives_reopen ... ok
+test invalid_bounds_intervals_and_sqlite_integer_overflow_do_not_create_a_head ... ok
+test key_identity_is_never_reused_and_revocation_is_irreversible_under_replay ... ok
+test historical_ledger_is_not_limited_to_the_transport_key_count ... ok
+test realm_project_and_application_scopes_never_leak_or_create_unknown_rows ... ok
+test two_store_writers_cannot_both_satisfy_the_same_absent_head_expectation ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.54s
+

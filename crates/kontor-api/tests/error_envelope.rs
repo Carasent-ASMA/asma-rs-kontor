@@ -10,7 +10,7 @@
 use kontor_api::error::{ApiError, ApiErrorCode};
 use kontor_core::DomainError;
 use kontor_core::consultation::{ConsultationFamily, ConsultationRunId};
-use kontor_core::id::{AdvisorRunId, CommitteeRunId, RealmId};
+use kontor_core::id::{AdvisorRunId, CommitteeRunId, PlanningPairRunId, RealmId};
 use kontor_core::repository::RepositoryError;
 
 /// The sentence that must never be the answer for a variant this build knows.
@@ -206,21 +206,29 @@ fn asking_for_the_state_an_aggregate_already_holds_is_advised_differently() {
 
 /// A transactional consultation duplicate is the one store conflict whose
 /// transport answer is not a revision conflict: it carries the surviving run's
-/// locator and the read/resume action, for both families, and every other
+/// locator and the read/resume action, for every family, and every other
 /// conflict keeps the merged revision-conflict mapping.
 #[test]
 fn the_transactional_duplicate_carries_the_exact_sequential_envelope() {
     let realm_id = RealmId::generate();
-    for family in [ConsultationFamily::Advisor, ConsultationFamily::Committee] {
+    for family in [
+        ConsultationFamily::Advisor,
+        ConsultationFamily::Committee,
+        ConsultationFamily::PlanningPair,
+    ] {
         let run_id = match family {
             ConsultationFamily::Advisor => ConsultationRunId::Advisor(AdvisorRunId::generate()),
             ConsultationFamily::Committee => {
                 ConsultationRunId::Committee(CommitteeRunId::generate())
             }
+            ConsultationFamily::PlanningPair => {
+                ConsultationRunId::PlanningPair(PlanningPairRunId::generate())
+            }
         };
         let label = match family {
             ConsultationFamily::Advisor => "Advisor",
             ConsultationFamily::Committee => "Committee",
+            ConsultationFamily::PlanningPair => "planning pair",
         };
         let refusal = ApiError::from_repository(
             realm_id,

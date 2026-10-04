@@ -1142,6 +1142,11 @@ fn concurrent_semantic_identity_losers_get_the_typed_duplicate_naming_the_surviv
                     run.definition_hash = committee_profile.hash().clone();
                     ConsultationRunId::Committee(CommitteeRunId::generate())
                 }
+                ConsultationFamily::PlanningPair => {
+                    unreachable!(
+                        "this fixture covers the released Advisor and Committee duplicate route"
+                    )
+                }
             };
             run.semantic_identity_hash = Some(identity.clone());
             run.topology_node_id = node_id;

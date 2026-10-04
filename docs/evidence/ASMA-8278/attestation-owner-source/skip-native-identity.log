@@ -1,0 +1,24 @@
+   Compiling kontor-runtime v0.2.1 (/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/mutation-source/crates/kontor-runtime)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.28s
+     Running unittests src/lib.rs (/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/mutation-target/debug/deps/kontor_runtime-38fd6bad31f23716)
+
+running 1 test
+test planning_pair::attestation::owner_checks::tests::every_native_identity_component_and_positive_generation_must_match ... FAILED
+
+failures:
+
+---- planning_pair::attestation::owner_checks::tests::every_native_identity_component_and_positive_generation_must_match stdout ----
+
+thread 'planning_pair::attestation::owner_checks::tests::every_native_identity_component_and_positive_generation_must_match' (25360575) panicked at crates/kontor-runtime/src/planning_pair/attestation/owner_checks/tests.rs:270:9:
+assertion `left == right` failed
+  left: Ok(())
+ right: Err(NativeIdentity)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    planning_pair::attestation::owner_checks::tests::every_native_identity_component_and_positive_generation_must_match
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 133 filtered out; finished in 0.34s
+
+error: test failed, to rerun pass `-p kontor-runtime --lib`

@@ -11,6 +11,8 @@ members = [
     "crates/kontor-memory-cognee",
     "crates/kontor-accounts",
     "crates/kontor-teams",
+    "crates/kontor-fleet",
+    "crates/kontor-fleet-activation",
     "crates/kontor-scheduler",
     "crates/kontor-calendar",
     "crates/kontor-policy",

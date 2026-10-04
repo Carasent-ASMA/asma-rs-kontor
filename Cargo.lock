@@ -3161,7 +3161,10 @@ dependencies = [
  "kontor-api",
  "kontor-core",
  "kontor-daemon",
+ "kontor-fleet",
+ "kontor-fleet-activation",
  "kontor-mcp",
+ "kontor-profiles",
  "kontor-store",
  "predicates",
  "reqwest",
@@ -3211,6 +3214,8 @@ dependencies = [
  "kontor-api",
  "kontor-context",
  "kontor-core",
+ "kontor-fleet",
+ "kontor-fleet-activation",
  "kontor-jira",
  "kontor-mcp",
  "kontor-memory-cognee",
@@ -3249,6 +3254,27 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-stronghold",
  "tinyvec",
+]
+
+[[package]]
+name = "kontor-fleet"
+version = "0.2.1"
+dependencies = [
+ "kontor-core",
+ "serde",
+ "serde_yaml_ng",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "kontor-fleet-activation"
+version = "0.2.1"
+dependencies = [
+ "kontor-core",
+ "kontor-fleet",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -3346,6 +3372,7 @@ name = "kontor-runtime"
 version = "0.2.1"
 dependencies = [
  "async-trait",
+ "aws-lc-rs",
  "kontor-core",
  "serde",
  "serde_json",

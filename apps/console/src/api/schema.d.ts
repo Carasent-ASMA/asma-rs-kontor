@@ -290,6 +290,162 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/fleet/bundle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The Realm's orchestration bundle selection. */
+        get: operations["fleet_bundle"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fleet/bundle:activate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Activate one published orchestration bundle under the expected standing
+         *     activation.
+         */
+        post: operations["activate_fleet_bundle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fleet/bundle:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resolve one candidate orchestration bundle. Writes nothing. */
+        post: operations["preview_fleet_bundle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fleet/bundle:propose": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Propose an initial orchestration bundle for review. Writes nothing. */
+        post: operations["propose_fleet_bundle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fleet/bundle:publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Publish one previewed orchestration bundle. Selects nothing. */
+        post: operations["publish_fleet_bundle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fleet/policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The Realm's fleet policy selection. */
+        get: operations["fleet_policy_selection"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fleet/policy:activate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Activate one published fleet policy under the expected current selection. */
+        post: operations["activate_fleet_policy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fleet/policy:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Validate one candidate fleet policy. Writes nothing. */
+        post: operations["preview_fleet_policy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fleet/policy:publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Publish one previewed fleet policy. Selects nothing. */
+        post: operations["publish_fleet_policy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/health": {
         parameters: {
             query?: never;
@@ -1617,6 +1773,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/epics/{epic_id}/planning-pair-runs:invoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Invoke one planning pair as its caller's own scoped seat. */
+        post: operations["invoke_planning_pair_run"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/epics/{epic_id}/roster:upgrade-apply": {
         parameters: {
             query?: never;
@@ -2108,6 +2281,162 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["tombstone"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/planning-pair-profiles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every published planning pair document revision. */
+        get: operations["planning_pair_profiles"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/planning-pair-profiles:apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Publish one planning pair document revision. */
+        post: operations["apply_planning_pair_profile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/planning-pair-profiles:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Judge one planning pair document. Commits nothing. */
+        post: operations["preview_planning_pair_profile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one planning pair as its reader may see it. */
+        get: operations["planning_pair_run"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/answers:record": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record the authenticated addressed member's sealed answer. */
+        post: operations["record_planning_pair_answer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/clarification:request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Ask the caller's one clarification question. */
+        post: operations["request_planning_pair_clarification"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/disposition:record": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record the caller's disposition. Terminal; never a settlement. */
+        post: operations["record_planning_pair_disposition"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/findings:record": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record the authenticated member's sealed finding. */
+        post: operations["record_planning_pair_finding"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/seats/{seat_binding_id}/recover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Requalify one member on its exact known native session, as the pair's
+         *     frozen caller's own scoped seat. Never a replacement or a new session.
+         */
+        post: operations["recover_planning_pair_seat"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5660,7 +5989,10 @@ export interface components {
             /** @description `total` | `growth_after_prefix`. */
             trigger_scope: string;
         };
-        /** @description Apply a named Core Team preview. */
+        /**
+         * @description Apply a named Core Team preview: the same seats, or the same bundle, it was
+         *     previewed with.
+         */
         CoreTeamApplyRequest: {
             /**
              * Format: int64
@@ -5670,7 +6002,9 @@ export interface components {
             /** @description The hash the preview answered with. */
             preview_hash: string;
             /** @description The roles the Core Team should seat, in order. */
-            seats: components["schemas"]["CoreTeamSeatSelectionDto"][];
+            seats?: components["schemas"]["CoreTeamSeatSelectionDto"][] | null;
+            /** @description The published orchestration bundle the preview was made from. */
+            source_bundle_hash?: string | null;
         };
         /** @description One project's Core Team. */
         CoreTeamDto: {
@@ -5797,6 +6131,11 @@ export interface components {
             core_team: components["schemas"]["CoreTeamDto"];
             /** @description The receipt it was committed under. */
             receipt: components["schemas"]["MutationReceiptDto"];
+            /**
+             * @description The published orchestration bundle a Core Team apply took its seats
+             *     from, when it took them from one.
+             */
+            source_bundle_hash?: string | null;
         };
         /** @description What a Core Team change would do. */
         CoreTeamPreviewDto: {
@@ -5806,11 +6145,22 @@ export interface components {
             preview_hash: string;
             /** @description The Realm that computed it. */
             realm_id: string;
+            /** @description The published bundle the seats came from, when they came from one. */
+            source_bundle_hash?: string | null;
         };
-        /** @description A proposed Core Team composition. */
+        /**
+         * @description A proposed Core Team composition: the caller's seats, or the Core Team
+         *     revision one published orchestration bundle declares (ASMA-8280 S-3).
+         *     Exactly one of the two.
+         */
         CoreTeamPreviewRequest: {
             /** @description The roles the Core Team should seat, in order. */
-            seats: components["schemas"]["CoreTeamSeatSelectionDto"][];
+            seats?: components["schemas"]["CoreTeamSeatSelectionDto"][] | null;
+            /**
+             * @description A published orchestration bundle whose verified Core Team revision
+             *     supplies the seats instead.
+             */
+            source_bundle_hash?: string | null;
         };
         /** @description Apply one still-current Core Team route preview. */
         CoreTeamRouteApplyRequest: {
@@ -6109,10 +6459,17 @@ export interface components {
             /** @description The catalog role whose persona was delivered. */
             role_code: string;
         };
-        /** @description One authorized native route for a persistent Core Team role. */
+        /**
+         * @description One authorized native route for a persistent Core Team role.
+         *
+         *     Exactly one of `model_route` and `eligibility`: the caller's exact route,
+         *     which the activated fleet policy may admit or refuse but never replaces, or
+         *     — when the caller names none — the policy's own choice under the
+         *     eligibility the caller states (ASMA-8280).
+         */
         CoreTeamSeatRouteRequest: {
-            /** @description Exact provider/model/effort route to launch or recover. */
-            model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            eligibility?: null | components["schemas"]["FleetEligibilityRequest"];
+            model_route?: null | components["schemas"]["RuntimeModelRouteRequest"];
             /** @description Stable role code in the epic's frozen Core Team roster. */
             role_code: string;
         };
@@ -6842,6 +7199,269 @@ export interface components {
             /** @description The existing team envelope. */
             team_run_id: string;
         };
+        /** @description One activation record: the published policy placement reads. */
+        FleetActivationDto: {
+            /** @description When activation replaced the record. */
+            activated_at: string;
+            /**
+             * @description The Core Team revision an aligned activation selects; absent for a
+             *     schema_version 1 record.
+             */
+            core_team_revision_hash?: string | null;
+            /** @description SHA-256 of exactly the activated policy bytes. */
+            policy_hash: string;
+            /**
+             * Format: int32
+             * @description The schema those bytes validate under.
+             */
+            policy_schema_version: number;
+            /**
+             * @description The orchestration bundle an aligned (schema_version 2) activation
+             *     names; absent for a schema_version 1 record.
+             */
+            source_bundle_hash?: string | null;
+        };
+        /**
+         * @description The standing activation a caller read, as an activation must name it.
+         *
+         *     Omitted entirely only when no activation record stands; a schema_version 1
+         *     record is named by its policy alone.
+         */
+        FleetActivationFenceDto: {
+            /** @description The policy the standing record names. */
+            policy_hash: string;
+            /** @description The bundle the standing record names, for a schema_version 2 record. */
+            source_bundle_hash?: string | null;
+        };
+        /**
+         * @description Select one published bundle — its policy and its Core Team revision
+         *     together — for every later placement.
+         */
+        FleetBundleActivateRequest: {
+            expected_active?: null | components["schemas"]["FleetActivationFenceDto"];
+            /** @description The published bundle to activate. */
+            source_bundle_hash: string;
+        };
+        /**
+         * @description The Realm's orchestration bundle selection (ASMA-8280 S-1).
+         *
+         *     The same single activation pointer [`FleetPolicyDto`] reports, read for its
+         *     bundle: a schema_version 1 record names a policy alone; a schema_version 2
+         *     record also names the orchestration bundle and Core Team revision, whose
+         *     manifest is reported here when it verifies.
+         */
+        FleetBundleDto: {
+            activation?: null | components["schemas"]["FleetActivationDto"];
+            /**
+             * Format: int32
+             * @description The activation record's format, `1` or `2`, when one can be read.
+             */
+            activation_schema_version?: number | null;
+            manifest?: null | components["schemas"]["FleetBundleManifestDto"];
+            /** @description The Realm it governs. */
+            realm_id: string;
+            /** @description Why the selected activation cannot be served, when it cannot. */
+            refusal?: string | null;
+            /** @description Which source decides fleet routing. */
+            selection: components["schemas"]["FleetPolicySelectionDto"];
+        };
+        /** @description One immutable orchestration bundle manifest. */
+        FleetBundleManifestDto: {
+            /** @description The bundle's canonical Core Team revision. */
+            core_team_revision_hash: string;
+            /** @description The bundle's policy. */
+            policy_hash: string;
+            /**
+             * Format: int32
+             * @description The schema that policy validates under.
+             */
+            policy_schema_version: number;
+            /** @description The resolver that produced the bundle. */
+            resolver: string;
+            /** @description The role catalog the Core Team revision was resolved against. */
+            role_catalog: components["schemas"]["FleetRoleCatalogPinDto"];
+            /** @description The manifest's canonical content hash: the bundle's identity. */
+            source_bundle_hash: string;
+            /** @description SHA-256 of each authoring source's exact bytes, by bundle-relative path. */
+            sources: {
+                [key: string]: string;
+            };
+        };
+        /** @description What a candidate bundle resolves to, before anything is written. */
+        FleetBundlePreviewDto: {
+            /** @description The manifest publication would write. */
+            manifest: components["schemas"]["FleetBundleManifestDto"];
+            /**
+             * @description The hash the corresponding publish must name: the three exact source
+             *     documents and the selected catalog revision.
+             */
+            preview_hash: string;
+            /** @description The Realm it was resolved for. */
+            realm_id: string;
+        };
+        /**
+         * @description One candidate orchestration bundle, as authored: the exact bytes of its
+         *     three sources.
+         */
+        FleetBundlePreviewRequest: {
+            /** @description The exact bytes of `teams/core-team.yml`. */
+            core_team: string;
+            /** @description The exact bytes of `fleet.yml`. */
+            fleet: string;
+            /** @description The exact bytes of `orchestration.yml`. */
+            orchestration: string;
+        };
+        /** @description A proposed initial orchestration bundle for review (ASMA-8280 S-2). */
+        FleetBundleProposalDto: {
+            /** @description The proposed `teams/core-team.yml` bytes: the mandatory roles alone. */
+            core_team: string;
+            /** @description The proposed `orchestration.yml` bytes. */
+            orchestration: string;
+            /** @description The Realm it was proposed for. */
+            realm_id: string;
+            /** @description The exact catalog revision the proposal pins. */
+            role_catalog: components["schemas"]["FleetRoleCatalogPinDto"];
+        };
+        /**
+         * @description Publish one previewed bundle as immutable, content-addressed artifacts.
+         *
+         *     Publication selects nothing: placement keeps reading the current selection
+         *     until an activation names this bundle.
+         */
+        FleetBundlePublishRequest: {
+            /** @description The exact bytes of `teams/core-team.yml` that were previewed. */
+            core_team: string;
+            /** @description The exact bytes of `fleet.yml` that were previewed. */
+            fleet: string;
+            /** @description The exact bytes of `orchestration.yml` that were previewed. */
+            orchestration: string;
+            /** @description The hash preview returned for these bytes. */
+            preview_hash: string;
+        };
+        /** @description One published bundle. */
+        FleetBundlePublishedDto: {
+            /** @description Whether this call wrote any artifact or found them all published. */
+            applied: components["schemas"]["AppliedDto"];
+            /** @description The manifest as published. */
+            manifest: components["schemas"]["FleetBundleManifestDto"];
+            /** @description The Realm it was published in. */
+            realm_id: string;
+        };
+        /**
+         * @description The runtime facts one fleet policy choice is made under: stated by the
+         *     caller, applied in chain order, and recorded with the decision.
+         */
+        FleetEligibilityRequest: {
+            /** @description Vendors the seat must avoid. */
+            excluded_vendors?: string[];
+            /** @description Account aliases that cannot take the seat now. */
+            unavailable_accounts?: string[];
+        };
+        /** @description Select one published policy for every later placement. */
+        FleetPolicyActivateRequest: {
+            /** @description The policy the caller read as active; omit when none was. */
+            expected_active_policy_hash?: string | null;
+            /** @description The published policy to activate. */
+            policy_hash: string;
+        };
+        /** @description The activation one activate call left standing. */
+        FleetPolicyActivatedDto: {
+            /** @description The standing activation record. */
+            activation: components["schemas"]["FleetActivationDto"];
+            /**
+             * @description `created` when this call replaced the record, `unchanged` when the
+             *     policy was already active.
+             */
+            applied: components["schemas"]["AppliedDto"];
+            /** @description The Realm it governs. */
+            realm_id: string;
+        };
+        /**
+         * @description The Realm's fleet policy selection (ASMA-8280).
+         *
+         *     Exactly one source decides fleet routing: an activation record naming one
+         *     published policy by content hash, or — when none exists — the unmigrated
+         *     state-root `fleet.yml`. An activation that cannot be verified is reported
+         *     here and refuses placement; it never falls back.
+         */
+        FleetPolicyDto: {
+            activation?: null | components["schemas"]["FleetActivationDto"];
+            /** @description SHA-256 of the policy bytes placement reads now, when there is one. */
+            active_policy_hash?: string | null;
+            /**
+             * Format: int32
+             * @description The schema version of that policy.
+             */
+            active_schema_version?: number | null;
+            /** @description The Realm it governs. */
+            realm_id: string;
+            /** @description Why the selected activation cannot be served, when it cannot. */
+            refusal?: string | null;
+            /** @description Which source decides fleet routing. */
+            selection: components["schemas"]["FleetPolicySelectionDto"];
+        };
+        /** @description What a candidate policy is, before anything is written. */
+        FleetPolicyPreviewDto: {
+            /** @description SHA-256 of exactly the validated bytes: the policy's identity. */
+            policy_hash: string;
+            /** @description The hash the corresponding publish must name. */
+            preview_hash: string;
+            /** @description The Realm it was validated for. */
+            realm_id: string;
+            /**
+             * Format: int32
+             * @description The schema those bytes validate under.
+             */
+            schema_version: number;
+        };
+        /** @description One candidate fleet policy, as authored. */
+        FleetPolicyPreviewRequest: {
+            /** @description The exact YAML bytes of a schema_version 1 or 2 fleet policy. */
+            document: string;
+        };
+        /**
+         * @description Publish one previewed policy as an immutable, content-addressed artifact.
+         *
+         *     Publication selects nothing: placement keeps reading the current selection
+         *     until an activation names this policy.
+         */
+        FleetPolicyPublishRequest: {
+            /** @description The exact YAML bytes that were previewed. */
+            document: string;
+            /** @description The hash preview returned for these bytes. */
+            preview_hash: string;
+        };
+        /** @description One published policy. */
+        FleetPolicyPublishedDto: {
+            /** @description Whether this call wrote the artifact or found it already published. */
+            applied: components["schemas"]["AppliedDto"];
+            /** @description SHA-256 of exactly the published bytes. */
+            policy_hash: string;
+            /** @description The Realm it was published in. */
+            realm_id: string;
+            /**
+             * Format: int32
+             * @description The schema those bytes validate under.
+             */
+            schema_version: number;
+        };
+        /**
+         * @description Which source decides a Realm's fleet routing.
+         * @enum {string}
+         */
+        FleetPolicySelectionDto: "activation" | "fleet_yml";
+        /** @description The exact role catalog revision a bundle pins. */
+        FleetRoleCatalogPinDto: {
+            /** @description The catalog's stable identity. */
+            catalog_id: string;
+            /** @description The canonical content hash of that revision. */
+            content_hash: string;
+            /**
+             * Format: int32
+             * @description The catalog revision.
+             */
+            version: number;
+        };
         FrozenRevision: {
             content_hash: string;
             /** Format: uuid */
@@ -7263,6 +7883,26 @@ export interface components {
              *     inserts them deterministically.
              */
             topic?: string | null;
+        };
+        /** @description Invoke one planning pair against an epic, as its frozen caller. */
+        InvokePlanningPairRequest: {
+            /**
+             * Format: int64
+             * @description The epic revision the caller read.
+             */
+            expected_revision: number;
+            /** @description Exactly two members, `seat-a` then `seat-b`. */
+            members: components["schemas"]["PlanningPairMemberPlacementRequest"][];
+            /** @description The exact document revision, including its canonical hash. */
+            profile: components["schemas"]["PlanningPairProfileRefDto"];
+            /** @description The protocol, named explicitly. Nothing substitutes another. */
+            protocol: components["schemas"]["PlanningPairProtocolDto"];
+            /** @description What the caller asks. */
+            question: string;
+            /** @description Optional ticket scope inside the epic; absent means the epic. */
+            task_id?: string | null;
+            /** @description Short semantic subject the pinned Team Definition renders. */
+            topic: string;
         };
         /** @description Confirmed Jira identity evidence, or an explicit awaiting state. */
         JiraBindingDto: {
@@ -7863,6 +8503,236 @@ export interface components {
              */
             version: number;
         };
+        /** @description The released clarification round. */
+        PlanningPairClarificationDto: {
+            /** @description The members it addressed. */
+            addressed: components["schemas"]["PlanningPairSlotDto"][];
+            /** @description Every addressed member's answer. */
+            answers: components["schemas"]["PlanningPairContributionDto"][];
+            /** @description The caller's question. */
+            question: string;
+        };
+        /** @description One released finding or answer. */
+        PlanningPairContributionDto: {
+            /** @description The advice, verbatim. */
+            advice: string;
+            /** @description Its canonical address. */
+            document_hash: string;
+            /** @description `findings` or `clarification`. */
+            round: string;
+            /** @description The member that gave it. */
+            slot: components["schemas"]["PlanningPairSlotDto"];
+        };
+        /** @description The caller's recorded disposition. */
+        PlanningPairDispositionRecordDto: {
+            /** @description One entry per member, `seat-a` then `seat-b`. */
+            members: components["schemas"]["PlanningPairMemberDispositionDto"][];
+            /** @description Why the caller decided as it did. */
+            rationale: string;
+        };
+        /**
+         * @description One member's known native session: what a trusted runtime readback named,
+         *     never a qualification.
+         */
+        PlanningPairKnownNativeDto: {
+            /** @description The exact session. */
+            native_identity: components["schemas"]["PlanningPairNativeIdentityDto"];
+            /**
+             * Format: date-time
+             * @description When it was read back.
+             */
+            observed_at: string;
+            /** @description Its provider conversation, when one was reported. */
+            provider_session_id?: string | null;
+            /** @description Why its launch readback did not qualify the member, when it did not. */
+            readback_refusal?: string | null;
+        };
+        /** @description What the caller decided about one member's advice. */
+        PlanningPairMemberDispositionDto: {
+            /** @description The exact clarification answer, when the member gave one. */
+            answer?: string | null;
+            /** @description Accepted, partially accepted or rejected. */
+            disposition: components["schemas"]["AdviceDispositionDto"];
+            /** @description The exact finding the decision is about. */
+            finding: string;
+            /** @description The member. */
+            slot: components["schemas"]["PlanningPairSlotDto"];
+        };
+        /** @description One frozen member. */
+        PlanningPairMemberDto: {
+            /** @description The binding the TPM named. */
+            binding_key: string;
+            known_native?: null | components["schemas"]["PlanningPairKnownNativeDto"];
+            /** @description The exact native seat title. */
+            label: string;
+            /** @description The route the shared allocator chose. */
+            model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            observed_binding?: null | components["schemas"]["ObservedBindingDto"];
+            /**
+             * Format: int64
+             * @description The native-filler generation scoped credentials are fenced to.
+             */
+            occupancy_generation: number;
+            /** @description The persistent SeatBinding. */
+            seat_binding_id: string;
+            /** @description The member slot. */
+            slot: components["schemas"]["PlanningPairSlotDto"];
+            /** @description The actual vendor the shared allocator held distinct. */
+            vendor: string;
+        };
+        /**
+         * @description One member's placement: the existing binding the TPM names for it and the
+         *     eligibility it states. The route is the shared allocator's, never the
+         *     caller's.
+         */
+        PlanningPairMemberPlacementRequest: {
+            /** @description The existing canonical binding this member resolves. */
+            binding_key: string;
+            /** @description Vendors this member must avoid. */
+            excluded_vendors?: string[];
+            /** @description The member slot. */
+            slot: components["schemas"]["PlanningPairSlotDto"];
+            /** @description Account aliases that cannot take this member now. */
+            unavailable_accounts?: string[];
+        };
+        /**
+         * @description One exact native session: its runtime family, host and runtime generation,
+         *     and its native id.
+         */
+        PlanningPairNativeIdentityDto: {
+            /**
+             * Format: int64
+             * @description The runtime generation.
+             */
+            generation: number;
+            /** @description The runtime host that owns the generation. */
+            host: string;
+            /** @description The native session id within it. */
+            native_id: string;
+            /** @description The runtime family. */
+            runtime_kind: string;
+        };
+        /** @description The exact published document revision an invocation pins. */
+        PlanningPairProfileRefDto: {
+            /** @description The canonical hash the caller read; a different published hash refuses. */
+            definition_hash: string;
+            /** @description The document id shared by every revision. */
+            id: string;
+            /**
+             * Format: int32
+             * @description The pinned revision.
+             */
+            version: number;
+        };
+        /**
+         * @description The protocol a caller explicitly selects. There is exactly one.
+         * @enum {string}
+         */
+        PlanningPairProtocolDto: "planning_pair@1";
+        /** @description One planning pair as its reader may see it. */
+        PlanningPairRunDto: {
+            /** @description The frozen caller seat. */
+            caller_seat_binding_id: string;
+            clarification?: null | components["schemas"]["PlanningPairClarificationDto"];
+            /** @description The rendered container name, when the pinned Team Definition names it. */
+            container_name?: string | null;
+            disposition?: null | components["schemas"]["PlanningPairDispositionRecordDto"];
+            /** @description The epic it advises. */
+            epic_id: string;
+            /** @description Both findings, once released and only to the caller. */
+            findings?: components["schemas"]["PlanningPairContributionDto"][] | null;
+            /** @description Both frozen members. */
+            members: components["schemas"]["PlanningPairMemberDto"][];
+            /** @description A member reader's own contributions, sealed or not. */
+            own_contributions?: components["schemas"]["PlanningPairContributionDto"][];
+            /** @description The protocol phase the latest record restores to. */
+            phase: string;
+            /** @description The frozen placement's canonical hash. */
+            placement_hash: string;
+            /** @description The consultation. */
+            planning_pair_run_id: string;
+            /** @description The pinned document revision. */
+            profile: components["schemas"]["ProfileRevisionDto"];
+            /** @description Always `planning_pair@1`. */
+            protocol: components["schemas"]["PlanningPairProtocolDto"];
+            /** @description The caller's question. */
+            question: string;
+            /** @description The Realm it belongs to. */
+            realm_id: string;
+            receipt?: null | components["schemas"]["MutationReceiptDto"];
+            /**
+             * Format: int64
+             * @description The record revision the projection restored.
+             */
+            record_revision: number;
+            /**
+             * @description The advice the caller did not wholly adopt, kept verbatim; to the
+             *     caller only.
+             */
+            retained_dissent?: components["schemas"]["PlanningPairContributionDto"][];
+            /**
+             * Format: int64
+             * @description The run revision.
+             */
+            revision: number;
+            /**
+             * Format: int64
+             * @description The control-plane position the answer is consistent with.
+             */
+            snapshot_cursor: number;
+            /** @description `materializing`, `running`, `needs_human` or `disposed`. */
+            state: string;
+            /** @description The ticket it advises, when it was invoked at one. */
+            task_id?: string | null;
+            /** @description The frozen semantic topic. */
+            topic: string;
+            /** @description The container node. */
+            topology_node_id: string;
+            /** @description Who this projection was rendered for. */
+            viewer: components["schemas"]["PlanningPairViewerDto"];
+        };
+        /**
+         * @description One member requalified on its exact known native session.
+         *
+         *     The same SeatBinding, generation, session and frozen placement: nothing is
+         *     created, replaced or rerouted, and nothing here is a verdict.
+         */
+        PlanningPairSeatRecoveryDto: {
+            /**
+             * Format: int64
+             * @description The member's unchanged occupancy generation.
+             */
+            member_occupancy_generation: number;
+            /** @description The same native session, read back again. */
+            native_identity: components["schemas"]["PlanningPairNativeIdentityDto"];
+            /** @description The frozen placement the member's provenance was read back against. */
+            placement_hash: string;
+            /** @description The pair as its caller now sees it. */
+            planning_pair: components["schemas"]["PlanningPairRunDto"];
+            /** @description The same provider conversation, when one is recorded. */
+            provider_session_id?: string | null;
+            /** @description The recovery's receipt. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /**
+             * Format: int64
+             * @description The run revision the requalification was recorded at.
+             */
+            recovered_revision: number;
+            /** @description The member's persistent SeatBinding. */
+            seat_binding_id: string;
+            /** @description The member slot. */
+            slot: components["schemas"]["PlanningPairSlotDto"];
+        };
+        /**
+         * @description One of the two member slots.
+         * @enum {string}
+         */
+        PlanningPairSlotDto: "seat-a" | "seat-b";
+        /**
+         * @description Who the projection was rendered for, and so what it may contain.
+         * @enum {string}
+         */
+        PlanningPairViewerDto: "caller" | "member" | "observer";
         /** @description The result of judging an epic with the exact apply rules and no writes. */
         PreviewEpicDto: {
             /** @description Whether apply would create the epic or find it unchanged. */
@@ -8959,6 +9829,28 @@ export interface components {
             /** @description The verdict. `waived` is an admin decision; the rest are operator work. */
             verdict: string;
         };
+        /** @description One member's finding or clarification answer. */
+        RecordPlanningPairContributionRequest: {
+            /** @description The advice, verbatim. */
+            advice: string;
+            /**
+             * Format: int64
+             * @description The run revision the member read.
+             */
+            expected_revision: number;
+        };
+        /** @description The caller's disposition. A decision, not a verdict. */
+        RecordPlanningPairDispositionRequest: {
+            /**
+             * Format: int64
+             * @description The run revision the caller read.
+             */
+            expected_revision: number;
+            /** @description One entry per member, `seat-a` then `seat-b`. */
+            members: components["schemas"]["PlanningPairMemberDispositionDto"][];
+            /** @description Why the caller decided as it did. */
+            rationale: string;
+        };
         /**
          * @description What `provider-quota-states:record` is asked for.
          *
@@ -9071,6 +9963,34 @@ export interface components {
              * @description Which append-only evaluation of the gate that receipt recorded.
              */
             sequence: number;
+        };
+        /**
+         * @description Requalify one member on its exact known native session, as the pair's
+         *     frozen caller.
+         *
+         *     Every field is a compare-and-swap assertion. The member and the pair come
+         *     from the path and the caller from its credential; the session is the one
+         *     already known for the member, never one named here. There is no route,
+         *     provider, profile, generation, credential or new-session field.
+         */
+        RecoverPlanningPairSeatRequest: {
+            /**
+             * Format: int64
+             * @description The member's occupancy generation the caller read.
+             */
+            expected_member_occupancy_generation: number;
+            /** @description The member's known native session the caller read. */
+            expected_native_identity: components["schemas"]["PlanningPairNativeIdentityDto"];
+            /**
+             * @description The member's provider conversation, required exactly when one is
+             *     recorded for the known session.
+             */
+            expected_provider_session_id?: string | null;
+            /**
+             * Format: int64
+             * @description The run revision the caller read.
+             */
+            expected_run_revision: number;
         };
         /**
          * @description One member the resolver removed, and why.
@@ -9281,6 +10201,18 @@ export interface components {
             repository: string;
             /** @description The root-pointer revision, for a module that has one. */
             root_pointer_revision?: string | null;
+        };
+        /** @description The caller's one clarification question. */
+        RequestPlanningPairClarificationRequest: {
+            /** @description One or both members, each once. */
+            addressed: components["schemas"]["PlanningPairSlotDto"][];
+            /**
+             * Format: int64
+             * @description The run revision the caller read.
+             */
+            expected_revision: number;
+            /** @description What the caller needs clarified. */
+            question: string;
         };
         /** @description Exact Admin compare-and-swap for one native-less Committee seat. */
         RerouteUnmaterializedConsultationSeatRequest: {
@@ -11892,6 +12824,399 @@ export interface operations {
             };
             /** @description The position is outside the retained history */
             410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    fleet_bundle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FleetBundleDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    activate_fleet_bundle: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FleetBundleActivateRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FleetPolicyActivatedDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_fleet_bundle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FleetBundlePreviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FleetBundlePreviewDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    propose_fleet_bundle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FleetBundleProposalDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    publish_fleet_bundle: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FleetBundlePublishRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FleetBundlePublishedDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    fleet_policy_selection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FleetPolicyDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    activate_fleet_policy: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FleetPolicyActivateRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FleetPolicyActivatedDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_fleet_policy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FleetPolicyPreviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FleetPolicyPreviewDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    publish_fleet_policy: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FleetPolicyPublishRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FleetPolicyPublishedDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -16075,6 +17400,68 @@ export interface operations {
             };
         };
     };
+    invoke_planning_pair_run: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InvokePlanningPairRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanningPairRunDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     apply_roster_upgrade: {
         parameters: {
             query?: never;
@@ -17271,6 +18658,525 @@ export interface operations {
         };
         responses: {
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    planning_pair_profiles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileCatalogDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    apply_planning_pair_profile: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProfileApplyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppliedProfileDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_planning_pair_profile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProfilePreviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfilePreviewDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    planning_pair_run: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The planning pair */
+                planning_pair_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanningPairRunDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    record_planning_pair_answer: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The member's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The planning pair */
+                planning_pair_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordPlanningPairContributionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanningPairRunDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    request_planning_pair_clarification: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The planning pair */
+                planning_pair_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RequestPlanningPairClarificationRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanningPairRunDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    record_planning_pair_disposition: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The planning pair */
+                planning_pair_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordPlanningPairDispositionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanningPairRunDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    record_planning_pair_finding: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The member's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The planning pair */
+                planning_pair_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordPlanningPairContributionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanningPairRunDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    recover_planning_pair_seat: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The planning pair */
+                planning_pair_run_id: string;
+                /** @description The member seat to requalify */
+                seat_binding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecoverPlanningPairSeatRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanningPairSeatRecoveryDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
