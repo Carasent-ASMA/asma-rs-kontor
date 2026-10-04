@@ -1,0 +1,25 @@
+diff --git a/crates/kontor-store/src/repository.rs b/crates/kontor-store/src/repository.rs
+index 54b692a9..47ba49be 100644
+--- a/crates/kontor-store/src/repository.rs
++++ b/crates/kontor-store/src/repository.rs
+@@ -5507,19 +5507,7 @@ impl SqliteStore {
+             // embellished document becoming durable in the first place; the
+             // binder's later check then has something whole to compare against
+             // (ASMA-8187 P2).
+-            let typed = serde_json::from_value::<CoreTeamRouteSuccessionReadback>(
+-                succession.readback.clone(),
+-            )
+-            .map_err(|_| RepositoryError::Conflict {
+-                subject: "core team route succession",
+-                rule: "the succession readback is not a complete Core Team succession readback",
+-            })?;
+-            typed
+-                .check_internal_consistency()
+-                .map_err(|rule| RepositoryError::Conflict {
+-                    subject: "core team route succession",
+-                    rule,
+-                })?;
++            // MUTANT M-P21a: the readback is whatever JSON the caller sent.
+             let readback = serde_json::to_string(&succession.readback).map_err(|error| {
+                 RepositoryError::Backend {
+                     detail: format!("a succession readback could not be encoded: {error}"),

@@ -22,4 +22,4 @@ CREATE TRIGGER memory_projection_rebuild_results_no_update BEFORE UPDATE ON memo
 BEGIN SELECT RAISE(ABORT,'projection rebuild results are immutable'); END;
 CREATE TRIGGER memory_projection_rebuild_results_no_delete BEFORE DELETE ON memory_projection_rebuild_results
 BEGIN SELECT RAISE(ABORT,'projection rebuild results are permanent'); END;
-PRAGMA user_version = 121;
+PRAGMA user_version = 124;

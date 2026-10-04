@@ -1,0 +1,18 @@
+--- a/crates/kontor-daemon/src/applications.rs
++++ b/crates/kontor-daemon/src/applications.rs
+@@ -846,13 +846,14 @@
+     timeout: std::time::Duration,
+     mut all_finished: impl FnMut() -> bool,
+ ) -> bool {
++    // MUTANT M-HANG-SETTLE-ALWAYS: an unfinished worker reports as settled.
+     let deadline = std::time::Instant::now() + timeout;
+     loop {
+         if all_finished() {
+             return true;
+         }
+         if std::time::Instant::now() >= deadline {
+-            return false;
++            return true;
+         }
+         std::thread::sleep(std::time::Duration::from_millis(20));
+     }

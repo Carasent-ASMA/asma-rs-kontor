@@ -41,7 +41,7 @@ fn ledger(connection: &Connection) -> Vec<Vec<Vec<String>>> {
 }
 
 #[test]
-fn migration_0120_failure_preserves_v119_schema_history_and_clean_retry() {
+fn migration_0123_failure_preserves_v119_schema_history_and_clean_retry() {
     let directory = tempfile::tempdir().unwrap();
     let database = directory.path().join("kontor.db");
     let store = SqliteStore::open(&database).unwrap();
@@ -93,8 +93,8 @@ fn migration_0120_failure_preserves_v119_schema_history_and_clean_retry() {
         .unwrap();
     drop(store);
     let connection = Connection::open(&database).unwrap();
-    connection.execute_batch("DROP TABLE memory_projection_rebuild_results; DROP TABLE memory_projection_rebuild_keys; DROP TABLE memory_recall_keys; DROP TABLE memory_recall_metadata; DROP TABLE memory_experience_proposals; DROP TABLE memory_projection_active; DROP TABLE memory_projection_snapshots; DROP TABLE memory_experience_eligibility; PRAGMA user_version=119;").unwrap();
-    // A synthetic name collision fails inside unmodified 0120, after four
+    connection.execute_batch("DROP TABLE memory_projection_rebuild_results; DROP TABLE memory_projection_rebuild_keys; DROP TABLE memory_recall_keys; DROP TABLE memory_recall_metadata; DROP TABLE memory_experience_proposals; DROP TABLE memory_projection_active; DROP TABLE memory_projection_snapshots; DROP TABLE memory_experience_eligibility; DROP TABLE imported_record_evidence; DROP TABLE core_team_route_successions; PRAGMA user_version=119;").unwrap();
+    // A synthetic name collision fails inside unmodified 0123, after four
     // CREATE TABLE statements. Only this deliberate fixture trigger is removed.
     connection.execute_batch("CREATE TRIGGER memory_projection_snapshots_no_update BEFORE UPDATE ON memory_revisions BEGIN SELECT 1; END;").unwrap();
     let history = ledger(&connection);
@@ -104,7 +104,7 @@ fn migration_0120_failure_preserves_v119_schema_history_and_clean_retry() {
         "SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name",
     );
     drop(connection);
-    let error = SqliteStore::open(&database).expect_err("forced 0120 collision must roll back");
+    let error = SqliteStore::open(&database).expect_err("forced 0123 collision must roll back");
     assert!(matches!(error, StoreError::Sqlite(_)), "{error:?}");
     let connection = Connection::open(&database).unwrap();
     assert_eq!(
@@ -207,6 +207,6 @@ fn migration_0120_failure_preserves_v119_schema_history_and_clean_retry() {
     );
     println!(
         "F4_RESULT {}",
-        serde_json::json!({"prior_version":119,"final_version":SCHEMA_VERSION,"injected_failure":"0120 duplicate trigger after four table creations","history_sha256":hash,"rollback_schema_equal":true,"rollback_ledger_equal":true,"clean_retry_equal":true,"typed_backfill_rows":cache,"forward_version_refused":true})
+        serde_json::json!({"prior_version":119,"final_version":SCHEMA_VERSION,"injected_failure":"0123 duplicate trigger after four table creations","history_sha256":hash,"rollback_schema_equal":true,"rollback_ledger_equal":true,"clean_retry_equal":true,"typed_backfill_rows":cache,"forward_version_refused":true})
     );
 }

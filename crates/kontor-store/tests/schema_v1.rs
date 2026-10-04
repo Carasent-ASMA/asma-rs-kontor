@@ -67,6 +67,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "advisor_advice_artifacts",
     "context_packs",
     "core_team_revisions",
+    "core_team_route_successions",
     // Schema v32 (KON-OP-06): published Completion Profile revisions, one durable
     // completion run per epic, and the TPM wake outbox.
     "completion_profile_revisions",
@@ -110,6 +111,7 @@ const EXPECTED_TABLES: &[&str] = &[
     // Schema v5 (KON-MVP-19): the destination half of a redacted import.
     "import_receipts",
     "imported_profile_selection_outcomes",
+    "imported_record_evidence",
     "imported_records",
     // Schema v6 (KON-MVP-22): the terminal half of intake and its work lineage.
     "intake_created_work",
@@ -764,8 +766,15 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // v118 records bounded runtime-message delivery proof steps.
     // v119 makes publication attestations immutable, append-only evidence
     // (ASMA-8102); both guards must survive migration and reopen.
-    // v120 adds typed experience eligibility, projections and immutable recall metadata.
-    assert_eq!(SCHEMA_VERSION, 121);
+    // v120 gives one Core Team route succession an exclusive per-seat owner
+    // claimed before its first duplicable effect, and a durable readback plus
+    // pending-effect record so a replay converges instead of re-planning
+    // against a seat that has moved (ASMA-8187).
+    // v121 retains imported records as inspectable evidence without authority.
+    // v122 freezes and verifies each succession receipt binding.
+    // v123 adds typed experience eligibility, projections and recall metadata.
+    // v124 records immutable projection rebuild requests and original results.
+    assert_eq!(SCHEMA_VERSION, 124);
 }
 
 #[test]
@@ -2103,6 +2112,7 @@ fn the_deployed_op03_v31_lineage_converges_without_losing_its_receipts() {
     let connection = raw(&directory);
     for table in [
         "core_team_revisions",
+        "core_team_route_successions",
         "quick_sessions",
         "quick_session_promotions",
         "epic_rosters",
@@ -6115,7 +6125,7 @@ fn issuance_boundary_is_frozen_across_replay_and_reopen() {
 }
 
 #[test]
-fn v120_upgrade_preserves_generic_ledger_and_enforces_immutable_memory_receipts() {
+fn v123_upgrade_preserves_generic_ledger_and_enforces_immutable_memory_receipts() {
     use kontor_core::id::{ExternalName, IdempotencyKey, Timestamp};
     use kontor_core::memory::{DegradedReason, RecallIntent};
     use kontor_core::repository::NewProject;
@@ -6175,11 +6185,11 @@ fn v120_upgrade_preserves_generic_ledger_and_enforces_immutable_memory_receipts(
         )
         .unwrap();
     drop(store);
-    // Remove only this migration's additive tables and derived cache. The fixture
+    // Remove all post-119 additive tables and the derived cache. The fixture
     // now has the exact v119 table set and ledger, and opens through the real chain.
     let database = directory.path().join("kontor.db");
     let connection = Connection::open(&database).unwrap();
-    connection.execute_batch("DROP TABLE memory_projection_rebuild_results; DROP TABLE memory_projection_rebuild_keys; DROP TABLE memory_recall_keys; DROP TABLE memory_recall_metadata; DROP TABLE memory_experience_proposals; DROP TABLE memory_projection_active; DROP TABLE memory_projection_snapshots; DROP TABLE memory_experience_eligibility; PRAGMA user_version=119;").unwrap();
+    connection.execute_batch("DROP TABLE memory_projection_rebuild_results; DROP TABLE memory_projection_rebuild_keys; DROP TABLE memory_recall_keys; DROP TABLE memory_recall_metadata; DROP TABLE memory_experience_proposals; DROP TABLE memory_projection_active; DROP TABLE memory_projection_snapshots; DROP TABLE memory_experience_eligibility; DROP TABLE imported_record_evidence; DROP TABLE core_team_route_successions; PRAGMA user_version=119;").unwrap();
     drop(connection);
     let store = SqliteStore::open(&database).unwrap();
     assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);

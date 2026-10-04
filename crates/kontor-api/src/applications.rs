@@ -858,6 +858,56 @@ pub struct CoreTeamNativeSeatDto {
     pub observed_at: Timestamp,
 }
 
+/// One occupancy of a logical hosted seat: the native that filled it and the
+/// persona that occupancy was opened under.
+///
+/// A seat outlives its natives. Reporting only the current one answers "who is
+/// here" but not "what was this seat ever opened under", and the second question
+/// is the one a no-overwrite qualification has to ask.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct HostedSeatOccupancyDto {
+    /// The occupancy generation this native filled.
+    pub occupancy_generation: u64,
+    /// `current` for the occupancy filling the seat now, `retired` for one it
+    /// superseded. Stated rather than inferred from position, so a reader does
+    /// not have to know the ordering rule to know which native is live.
+    pub lifecycle: String,
+    /// Exact native session that filled this occupancy.
+    pub native: CoreTeamNativeSeatDto,
+    /// The persona this occupancy was opened under, when its role seeds one.
+    ///
+    /// Never carries the persona text. The digest is the identity a reader
+    /// needs in order to compare two occupancies; the bytes are launch input,
+    /// and a read contract that disclosed them would be publishing a system
+    /// prompt rather than evidencing one.
+    pub role_persona: Option<CoreTeamSeatPersonaDto>,
+}
+
+/// The immutable occupancy chain of one logical hosted seat inside one epic.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct HostedSeatOccupancyChainDto {
+    /// The Realm it was read in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The project it serves.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// The epic whose control plane owns the seat.
+    #[schema(value_type = String)]
+    pub epic_id: kontor_core::id::MiniProjectId,
+    /// The logical seat whose occupancies these are.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// The standard role the seat is held under.
+    #[schema(value_type = String)]
+    pub role_code: kontor_core::id::RoleCode,
+    /// Every occupancy, oldest generation first.
+    pub occupancies: Vec<HostedSeatOccupancyDto>,
+    /// The position this read is consistent with.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
 /// One project's Core Team.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct CoreTeamDto {
@@ -1045,6 +1095,83 @@ impl CoreTeamRouteApplyRequest {
     }
 }
 
+/// One exact native occupant of a logical Core Team seat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CoreTeamRouteOccupantDto {
+    /// Exact native session identity.
+    #[schema(value_type = String)]
+    pub native_id: ExternalId,
+    /// Runtime that holds it.
+    pub runtime_kind: String,
+    /// Host it was placed on.
+    pub host: String,
+    /// Runtime generation of this native.
+    pub generation: u64,
+    /// Provider conversation, when the runtime exposes one.
+    #[schema(value_type = Option<String>)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_session_id: Option<ExternalId>,
+    /// Which occupancy of the logical seat this native is.
+    pub occupancy_generation: u64,
+    /// Frozen provider/model/effort route it runs on.
+    pub model_route: RuntimeModelRouteRequest,
+}
+
+/// The successor's grant subject, as non-secret identity only.
+///
+/// A seat credential is bearer material derived from the operator secret, so
+/// neither it nor any digest *of it* appears here or anywhere else. What is
+/// recorded is the subject the grant is scoped to — the logical seat and the
+/// occupancy generation — and a digest over exactly that public pair. A reader
+/// can therefore prove which generation-scoped grant the successor derived
+/// without the record ever having held anything secret (ASMA-8187).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CoreTeamRouteGrantSubjectDto {
+    /// The generation this successor's grant is scoped to.
+    pub generation: u64,
+    /// The logical seat the grant is scoped to.
+    #[schema(value_type = String)]
+    pub subject_seat_binding_id: SeatBindingId,
+    /// Digest over the non-secret (seat, generation) subject pair. Never over
+    /// credential material.
+    #[schema(value_type = String)]
+    pub subject_digest: ContentHash,
+}
+
+/// Which trailing effects of a committed succession have landed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CoreTeamRouteEffectsDto {
+    /// The launch intent has been reconciled against the native it produced.
+    pub launch_intent_installed: bool,
+    /// The SeatBinding has been observed against the successor.
+    pub seat_binding_observed: bool,
+}
+
+/// The complete durable evidence one Core Team succession produced.
+///
+/// Persisted in the same transaction as the route transition and answered with
+/// verbatim thereafter. Recomputing it would describe the seat's *current*
+/// occupant, which is precisely the wrong answer to "what did this command do"
+/// once a later succession has moved the seat on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CoreTeamRouteSuccessionReadbackDto {
+    /// The preserved logical seat.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// Exact archived predecessor.
+    pub predecessor: CoreTeamRouteOccupantDto,
+    /// Exact installed successor.
+    pub successor: CoreTeamRouteOccupantDto,
+    /// The successor's generation-scoped grant subject, never any credential.
+    ///
+    /// Named `grant_subject` rather than `credential` deliberately: the realm's
+    /// canonical-document guard forbids a node called `credential` outright, and
+    /// this node is the subject a grant is scoped to rather than a grant.
+    pub grant_subject: CoreTeamRouteGrantSubjectDto,
+    /// Instant the predecessor was retired.
+    pub retired_at: String,
+}
+
 /// Completed in-place route correction with exact identity readback.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct CoreTeamRouteOutcomeDto {
@@ -1059,6 +1186,30 @@ pub struct CoreTeamRouteOutcomeDto {
     /// Active successor native identity; equal to predecessor for an unchanged route.
     #[schema(value_type = String)]
     pub successor_native_id: ExternalId,
+    /// The complete durable readback this succession produced.
+    ///
+    /// Present for every succession that replaced a native, including an exact
+    /// replay of one: the bytes come from the succession ledger rather than
+    /// from the seat's current state. An unchanged-route correction replaced
+    /// nothing and carries none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub readback: Option<CoreTeamRouteSuccessionReadbackDto>,
+    /// Digest of that readback.
+    ///
+    /// Covers the immutable outcome only. The trailing effects below are live
+    /// ledger state rather than evidence of what the command did, so they are
+    /// deliberately outside the hashed document — a digest that moved when an
+    /// effect landed would not be a digest of the outcome.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub readback_hash: Option<ContentHash>,
+    /// Which trailing effects have landed, read at answer time.
+    ///
+    /// A committed route with a pending launch intent or an unobserved
+    /// SeatBinding is not a complete succession, and this is where a caller
+    /// sees that rather than inferring it from a readback that cannot change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub succession_effects: Option<CoreTeamRouteEffectsDto>,
     /// Audited mutation receipt.
     pub receipt: MutationReceiptDto,
 }
@@ -7490,6 +7641,23 @@ pub trait ApplicationOperations: Send + Sync {
 
     /// One project's Core Team.
     fn core_team(&self, project_id: ProjectId) -> Result<CoreTeamDto, ApiError>;
+    /// One epic's materialized Core Team, as the server currently owns it.
+    ///
+    /// The same projection the mutating epic routes already return. Exposing it
+    /// as a read is the whole point: until now the only way to observe a seat's
+    /// native and persona was to change something.
+    fn epic_core_team(
+        &self,
+        project_id: ProjectId,
+        epic_id: kontor_core::id::MiniProjectId,
+    ) -> Result<CoreTeamDto, ApiError>;
+    /// The immutable occupancy chain of one hosted seat in one epic.
+    fn epic_hosted_seat_occupancies(
+        &self,
+        project_id: ProjectId,
+        epic_id: kontor_core::id::MiniProjectId,
+        seat_binding_id: SeatBindingId,
+    ) -> Result<HostedSeatOccupancyChainDto, ApiError>;
     /// What a Core Team change would do. Commits nothing.
     fn preview_core_team(
         &self,
@@ -10110,6 +10278,73 @@ pub async fn core_team(
     caller.require(&state, CallerCapability::Observer)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
     Ok(Json(state.applications().core_team(project_id)?))
+}
+
+/// One epic's materialized Core Team.
+///
+/// Pure. It records no command, calls no runtime, and changes nothing; the
+/// mutating epic routes already return this projection and this route only
+/// stops a caller from having to mutate in order to see it.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/epics/{epic_id}/core-team", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic whose control plane holds the seats")
+    ),
+    responses(
+        (status = 200, body = CoreTeamDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn epic_core_team(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+) -> Result<Json<CoreTeamDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, kontor_core::id::MiniProjectId::parse(&epic_id))?;
+    Ok(Json(
+        state.applications().epic_core_team(project_id, epic_id)?,
+    ))
+}
+
+/// Every occupancy one hosted seat has had, oldest first.
+///
+/// Pure, and deliberately a separate route from the roster: the roster answers
+/// what is true now, and carrying every seat's whole history inside it would
+/// make the common read pay for the rare one.
+#[utoipa::path(
+    get,
+    path = "/v1/projects/{project_id}/epics/{epic_id}/core-team/seats/{seat_binding_id}/occupancies",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic whose control plane holds the seat"),
+        ("seat_binding_id" = String, Path, description = "The logical seat")
+    ),
+    responses(
+        (status = 200, body = HostedSeatOccupancyChainDto),
+        (status = 401), (status = 403),
+        (status = 404, description = "No such seat in this epic"),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn epic_hosted_seat_occupancies(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id, seat_binding_id)): Path<(String, String, String)>,
+) -> Result<Json<HostedSeatOccupancyChainDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, kontor_core::id::MiniProjectId::parse(&epic_id))?;
+    let seat_binding_id = parse_id(&state, SeatBindingId::parse(&seat_binding_id))?;
+    Ok(Json(state.applications().epic_hosted_seat_occupancies(
+        project_id,
+        epic_id,
+        seat_binding_id,
+    )?))
 }
 
 /// What a Core Team change would do. Commits nothing.

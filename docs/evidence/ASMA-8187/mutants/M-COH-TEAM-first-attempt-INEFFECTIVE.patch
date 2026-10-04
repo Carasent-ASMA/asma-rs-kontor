@@ -1,0 +1,42 @@
+--- a/crates/kontor-daemon/src/applications.rs
++++ b/crates/kontor-daemon/src/applications.rs
+@@ -8408,14 +8408,10 @@
+                                 // predecessor's; a current generation with no row
+                                 // is null, which is the same answer the chain
+                                 // gives and the only honest one.
+-                                let persona = match generation {
+-                                    Some(generation) => store.get_hosted_seat_role_persona(
+-                                        project_id,
+-                                        seat_binding_id,
+-                                        generation,
+-                                    )?,
+-                                    None => None,
+-                                };
++                                // MUTANT M-COH-TEAM: defer the persona to a
++                                // second acquisition, pairing one occupancy's
++                                // native with another's persona.
++                                let persona = None;
+                                 (native, generation, persona)
+                             }
+                             None => (None, None, None),
+@@ -8433,7 +8429,19 @@
+             )
+             .map_err(|error| self.refuse(&error))?;
+ 
+-        // Pure mapping, after the release.
++        // MUTANT M-COH-TEAM: the deferred persona read, after the release.
++        let mut captured = captured;
++        for entry in &mut captured {
++            if let (Some(seat_binding_id), Some(generation)) =
++                (entry.seat_binding_id, entry.occupancy_generation)
++            {
++                entry.persona = state
++                    .with_store(|store| {
++                        store.get_hosted_seat_role_persona(project_id, seat_binding_id, generation)
++                    })
++                    .map_err(|error| self.refuse(&error))?;
++            }
++        }
+         for (seat, captured) in seats.iter_mut().zip(captured) {
+             seat.seat_binding_id = captured.seat_binding_id;
+             seat.native_seat = captured.native.map(|native| CoreTeamNativeSeatDto {

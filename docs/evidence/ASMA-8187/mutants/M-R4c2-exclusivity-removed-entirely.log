@@ -1,0 +1,20 @@
+running 1 test
+test a_concurrent_second_key_is_refused_at_the_claim_before_any_native_effect ... FAILED
+
+failures:
+
+---- a_concurrent_second_key_is_refused_at_the_claim_before_any_native_effect stdout ----
+
+thread 'a_concurrent_second_key_is_refused_at_the_claim_before_any_native_effect' (74074996) panicked at crates/kontor-daemon/tests/loopback_api.rs:62187:9:
+assertion `left != right` failed: a concurrent second key succeeded a seat another key owns: {"core_team":{"realm_id":"01a0e6e7-0a41-7401-9f6c-4fbd11848f60","project_id":"01a0e6e7-1143-7253-a159-51d410bb20d3","seats":[{"role":{"catalog_revision":{"id":"01936f5a-1000-7000-8000-000000000002","version":1},"role_code":"LSA","standard_title":"Lead Software Architect","segment":"architecture","custom_display_name":null},"presence":"required","ad_hoc_allowed":true,"seat_binding_id":"01a0e6e7-1190-7240-a3cc-aa33870b131d","native_seat":{"runtime_kind":"fake.runtime","host":"fake-host","generation":1,"native_id":"native-hosted-seat-3","provider_session_id":"provider-hosted-seat-3","model_route":{"provider":"codex","model":"gpt-5.6-sol","effort":"xhigh"},"observed_at":"2026-09-28T07:24:58.199755Z"},"role_persona":{"role_code":"LSA","prompt_hash":"be05a2220f6800089f7d51ecb44763ad830747df4635c2f3a40e8b34960117e7","delivery":"create_only_no_readback","occupancy_generation":1,"frozen_at":"2026-09-28T07:24:58.199244Z"}},{"role":{"catalog_revision":{"id":"01936f5a-1000-7000-8000-000000000002","version":1},"role_code":"TPM","standard_title":"Technical Program Manager","segment":"product_delivery","custom_display_name":null},"presence":"required","ad_hoc_allowed":false,"seat_binding_id":"01a0e6e7-1194-7bf1-96d2-b5ae5d99c9a4","native_seat":{"runtime_kind":"fake.runtime","host":"fake-host","generation":1,"native_id":"native-hosted-seat-5","provider_session_id":"provider-hosted-seat-5","model_route":{"provider":"codex","model":"gpt-5.6-sol","effort":"high"},"observed_at":"2026-09-28T07:24:58.247524Z"},"role_persona":null}],"revision":1,"snapshot_cursor":8},"seat_binding_id":"01a0e6e7-1194-7bf1-96d2-b5ae5d99c9a4","predecessor_native_id":"native-hosted-seat-4","successor_native_id":"native-hosted-seat-5","readback":{"seat_binding_id":"01a0e6e7-1194-7bf1-96d2-b5ae5d99c9a4","predecessor":{"native_id":"native-hosted-seat-4","runtime_kind":"fake.runtime","host":"fake-host","generation":1,"provider_session_id":"provider-hosted-seat-4","occupancy_generation":1,"model_route":{"provider":"codex","model":"gpt-5.6-sol","effort":"xhigh"}},"successor":{"native_id":"native-hosted-seat-5","runtime_kind":"fake.runtime","host":"fake-host","generation":1,"provider_session_id":"provider-hosted-seat-5","occupancy_generation":2,"model_route":{"provider":"codex","model":"gpt-5.6-sol","effort":"high"}},"grant_subject":{"generation":2,"subject_seat_binding_id":"01a0e6e7-1194-7bf1-96d2-b5ae5d99c9a4","subject_digest":"18ddb7f0c9ec66a39a9f1f7f799025d5e66226c6f80500c835bd03e81a8c6fc2"},"retired_at":"2026-09-28T07:24:58.237534Z"},"readback_hash":"4f502f9065ebd19a47af1a05bd50cc36463ab8b73a59f68bd659d2ddab4857d9","succession_effects":{"launch_intent_installed":true,"seat_binding_observed":true},"receipt":{"realm_id":"01a0e6e7-0a41-7401-9f6c-4fbd11848f60","receipt_id":"01a0e6e7-1209-7141-a221-7e5f95f105f7","applied":"updated","revision":1,"snapshot_cursor":8}}
+  left: 200
+ right: 200
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    a_concurrent_second_key_is_refused_at_the_claim_before_any_native_effect
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 496 filtered out; finished in 2.01s
+
+error: test failed, to rerun pass `-p kontor-daemon --test loopback_api`

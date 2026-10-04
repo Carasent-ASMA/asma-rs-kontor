@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 121;
+pub const SCHEMA_VERSION: i64 = 124;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -415,9 +415,20 @@ const MIGRATIONS: &[&str] = &[
     // the SQLite boundary so recorded publication evidence cannot be rewritten
     // or erased after insertion (ASMA-8102 / PUB-01).
     include_str!("../migrations/0119_publication_attestations_immutable.sql"),
-    // Schema v120. Typed experience eligibility, immutable projections and recall metadata.
-    include_str!("../migrations/0120_experience_memory_projection.sql"),
-    include_str!("../migrations/0121_memory_projection_rebuild_receipts.sql"),
+    // Schema v120. One Core Team route succession is owned exclusively before
+    // its first duplicable effect and stays recoverable across every interval
+    // those effects span.
+    include_str!("../migrations/0120_core_team_route_successions.sql"),
+    // Schema v121. The content of an imported record, kept beside its lineage as
+    // inspectable evidence and never as destination authority.
+    include_str!("../migrations/0121_imported_record_evidence.sql"),
+    // Schema v122. A succession's receipt is proved to be its own, binds at most
+    // one succession, and the instant it bound at is as frozen as the binding.
+    include_str!("../migrations/0122_core_team_route_succession_receipt_identity.sql"),
+    // Schema v123. Typed experience eligibility, immutable projections and recall metadata.
+    include_str!("../migrations/0123_experience_memory_projection.sql"),
+    // Schema v124. Immutable projection rebuild requests and original result receipts.
+    include_str!("../migrations/0124_memory_projection_rebuild_receipts.sql"),
 ];
 
 const _: () = assert!(
@@ -625,9 +636,9 @@ fn apply_pending(
         canonicalize_operational_topology_v47(&transaction)?;
     }
 
-    // Schema v120's derived cache uses the canonical Rust validator, never a
+    // Schema v123's derived cache uses the canonical Rust validator, never a
     // permissive SQL shape test. Its writes share the ordered migration transaction.
-    if version < 120 {
+    if version < 123 {
         crate::memory::rebuild_experience_eligibility_in(&transaction)?;
     }
 

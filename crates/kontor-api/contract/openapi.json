@@ -3955,6 +3955,60 @@
         }
       }
     },
+    "/v1/projects/{project_id}/epics/{epic_id}/core-team": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "One epic's materialized Core Team.",
+        "description": "Pure. It records no command, calls no runtime, and changes nothing; the\nmutating epic routes already return this projection and this route only\nstops a caller from having to mutate in order to see it.",
+        "operationId": "epic_core_team",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic whose control plane holds the seats",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoreTeamDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/epics/{epic_id}/core-team/launch-intents:supersede": {
       "post": {
         "tags": [
@@ -4335,6 +4389,69 @@
           },
           "503": {
             "description": "The runtime could not be reached"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/epics/{epic_id}/core-team/seats/{seat_binding_id}/occupancies": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Every occupancy one hosted seat has had, oldest first.",
+        "description": "Pure, and deliberately a separate route from the roster: the roster answers\nwhat is true now, and carrying every seat's whole history inside it would\nmake the common read pay for the rare one.",
+        "operationId": "epic_hosted_seat_occupancies",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic whose control plane holds the seat",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "seat_binding_id",
+            "in": "path",
+            "description": "The logical seat",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostedSeatOccupancyChainDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": "No such seat in this epic"
+          },
+          "503": {
+            "description": "The owning application service is not composed"
           }
         }
       }
@@ -16588,6 +16705,98 @@
         },
         "additionalProperties": false
       },
+      "CoreTeamRouteEffectsDto": {
+        "type": "object",
+        "description": "Which trailing effects of a committed succession have landed.",
+        "required": [
+          "launch_intent_installed",
+          "seat_binding_observed"
+        ],
+        "properties": {
+          "launch_intent_installed": {
+            "type": "boolean",
+            "description": "The launch intent has been reconciled against the native it produced."
+          },
+          "seat_binding_observed": {
+            "type": "boolean",
+            "description": "The SeatBinding has been observed against the successor."
+          }
+        }
+      },
+      "CoreTeamRouteGrantSubjectDto": {
+        "type": "object",
+        "description": "The successor's grant subject, as non-secret identity only.\n\nA seat credential is bearer material derived from the operator secret, so\nneither it nor any digest *of it* appears here or anywhere else. What is\nrecorded is the subject the grant is scoped to — the logical seat and the\noccupancy generation — and a digest over exactly that public pair. A reader\ncan therefore prove which generation-scoped grant the successor derived\nwithout the record ever having held anything secret (ASMA-8187).",
+        "required": [
+          "generation",
+          "subject_seat_binding_id",
+          "subject_digest"
+        ],
+        "properties": {
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The generation this successor's grant is scoped to.",
+            "minimum": 0
+          },
+          "subject_digest": {
+            "type": "string",
+            "description": "Digest over the non-secret (seat, generation) subject pair. Never over\ncredential material."
+          },
+          "subject_seat_binding_id": {
+            "type": "string",
+            "description": "The logical seat the grant is scoped to."
+          }
+        }
+      },
+      "CoreTeamRouteOccupantDto": {
+        "type": "object",
+        "description": "One exact native occupant of a logical Core Team seat.",
+        "required": [
+          "native_id",
+          "runtime_kind",
+          "host",
+          "generation",
+          "occupancy_generation",
+          "model_route"
+        ],
+        "properties": {
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Runtime generation of this native.",
+            "minimum": 0
+          },
+          "host": {
+            "type": "string",
+            "description": "Host it was placed on."
+          },
+          "model_route": {
+            "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+            "description": "Frozen provider/model/effort route it runs on."
+          },
+          "native_id": {
+            "type": "string",
+            "description": "Exact native session identity."
+          },
+          "occupancy_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Which occupancy of the logical seat this native is.",
+            "minimum": 0
+          },
+          "provider_session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Provider conversation, when the runtime exposes one."
+          },
+          "runtime_kind": {
+            "type": "string",
+            "description": "Runtime that holds it."
+          }
+        }
+      },
       "CoreTeamRouteOutcomeDto": {
         "type": "object",
         "description": "Completed in-place route correction with exact identity readback.",
@@ -16607,6 +16816,24 @@
             "type": "string",
             "description": "Archived predecessor native identity."
           },
+          "readback": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CoreTeamRouteSuccessionReadbackDto",
+                "description": "The complete durable readback this succession produced.\n\nPresent for every succession that replaced a native, including an exact\nreplay of one: the bytes come from the succession ledger rather than\nfrom the seat's current state. An unchanged-route correction replaced\nnothing and carries none."
+              }
+            ]
+          },
+          "readback_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Digest of that readback.\n\nCovers the immutable outcome only. The trailing effects below are live\nledger state rather than evidence of what the command did, so they are\ndeliberately outside the hashed document — a digest that moved when an\neffect landed would not be a digest of the outcome."
+          },
           "receipt": {
             "$ref": "#/components/schemas/MutationReceiptDto",
             "description": "Audited mutation receipt."
@@ -16614,6 +16841,17 @@
           "seat_binding_id": {
             "type": "string",
             "description": "Preserved logical SeatBinding."
+          },
+          "succession_effects": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CoreTeamRouteEffectsDto",
+                "description": "Which trailing effects have landed, read at answer time.\n\nA committed route with a pending launch intent or an unobserved\nSeatBinding is not a complete succession, and this is where a caller\nsees that rather than inferring it from a readback that cannot change."
+              }
+            ]
           },
           "successor_native_id": {
             "type": "string",
@@ -16717,6 +16955,39 @@
           }
         },
         "additionalProperties": false
+      },
+      "CoreTeamRouteSuccessionReadbackDto": {
+        "type": "object",
+        "description": "The complete durable evidence one Core Team succession produced.\n\nPersisted in the same transaction as the route transition and answered with\nverbatim thereafter. Recomputing it would describe the seat's *current*\noccupant, which is precisely the wrong answer to \"what did this command do\"\nonce a later succession has moved the seat on.",
+        "required": [
+          "seat_binding_id",
+          "predecessor",
+          "successor",
+          "grant_subject",
+          "retired_at"
+        ],
+        "properties": {
+          "grant_subject": {
+            "$ref": "#/components/schemas/CoreTeamRouteGrantSubjectDto",
+            "description": "The successor's generation-scoped grant subject, never any credential.\n\nNamed `grant_subject` rather than `credential` deliberately: the realm's\ncanonical-document guard forbids a node called `credential` outright, and\nthis node is the subject a grant is scoped to rather than a grant."
+          },
+          "predecessor": {
+            "$ref": "#/components/schemas/CoreTeamRouteOccupantDto",
+            "description": "Exact archived predecessor."
+          },
+          "retired_at": {
+            "type": "string",
+            "description": "Instant the predecessor was retired."
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "The preserved logical seat."
+          },
+          "successor": {
+            "$ref": "#/components/schemas/CoreTeamRouteOccupantDto",
+            "description": "Exact installed successor."
+          }
+        }
       },
       "CoreTeamSeatClaimApplyRequest": {
         "type": "object",
@@ -19014,6 +19285,89 @@
           }
         },
         "additionalProperties": false
+      },
+      "HostedSeatOccupancyChainDto": {
+        "type": "object",
+        "description": "The immutable occupancy chain of one logical hosted seat inside one epic.",
+        "required": [
+          "realm_id",
+          "project_id",
+          "epic_id",
+          "seat_binding_id",
+          "role_code",
+          "occupancies",
+          "snapshot_cursor"
+        ],
+        "properties": {
+          "epic_id": {
+            "type": "string",
+            "description": "The epic whose control plane owns the seat."
+          },
+          "occupancies": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HostedSeatOccupancyDto"
+            },
+            "description": "Every occupancy, oldest generation first."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The project it serves."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it was read in."
+          },
+          "role_code": {
+            "type": "string",
+            "description": "The standard role the seat is held under."
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "The logical seat whose occupancies these are."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The position this read is consistent with."
+          }
+        }
+      },
+      "HostedSeatOccupancyDto": {
+        "type": "object",
+        "description": "One occupancy of a logical hosted seat: the native that filled it and the\npersona that occupancy was opened under.\n\nA seat outlives its natives. Reporting only the current one answers \"who is\nhere\" but not \"what was this seat ever opened under\", and the second question\nis the one a no-overwrite qualification has to ask.",
+        "required": [
+          "occupancy_generation",
+          "lifecycle",
+          "native"
+        ],
+        "properties": {
+          "lifecycle": {
+            "type": "string",
+            "description": "`current` for the occupancy filling the seat now, `retired` for one it\nsuperseded. Stated rather than inferred from position, so a reader does\nnot have to know the ordering rule to know which native is live."
+          },
+          "native": {
+            "$ref": "#/components/schemas/CoreTeamNativeSeatDto",
+            "description": "Exact native session that filled this occupancy."
+          },
+          "occupancy_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The occupancy generation this native filled.",
+            "minimum": 0
+          },
+          "role_persona": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CoreTeamSeatPersonaDto",
+                "description": "The persona this occupancy was opened under, when its role seeds one.\n\nNever carries the persona text. The digest is the identity a reader\nneeds in order to compare two occupancies; the bytes are launch input,\nand a read contract that disclosed them would be publishing a system\nprompt rather than evidencing one."
+              }
+            ]
+          }
+        }
       },
       "ImportBody": {
         "type": "object",

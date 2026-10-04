@@ -1616,6 +1616,16 @@ const SECRET_MARKERS: &[(&str, usize)] = &[
     ("akia", 16),
     ("asia", 16),
     ("aiza", 20),
+    // This Realm's own seat bearers. They are derived from the operator secret
+    // and are exactly as sensitive as any provider token, but nothing above
+    // matches them: the value has no `bearer ` prefix, and the key it appears
+    // under is the caller's to choose. A tail of forty keeps an ordinary
+    // mention of the scheme name — in a comment, a rule, a doc string — from
+    // being read as a credential, while a real bearer carries a binding, a
+    // generation and a sixty-four character signature after the prefix
+    // (ASMA-8187 P1).
+    ("kontor-seat-v1.", 40),
+    ("kontor-seat-v2.", 40),
 ];
 
 /// Inline assignments that carry a credential in an otherwise ordinary string,

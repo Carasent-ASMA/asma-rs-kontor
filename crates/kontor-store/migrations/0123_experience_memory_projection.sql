@@ -62,4 +62,4 @@ CREATE TRIGGER memory_recall_keys_no_update BEFORE UPDATE ON memory_recall_keys
 BEGIN SELECT RAISE(ABORT,'memory recall keys are immutable'); END;
 CREATE TRIGGER memory_recall_keys_no_delete BEFORE DELETE ON memory_recall_keys
 BEGIN SELECT RAISE(ABORT,'memory recall keys are immutable'); END;
-PRAGMA user_version = 120;
+PRAGMA user_version = 123;

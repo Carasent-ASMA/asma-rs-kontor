@@ -1,0 +1,24 @@
+--- a/crates/kontor-store/src/repository.rs
++++ b/crates/kontor-store/src/repository.rs
+@@ -5541,19 +5541,8 @@
+                     subject: "core team route succession",
+                     rule: "a succession outcome cannot commit onto a claim that was never taken",
+                 })?;
+-            typed
+-                .check_describes_transition(
+-                    predecessor,
+-                    u64::try_from(claim.0).unwrap_or(u64::MAX),
+-                    successor,
+-                    u64::try_from(claim.1).unwrap_or(u64::MAX),
+-                    u64::try_from(claim.2).unwrap_or(u64::MAX),
+-                    retired_at,
+-                )
+-                .map_err(|rule| RepositoryError::Conflict {
+-                    subject: "core team route succession",
+-                    rule,
+-                })?;
++            // MUTANT M-P24: the readback need not describe this transition.
++            let _ = &claim;
+             let readback = serde_json::to_string(&succession.readback).map_err(|error| {
+                 RepositoryError::Backend {
+                     detail: format!("a succession readback could not be encoded: {error}"),
