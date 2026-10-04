@@ -340,6 +340,7 @@ pub struct LaunchRequest {
     authority: LaunchAuthority,
     parts: LaunchParts,
     expected_existing_native_id: Option<ExternalId>,
+    fleet_provenance: Option<crate::provenance::FleetLaunchProvenance>,
 }
 
 impl LaunchRequest {
@@ -356,6 +357,7 @@ impl LaunchRequest {
             authority,
             parts,
             expected_existing_native_id: None,
+            fleet_provenance: None,
         }
     }
 
@@ -369,7 +371,29 @@ impl LaunchRequest {
             authority,
             parts,
             expected_existing_native_id: Some(expected_existing_native_id),
+            fleet_provenance: None,
         }
+    }
+
+    /// The same request, naming the fleet policy's authority for its route
+    /// (ASMA-8280 G-3).
+    ///
+    /// Not part of what admission compares: the seat, run and binding are the
+    /// reservation; the provenance is what the runtime writes to its native
+    /// surface and reads back.
+    #[must_use]
+    pub fn with_fleet_provenance(
+        mut self,
+        provenance: Option<crate::provenance::FleetLaunchProvenance>,
+    ) -> Self {
+        self.fleet_provenance = provenance;
+        self
+    }
+
+    /// The fleet policy's authority for this launch's route, when one chose it.
+    #[must_use]
+    pub const fn fleet_provenance(&self) -> Option<&crate::provenance::FleetLaunchProvenance> {
+        self.fleet_provenance.as_ref()
     }
 
     /// The authority this launch is spending.

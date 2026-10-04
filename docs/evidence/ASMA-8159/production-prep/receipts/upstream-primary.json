@@ -1,0 +1,42 @@
+{
+  "upstream_pin": "b32d8afc59e1064d9291b9828a8a147be9cc8bab",
+  "files": [
+    {
+      "path": "LICENSE",
+      "url": "https://raw.githubusercontent.com/topoteretes/cognee/b32d8afc59e1064d9291b9828a8a147be9cc8bab/LICENSE",
+      "bytes": 11344,
+      "sha256": "a471e34908f50c3f120e9a56f3c30cb34e133e4ede01a9cbd5ce718fc358ecd4"
+    },
+    {
+      "path": "pyproject.toml",
+      "url": "https://raw.githubusercontent.com/topoteretes/cognee/b32d8afc59e1064d9291b9828a8a147be9cc8bab/pyproject.toml",
+      "bytes": 17427,
+      "sha256": "fbce31417acb6e3099d8426a5f30e9c263dbf2cc492500728d2603f7e3fef1b3"
+    },
+    {
+      "path": "cognee/cli/api_client.py",
+      "url": "https://raw.githubusercontent.com/topoteretes/cognee/b32d8afc59e1064d9291b9828a8a147be9cc8bab/cognee/cli/api_client.py",
+      "bytes": 14567,
+      "sha256": "9a3b6a89c2a23e25bc5d384809c54423ea2e42ad4b22dce34b98a29d030f640c"
+    },
+    {
+      "path": "cognee/modules/users/methods/get_authenticated_user.py",
+      "url": "https://raw.githubusercontent.com/topoteretes/cognee/b32d8afc59e1064d9291b9828a8a147be9cc8bab/cognee/modules/users/methods/get_authenticated_user.py",
+      "bytes": 4437,
+      "sha256": "1010bb03f4d9ac968fc8148cb409ab8d0d66ab884d2aa34757cd22a007aade40"
+    },
+    {
+      "path": "cognee/api/v1/search/routers/get_search_router.py",
+      "url": "https://raw.githubusercontent.com/topoteretes/cognee/b32d8afc59e1064d9291b9828a8a147be9cc8bab/cognee/api/v1/search/routers/get_search_router.py",
+      "bytes": 13827,
+      "sha256": "8149b790115c9a6dbd7755b898e4a540a9d2c5037b6d7d2301b867ed9a566ef3"
+    },
+    {
+      "path": "cognee/modules/pipelines/models/PipelineRunInfo.py",
+      "url": "https://raw.githubusercontent.com/topoteretes/cognee/b32d8afc59e1064d9291b9828a8a147be9cc8bab/cognee/modules/pipelines/models/PipelineRunInfo.py",
+      "bytes": 2303,
+      "sha256": "6f3cc9557ac8fbc0f5258444a6cac5307a3f336a15716a7e51b9a5fbb5a58026"
+    }
+  ],
+  "claim": "inspection only; production image/principal/providers unqualified"
+}

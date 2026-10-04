@@ -1,0 +1,26 @@
+{
+  "baseSourceCommit": "51cfef9caaa1e2b12674ad932d0adfb0658d4777",
+  "files": [
+    {
+      "path": "crates/kontor-api/src/applications.rs",
+      "beforeSha256": "765e84d47873255b9e2c1a199528290c9cdd08d13015f6dc2075f059090b45c3",
+      "afterSha256": "9490d0510ca1c435bdfb700ab3b2640c2f5fe105cdb8bf4b930176c2aeaa28ed"
+    },
+    {
+      "path": "crates/kontor-api/contract/openapi.json",
+      "beforeSha256": "6ef176e542ce03d4b6720ca1fad94a2443943760d55b5d516cf2440da289c462",
+      "afterSha256": "894064dea0d4356da2843e16a8d2e4016f3f4af0f8744422b7d50197020a2a0e"
+    },
+    {
+      "path": "apps/console/src/api/schema.d.ts",
+      "beforeSha256": "73e0b6da92c1710ca8e997af35ef179f463429e1345108749554ff2e9869da08",
+      "afterSha256": "e9a7402053f7ad45e5a5383f24b3f800decf7fef4581f032dae82111a962a13b"
+    }
+  ],
+  "semanticDelta": [
+    "Advisor GET response 409",
+    "Committee GET response 409"
+  ],
+  "runtimeHandlerBodiesChanged": false,
+  "scope": "Only the two read declarations, served OpenAPI document and generated TypeScript responses change. The read helper, strict renderer, tests and lockfile remain exact-51 bytes. No new whole-source gate execution is claimed."
+}

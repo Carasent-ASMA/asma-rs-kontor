@@ -1,0 +1,7 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.20s
+     Running unittests src/lib.rs (target/debug/deps/kontor_store-9640265f0baaa497)
+
+running 1 test
+test memory::experience_tests::exact_budget_32768_32769_unicode_escaping_and_skip_oversized_top ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 1.92s

@@ -1,0 +1,12 @@
+{
+  "source_root": "/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-restart-20261004",
+  "base": "975b05f91a69ac4c8623c5655dc1855091f81b69",
+  "contract": "dc6d360a2616c683921526ea7e6f0114f0e4664f",
+  "spec": "1.5 section9.8",
+  "owned": [
+    "crates/kontor-runtime/src/planning_pair/attestation.rs",
+    "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic.rs",
+    "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic/tests.rs"
+  ],
+  "limits": "diagnostic consistency only; no store/native/keychain/provider/installedDB/publication effects"
+}

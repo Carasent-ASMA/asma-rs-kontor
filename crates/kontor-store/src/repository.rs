@@ -29,7 +29,7 @@ use kontor_core::id::{
     CommandReceiptId, CommitteeRunId, ContentHash, CredentialAlias, CurrencyCode,
     DescriptionPublicationId, EventCursor, ExternalId, ExternalName, GateKey,
     GuardrailEvaluationId, HolidaySourceId, IdempotencyKey, IntakeReceiptId, MiniProjectId,
-    ModuleKey, Money, OpenQuestionId, PersonaScenarioId, PhaseKey, ProjectId,
+    ModuleKey, Money, OpenQuestionId, PersonaScenarioId, PhaseKey, PlanningPairRunId, ProjectId,
     ProviderUsageObservationId, QuickSessionId, QuotaObservationProvenanceId, RealmId,
     RoleCatalogId, RoleCode, RoleKey, RoleSlotId, RuntimeBindingId, RuntimeKindKey,
     ScheduleOverrideId, SeatBindingId, SignedDuration, SpecVersion, StatusConflictId,
@@ -42,6 +42,7 @@ use kontor_core::open_question::{
     AmbiguityRound, Disposition, DispositionKind, DispositionOutcome, OpenQuestion,
     OpenQuestionAttachment, OpenQuestionSummary, QuestionScope, TriggerFiring,
 };
+use kontor_core::planning_pair::{PlanningPairRound, PlanningPairSlot, PlanningPairState};
 use kontor_core::quota::{CreditBalance, QuotaWindow, QuotaWindowKind};
 use kontor_core::realm::{EventEnvelope, RealmCursor, ReceiptEnvelope, SnapshotEnvelope};
 use kontor_core::receipt::{
@@ -52,33 +53,36 @@ use kontor_core::repository::{
     AccountProfile, AccountProfileUpdate, AdaptiveAdmissionAdvance, AdoptionWrite, AgentRun,
     AttestationWrite, AvailabilityOverride, CalendarRepository, CapacityObservation,
     CapacityRepository, CommandRepository, CompletionWrite, ConnectorSpecSelector,
+    CoreTeamRouteSuccessionCommit, CoreTeamRouteSuccessionEffects, CoreTeamRouteSuccessionReadback,
     CredentialReference, CredentialReferenceKind, GateEvaluation, GateRejectionRecovery,
     GateRejectionRoute, GateRouteOrigin, HistoryGapKind, HistoryGapMarker,
     HostedSeatLaunchIntentState, HostedSeatLaunchIntentSupersession, IntakeCreatedWork,
     IntakeDecisionRecord, IntakeOutcome, IntakeRepository, MiniProject,
     MiniProjectTopologySnapshot, NewAbandonReceipt, NewAccountProfile, NewAdaptiveAdmissionState,
     NewAgentRun, NewAvailabilityOverride, NewCapacityObservation, NewCommandIntent,
-    NewConsultationMaterializationReroute, NewConsultationRecoveryAttempt, NewGateEvaluation,
-    NewIntakeDecision, NewIntakeDecisionRecord, NewIntakeReevaluation, NewLocalCommand,
-    NewMiniProject, NewNativeContainerBinding, NewObservation, NewProject, NewProviderQuotaState,
-    NewProviderUsageObservation, NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode,
-    NewSourceEvent, NewTask, NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink,
-    PhaseAdvance, Project, ProjectRepository, ProjectTopologyDefault, ProviderQuotaState,
-    ProviderUsageObservation, QuotaObservationProvenance, RealmEventPage, RealmRepository,
-    ReceiptAdvance, ReevaluationOutcome, RepositoryError, RepositoryResult, RunClosure,
-    RunInspection, RunRepository, RuntimeBinding, RuntimeEvent, SeatLivenessObservation,
-    SessionVerdictEvidence, SourceDisposition, SourceEventIngest, SpecRepository,
-    StoredAdvisorAdvice, StoredCapacityConfiguration, StoredCommitteeFinding,
+    NewConsultationMaterializationReroute, NewConsultationRecoveryAttempt,
+    NewCoreTeamRouteSuccessionClaim, NewGateEvaluation, NewIntakeDecision, NewIntakeDecisionRecord,
+    NewIntakeReevaluation, NewLocalCommand, NewMiniProject, NewNativeContainerBinding,
+    NewObservation, NewProject, NewProviderQuotaState, NewProviderUsageObservation,
+    NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode, NewSourceEvent, NewTask,
+    NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink, PhaseAdvance,
+    PlanningPairMemberReadback, Project, ProjectRepository, ProjectTopologyDefault,
+    ProviderQuotaState, ProviderUsageObservation, QuotaObservationProvenance, RealmEventPage,
+    RealmRepository, ReceiptAdvance, ReevaluationOutcome, RepositoryError, RepositoryResult,
+    RunClosure, RunInspection, RunRepository, RuntimeBinding, RuntimeEvent,
+    SeatLivenessObservation, SessionVerdictEvidence, SourceDisposition, SourceEventIngest,
+    SpecRepository, StoredAdvisorAdvice, StoredCapacityConfiguration, StoredCommitteeFinding,
     StoredCompletionProfile, StoredCompletionWake, StoredCompletionWakeDelivery,
     StoredConsultationMaterializationReroute, StoredConsultationProfileRevision,
     StoredConsultationRecoveryAttempt, StoredConsultationRun, StoredConsultationSeat,
-    StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster, StoredHostedSeatLaunchIntent,
-    StoredHostedTopologySeat, StoredLegacyEpicBacklogCodeCorrection, StoredPromotion,
-    StoredQuickSession, StoredRemediationProposal, StoredRetiredEvaluatorAttestation,
-    StoredTeamRunAdmissionAdoption, StoredTopologyContainerRecovery, SuccessionRepository, Task,
-    TaskInspection, TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure,
-    TicketLink, TicketRepository, TopologyRepository, WorkflowRepository,
-    validate_dependency_graph,
+    StoredCoreTeamRevision, StoredCoreTeamRouteSuccession, StoredEpicCompletion, StoredEpicRoster,
+    StoredHostedSeatLaunchIntent, StoredHostedTopologySeat, StoredLegacyEpicBacklogCodeCorrection,
+    StoredPlanningPairContribution, StoredPlanningPairKnownNative, StoredPlanningPairPlacement,
+    StoredPlanningPairRecord, StoredPromotion, StoredQuickSession, StoredRemediationProposal,
+    StoredRetiredEvaluatorAttestation, StoredTeamRunAdmissionAdoption,
+    StoredTopologyContainerRecovery, SuccessionRepository, Task, TaskInspection,
+    TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink,
+    TicketRepository, TopologyRepository, WorkflowRepository, validate_dependency_graph,
 };
 use kontor_core::repository::{
     LegacyConsultationTopicCorrection, LegacyEpicBacklogCodeCorrection, LiveNativeSubject,
@@ -138,6 +142,7 @@ use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
 use crate::SqliteStore;
+mod attestation_authority;
 use crate::events::append::stored_payload;
 use crate::events::replay::{EVENT_COLUMNS, read_event};
 use crate::graph::{Applied, IdempotencyBinding};
@@ -169,6 +174,24 @@ pub(crate) fn backend(error: rusqlite::Error) -> RepositoryError {
 
 pub(crate) fn conflict(subject: &'static str, rule: &'static str) -> RepositoryError {
     RepositoryError::Conflict { subject, rule }
+}
+
+/// Whether a failed write was refused by the unique index that binds one
+/// server-derived consultation semantic identity.
+///
+/// Matched on the exact index identity the schema declares, so no other
+/// uniqueness, check or immutability violation is reclassified.
+fn is_duplicate_semantic_identity(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(failure, detail)
+            if failure.code == rusqlite::ErrorCode::ConstraintViolation
+                && detail.as_deref().is_some_and(|detail| {
+                    detail.contains(
+                        "consultation_runs.project_id, consultation_runs.semantic_identity_hash"
+                    ) || detail.contains("consultation_runs_by_semantic_identity")
+                })
+    )
 }
 
 pub(crate) fn text(timestamp: Timestamp) -> String {
@@ -229,8 +252,303 @@ fn consultation_run_id(
         ConsultationFamily::Committee => {
             CommitteeRunId::parse(value).map(ConsultationRunId::Committee)
         }
+        ConsultationFamily::PlanningPair => {
+            PlanningPairRunId::parse(value).map(ConsultationRunId::PlanningPair)
+        }
     }
     .map_err(RepositoryError::from)
+}
+
+/// The checks every frozen consultation passes before its transaction opens.
+fn validate_frozen_consultation_run(
+    run: &StoredConsultationRun,
+    node: &NewSessionTopologyNode,
+) -> RepositoryResult<()> {
+    if run.project_id != node.project_id
+        || run.topology_node_id != node.id
+        || node.mini_project_id != Some(run.mini_project_id)
+    {
+        return Err(RepositoryError::Conflict {
+            subject: "consultation run",
+            rule: "the frozen run and topology node do not describe one scope",
+        });
+    }
+    let verified_context = CanonicalDocument::from_serializable(&run.context)?;
+    if ContentHash::of(run.question.as_str().as_bytes()) != run.question_hash
+        || verified_context.hash() != &run.context_hash
+    {
+        return Err(RepositoryError::Conflict {
+            subject: "consultation run",
+            rule: "frozen input does not match its digest",
+        });
+    }
+    Ok(())
+}
+
+/// Insert one planning pair record revision inside the caller's transaction.
+fn insert_planning_pair_record_in(
+    transaction: &Transaction<'_>,
+    record: &StoredPlanningPairRecord,
+) -> RepositoryResult<()> {
+    transaction
+        .execute(
+            "INSERT INTO planning_pair_record_revisions
+                 (run_id, project_id, revision, phase, record, record_hash, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                record.run_id.as_text(),
+                record.project_id.to_string(),
+                i64::try_from(record.revision.get()).unwrap_or(i64::MAX),
+                record.phase.as_str(),
+                record.record.json(),
+                record.record.hash().as_str(),
+                format_utc_timestamp(record.created_at),
+            ],
+        )
+        .map_err(backend)?;
+    Ok(())
+}
+
+/// Insert one frozen consultation — its topology node, run row, re-review
+/// claim, seat bindings and seats — inside the caller's transaction.
+///
+/// Shared by every family, so a planning pair is created through exactly the
+/// statements an Advisor or Committee is.
+fn insert_consultation_run_in(
+    transaction: &Transaction<'_>,
+    run: &StoredConsultationRun,
+    node: &NewSessionTopologyNode,
+    seats: &[(&StoredConsultationSeat, &NewSeatBinding)],
+) -> RepositoryResult<()> {
+    // The subject has to be inside the consultation naming it. The
+    // column's foreign key only proves the ticket exists somewhere:
+    // `tasks` is unique on (project_id, id) and SQLite cannot add a
+    // composite foreign key through ALTER TABLE ADD COLUMN, so a ticket
+    // from another project — or from a sibling epic in this one — would
+    // satisfy it while naming a subject this epic has no authority over.
+    // Storage refuses it too; this refusal is the legible one.
+    if let Some(subject_task_id) = run.subject.and_then(ConsultationSubject::task_id) {
+        let contained: bool = transaction
+            .query_row(
+                "SELECT EXISTS (
+                     SELECT 1
+                       FROM tasks
+                      WHERE id = ?1
+                        AND project_id = ?2
+                        AND mini_project_id IS ?3
+                 )",
+                params![
+                    subject_task_id.to_string(),
+                    run.project_id.to_string(),
+                    run.mini_project_id.to_string(),
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if !contained {
+            return Err(RepositoryError::Conflict {
+                subject: "consultation subject",
+                rule: "the advised task belongs to another project or epic",
+            });
+        }
+    }
+    transaction
+        .execute(
+            "INSERT INTO topology_nodes
+                 (id, project_id, mini_project_id, spec_id, spec_version, spec_hash,
+                  kind, parent_id, lifecycle, placement, task_id, revision,
+                  created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+                     'active', 'unbound', NULL, 1, ?9, ?9)",
+            params![
+                node.id.to_string(),
+                node.project_id.to_string(),
+                node.mini_project_id.map(|id| id.to_string()),
+                node.topology.spec_id.to_string(),
+                version_column(node.topology.version),
+                node.topology.canonical_hash.as_str(),
+                node.kind.as_str(),
+                node.parent_id.map(|id| id.to_string()),
+                text(node.created_at),
+            ],
+        )
+        .map_err(backend)?;
+
+    let context = canonical_json(&run.context, "consultation context")?;
+    let result = run
+        .result
+        .as_ref()
+        .map(|value| canonical_json(value, "consultation result"))
+        .transpose()?;
+    transaction
+        .execute(
+            "INSERT INTO consultation_runs
+                 (run_id, project_id, mini_project_id, family, profile_id,
+                  profile_version, definition_hash, semantic_identity_hash, question, question_hash,
+                  context, context_hash, caller_seat_binding_id, topology_node_id,
+                  invoke_key, invoke_intent_hash, state, round, result, result_hash, revision, created_at,
+                  updated_at, settled_at, topic, subject_kind, subject_task_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                     ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
+                     ?26, ?27)",
+            params![
+                run.id.as_text(),
+                run.project_id.to_string(),
+                run.mini_project_id.to_string(),
+                run.id.family().as_str(),
+                run.profile_id,
+                version_column(run.profile_version),
+                run.definition_hash.as_str(),
+                run.semantic_identity_hash.as_ref().map(ContentHash::as_str),
+                run.question.as_str(),
+                run.question_hash.as_str(),
+                context,
+                run.context_hash.as_str(),
+                run.caller_seat_binding_id.to_string(),
+                run.topology_node_id.to_string(),
+                run.invoke_key.as_str(),
+                run.invoke_intent_hash.as_str(),
+                run.state.as_str(),
+                i64::from(run.round),
+                result,
+                run.result_hash.as_ref().map(ContentHash::as_str),
+                i64::try_from(run.revision.get()).unwrap_or(i64::MAX),
+                text(run.created_at),
+                text(run.updated_at),
+                run.settled_at.map(text),
+                run.topic.as_ref().map(ExternalName::as_str),
+                run.subject.map(ConsultationSubject::as_str),
+                run.subject
+                    .and_then(ConsultationSubject::task_id)
+                    .map(|task_id| task_id.to_string()),
+            ],
+        )
+        .map_err(|error| match error {
+            error if is_duplicate_semantic_identity(&error) =>
+            {
+                conflict(
+                    "consultation semantic identity",
+                    "a consultation run already owns this family, scope, profile and topic",
+                )
+            }
+            other => backend(other),
+        })?;
+
+    if let Some(provenance) = run
+        .context
+        .get("re_review")
+        .filter(|value| !value.is_null())
+    {
+        if run.id.family() != ConsultationFamily::Committee {
+            return Err(conflict(
+                "consultation re-review provenance",
+                "only a Committee run may claim completion re-review lineage",
+            ));
+        }
+        let provenance = CanonicalDocument::from_serializable(&serde_json::json!({
+            "schema_version": 1,
+            "re_review": provenance,
+        }))?;
+        transaction
+            .execute(
+                "INSERT INTO committee_re_review_claims
+                     (project_id, mini_project_id, provenance, provenance_hash,
+                      committee_run_id, claimed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    run.project_id.to_string(),
+                    run.mini_project_id.to_string(),
+                    provenance.json(),
+                    provenance.hash().as_str(),
+                    run.id.as_text(),
+                    text(run.created_at),
+                ],
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::SqliteFailure(failure, _)
+                    if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    conflict(
+                        "Committee re-review provenance",
+                        "this completion freeze already has one clean Committee re-review",
+                    )
+                }
+                other => backend(other),
+            })?;
+    }
+
+    for (seat, binding) in seats {
+        if seat.run_id != run.id
+            || binding.id != seat.seat_binding_id
+            || binding.project_id != run.project_id
+            || binding.topology_node_id != node.id
+            || binding.role_slot_id != seat.role_slot_id
+        {
+            return Err(RepositoryError::Conflict {
+                subject: "consultation seat",
+                rule: "the frozen seat and SeatBinding do not describe one slot",
+            });
+        }
+        transaction
+            .execute(
+                "INSERT INTO seat_bindings
+                     (id, project_id, topology_node_id, role_slot_id,
+                      role_catalog_id, role_catalog_version, role_code,
+                      standard_title, custom_display_name, task_id, team_run_id,
+                      lifecycle, attach_deadline, last_attached_at, last_activity_at,
+                      parent_seat_binding_id, released_at,
+                      replaced_by_seat_binding_id, runtime_reported,
+                      revision, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+                         NULL, NULL, 'active', ?10, NULL, NULL, ?11,
+                         NULL, NULL, NULL, 1, ?12, ?12)",
+                params![
+                    binding.id.to_string(),
+                    binding.project_id.to_string(),
+                    binding.topology_node_id.to_string(),
+                    binding.role_slot_id.as_str(),
+                    binding.role.catalog_id.to_string(),
+                    version_column(binding.role.catalog_revision),
+                    binding.role.role_code.as_str(),
+                    binding.role.standard_title.as_str(),
+                    binding
+                        .role
+                        .custom_display_name
+                        .as_ref()
+                        .map(ExternalName::as_str),
+                    text(binding.attach_deadline),
+                    binding.parent_seat_binding_id.map(|id| id.to_string()),
+                    text(binding.created_at),
+                ],
+            )
+            .map_err(backend)?;
+        let model =
+            serde_json::to_string(&seat.model_rung).map_err(|error| RepositoryError::Backend {
+                detail: format!("a consultation model rung could not be encoded: {error}"),
+            })?;
+        transaction
+            .execute(
+                "INSERT INTO consultation_seats
+                     (run_id, project_id, role_slot_id, committee_role,
+                      logical_role, seat_binding_id, model_rung, occupancy_generation,
+                      runtime_kind, host, generation, native_id,
+                      provider_session_id, observed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+                         NULL, NULL, NULL, NULL, NULL, NULL)",
+                params![
+                    run.id.as_text(),
+                    run.project_id.to_string(),
+                    seat.role_slot_id.as_str(),
+                    seat.committee_role.map(CommitteeRole::as_str),
+                    seat.logical_role.as_str(),
+                    seat.seat_binding_id.to_string(),
+                    model,
+                    i64::try_from(seat.occupancy_generation).unwrap_or(i64::MAX),
+                ],
+            )
+            .map_err(backend)?;
+    }
+    Ok(())
 }
 
 fn read_consultation_run(
@@ -770,6 +1088,366 @@ type ConsultationSeatColumns = (
     Option<String>,
     Option<String>,
 );
+
+/// The known native claim of one planning pair member, read on `connection`
+/// (a transaction or the store's own connection).
+fn planning_pair_known_native_in(
+    connection: &rusqlite::Connection,
+    project_id: ProjectId,
+    run_id: ConsultationRunId,
+    seat_binding_id: SeatBindingId,
+    occupancy_generation: u64,
+) -> RepositoryResult<Option<StoredPlanningPairKnownNative>> {
+    let row = connection
+        .query_row(
+            "SELECT runtime_kind, host, runtime_generation, native_id, provider_session_id,
+                    context_hash, placement_hash, readback_refusal, observed_at
+               FROM planning_pair_member_natives
+              WHERE project_id = ?1 AND run_id = ?2 AND seat_binding_id = ?3
+                AND occupancy_generation = ?4",
+            params![
+                project_id.to_string(),
+                run_id.as_text(),
+                seat_binding_id.to_string(),
+                i64::try_from(occupancy_generation).unwrap_or(i64::MAX),
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, String>(8)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(backend)?;
+    row.map(
+        |(runtime_kind, host, generation, native_id, provider, context, placement, refusal, at)| {
+            Ok(StoredPlanningPairKnownNative {
+                run_id,
+                project_id,
+                seat_binding_id,
+                occupancy_generation,
+                identity: NativeRuntimeIdentity {
+                    runtime_kind: RuntimeKindKey::parse(&runtime_kind)?,
+                    host: ExternalName::parse(&host)?,
+                    generation: u64::try_from(generation).map_err(|_| {
+                        conflict(
+                            "planning pair member native",
+                            "the runtime generation is negative",
+                        )
+                    })?,
+                    native_id: ExternalId::parse(&native_id)?,
+                },
+                provider_session_id: provider.as_deref().map(ExternalId::parse).transpose()?,
+                context_hash: ContentHash::parse(&context)?,
+                placement_hash: ContentHash::parse(&placement)?,
+                readback_refusal: refusal
+                    .as_deref()
+                    .map(kontor_core::planning_pair::PlanningPairReadbackRefusal::parse)
+                    .transpose()?,
+                observed_at: read_timestamp(&at)?,
+            })
+        },
+    )
+    .transpose()
+}
+
+/// Keep `claim` as the member's known native: written when none is kept for
+/// its generation, and otherwise only ever the same session, never replaced.
+fn keep_planning_pair_known_native_in(
+    transaction: &rusqlite::Transaction<'_>,
+    claim: &StoredPlanningPairKnownNative,
+) -> RepositoryResult<StoredPlanningPairKnownNative> {
+    if claim.run_id.family() != ConsultationFamily::PlanningPair {
+        return Err(conflict(
+            "planning pair member native",
+            "a known member native belongs only to a planning pair",
+        ));
+    }
+    if let Some(kept) = planning_pair_known_native_in(
+        transaction,
+        claim.project_id,
+        claim.run_id,
+        claim.seat_binding_id,
+        claim.occupancy_generation,
+    )? {
+        if kept.identity != claim.identity
+            || kept
+                .provider_session_id
+                .as_ref()
+                .is_some_and(|session| claim.provider_session_id.as_ref() != Some(session))
+            || kept.context_hash != claim.context_hash
+            || kept.placement_hash != claim.placement_hash
+        {
+            return Err(conflict(
+                "planning pair member native",
+                "a known planning pair member native is immutable; another observation never replaces it",
+            ));
+        }
+        return Ok(kept);
+    }
+    transaction
+        .execute(
+            "INSERT INTO planning_pair_member_natives
+                 (run_id, project_id, seat_binding_id, occupancy_generation, runtime_kind, host,
+                  runtime_generation, native_id, provider_session_id, context_hash,
+                  placement_hash, readback_refusal, observed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                claim.run_id.as_text(),
+                claim.project_id.to_string(),
+                claim.seat_binding_id.to_string(),
+                i64::try_from(claim.occupancy_generation).unwrap_or(i64::MAX),
+                claim.identity.runtime_kind.as_str(),
+                claim.identity.host.as_str(),
+                i64::try_from(claim.identity.generation).unwrap_or(i64::MAX),
+                claim.identity.native_id.as_str(),
+                claim.provider_session_id.as_ref().map(ExternalId::as_str),
+                claim.context_hash.as_str(),
+                claim.placement_hash.as_str(),
+                claim.readback_refusal.map(|refusal| refusal.as_str()),
+                format_utc_timestamp(claim.observed_at),
+            ],
+        )
+        .map_err(|error| match error {
+            rusqlite::Error::SqliteFailure(failure, _)
+                if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                conflict(
+                    "planning pair member native",
+                    "a known planning pair native belongs only to a current member seat of an open pair",
+                )
+            }
+            other => backend(other),
+        })?;
+    Ok(claim.clone())
+}
+
+/// One member seat's occupancy generation and native binding columns:
+/// `(occupancy_generation, runtime_kind, host, runtime_generation, native_id)`.
+type PlanningPairMemberSeatRow = (
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    Option<String>,
+);
+
+/// One planning pair member seat's generation and binding, read in
+/// `transaction`.
+fn planning_pair_member_seat_in(
+    transaction: &rusqlite::Transaction<'_>,
+    project_id: ProjectId,
+    run_id: ConsultationRunId,
+    seat_binding_id: SeatBindingId,
+) -> RepositoryResult<Option<PlanningPairMemberSeatRow>> {
+    transaction
+        .query_row(
+            "SELECT occupancy_generation, runtime_kind, host, generation, native_id
+               FROM consultation_seats
+              WHERE project_id = ?1 AND run_id = ?2 AND seat_binding_id = ?3",
+            params![
+                project_id.to_string(),
+                run_id.as_text(),
+                seat_binding_id.to_string()
+            ],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(backend)
+}
+
+/// Bind one member seat, at its current generation, to exactly its known
+/// session: a seat already bound to that session is unchanged, and one bound
+/// to any other is a conflict.
+fn bind_planning_pair_member_in(
+    transaction: &rusqlite::Transaction<'_>,
+    known: &StoredPlanningPairKnownNative,
+    observed_at: Timestamp,
+) -> RepositoryResult<()> {
+    let seat = planning_pair_member_seat_in(
+        transaction,
+        known.project_id,
+        known.run_id,
+        known.seat_binding_id,
+    )?;
+    let (generation, runtime_kind, host, runtime_generation, native_id) =
+        seat.ok_or(RepositoryError::NotFound {
+            subject: "consultation seat",
+        })?;
+    if u64::try_from(generation).ok() != Some(known.occupancy_generation) {
+        return Err(conflict(
+            "planning pair member",
+            "the member's occupancy generation moved",
+        ));
+    }
+    let identity = &known.identity;
+    if let Some(native_id) = native_id {
+        if runtime_kind.as_deref() != Some(identity.runtime_kind.as_str())
+            || host.as_deref() != Some(identity.host.as_str())
+            || runtime_generation.and_then(|value| u64::try_from(value).ok())
+                != Some(identity.generation)
+            || native_id != identity.native_id.as_str()
+        {
+            return Err(conflict(
+                "consultation seat",
+                "a frozen seat cannot move to another native session",
+            ));
+        }
+        return Ok(());
+    }
+    let changed = transaction
+        .execute(
+            "UPDATE consultation_seats
+                SET runtime_kind = ?5, host = ?6, generation = ?7, native_id = ?8,
+                    provider_session_id = ?9, observed_at = ?10
+              WHERE project_id = ?1 AND run_id = ?2 AND seat_binding_id = ?3
+                AND occupancy_generation = ?4 AND runtime_kind IS NULL",
+            params![
+                known.project_id.to_string(),
+                known.run_id.as_text(),
+                known.seat_binding_id.to_string(),
+                i64::try_from(known.occupancy_generation).unwrap_or(i64::MAX),
+                identity.runtime_kind.as_str(),
+                identity.host.as_str(),
+                i64::try_from(identity.generation).unwrap_or(i64::MAX),
+                identity.native_id.as_str(),
+                known.provider_session_id.as_ref().map(ExternalId::as_str),
+                text(observed_at),
+            ],
+        )
+        .map_err(backend)?;
+    if changed != 1 {
+        return Err(RepositoryError::NotFound {
+            subject: "consultation seat",
+        });
+    }
+    Ok(())
+}
+
+/// Hold one member readback to the seat it was taken against: the seat the
+/// run's current member at the expected generation, and the session the
+/// member's known one, bound or claimed. Answers the run's state. The run's
+/// revision and that it is not disposed are held by the one compare-and-swap
+/// that moves it, in the same transaction.
+fn planning_pair_member_readback_in(
+    transaction: &rusqlite::Transaction<'_>,
+    readback: &PlanningPairMemberReadback,
+) -> RepositoryResult<ConsultationRunState> {
+    let verified = &readback.verified;
+    if verified.run_id != readback.run_id
+        || verified.project_id != readback.project_id
+        || verified.seat_binding_id != readback.seat_binding_id
+        || verified.occupancy_generation != readback.occupancy_generation
+    {
+        return Err(conflict(
+            "planning pair member recovery",
+            "the readback describes another member",
+        ));
+    }
+    let state: Option<String> = transaction
+        .query_row(
+            "SELECT state FROM consultation_runs
+              WHERE project_id = ?1 AND run_id = ?2 AND family = 'planning_pair'",
+            params![readback.project_id.to_string(), readback.run_id.as_text()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?;
+    let state = ConsultationRunState::parse(&state.ok_or(RepositoryError::NotFound {
+        subject: "consultation run",
+    })?)?;
+    let seat = planning_pair_member_seat_in(
+        transaction,
+        readback.project_id,
+        readback.run_id,
+        readback.seat_binding_id,
+    )?;
+    let (generation, runtime_kind, host, runtime_generation, native_id) =
+        seat.ok_or(RepositoryError::NotFound {
+            subject: "consultation seat",
+        })?;
+    if u64::try_from(generation).ok() != Some(readback.occupancy_generation) {
+        return Err(conflict(
+            "planning pair member",
+            "the member's occupancy generation moved",
+        ));
+    }
+    let identity = &verified.identity;
+    let known = match native_id {
+        Some(native_id) => {
+            runtime_kind.as_deref() == Some(identity.runtime_kind.as_str())
+                && host.as_deref() == Some(identity.host.as_str())
+                && runtime_generation.and_then(|value| u64::try_from(value).ok())
+                    == Some(identity.generation)
+                && native_id == identity.native_id.as_str()
+        }
+        None => planning_pair_known_native_in(
+            transaction,
+            readback.project_id,
+            readback.run_id,
+            readback.seat_binding_id,
+            readback.occupancy_generation,
+        )?
+        .ok_or(RepositoryError::NotFound {
+            subject: "planning pair member native",
+        })?
+        .identity
+        .eq(identity),
+    };
+    if !known {
+        return Err(conflict(
+            "planning pair member recovery",
+            "the readback is not of the member's known native session",
+        ));
+    }
+    Ok(state)
+}
+
+/// Move one planning pair one revision, to `next`, under compare-and-swap.
+fn advance_planning_pair_run_in(
+    transaction: &rusqlite::Transaction<'_>,
+    readback: &PlanningPairMemberReadback,
+    next: ConsultationRunState,
+) -> RepositoryResult<()> {
+    let changed = transaction
+        .execute(
+            "UPDATE consultation_runs
+                SET revision = revision + 1, state = ?4, updated_at = ?5
+              WHERE project_id = ?1 AND run_id = ?2 AND family = 'planning_pair'
+                AND revision = ?3 AND state <> 'disposed'",
+            params![
+                readback.project_id.to_string(),
+                readback.run_id.as_text(),
+                i64::try_from(readback.expected_revision.get()).unwrap_or(i64::MAX),
+                next.as_str(),
+                format_utc_timestamp(readback.applied_at),
+            ],
+        )
+        .map_err(backend)?;
+    if changed != 1 {
+        return Err(conflict(
+            "consultation run",
+            "the run moved since it was read",
+        ));
+    }
+    Ok(())
+}
 
 fn read_consultation_seat(
     run_id: ConsultationRunId,
@@ -2139,6 +2817,46 @@ impl SqliteStore {
     }
 }
 
+/// Every planning pair member seat holds a role that is an exact projection
+/// of the role catalog its epic selected: persisted bytes that hash to the
+/// `catalog_hash` the epic's frozen roster pins. A seat's own catalog
+/// reference is never trusted on its own, so a role resolved in any other
+/// catalog the realm happens to hold is refused here, inside the transaction.
+fn planning_pair_member_roles_in(
+    transaction: &Transaction<'_>,
+    run: &StoredConsultationRun,
+    seats: &[(&StoredConsultationSeat, &NewSeatBinding)],
+) -> RepositoryResult<()> {
+    let pinned: Option<String> = transaction
+        .query_row(
+            "SELECT catalog_hash FROM epic_rosters
+             WHERE project_id = ?1 AND mini_project_id = ?2",
+            params![run.project_id.to_string(), run.mini_project_id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?;
+    let pinned = pinned.ok_or(RepositoryError::Conflict {
+        subject: "planning pair member role",
+        rule: "the epic has frozen no roster, so it has selected no role catalog",
+    })?;
+    for (_, binding) in seats {
+        let catalog = role_catalog_in(
+            transaction,
+            binding.role.catalog_id,
+            binding.role.catalog_revision,
+        )?;
+        if catalog.canonicalize()?.hash().as_str() != pinned {
+            return Err(RepositoryError::Conflict {
+                subject: "planning pair member role",
+                rule: "a member role names a role catalog the epic did not select",
+            });
+        }
+        binding.role.validate_against(&catalog)?;
+    }
+    Ok(())
+}
+
 fn role_catalog_in(
     transaction: &Transaction<'_>,
     catalog_id: RoleCatalogId,
@@ -2346,261 +3064,492 @@ impl SqliteStore {
         node: &NewSessionTopologyNode,
         seats: &[(&StoredConsultationSeat, &NewSeatBinding)],
     ) -> RepositoryResult<()> {
-        if run.project_id != node.project_id
-            || run.topology_node_id != node.id
-            || node.mini_project_id != Some(run.mini_project_id)
-        {
-            return Err(RepositoryError::Conflict {
-                subject: "consultation run",
-                rule: "the frozen run and topology node do not describe one scope",
-            });
-        }
-        let verified_context = CanonicalDocument::from_serializable(&run.context)?;
-        if ContentHash::of(run.question.as_str().as_bytes()) != run.question_hash
-            || verified_context.hash() != &run.context_hash
-        {
-            return Err(RepositoryError::Conflict {
-                subject: "consultation run",
-                rule: "frozen input does not match its digest",
-            });
-        }
+        validate_frozen_consultation_run(run, node)?;
         let transaction = self.begin()?;
-        // The subject has to be inside the consultation naming it. The
-        // column's foreign key only proves the ticket exists somewhere:
-        // `tasks` is unique on (project_id, id) and SQLite cannot add a
-        // composite foreign key through ALTER TABLE ADD COLUMN, so a ticket
-        // from another project — or from a sibling epic in this one — would
-        // satisfy it while naming a subject this epic has no authority over.
-        // Storage refuses it too; this refusal is the legible one.
-        if let Some(subject_task_id) = run.subject.and_then(ConsultationSubject::task_id) {
-            let contained: bool = transaction
-                .query_row(
-                    "SELECT EXISTS (
-                         SELECT 1
-                           FROM tasks
-                          WHERE id = ?1
-                            AND project_id = ?2
-                            AND mini_project_id IS ?3
-                     )",
-                    params![
-                        subject_task_id.to_string(),
-                        run.project_id.to_string(),
-                        run.mini_project_id.to_string(),
-                    ],
-                    |row| row.get(0),
-                )
-                .map_err(backend)?;
-            if !contained {
-                return Err(RepositoryError::Conflict {
-                    subject: "consultation subject",
-                    rule: "the advised task belongs to another project or epic",
+        if let Err(error) = insert_consultation_run_in(&transaction, run, node, seats) {
+            let duplicate = matches!(
+                &error,
+                RepositoryError::Conflict {
+                    subject: "consultation semantic identity",
+                    ..
+                }
+            );
+            // Preserve the released typed-duplicate route after rolling back the
+            // loser's topology writes, just as before the shared helper existed.
+            drop(transaction);
+            if duplicate
+                && let Some(hash) = run.semantic_identity_hash.as_ref()
+                && let Some(existing) =
+                    self.get_consultation_run_by_semantic_identity(run.project_id, hash)?
+            {
+                return Err(RepositoryError::DuplicateConsultation {
+                    family: run.id.family(),
+                    run_id: existing.id,
                 });
             }
+            return Err(error);
         }
-        transaction
-            .execute(
-                "INSERT INTO topology_nodes
-                     (id, project_id, mini_project_id, spec_id, spec_version, spec_hash,
-                      kind, parent_id, lifecycle, placement, task_id, revision,
-                      created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
-                         'active', 'unbound', NULL, 1, ?9, ?9)",
-                params![
-                    node.id.to_string(),
-                    node.project_id.to_string(),
-                    node.mini_project_id.map(|id| id.to_string()),
-                    node.topology.spec_id.to_string(),
-                    version_column(node.topology.version),
-                    node.topology.canonical_hash.as_str(),
-                    node.kind.as_str(),
-                    node.parent_id.map(|id| id.to_string()),
-                    text(node.created_at),
-                ],
-            )
-            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
 
-        let context = canonical_json(&run.context, "consultation context")?;
-        let result = run
-            .result
-            .as_ref()
-            .map(|value| canonical_json(value, "consultation result"))
-            .transpose()?;
+    /// Freeze one planning pair (ASMA-8282): its consultation run, node and
+    /// member seats through exactly the statements every family uses, plus its
+    /// frozen placement and first record revision, in one transaction.
+    ///
+    /// The semantic-identity unique index is the shared one, so a duplicate
+    /// planning pair is refused exactly as a duplicate Committee is.
+    ///
+    /// # Errors
+    /// A conflict when the run is not a planning pair, the placement or record
+    /// names another run or project, the record is not the run's own first
+    /// revision, or any shared consultation rule refuses the run.
+    pub fn create_planning_pair_run(
+        &self,
+        run: &StoredConsultationRun,
+        node: &NewSessionTopologyNode,
+        seats: &[(&StoredConsultationSeat, &NewSeatBinding)],
+        placement: &StoredPlanningPairPlacement,
+        record: &StoredPlanningPairRecord,
+    ) -> RepositoryResult<()> {
+        if run.id.family() != ConsultationFamily::PlanningPair
+            || placement.run_id != run.id
+            || record.run_id != run.id
+            || placement.project_id != run.project_id
+            || record.project_id != run.project_id
+            || record.revision != run.revision
+        {
+            return Err(RepositoryError::Conflict {
+                subject: "planning pair",
+                rule: "the run, placement and record do not describe one planning pair",
+            });
+        }
+        validate_frozen_consultation_run(run, node)?;
+        let transaction = self.begin()?;
+        planning_pair_member_roles_in(&transaction, run, seats)?;
+        insert_consultation_run_in(&transaction, run, node, seats)?;
         transaction
             .execute(
-                "INSERT INTO consultation_runs
-                     (run_id, project_id, mini_project_id, family, profile_id,
-                      profile_version, definition_hash, semantic_identity_hash, question, question_hash,
-                      context, context_hash, caller_seat_binding_id, topology_node_id,
-                      invoke_key, invoke_intent_hash, state, round, result, result_hash, revision, created_at,
-                      updated_at, settled_at, topic, subject_kind, subject_task_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                         ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
-                         ?26, ?27)",
+                "INSERT INTO planning_pair_placements
+                     (run_id, project_id, protocol, placement, placement_hash, created_at)
+                 VALUES (?1, ?2, 'planning_pair@1', ?3, ?4, ?5)",
                 params![
                     run.id.as_text(),
                     run.project_id.to_string(),
-                    run.mini_project_id.to_string(),
-                    run.id.family().as_str(),
-                    run.profile_id,
-                    version_column(run.profile_version),
-                    run.definition_hash.as_str(),
-                    run.semantic_identity_hash.as_ref().map(ContentHash::as_str),
-                    run.question.as_str(),
-                    run.question_hash.as_str(),
-                    context,
-                    run.context_hash.as_str(),
-                    run.caller_seat_binding_id.to_string(),
-                    run.topology_node_id.to_string(),
-                    run.invoke_key.as_str(),
-                    run.invoke_intent_hash.as_str(),
-                    run.state.as_str(),
-                    i64::from(run.round),
-                    result,
-                    run.result_hash.as_ref().map(ContentHash::as_str),
-                    i64::try_from(run.revision.get()).unwrap_or(i64::MAX),
-                    text(run.created_at),
-                    text(run.updated_at),
-                    run.settled_at.map(text),
-                    run.topic.as_ref().map(ExternalName::as_str),
-                    run.subject.map(ConsultationSubject::as_str),
-                    run.subject
-                        .and_then(ConsultationSubject::task_id)
-                        .map(|task_id| task_id.to_string()),
+                    placement.placement.json(),
+                    placement.placement.hash().as_str(),
+                    format_utc_timestamp(placement.created_at),
                 ],
             )
-            .map_err(|error| match error {
-                rusqlite::Error::SqliteFailure(failure, detail)
-                    if failure.code == rusqlite::ErrorCode::ConstraintViolation
-                        && detail.as_deref().is_some_and(|detail| {
-                            detail.contains("consultation_runs.project_id, consultation_runs.semantic_identity_hash")
-                                || detail.contains("consultation_runs_by_semantic_identity")
-                        }) =>
-                {
-                    conflict(
-                        "consultation semantic identity",
-                        "an Advisor or Committee run already owns this family, scope, template and topic",
-                    )
-                }
-                other => backend(other),
-            })?;
+            .map_err(backend)?;
+        insert_planning_pair_record_in(&transaction, record)?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
 
-        if let Some(provenance) = run
-            .context
-            .get("re_review")
-            .filter(|value| !value.is_null())
+    /// The frozen placement of one planning pair, re-admitted under its
+    /// canonical address.
+    pub fn planning_pair_placement(
+        &self,
+        project_id: ProjectId,
+        run_id: ConsultationRunId,
+    ) -> RepositoryResult<Option<StoredPlanningPairPlacement>> {
+        let row = self
+            .connection
+            .query_row(
+                "SELECT placement, placement_hash, created_at
+                   FROM planning_pair_placements
+                  WHERE project_id = ?1 AND run_id = ?2",
+                params![project_id.to_string(), run_id.as_text()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        row.map(|(placement, hash, created_at)| {
+            Ok(StoredPlanningPairPlacement {
+                run_id,
+                project_id,
+                placement: CanonicalDocument::from_stored(&placement, &ContentHash::parse(&hash)?)?,
+                created_at: read_timestamp(&created_at)?,
+            })
+        })
+        .transpose()
+    }
+
+    /// The latest record revision of one planning pair, re-admitted under its
+    /// canonical address. Nothing here interprets the record: the service
+    /// restores it through the domain transitions.
+    pub fn latest_planning_pair_record(
+        &self,
+        project_id: ProjectId,
+        run_id: ConsultationRunId,
+    ) -> RepositoryResult<Option<StoredPlanningPairRecord>> {
+        let row = self
+            .connection
+            .query_row(
+                "SELECT revision, phase, record, record_hash, created_at
+                   FROM planning_pair_record_revisions
+                  WHERE project_id = ?1 AND run_id = ?2
+                  ORDER BY revision DESC
+                  LIMIT 1",
+                params![project_id.to_string(), run_id.as_text()],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        row.map(|(revision, phase, record, hash, created_at)| {
+            Ok(StoredPlanningPairRecord {
+                run_id,
+                project_id,
+                revision: revision_of(revision)?,
+                phase: PlanningPairState::parse(&phase)?,
+                record: CanonicalDocument::from_stored(&record, &ContentHash::parse(&hash)?)?,
+                created_at: read_timestamp(&created_at)?,
+            })
+        })
+        .transpose()
+    }
+
+    /// Every finding and answer storage has accepted for one planning pair,
+    /// findings first, each round in slot order.
+    pub fn planning_pair_contributions(
+        &self,
+        project_id: ProjectId,
+        run_id: ConsultationRunId,
+    ) -> RepositoryResult<Vec<StoredPlanningPairContribution>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT round, slot, document_hash, seat_binding_id, occupancy_generation,
+                        record_revision, created_at
+                   FROM planning_pair_contributions
+                  WHERE project_id = ?1 AND run_id = ?2
+                  ORDER BY CASE round WHEN 'findings' THEN 0 ELSE 1 END, slot",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(params![project_id.to_string(), run_id.as_text()], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })
+            .map_err(backend)?;
+        let mut contributions = Vec::new();
+        for row in rows {
+            let (round, slot, hash, seat, generation, record_revision, created_at) =
+                row.map_err(backend)?;
+            contributions.push(StoredPlanningPairContribution {
+                run_id,
+                round: PlanningPairRound::parse(&round)?,
+                slot: PlanningPairSlot::parse(&slot)?,
+                document_hash: ContentHash::parse(&hash)?,
+                seat_binding_id: SeatBindingId::parse(&seat)?,
+                occupancy_generation: u64::try_from(generation).map_err(|_| {
+                    RepositoryError::Conflict {
+                        subject: "planning pair contribution",
+                        rule: "the occupancy generation is outside the supported range",
+                    }
+                })?,
+                record_revision: revision_of(record_revision)?,
+                created_at: read_timestamp(&created_at)?,
+            });
+        }
+        Ok(contributions)
+    }
+
+    /// Accept one planning pair transition under compare-and-swap: the run
+    /// moves one revision and to `next_state`, the record revision for that
+    /// exact run revision is written, and a finding or answer is recorded
+    /// with the authenticated member that gave it — all or nothing.
+    ///
+    /// # Errors
+    /// A conflict when the run is not a planning pair, moved since it was read,
+    /// is disposed, or when the record does not describe the next revision;
+    /// the storage triggers refuse a rewritten contribution and anything after
+    /// a disposition.
+    pub fn append_planning_pair_record(
+        &self,
+        project_id: ProjectId,
+        run_id: ConsultationRunId,
+        expected_revision: AggregateRevision,
+        next_state: ConsultationRunState,
+        record: &StoredPlanningPairRecord,
+        contribution: Option<&StoredPlanningPairContribution>,
+    ) -> RepositoryResult<StoredConsultationRun> {
+        let next_revision = expected_revision
+            .next()
+            .map_err(|_| RepositoryError::Conflict {
+                subject: "planning pair",
+                rule: "the run revision cannot advance",
+            })?;
+        if run_id.family() != ConsultationFamily::PlanningPair
+            || record.run_id != run_id
+            || record.project_id != project_id
+            || record.revision != next_revision
+            || contribution.is_some_and(|contribution| {
+                contribution.run_id != run_id || contribution.record_revision != next_revision
+            })
         {
-            if run.id.family() != ConsultationFamily::Committee {
-                return Err(conflict(
-                    "consultation re-review provenance",
-                    "only a Committee run may claim completion re-review lineage",
-                ));
-            }
-            let provenance = CanonicalDocument::from_serializable(&serde_json::json!({
-                "schema_version": 1,
-                "re_review": provenance,
-            }))?;
+            return Err(RepositoryError::Conflict {
+                subject: "planning pair",
+                rule: "the record and contribution must describe the run's next revision",
+            });
+        }
+        let transaction = self.begin()?;
+        let changed = transaction
+            .execute(
+                "UPDATE consultation_runs
+                    SET revision = revision + 1, state = ?4, updated_at = ?5
+                  WHERE project_id = ?1 AND run_id = ?2 AND family = 'planning_pair'
+                    AND revision = ?3 AND state <> 'disposed'",
+                params![
+                    project_id.to_string(),
+                    run_id.as_text(),
+                    i64::try_from(expected_revision.get()).unwrap_or(i64::MAX),
+                    next_state.as_str(),
+                    format_utc_timestamp(record.created_at),
+                ],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(RepositoryError::Conflict {
+                subject: "consultation run",
+                rule: "the run moved since it was read",
+            });
+        }
+        insert_planning_pair_record_in(&transaction, record)?;
+        if let Some(contribution) = contribution {
             transaction
                 .execute(
-                    "INSERT INTO committee_re_review_claims
-                         (project_id, mini_project_id, provenance, provenance_hash,
-                          committee_run_id, claimed_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    "INSERT INTO planning_pair_contributions
+                         (run_id, project_id, round, slot, document_hash, seat_binding_id,
+                          occupancy_generation, record_revision, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                     params![
-                        run.project_id.to_string(),
-                        run.mini_project_id.to_string(),
-                        provenance.json(),
-                        provenance.hash().as_str(),
-                        run.id.as_text(),
-                        text(run.created_at),
+                        run_id.as_text(),
+                        project_id.to_string(),
+                        contribution.round.as_str(),
+                        contribution.slot.as_str(),
+                        contribution.document_hash.as_str(),
+                        contribution.seat_binding_id.to_string(),
+                        i64::try_from(contribution.occupancy_generation).unwrap_or(i64::MAX),
+                        i64::try_from(next_revision.get()).unwrap_or(i64::MAX),
+                        format_utc_timestamp(contribution.created_at),
                     ],
                 )
                 .map_err(|error| match error {
                     rusqlite::Error::SqliteFailure(failure, _)
                         if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
                     {
-                        conflict(
-                            "Committee re-review provenance",
-                            "this completion freeze already has one clean Committee re-review",
-                        )
+                        RepositoryError::Conflict {
+                            subject: "planning pair contribution",
+                            rule: "a recorded finding or answer is immutable",
+                        }
                     }
                     other => backend(other),
                 })?;
         }
+        transaction.commit().map_err(backend)?;
+        self.get_consultation_run(project_id, run_id)?
+            .ok_or(RepositoryError::Conflict {
+                subject: "consultation run",
+                rule: "the run disappeared after its transition",
+            })
+    }
 
-        for (seat, binding) in seats {
-            if seat.run_id != run.id
-                || binding.id != seat.seat_binding_id
-                || binding.project_id != run.project_id
-                || binding.topology_node_id != node.id
-                || binding.role_slot_id != seat.role_slot_id
-            {
-                return Err(RepositoryError::Conflict {
-                    subject: "consultation seat",
-                    rule: "the frozen seat and SeatBinding do not describe one slot",
-                });
-            }
-            transaction
-                .execute(
-                    "INSERT INTO seat_bindings
-                         (id, project_id, topology_node_id, role_slot_id,
-                          role_catalog_id, role_catalog_version, role_code,
-                          standard_title, custom_display_name, task_id, team_run_id,
-                          lifecycle, attach_deadline, last_attached_at, last_activity_at,
-                          parent_seat_binding_id, released_at,
-                          replaced_by_seat_binding_id, runtime_reported,
-                          revision, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
-                             NULL, NULL, 'active', ?10, NULL, NULL, ?11,
-                             NULL, NULL, NULL, 1, ?12, ?12)",
-                    params![
-                        binding.id.to_string(),
-                        binding.project_id.to_string(),
-                        binding.topology_node_id.to_string(),
-                        binding.role_slot_id.as_str(),
-                        binding.role.catalog_id.to_string(),
-                        version_column(binding.role.catalog_revision),
-                        binding.role.role_code.as_str(),
-                        binding.role.standard_title.as_str(),
-                        binding
-                            .role
-                            .custom_display_name
-                            .as_ref()
-                            .map(ExternalName::as_str),
-                        text(binding.attach_deadline),
-                        binding.parent_seat_binding_id.map(|id| id.to_string()),
-                        text(binding.created_at),
-                    ],
-                )
-                .map_err(backend)?;
-            let model = serde_json::to_string(&seat.model_rung).map_err(|error| {
-                RepositoryError::Backend {
-                    detail: format!("a consultation model rung could not be encoded: {error}"),
-                }
-            })?;
-            transaction
-                .execute(
-                    "INSERT INTO consultation_seats
-                         (run_id, project_id, role_slot_id, committee_role,
-                          logical_role, seat_binding_id, model_rung, occupancy_generation,
-                          runtime_kind, host, generation, native_id,
-                          provider_session_id, observed_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
-                             NULL, NULL, NULL, NULL, NULL, NULL)",
-                    params![
-                        run.id.as_text(),
-                        run.project_id.to_string(),
-                        seat.role_slot_id.as_str(),
-                        seat.committee_role.map(CommitteeRole::as_str),
-                        seat.logical_role.as_str(),
-                        seat.seat_binding_id.to_string(),
-                        model,
-                        i64::try_from(seat.occupancy_generation).unwrap_or(i64::MAX),
-                    ],
-                )
-                .map_err(backend)?;
+    /// The known native claim of one planning pair member at one occupancy
+    /// generation, when a trusted runtime outcome recorded one.
+    pub fn planning_pair_known_native(
+        &self,
+        project_id: ProjectId,
+        run_id: ConsultationRunId,
+        seat_binding_id: SeatBindingId,
+        occupancy_generation: u64,
+    ) -> RepositoryResult<Option<StoredPlanningPairKnownNative>> {
+        planning_pair_known_native_in(
+            &self.connection,
+            project_id,
+            run_id,
+            seat_binding_id,
+            occupancy_generation,
+        )
+    }
+
+    /// Record what one member launch's trusted readback proved, in one
+    /// transaction: the known native claim, and, only when that readback
+    /// qualified the member, its bind on exactly that session.
+    ///
+    /// A claim already kept for the member's generation is never replaced: the
+    /// same session is a replay, and any other observation is a conflict.
+    ///
+    /// # Errors
+    /// A conflict when the claim names another session than one already kept,
+    /// the seat is not the pair's current member, the pair is disposed, or the
+    /// seat is bound to another session.
+    pub fn record_planning_pair_member_launch(
+        &self,
+        claim: &StoredPlanningPairKnownNative,
+    ) -> RepositoryResult<StoredPlanningPairKnownNative> {
+        let transaction = self.begin()?;
+        let kept = keep_planning_pair_known_native_in(&transaction, claim)?;
+        if claim.readback_refusal.is_none() {
+            bind_planning_pair_member_in(&transaction, &kept, claim.observed_at)?;
         }
         transaction.commit().map_err(backend)?;
-        Ok(())
+        Ok(kept)
+    }
+
+    /// Requalify one planning pair member on its exact known native session,
+    /// with the frozen caller's receipt, in one transaction (ASMA-8282
+    /// frontier A).
+    ///
+    /// An exact replay of `command` changes nothing and answers the receipt
+    /// it first wrote. Otherwise the run must still be at the expected
+    /// revision and not disposed, the member at its current generation, and
+    /// the readback must name the member's known session, bound or claimed.
+    /// The member is bound to that session if it is not already. A pair whose
+    /// members are then both qualified leaves `needs_human` for `running`;
+    /// a materializing or running pair keeps its state. The run moves one
+    /// revision, and the receipt is written beside it.
+    ///
+    /// # Errors
+    /// A conflict when the run moved or is disposed, the generation moved, the
+    /// session is not the known one or the readback did not qualify the
+    /// member; not found when no native is known for the member.
+    pub fn requalify_planning_pair_member(
+        &self,
+        readback: &PlanningPairMemberReadback,
+        command: &ReceiptEnvelope<NewLocalCommand>,
+    ) -> RepositoryResult<(StoredConsultationRun, CommandReceiptId, bool)> {
+        let command = command.peek(self.realm_id())?;
+        if readback.verified.readback_refusal.is_some() {
+            return Err(conflict(
+                "planning pair member recovery",
+                "a readback that did not qualify the member cannot requalify it",
+            ));
+        }
+        if command.target_revision != readback.expected_revision.next()? {
+            return Err(conflict(
+                "planning pair member recovery",
+                "the receipt must name the run's next revision",
+            ));
+        }
+        let transaction = self.begin()?;
+        if let Some(existing) =
+            crate::commands::intent::insert_local_command(&transaction, command)?
+        {
+            drop(transaction);
+            let run = self
+                .get_consultation_run(readback.project_id, readback.run_id)?
+                .ok_or(RepositoryError::NotFound {
+                    subject: "consultation run",
+                })?;
+            return Ok((run, existing.id, false));
+        }
+        let state = planning_pair_member_readback_in(&transaction, readback)?;
+        keep_planning_pair_known_native_in(&transaction, &readback.verified)?;
+        bind_planning_pair_member_in(&transaction, &readback.verified, readback.applied_at)?;
+        let unqualified: i64 = transaction
+            .query_row(
+                "SELECT count(*) FROM consultation_seats
+                  WHERE project_id = ?1 AND run_id = ?2 AND runtime_kind IS NULL",
+                params![readback.project_id.to_string(), readback.run_id.as_text()],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        let next = if state == ConsultationRunState::NeedsHuman && unqualified == 0 {
+            ConsultationRunState::Running
+        } else {
+            state
+        };
+        advance_planning_pair_run_in(&transaction, readback, next)?;
+        transaction.commit().map_err(backend)?;
+        let run = self
+            .get_consultation_run(readback.project_id, readback.run_id)?
+            .ok_or(RepositoryError::NotFound {
+                subject: "consultation run",
+            })?;
+        Ok((run, command.receipt_id, true))
+    }
+
+    /// Withdraw one planning pair member's current qualification after an
+    /// adverse readback of its exact known native session, in one transaction
+    /// (ASMA-8282 frontier A).
+    ///
+    /// Only this member is unbound; its peer, every finding and the known
+    /// native claim are kept, and the claim is written from `verified` if none
+    /// was kept yet. A running pair moves to `needs_human`; a materializing
+    /// pair stays materializing. The run moves one revision. No receipt is
+    /// written: the operation is refused.
+    ///
+    /// # Errors
+    /// A conflict when the run moved or is disposed, the generation moved, or
+    /// the member is not bound to the known session.
+    pub fn disqualify_planning_pair_member(
+        &self,
+        readback: &PlanningPairMemberReadback,
+    ) -> RepositoryResult<StoredConsultationRun> {
+        let transaction = self.begin()?;
+        let state = planning_pair_member_readback_in(&transaction, readback)?;
+        keep_planning_pair_known_native_in(&transaction, &readback.verified)?;
+        let identity = &readback.verified.identity;
+        let changed = transaction
+            .execute(
+                "UPDATE consultation_seats
+                    SET runtime_kind = NULL, host = NULL, generation = NULL, native_id = NULL,
+                        provider_session_id = NULL, observed_at = NULL
+                  WHERE project_id = ?1 AND run_id = ?2 AND seat_binding_id = ?3
+                    AND occupancy_generation = ?4 AND runtime_kind = ?5 AND host = ?6
+                    AND generation = ?7 AND native_id = ?8",
+                params![
+                    readback.project_id.to_string(),
+                    readback.run_id.as_text(),
+                    readback.seat_binding_id.to_string(),
+                    i64::try_from(readback.occupancy_generation).unwrap_or(i64::MAX),
+                    identity.runtime_kind.as_str(),
+                    identity.host.as_str(),
+                    i64::try_from(identity.generation).unwrap_or(i64::MAX),
+                    identity.native_id.as_str(),
+                ],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(conflict(
+                "planning pair member recovery",
+                "only a member bound to its known session can lose its qualification",
+            ));
+        }
+        let next = if state == ConsultationRunState::Running {
+            ConsultationRunState::NeedsHuman
+        } else {
+            state
+        };
+        advance_planning_pair_run_in(&transaction, readback, next)?;
+        transaction.commit().map_err(backend)?;
+        self.get_consultation_run(readback.project_id, readback.run_id)?
+            .ok_or(RepositoryError::NotFound {
+                subject: "consultation run",
+            })
     }
 
     /// One family-qualified consultation in one project.
@@ -3576,6 +4525,69 @@ impl SqliteStore {
                         )
                     })?,
                     ContentHash::parse(&hash)?,
+                ))
+            })
+            .transpose()
+    }
+
+    /// Read the frozen profile for the current consultation generation, including
+    /// an unresolved recovery reservation. No runtime observation makes it terminal.
+    pub fn get_consultation_generation_profile(
+        &self,
+        project_id: ProjectId,
+        seat: &StoredConsultationSeat,
+    ) -> RepositoryResult<Option<(CanonicalDocument, String)>> {
+        let generation = i64::try_from(seat.occupancy_generation).map_err(|_| {
+            conflict(
+                "consultation profile",
+                "the generation cannot be represented",
+            )
+        })?;
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT recovery_profile, recovery_profile_hash, state
+             FROM consultation_seat_recovery_attempts
+             WHERE project_id = ?1 AND run_id = ?2 AND role_slot_id = ?3
+               AND successor_occupancy_generation = ?4
+             UNION ALL
+             SELECT recovery_profile, recovery_profile_hash, 'installed'
+             FROM consultation_seat_materialization_reroutes
+             WHERE project_id = ?1 AND run_id = ?2 AND role_slot_id = ?3
+               AND successor_generation = ?4",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(
+                params![
+                    project_id.to_string(),
+                    seat.run_id.as_text(),
+                    seat.role_slot_id.as_str(),
+                    generation
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .map_err(backend)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(backend)?;
+        if rows.len() > 1 {
+            return Err(conflict(
+                "consultation profile",
+                "the current generation has ambiguous recovery provenance",
+            ));
+        }
+        rows.into_iter()
+            .next()
+            .map(|(json, hash, state)| {
+                Ok((
+                    CanonicalDocument::from_stored(&json, &ContentHash::parse(&hash)?)?,
+                    state,
                 ))
             })
             .transpose()
@@ -5353,12 +6365,17 @@ impl SqliteStore {
 
     /// Atomically move the exact predecessor to history and make its successor
     /// the active native filler of the same logical SeatBinding.
+    /// `succession`, when supplied, is committed in this same transaction. The
+    /// transition and the evidence that reconstructs it therefore commit
+    /// together or not at all, which is what removes the window a process lost
+    /// between them used to leave open (ASMA-8187).
     pub fn replace_hosted_topology_seat_route(
         &self,
         predecessor: &StoredHostedTopologySeat,
         successor: &StoredHostedTopologySeat,
         retired_at: Timestamp,
         reason: &str,
+        succession: Option<&CoreTeamRouteSuccessionCommit>,
     ) -> RepositoryResult<Applied> {
         if predecessor.project_id != successor.project_id
             || predecessor.seat_binding_id != successor.seat_binding_id
@@ -5369,23 +6386,39 @@ impl SqliteStore {
             });
         }
         let transaction = self.begin()?;
-        let active_native: Option<String> = transaction
+        // The whole identity, not the external id alone. A provider may reissue
+        // an external id it has already used, so `native_id` on its own cannot
+        // say whether the seat holds *this* native or a later one wearing the
+        // same name; the runtime generation is what tells them apart
+        // (ASMA-8187 P1).
+        let active: Option<(String, i64, String, String)> = transaction
             .query_row(
-                "SELECT native_id FROM hosted_topology_seats
-                 WHERE project_id = ?1 AND seat_binding_id = ?2",
+                "SELECT native_id, generation, runtime_kind, host
+                   FROM hosted_topology_seats
+                  WHERE project_id = ?1 AND seat_binding_id = ?2",
                 params![
                     predecessor.project_id.to_string(),
                     predecessor.seat_binding_id.to_string(),
                 ],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()
             .map_err(backend)?;
-        if active_native.as_deref() == Some(successor.native_identity.native_id.as_str()) {
+        let names = |identity: &NativeRuntimeIdentity| {
+            active
+                .as_ref()
+                .is_some_and(|(native, generation, kind, host)| {
+                    native == identity.native_id.as_str()
+                        && u64::try_from(*generation).unwrap_or(u64::MAX) == identity.generation
+                        && kind == identity.runtime_kind.as_str()
+                        && host == identity.host.as_str()
+                })
+        };
+        if names(&successor.native_identity) {
             transaction.rollback().map_err(backend)?;
             return Ok(Applied::Unchanged);
         }
-        if active_native.as_deref() != Some(predecessor.native_identity.native_id.as_str()) {
+        if !names(&predecessor.native_identity) {
             return Err(RepositoryError::Conflict {
                 subject: "hosted topology seat route",
                 rule: "the active native predecessor differs from the correction",
@@ -5463,8 +6496,725 @@ impl SqliteStore {
                 ],
             )
             .map_err(backend)?;
+        if let Some(succession) = succession {
+            // Validated here, at the boundary that persists it, and not only by
+            // whichever caller happened to build it. The readback arrives as
+            // free JSON, so this is the last place a nested forbidden key or a
+            // bearer-shaped value can be refused before it is durable — and the
+            // declared hash is re-derived rather than trusted, so a caller
+            // cannot record bytes under a digest that does not describe them.
+            let canonical = CanonicalDocument::from_value(&serde_json::json!({
+                "schema_version": 1,
+                "readback": succession.readback,
+            }))?;
+            if canonical.hash() != &succession.readback_hash {
+                return Err(RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule: "the succession readback does not match its declared hash",
+                });
+            }
+            // And it is a *readback*, not merely well-formed JSON under an
+            // honest digest. Typing it here is what stops an incomplete or
+            // embellished document becoming durable in the first place; the
+            // binder's later check then has something whole to compare against
+            // (ASMA-8187 P2).
+            let typed = serde_json::from_value::<CoreTeamRouteSuccessionReadback>(
+                succession.readback.clone(),
+            )
+            .map_err(|_| RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the succession readback is not a complete Core Team succession readback",
+            })?;
+            typed
+                .check_internal_consistency()
+                .map_err(|rule| RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule,
+                })?;
+            // Coherent is not the same as true. The claim fixes the two
+            // generations this command produces, and the caller supplies the two
+            // seat rows and the retirement instant; the readback has to describe
+            // *those*, or it is an internally tidy account of a succession that
+            // did not happen. Runtime kind, host, provider session and model
+            // route are carried nowhere else durable, so this is the only place
+            // they can ever be checked (ASMA-8187 P2).
+            let claim: (i64, i64, i64) = transaction
+                .query_row(
+                    "SELECT predecessor_occupancy_generation, successor_occupancy_generation,
+                            successor_credential_generation
+                       FROM core_team_route_successions WHERE idempotency_key = ?1",
+                    params![succession.idempotency_key.as_str()],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()
+                .map_err(backend)?
+                .ok_or(RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule: "a succession outcome cannot commit onto a claim that was never taken",
+                })?;
+            typed
+                .check_describes_transition(
+                    predecessor,
+                    u64::try_from(claim.0).unwrap_or(u64::MAX),
+                    successor,
+                    u64::try_from(claim.1).unwrap_or(u64::MAX),
+                    u64::try_from(claim.2).unwrap_or(u64::MAX),
+                    retired_at,
+                )
+                .map_err(|rule| RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule,
+                })?;
+            let readback = serde_json::to_string(&succession.readback).map_err(|error| {
+                RepositoryError::Backend {
+                    detail: format!("a succession readback could not be encoded: {error}"),
+                }
+            })?;
+            // The claim must already exist, name this exact seat, and not yet
+            // be committed. Anything else is a caller committing an outcome
+            // onto a claim that is not the one it took.
+            let updated = transaction
+                .execute(
+                    "UPDATE core_team_route_successions
+                        SET successor_native_id = ?2, successor_generation = ?3,
+                            readback = ?4, readback_hash = ?5, route_committed_at = ?6
+                      WHERE idempotency_key = ?1
+                        AND project_id = ?7
+                        AND seat_binding_id = ?8
+                        AND predecessor_native_id = ?9
+                        AND route_committed_at IS NULL",
+                    params![
+                        succession.idempotency_key.as_str(),
+                        successor.native_identity.native_id.as_str(),
+                        i64::try_from(successor.native_identity.generation).unwrap_or(i64::MAX),
+                        readback,
+                        succession.readback_hash.as_str(),
+                        text(succession.route_committed_at),
+                        predecessor.project_id.to_string(),
+                        predecessor.seat_binding_id.to_string(),
+                        predecessor.native_identity.native_id.as_str(),
+                    ],
+                )
+                .map_err(backend)?;
+            if updated != 1 {
+                return Err(RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule: "the claimed succession is already committed or names another seat",
+                });
+            }
+        }
+        transaction.commit().map_err(backend)?;
+        // The transition and its ledger row are durable and the caller is about
+        // to learn nothing about them. This is the *earliest* incomplete shape a
+        // replay can find — route committed, neither trailing effect attempted —
+        // and it is distinct from losing the latch after both have landed.
+        // Production builds never compile this.
+        #[cfg(feature = "fault-injection")]
+        if self.faults.lose_next_succession_route_ack.replace(false) {
+            return Err(RepositoryError::Backend {
+                detail: "injected fault after the succession route commit".to_owned(),
+            });
+        }
+        Ok(Applied::Updated)
+    }
+
+    /// Take exclusive ownership of one Core Team route succession.
+    ///
+    /// This runs *before* the retire and the launch, and its uniqueness index is
+    /// the exclusivity itself. A second caller arriving with a second fresh
+    /// idempotency key for the same (project, seat, predecessor occupancy)
+    /// cannot insert, so it never reaches an effect: the seat cannot acquire two
+    /// natives claiming one logical owner.
+    ///
+    /// Re-claiming under the same key and the same intent is `Unchanged`, which
+    /// is what lets an exact replay continue. The same key with a different
+    /// intent, or a different key against a live claim, is a conflict.
+    pub fn claim_core_team_route_succession(
+        &self,
+        claim: &NewCoreTeamRouteSuccessionClaim,
+    ) -> RepositoryResult<Applied> {
+        let transaction = self.begin()?;
+        let existing: Option<(String, String, i64)> = transaction
+            .query_row(
+                "SELECT idempotency_key, intent_hash, predecessor_occupancy_generation
+                   FROM core_team_route_successions
+                  WHERE project_id = ?1 AND seat_binding_id = ?2
+                    AND predecessor_occupancy_generation = ?3",
+                params![
+                    claim.project_id.to_string(),
+                    claim.seat_binding_id.to_string(),
+                    i64::try_from(claim.predecessor_occupancy_generation).unwrap_or(i64::MAX),
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        if let Some((key, intent_hash, _)) = existing {
+            transaction.rollback().map_err(backend)?;
+            if key != claim.idempotency_key.as_str() {
+                return Err(RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule: "another idempotency key already owns this seat's succession",
+                });
+            }
+            if intent_hash != claim.intent_hash.as_str() {
+                return Err(RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule: "the idempotency key already claimed a different succession",
+                });
+            }
+            return Ok(Applied::Unchanged);
+        }
+        transaction
+            .execute(
+                "INSERT INTO core_team_route_successions
+                     (idempotency_key, intent_hash, project_id, mini_project_id,
+                      seat_binding_id, predecessor_native_id, predecessor_generation,
+                      predecessor_occupancy_generation, successor_occupancy_generation,
+                      successor_credential_generation, claimed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    claim.idempotency_key.as_str(),
+                    claim.intent_hash.as_str(),
+                    claim.project_id.to_string(),
+                    claim.mini_project_id.to_string(),
+                    claim.seat_binding_id.to_string(),
+                    claim.predecessor_native_id.as_str(),
+                    i64::try_from(claim.predecessor_generation).unwrap_or(i64::MAX),
+                    i64::try_from(claim.predecessor_occupancy_generation).unwrap_or(i64::MAX),
+                    i64::try_from(claim.successor_occupancy_generation).unwrap_or(i64::MAX),
+                    i64::try_from(claim.successor_credential_generation).unwrap_or(i64::MAX),
+                    text(claim.claimed_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(Applied::Created)
+    }
+
+    /// Commit a succession's trailing effects by *proving* them.
+    ///
+    /// The previous shape took two booleans and trusted them, which meant the
+    /// persistence boundary recorded the caller's opinion rather than what
+    /// durable state actually says. Both latches are now derived here from the
+    /// exact rows the effects were supposed to write:
+    ///
+    /// * the launch intent for this occupancy is `installed` and names this
+    ///   succession's exact successor native — not merely some native;
+    /// * the seat's active occupant *is* that successor, and the SeatBinding's
+    ///   attachment instant is the successor's own observation instant, which
+    ///   is what ties the generic liveness write to this succession rather than
+    ///   to whatever last touched the seat.
+    ///
+    /// Anything short of both refuses and latches nothing, so a half-landed
+    /// succession cannot be talked into looking complete (ASMA-8187 P2).
+    pub fn commit_core_team_route_succession_effects(
+        &self,
+        key: &IdempotencyKey,
+    ) -> RepositoryResult<Applied> {
+        // A crash here is indistinguishable, from the caller, from the latch
+        // never having happened — which is the interval the pending-effect
+        // columns exist to survive. Production builds never compile this.
+        #[cfg(feature = "fault-injection")]
+        if self.faults.lose_next_succession_effects.replace(false) {
+            return Err(RepositoryError::Backend {
+                detail: "injected fault before the succession effect latch".to_owned(),
+            });
+        }
+        let recorded =
+            self.get_core_team_route_succession(key)?
+                .ok_or(RepositoryError::NotFound {
+                    subject: "core team route succession",
+                })?;
+        let (Some(successor_native_id), Some(_), Some(_)) = (
+            recorded.successor_native_id.clone(),
+            recorded.successor_generation,
+            recorded.route_committed_at,
+        ) else {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "a succession cannot commit effects before its route",
+            });
+        };
+        // The committed readback was proved against its own transition before it
+        // became durable and is immutable afterwards, so it — not the two
+        // identity columns beside it — is what the seat must still match.
+        let evidence = Self::committed_readback(&recorded)?;
+
+        // Effect zero, and the one the other two are only meaningful under: the
+        // seat is still standing in the occupancy this command produced. An
+        // external native id is the provider's to reissue, so a later occupancy
+        // reusing the same id would otherwise satisfy an older row's latches and
+        // let it receipt effects belonging to its successor's successor
+        // (ASMA-8187 P1).
+        let occupancy = self.hosted_topology_seat_occupancy_generation(
+            recorded.project_id,
+            recorded.seat_binding_id,
+        )?;
+        if occupancy != Some(recorded.successor_occupancy_generation) {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the seat has left the occupancy generation this succession installed",
+            });
+        }
+
+        // Effect one: the launch intent, installed against this exact native.
+        let intent = self.get_hosted_seat_launch_intent(
+            recorded.project_id,
+            recorded.seat_binding_id,
+            recorded.successor_occupancy_generation,
+        )?;
+        let launch_intent_installed = intent.is_some_and(|intent| {
+            intent.state == HostedSeatLaunchIntentState::Installed
+                && intent.observed_native_id.as_ref() == Some(&successor_native_id)
+        });
+
+        // Effect two: the observation, bound to this exact successor. The
+        // active occupant proves which native the seat holds — by its whole
+        // identity, so a reissued id under another runtime generation is not
+        // mistaken for it — and the attachment instant proves the observation
+        // was written for *that* native and not inherited from an earlier one.
+        let active =
+            self.get_hosted_topology_seat(recorded.project_id, recorded.seat_binding_id)?;
+        let seat_binding_observed = match (
+            active,
+            self.get_seat_binding(recorded.project_id, recorded.seat_binding_id)?,
+        ) {
+            (Some(active), Some(binding)) => {
+                evidence.successor_is(&active)
+                    && binding.last_attached_at == Some(active.observed_at)
+            }
+            _ => false,
+        };
+
+        if !launch_intent_installed || !seat_binding_observed {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the succession's trailing effects are not both proved against its successor",
+            });
+        }
+        let updated = self
+            .connection
+            .execute(
+                "UPDATE core_team_route_successions
+                    SET launch_intent_installed = 1, seat_binding_observed = 1
+                  WHERE idempotency_key = ?1 AND route_committed_at IS NOT NULL",
+                params![key.as_str()],
+            )
+            .map_err(backend)?;
+        if updated == 0 {
+            return Err(RepositoryError::NotFound {
+                subject: "core team route succession",
+            });
+        }
+        Ok(Applied::Updated)
+    }
+
+    /// The validated, immutable readback a committed succession recorded.
+    ///
+    /// Typed on the way in and proved against its own transition before it was
+    /// written, so decoding it here is reading evidence rather than trusting a
+    /// stored string. A row that cannot produce one is a row no later check can
+    /// stand on.
+    fn committed_readback(
+        recorded: &StoredCoreTeamRouteSuccession,
+    ) -> RepositoryResult<CoreTeamRouteSuccessionReadback> {
+        let readback = recorded.readback.clone().ok_or(RepositoryError::Conflict {
+            subject: "core team route succession",
+            rule: "a committed succession carries no readback to verify against",
+        })?;
+        serde_json::from_value(readback).map_err(|_| RepositoryError::Conflict {
+            subject: "core team route succession",
+            rule: "the stored succession readback is no longer a complete readback",
+        })
+    }
+
+    /// Bind one recorded succession to the receipt that completed it.
+    ///
+    /// One-time and exact on key *and* intent: a receipt is evidence for one
+    /// specific command, and binding it to another would make the ledger assert
+    /// something it never saw. Re-binding the identical receipt is unchanged,
+    /// which is what lets a lost acknowledgement finish.
+    pub fn bind_core_team_route_succession_receipt(
+        &self,
+        key: &IdempotencyKey,
+        intent_hash: &ContentHash,
+        receipt_id: CommandReceiptId,
+        receipted_at: Timestamp,
+    ) -> RepositoryResult<Applied> {
+        // The command receipt is already recorded by the time this runs, so a
+        // loss here leaves a realm holding a receipt no ledger row points at.
+        // A replay must rebind that same receipt rather than mint a second.
+        // Production builds never compile this.
+        #[cfg(feature = "fault-injection")]
+        if self
+            .faults
+            .lose_next_succession_receipt_binding
+            .replace(false)
+        {
+            return Err(RepositoryError::Backend {
+                detail: "injected fault before the succession receipt binding".to_owned(),
+            });
+        }
+        let transaction = self.begin()?;
+        #[allow(clippy::type_complexity)]
+        let row: Option<(
+            String,
+            Option<String>,
+            Option<String>,
+            i64,
+            i64,
+            String,
+            String,
+        )> = transaction
+            .query_row(
+                "SELECT intent_hash, receipt_id, route_committed_at,
+                            launch_intent_installed, seat_binding_observed,
+                            project_id, mini_project_id
+                       FROM core_team_route_successions
+                      WHERE idempotency_key = ?1",
+                params![key.as_str()],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((
+            recorded_hash,
+            bound,
+            committed,
+            launch_installed,
+            seat_observed,
+            project_id,
+            mini_project_id,
+        )) = row
+        else {
+            return Err(RepositoryError::NotFound {
+                subject: "core team route succession",
+            });
+        };
+        if recorded_hash != intent_hash.as_str() {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the receipt names a different succession intent",
+            });
+        }
+        // Completeness is a precondition of the receipt, not a consequence of
+        // it. A caller that reconciled nothing must not be able to mint the
+        // statement that everything landed.
+        if committed.is_none() || launch_installed != 1 || seat_observed != 1 {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "a receipt cannot bind a succession whose effects have not all landed",
+            });
+        }
+        // A foreign key proves the receipt exists; it says nothing about whose
+        // it is. Read it here, inside the same transaction, and require it to be
+        // the receipt this exact command produced: same project, same key, same
+        // command kind, same target epic, same intent. Anything else is a
+        // succession pointing at somebody else's completion (ASMA-8187 P2).
+        #[allow(clippy::type_complexity)]
+        let receipt: Option<(
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+        )> = transaction
+            .query_row(
+                "SELECT project_id, idempotency_key, kind, intent_hash,
+                            json_extract(target, '$.kind'),
+                            json_extract(target, '$.mini_project_id')
+                       FROM command_receipts WHERE id = ?1",
+                params![receipt_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((
+            receipt_project,
+            receipt_key,
+            receipt_kind,
+            receipt_intent,
+            target_kind,
+            target_epic,
+        )) = receipt
+        else {
+            return Err(RepositoryError::NotFound {
+                subject: "command receipt",
+            });
+        };
+        if receipt_project != project_id
+            || receipt_key != key.as_str()
+            || receipt_kind != "correct_core_team_route"
+            || receipt_intent != intent_hash.as_str()
+            || target_kind.as_deref() != Some("mini_project")
+            || target_epic.as_deref() != Some(mini_project_id.as_str())
+        {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the receipt was recorded for another command",
+            });
+        }
+        // The receipt is the last moment anything reads this row before it
+        // becomes the answer to every replay, so the evidence is re-proved
+        // here rather than assumed from the write that produced it. The digest
+        // is recomputed from the stored bytes, and every value the readback
+        // repeats from a ledger column is compared against that column: two
+        // layers wrote them, and agreement between the two is evidence rather
+        // than a restatement.
+        self.verify_succession_readback(&transaction, key)?;
+        // Only now may an identical binding answer `Unchanged`. Returning it
+        // earlier made the idempotent path the one path that proved nothing:
+        // a row bound by some other route — an upgrade, a restore, a direct
+        // write — would be re-affirmed on replay without its receipt or its
+        // readback ever being read. A replay is the most common way this row is
+        // looked at, so it has to be the most verified, not the least
+        // (ASMA-8187 P2).
+        if let Some(bound) = bound {
+            transaction.rollback().map_err(backend)?;
+            return if bound == receipt_id.to_string() {
+                Ok(Applied::Unchanged)
+            } else {
+                Err(RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule: "the succession is already bound to another receipt",
+                })
+            };
+        }
+        transaction
+            .execute(
+                "UPDATE core_team_route_successions
+                    SET receipt_id = ?2, receipted_at = ?3
+                  WHERE idempotency_key = ?1",
+                params![key.as_str(), receipt_id.to_string(), text(receipted_at)],
+            )
+            .map_err(backend)?;
         transaction.commit().map_err(backend)?;
         Ok(Applied::Updated)
+    }
+
+    /// Re-prove a committed succession's readback against its own ledger row.
+    fn verify_succession_readback(
+        &self,
+        transaction: &rusqlite::Transaction<'_>,
+        key: &IdempotencyKey,
+    ) -> RepositoryResult<()> {
+        let row: (
+            String,
+            String,
+            String,
+            i64,
+            i64,
+            String,
+            i64,
+            i64,
+            i64,
+            String,
+        ) = transaction
+            .query_row(
+                "SELECT readback, readback_hash, predecessor_native_id, predecessor_generation,
+                        predecessor_occupancy_generation, successor_native_id,
+                        successor_generation, successor_occupancy_generation,
+                        successor_credential_generation, seat_binding_id
+                   FROM core_team_route_successions WHERE idempotency_key = ?1",
+                params![key.as_str()],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                        row.get(9)?,
+                    ))
+                },
+            )
+            .map_err(backend)?;
+        let readback: serde_json::Value =
+            serde_json::from_str(&row.0).map_err(|error| RepositoryError::Backend {
+                detail: format!("a succession readback could not be decoded: {error}"),
+            })?;
+        let declared = ContentHash::parse(&row.1)?;
+        let recomputed = CanonicalDocument::from_value(&serde_json::json!({
+            "schema_version": 1,
+            "readback": readback,
+        }))?;
+        if recomputed.hash() != &declared {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the stored succession readback no longer matches its recorded digest",
+            });
+        }
+        // Typed, not probed. Reading nine pointers out of free JSON proves those
+        // nine agree and says nothing about the rest of the document: a missing
+        // `host`, an absent `retired_at` or an extra member nobody declared all
+        // passed. Deserializing into the shared domain structure — which denies
+        // unknown fields and has no optional identity — is what makes the whole
+        // readback the thing under test (ASMA-8187 P2).
+        let readback: CoreTeamRouteSuccessionReadback =
+            serde_json::from_value(readback).map_err(|_| RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the succession readback is not a complete Core Team succession readback",
+            })?;
+        let seat_binding_id = row.9;
+        let agrees = readback.seat_binding_id.to_string() == seat_binding_id
+            && readback.predecessor.native_id.as_str() == row.2
+            && readback.predecessor.generation == u64::try_from(row.3).unwrap_or(u64::MAX)
+            && readback.predecessor.occupancy_generation
+                == u64::try_from(row.4).unwrap_or(u64::MAX)
+            && readback.successor.native_id.as_str() == row.5
+            && readback.successor.generation == u64::try_from(row.6).unwrap_or(u64::MAX)
+            && readback.successor.occupancy_generation == u64::try_from(row.7).unwrap_or(u64::MAX)
+            && readback.grant_subject.generation == u64::try_from(row.8).unwrap_or(u64::MAX)
+            && readback.grant_subject.subject_seat_binding_id.to_string() == seat_binding_id;
+        if !agrees {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the succession readback disagrees with its own ledger identity",
+            });
+        }
+        // Re-asked here, over the stored bytes, rather than trusted from the
+        // write that produced them: the derived grant digest, two distinct
+        // occupants, a recorded retirement instant.
+        readback
+            .check_internal_consistency()
+            .map_err(|rule| RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule,
+            })?;
+        Ok(())
+    }
+
+    /// Read one recorded succession by the key a replay arrives holding.
+    pub fn get_core_team_route_succession(
+        &self,
+        key: &IdempotencyKey,
+    ) -> RepositoryResult<Option<StoredCoreTeamRouteSuccession>> {
+        self.read_core_team_route_succession("WHERE idempotency_key = ?1", params![key.as_str()])
+    }
+
+    /// Read the exclusive owner of one seat's succession, if it has one.
+    pub fn core_team_route_succession_owner(
+        &self,
+        project_id: ProjectId,
+        seat_binding_id: SeatBindingId,
+        predecessor_occupancy_generation: u64,
+    ) -> RepositoryResult<Option<StoredCoreTeamRouteSuccession>> {
+        self.read_core_team_route_succession(
+            "WHERE project_id = ?1 AND seat_binding_id = ?2
+               AND predecessor_occupancy_generation = ?3",
+            params![
+                project_id.to_string(),
+                seat_binding_id.to_string(),
+                i64::try_from(predecessor_occupancy_generation).unwrap_or(i64::MAX),
+            ],
+        )
+    }
+
+    fn read_core_team_route_succession(
+        &self,
+        predicate: &str,
+        parameters: &[&dyn rusqlite::ToSql],
+    ) -> RepositoryResult<Option<StoredCoreTeamRouteSuccession>> {
+        let Some(row) = self
+            .connection
+            .query_row(
+                &format!(
+                    "SELECT idempotency_key, intent_hash, project_id, mini_project_id,
+                            seat_binding_id, predecessor_native_id, predecessor_generation,
+                            predecessor_occupancy_generation, successor_occupancy_generation,
+                            successor_credential_generation, claimed_at, successor_native_id,
+                            successor_generation, readback, readback_hash, route_committed_at,
+                            launch_intent_installed, seat_binding_observed, receipt_id,
+                            receipted_at
+                       FROM core_team_route_successions {predicate}"
+                ),
+                parameters,
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, i64>(6)?,
+                        row.get::<_, i64>(7)?,
+                        row.get::<_, i64>(8)?,
+                        row.get::<_, i64>(9)?,
+                        row.get::<_, String>(10)?,
+                        row.get::<_, Option<String>>(11)?,
+                        row.get::<_, Option<i64>>(12)?,
+                        row.get::<_, Option<String>>(13)?,
+                        row.get::<_, Option<String>>(14)?,
+                        row.get::<_, Option<String>>(15)?,
+                        row.get::<_, i64>(16)?,
+                        row.get::<_, i64>(17)?,
+                        row.get::<_, Option<String>>(18)?,
+                        row.get::<_, Option<String>>(19)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(StoredCoreTeamRouteSuccession {
+            idempotency_key: IdempotencyKey::parse(&row.0)?,
+            intent_hash: ContentHash::parse(&row.1)?,
+            project_id: ProjectId::parse(&row.2)?,
+            mini_project_id: MiniProjectId::parse(&row.3)?,
+            seat_binding_id: SeatBindingId::parse(&row.4)?,
+            predecessor_native_id: ExternalId::parse(&row.5)?,
+            predecessor_generation: u64::try_from(row.6).unwrap_or_default(),
+            predecessor_occupancy_generation: u64::try_from(row.7).unwrap_or_default(),
+            successor_occupancy_generation: u64::try_from(row.8).unwrap_or_default(),
+            successor_credential_generation: u64::try_from(row.9).unwrap_or_default(),
+            claimed_at: read_timestamp(&row.10)?,
+            successor_native_id: row.11.as_deref().map(ExternalId::parse).transpose()?,
+            successor_generation: row.12.map(|value| u64::try_from(value).unwrap_or_default()),
+            readback: row
+                .13
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()
+                .map_err(|error| RepositoryError::Backend {
+                    detail: format!("a succession readback could not be decoded: {error}"),
+                })?,
+            readback_hash: row.14.as_deref().map(ContentHash::parse).transpose()?,
+            route_committed_at: row.15.as_deref().map(read_timestamp).transpose()?,
+            effects: CoreTeamRouteSuccessionEffects {
+                launch_intent_installed: row.16 != 0,
+                seat_binding_observed: row.17 != 0,
+            },
+            receipt_id: row.18.as_deref().map(CommandReceiptId::parse).transpose()?,
+            receipted_at: row.19.as_deref().map(read_timestamp).transpose()?,
+        }))
     }
 
     /// Read the one advice artifact a single-seat Advisor run produced.
@@ -11493,6 +13243,63 @@ impl SqliteStore {
         })?;
         transaction.commit().map_err(backend)?;
         Ok(stored)
+    }
+
+    /// Bind one realm-scoped key to the logical operation it names, before the
+    /// effect that operation has outside this database.
+    ///
+    /// For an operation whose state lives in the Realm state root — fleet
+    /// policy publication and activation — there is no row to write in the same
+    /// transaction, so the key is judged on its own: `Created` for a first use,
+    /// `Unchanged` for an exact replay, and a conflict for a key already bound
+    /// to anything else. The caller performs its idempotent effect after either
+    /// answer, so a replay whose first attempt died before the effect converges.
+    ///
+    /// # Errors
+    /// A conflict when the key is bound to a different operation or fingerprint.
+    pub fn bind_realm_operation(&self, binding: &IdempotencyBinding) -> RepositoryResult<Applied> {
+        let transaction = self.begin()?;
+        let bound: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT operation, fingerprint FROM realm_idempotency_bindings
+                 WHERE idempotency_key = ?1",
+                params![binding.key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let applied = match bound {
+            Some((operation, fingerprint))
+                if operation == binding.operation
+                    && fingerprint == binding.fingerprint.as_str() =>
+            {
+                Applied::Unchanged
+            }
+            Some(_) => {
+                return Err(conflict(
+                    "idempotency key",
+                    "this key is already bound to a different operation",
+                ));
+            }
+            None => {
+                transaction
+                    .execute(
+                        "INSERT INTO realm_idempotency_bindings
+                             (idempotency_key, operation, fingerprint, bound_at)
+                         VALUES (?1, ?2, ?3, ?4)",
+                        params![
+                            binding.key,
+                            binding.operation,
+                            binding.fingerprint.as_str(),
+                            text(binding.bound_at)
+                        ],
+                    )
+                    .map_err(backend)?;
+                Applied::Created
+            }
+        };
+        transaction.commit().map_err(backend)?;
+        Ok(applied)
     }
 }
 

@@ -1,0 +1,10 @@
+# branch.oid c76351f68d7f8c9a904bee52c1d7fe4668460e00
+# branch.head feat/ASMA-8278-shared-orchestration-release-integration
+# branch.upstream origin/feat/ASMA-8278-shared-orchestration-release-integration
+# branch.ab +0 -0
+? .agents/
+? .asma/
+? .cursor/
+? .dsh/
+? AGENTS.md
+? CLAUDE.md

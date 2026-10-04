@@ -1,0 +1,102 @@
+=== mutant M-COH (projection coherence) ===
+source snapshot   : crates/kontor-daemon/src/applications.rs
+                    sha256 3a9f16873b39ad41a70c4aaefac303d62492b88406b4c97dcdf0befd050217f2
+state reached at  : 8910ebc603b5d013861d0793c6f8384f75eaca9d
+identity note     : the snapshot is the identity; the commit is only how that
+                    state is reached. An earlier revision named 5e00a238,
+                    which was HEAD when the harness read it but whose
+                    applications.rs is 4e04205f... -- a different file. The
+                    patch applies to 8910ebc6 and to nothing earlier.
+mutated file      : crates/kontor-daemon/src/applications.rs
+snapshot sha256   : 3a9f16873b39ad41a70c4aaefac303d62492b88406b4c97dcdf0befd050217f2
+restored sha256   : 3a9f16873b39ad41a70c4aaefac303d62492b88406b4c97dcdf0befd050217f2
+restoration       : byte-identical to the named snapshot
+patch             : M-COH-split-lock-boundary.patch (mutation-only, 64 lines)
+  git apply --check: accepted
+  patch --dry-run  : patching file 'crates/kontor-daemon/src/applications.rs'
+
+What it removes: the single store acquisition in epic_hosted_seat_occupancies,
+restoring the split boundary after the history/current read.
+
+--- first attempt: INCONCLUSIVE, not a kill ---
+Hung ~48 minutes with the test binary at 0% CPU and no verdict; terminated.
+Cause was the harness, not the production change: barrier_case asserted
+inside std::thread::scope before calling barrier.release(), so the scope
+waited forever to join a reader nobody would wake. Full process evidence is
+retained in M-COH-first-attempt-INCONCLUSIVE.txt.
+
+--- harness fix ---
+The scope now only observes; barrier.release() runs on every path; verdicts
+are reached after both joins; the observation loop is bounded; and every run
+is wall-clock bounded so a coordination defect reports a timeout instead of
+hanging.
+
+--- second attempt: deterministic ---
+corrected path : 2 passed in 5.97s
+mutant         : FAILED in 4.78s, exit 101
+                 'a succession committed while the projection held the store lock'
+                 (the core-team case passes under this mutant, correctly: M-COH
+                  splits only the occupancy chain's acquisition)
+command: cargo test -p kontor-daemon --lib -- coherence --test-threads=1
+hard limit: 420s
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-daemon)
+warning: method `epic_control_seat_binding` is never used
+    --> crates/kontor-daemon/src/applications.rs:8448:8
+     |
+ 939 | impl Services {
+     | ------------- method in this implementation
+...
+8448 |     fn epic_control_seat_binding(
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `kontor-daemon` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 15.79s
+     Running unittests src/lib.rs (target/debug/deps/kontor_daemon-efbe81bf64c053fc)
+
+running 2 tests
+test applications::coherence::the_core_team_projection_answers_from_one_instant ... ok
+test applications::coherence::the_occupancy_chain_answers_from_one_instant ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 123 filtered out; finished in 5.97s
+
+exit status: 0
+command: cargo test -p kontor-daemon --lib -- coherence --test-threads=1
+hard limit: 420s
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-daemon)
+warning: method `epic_control_seat_binding` is never used
+    --> crates/kontor-daemon/src/applications.rs:8454:8
+     |
+ 945 | impl Services {
+     | ------------- method in this implementation
+...
+8454 |     fn epic_control_seat_binding(
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `kontor-daemon` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.35s
+     Running unittests src/lib.rs (target/debug/deps/kontor_daemon-efbe81bf64c053fc)
+
+running 2 tests
+test applications::coherence::the_core_team_projection_answers_from_one_instant ... ok
+test applications::coherence::the_occupancy_chain_answers_from_one_instant ... FAILED
+
+failures:
+
+---- applications::coherence::the_occupancy_chain_answers_from_one_instant stdout ----
+
+thread 'applications::coherence::the_occupancy_chain_answers_from_one_instant' (23539377) panicked at crates/kontor-daemon/src/applications.rs:44682:9:
+a succession committed while the projection held the store lock
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    applications::coherence::the_occupancy_chain_answers_from_one_instant
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 123 filtered out; finished in 4.78s
+
+error: test failed, to rerun pass `-p kontor-daemon --lib`
+exit status: 101

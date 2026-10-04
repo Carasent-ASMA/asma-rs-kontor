@@ -1,0 +1,22 @@
+   Compiling kontor-runtime v0.2.1 (/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-snapshot-codec-validation-ga911_7m/mutation-source/crates/kontor-runtime)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.92s
+     Running unittests src/lib.rs (/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/mutation-target/debug/deps/kontor_runtime-38fd6bad31f23716)
+
+running 1 test
+test planning_pair::attestation::snapshot_codec::tests::shared_snapshot_guards_refuse_encode_and_decode_without_divergence ... FAILED
+
+failures:
+
+---- planning_pair::attestation::snapshot_codec::tests::shared_snapshot_guards_refuse_encode_and_decode_without_divergence stdout ----
+
+thread 'planning_pair::attestation::snapshot_codec::tests::shared_snapshot_guards_refuse_encode_and_decode_without_divergence' (25652025) panicked at crates/kontor-runtime/src/planning_pair/attestation/snapshot_codec/tests.rs:122:31:
+prevalidate encode: [123, 34, 115, 99, 104, 101, 109, 97, 95, 118, 101, 114, 115, 105, 111, 110, 34, 58, 49, 44, 34, 114, 101, 118, 105, 115, 105, 111, 110, 34, 58, 48, 44, 34, 107, 101, 121, 115, 34, 58, 91, 123, 34, 105, 115, 115, 117, 101, 114, 34, 58, 34, 116, 101, 115, 116, 45, 105, 115, 115, 117, 101, 114, 34, 44, 34, 107, 101, 121, 95, 105, 100, 34, 58, 34, 107, 101, 121, 45, 49, 34, 44, 34, 112, 117, 98, 108, 105, 99, 95, 107, 101, 121, 95, 100, 101, 114, 34, 58, 91, 49, 44, 50, 44, 51, 93, 44, 34, 110, 111, 116, 95, 98, 101, 102, 111, 114, 101, 34, 58, 49, 48, 48, 44, 34, 101, 120, 112, 105, 114, 101, 115, 95, 97, 116, 34, 58, 50, 48, 48, 44, 34, 114, 101, 118, 111, 107, 101, 100, 34, 58, 116, 114, 117, 101, 125, 93, 125]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    planning_pair::attestation::snapshot_codec::tests::shared_snapshot_guards_refuse_encode_and_decode_without_divergence
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 140 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p kontor-runtime --lib`

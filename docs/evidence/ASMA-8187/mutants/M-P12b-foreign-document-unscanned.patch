@@ -1,0 +1,13 @@
+diff --git a/crates/kontor-store/src/backup/export.rs b/crates/kontor-store/src/backup/export.rs
+index 6ca157db..5e5f50fe 100644
+--- a/crates/kontor-store/src/backup/export.rs
++++ b/crates/kontor-store/src/backup/export.rs
+@@ -642,7 +642,7 @@ impl KontorExportV1 {
+         // vouched for. It runs before an import opens a transaction, so a
+         // document carrying credential material is refused having written
+         // nothing (ASMA-8187 P1).
+-        scan_for_canaries(&canonical_value(self)?, 0)?;
++        // MUTANT M-P12b: a foreign document is believed on its digest alone.
+         Ok(())
+     }
+ 

@@ -1,0 +1,1109 @@
+{
+  "proof": {
+    "additional_current_items": 2,
+    "appended_memory_receipts": 3,
+    "approved_head_pointer_changed": true,
+    "backup_directory": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/.tmpKIfeUE",
+    "boundary": "synthetic same-Realm snapshot, no live/copy-live corpus",
+    "census": [
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-000",
+        "integer:2",
+        "text:01a100ec-6d38-7ec0-b42c-b1c4f202a770",
+        "text:01a100ec-6d38-7ec0-b42c-b1c4f202a770",
+        "integer:1",
+        "text:6c4b0c1cd2c18d3dcccbce10238ced69466c9c61e6c35c796e0bbfcbd41753c8",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-001",
+        "integer:2",
+        "text:01a100ec-6d3a-7082-bb74-5a52dfa264f2",
+        "text:01a100ec-6d3a-7082-bb74-5a52dfa264f2",
+        "integer:1",
+        "text:c99bc1e6f623c5bb2309a806657990ad399a22f9bd38e4f706d5915ef563edc4",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-002",
+        "integer:2",
+        "text:01a100ec-6d3c-73e0-aaa2-de13de71d884",
+        "text:01a100ec-6d3c-73e0-aaa2-de13de71d884",
+        "integer:1",
+        "text:c134d5db4496a50375c8e8015846ea5eff4a55d05872bcc54aeb4760af8c7550",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-003",
+        "integer:2",
+        "text:01a100ec-6d3e-7f31-9db3-dc60f9e296f9",
+        "text:01a100ec-6d3e-7f31-9db3-dc60f9e296f9",
+        "integer:1",
+        "text:59fc054628032ea846649ba911cda0830d755257cd661a9581fc49d081954929",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-004",
+        "integer:2",
+        "text:01a100ec-6d3f-7ee0-9113-6c38afe82f25",
+        "text:01a100ec-6d3f-7ee0-9113-6c38afe82f25",
+        "integer:1",
+        "text:1914268fdae250ad9386e3768fe03979edac3f94fd6efa856c55005ff3f8a688",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-005",
+        "integer:2",
+        "text:01a100ec-6d41-7993-b53d-1db46cce347c",
+        "text:01a100ec-6d41-7993-b53d-1db46cce347c",
+        "integer:1",
+        "text:473c5ae9ecf1cc764418cf59d6eff98a39778bfb458574307afcebd17f335e73",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-006",
+        "integer:2",
+        "text:01a100ec-6d42-7573-944d-5262c3c3d217",
+        "text:01a100ec-6d42-7573-944d-5262c3c3d217",
+        "integer:1",
+        "text:8758018d3d7baa9bdba4400792298cc2d9a401e2680cd89d0c692ecaedef80a8",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-007",
+        "integer:2",
+        "text:01a100ec-6d44-7573-a5ff-ebcc5808505f",
+        "text:01a100ec-6d44-7573-a5ff-ebcc5808505f",
+        "integer:1",
+        "text:c85151379863890eb51a73a15d8d256aa7b6f6935ce3408627236c50cd25efc8",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-008",
+        "integer:2",
+        "text:01a100ec-6d45-7b61-b097-a981a83af0a0",
+        "text:01a100ec-6d45-7b61-b097-a981a83af0a0",
+        "integer:1",
+        "text:01affbb686366487b523bf6881a81321a4a9e1d8d3b2e0cdbaa293feee1248fc",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-009",
+        "integer:2",
+        "text:01a100ec-6d47-7a92-96d5-00d48cc5ca7d",
+        "text:01a100ec-6d47-7a92-96d5-00d48cc5ca7d",
+        "integer:1",
+        "text:5ebb2a7f9edd1862d7fcad27da02d160a11fe906da8a09239a1f3d40537ece7c",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-010",
+        "integer:2",
+        "text:01a100ec-6d48-7c61-93ba-21e1d132f585",
+        "text:01a100ec-6d48-7c61-93ba-21e1d132f585",
+        "integer:1",
+        "text:8a1dcafd28d4734870f3e1baa0ded2f5f285a48d213954b7788b6592db61972d",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-011",
+        "integer:2",
+        "text:01a100ec-6d49-7d10-9f44-5b27faf7e409",
+        "text:01a100ec-6d49-7d10-9f44-5b27faf7e409",
+        "integer:1",
+        "text:750b81505af3b8ce50722f4370f64e150e57fc8585fe2bd59053af76ac01f187",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-012",
+        "integer:2",
+        "text:01a100ec-6d4b-7c80-8627-7bbc39e66c89",
+        "text:01a100ec-6d4b-7c80-8627-7bbc39e66c89",
+        "integer:1",
+        "text:21e792627b9838633aedff886ecc1e08b2531e686937828de766ebf6c90e43d1",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-013",
+        "integer:2",
+        "text:01a100ec-6d4d-71d2-8bac-7325f857b443",
+        "text:01a100ec-6d4d-71d2-8bac-7325f857b443",
+        "integer:1",
+        "text:d0ce2ea4577727d976216fa5a70cebf2cebe6265be8459e63967eaaaff80f3b9",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-014",
+        "integer:2",
+        "text:01a100ec-6d4e-7922-a2e1-6e114b8f1f8d",
+        "text:01a100ec-6d4e-7922-a2e1-6e114b8f1f8d",
+        "integer:1",
+        "text:776c8c6cb16d6e0825c8839f9673d183bc16596d8f2610cc548e2d19aa55cc2d",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-015",
+        "integer:2",
+        "text:01a100ec-6d50-7501-add8-76edc08714d3",
+        "text:01a100ec-6d50-7501-add8-76edc08714d3",
+        "integer:1",
+        "text:8c44e06c1edd6e12196082754eb028cde34900b0c2fe8a140759942487009150",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-016",
+        "integer:2",
+        "text:01a100ec-6d52-7841-80df-038033bf7967",
+        "text:01a100ec-6d52-7841-80df-038033bf7967",
+        "integer:1",
+        "text:96c6eb303db1233913b40041d0450715fa2170869a995a75d38c8ad064034374",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-017",
+        "integer:2",
+        "text:01a100ec-6d53-7923-8c18-73ef7f795851",
+        "text:01a100ec-6d53-7923-8c18-73ef7f795851",
+        "integer:1",
+        "text:54113b12ef6f19a5abea41bf9f9f042577eeac5da1ee512601ac4e988481efe6",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-018",
+        "integer:2",
+        "text:01a100ec-6d55-7330-8af4-1a2b8b478adb",
+        "text:01a100ec-6d55-7330-8af4-1a2b8b478adb",
+        "integer:1",
+        "text:d54ec936e908c2c4fa6f2894f65cf120b30539bba484071ee265d1ffffbfce24",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-019",
+        "integer:2",
+        "text:01a100ec-6d56-7692-a620-5a85970b3bf8",
+        "text:01a100ec-6d56-7692-a620-5a85970b3bf8",
+        "integer:1",
+        "text:850664409be9bc5844b1a1eb2836bc14f0ad631ff415a07817ec01cc1d5b9d84",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-020",
+        "integer:2",
+        "text:01a100ec-6d58-7dc2-83c1-44798d5f7adf",
+        "text:01a100ec-6d58-7dc2-83c1-44798d5f7adf",
+        "integer:1",
+        "text:06c942afb1054565b1d352ce53ae62547cf8583f92eac277e88fa58cc268d377",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-021",
+        "integer:2",
+        "text:01a100ec-6d5a-75c3-bb61-264571d6a8cf",
+        "text:01a100ec-6d5a-75c3-bb61-264571d6a8cf",
+        "integer:1",
+        "text:b409cc9c994734f453c20b9ba900a9c6d74a0415ae60be84d028ee676c88f9b8",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-022",
+        "integer:2",
+        "text:01a100ec-6d5b-7e12-ab40-6ef201eb1a60",
+        "text:01a100ec-6d5b-7e12-ab40-6ef201eb1a60",
+        "integer:1",
+        "text:e80d98632568f0e5fad1b0a0b342100f51e0ebcbbc7e0c1e1322da52f1b483f4",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-023",
+        "integer:2",
+        "text:01a100ec-6d5d-7550-804e-3a68ee344d13",
+        "text:01a100ec-6d5d-7550-804e-3a68ee344d13",
+        "integer:1",
+        "text:48634edf2c8cbdc4ab2a11542f062c78c0e95a7465b9e5dee109fc2dee7abb0f",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-024",
+        "integer:2",
+        "text:01a100ec-6d5e-7bd0-9144-705e9507f0fd",
+        "text:01a100ec-6d5e-7bd0-9144-705e9507f0fd",
+        "integer:1",
+        "text:d35415a7e191c7900322d60b5fcbd28ef1aadfd25681dede4ad88c4b8b844af1",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-025",
+        "integer:2",
+        "text:01a100ec-6d60-7880-9307-c4039c4ab4c1",
+        "text:01a100ec-6d60-7880-9307-c4039c4ab4c1",
+        "integer:1",
+        "text:6d47db86484548a7c1ebb16725c502f09da0b9f9afd0cdb61941732158bb2ad8",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-026",
+        "integer:2",
+        "text:01a100ec-6d61-7863-8289-8476c05671ad",
+        "text:01a100ec-6d61-7863-8289-8476c05671ad",
+        "integer:1",
+        "text:8224a776c7f5405c659173cf14f7f7e7c3cf725c6934dd11394345f97fea7925",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-027",
+        "integer:2",
+        "text:01a100ec-6d63-7810-a325-b4b38266abfe",
+        "text:01a100ec-6d63-7810-a325-b4b38266abfe",
+        "integer:1",
+        "text:380d17796cf77a448881ed390c376944e8888c518b6787d8ec69189b54ad8a42",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-028",
+        "integer:2",
+        "text:01a100ec-6d64-7fa2-89bc-de8ff5736541",
+        "text:01a100ec-6d64-7fa2-89bc-de8ff5736541",
+        "integer:1",
+        "text:80777b64e25867d26dd390083c091aa5c6c46112fc183b6a21d4850719a24eac",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-029",
+        "integer:2",
+        "text:01a100ec-6d66-74b3-a6bd-daa97a9d296e",
+        "text:01a100ec-6d66-74b3-a6bd-daa97a9d296e",
+        "integer:1",
+        "text:0fc2f9dbccbe0c6608b80d626b08ed09fe56848ded5483926d6692d39ad81957",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-030",
+        "integer:2",
+        "text:01a100ec-6d67-7bf2-9dad-69c9ac019851",
+        "text:01a100ec-6d67-7bf2-9dad-69c9ac019851",
+        "integer:1",
+        "text:236c2c30b58200c4ac6c54d0c9f829ee4b491dc105f0d8c467372b95336576ef",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:local_only"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-031",
+        "integer:2",
+        "text:01a100ec-6d69-7943-a591-501c7e6f7258",
+        "text:01a100ec-6d69-7943-a591-501c7e6f7258",
+        "integer:1",
+        "text:7d5568854046411719ddd352f49adac2253a9f4c3823d3b3105e94fb5ec2c565",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:local_only"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-032",
+        "integer:2",
+        "text:01a100ec-6d6b-7b60-9f81-cfdfbf5116e1",
+        "text:01a100ec-6d6b-7b60-9f81-cfdfbf5116e1",
+        "integer:1",
+        "text:7545abb737a96419d8f177dcbbf6248e1f177c5c85b0b8145dcae0135594d4fa",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:local_only"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-033",
+        "integer:2",
+        "text:01a100ec-6d6d-7c82-bcd9-492d22e86e03",
+        "text:01a100ec-6d6d-7c82-bcd9-492d22e86e03",
+        "integer:1",
+        "text:5725ca0dd3b8ba67b65cd374fe8ddf8bc144fc254a24205f8cb906d71d3fad9e",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:local_only"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-034",
+        "integer:2",
+        "text:01a100ec-6d6e-7811-a0b1-d48d7df8df64",
+        "text:01a100ec-6d6e-7811-a0b1-d48d7df8df64",
+        "integer:1",
+        "text:be44acd8cdb14a2629e91876b6c4a9e88501f83561dba15359b3f026b7f4914b",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:local_only"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-035",
+        "integer:2",
+        "text:01a100ec-6d70-7070-b765-db0221af40d2",
+        "text:01a100ec-6d70-7070-b765-db0221af40d2",
+        "integer:1",
+        "text:280f4d88e70a0f3bc3cc2b2d0061bb08c1af9f4c3768d03f71e07d3539bf783a",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:local_only"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-036",
+        "integer:2",
+        "text:01a100ec-6d71-7352-ab81-9df7d1b6d183",
+        "text:01a100ec-6d71-7352-ab81-9df7d1b6d183",
+        "integer:1",
+        "text:d061dfbec999f2bb646d2cad64f8fb6482c74b2f0651188bc1e0e6d1faa2bbff",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:local_only"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-037",
+        "integer:2",
+        "text:01a100ec-6d73-7c72-8fe8-29d2e706db96",
+        "text:01a100ec-6d73-7c72-8fe8-29d2e706db96",
+        "integer:1",
+        "text:047707f398f904bf20b888483c3a1aa2bd6afd69c72efedd4a48cf562ef0596f",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:local_only"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-038",
+        "integer:2",
+        "text:01a100ec-6d75-7841-8450-17a50f2702a1",
+        "text:01a100ec-6d75-7841-8450-17a50f2702a1",
+        "integer:1",
+        "text:a20c214965981247458dcfd783be377b7c5b875175e3ee8ebc927ada0b5cbbdf",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:local_only"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-039",
+        "integer:2",
+        "text:01a100ec-6d76-7fa3-bf91-cd0aeccab71d",
+        "text:01a100ec-6d76-7fa3-bf91-cd0aeccab71d",
+        "integer:1",
+        "text:41ea297c17a08c5e532423317fa8bfd0f12ea4c09bfa0e67dd476f21bb3d701f",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:local_only"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-040",
+        "integer:2",
+        "text:01a100ec-6d78-7d00-b6d6-ea1db0c34796",
+        "text:01a100ec-6d78-7d00-b6d6-ea1db0c34796",
+        "integer:1",
+        "text:44a28cc1c4c1630e323538a165bfe91dabfc756ec13524c7070ed1ae40610993",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:generic",
+        "null"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-041",
+        "integer:2",
+        "text:01a100ec-6d79-7621-a208-3ae7edf3d051",
+        "text:01a100ec-6d79-7621-a208-3ae7edf3d051",
+        "integer:1",
+        "text:20951df859fd7450f74acc6dde20bc53fe2a940f0a23dcc347e46d7d1185b300",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:generic",
+        "null"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-042",
+        "integer:2",
+        "text:01a100ec-6d7d-7142-bfe5-a60f615836a5",
+        "text:01a100ec-6d7d-7142-bfe5-a60f615836a5",
+        "integer:1",
+        "text:469244d054a37db6947025f06a8b5a6228b69092130eddff04ebc2853030ac91",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:generic",
+        "null"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-043",
+        "integer:2",
+        "text:01a100ec-6d7e-71f0-883e-f00a367b019a",
+        "text:01a100ec-6d7e-71f0-883e-f00a367b019a",
+        "integer:1",
+        "text:88fc0ae69a73cd3b49e79c69a9aba5bb526d5fe5cfc491e3875ef9fb845a48cb",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:generic",
+        "null"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-044",
+        "integer:2",
+        "text:01a100ec-6d7e-71f0-883e-f033cff5157b",
+        "text:01a100ec-6d7e-71f0-883e-f033cff5157b",
+        "integer:1",
+        "text:6dcde01a402d0eb25fb9dbc0d0b11c28f04026c9ce5811274d8164c6a3893019",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:generic",
+        "null"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-045",
+        "integer:1",
+        "null",
+        "text:01a100ec-6d7f-7732-97dd-3a178b67d679",
+        "integer:1",
+        "text:d6470caf523a07728a03cbe7f35b9e1ae9e0316eb07b28eb7ba8c53feff4f056",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:pending",
+        "null"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-046",
+        "integer:1",
+        "null",
+        "text:01a100ec-6d80-7383-94fc-0987a5e78c32",
+        "integer:1",
+        "text:582a0fe85ba5f21be3ac59558fed21d9c86e2be9fab03faae590fa9a8a26b491",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:pending",
+        "null"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-047",
+        "integer:1",
+        "null",
+        "text:01a100ec-6d81-76a3-af31-bdd3250f6c4c",
+        "integer:1",
+        "text:cf6a4e51a17daa7fa8e204dc2a98ad26db0a13f8721f8fdac1ca1f32a87715f4",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:pending",
+        "null"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-048",
+        "integer:1",
+        "null",
+        "text:01a100ec-6d82-7a11-9d50-245d7c151e99",
+        "integer:1",
+        "text:d82486238b5196711fdabcf93b54aacae0cd03f0dfdec6d5f5778156f689ccaa",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:pending",
+        "null"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-049",
+        "integer:1",
+        "null",
+        "text:01a100ec-6d83-7953-9ab9-1c7e11553d5c",
+        "integer:1",
+        "text:35aa1947a9f9740bad531a11c760215959e851b75c1c9ab3578706ed356d4fa5",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:pending",
+        "null"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-050",
+        "integer:3",
+        "text:01a100ec-6d84-7912-bc2a-f80e3becfee4",
+        "text:01a100ec-6d84-7912-bc2a-f80e3becfee4",
+        "integer:1",
+        "text:5dd2897d95968977dc207d2d85fd24cba81d8a572d2a7068587f66ef322b3c34",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:tombstoned",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-051",
+        "integer:3",
+        "text:01a100ec-6d85-79f2-9770-c355dd3c1f68",
+        "text:01a100ec-6d85-79f2-9770-c355dd3c1f68",
+        "integer:1",
+        "text:afe313703169149a2d38dce30a885678d749a154a84b831e6d83a17673cbf738",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:tombstoned",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-052",
+        "integer:3",
+        "text:01a100ec-6d87-75d0-82d6-2a4ac5f4b823",
+        "text:01a100ec-6d87-75d0-82d6-2a4ac5f4b823",
+        "integer:1",
+        "text:739ddd822f516ddfaf96b00c46e1605a43970dc912a5956585b997b92679420b",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:tombstoned",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-053",
+        "integer:3",
+        "text:01a100ec-6d89-7ab2-b907-1872c591879f",
+        "text:01a100ec-6d89-7ab2-b907-1872c591879f",
+        "integer:1",
+        "text:4d4980d5e556a6ec3bc8fe14b71b8bdbecf49ddcf9bb021a4b5e33542a548684",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:tombstoned",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-054",
+        "integer:3",
+        "text:01a100ec-6d8a-7510-aafa-70dbde4d7d40",
+        "text:01a100ec-6d8a-7510-aafa-70dbde4d7d40",
+        "integer:1",
+        "text:ea34641c983ab07a0b17d13ba05e8b6c7ea192a47c700856046e28b0b4dc8223",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:tombstoned",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-055",
+        "integer:2",
+        "text:01a100ec-6d8c-7783-9321-cdeb59a89bef",
+        "text:01a100ec-6d8c-7783-9321-cdeb59a89bef",
+        "integer:1",
+        "text:c1cb1849b71c243ec382d8e8d15729fff801844e457221676d00966007ea91df",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:typed_candidate_requires_rust_validation",
+        "text:provider_eligible"
+      ],
+      [
+        "text:01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "text:synthetic-55-056",
+        "integer:2",
+        "text:01a100ec-6d8d-7073-a16b-3e5468508827",
+        "text:01a100ec-6d8d-7073-a16b-3e5468508827",
+        "integer:1",
+        "text:14fec1b8953204be48cb56b124fd2aa77e1f75774907174af3f7a4177f04ec02",
+        "text:ASMA-8159-explicitly-synthetic",
+        "text:generic",
+        "null"
+      ]
+    ],
+    "cohort": [
+      {
+        "content_hash": "6c4b0c1cd2c18d3dcccbce10238ced69466c9c61e6c35c796e0bbfcbd41753c8",
+        "item_id": "synthetic-55-000",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d38-7ec0-b42c-b1c4f202a770"
+      },
+      {
+        "content_hash": "c99bc1e6f623c5bb2309a806657990ad399a22f9bd38e4f706d5915ef563edc4",
+        "item_id": "synthetic-55-001",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d3a-7082-bb74-5a52dfa264f2"
+      },
+      {
+        "content_hash": "c134d5db4496a50375c8e8015846ea5eff4a55d05872bcc54aeb4760af8c7550",
+        "item_id": "synthetic-55-002",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d3c-73e0-aaa2-de13de71d884"
+      },
+      {
+        "content_hash": "59fc054628032ea846649ba911cda0830d755257cd661a9581fc49d081954929",
+        "item_id": "synthetic-55-003",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d3e-7f31-9db3-dc60f9e296f9"
+      },
+      {
+        "content_hash": "1914268fdae250ad9386e3768fe03979edac3f94fd6efa856c55005ff3f8a688",
+        "item_id": "synthetic-55-004",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d3f-7ee0-9113-6c38afe82f25"
+      },
+      {
+        "content_hash": "473c5ae9ecf1cc764418cf59d6eff98a39778bfb458574307afcebd17f335e73",
+        "item_id": "synthetic-55-005",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d41-7993-b53d-1db46cce347c"
+      },
+      {
+        "content_hash": "8758018d3d7baa9bdba4400792298cc2d9a401e2680cd89d0c692ecaedef80a8",
+        "item_id": "synthetic-55-006",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d42-7573-944d-5262c3c3d217"
+      },
+      {
+        "content_hash": "c85151379863890eb51a73a15d8d256aa7b6f6935ce3408627236c50cd25efc8",
+        "item_id": "synthetic-55-007",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d44-7573-a5ff-ebcc5808505f"
+      },
+      {
+        "content_hash": "01affbb686366487b523bf6881a81321a4a9e1d8d3b2e0cdbaa293feee1248fc",
+        "item_id": "synthetic-55-008",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d45-7b61-b097-a981a83af0a0"
+      },
+      {
+        "content_hash": "5ebb2a7f9edd1862d7fcad27da02d160a11fe906da8a09239a1f3d40537ece7c",
+        "item_id": "synthetic-55-009",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d47-7a92-96d5-00d48cc5ca7d"
+      },
+      {
+        "content_hash": "8a1dcafd28d4734870f3e1baa0ded2f5f285a48d213954b7788b6592db61972d",
+        "item_id": "synthetic-55-010",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d48-7c61-93ba-21e1d132f585"
+      },
+      {
+        "content_hash": "750b81505af3b8ce50722f4370f64e150e57fc8585fe2bd59053af76ac01f187",
+        "item_id": "synthetic-55-011",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d49-7d10-9f44-5b27faf7e409"
+      },
+      {
+        "content_hash": "21e792627b9838633aedff886ecc1e08b2531e686937828de766ebf6c90e43d1",
+        "item_id": "synthetic-55-012",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d4b-7c80-8627-7bbc39e66c89"
+      },
+      {
+        "content_hash": "d0ce2ea4577727d976216fa5a70cebf2cebe6265be8459e63967eaaaff80f3b9",
+        "item_id": "synthetic-55-013",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d4d-71d2-8bac-7325f857b443"
+      },
+      {
+        "content_hash": "776c8c6cb16d6e0825c8839f9673d183bc16596d8f2610cc548e2d19aa55cc2d",
+        "item_id": "synthetic-55-014",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d4e-7922-a2e1-6e114b8f1f8d"
+      },
+      {
+        "content_hash": "8c44e06c1edd6e12196082754eb028cde34900b0c2fe8a140759942487009150",
+        "item_id": "synthetic-55-015",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d50-7501-add8-76edc08714d3"
+      },
+      {
+        "content_hash": "96c6eb303db1233913b40041d0450715fa2170869a995a75d38c8ad064034374",
+        "item_id": "synthetic-55-016",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d52-7841-80df-038033bf7967"
+      },
+      {
+        "content_hash": "54113b12ef6f19a5abea41bf9f9f042577eeac5da1ee512601ac4e988481efe6",
+        "item_id": "synthetic-55-017",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d53-7923-8c18-73ef7f795851"
+      },
+      {
+        "content_hash": "d54ec936e908c2c4fa6f2894f65cf120b30539bba484071ee265d1ffffbfce24",
+        "item_id": "synthetic-55-018",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d55-7330-8af4-1a2b8b478adb"
+      },
+      {
+        "content_hash": "850664409be9bc5844b1a1eb2836bc14f0ad631ff415a07817ec01cc1d5b9d84",
+        "item_id": "synthetic-55-019",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d56-7692-a620-5a85970b3bf8"
+      },
+      {
+        "content_hash": "06c942afb1054565b1d352ce53ae62547cf8583f92eac277e88fa58cc268d377",
+        "item_id": "synthetic-55-020",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d58-7dc2-83c1-44798d5f7adf"
+      },
+      {
+        "content_hash": "b409cc9c994734f453c20b9ba900a9c6d74a0415ae60be84d028ee676c88f9b8",
+        "item_id": "synthetic-55-021",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d5a-75c3-bb61-264571d6a8cf"
+      },
+      {
+        "content_hash": "e80d98632568f0e5fad1b0a0b342100f51e0ebcbbc7e0c1e1322da52f1b483f4",
+        "item_id": "synthetic-55-022",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d5b-7e12-ab40-6ef201eb1a60"
+      },
+      {
+        "content_hash": "48634edf2c8cbdc4ab2a11542f062c78c0e95a7465b9e5dee109fc2dee7abb0f",
+        "item_id": "synthetic-55-023",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d5d-7550-804e-3a68ee344d13"
+      },
+      {
+        "content_hash": "d35415a7e191c7900322d60b5fcbd28ef1aadfd25681dede4ad88c4b8b844af1",
+        "item_id": "synthetic-55-024",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d5e-7bd0-9144-705e9507f0fd"
+      },
+      {
+        "content_hash": "6d47db86484548a7c1ebb16725c502f09da0b9f9afd0cdb61941732158bb2ad8",
+        "item_id": "synthetic-55-025",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d60-7880-9307-c4039c4ab4c1"
+      },
+      {
+        "content_hash": "8224a776c7f5405c659173cf14f7f7e7c3cf725c6934dd11394345f97fea7925",
+        "item_id": "synthetic-55-026",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d61-7863-8289-8476c05671ad"
+      },
+      {
+        "content_hash": "380d17796cf77a448881ed390c376944e8888c518b6787d8ec69189b54ad8a42",
+        "item_id": "synthetic-55-027",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d63-7810-a325-b4b38266abfe"
+      },
+      {
+        "content_hash": "80777b64e25867d26dd390083c091aa5c6c46112fc183b6a21d4850719a24eac",
+        "item_id": "synthetic-55-028",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d64-7fa2-89bc-de8ff5736541"
+      },
+      {
+        "content_hash": "0fc2f9dbccbe0c6608b80d626b08ed09fe56848ded5483926d6692d39ad81957",
+        "item_id": "synthetic-55-029",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d66-74b3-a6bd-daa97a9d296e"
+      },
+      {
+        "content_hash": "236c2c30b58200c4ac6c54d0c9f829ee4b491dc105f0d8c467372b95336576ef",
+        "item_id": "synthetic-55-030",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d67-7bf2-9dad-69c9ac019851"
+      },
+      {
+        "content_hash": "7d5568854046411719ddd352f49adac2253a9f4c3823d3b3105e94fb5ec2c565",
+        "item_id": "synthetic-55-031",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d69-7943-a591-501c7e6f7258"
+      },
+      {
+        "content_hash": "7545abb737a96419d8f177dcbbf6248e1f177c5c85b0b8145dcae0135594d4fa",
+        "item_id": "synthetic-55-032",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d6b-7b60-9f81-cfdfbf5116e1"
+      },
+      {
+        "content_hash": "5725ca0dd3b8ba67b65cd374fe8ddf8bc144fc254a24205f8cb906d71d3fad9e",
+        "item_id": "synthetic-55-033",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d6d-7c82-bcd9-492d22e86e03"
+      },
+      {
+        "content_hash": "be44acd8cdb14a2629e91876b6c4a9e88501f83561dba15359b3f026b7f4914b",
+        "item_id": "synthetic-55-034",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d6e-7811-a0b1-d48d7df8df64"
+      },
+      {
+        "content_hash": "280f4d88e70a0f3bc3cc2b2d0061bb08c1af9f4c3768d03f71e07d3539bf783a",
+        "item_id": "synthetic-55-035",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d70-7070-b765-db0221af40d2"
+      },
+      {
+        "content_hash": "d061dfbec999f2bb646d2cad64f8fb6482c74b2f0651188bc1e0e6d1faa2bbff",
+        "item_id": "synthetic-55-036",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d71-7352-ab81-9df7d1b6d183"
+      },
+      {
+        "content_hash": "047707f398f904bf20b888483c3a1aa2bd6afd69c72efedd4a48cf562ef0596f",
+        "item_id": "synthetic-55-037",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d73-7c72-8fe8-29d2e706db96"
+      },
+      {
+        "content_hash": "a20c214965981247458dcfd783be377b7c5b875175e3ee8ebc927ada0b5cbbdf",
+        "item_id": "synthetic-55-038",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d75-7841-8450-17a50f2702a1"
+      },
+      {
+        "content_hash": "41ea297c17a08c5e532423317fa8bfd0f12ea4c09bfa0e67dd476f21bb3d701f",
+        "item_id": "synthetic-55-039",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d76-7fa3-bf91-cd0aeccab71d"
+      },
+      {
+        "content_hash": "44a28cc1c4c1630e323538a165bfe91dabfc756ec13524c7070ed1ae40610993",
+        "item_id": "synthetic-55-040",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d78-7d00-b6d6-ea1db0c34796"
+      },
+      {
+        "content_hash": "20951df859fd7450f74acc6dde20bc53fe2a940f0a23dcc347e46d7d1185b300",
+        "item_id": "synthetic-55-041",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d79-7621-a208-3ae7edf3d051"
+      },
+      {
+        "content_hash": "469244d054a37db6947025f06a8b5a6228b69092130eddff04ebc2853030ac91",
+        "item_id": "synthetic-55-042",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d7d-7142-bfe5-a60f615836a5"
+      },
+      {
+        "content_hash": "88fc0ae69a73cd3b49e79c69a9aba5bb526d5fe5cfc491e3875ef9fb845a48cb",
+        "item_id": "synthetic-55-043",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d7e-71f0-883e-f00a367b019a"
+      },
+      {
+        "content_hash": "6dcde01a402d0eb25fb9dbc0d0b11c28f04026c9ce5811274d8164c6a3893019",
+        "item_id": "synthetic-55-044",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d7e-71f0-883e-f033cff5157b"
+      },
+      {
+        "content_hash": "d6470caf523a07728a03cbe7f35b9e1ae9e0316eb07b28eb7ba8c53feff4f056",
+        "item_id": "synthetic-55-045",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d7f-7732-97dd-3a178b67d679"
+      },
+      {
+        "content_hash": "582a0fe85ba5f21be3ac59558fed21d9c86e2be9fab03faae590fa9a8a26b491",
+        "item_id": "synthetic-55-046",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d80-7383-94fc-0987a5e78c32"
+      },
+      {
+        "content_hash": "cf6a4e51a17daa7fa8e204dc2a98ad26db0a13f8721f8fdac1ca1f32a87715f4",
+        "item_id": "synthetic-55-047",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d81-76a3-af31-bdd3250f6c4c"
+      },
+      {
+        "content_hash": "d82486238b5196711fdabcf93b54aacae0cd03f0dfdec6d5f5778156f689ccaa",
+        "item_id": "synthetic-55-048",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d82-7a11-9d50-245d7c151e99"
+      },
+      {
+        "content_hash": "35aa1947a9f9740bad531a11c760215959e851b75c1c9ab3578706ed356d4fa5",
+        "item_id": "synthetic-55-049",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d83-7953-9ab9-1c7e11553d5c"
+      },
+      {
+        "content_hash": "5dd2897d95968977dc207d2d85fd24cba81d8a572d2a7068587f66ef322b3c34",
+        "item_id": "synthetic-55-050",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d84-7912-bc2a-f80e3becfee4"
+      },
+      {
+        "content_hash": "afe313703169149a2d38dce30a885678d749a154a84b831e6d83a17673cbf738",
+        "item_id": "synthetic-55-051",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d85-79f2-9770-c355dd3c1f68"
+      },
+      {
+        "content_hash": "739ddd822f516ddfaf96b00c46e1605a43970dc912a5956585b997b92679420b",
+        "item_id": "synthetic-55-052",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d87-75d0-82d6-2a4ac5f4b823"
+      },
+      {
+        "content_hash": "4d4980d5e556a6ec3bc8fe14b71b8bdbecf49ddcf9bb021a4b5e33542a548684",
+        "item_id": "synthetic-55-053",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d89-7ab2-b907-1872c591879f"
+      },
+      {
+        "content_hash": "ea34641c983ab07a0b17d13ba05e8b6c7ea192a47c700856046e28b0b4dc8223",
+        "item_id": "synthetic-55-054",
+        "project_id": "01a100ec-6d19-7fd3-920b-6c392e1e1913",
+        "provenance": "ASMA-8159-explicitly-synthetic",
+        "revision_id": "01a100ec-6d8a-7510-aafa-70dbde4d7d40"
+      }
+    ],
+    "current_approved_not_tombstoned": 47,
+    "generic_current": 6,
+    "local_only": 10,
+    "manifest": {
+      "byte_length": 3305472,
+      "content_hash": "2155590956fbfe44438514e3a06fac9ab9ae9fa4c7cc40dd09dc153868c32f29",
+      "created_at": "2026-10-03T08:40:57.102405Z",
+      "database_schema_version": 121,
+      "format_version": 1,
+      "realm_id": "01a100ec-62e0-7250-ba07-6e470a0a98a3"
+    },
+    "optimistic_conflict": true,
+    "origin": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/.tmpkp9Q5J",
+    "pending": 5,
+    "prior_history_sha256": "3f629f00c9eb7f03ae8084cf78e30fe02c6a98391f08c226af90389e099393ac",
+    "prior_immutable_rows_preserved": true,
+    "projection_provider_eligible": 31,
+    "purges": 0,
+    "replay_after_restart_equal": true,
+    "restore_root": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/.tmp0lMBUM",
+    "retention": "test lifetime; all temporary roots deleted; only synthetic hash/identity evidence retained",
+    "source_rows_unchanged": true,
+    "synthetic_cohort_count": 55,
+    "synthetic_current_n": 57,
+    "tombstoned": 5,
+    "typed_recall_eligible": 41
+  },
+  "teardown_roots_absent": true
+}

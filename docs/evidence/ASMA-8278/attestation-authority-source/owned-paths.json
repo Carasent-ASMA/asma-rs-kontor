@@ -1,0 +1,14 @@
+[
+  "crates/kontor-core/src/repository.rs",
+  "crates/kontor-core/src/repository/attestation_authority.rs",
+  "crates/kontor-store/src/repository.rs",
+  "crates/kontor-store/src/repository/attestation_authority.rs",
+  "crates/kontor-store/src/migrations.rs",
+  "crates/kontor-store/migrations/0124_attestation_authority_keys.sql",
+  "crates/kontor-store/tests/attestation_authority.rs",
+  "crates/kontor-store/tests/schema_v1.rs",
+  "crates/kontor-store/tests/repository_roundtrip.rs",
+  "crates/kontor-store/src/backup/export.rs",
+  "crates/kontor-store/src/backup/restore.rs",
+  "crates/kontor-store/tests/backup_snapshot.rs"
+]

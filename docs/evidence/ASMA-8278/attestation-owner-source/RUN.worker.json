@@ -1,0 +1,17 @@
+{
+  "repository": "/tmp/asma-8278-module-consolidation-20261002.Mcrugq",
+  "focused": {
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-runtime",
+      "--lib",
+      "planning_pair::attestation::owner_checks",
+      "--offline",
+      "--jobs",
+      "2"
+    ],
+    "exit": 0
+  }
+}

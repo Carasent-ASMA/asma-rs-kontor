@@ -68,7 +68,10 @@ pub use completion::{
     SignalDelivery, advance, blockers, compile, initial_completion_generation,
     needs_human_recovery_round, operational_default, outstanding, recorded_era, start,
 };
-pub use headroom::{EligibleAccount, HeadroomConfig, Placement, SeatClass, WaitReason, resolve};
+pub use headroom::{
+    EligibleAccount, HeadroomConfig, Placement, RungEvidence, SeatClass, WaitReason, placement,
+    resolve, rung_evidence,
+};
 pub use model::{
     AccountAdmissionEvidence, AccountCapabilityKey, AccountPin, AdaptiveWindow,
     AdaptiveWindowConfig, AdmissionEventId, AdmittedCandidate, AuthorizationEvidence,

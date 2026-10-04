@@ -1,0 +1,16 @@
+
+---- a_succession_crosses_a_realm_boundary_as_evidence_and_not_as_authority stdout ----
+
+thread 'a_succession_crosses_a_realm_boundary_as_evidence_and_not_as_authority' (74357295) panicked at crates/kontor-store/tests/hosted_seat_autonomy.rs:1684:9:
+assertion `left == right` failed: the preserved content does not match its preserved digest
+  left: "75e163684e45f7e234632ba95ecf57c690523a66c6101e3c22fdc059aad94b62"
+ right: "7f94b71f7248d80960ff59997e04a6e08c7f47e45d1341b2aa6a76c319133eef"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    a_succession_crosses_a_realm_boundary_as_evidence_and_not_as_authority
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 21 filtered out; finished in 3.55s
+
+error: test failed, to rerun pass `-p kontor-store --test hosted_seat_autonomy`

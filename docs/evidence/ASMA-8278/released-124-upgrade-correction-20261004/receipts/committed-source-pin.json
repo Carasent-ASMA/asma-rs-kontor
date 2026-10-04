@@ -1,0 +1,51 @@
+{
+  "epic": "ASMA-8278",
+  "kind": "released-124-upgrade-correction-source-pin-supplement",
+  "correction_commit": "3a6eb0b9d98fe8a7c083068cf953b01d45cb6912",
+  "correction_tree": "7d15d19c2bb059d7925dbc42b90924de741da33c",
+  "parent": "d0d27332e9581cef368a4e0e2c8ea1a48f552716",
+  "source": {
+    "crates/kontor-store/src/migrations.rs": {
+      "sha256": "989e4a98db2257b4c5dabc401fb2758594a6792a2bdffea9f3f13fa38397b390",
+      "blob": "1c7c3d017112134ef7bacb8a3ec7a5bce9c27c4a",
+      "precommit_blob": "1c7c3d017112134ef7bacb8a3ec7a5bce9c27c4a",
+      "equal": true
+    }
+  },
+  "equivalence": "The whole-store source binding is asserted through precommit-to-committed blob equality. The focused log/meta pair is inconsistent and does not qualify a successful invocation. See C1-ERRATUM.json; original result label is preserved at 00a0e94c.",
+  "production_inputs_unchanged": "All non-test production source and generated API inputs are byte-equal to d0d27332 (see receipts/source-equivalence.txt).",
+  "origin_head": "3a6eb0b9d98fe8a7c083068cf953b01d45cb6912",
+  "results": {
+    "released_124_focused": {
+      "exit": 101,
+      "log": "receipts/released-124-focused.log",
+      "sha256": "b0dbed36f9ac8e935d49a46dfbef8ff84b66cb54885b832bcf6a47a5ea9f3e0b",
+      "disposition": "INCONSISTENT_LOG_META_NOT_QUALIFYING",
+      "log_result": "1 passed",
+      "finish_line_present": false,
+      "failure_cause": "UNKNOWN",
+      "intermediate_test_edits": "UNKNOWN",
+      "qualification": "New test passes in results.store_full; no immediate-pass claim."
+    },
+    "store_full": {
+      "suites": 40,
+      "passed": 697,
+      "failed": 0,
+      "ignored": 0,
+      "exit": 0,
+      "log": "receipts/store-full.log",
+      "sha256": "7e4ce0f0da914dbfd61ab06a19c326ce1045c55f58f174de2591bb90c552537c"
+    },
+    "fmt_check": {
+      "exit": 0,
+      "log": "receipts/fmt-check.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "clippy": {
+      "exit": 0,
+      "log": "receipts/clippy.log",
+      "sha256": "5e816f280e8ae45b4850c74e7729828f34ad685ac04862700c4e20b13acdf993"
+    }
+  },
+  "note": "Committed after the correction commit; the packet manifest is refreshed in this same commit to declare this supplement."
+}

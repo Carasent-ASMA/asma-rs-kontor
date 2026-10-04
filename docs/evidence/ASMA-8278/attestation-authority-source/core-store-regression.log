@@ -1,0 +1,1111 @@
+   Compiling chrono v0.4.45
+   Compiling rusty-fork v0.3.1
+   Compiling proptest v1.11.0
+   Compiling icalendar v0.17.13
+   Compiling kontor-core v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-core)
+   Compiling kontor-calendar v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-calendar)
+   Compiling kontor-store v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 32.79s
+     Running unittests src/lib.rs (target/debug/deps/kontor_core-e1a85cd6e5c26356)
+
+running 43 tests
+test authority::tests::native_origins_start_writable_and_refuse_cutover ... ok
+test authority::tests::pending_origins_start_legacy_and_permit_cutover ... ok
+test authority::tests::spellings_round_trip ... ok
+test compaction::tests::a_boundary_trigger_respects_the_policy_that_forbids_it ... ok
+test compaction::tests::a_finished_turn_is_not_a_trigger ... ok
+test compaction::tests::a_runtime_that_enforces_nothing_has_no_threshold_to_reach ... ok
+test compaction::tests::each_deterministic_trigger_fires_on_its_own_grounds ... ok
+test compaction::tests::only_a_boundary_or_operator_compaction_owes_a_durable_handoff ... ok
+test epic_seat::tests::a_runtime_self_report_certifies_a_native_but_not_activity ... ok
+test epic_seat::tests::a_released_seat_is_released_whatever_else_it_carries ... ok
+test epic_seat::tests::a_seat_nothing_was_ever_observed_of_is_unobserved ... ok
+test epic_seat::tests::a_task_scoped_seat_with_a_native_can_be_succeeded ... ok
+test epic_seat::tests::a_task_scoped_seat_with_no_native_has_no_predecessor_to_cite ... ok
+test epic_seat::tests::an_attach_instant_alone_does_not_certify_a_native ... ok
+test epic_seat::tests::observed_activity_is_the_only_thing_that_certifies_work ... ok
+test quota::tests::a_threshold_of_zero_or_over_a_hundred_is_refused ... ok
+test quota::tests::a_window_is_classified_by_its_span_not_by_its_field_name ... ok
+test quota::tests::credit_above_its_reserve_clears_and_credit_at_the_floor_does_not ... ok
+test quota::tests::every_window_below_its_own_threshold_is_headroom ... ok
+test quota::tests::no_window_is_not_the_same_fact_as_an_empty_one ... ok
+test quota::tests::one_exhausted_window_blocks_even_beside_a_window_with_room ... ok
+test quota::tests::thresholds_are_per_kind_and_not_one_number ... ok
+test quota::tests::two_currencies_are_refused_rather_than_converted ... ok
+test quota::tests::two_exhausted_windows_block_until_the_later_reset ... ok
+test retired_evaluator::tests::the_exact_live_retired_audit_seat_is_attestable ... ok
+test retired_evaluator::tests::the_same_claim_proves_the_same_digest_and_a_changed_one_does_not ... ok
+test selector::tests::a_canonical_key_selects_by_key ... ok
+test selector::tests::a_uuid_selects_by_identity ... ok
+test selector::tests::an_epic_selector_accepts_both_spellings ... ok
+test selector::tests::lowercase_and_malformed_spellings_are_refused ... ok
+test selector::tests::the_two_grammars_do_not_collide ... ok
+test tpm_lineage::tests::a_native_no_durable_record_names_is_not_a_candidate ... ok
+test tpm_lineage::tests::a_prepared_intent_that_never_installed_names_no_native ... ok
+test retired_evaluator::tests::each_fence_refuses_on_its_own ... ok
+test tpm_lineage::tests::a_record_whose_route_disagrees_is_a_different_admission ... ok
+test tpm_lineage::tests::a_replayed_record_is_one_lineage_not_two ... ok
+test tpm_lineage::tests::a_seat_that_moved_out_of_its_ecp_refuses_before_any_lineage_is_read ... ok
+test tpm_lineage::tests::an_agreeing_occupancy_and_intent_are_one_lineage_evidenced_by_both ... ok
+test tpm_lineage::tests::another_generations_lineage_is_not_this_generations ... ok
+test tpm_lineage::tests::an_occupancy_and_intent_naming_different_natives_contradict ... ok
+test tpm_lineage::tests::the_live_seat_resolves_generation_one_to_exactly_one_native ... ok
+test tpm_lineage::tests::two_installed_intents_naming_different_natives_are_ambiguous ... ok
+test tpm_lineage::tests::two_occupancies_naming_different_natives_are_ambiguous ... ok
+
+test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/backlog_identity.rs (target/debug/deps/backlog_identity-d598c83cc33e7e03)
+
+running 8 tests
+test automatic_allocation_refuses_titles_with_fewer_than_two_usable_characters ... ok
+test a_legacy_correction_basis_preserves_a_bounded_noncanonical_spelling ... ok
+test automatic_epic_code_starts_with_title_initials ... ok
+test collisions_expand_title_characters_in_column_major_order_case_insensitively ... ok
+test exhausted_title_characters_use_the_smallest_free_numeric_ordinal ... ok
+test item_code_refuses_noncanonical_or_missing_jira_numeric_identity ... ok
+test item_code_uses_the_confirmed_jira_keys_canonical_numeric_suffix ... ok
+test manual_epic_codes_are_canonical_namespaces_not_issue_numbers ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/branch_identity.rs (target/debug/deps/branch_identity-ecc327c945d56248)
+
+running 10 tests
+test a_long_title_is_cut_without_a_dangling_hyphen ... ok
+test a_managed_worktree_encodes_exactly_its_branch ... ok
+test a_tracker_key_is_never_repaired ... ok
+test an_asma_cli_catalog_worktree_has_a_separate_task_slug_and_module ... ok
+test canonical_branches_parse_with_their_key ... ok
+test derivation_matches_the_asma_cli_examples ... ok
+test every_audited_deviation_is_refused_with_its_code ... ok
+test every_refusal_reports_its_stable_code_first ... ok
+test the_binding_check_accepts_only_a_confirmed_key ... ok
+test the_release_line_is_the_only_keyless_form ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/consultation_identity_golden.rs (target/debug/deps/consultation_identity_golden-7705e54e8684b4a4)
+
+running 2 tests
+test advisor_and_committee_identities_keep_their_golden_bytes ... ok
+test a_planning_pair_identity_is_its_own_family_and_still_ignores_retry_mechanics ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/consultation_specs.rs (target/debug/deps/consultation_specs-6a3243e7572e5b32)
+
+running 26 tests
+test a_consultation_topic_cannot_repeat_server_owned_name_components ... ok
+test a_legacy_topic_correction_only_peels_server_owned_leading_material ... ok
+test a_committee_past_the_seat_bound_is_refused ... ok
+test a_missing_finding_blocks_settlement_rather_than_passing ... ok
+test a_third_round_cannot_be_declared ... ok
+test a_zero_consultation_limit_is_refused ... ok
+test advisor_profile_is_publishable ... ok
+test an_advisor_with_no_scope_is_refused ... ok
+test an_advisor_no_role_may_consult_is_refused ... ok
+test both_compliant_with_complete_evidence_settles_compliant ... ok
+test cardinality_is_data_not_three ... ok
+test dispositions_round_trip_their_stable_spelling ... ok
+test duplicate_scopes_are_refused_rather_than_deduplicated ... ok
+test duplicate_slot_ids_are_refused ... ok
+test empty_behavioural_prose_is_refused ... ok
+test canonical_hash_is_stable_across_equal_revisions ... ok
+test independent_review_is_publishable ... ok
+test judge_slot_is_reported_when_frozen ... ok
+test missing_required_evidence_settles_non_compliant ... ok
+test one_dissent_settles_non_compliant ... ok
+test one_reviewer_is_refused ... ok
+test logical_consultation_identity_ignores_retry_mechanics_and_changes_with_semantics ... ok
+test reviewers_colliding_only_on_a_fallback_rung_are_refused ... ok
+test reviewers_sharing_a_primary_provider_are_refused ... ok
+test shared_providers_are_allowed_when_no_distinctness_is_declared ... ok
+test two_judges_are_refused ... ok
+
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/domain_state.rs (target/debug/deps/domain_state-4b941c7a5e0160d9)
+
+running 37 tests
+test a_completed_task_reopens_only_under_an_explicit_authority ... ok
+test a_healthy_seat_is_the_only_one_that_counts_as_executing ... ok
+test a_confirmed_run_needs_intent_observation_binding_and_freshness_to_agree ... ok
+test a_queued_run_is_accepted_but_not_dispatched ... ok
+test a_self_reported_running_runtime_does_not_prove_activity ... ok
+test a_settled_command_receipt_is_immutable ... ok
+test a_stale_observation_and_a_changed_generation_are_not_confirmations ... ok
+test a_task_cannot_claim_progress_without_an_attached_seat ... ok
+test a_terminal_task_is_immutable ... ok
+test a_ready_task_completes_on_the_same_certificate_an_in_progress_one_needs ... ok
+test a_waiver_the_profile_forbids_cannot_certify_closure ... ok
+test acknowledgement_is_not_completion_and_unknown_forbids_a_blind_retry ... ok
+test an_attached_seat_that_never_showed_activity_is_stalled_not_healthy ... ok
+test an_orphan_is_an_orphan_however_healthy_its_runtime_looks ... ok
+test an_idempotency_key_is_a_replay_only_for_the_same_command ... ok
+test an_unattached_seat_becomes_a_finding_once_its_deadline_passes ... ok
+test attesting_a_retired_evaluator_witnesses_only_its_task_and_moves_no_run ... ok
+test closure_evidence_is_the_only_route_to_terminal ... ok
+test desired_observed_and_derived_can_all_differ_at_once ... ok
+test closing_a_task_requires_the_profile_to_certify_closure ... ok
+test failing_a_task_requires_its_run_to_have_closed_failed ... ok
+test fresh_runtime_evidence_converges_non_terminal_lifecycle_without_regression ... ok
+test freshness_is_measured_not_assumed ... ok
+test gate_verdicts_and_states_stay_distinct ... ok
+test leaving_a_held_state_requires_a_command_receipt ... ok
+test operator_abandon_can_only_claim_abandoned ... ok
+test realm_envelopes_require_matching_realm_and_qualify_cursors ... ok
+test replayed_or_out_of_order_native_events_never_regress_projection_or_revision ... ok
+test revisions_start_at_one_and_only_move_under_a_compare_and_swap ... ok
+test every_command_kind_declares_its_legal_targets_revision_rule_and_desired_state ... ok
+test run_lifecycle_and_task_lifecycle_are_not_interchangeable ... ok
+test task_transitions_follow_the_declared_table ... ok
+test terminal_evidence_must_belong_to_the_closed_run_and_match_its_hash ... ok
+test the_exact_incident_shape_cannot_certify_progress ... ok
+test team_run_advances_and_closes_with_cas_and_bound_evidence ... ok
+test uncertainty_is_never_completion ... ok
+test the_team_child_digest_is_order_independent_and_matches_an_independent_hash ... ok
+
+test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/native_naming.rs (target/debug/deps/native_naming-5d30060557a152ea)
+
+running 18 tests
+test a_jira_key_token_renders_its_exact_confirmed_bytes ... ok
+test a_confirmed_jira_key_is_admitted_only_in_its_canonical_spelling ... ok
+test a_separator_only_revision_changes_every_join_without_mutating_v1 ... ok
+test ai_short_names_are_trimmed_two_keyword_values_and_preserve_unicode_bytes ... ok
+test every_missing_token_fails_closed_and_names_the_missing_contract ... ok
+test every_token_keeps_its_exact_serialized_spelling ... ok
+test item_code_is_one_typed_native_name_value_not_two_recombined_tokens ... ok
+test retired_names_keep_exact_identity_text_under_one_selected_prefix ... ok
+test retired_names_preserve_interior_marker_text_and_nonmatching_prefixes ... ok
+test retired_names_preserve_the_exact_sixty_scalar_boundary ... ok
+test retired_names_refuse_a_marker_only_or_untrimmed_base ... ok
+test retired_names_reject_caps_that_cannot_preserve_the_marker_and_base ... ok
+test retired_names_reject_empty_controls_and_separator_bearing_markers ... ok
+test retired_names_take_marker_separator_and_cap_from_the_selected_policy ... ok
+test retired_names_strip_all_repeated_leading_markers_and_are_idempotent ... ok
+test retired_names_truncate_unicode_scalars_instead_of_utf8_bytes ... ok
+test the_backlog_code_wins_when_a_descriptive_ai_short_name_is_also_present ... ok
+test the_v1_matrix_renders_exact_bullet_separated_bytes ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/open_question.rs (target/debug/deps/open_question-4a6c607b2423ccf3)
+
+running 27 tests
+test a_correction_must_name_a_predecessor_that_exists ... ok
+test a_citation_of_a_superseded_revision_is_reported ... ok
+test a_disposition_correction_appends_and_supersedes_by_name ... ok
+test a_disposition_outcome_survives_a_json_round_trip ... ok
+test a_mismatched_trigger_is_refused ... ok
+test a_fired_trigger_on_a_deferred_question_is_reported_not_applied ... ok
+test a_question_is_project_shared_by_the_tier_default ... ok
+test a_reopened_question_can_be_dispositioned_again ... ok
+test a_resolved_or_undispositioned_question_has_no_trigger_to_fire ... ok
+test a_round_must_record_why_and_at_least_one_option ... ok
+test a_round_correction_appends_and_leaves_the_predecessor_byte_identical ... ok
+test a_superseded_decision_is_not_a_contradiction ... ok
+test a_trigger_cannot_fire_twice_against_one_deferral ... ok
+test an_already_reopened_question_is_not_reported_again ... ok
+test an_undispositioned_question_is_open_and_blocks_completion ... ok
+test an_unfired_trigger_reports_nothing ... ok
+test contradicting_accepted_decisions_are_reported ... ok
+test any_seat_may_raise_a_question ... ok
+test deferring_requires_a_concrete_non_empty_trigger ... ok
+test each_disposition_releases_the_gate_and_reports_its_own_status ... ok
+test not_relevant_requires_a_reason ... ok
+test finding_order_does_not_depend_on_observation_order ... ok
+test nothing_reclassifies_a_question ... ok
+test the_closer_split_never_names_a_role_code ... ok
+test the_matching_trigger_reopens_without_erasing_the_deferral ... ok
+test there_are_exactly_three_dispositions ... ok
+test the_configured_closer_split_governs_disposition ... ok
+
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/planning_pair.rs (target/debug/deps/planning_pair-2659092f597d6157)
+
+running 25 tests
+test a_disposed_pair_is_immutable ... ok
+test a_disposition_cannot_carry_a_verdict ... ok
+test a_disposition_that_omits_or_reorders_a_member_is_refused ... ok
+test a_disposition_citing_a_rewritten_finding_or_answer_is_refused ... ok
+test a_findings_round_missing_a_member_releases_nothing ... ok
+test a_member_cannot_speak_for_the_other_seat_or_the_caller ... ok
+test a_document_revision_is_identified_by_its_id_version_and_hash ... ok
+test a_member_without_a_known_vendor_is_refused ... ok
+test a_pair_missing_a_member_is_refused ... ok
+test a_member_grant_cannot_name_an_authority ... ok
+test a_planning_pair_has_no_judge_quorum_or_verdict_to_declare ... ok
+test a_recorded_finding_or_answer_cannot_be_rewritten ... ok
+test a_sealed_answer_has_no_public_read_path_until_every_addressed_member_answers ... ok
+test a_sealed_finding_has_no_public_read_path_until_release ... ok
+test a_second_clarification_round_is_refused ... ok
+test a_stored_record_has_no_room_for_a_judge_a_verdict_or_a_second_round ... ok
+test a_run_survives_the_store_at_every_point_in_its_life ... ok
+test a_stored_run_under_another_revision_or_protocol_fails_closed ... ok
+test advice_cannot_satisfy_a_formal_review_gate ... ok
+test dissent_survives_the_callers_decision ... ok
+test members_on_one_actual_vendor_are_refused ... ok
+test one_findings_round_one_clarification_then_the_callers_disposition ... ok
+test a_stored_run_that_breaks_a_rule_fails_closed_on_that_rule ... ok
+test protocol_selection_is_explicit_and_never_substituted ... ok
+test only_an_addressed_member_answers_and_only_when_the_caller_asked ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/publication_identity.rs (target/debug/deps/publication_identity-19033590dbb55df0)
+
+running 13 tests
+test a_keyless_or_unbound_branch_is_refused_before_any_rule ... ok
+test a_commit_sha_is_forty_lowercase_hex_digits ... ok
+test a_publication_for_an_unbound_repository_is_refused ... ok
+test a_pull_request_must_carry_a_title ... ok
+test a_task_branch_binds_through_its_own_key ... ok
+test a_repository_outside_the_binding_is_refused ... ok
+test a_title_leads_with_exactly_one_key_and_one_space ... ok
+test a_task_branch_is_narrower_than_its_epic ... ok
+test a_title_naming_a_foreign_key_is_a_mismatch ... ok
+test an_empty_authorization_set_authorizes_nothing ... ok
+test an_unauthorized_repository_is_reported_beside_every_other_failure ... ok
+test an_epic_branch_accepts_only_its_own_title_key ... ok
+test every_failing_rule_is_reported_at_once ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/quota_headroom.rs (target/debug/deps/quota_headroom-88bc5683b690f8ea)
+
+running 9 tests
+test a_longer_span_is_never_a_shorter_kind ... ok
+test a_credit_balance_cannot_change_a_window_verdict ... ok
+test a_single_spent_window_blocks_the_whole_set ... ok
+test a_span_classifies_into_exactly_one_kind ... ok
+test a_window_is_judged_against_its_own_kinds_threshold ... ok
+test adding_a_window_never_relieves_a_blocked_set ... ok
+test blocking_names_the_latest_reset_among_the_spent_windows ... ok
+test credit_clears_only_above_its_floor_and_only_in_one_currency ... ok
+test consumption_at_the_threshold_already_stops_admitting ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/spec_validation.rs (target/debug/deps/spec_validation-0b852d45115205e7)
+
+running 61 tests
+test a_credential_prefix_must_begin_at_a_token_boundary ... ok
+test a_daylight_saving_fold_opens_the_repeated_local_hour_both_times ... ok
+test a_daylight_saving_gap_never_opens_a_window_that_has_no_local_time ... ok
+test a_declared_ceiling_clamps_the_trigger_and_records_why ... ok
+test a_dedup_expression_must_resolve_completely_or_not_at_all ... ok
+test a_document_must_declare_a_schema_version_this_binary_understands ... ok
+test a_frozen_slot_resolves_to_the_role_it_fills_and_never_to_its_own_name ... ok
+test a_model_chain_is_closed_and_bounded ... ok
+test a_persona_can_never_approve_its_own_scenario ... ok
+test a_gate_must_have_authority_and_a_distinct_waiver_authority ... ok
+test a_persona_may_not_reference_production_or_real_identity ... ok
+test a_policy_document_refuses_an_arbitrary_token_target ... ok
+test a_required_artifact_must_have_a_producing_evidence_contract ... ok
+test a_seed_table_refuses_a_duplicate_role_and_an_explicit_only_class ... ok
+test a_stored_document_is_re_verified_against_its_bytes_and_digest ... ok
+test a_rejection_route_must_target_a_strict_ancestor ... ok
+test an_intake_decision_must_be_internally_consistent ... ok
+test an_ambiguous_or_incomplete_frozen_team_names_no_role_at_all ... ok
+test an_overnight_shift_must_be_declared_as_two_windows_and_then_resolves ... ok
+test an_override_is_attributable_and_a_default_is_not ... ok
+test an_unenforced_context_policy_renders_as_not_enforced_and_never_as_success ... ok
+test an_unknown_ceiling_leaves_the_requested_trigger_standing ... ok
+test an_invalid_phase_graph_is_refused ... ok
+test any_cycle_is_refused ... ok
+test auto_arming_is_always_bounded ... ok
+test best_effort_on_an_incapable_runtime_is_visibly_not_enforced ... ok
+test budget_bounds_are_never_open_ended ... ok
+test canonical_form_is_key_order_and_line_ending_independent ... ok
+test canonicalization_is_bounded ... ok
+test classification_spellings_are_stable_and_closed ... ok
+test documents_that_carry_credentials_or_identity_are_refused_before_sql ... ok
+test each_classifiable_tier_has_a_default_so_work_never_stalls ... ok
+test entity_ids_must_be_canonical_version_seven_uuids ... ok
+test every_gate_key_in_the_fixture_is_data_not_behaviour ... ok
+test extended_and_native_are_unreachable_from_a_seed ... ok
+test external_names_are_unicode_and_may_contain_spaces ... ok
+test internal_keys_follow_one_conservative_rule ... ok
+test module_keys_contend_across_slash_and_dotted_holdout_spellings ... ok
+test module_keys_refuse_every_non_canonical_path_spelling ... ok
+test module_keys_round_trip_canonical_repository_paths ... ok
+test only_an_exhausted_allowance_recovers_on_a_clock ... ok
+test only_the_module_key_carries_a_path_separator ... ok
+test overlapping_windows_are_refused_and_touching_windows_are_not ... ok
+test persona_actor_cannot_evaluate_or_waive_and_prohibited_actions_are_required ... ok
+test persona_steps_must_be_consecutively_numbered ... ok
+test precedence_is_override_then_role_slot_then_work_profile_then_seed_then_standard ... ok
+test renaming_every_profile_and_phase_id_changes_nothing_but_the_hash ... ok
+test required_enforcement_refuses_a_runtime_that_cannot_configure_it ... ok
+test resolution_is_byte_identical_across_repeated_freezes ... ok
+test sensitive_material_is_rejected_from_every_persisted_string_category_without_echo ... ok
+test the_arbitrary_fixture_profile_validates_and_hashes_stably ... ok
+test the_five_classes_map_to_exactly_the_approved_trigger_targets ... ok
+test the_persona_fixture_validates_and_freezes ... ok
+test the_trigger_fixture_validates_and_matches_deterministically ... ok
+test tier_a_operational_state_refuses_classification ... ok
+test timestamps_must_already_be_canonical_utc ... ok
+test topology_naming_accepts_versioned_bullets_while_rejecting_invalid_separators ... ok
+test topology_naming_rejects_legacy_unknown_empty_duplicate_and_punctuated_templates ... ok
+test topology_naming_requires_typed_container_and_hosted_seat_templates ... ok
+test unconstrained_budget_is_positive_and_distinct_from_a_stated_ceiling ... ok
+test arbitrary_linear_profiles_validate ... ok
+
+test result: ok. 61 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s
+
+     Running tests/succession.rs (target/debug/deps/succession-183e24894f7cd5c0)
+
+running 4 tests
+test deferred_refresh_accepts_exactly_admit_or_future_wait_shapes ... ok
+test placement_wait_is_the_only_way_an_attempt_starts_deferred ... ok
+test the_succession_state_machine_is_forward_only ... ok
+test a_degraded_handoff_is_durable_evidence_not_a_release_refusal ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/team_definition_naming.rs (target/debug/deps/team_definition_naming-633f4b69bd066424)
+
+running 9 tests
+test a_missing_topic_or_local_seat_value_fails_closed ... ok
+test a_duplicate_team_slot_id_is_refused ... ok
+test a_team_slot_the_seat_template_cannot_render_is_refused ... ok
+test alternative_templates_may_register_one_role_code_under_different_slot_ids ... ok
+test recommended_team_definition_renders_the_exact_container_and_local_seat_matrix ... ok
+test team_definitions_reject_every_legacy_naming_source ... ok
+test team_slots_register_delivery_roles_without_inferring_them ... ok
+test unknown_fields_fail_closed_at_every_nested_definition_level ... ok
+test the_snapshot_binds_the_exact_definition_bytes ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/team_definition_render_contract.rs (target/debug/deps/team_definition_render_contract-5ef90b3d6dac7b13)
+
+running 11 tests
+test a_required_jira_key_with_no_confirmed_binding_refuses_instead_of_rendering ... ok
+test a_seat_template_carrying_a_jira_key_is_refused ... ok
+test a_topic_containing_the_separator_is_refused_as_ambiguous ... ok
+test a_seat_template_repeating_container_scope_is_refused ... ok
+test duplicate_container_prefixes_are_ambiguous_and_refused ... ok
+test every_jira_key_container_row_renders_the_exact_contract_bytes ... ok
+test every_local_seat_row_renders_exactly_from_the_pinned_definition ... ok
+test every_recommended_container_row_renders_the_exact_contract_bytes ... ok
+test role_coded_and_display_named_seat_policies_are_mutually_exclusive ... ok
+test the_old_token_definition_still_validates_and_renders_unchanged ... ok
+test the_separator_is_exact_bullet_bytes_and_never_a_normalized_lookalike ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/team_definition_successors.rs (target/debug/deps/team_definition_successors-238548098e689576)
+
+running 5 tests
+test a_candidate_differs_from_its_source_only_by_version_and_the_agreed_tokens ... ok
+test every_candidate_targets_an_unused_version_of_its_own_source_lineage ... ok
+test every_candidate_is_publishable_and_hashes_to_its_recorded_identity ... ok
+test the_manifest_covers_exactly_the_four_live_pinned_source_revisions ... ok
+test every_recorded_source_document_still_hashes_to_its_published_identity ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/ticket_content.rs (target/debug/deps/ticket_content-a2d66249888a7a5b)
+
+running 14 tests
+test a_body_still_equal_to_what_kontor_published_is_kontors_own_drift ... ok
+test a_body_nobody_published_is_treated_as_human_authored ... ok
+test a_missing_observation_is_missing_evidence_not_agreement ... ok
+test a_placeholder_is_a_conflict_even_when_nothing_is_intended ... ok
+test a_present_but_empty_body_is_reported_missing ... ok
+test a_real_body_with_nothing_intended_is_not_kontors_to_judge ... ok
+test an_empty_body_is_not_reported_as_a_placeholder ... ok
+test an_observed_body_equal_to_the_intent_is_not_a_conflict ... ok
+test every_conflict_kind_round_trips_its_stable_spelling ... ok
+test reconciliation_judges_a_body_without_any_intended_content ... ok
+test authored_prose_beginning_with_kontor_is_not_a_placeholder ... ok
+test reconciliation_never_reports_divergence ... ok
+test the_creation_marker_is_recognized_as_a_placeholder ... ok
+test the_task_creation_marker_is_recognized_too ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/ticket_policy.rs (target/debug/deps/ticket_policy-c6895c3eb77cf14d)
+
+running 37 tests
+test a_field_specification_is_accepted_or_refused_atomically ... ok
+test a_matching_milestone_selects_the_live_transition_by_destination ... ok
+test a_projection_may_not_contradict_its_pinned_specification ... ok
+test a_required_field_may_not_be_omitted ... ok
+test a_select_value_must_be_one_the_specification_declares ... ok
+test a_target_two_moves_away_is_reached_through_the_declared_intermediate ... ok
+test a_stale_observation_is_never_acted_on ... ok
+test a_transition_receipt_must_record_something_it_actually_did ... ok
+test accept_external_never_writes_an_assignee_it_did_not_have_to ... ok
+test a_workflow_specification_is_checked_structurally ... ok
+test accept_external_preserves_an_existing_owner_and_still_converges_the_status ... ok
+test accept_external_still_assigns_an_unassigned_ticket_to_the_principal ... ok
+test an_absent_field_means_no_write_never_a_clear ... ok
+test an_already_converged_ticket_is_a_no_op ... ok
+test an_absent_route_keeps_the_v1_canonical_document_and_hash ... ok
+test an_epic_closes_only_from_completion_and_child_evidence ... ok
+test an_epic_route_selects_only_the_configured_next_hop ... ok
+test an_external_hold_with_unfinished_epic_work_is_an_incompatible_human_move ... ok
+test an_intermediate_kontor_was_not_given_is_refused_rather_than_invented ... ok
+test an_externally_closed_ticket_without_internal_evidence_is_a_conflict ... ok
+test an_unknown_status_or_an_incompatible_human_move_is_a_conflict ... ok
+test comments_are_inbound_only_and_identified_by_link_id_and_body ... ok
+test both_workflow_fixtures_validate_and_use_different_spellings ... ok
+test epic_predicates_cannot_be_satisfied_by_task_facts ... ok
+test each_external_terminal_class_requires_its_own_corresponding_internal_outcome ... ok
+test external_terminal_success_with_incomplete_gates_is_a_conflict_even_when_run_outcome_exists ... ok
+test milestone_routes_are_closed_deterministic_chains_to_the_target ... ok
+test no_matching_milestone_does_nothing ... ok
+test owner_and_direction_must_be_a_permitted_pair ... ok
+test predicates_read_kontor_state_and_nothing_else ... ok
+test ownership_is_converged_before_the_status_moves ... ok
+test preserve_never_clears_a_terminal_assignee ... ok
+test resolving_the_exact_incompatible_move_allows_that_transition_source_only ... ok
+test someone_else_holding_the_ticket_is_a_conflict_not_a_takeover ... ok
+test the_field_key_set_is_closed ... ok
+test the_two_fixtures_produce_the_same_decisions ... ok
+test zero_or_several_live_transitions_are_conflicts ... ok
+
+test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (target/debug/deps/kontor_store-cbe384fd049b60cc)
+
+running 17 tests
+test backup::export::attestation_ledger_tests::historical_table_absence_is_allowed_only_before_124 ... ok
+test backup::restore::tests::a_failed_publish_puts_the_occupant_back_and_leaves_no_superseded_name ... ok
+test backup::restore::tests::a_taken_superseded_name_is_refused_and_nothing_moves ... ok
+test memory::tests::an_import_that_fails_while_recording_its_manifest_leaves_nothing_and_resumes ... ok
+test memory::tests::concurrent_approvers_get_one_commit_and_one_typed_conflict ... ok
+test memory::tests::current_retrieval_does_not_decode_superseded_history_or_unapproved_drafts ... ok
+test memory::tests::cutover_is_attested_hashed_transactional_and_idempotent ... ok
+test memory::tests::first_proposal_history_is_readable_before_approval_and_after_restart ... ok
+test memory::tests::frozen_revision_hash_is_the_approved_stored_hash ... ok
+test memory::tests::ledger_conflicts_filters_rebuilds_and_freezes_context ... ok
+test memory::tests::proposal_never_enters_fts_before_approval ... ok
+test memory::tests::purge_removes_payload_approval_and_index_but_keeps_receipts ... ok
+test memory::tests::reproposal_never_resets_the_aggregate_revision ... ok
+test memory::tests::two_approvals_leave_exactly_one_current_revision ... ok
+test query::tests::a_calendar_assignment_flips_the_flag_the_plan_route_refuses_on ... ok
+test query::tests::the_assembled_priority_is_a_stated_constant_rather_than_a_guess ... ok
+test query::tests::a_fresh_realm_has_no_projects_and_no_calendar_assignment ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 76.97s
+
+     Running tests/advisor_multi_seat_advice.rs (target/debug/deps/advisor_multi_seat_advice-a934d494457f66e9)
+
+running 3 tests
+test settled_sessions_are_released_durably_without_changing_advice_or_bindings ... ok
+test two_advisor_seats_each_record_their_own_advice_without_settling_the_run ... ok
+test advice_is_idempotent_per_exact_seat_and_immutable_per_seat ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.94s
+
+     Running tests/attestation_authority.rs (target/debug/deps/attestation_authority-52bb3ee0cfd5a837)
+
+running 10 tests
+test direct_sql_cannot_change_material_unrevoke_delete_or_jump_the_head ... ok
+test exact_expected_head_is_required_and_failed_writes_leave_no_partial_mutation ... ok
+test checked_revision_overflow_refuses_registration_and_revocation_atomically ... ok
+test first_registration_advances_once_and_read_projection_survives_reopen ... ok
+test failed_migration_124_rolls_back_its_new_head_and_version ... ok
+test invalid_bounds_intervals_and_sqlite_integer_overflow_do_not_create_a_head ... ok
+test key_identity_is_never_reused_and_revocation_is_irreversible_under_replay ... ok
+test historical_ledger_is_not_limited_to_the_transport_key_count ... ok
+test realm_project_and_application_scopes_never_leak_or_create_unknown_rows ... ok
+test two_store_writers_cannot_both_satisfy_the_same_absent_head_expectation ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.12s
+
+     Running tests/backlog_identity.rs (target/debug/deps/backlog_identity-5a663695ca4b67ff)
+
+running 7 tests
+test a_manual_epic_code_is_durable_immutable_and_project_scoped ... ok
+test automatic_codes_expand_deterministically_inside_one_project ... ok
+test database_triggers_forbid_updating_or_deleting_an_assignment ... ok
+test a_quarantined_legacy_value_does_not_block_a_new_active_assignment ... ok
+test derived_item_codes_are_not_persisted_as_a_second_jira_identity ... ok
+test migration_preserves_valid_legacy_codes_and_quarantines_duplicates_and_invalid_values ... ok
+test racing_automatic_allocators_commit_distinct_deterministic_codes ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.43s
+
+     Running tests/backup_export.rs (target/debug/deps/backup_export-08d707700b895923)
+
+running 25 tests
+test a_canary_inside_a_stored_document_aborts_the_export ... ok
+test a_generation_three_export_from_a_quota_capable_database_is_refused_as_incomplete ... ok
+test a_future_export_generation_is_refused_and_this_one_parses ... ok
+test a_realm_never_imports_its_own_export_and_never_imports_into_no_project ... ok
+test a_round_trip_preserves_the_versioned_specifications_and_the_source_evidence ... ok
+test an_export_carries_no_credential_reference_no_comment_body_and_no_secret ... ok
+test an_export_of_unchanged_state_is_byte_identical_and_hashes_the_same ... ok
+test an_import_mints_a_destination_receipt_and_replays_no_source_receipt ... ok
+test an_import_refuses_an_outcome_that_does_not_match_its_source_policy ... ok
+test command_events_refuse_an_unrelated_payload_even_with_its_own_valid_hash ... ok
+test an_unchanged_selection_preserves_the_older_created_workflow_binding ... ok
+test command_events_refuse_hashes_that_do_not_identify_the_payload ... ok
+test command_events_refuse_missing_or_wrong_project_receipts ... ok
+test command_intent_payloads_still_receive_the_embedded_canary_scan ... ok
+test command_intent_import_preserves_its_non_executable_source_lineage ... ok
+test export_generations_are_closed_over_the_fields_and_summaries_they_define ... ok
+test command_intents_export_under_their_own_document_contract ... ok
+test generation_two_without_profile_selection_outcomes_remains_importable ... ok
+test import_preflight_and_transaction_leave_no_orphan_specification ... ok
+test imported_task_lifecycle_provenance_survives_export_serialization_and_parse ... ok
+test profile_selection_outcomes_cannot_predate_the_generation_that_stored_them ... ok
+test profile_selection_outcomes_round_trip_as_exact_non_executable_lineage ... ok
+test profile_selection_import_rejects_every_incomplete_or_swapped_frozen_binding has been running for over 60 seconds
+test profile_selection_receipt_must_be_confirmed_local_effect_evidence ... ok
+test runtime_and_census_payloads_still_refuse_session_content ... ok
+test profile_selection_import_rejects_every_incomplete_or_swapped_frozen_binding ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 174.52s
+
+     Running tests/backup_snapshot.rs (target/debug/deps/backup_snapshot-958c3250012312ed)
+
+running 18 tests
+test a_manifest_that_does_not_describe_its_snapshot_is_refused ... ok
+test a_nonempty_public_authority_snapshot_is_refused_before_destination_creation ... ok
+test a_published_snapshot_is_never_overwritten ... ok
+test a_damaged_database_is_never_copied_and_replaces_nothing ... ok
+test a_restore_refuses_a_taken_superseded_name_and_leaves_the_destination_intact ... ok
+test a_snapshot_taken_while_the_database_is_written_is_a_consistent_point ... ok
+test a_restore_reinstates_the_same_realm_and_refuses_a_different_one ... ok
+test an_old_empty_snapshot_cannot_rollback_current_public_key_revocation ... ok
+test corrupted124_destination_ledger_tables_refuse_without_directory_changes ... ok
+test corrupted124_missing_ledger_tables_is_not_an_empty_restore_fallback ... ok
+test historical_pre124_files_retain_schema_refusal_and_additive_open_behavior ... ok
+test nonempty_public_authority_ledger_is_not_silently_omitted_from_export ... ok
+test memory_ledger_and_import_evidence_restore_while_fts_is_rebuilt ... ok
+test retention_never_empties_a_directory_that_holds_one_backup ... ok
+test retention_keeps_the_newest_seven_of_this_realm_and_touches_nothing_else ... ok
+test snapshot_preserves_exact_k_and_k2_profile_selection_bindings ... ok
+test the_gate_rejection_route_schema_migrates_and_survives_a_snapshot ... ok
+test two_simultaneous_publishers_of_one_name_produce_one_snapshot ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 68.96s
+
+     Running tests/calendar_imports.rs (target/debug/deps/calendar_imports-76a41a8fafd2512f)
+
+running 10 tests
+test a_manual_exception_survives_a_refresh_that_drops_every_import ... ok
+test a_preview_alone_changes_no_row ... ok
+test a_refresh_stops_a_withdrawn_holiday_without_deleting_its_history ... ok
+test a_replayed_idempotency_key_returns_the_original_apply ... ok
+test a_second_import_must_supersede_the_one_already_applied ... ok
+test an_import_applies_its_revision_provenance_and_exceptions_together ... ok
+test an_applied_import_cannot_be_rewritten_or_deleted_through_direct_sql ... ok
+test an_imported_exception_must_name_a_holiday_source_that_exists ... ok
+test an_import_whose_exceptions_belong_elsewhere_is_refused_before_any_write ... ok
+test the_categories_a_request_selected_are_recorded_with_the_apply ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.59s
+
+     Running tests/child_calendar_windows.rs (target/debug/deps/child_calendar_windows-e601fd4d03798104)
+
+running 2 tests
+test a_persisted_task_widening_is_refused_without_a_scoped_override ... ok
+test a_persisted_task_narrowing_changes_production_calendar_admission ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.34s
+
+     Running tests/command_recovery.rs (target/debug/deps/command_recovery-6c2db2218ccf80ea)
+
+running 20 tests
+test a_local_command_is_never_dispatchable_and_completes_only_after_success ... ok
+test a_receipt_that_queued_nothing_is_settled_rather_than_a_missing_outbox_entry ... ok
+test a_retry_needs_proof_of_no_effect_and_reuses_the_original_command ... ok
+test a_repeat_of_the_current_state_still_has_to_prove_its_correlation ... ok
+test acknowledgement_is_nonterminal_and_confirmation_needs_evidence ... ok
+test a_reused_idempotency_key_must_name_the_same_durable_command ... ok
+test confirmed_receipt_is_restart_terminal ... ok
+test duplicate_or_out_of_order_receipt_transition_does_not_regress ... ok
+test ambiguous_dispatch_never_becomes_fresh_launch ... ok
+test idempotency_replay_returns_original_receipt_and_cursor ... ok
+test intent_failure_rolls_back_every_effect ... ok
+test intent_outbox_desired_and_event_commit_atomically ... ok
+test lost_ack_is_resolved_by_persisted_correlation ... ok
+test every_command_crash_point_recovers_without_second_native_launch ... ok
+test startup_confirms_a_legacy_launch_only_from_its_durable_binding ... ok
+test receipt_transition_history_survives_reopen ... ok
+test startup_fails_a_legacy_launch_only_from_terminal_run_evidence ... ok
+test the_local_completion_boundary_ignores_a_dispatch_receipt ... ok
+test the_correlation_is_the_claim_token_and_nothing_else ... ok
+test two_claimers_never_receive_the_same_work ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.84s
+
+     Running tests/consultation_profiles.rs (target/debug/deps/consultation_profiles-44696624cb2d0047)
+
+running 9 tests
+test a_first_revision_that_skips_version_one_is_refused ... ok
+test a_catalog_reads_in_a_stable_order ... ok
+test another_projects_revisions_do_not_resolve ... ok
+test a_published_definition_reads_back_byte_for_byte ... ok
+test each_profile_versions_independently ... ok
+test republishing_a_version_is_refused ... ok
+test revisions_must_be_consecutive ... ok
+test the_first_revision_of_a_profile_is_version_one ... ok
+test the_two_families_are_separate_catalogs ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.19s
+
+     Running tests/consultation_subject.rs (target/debug/deps/consultation_subject-db62de149f8b4b4d)
+
+running 13 tests
+test a_consultation_about_a_task_never_claims_the_delivery_workspaces_node ... ok
+test a_frozen_subject_cannot_be_moved_after_invocation ... ok
+test a_run_recorded_before_the_subject_existed_reads_back_absent ... ok
+test a_subject_from_a_sibling_epic_in_the_same_project_is_refused ... ok
+test a_subject_from_another_project_is_refused ... ok
+test an_impossible_stored_pairing_is_refused_rather_than_guessed ... ok
+test an_epic_and_a_task_subject_both_round_trip_through_the_store ... ok
+test every_subject_state_survives_a_restart_under_its_own_identity ... ok
+test storage_refuses_an_uncontained_subject_even_without_the_repository_check ... ok
+test every_subject_state_survives_a_backup_and_restore_under_its_own_identity ... ok
+test the_database_refuses_every_impossible_subject_pairing ... ok
+test the_redacted_export_carries_no_consultation_subject ... ok
+test the_run_node_and_subject_must_all_describe_one_scope ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.90s
+
+     Running tests/crash_reopen.rs (target/debug/deps/crash_reopen-b8b36eac468df076)
+
+running 5 tests
+
+running 1 test
+
+running 1 test
+test an_interrupted_migration_leaves_no_schema_or_realm_and_reopens_cleanly ... ok
+test crash_child_worker ... ok
+test migration_crash_child_worker ... ok
+test committed_work_survives_an_abrupt_exit_and_an_interrupted_transaction_does_not ... ok
+test two_connections_may_share_one_file ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.79s
+
+     Running tests/epic_jira_reconciliation.rs (target/debug/deps/epic_jira_reconciliation-7a3730afe713d7d4)
+
+running 4 tests
+test epic_transition_authority_replays_and_recovers_from_confirmed_readback ... ok
+test epic_conflict_schema_refuses_unknown_kinds_bad_timestamps_and_second_resolution ... ok
+test epic_transition_key_cannot_authorize_different_intent ... ok
+test one_open_epic_conflict_is_kept_until_operator_resolution ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.68s
+
+     Running tests/event_replay.rs (target/debug/deps/event_replay-cca5d35c8c7ed2fc)
+
+running 47 tests
+test a_duplicate_replay_cannot_mutate_quota ... ok
+test a_document_may_only_claim_the_quota_chain_its_generation_had ... ok
+test a_late_runtime_refusal_cannot_overwrite_a_newer_provider_report ... ok
+test a_failure_after_the_record_but_before_the_row_leaves_neither ... ok
+test a_newer_runtime_refusal_still_blocks_over_an_older_report ... ok
+test a_non_runtime_row_that_happens_to_agree_is_not_forced_to_cite ... ok
+test a_quota_row_cannot_cite_another_projects_provenance ... ok
+test a_record_citing_a_binding_the_store_does_not_hold_is_refused ... ok
+test a_record_that_disagrees_with_its_row_is_refused_per_column ... ok
+test a_recorded_decision_reads_back_exactly_including_its_range_set ... ok
+test a_reducible_observation_writes_its_event_projection_and_quota_together ... ok
+test a_refused_quota_write_rolls_back_the_event_and_the_projection ... ok
+test a_runtime_observation_without_provenance_is_refused_even_when_a_row_exists ... ok
+test a_sequence_too_large_to_store_exactly_is_refused_rather_than_clamped ... ok
+test a_source_range_cannot_be_appended_after_its_record_is_written ... ok
+test an_inconsistent_or_empty_range_set_is_refused ... ok
+test an_older_refusal_cannot_regress_a_newer_availability_row ... ok
+test an_unlisted_alias_does_not_walk_session_content_past_the_boundary ... ok
+test concurrent_appenders_allocate_unique_monotonic_control_cursors ... ok
+test consumer_cursor_survives_restart ... ok
+test content_epoch_gap_returns_timeline_refetch_required ... ok
+test content_gap_persists_only_binding_continuity_and_audit_ref ... ok
+test content_sequence_gap_changes_no_lifecycle_or_projection ... ok
+test control_gap_is_idempotent_on_replay ... ok
+test control_gap_never_infers_terminal_state ... ok
+test control_sequence_jump_records_typed_control_gap ... ok
+test duplicate_and_out_of_order_never_regress_effects ... ok
+test duplicate_native_id_returns_original_cursor ... ok
+test a_rehashed_document_cannot_forge_the_quota_chain ... ok
+test empty_origin_snapshot_does_not_skip_first_event ... ok
+test identical_payloads_without_native_ids_stay_distinct_observations ... ok
+test every_stored_integer_refuses_rather_than_clamps ... ok
+test no_refusal_text_reaches_the_database ... ok
+test normalization_or_cas_failure_leaves_no_event_or_effect ... ok
+test older_distinct_observation_appends_but_does_not_reduce ... ok
+test on_an_equal_instant_the_provider_report_outranks_a_runtime_refusal ... ok
+test one_native_event_id_may_not_carry_two_payloads ... ok
+test persisted_consumer_pages_without_gap_or_overlap ... ok
+test projection_effect_always_cites_persisted_event ... ok
+test provenance_cardinality_matches_what_was_actually_accepted ... ok
+test raw_and_normalized_observation_exist_before_projection_effect ... ok
+test replay_after_n_returns_only_greater_cursors_in_order ... ok
+test same_sequence_conflicting_payload_is_rejected ... ok
+test the_session_content_boundary_holds_on_every_append_path ... ok
+test transcript_and_token_deltas_are_rejected ... ok
+test two_sessions_may_share_one_native_event_id ... ok
+test the_exported_quota_chain_is_exact_and_carries_no_refusal_text ... ok
+
+test result: ok. 47 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.23s
+
+     Running tests/hosted_seat_autonomy.rs (target/debug/deps/hosted_seat_autonomy-1962cf52826aa133)
+
+running 16 tests
+test a_changed_default_applies_to_the_successor_and_not_the_predecessor ... ok
+test a_contradictory_authority_is_refused_by_the_schema ... ok
+test a_hosted_seat_reads_back_the_authority_it_was_launched_under ... ok
+test a_live_generation_cannot_change_its_authority_in_place ... ok
+test a_prepared_intent_holds_the_authority_before_any_occupancy_exists ... ok
+test an_installed_intent_refuses_a_second_native ... ok
+test archival_refuses_a_predecessor_whose_authority_does_not_match ... ok
+test binding_an_occupancy_reconciles_its_intent ... ok
+test history_retains_the_authority_the_retired_generation_ran_under ... ok
+test pre_feature_hosted_rows_migrate_to_the_least_authority ... ok
+test one_generation_cannot_be_prepared_under_a_second_authority ... ok
+test preparing_the_same_launch_twice_is_one_intent ... ok
+test replaying_an_unacknowledged_launch_is_idempotent ... ok
+test seat_history_reads_back_every_predecessor_in_retirement_order ... ok
+test seat_launch_intents_read_back_across_every_generation ... ok
+test the_schema_refuses_to_rewrite_a_recorded_decision ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.45s
+
+     Running tests/intake_lineage.rs (target/debug/deps/intake_lineage-292846efe8a7d038)
+
+running 14 tests
+test a_bounded_auto_arm_creates_work_with_its_authorization_in_the_lineage ... ok
+test a_decision_about_an_unknown_or_changed_event_is_refused ... ok
+test a_newer_trigger_revision_appends_a_successor_and_mutates_nothing ... ok
+test a_rejection_is_terminal_receipt_backed_and_creates_nothing ... ok
+test an_approval_creates_one_graph_with_lineage_and_a_replay_creates_none ... ok
+test an_approval_required_trigger_cannot_be_auto_armed ... ok
+test an_approval_receipt_must_authorize_this_intake_decision ... ok
+test an_event_is_durable_before_a_decision_exists ... ok
+test auto_armed_work_still_faces_every_ordinary_blocker ... ok
+test intake_created_work_reaches_the_scheduler_as_event_origin ... ok
+test the_intake_module_starts_no_run_and_dispatches_no_command ... ok
+test one_event_delivered_concurrently_produces_one_event_one_decision_and_one_graph ... ok
+test the_same_identity_with_different_bytes_is_a_conflict_and_writes_nothing ... ok
+test the_store_refuses_every_auto_arm_the_policy_refuses ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.24s
+
+     Running tests/jira_link_ledger.rs (target/debug/deps/jira_link_ledger-4c6fa7fb3b3cf28e)
+
+running 5 tests
+test jira_task_and_issue_identity_are_both_exclusive ... ok
+test jira_aliases_share_one_idempotent_task_link_ledger ... ok
+test v81_keeps_a_legacy_only_confirmed_binding_visible_through_the_canonical_ledger ... ok
+test v81_fails_closed_for_each_irreconcilable_historical_identity ... ok
+test v81_selects_an_exact_canonical_duplicate_without_rewriting_legacy_evidence ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.34s
+
+     Running tests/jira_materialization.rs (target/debug/deps/jira_materialization-4b4d556e56b7f98e)
+
+running 30 tests
+test a_canonical_task_key_cannot_be_changed_by_direct_sql ... ok
+test a_binding_without_an_immutable_issue_stays_fail_closed_for_renames ... ok
+test a_committed_rename_is_never_reported_as_a_failure_by_its_own_caller ... ok
+test a_confirmed_epic_binding_cannot_be_replaced_by_a_later_batch ... ok
+test a_different_immutable_issue_cannot_take_over_a_confirmed_binding ... ok
+test a_confirmed_binding_and_its_immutable_issue_survive_a_backup_and_restore ... ok
+test a_rename_reports_what_it_committed_even_when_the_row_moves_underneath_it ... ok
+test a_rewound_rename_sequence_cannot_reactivate_spent_epic_authority ... ok
+test a_legacy_exact_replay_cannot_claim_an_issue_already_bound_in_the_other_ledger ... ok
+test a_safe_link_batch_can_recover_the_scope_of_an_unconfirmed_create_batch ... ok
+test a_rewound_rename_sequence_cannot_reactivate_spent_task_authority ... ok
+test a_same_issue_rename_moves_the_key_without_moving_the_subject ... ok
+test a_stale_epic_rename_authority_cannot_restore_an_earlier_destination ... ok
+test a_stale_task_rename_authority_cannot_restore_an_earlier_destination ... ok
+test a_task_key_cycle_does_not_reactivate_the_authority_of_an_earlier_occurrence ... ok
+test a_uniqueness_violation_establishing_an_immutable_issue_is_a_typed_conflict ... ok
+test activation_requires_every_confirmed_binding_and_survives_readback ... ok
+test an_ambiguous_cross_ledger_key_is_a_typed_conflict_rather_than_a_backend_error ... ok
+test an_epic_key_cycle_does_not_reactivate_the_authority_of_an_earlier_occurrence ... ok
+test confirmation_adopts_a_migrated_legacy_jira_alias_binding ... ok
+test confirmation_adopts_an_exact_existing_task_binding_after_transport_recovery ... ok
+test planning_refuses_a_non_exact_item_set_without_persisting_a_partial_batch ... ok
+test link_recovery_adopts_the_original_pending_create_batch_in_place ... ok
+test recovery_postcondition_failure_rolls_back_ledger_and_legacy_items ... ok
+test resolution_is_project_scoped_and_never_reaches_a_foreign_projects_binding ... ok
+test recovery_adopts_exact_non_overlapping_legacy_batch_fragments_without_rewriting_them ... ok
+test resolution_returns_the_immutable_kontor_uuid_and_reads_legacy_state_without_writing ... ok
+test two_direct_sql_updates_cannot_forge_the_tail_of_a_proven_rename ... ok
+test v73_migrates_an_empty_confirmed_link_batch_without_losing_incident_evidence ... ok
+test two_issues_racing_for_one_key_settle_on_exactly_one_typed_winner ... ok
+
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.74s
+
+     Running tests/legacy_naming_recovery.rs (target/debug/deps/legacy_naming_recovery-b366f09133a9a1c2)
+
+running 2 tests
+test a_stale_container_recovery_cas_preserves_logical_identity_and_history ... ok
+test a_legacy_epic_code_correction_is_atomic_append_only_and_replay_safe ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.39s
+
+     Running tests/native_capacity.rs (target/debug/deps/native_capacity-14bf9b0fa119faa8)
+
+running 16 tests
+test a_balance_and_a_reserve_in_two_currencies_cannot_be_stored_at_all ... ok
+test a_lapsed_override_is_still_a_record_that_someone_made_it ... ok
+test a_new_reading_replaces_the_window_set_rather_than_merging_into_it ... ok
+test a_provider_that_cannot_report_headroom_is_storable_and_does_not_block ... ok
+test a_quota_state_written_against_a_revision_that_has_moved_is_refused ... ok
+test a_reset_instant_belongs_to_an_exhausted_allowance_and_to_nothing_else ... ok
+test a_stored_observation_keeps_its_raw_reading_alongside_what_was_derived ... ok
+test an_explicit_probe_key_replays_one_immutable_observation_and_conflicts_on_new_intent ... ok
+test an_override_stands_beside_the_evidence_and_never_rewrites_it ... ok
+test an_override_written_against_a_revision_that_has_moved_is_refused ... ok
+test an_unchanged_provider_report_appends_fresh_evidence_without_projection_churn ... ok
+test one_account_holds_a_separate_quota_state_per_provider ... ok
+test every_window_balance_and_reserve_survives_a_restart ... ok
+test one_window_kind_cannot_be_observed_twice_on_one_pair ... ok
+test the_latest_reading_per_account_is_the_one_a_projection_reports ... ok
+test the_same_collector_reading_cannot_be_recorded_twice ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.64s
+
+     Running tests/open_questions.rs (target/debug/deps/open_questions-03f71c399e51281d)
+
+running 12 tests
+test a_child_row_can_be_neither_updated_nor_deleted ... ok
+test a_deferral_without_a_trigger_and_a_firing_without_a_deferral_are_both_refused ... ok
+test a_question_of_another_project_does_not_resolve ... ok
+test a_firing_that_names_the_wrong_trigger_is_refused_by_the_schema ... ok
+test an_append_from_a_stale_revision_is_refused ... ok
+test every_round_disposition_and_firing_survives_a_restart ... ok
+test only_the_current_deferral_reopens_and_it_reopens_once ... ok
+test only_the_revision_of_a_header_may_move ... ok
+test the_ledger_exports_deterministically_and_completely ... ok
+test the_ledger_lands_in_the_declared_schema_generation ... ok
+test the_ledger_survives_a_snapshot_restore ... ok
+test an_import_records_every_ledger_row_as_lineage ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.23s
+
+     Running tests/operational_liveness.rs (target/debug/deps/operational_liveness-c9ce4071ff149263)
+
+running 11 tests
+test a_disagreeing_identity_is_reported_rather_than_silently_repaired ... ok
+test a_confirmation_and_a_self_report_are_not_activity ... ok
+test a_task_resolves_to_at_most_one_active_topology_node ... ok
+test a_native_container_binding_survives_restart_and_export ... ok
+test an_observation_records_what_was_seen_and_erases_nothing_else ... ok
+test an_orphan_is_concluded_from_the_owning_epic_seat ... ok
+test newest_completion_wake_is_stable_per_hosted_tpm_occupancy ... ok
+test one_native_container_cannot_be_claimed_by_two_nodes ... ok
+test re_confirming_a_binding_advances_the_readback_without_rebinding ... ok
+test the_attach_deadline_is_the_one_fixed_at_creation ... ok
+test seat_liveness_evidence_survives_restart_and_export ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.60s
+
+     Running tests/operational_promotion.rs (target/debug/deps/operational_promotion-5fe1f9bacd1ce406)
+
+running 3 tests
+test a_second_command_for_one_session_is_a_conflict_rather_than_a_backend_error ... ok
+test a_promotion_that_cannot_freeze_its_roster_leaves_the_source_promotable ... ok
+test authorizing_a_promotion_records_the_epic_and_its_roster_together ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.96s
+
+     Running tests/operational_topology.rs (target/debug/deps/operational_topology-6c8a94c76efa3cd0)
+
+running 9 tests
+test a_human_override_is_stored_whole_and_read_back ... ok
+test a_published_classification_cannot_be_revised_after_the_fact ... ok
+test a_published_topology_revision_cannot_be_replaced_even_with_the_same_bytes ... ok
+test a_retired_but_unarchived_child_blocks_its_parents_archive ... ok
+test an_unattributed_override_is_refused_by_the_schema ... ok
+test operational_state_survives_restart_and_typed_export ... ok
+test a_new_epic_can_share_its_lineages_historical_project_root ... ok
+test publishing_refuses_a_class_nobody_chose ... ok
+test repinning_an_epic_migrates_compatible_nodes_without_changing_their_identities_or_revisions ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.56s
+
+     Running tests/planning_pair_store.rs (target/debug/deps/planning_pair_store-cafa929943af34ef)
+
+running 8 tests
+test a_disposed_pair_is_terminal_in_storage ... ok
+test a_member_role_outside_the_epics_selected_catalog_is_refused_in_storage ... ok
+test a_planning_pair_is_frozen_with_its_placement_and_first_record ... ok
+test a_planning_pair_shares_the_one_semantic_identity_index ... ok
+test a_recorded_contribution_cannot_be_rewritten ... ok
+test a_transition_moves_the_run_and_its_record_together_under_compare_and_swap ... ok
+test placement_and_records_belong_only_to_a_planning_pair ... ok
+test storage_refuses_an_unknown_family_and_a_state_outside_the_family ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.97s
+
+     Running tests/policy_evidence.rs (target/debug/deps/policy_evidence-0740065526b12be6)
+
+running 22 tests
+test a_parked_run_is_terminal_and_never_reopens ... ok
+test a_pass_resets_only_its_own_reviewer_and_gate_stream ... ok
+test a_refused_dispatch_records_no_successor_on_its_step ... ok
+test a_replayed_recovery_step_produces_no_second_effect ... ok
+test a_park_plan_that_is_not_a_park_verdict_is_refused_and_rolls_the_rejection_back ... ok
+test a_second_follow_up_may_not_reuse_the_successor_the_first_one_dispatched ... ok
+test a_started_or_waived_verdict_does_not_reset_a_rejection_stream ... ok
+test a_step_appended_without_its_advance_does_not_close_the_episode_either ... ok
+test a_successor_whose_lineage_does_not_reach_the_parked_run_is_refused ... ok
+test a_waiver_receipt_must_name_a_real_waiver ... ok
+test an_approval_is_spent_once_and_only_on_the_action_it_names ... ok
+test an_episode_cannot_advance_without_appending_the_step_that_caused_it ... ok
+test an_expired_approval_cannot_be_spent ... ok
+test another_reviewer_and_another_gate_keep_their_own_counters ... ok
+test only_two_dispatched_follow_ups_are_admitted ... ok
+test parking_an_imported_task_clears_its_historical_lifecycle_provenance ... ok
+test recovery_advice_can_never_be_stored_as_an_approval ... ok
+test an_unauthorized_role_cannot_reject_and_leaves_nothing_behind ... ok
+test recovery_runs_as_a_linked_successor_and_never_touches_the_parked_run ... ok
+test the_advisor_and_committee_budgets_hold_against_the_database ... ok
+test stored_evidence_refuses_update_and_delete_from_direct_sql ... ok
+test two_rejections_by_one_principal_park_the_task_even_across_relaunches ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.55s
+
+     Running tests/publication_attestations_immutable.rs (target/debug/deps/publication_attestations_immutable-3020305f882ef815)
+
+running 1 test
+test recorded_publication_attestations_are_immutable_at_the_database_boundary ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.63s
+
+     Running tests/reconciliation.rs (target/debug/deps/reconciliation-4b455f0a5e346f1d)
+
+running 16 tests
+test a_census_observation_is_evidence_before_it_is_a_conclusion ... ok
+test a_census_admits_only_the_scope_it_censuses ... ok
+test absence_never_sets_terminal_outcome ... ok
+test an_observation_from_a_control_path_and_a_census_share_one_cursor_space ... ok
+test an_unbound_native_session_is_recorded_but_never_attached ... ok
+test completed_epoch_records_membership_and_completion_cursor ... ok
+test failed_census_does_not_mark_missing ... ok
+test generation_change_is_persisted_without_rebinding ... ok
+test later_positive_epoch_can_restore_freshness ... ok
+test missing_bound_session_becomes_lost_contact_not_completed ... ok
+test partial_epoch_cannot_apply_absence ... ok
+test reconciliation_epoch_survives_restart ... ok
+test reconciliation_preserves_distinct_desired_observed_derived_and_lifecycle ... ok
+test repeating_completed_epoch_does_not_increment_revision ... ok
+test the_scripted_census_sequence_reaches_its_recorded_conclusions ... ok
+test repeating_same_epoch_duplicates_no_facts_or_effects ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.46s
+
+     Running tests/repository_roundtrip.rs (target/debug/deps/repository_roundtrip-cba382491f28e954)
+
+running 89 tests
+test a_changed_claim_under_the_same_receipt_is_refused ... ok
+test a_closed_run_is_immutable_and_recovery_creates_a_successor ... ok
+test a_capability_receipt_must_record_this_command_over_this_exact_scope ... ok
+test a_completion_commit_refuses_command_scope_and_unchanged_state_mismatches ... ok
+test a_compaction_receipt_is_idempotent_by_id_and_conflicts_on_different_content ... ok
+test a_completion_transition_from_a_superseded_revision_changes_nothing ... ok
+test a_completion_whose_wake_cannot_be_stored_commits_neither ... ok
+test a_confirmed_receipt_whose_session_moved_never_reaches_storage ... ok
+test a_conflict_keeps_its_inputs_and_resolves_exactly_once ... ok
+test a_conflict_resolution_receipt_must_resolve_this_conflicted_link ... ok
+test a_context_policy_survives_crash_reopen_with_its_clamp_evidence ... ok
+test a_disappeared_process_never_closes_a_run ... ok
+test a_disposition_closure_reproves_itself_and_round_trips_as_its_own_source ... ok
+test a_dependency_cycle_is_refused_and_writes_nothing ... ok
+test a_done_tasks_settled_turn_claim_counts_and_a_missing_key_stays_absent ... ok
+test a_gate_may_only_be_decided_by_the_authority_the_profile_names ... ok
+test a_gate_rejection_route_and_exact_receipt_commit_or_roll_back_together ... ok
+test a_gate_verdict_and_its_exact_receipt_result_commit_or_roll_back_together ... ok
+test a_historical_rejection_recovery_is_source_unique_append_only_and_survives_reopen ... ok
+test a_phase_advances_only_along_a_declared_edge_and_only_under_a_compare_and_swap ... ok
+test a_pinned_calendar_revision_is_never_silently_upgraded ... ok
+test a_project_with_no_calendar_is_unrestricted_not_closed ... ok
+test a_published_completion_profile_revision_cannot_be_republished ... ok
+test a_raw_event_is_appended_before_state_is_reduced_and_replays_are_idempotent ... ok
+test a_receipt_backed_native_closure_certifies_only_its_latest_passed_gate_artifacts ... ok
+test a_recorded_proof_is_append_only ... ok
+test a_referenced_account_profile_cannot_be_deleted ... ok
+test a_refused_intent_rolls_back_receipt_outbox_desired_state_and_event_together ... ok
+test a_repeated_source_event_returns_the_original_decision ... ok
+test a_replayed_completion_wake_reuses_its_intent_instead_of_adding_a_second ... ok
+test a_retired_evaluator_proof_replays_onto_exactly_one_row ... ok
+test a_run_context_policy_is_written_once_and_cannot_be_revised ... ok
+test a_second_remediation_proposal_for_one_round_is_refused ... ok
+test a_settled_turn_closure_missing_a_slots_turn_is_refused_by_the_store ... ok
+test a_settled_turns_labels_are_not_addressable_artifact_evidence ... ok
+test a_slot_that_both_settled_and_was_waived_is_refused_by_the_store ... ok
+test a_task_closes_only_when_its_pinned_profile_says_it_may ... ok
+test a_task_from_a_sibling_goal_is_not_armed_by_a_goal_authorization ... ok
+test a_valid_id_from_another_project_never_resolves ... ok
+test a_waived_slot_is_refused_a_run_a_binding_a_turn_and_an_update ... ok
+test a_waiver_is_refused_without_policy_authority_evidence_or_an_unbound_slot ... ok
+test a_waiver_replays_on_its_key_and_is_never_appended_to ... ok
+test account_profiles_are_listed_and_read_per_project ... ok
+test an_account_profile_change_from_a_foreign_realm_is_refused_before_any_write ... ok
+test an_account_profile_credential_identity_cannot_be_edited_by_direct_sql ... ok
+test an_account_profile_from_another_project_is_never_updated ... ok
+test an_account_profile_round_trips_through_a_reopen ... ok
+test an_account_profile_update_is_a_compare_and_swap ... ok
+test an_empty_ledger_snapshot_resumes_without_a_gap_or_an_overlap ... ok
+test an_exact_orphaned_proposal_claim_recovers_once_and_rejects_impostors ... ok
+test an_exact_orphaned_route_effect_recovers_receipt_and_wake_once ... ok
+test an_execution_authorization_is_bounded_and_arms_only_its_scope ... ok
+test an_existing_source_event_can_create_one_linked_receipt_per_newer_trigger_revision ... ok
+test an_incompatible_command_kind_and_target_never_reaches_sql ... ok
+test an_override_approval_and_its_revocation_each_need_their_own_receipt ... ok
+test an_override_is_bounded_by_its_scope_ceiling_and_revocation ... ok
+test an_unknown_dispatch_result_blocks_a_retry_until_it_is_reconciled ... ok
+test an_unreferenced_account_profile_is_deleted_under_a_compare_and_swap ... ok
+test another_project_can_neither_read_nor_target_a_context_policy ... ok
+test atomic_local_gate_and_done_survive_restart_and_replay_after_reopen ... ok
+test a_mismatched_realm_envelope_or_foreign_id_fails_atomically ... ok
+test calendar_exceptions_are_append_only_and_scoped_to_their_project ... ok
+test compaction_receipts_survive_crash_reopen_and_report_the_most_recent ... ok
+test concurrent_recovery_keys_both_observe_no_route_before_either_commits ... ok
+test cross_project_targets_tasks_evidence_pins_and_trigger_refs_fail_without_partial_rows ... ok
+test desired_observed_and_derived_all_survive_a_restart_with_different_values ... ok
+test every_refused_write_leaves_zero_partial_rows_revisions_events_or_outbox_entries ... ok
+test every_team_closure_source_round_trips_as_itself ... ok
+test external_comments_deduplicate_replays_and_keep_edits ... ok
+test intent_desired_state_outbox_and_event_commit_together ... ok
+test no_gate_verdict_can_turn_its_citations_into_producer_evidence ... ok
+test orphaned_remediation_effects_without_claims_cannot_be_adopted ... ok
+test persona_snapshot_persists_reopens_and_rejects_cross_project_or_wrong_gate ... ok
+test replayed_or_out_of_order_native_events_never_regress_projection_or_revision ... ok
+test sensitive_material_is_rejected_from_every_persisted_string_category_without_echo ... ok
+test both_external_workflow_fixtures_persist_reopen_and_hash_identically ... ok
+test stale_atomic_withdrawal_leaves_no_receipt_and_preserves_the_moved_task ... ok
+test team_run_advances_and_closes_with_cas_and_bound_evidence ... ok
+test terminal_evidence_must_belong_to_the_closed_run_and_match_its_hash ... ok
+test specifications_and_snapshots_survive_a_restart_byte_for_byte ... ok
+test the_gate_state_map_reduces_the_whole_append_only_history ... ok
+test the_stored_command_vocabulary_is_exactly_the_domain_vocabulary ... ok
+test two_epics_reuse_the_same_exact_derived_completion_profile ... ok
+test two_legacy_receipts_for_one_native_closure_are_marked_ambiguous ... ok
+test v115_confirms_exact_local_mutations_with_typed_provenance_and_preserves_history ... FAILED
+test v115_never_confirms_rejected_gates_or_revives_a_stale_pass ... ok
+test the_arbitrary_profile_and_persona_fixtures_persist_reopen_and_hash_identically ... ok
+test workflow_installation_rolls_back_when_its_authority_receipt_is_refused ... ok
+test v115_preserves_ambiguous_claimed_attempted_and_native_command_receipts ... ok
+
+failures:
+
+---- v115_confirms_exact_local_mutations_with_typed_provenance_and_preserves_history stdout ----
+
+thread 'v115_confirms_exact_local_mutations_with_typed_provenance_and_preserves_history' (26593289) panicked at crates/kontor-store/tests/repository_roundtrip.rs:2965:38:
+repaired store restarts without repeating migration: Sqlite(SqlInputError { error: Error { code: Unknown, extended_code: 1 }, msg: "table attestation_authority_heads already exists", sql: "-- ASMA-8278: public issuer-key metadata only. No issuance or native admission.\nCREATE TABLE attestation_authority_heads (\n    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,\n    application TEXT NOT NULL CHECK (length(CAST(application AS BLOB)) BETWEEN 1 AND 256),\n    revision INTEGER NOT NULL CHECK (revision >= 1),\n    PRIMARY KEY (project_id, application)\n) STRICT;\n\nCREATE TABLE attestation_authority_keys (\n    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,\n    application TEXT NOT NULL CHECK (length(CAST(application AS BLOB)) BETWEEN 1 AND 256),\n    issuer TEXT NOT NULL CHECK (length(CAST(issuer AS BLOB)) BETWEEN 1 AND 256),\n    key_id TEXT NOT NULL CHECK (length(CAST(key_id AS BLOB)) BETWEEN 1 AND 256),\n    public_key_der BLOB NOT NULL CHECK (length(public_key_der) BETWEEN 1 AND 2048),\n    material_digest TEXT NOT NULL CHECK (length(material_digest) = 64\n                                        AND material_digest NOT GLOB '*[^0-9a-f]*'),\n    not_before INTEGER NOT NULL CHECK (not_before >= 0),\n    expires_at INTEGER NOT NULL CHECK (expires_at > not_before),\n    registered_revision INTEGER NOT NULL CHECK (registered_revision >= 1),\n    revoked_revision INTEGER NULL CHECK (revoked_revision IS NULL\n                                         OR revoked_revision > registered_revision),\n    PRIMARY KEY (project_id, application, issuer, key_id),\n    UNIQUE (project_id, application, registered_revision),\n    UNIQUE (project_id, application, revoked_revision)\n) STRICT;\n\nCREATE TRIGGER attestation_keys_registration_next\nBEFORE INSERT ON attestation_authority_keys\nWHEN EXISTS (SELECT 1 FROM attestation_authority_keys\n             WHERE project_id = NEW.project_id AND application = NEW.application\n               AND issuer = NEW.issuer AND key_id = NEW.key_id)\n  OR NEW.revoked_revision IS NOT NULL OR NEW.registered_revision <>\n    COALESCE((SELECT revision FROM attestation_authority_heads\n              WHERE project_id = NEW.project_id AND application = NEW.application), 0) + 1\nBEGIN SELECT RAISE(ABORT, 'key registration must advance the current head exactly once'); END;\n\nCREATE TRIGGER attestation_heads_initial\nBEFORE INSERT ON attestation_authority_heads\nWHEN EXISTS (SELECT 1 FROM attestation_authority_heads\n             WHERE project_id = NEW.project_id AND application = NEW.application)\n  OR NEW.revision <> 1 OR NOT EXISTS (\n    SELECT 1 FROM attestation_authority_keys WHERE project_id = NEW.project_id\n      AND application = NEW.application AND registered_revision = 1)\nBEGIN SELECT RAISE(ABORT, 'an initial head requires its first registered key'); END;\n\nCREATE TRIGGER attestation_heads_monotonic\nBEFORE UPDATE ON attestation_authority_heads\nWHEN NEW.project_id <> OLD.project_id OR NEW.application <> OLD.application\n  OR NEW.revision <> OLD.revision + 1 OR NOT EXISTS (\n    SELECT 1 FROM attestation_authority_keys WHERE project_id = NEW.project_id\n      AND application = NEW.application AND\n        (registered_revision = NEW.revision OR revoked_revision = NEW.revision))\nBEGIN SELECT RAISE(ABORT, 'a head advances only with its exact key mutation'); END;\n\nCREATE TRIGGER attestation_heads_permanent BEFORE DELETE ON attestation_authority_heads\nBEGIN SELECT RAISE(ABORT, 'key authority heads are permanent'); END;\n\nCREATE TRIGGER attestation_keys_immutable\nBEFORE UPDATE ON attestation_authority_keys\nWHEN NEW.project_id <> OLD.project_id OR NEW.application <> OLD.application\n  OR NEW.issuer <> OLD.issuer OR NEW.key_id <> OLD.key_id\n  OR NEW.public_key_der <> OLD.public_key_der OR NEW.material_digest <> OLD.material_digest\n  OR NEW.not_before <> OLD.not_before OR NEW.expires_at <> OLD.expires_at\n  OR NEW.registered_revision <> OLD.registered_revision\n  OR OLD.revoked_revision IS NOT NULL OR NEW.revoked_revision IS NULL\n  OR NEW.revoked_revision <> (SELECT revision + 1 FROM attestation_authority_heads\n      WHERE project_id = OLD.project_id AND application = OLD.application)\nBEGIN SELECT RAISE(ABORT, 'key mapping is immutable and revocation is one way'); END;\n\nCREATE TRIGGER attestation_keys_permanent BEFORE DELETE ON attestation_authority_keys\nBEGIN SELECT RAISE(ABORT, 'registered public key material is permanent'); END;\n\nCREATE TRIGGER attestation_key_registration_head AFTER INSERT ON attestation_authority_keys\nBEGIN\n    INSERT INTO attestation_authority_heads (project_id, application, revision)\n        SELECT NEW.project_id, NEW.application, 1 WHERE NOT EXISTS (\n            SELECT 1 FROM attestation_authority_heads WHERE project_id = NEW.project_id\n                AND application = NEW.application);\n    UPDATE attestation_authority_heads SET revision = NEW.registered_revision\n        WHERE project_id = NEW.project_id AND application = NEW.application\n            AND revision = NEW.registered_revision - 1;\nEND;\n\nCREATE TRIGGER attestation_key_revocation_head AFTER UPDATE ON attestation_authority_keys\nBEGIN\n    UPDATE attestation_authority_heads SET revision = NEW.revoked_revision\n        WHERE project_id = NEW.project_id AND application = NEW.application\n            AND revision = NEW.revoked_revision - 1;\nEND;\n\nPRAGMA user_version = 124;\n", offset: 93 })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    v115_confirms_exact_local_mutations_with_typed_provenance_and_preserves_history
+
+test result: FAILED. 88 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 21.19s
+
+error: test failed, to rerun pass `-p kontor-store --test repository_roundtrip`

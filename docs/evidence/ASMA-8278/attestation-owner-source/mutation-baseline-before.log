@@ -1,0 +1,71 @@
+   Compiling libc v0.2.189
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.26
+   Compiling quote v1.0.47
+   Compiling jobserver v0.1.35
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.12
+   Compiling syn v3.0.6
+   Compiling serde_core v1.0.229
+   Compiling cc v1.4.6
+   Compiling typenum v1.20.1
+   Compiling cmake v0.1.58
+   Compiling hybrid-array v0.4.15
+   Compiling pkg-config v0.3.34
+   Compiling dunce v1.0.5
+   Compiling fs_extra v1.3.0
+   Compiling aws-lc-sys v0.45.0
+   Compiling zmij v1.0.23
+   Compiling cfg-if v1.0.5
+   Compiling getrandom v0.4.3
+   Compiling crypto-common v0.2.2
+   Compiling block-buffer v0.12.1
+   Compiling serde_json v1.0.151
+   Compiling const-oid v0.10.2
+   Compiling thiserror v2.0.20
+   Compiling serde v1.0.229
+   Compiling digest v0.11.3
+   Compiling serde_derive v1.0.229
+   Compiling thiserror-impl v2.0.20
+   Compiling errno v0.3.14
+   Compiling cpufeatures v0.3.1
+   Compiling itoa v1.0.18
+   Compiling aws-lc-rs v1.18.1
+   Compiling memchr v2.8.3
+   Compiling jiff-tzdb v0.1.8
+   Compiling jiff-core v0.1.1
+   Compiling jiff v0.2.35
+   Compiling sha2 v0.11.0
+   Compiling signal-hook-registry v1.4.8
+   Compiling uuid v1.24.0
+   Compiling tokio-macros v2.7.2
+   Compiling socket2 v0.6.5
+   Compiling mio v1.2.3
+   Compiling zeroize v1.9.0
+   Compiling untrusted v0.7.1
+   Compiling pin-project-lite v0.2.17
+   Compiling hex v0.4.3
+   Compiling bytes v1.12.1
+   Compiling tokio v1.53.1
+   Compiling kontor-core v0.2.1 (/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/mutation-source/crates/kontor-core)
+   Compiling async-trait v0.1.92
+   Compiling kontor-runtime v0.2.1 (/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/mutation-source/crates/kontor-runtime)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 44.53s
+     Running unittests src/lib.rs (/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/mutation-target/debug/deps/kontor_runtime-38fd6bad31f23716)
+
+running 12 tests
+test planning_pair::attestation::owner_checks::tests::current_binding_and_nonzero_occupancy_generation_must_match ... ok
+test planning_pair::attestation::owner_checks::tests::every_current_scope_component_and_task_presence_must_match ... ok
+test planning_pair::attestation::owner_checks::tests::selected_issuer_key_and_token_substitutions_are_refused ... ok
+test planning_pair::attestation::owner_checks::tests::active_seat_and_active_node_are_both_required ... ok
+test planning_pair::attestation::owner_checks::tests::current_key_interval_is_inclusive_at_start_and_exclusive_at_end ... ok
+test planning_pair::attestation::owner_checks::tests::matching_observations_return_unit_diagnostic_consistency_only ... ok
+test planning_pair::attestation::owner_checks::tests::every_native_identity_component_and_positive_generation_must_match ... ok
+test planning_pair::attestation::owner_checks::tests::key_and_token_revocation_after_verification_are_refused ... ok
+test planning_pair::attestation::owner_checks::tests::current_token_interval_can_narrow_but_never_bypass_signed_validity ... ok
+test planning_pair::attestation::owner_checks::tests::the_current_requested_operation_must_be_signed ... ok
+test planning_pair::attestation::owner_checks::tests::zero_older_and_newer_key_set_revisions_are_refused ... ok
+test planning_pair::attestation::owner_checks::tests::signed_token_expiry_between_verification_and_observation_is_refused ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 122 filtered out; finished in 0.27s
+
