@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-09-26T18:52:28.405372+00:00",
+  "userInstruction": "Approve isolated correction",
+  "scope": "ASMA-8015 isolated source correction and synthetic/fake-backend tests only",
+  "liveKeychainChanges": false,
+  "installation": false,
+  "deployment": false,
+  "priorHoldPreserved": "/private/tmp/ASMA-8015-source-approval-hold.json",
+  "swaggerBuildDependency": {
+    "copiedFrom": "/private/tmp/ASMA-8015-credential-qualification/target/debug/build/utoipa-swagger-ui-9a2a507b1e5951e8/out/v5.17.14.zip",
+    "sha256": "481244d0812097b11fbaeef79f71d942b171617f9c9f9514e63acbe13e71ccdc"
+  },
+  "noCredentialExtraction": true
+}

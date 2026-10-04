@@ -1,0 +1,11 @@
+--- restored/export.rs
++++ mutant-allow-observation/export.rs
+@@ -1177,7 +1177,7 @@
+                 detail: "a stored control payload is not JSON",
+             })?;
+         match event.event_kind.as_str() {
+-            "runtime_observation" | "census_observation" => ensure_control_metadata(&payload)?,
++            "runtime_observation" | "census_observation" => {}
+             "command_intent" => {}
+             _ => {
+                 return Err(BackupError::Verification {

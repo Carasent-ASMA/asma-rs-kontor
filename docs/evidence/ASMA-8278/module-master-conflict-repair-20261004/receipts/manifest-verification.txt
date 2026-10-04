@@ -1,0 +1,27 @@
+manifest-declared artifacts: sha256  bytes  blob  blob-exists  path
+2e3f7ca20e2a2cba2040fc694ebe57c8225ae1e33ac165969ef3a6d7fe854ca8      5590  d07cc4b4346aa7053157663bcf3ded853c9b2476  yes  docs/evidence/ASMA-8278/module-master-conflict-repair-20261004/README.md
+33a8188ee41c13482ec75d119e7a139fa9efca9e408f4d67de60931a223c48e5      9247  b05e75cadcddfd0cc9792df8f63c7e1e91c74b2d  yes  docs/evidence/ASMA-8278/module-master-conflict-repair-20261004/manifest.json
+8041404cb562bd4cf75113df4271d4fa6125a7d311dfaf151484581aacc4e4b7      3430  d1ffff5b6f2ea0307f4753aaa458f51190c97a2c  yes  docs/evidence/ASMA-8278/module-master-conflict-repair-20261004/receipts/clippy.log
+4db407eda0806eb802e6653abba53e3decf20a53fc05ed145f393b86cd4cdd9d      1608  e4ec4f780bd3068be151f593d920eb06e03fb8f3  yes  docs/evidence/ASMA-8278/module-master-conflict-repair-20261004/receipts/commit-push.log
+e079bd0ad9d251b0e932b467a2a7a0a8f4035618ee91b0578b0f2ca66dbe35d6      6200  f2cfc5a8178f41ee5928f1e3aa38381eb1f4e823  yes  docs/evidence/ASMA-8278/module-master-conflict-repair-20261004/receipts/conflict-inventory.json
+3dc1b36c5f5c1ee6e5fc708554c0979192491442afedd53fbfcab31364d6ef0d     46166  53d79ef4a031784b3180419e63227ac4274cdbff  yes  docs/evidence/ASMA-8278/module-master-conflict-repair-20261004/receipts/focused-daemon-loopback.log
+be1932a585f247041a66f7f4808c6f4eeb047413c09baeed9b64fb16f5036f99      3150  732b8bba0e010f30f7570ff8b77efd1c815403db  yes  docs/evidence/ASMA-8278/module-master-conflict-repair-20261004/receipts/focused-daemon-memory.log
+a0b47d6b552dc8a5017390e445a7d01f51b35902f1c522b47f47371bf9284787     22918  256f02584d6094019dcacaec21bed9cbe7a69a8b  yes  docs/evidence/ASMA-8278/module-master-conflict-repair-20261004/receipts/focused-mcp-api-contract.log
+72d0e365e869e623e40bdce597fee7ef34d744e16431a59297783ead9e4aee83     89463  e24a642cd66381b91a9402176ab529557aa22107  yes  docs/evidence/ASMA-8278/module-master-conflict-repair-20261004/receipts/focused-store.log
+fa5f8996f180b427bfbf2ae8a3d086bb77b179f138ba5efdd095c3cc6a01a9de       119  0bca5673a91b0a3c9ffeba72c934735aabecf030  yes  docs/evidence/ASMA-8278/module-master-conflict-repair-20261004/receipts/focused-store.meta
+c61eff69a319602b04afd79ed0daf5f4b78b42a40d64858e2ac26df9e9a93cf3    267052  f19c54fc48feda8bc955628e6a15be5e8befc2b0  yes  docs/evidence/ASMA-8278/module-master-conflict-repair-20261004/receipts/full-combined.log
+2b06cb440f5e74daceaad3f7887c4feb102da103c435836e303bcae3b63e8426       344  ca24d89f4b0cc2e558578a691b751f773ede62d0  yes  docs/evidence/ASMA-8278/module-master-conflict-repair-20261004/receipts/full-combined.meta
+1aa1b1c0796dbe5cd1475a0056d8e35b2bd4a163df044ef8f6f5cd18db353aad      1582  4d0abcf2ca4c4dee00e875121ba6551b7eb7452f  yes  docs/evidence/ASMA-8278/module-master-conflict-repair-20261004/receipts/mutation-targets.json
+34af1cde2c9ea63b47cb8dfc7a35b7945c32379704e206bea4f4049924faab58       523  72860a56657ca4972fa6d2e0fe20f7a952ca010a  yes  docs/evidence/ASMA-8278/module-master-conflict-repair-20261004/receipts/named-ignored.txt
+25d3c3135b48f3ceb4bd7f0443094bf93759a0a3986a4b44bfe45567d3a16db7       421  f1d0a85d15b294dc90edf76e77f75f301059d753  yes  docs/evidence/ASMA-8278/module-master-conflict-repair-20261004/receipts/preflight-00-before-state.txt
+4d081052eb04c575bf42d68bca07146cff977fb400a409a1f26c3d727815a75d       286  6b79bc43b2ead839208b69c18a19e7fc10b8d3a9  yes  docs/evidence/ASMA-8278/module-master-conflict-repair-20261004/receipts/preflight-00-before-status.txt
+1705cb47716b6bf84d149da8b41780d07eef13ff2a8b822c000218f9f04f325f     31562  51fc79af8de0b08e5e9c7dbff416aaa4612b50bd  yes  docs/evidence/ASMA-8278/module-master-conflict-repair-20261004/receipts/preflight-00-ours-changed-files.txt
+d12d57339197a13b29db90547d4eaad1f94ae94ad4eaaf85821ab53c4dcb0d86      8490  1b3e7aa98da963b0d5ad708769ff35bfb741dd87  yes  docs/evidence/ASMA-8278/module-master-conflict-repair-20261004/receipts/preflight-00-ours-migrations.txt
+394843555fae217cf3ca68bbf8b3dcb372c053a2e82c76ec5616fbc556c37c21     40967  57f9c446accbf49e662b256b74538d4a4863a252  yes  docs/evidence/ASMA-8278/module-master-conflict-repair-20261004/receipts/preflight-00-theirs-changed-files.txt
+c69fdf691d65ae02e30aa7c073828f619fac19af2e85df19397e49da117c8f3a      8241  7df89690a8e3f6662e4e52cdd37f8ae9e7cd9d50  yes  docs/evidence/ASMA-8278/module-master-conflict-repair-20261004/receipts/preflight-00-theirs-migrations.txt
+620108a5835363d7b966d619971d7f76b02261a78fc1654815d2bd087d0bc0e0      4646  ff4a3ce26680e13c6cccb898cdbb04a8d1554e4b  yes  docs/evidence/ASMA-8278/module-master-conflict-repair-20261004/receipts/preflight-01-merge-tree-prediction.txt
+5bd43dc1ce3192419e3a32d31a25fb3c370685c1fea9a8a0067d26608913e19e      2514  1904172e3a16c25abeee3471d41c0d2ab91c6d7a  yes  docs/evidence/ASMA-8278/module-master-conflict-repair-20261004/receipts/preflight-02-conflict-sides-sha256.txt
+440790c290588f5a7366138a4a23b1e7d3d6c1ebd702504a8367baa5fbf5bd2b      2177  4bdb4b02e9246955849da0763cc7526e7c5ea481  yes  docs/evidence/ASMA-8278/module-master-conflict-repair-20261004/receipts/preflight-03-merge-execution.txt
+a88d555531a343c6bebbf83a9e20f8b1906bc338a0ea6a9e7ab1e3112255cc51      4052  e4d169a87c497c541c111d76fd89686ef5376a50  yes  docs/evidence/ASMA-8278/module-master-conflict-repair-20261004/receipts/resolved-source-sha256.txt
+declared_artifacts=24 all_blobs_exist=True
+note: this verification file and manifest.json are excluded from the manifest's own artifact list to avoid self-reference; manifest.json is verified here.

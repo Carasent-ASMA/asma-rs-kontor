@@ -1,0 +1,12 @@
+    Checking kontor-core v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/crates/kontor-core)
+    Checking kontor-runtime v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/crates/kontor-runtime)
+    Checking kontor-policy v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/crates/kontor-policy)
+    Checking kontor-context v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/crates/kontor-context)
+    Checking kontor-scheduler v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/crates/kontor-scheduler)
+    Checking kontor-teams v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/crates/kontor-teams)
+    Checking kontor-profiles v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/crates/kontor-profiles)
+    Checking kontor-calendar v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/crates/kontor-calendar)
+    Checking kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/crates/kontor-store)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 18.14s
+
+PROCESS_EXIT_CODE=0

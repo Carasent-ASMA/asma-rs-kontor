@@ -1,0 +1,196 @@
+[
+  {
+    "mutant": "MUT-007",
+    "path": "crates/kontor-store/src/memory.rs",
+    "verdict": "KILLED",
+    "base_sha256": "171cefc4b0523cacc68148da4be4900ccb71c44e09f9e17f76669f081e2563ff",
+    "seeded_sha256": "c784607bfcd9cd6d5089c1d50a47a7b71ebb20e5a2f4c66843e43e277b758f4c",
+    "restored_sha256": "171cefc4b0523cacc68148da4be4900ccb71c44e09f9e17f76669f081e2563ff",
+    "patch_sha256": "f4227e7b6135c09daef06d6b8786ce4d66b041c75e385237d875dc05ce97deff",
+    "baseline": "mut-007-baseline",
+    "seeded": "mut-007-seeded",
+    "restored": "mut-007-restored",
+    "witness": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "projection_rebuild",
+      "--locked",
+      "--offline",
+      "--",
+      "composed_adverse_qualification_cannot_activate_before_canary",
+      "--exact"
+    ],
+    "failed_tests": [
+      "composed_adverse_qualification_cannot_activate_before_canary"
+    ]
+  },
+  {
+    "mutant": "MUT-001",
+    "path": "crates/kontor-core/src/memory.rs",
+    "verdict": "KILLED",
+    "base_sha256": "d441653116bfeb841fe322ebffb84820a843a1ed47cffff313f2bd06c2d0876f",
+    "seeded_sha256": "e0bc1d21a7824ba032caff04a5e9c02d880d0ca516759555591b3283079f439d",
+    "restored_sha256": "d441653116bfeb841fe322ebffb84820a843a1ed47cffff313f2bd06c2d0876f",
+    "patch_sha256": "29b3d0bf33e100e2e5d5cb2585e2858da3e146ceddffb7644f1b0350df4dfae3",
+    "baseline": "mut-001-baseline",
+    "seeded": "mut-001-seeded",
+    "restored": "mut-001-restored",
+    "witness": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-core",
+      "--test",
+      "experience_memory",
+      "--locked",
+      "--offline",
+      "--",
+      "strict_experience_roundtrip_and_non_memory_eligibility",
+      "--exact"
+    ],
+    "failed_tests": [
+      "strict_experience_roundtrip_and_non_memory_eligibility"
+    ]
+  },
+  {
+    "mutant": "MUT-002",
+    "path": "crates/kontor-store/src/memory.rs",
+    "verdict": "KILLED",
+    "base_sha256": "171cefc4b0523cacc68148da4be4900ccb71c44e09f9e17f76669f081e2563ff",
+    "seeded_sha256": "540d44c14a96d44ee593b0e6de555fadc3d371d3ff495e1adaba32a18dbef43b",
+    "restored_sha256": "171cefc4b0523cacc68148da4be4900ccb71c44e09f9e17f76669f081e2563ff",
+    "patch_sha256": "823bfe6e2c0efc36bee6f51c51815ff0c7778f56713f67d02be39d7cc53f2146",
+    "baseline": "mut-002-baseline",
+    "seeded": "mut-002-seeded",
+    "restored": "mut-002-restored",
+    "witness": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-store",
+      "--lib",
+      "--locked",
+      "--offline",
+      "--",
+      "memory::experience_tests::malicious_tuple_project_current_approval_tombstone_hash_policy_and_kind",
+      "--exact"
+    ],
+    "failed_tests": [
+      "memory::experience_tests::malicious_tuple_project_current_approval_tombstone_hash_policy_and_kind"
+    ]
+  },
+  {
+    "mutant": "MUT-003",
+    "path": "crates/kontor-store/src/memory.rs",
+    "verdict": "KILLED",
+    "base_sha256": "171cefc4b0523cacc68148da4be4900ccb71c44e09f9e17f76669f081e2563ff",
+    "seeded_sha256": "9feb0b9781895f7e7984dcf0820ea6b37c1d39cc9fa1a569f7127f36c46cce56",
+    "restored_sha256": "171cefc4b0523cacc68148da4be4900ccb71c44e09f9e17f76669f081e2563ff",
+    "patch_sha256": "d0df821dd8de76189592cb537de55560695582717468f655ffc8c63181807435",
+    "baseline": "mut-003-baseline",
+    "seeded": "mut-003-seeded",
+    "restored": "mut-003-restored",
+    "witness": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-store",
+      "--lib",
+      "--locked",
+      "--offline",
+      "--",
+      "memory::experience_tests::exact_budget_32768_32769_unicode_escaping_and_skip_oversized_top",
+      "--exact"
+    ],
+    "failed_tests": [
+      "memory::experience_tests::exact_budget_32768_32769_unicode_escaping_and_skip_oversized_top"
+    ]
+  },
+  {
+    "mutant": "MUT-004",
+    "path": "crates/kontor-memory-cognee/src/lib.rs",
+    "verdict": "KILLED",
+    "base_sha256": "f461effcda17a460a0939ef2bb077f74de1bd0b26ee5b6c44b997fcd3ec84c40",
+    "seeded_sha256": "dc38c8dfa7d31eaf9d9e27145b35b549fa3fd5e86d4df58510192450d3c73f24",
+    "restored_sha256": "f461effcda17a460a0939ef2bb077f74de1bd0b26ee5b6c44b997fcd3ec84c40",
+    "patch_sha256": "79488c1a95a3fb92944ea6f33bda9bea091c2637e5940e84e11fe41e5bf380fd",
+    "baseline": "mut-004-baseline",
+    "seeded": "mut-004-seeded",
+    "restored": "mut-004-restored",
+    "witness": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-memory-cognee",
+      "--test",
+      "fixtures",
+      "authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text",
+      "--locked",
+      "--offline",
+      "--",
+      "--exact"
+    ],
+    "failed_tests": [
+      "authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text"
+    ]
+  },
+  {
+    "mutant": "MUT-005",
+    "path": "crates/kontor-daemon/src/applications.rs",
+    "verdict": "KILLED",
+    "base_sha256": "2ea68d4c9ad898ae5faf8c5113d9a1bda1b7d7eb79a41f39b911a23f93bd2111",
+    "seeded_sha256": "6761f774f659300045e4f7cdec3214e40408af2bb9eaee5811c145914a9d4efa",
+    "restored_sha256": "2ea68d4c9ad898ae5faf8c5113d9a1bda1b7d7eb79a41f39b911a23f93bd2111",
+    "patch_sha256": "d5a71d2ded04234dc303d1ed9730295672bd1ed0018c3dcd2e2abfb498457298",
+    "baseline": "mut-005-baseline",
+    "seeded": "mut-005-seeded",
+    "restored": "mut-005-restored",
+    "witness": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "experience_launch::degraded_launch_never_lists_the_corpus_and_timeout_keeps_store_unlocked",
+      "--locked",
+      "--offline",
+      "--",
+      "--exact"
+    ],
+    "failed_tests": [
+      "experience_launch::degraded_launch_never_lists_the_corpus_and_timeout_keeps_store_unlocked"
+    ]
+  },
+  {
+    "mutant": "MUT-006",
+    "path": "crates/kontor-daemon/src/applications.rs",
+    "verdict": "KILLED",
+    "base_sha256": "2ea68d4c9ad898ae5faf8c5113d9a1bda1b7d7eb79a41f39b911a23f93bd2111",
+    "seeded_sha256": "d4f67a43111bd7469ffaa849c773580dc55e41f6f39b138bf4dad8907e966061",
+    "restored_sha256": "2ea68d4c9ad898ae5faf8c5113d9a1bda1b7d7eb79a41f39b911a23f93bd2111",
+    "patch_sha256": "0a8d98390666dfaf9aacfb3f589e8d04c0ede8e7843438d33325e0c75bc10a0b",
+    "baseline": "mut-006-baseline",
+    "seeded": "mut-006-seeded",
+    "restored": "mut-006-restored",
+    "witness": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "experience_launch::root_launch_contains_exact_frozen_canonical_bytes_and_downstream_cites_same_binding",
+      "--locked",
+      "--offline",
+      "--",
+      "--exact"
+    ],
+    "failed_tests": [
+      "experience_launch::root_launch_contains_exact_frozen_canonical_bytes_and_downstream_cites_same_binding"
+    ]
+  }
+]

@@ -1,0 +1,49 @@
+---
+
+Corrective audit result: `79b07f31028704a6a98203b89877264fd179a535` closes the prior P1 authority defect and P2 round-trip gap. Source-level conditional merge support is appropriate once its own full gate exits `0`.
+
+### Findings
+
+- **P0:** none.
+- **P1:** none.
+- **P2 — evidence wording ambiguity only.**  
+  The owning [report](/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/_docs/reports/2026-09-26-08-28-report-asma-8121-export-event-kind-kontor-operational-gap.md:48) says “The exact-candidate full gate now passes,” although that gate belongs to `b42b5197`. Lines 54, 58 and 66 correctly explain that it supplies no qualification credit to `79b07f31`. The sentence should explicitly say “the b42 candidate’s full gate passed,” or be superseded by an exact-`79b07f31` qualification receipt.
+
+### Corrective source assessment
+
+The [authority helper](/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/crates/kontor-store/src/backup/export.rs:1200) now correctly requires:
+
+- an exported receipt matching `command_receipt_id`;
+- exact project equality;
+- exact payload-byte equality;
+- event stored hash equal to receipt intent hash;
+- independent recomputation of the payload hash.
+
+Errors are static and do not echo payload content. Runtime/census positive-field validation, unknown-kind refusal and recursive canary scanning remain intact.
+
+The new [regressions](/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/crates/kontor-store/tests/backup_export.rs:563) cover unrelated validly hashed payloads, missing receipts, wrong projects and both unequal and mutually corrupted stored hashes. The matched-receipt canary fixture correctly mutates both authoritative copies, ensuring the redaction scanner—not an earlier authority mismatch—causes refusal.
+
+The [foreign-realm test](/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/crates/kontor-store/tests/backup_export.rs:651) proves exact source event identity/hash lineage, separately records command-receipt lineage, materializes neither as destination authority, and prevents either from appearing as destination-local commands/events on re-export.
+
+### Evidence verified
+
+- Clean, synchronized owned worktree at exact head `79b07f31028704a6a98203b89877264fd179a535`; tree `ebd20eb03d5659b30747bc2202e2b2ee0896528d`.
+- Prior audit preserved verbatim as [actual-lsa-b42-audit.txt](/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/_docs/reports/evidence/ASMA-8121/authority-correction/actual-lsa-b42-audit.txt), SHA-256 `280616c0…676bd4`.
+- All 42 [manifest entries](/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/_docs/reports/evidence/ASMA-8121/SHA256SUMS.json) match.
+- Restored source/test hashes match [results.json](/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/_docs/reports/evidence/ASMA-8121/authority-correction/results.json).
+- 25 restored export contracts passed; strict store Clippy exited `0`.
+- Six distinct compiled behavioral mutants were genuinely killed with exit `101`: reject-command, allow-observation, skip-canary, skip-authority, ignore-project and skip-hash-recompute.
+- PR #274 now targets exact `79b07f31`, has the corrected title, is mergeable, and its fresh publication check succeeded.
+- Prior MUT-003 kill/restore and `7ffd650d` ↔ `4c1c52cb` source-equality findings remain preserved.
+
+### Acceptance boundary
+
+Conditional merge support requires:
+
+1. The fresh exact-`79b07f31` archive gate must terminate with actual exit `0` and bind its receipt to this head/tree. I did not inspect or poll the running file.
+2. Clarify the b42-only gate sentence or make the exact-79 qualification receipt unambiguously supersede it.
+3. Merge/build/deployment must remain held until the ASMA-8098 ledger closeout releases the installed-`7ffd650d` hold.
+
+Still uncredited: deployment, actual repaired export of the preserved snapshot, destination continuity comparison, restart, current all-13 census, `89`/`88` reconciliation, ASMA-8120/8121 gates or task settlement, and epic PASS.
+
+No files, tests, processes, runtime, SQLite, Jira or Kontor state were changed.

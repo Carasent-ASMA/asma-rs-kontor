@@ -1,0 +1,9 @@
+   Compiling kontor-store v0.2.1 (/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-prepared-token-validation-da8llp8_/mutation-source/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.38s
+     Running unittests src/lib.rs (/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-prepared-token-validation-da8llp8_/mutation-target/debug/deps/kontor_store-277147386e385a4d)
+
+running 1 test
+test backup::export::attestation_ledger_tests::token_tables_are_required_at125_and_legacy124_absence_never_skips_keys ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.00s
+

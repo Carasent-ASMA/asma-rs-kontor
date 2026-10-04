@@ -1,0 +1,86 @@
+[
+  {
+    "task": "ASMA-8187",
+    "pin": "99b237201e71bbeacea726df09f32325428b58a5",
+    "command": [
+      "git",
+      "merge-base",
+      "--is-ancestor",
+      "99b237201e71bbeacea726df09f32325428b58a5",
+      "HEAD"
+    ],
+    "exit_code": 1,
+    "stderr": "",
+    "reachable": false
+  },
+  {
+    "task": "ASMA-8196",
+    "pin": "f77c32501c92aecad1ee10180edbfd3158cd06fb",
+    "command": [
+      "git",
+      "merge-base",
+      "--is-ancestor",
+      "f77c32501c92aecad1ee10180edbfd3158cd06fb",
+      "HEAD"
+    ],
+    "exit_code": 1,
+    "stderr": "",
+    "reachable": false
+  },
+  {
+    "task": "ASMA-8114",
+    "pin": "94286eaa6010295b1c85f998bc9c60b6543f046a",
+    "command": [
+      "git",
+      "merge-base",
+      "--is-ancestor",
+      "94286eaa6010295b1c85f998bc9c60b6543f046a",
+      "HEAD"
+    ],
+    "exit_code": 1,
+    "stderr": "",
+    "reachable": false
+  },
+  {
+    "task": "ASMA-8341",
+    "pin": "4a3eb2438fa375063db2ab0399c9afa4cacdf7a6",
+    "command": [
+      "git",
+      "merge-base",
+      "--is-ancestor",
+      "4a3eb2438fa375063db2ab0399c9afa4cacdf7a6",
+      "HEAD"
+    ],
+    "exit_code": 1,
+    "stderr": "",
+    "reachable": false
+  },
+  {
+    "task": "ASMA-8156",
+    "pin": "655e07ead8b87bebf3a5d43ddccc15c860114e05",
+    "command": [
+      "git",
+      "merge-base",
+      "--is-ancestor",
+      "655e07ead8b87bebf3a5d43ddccc15c860114e05",
+      "HEAD"
+    ],
+    "exit_code": 0,
+    "stderr": "",
+    "reachable": true
+  },
+  {
+    "task": "ASMA-8158",
+    "pin": "831dd7c1dc95a57258c75f5896bff5b76f3830fa",
+    "command": [
+      "git",
+      "merge-base",
+      "--is-ancestor",
+      "831dd7c1dc95a57258c75f5896bff5b76f3830fa",
+      "HEAD"
+    ],
+    "exit_code": 0,
+    "stderr": "",
+    "reachable": true
+  }
+]

@@ -1,0 +1,8 @@
+   Compiling kontor-store v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8156-typed-experience-contract-and/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.62s
+     Running tests/backup_snapshot.rs (target/debug/deps/backup_snapshot-47842331f09bd8da)
+
+running 1 test
+test memory_ledger_and_import_evidence_restore_while_fts_is_rebuilt ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 5.10s

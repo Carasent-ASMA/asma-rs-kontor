@@ -1,0 +1,32 @@
+   Compiling kontor-core v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8156-typed-experience-contract-and/crates/kontor-core)
+   Compiling kontor-runtime v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8156-typed-experience-contract-and/crates/kontor-runtime)
+   Compiling kontor-policy v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8156-typed-experience-contract-and/crates/kontor-policy)
+   Compiling kontor-context v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8156-typed-experience-contract-and/crates/kontor-context)
+   Compiling kontor-mcp v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8156-typed-experience-contract-and/crates/kontor-mcp)
+   Compiling kontor-cli v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8156-typed-experience-contract-and/crates/kontor-cli)
+   Compiling kontor-scheduler v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8156-typed-experience-contract-and/crates/kontor-scheduler)
+   Compiling kontor-teams v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8156-typed-experience-contract-and/crates/kontor-teams)
+   Compiling kontor-runtime-paseo v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8156-typed-experience-contract-and/crates/kontor-runtime-paseo)
+   Compiling kontor-profiles v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8156-typed-experience-contract-and/crates/kontor-profiles)
+   Compiling kontor-calendar v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8156-typed-experience-contract-and/crates/kontor-calendar)
+   Compiling kontor-accounts v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8156-typed-experience-contract-and/crates/kontor-accounts)
+   Compiling kontor-store v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8156-typed-experience-contract-and/crates/kontor-store)
+   Compiling kontor-jira v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8156-typed-experience-contract-and/crates/kontor-jira)
+   Compiling kontor-api v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8156-typed-experience-contract-and/crates/kontor-api)
+   Compiling kontor-daemon v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8156-typed-experience-contract-and/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 52.67s
+     Running tests/memory_parity.rs (target/debug/deps/memory_parity-7237a7f323a13d27)
+
+running 2 tests
+test native_memory_http_and_cli_share_realm_revision_and_cursor ... ok
+test typed_memory_http_cli_and_mcp_share_proposal_projection_and_classification ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.35s
+
+     Running tests/experience_memory.rs (target/debug/deps/experience_memory-05175ed64964ffd6)
+
+running 2 tests
+test secret_canaries_hidden_queries_and_projection_unavailable_are_static ... ok
+test proposal_approval_preview_freeze_readback_replay_and_purge_refusal ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.73s

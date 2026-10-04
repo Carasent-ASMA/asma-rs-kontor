@@ -20,6 +20,7 @@ workspace = true
 # only that runtime can redeem.
 
 [dependencies]
+aws-lc-rs = { workspace = true }
 # The exact version is the workspace's own package version. A bare path
 # dependency is a wildcard requirement, which `deny.toml` refuses.
 kontor-core = { path = "../kontor-core", version = "=0.2.1" }

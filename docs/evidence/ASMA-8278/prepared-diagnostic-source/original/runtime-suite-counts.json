@@ -1,0 +1,32 @@
+[
+  {
+    "suite": "Running unittests src/lib.rs",
+    "status": "ok",
+    "passed": 157,
+    "failed": 0
+  },
+  {
+    "suite": "Running tests/binding_timeline.rs",
+    "status": "ok",
+    "passed": 5,
+    "failed": 0
+  },
+  {
+    "suite": "Running tests/bound_container_contract.rs",
+    "status": "ok",
+    "passed": 7,
+    "failed": 0
+  },
+  {
+    "suite": "Running tests/retitle_container.rs",
+    "status": "ok",
+    "passed": 8,
+    "failed": 0
+  },
+  {
+    "suite": "Doc-tests kontor_runtime",
+    "status": "ok",
+    "passed": 2,
+    "failed": 0
+  }
+]

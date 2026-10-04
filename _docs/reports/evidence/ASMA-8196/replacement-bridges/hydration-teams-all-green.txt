@@ -1,0 +1,119 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling libc v0.2.189
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.26
+   Compiling serde_core v1.0.229
+   Compiling typenum v1.20.1
+   Compiling cfg-if v1.0.5
+   Compiling getrandom v0.4.3
+   Compiling zmij v1.0.23
+   Compiling const-oid v0.10.2
+   Compiling thiserror v2.0.20
+   Compiling serde v1.0.229
+   Compiling serde_json v1.0.151
+   Compiling hybrid-array v0.4.15
+   Compiling block-buffer v0.12.1
+   Compiling crypto-common v0.2.2
+   Compiling digest v0.11.3
+   Compiling memchr v2.8.3
+   Compiling jiff-core v0.1.1
+   Compiling itoa v1.0.18
+   Compiling jiff-tzdb v0.1.8
+   Compiling hex v0.4.3
+   Compiling bytes v1.12.1
+   Compiling pin-project-lite v0.2.17
+   Compiling syn v3.0.6
+   Compiling serde_derive v1.0.229
+   Compiling thiserror-impl v2.0.20
+   Compiling async-trait v0.1.92
+   Compiling tokio-macros v2.7.2
+   Compiling cpufeatures v0.3.1
+   Compiling errno v0.3.14
+   Compiling sha2 v0.11.0
+   Compiling socket2 v0.6.5
+   Compiling signal-hook-registry v1.4.8
+   Compiling mio v1.2.3
+   Compiling tokio v1.53.1
+   Compiling uuid v1.24.0
+   Compiling jiff v0.2.35
+   Compiling kontor-core v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-core)
+   Compiling kontor-runtime v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-runtime)
+   Compiling kontor-context v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-context)
+   Compiling kontor-teams v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-teams)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.92s
+     Running unittests src/lib.rs (target/debug/deps/kontor_teams-fe8d90a9bc84f54d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/operational_workflow.rs (target/debug/deps/operational_workflow-9af646b6c99c34d0)
+
+running 3 tests
+test core_team_forces_distinct_control_roles_and_derives_quick_and_initial_seats ... ok
+test invalid_role_base_and_asma_activation_refuse_before_effects ... ok
+test qsw_to_esw_promotion_is_idempotent_and_hands_off_to_the_lsa ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/team_contract.rs (target/debug/deps/team_contract-9e0ebfdb674ea778)
+
+running 49 tests
+test a_logical_role_may_be_declared_twice_only_through_distinct_slots ... ok
+test a_duplicate_slot_id_is_refused_by_the_rule_that_names_it ... ok
+test a_launch_that_renames_its_run_is_not_admitted ... ok
+test a_launch_that_fails_at_the_channel_releases_its_seat ... ok
+test a_closed_attempt_without_evidence_is_refused ... ok
+test a_later_template_edit_does_not_change_a_live_runs_policy ... ok
+test a_closing_run_from_another_slot_is_refused ... ok
+test a_closing_run_carrying_another_session_is_refused ... ok
+test a_failed_attempt_still_counts_as_child_evidence ... ok
+test a_permit_is_consumed_by_the_binding_it_produced ... ok
+test a_pending_replacement_refuses_a_run_that_has_not_closed ... ok
+test a_pack_with_a_duplicate_template_revision_is_refused ... ok
+test a_replacement_must_be_the_successor_kontor_recorded ... ok
+test a_revision_may_not_rename_or_renumber_the_template ... ok
+test a_replacement_closes_the_old_session_before_the_successor_exists ... ok
+test a_replacement_waits_for_the_runtime_to_observe_the_end ... ok
+test a_reserved_seat_admits_nobody_else ... ok
+test a_run_refused_in_a_second_seat_releases_that_seat ... ok
+test a_revision_publishes_the_next_version_and_leaves_the_previous_untouched ... ok
+test a_restart_does_not_reopen_an_occupied_seat ... ok
+test a_run_that_claims_evidence_while_still_open_closes_nothing ... ok
+test bundled_claude_routes_try_both_accounts_before_the_next_model ... ok
+test a_seat_resolves_its_own_declaration_over_the_frozen_seed ... ok
+test authority_for_one_seat_cannot_launch_another ... ok
+test an_envelope_that_disagrees_with_its_definition_is_refused ... ok
+test an_occupied_slot_offers_no_second_launch_permit ... ok
+test closure_refuses_a_slot_whose_leaf_is_not_terminal ... ok
+test compatible_work_resumes_the_seats_existing_binding ... ok
+test an_unbound_child_retry_preserves_native_depth_and_exact_parent_evidence ... ok
+test freshly_minted_identifiers_cannot_take_an_occupied_seat ... ok
+test hydration_preserves_transitive_abandoned_bridges_without_spending_depth ... ok
+test closure_requires_every_declared_slot ... ok
+test hydration_recovers_the_latest_closed_slot_for_operator_replacement ... ok
+test one_run_cannot_hold_two_seats_at_once ... ok
+test closure_accepts_an_authorized_evidence_bearing_waiver ... ok
+test one_admission_buys_exactly_one_native_session ... ok
+test one_seats_authority_cannot_spend_another_seats_reservation ... ok
+test the_bundled_pack_declares_per_slot_autonomy_as_a_new_revision ... ok
+test racing_admissions_for_one_seat_start_exactly_one_session ... ok
+test racing_hydrations_cannot_double_reserve_a_slot ... ok
+test malformed_transitive_abandoned_bridges_still_refuse_hydration ... ok
+test malformed_hydrated_state_yields_no_roster ... ok
+test every_seed_template_round_trips_byte_and_hash_identically ... ok
+test the_successor_chain_stops_at_the_declared_depth ... ok
+test two_distinct_slots_of_one_role_hold_independent_sessions ... ok
+test the_certificate_binds_the_template_and_every_slot ... ok
+test two_live_runs_in_one_seat_are_refused_as_an_ac4_conflict ... ok
+test two_managers_cannot_own_one_team_run ... ok
+test structurally_invalid_templates_are_refused ... ok
+
+test result: ok. 49 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+   Doc-tests kontor_teams
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+PROCESS_EXIT_CODE=0

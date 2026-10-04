@@ -1,0 +1,5 @@
+cmd=cargo test -p kontor-store --lib released_124_upgrade_preserves_realm_bindings_and_memory_content --locked
+start=2026-10-04T07:50:29Z
+head=d0d27332e9581cef368a4e0e2c8ea1a48f552716
+tree=9b1430e1494ea8b30df6f682a4001215cbd39b41
+exit=101
