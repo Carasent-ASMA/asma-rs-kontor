@@ -69,11 +69,11 @@ const EXPECTED_TABLES: &[&str] = &[
     "committee_remediations",
     "committee_re_review_claims",
     "advisor_advice_artifacts",
-    // Schema v125 (ASMA-8282): the planning pair's run-keyed protocol payload.
+    // Schema v127 (ASMA-8282): the planning pair's run-keyed protocol payload.
     "planning_pair_placements",
     "planning_pair_record_revisions",
     "planning_pair_contributions",
-    // Schema v126 (ASMA-8282 frontier A): each member's immutable known native.
+    // Schema v128 (ASMA-8282 frontier A): each member's immutable known native.
     "planning_pair_member_natives",
     "context_packs",
     "core_team_revisions",
@@ -142,6 +142,14 @@ const EXPECTED_TABLES: &[&str] = &[
     "memory_approvals",
     "memory_authority",
     "memory_context_bindings",
+    "memory_experience_eligibility",
+    "memory_experience_proposals",
+    "memory_projection_active",
+    "memory_projection_snapshots",
+    "memory_projection_rebuild_keys",
+    "memory_projection_rebuild_results",
+    "memory_recall_metadata",
+    "memory_recall_keys",
     "memory_fts",
     "memory_fts_config",
     "memory_fts_content",
@@ -772,16 +780,22 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // claimed before its first duplicable effect, and a durable readback plus
     // pending-effect record so a replay converges instead of re-planning
     // against a seat that has moved (ASMA-8187).
-    // v123 binds fleet policy publication and activation keys realm-wide and
+    // v121 retains imported records as inspectable evidence without authority.
+    // v122 freezes and verifies each succession receipt binding.
+    // v123 adds typed experience eligibility, projections and recall metadata.
+    // v124 records immutable projection rebuild requests and original results.
+    // v125 binds fleet policy publication and activation keys realm-wide and
     // restores the binding permanence triggers the v28 rebuild dropped
     // (ASMA-8280).
-    // v124 binds fleet bundle publication and activation keys the same way.
-    // v125 adds the closed `planning_pair` consultation family, its
+    // v126 binds fleet bundle publication and activation keys the same way.
+    // v127 adds the closed `planning_pair` consultation family, its
     // family-conditioned run states, its run-keyed placement, record and
     // contribution payload, and its six command kinds (ASMA-8282).
-    // v126 keeps each planning pair member's immutable known native session
+    // v128 keeps each planning pair member's immutable known native session
     // and adds the caller's same-native member recovery kind (ASMA-8282).
-    assert_eq!(SCHEMA_VERSION, 128);
+    // v129 adds public attestation issuer-key metadata (ASMA-8278).
+    // v130 records permanent prepared attestation commitments (ASMA-8278).
+    assert_eq!(SCHEMA_VERSION, 130);
 }
 
 #[test]
@@ -6131,10 +6145,10 @@ fn issuance_boundary_is_frozen_across_replay_and_reopen() {
     }
 }
 
-/// v123: fleet policy publication and activation bind their keys realm-wide,
+/// v125: fleet policy publication and activation bind their keys realm-wide,
 /// once, and a binding can no longer be rebound or released (ASMA-8280).
 #[test]
-fn v123_fleet_policy_keys_bind_once_and_stay_bound() {
+fn v125_fleet_policy_keys_bind_once_and_stay_bound() {
     let directory = temp();
     let store = open(&directory);
     let binding =
@@ -6197,10 +6211,10 @@ fn v123_fleet_policy_keys_bind_once_and_stay_bound() {
     }
 }
 
-/// v124: fleet bundle publication and activation bind their keys realm-wide,
-/// once; the v123 bindings survive the rebuild and stay permanent (ASMA-8280).
+/// v126: fleet bundle publication and activation bind their keys realm-wide,
+/// once; the v125 bindings survive the rebuild and stay permanent (ASMA-8280).
 #[test]
-fn v124_fleet_bundle_keys_bind_once_and_every_binding_stays_bound() {
+fn v126_fleet_bundle_keys_bind_once_and_every_binding_stays_bound() {
     let directory = temp();
     let store = open(&directory);
     let binding =
@@ -6268,12 +6282,12 @@ fn v124_fleet_bundle_keys_bind_once_and_every_binding_stays_bound() {
     }
 }
 
-/// v125 (ASMA-8282) rebuilds the consultation registry, its document catalog
+/// v127 (ASMA-8282) rebuilds the consultation registry, its document catalog
 /// and the receipt ledger to admit the closed `planning_pair` family. Every
 /// Advisor and Committee row, constraint, trigger and index must come through
 /// it byte for byte, including a settled run's terminal evidence.
 #[test]
-fn v125_preserves_every_advisor_and_committee_row_and_rule() {
+fn v127_preserves_every_advisor_and_committee_row_and_rule() {
     const PROJECT: &str = "0193f000-0000-7000-8000-000000000101";
     const EPIC: &str = "0193f000-0000-7000-8000-000000000102";
     const CALLER: &str = "0193f000-0000-7000-8000-000000000103";
@@ -6288,7 +6302,7 @@ fn v125_preserves_every_advisor_and_committee_row_and_rule() {
     const HASH_C: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 
     let connection = Connection::open_in_memory().expect("the migration fixture opens");
-    // The parents 0122 references, as stubs; then the exact v124 shapes of the
+    // The parents 0122 references, as stubs; then the exact v126 shapes of the
     // three tables it rebuilds, with their triggers and indexes.
     connection
         .execute_batch(&format!(
@@ -6321,10 +6335,10 @@ fn v125_preserves_every_advisor_and_committee_row_and_rule() {
                 .split("-- Widen the closed command-kind list")
                 .next()
                 .expect("the v34 catalog definition"),
-            runs = V124_CONSULTATION_RUNS,
+            runs = V126_CONSULTATION_RUNS,
             receipts = V108_COMMAND_RECEIPTS,
         ))
-        .expect("the v124 shapes are created");
+        .expect("the v126 shapes are created");
     connection
         .execute_batch(&format!(
             "INSERT INTO projects VALUES ('{PROJECT}');
@@ -6392,8 +6406,8 @@ fn v125_preserves_every_advisor_and_committee_row_and_rule() {
         .execute_batch("PRAGMA foreign_keys = OFF;")
         .expect("the migration runner's pragma");
     connection
-        .execute_batch(include_str!("../migrations/0125_planning_pair_family.sql"))
-        .expect("v125 applies over the historical rows");
+        .execute_batch(include_str!("../migrations/0127_planning_pair_family.sql"))
+        .expect("v127 applies over the historical rows");
     connection
         .execute_batch("PRAGMA foreign_keys = ON;")
         .expect("the runner restores foreign keys");
@@ -6494,12 +6508,12 @@ fn v125_preserves_every_advisor_and_committee_row_and_rule() {
     );
 }
 
-/// v126 (ASMA-8282 frontier A) adds one run-keyed planning pair detail, each
+/// v128 (ASMA-8282 frontier A) adds one run-keyed planning pair detail, each
 /// member's known native claim, and one receipt kind. The receipt ledger keeps
 /// every row; a claim belongs only to a current member seat of an open planning
 /// pair on its own placement, and is immutable and permanent.
 #[test]
-fn v126_keeps_every_receipt_and_admits_only_a_current_members_immutable_claim() {
+fn v128_keeps_every_receipt_and_admits_only_a_current_members_immutable_claim() {
     const PROJECT: &str = "0193f000-0000-7000-8000-000000000201";
     const RUN: &str = "0193f000-0000-7000-8000-000000000202";
     const COMMITTEE: &str = "0193f000-0000-7000-8000-000000000203";
@@ -6507,12 +6521,12 @@ fn v126_keeps_every_receipt_and_admits_only_a_current_members_immutable_claim() 
     const RECEIPT: &str = "0193f000-0000-7000-8000-000000000205";
     const PLACEMENT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const CONTEXT: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-    let v125 = include_str!("../migrations/0125_planning_pair_family.sql");
-    let start = v125
-        .find("CREATE TABLE command_receipts_v125 (")
-        .expect("the v125 receipt shape");
-    let end = start + v125[start..].find(") STRICT;").expect("its end") + ") STRICT;".len();
-    let receipts = v125[start..end].replace("command_receipts_v125", "command_receipts");
+    let v127 = include_str!("../migrations/0127_planning_pair_family.sql");
+    let start = v127
+        .find("CREATE TABLE command_receipts_v127 (")
+        .expect("the v127 receipt shape");
+    let end = start + v127[start..].find(") STRICT;").expect("its end") + ") STRICT;".len();
+    let receipts = v127[start..end].replace("command_receipts_v127", "command_receipts");
 
     let connection = Connection::open_in_memory().expect("the migration fixture opens");
     connection
@@ -6546,7 +6560,7 @@ fn v126_keeps_every_receipt_and_admits_only_a_current_members_immutable_claim() 
                      '{{}}', 3, '{{}}', '{CONTEXT}', 'intent_persisted', 0,
                      '2026-10-02T10:00:00Z', '2026-10-02T10:00:00Z', 'local');"
         ))
-        .expect("the v125 fixture");
+        .expect("the v127 fixture");
     let before: String = connection
         .query_row(
             "SELECT json_group_array(json_array(id, kind, idempotency_key, target_revision, state))
@@ -6557,9 +6571,9 @@ fn v126_keeps_every_receipt_and_admits_only_a_current_members_immutable_claim() 
         .expect("the receipts read");
     connection
         .execute_batch(include_str!(
-            "../migrations/0126_planning_pair_member_natives.sql"
+            "../migrations/0128_planning_pair_member_natives.sql"
         ))
-        .expect("v126 applies over the historical rows");
+        .expect("v128 applies over the historical rows");
     let after: String = connection
         .query_row(
             "SELECT json_group_array(json_array(id, kind, idempotency_key, target_revision, state))
@@ -6572,7 +6586,7 @@ fn v126_keeps_every_receipt_and_admits_only_a_current_members_immutable_claim() 
     let version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("the version reads");
-    assert_eq!(version, 126);
+    assert_eq!(version, 128);
 
     let receipt = |id: &str, key: &str, kind: &str| {
         connection.execute(
@@ -6666,9 +6680,9 @@ fn v126_keeps_every_receipt_and_admits_only_a_current_members_immutable_claim() 
     refused(claim(RUN, 3, PLACEMENT), "a disposed pair");
 }
 
-/// The exact v124 shape of `consultation_runs`: the v70 table, the four
+/// The exact v126 shape of `consultation_runs`: the v70 table, the four
 /// columns v77, v91 and v96 added, and the v91 and v96 indexes and triggers.
-const V124_CONSULTATION_RUNS: &str = "
+const V126_CONSULTATION_RUNS: &str = "
 CREATE TABLE consultation_runs (
     run_id TEXT NOT NULL PRIMARY KEY CHECK (length(run_id) = 36 AND run_id NOT GLOB '*[^0-9a-f-]*'),
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
@@ -6751,3 +6765,133 @@ CREATE INDEX ix_command_receipts_state ON command_receipts(project_id, state);
 CREATE TRIGGER command_receipts_no_delete BEFORE DELETE ON command_receipts
 BEGIN SELECT RAISE(ABORT, 'command receipts are not deletable'); END;
 ";
+
+#[test]
+fn v123_upgrade_preserves_generic_ledger_and_enforces_immutable_memory_receipts() {
+    use kontor_core::id::{ExternalName, IdempotencyKey, Timestamp};
+    use kontor_core::memory::{DegradedReason, RecallIntent};
+    use kontor_core::repository::NewProject;
+    use kontor_store::memory::{MemoryProvenance, SemanticRecall};
+    let directory = temp();
+    let store = open(&directory);
+    let project = ProjectId::generate();
+    store
+        .create_project(&NewProject {
+            id: project,
+            name: ExternalName::parse("Memory upgrade").unwrap(),
+            root_path: ExternalName::parse("/tmp/memory-upgrade").unwrap(),
+            created_at: Timestamp::now(),
+        })
+        .unwrap();
+    let document = CanonicalDocument::from_value(
+        &serde_json::json!({"schema_version":1,"text":"generic legacy document"}),
+    )
+    .unwrap();
+    let provenance = MemoryProvenance {
+        source: "synthetic".into(),
+        source_id: None,
+        legacy_last_write_wins: false,
+        history_unavailable: false,
+    };
+    let (revision, _) = store
+        .propose_memory_revision(project, "legacy", 0, &document, &provenance, "author")
+        .unwrap();
+    store
+        .approve_memory_revision(project, "legacy", &revision.revision_id, 1, "reviewer")
+        .unwrap();
+    let original = store
+        .freeze_memory_binding(
+            project,
+            "legacy-run",
+            &document,
+            std::slice::from_ref(&revision.revision_id),
+        )
+        .unwrap();
+    let typed = CanonicalDocument::from_value(
+        &serde_json::from_str::<serde_json::Value>(include_str!(
+            "../../kontor-core/tests/fixtures/experience-v1.json"
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    let (typed_revision, _) = store
+        .propose_memory_revision(project, "typed-existing", 0, &typed, &provenance, "author")
+        .unwrap();
+    store
+        .approve_memory_revision(
+            project,
+            "typed-existing",
+            &typed_revision.revision_id,
+            1,
+            "reviewer",
+        )
+        .unwrap();
+    drop(store);
+    // Remove all post-119 additive tables and the derived cache. The fixture
+    // now has the exact v119 table set and ledger, and opens through the real chain.
+    let database = directory.path().join("kontor.db");
+    let connection = Connection::open(&database).unwrap();
+    connection.execute_batch("DROP TABLE memory_projection_rebuild_results; DROP TABLE memory_projection_rebuild_keys; DROP TABLE memory_recall_keys; DROP TABLE memory_recall_metadata; DROP TABLE memory_experience_proposals; DROP TABLE memory_projection_active; DROP TABLE memory_projection_snapshots; DROP TABLE memory_experience_eligibility; DROP TABLE imported_record_evidence; DROP TABLE core_team_route_successions; PRAGMA user_version=119;").unwrap();
+    // The ASMA-8278 feature generations are additive too: a fixture that replays
+    // the chain from 119 must not leave their tables behind either.
+    connection.execute_batch("DROP TABLE planning_pair_contributions; DROP TABLE planning_pair_record_revisions; DROP TABLE planning_pair_placements; DROP TABLE planning_pair_member_natives; DROP TABLE attestation_authority_keys; DROP TABLE attestation_authority_heads; DROP TABLE prepared_attestation_tokens; DROP TABLE attestation_token_heads;").unwrap();
+    drop(connection);
+    let store = SqliteStore::open(&database).unwrap();
+    assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+    assert_eq!(store.list_memory(project).unwrap()[0].document, document);
+    assert_eq!(
+        store
+            .memory_binding(project, "legacy-run")
+            .unwrap()
+            .unwrap()
+            .result_hash,
+        original.result_hash
+    );
+    let snapshot = store.stage_projection(project).unwrap();
+    assert!(snapshot.entries.is_empty());
+    let intent = RecallIntent {
+        schema_version: 1,
+        task_id: "synthetic".into(),
+        task_title: "publication".into(),
+        module: None,
+        declared_scope: vec![],
+        phase: "verification".into(),
+    };
+    let key = IdempotencyKey::parse("upgrade-recall").unwrap();
+    let recall = store
+        .recall_experiences_idempotent(
+            project,
+            "typed-run",
+            "synthetic",
+            &key,
+            &intent,
+            &SemanticRecall::Degraded(DegradedReason::Absent),
+        )
+        .unwrap();
+    assert_eq!(recall.metadata.identities.len(), 1);
+    assert_eq!(
+        recall.metadata.identities[0].revision_id,
+        typed_revision.revision_id
+    );
+    drop(store);
+    let connection = Connection::open(&database).unwrap();
+    for sql in [
+        "UPDATE memory_projection_snapshots SET dataset='changed'",
+        "DELETE FROM memory_projection_snapshots",
+        "UPDATE memory_recall_metadata SET metadata='{}'",
+        "DELETE FROM memory_recall_metadata",
+        "UPDATE memory_recall_keys SET task_id='changed'",
+        "DELETE FROM memory_recall_keys",
+    ] {
+        assert!(
+            connection.execute(sql, []).is_err(),
+            "immutable evidence must reject {sql}"
+        );
+    }
+    let violations: i64 = connection
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(violations, 0);
+}

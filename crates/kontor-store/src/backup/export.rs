@@ -1290,7 +1290,7 @@ pub fn export_realm(store: &SqliteStore, now: Timestamp) -> Result<KontorExportV
 }
 
 /// Qualified key/token continuity is unsupported by modeled export and restore.
-/// Legitimate pre-127/pre-128 absence is distinct from corrupt missing tables.
+/// Legitimate pre-129/pre-130 absence is distinct from corrupt missing tables.
 /// Every present key ledger is inspected before any token-absence fallback.
 pub(crate) fn ensure_empty_attestation_ledger(connection: &Connection) -> Result<(), BackupError> {
     let refusal = || BackupError::Verification {
@@ -1304,12 +1304,12 @@ pub(crate) fn ensure_empty_attestation_ledger(connection: &Connection) -> Result
     }
     for (introduced, head, rows) in [
         (
-            127,
+            129,
             "attestation_authority_heads",
             "attestation_authority_keys",
         ),
         (
-            128,
+            130,
             "attestation_token_heads",
             "prepared_attestation_tokens",
         ),
@@ -3079,14 +3079,14 @@ mod attestation_ledger_tests {
     use super::*;
 
     #[test]
-    fn historical_table_absence_is_allowed_only_before_127() {
+    fn historical_table_absence_is_allowed_only_before_129() {
         let connection = Connection::open_in_memory().expect("fixture");
         connection
-            .execute_batch("PRAGMA user_version=126;")
+            .execute_batch("PRAGMA user_version=128;")
             .expect("legacy version");
         assert!(ensure_empty_attestation_ledger(&connection).is_ok());
         connection
-            .execute_batch("PRAGMA user_version=127;")
+            .execute_batch("PRAGMA user_version=129;")
             .expect("corrupt current version");
         assert!(matches!(
             ensure_empty_attestation_ledger(&connection),
@@ -3101,11 +3101,11 @@ mod attestation_ledger_tests {
         ));
     }
     #[test]
-    fn token_tables_are_required_at128_and_legacy127_absence_never_skips_keys() {
+    fn token_tables_are_required_at130_and_legacy129_absence_never_skips_keys() {
         let connection = Connection::open_in_memory().expect("fixture");
         connection
             .execute_batch(
-                "PRAGMA user_version=127;
+                "PRAGMA user_version=129;
             CREATE TABLE attestation_authority_heads (revision INTEGER);
             CREATE TABLE attestation_authority_keys (revoked_revision INTEGER);",
             )
@@ -3116,7 +3116,7 @@ mod attestation_ledger_tests {
             .expect("revoked history");
         assert!(ensure_empty_attestation_ledger(&connection).is_err());
         connection
-            .execute_batch("DELETE FROM attestation_authority_keys; PRAGMA user_version=128;")
+            .execute_batch("DELETE FROM attestation_authority_keys; PRAGMA user_version=130;")
             .expect("corrupt fixture only");
         assert!(ensure_empty_attestation_ledger(&connection).is_err());
         connection

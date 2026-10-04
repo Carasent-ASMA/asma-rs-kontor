@@ -254,14 +254,14 @@ fn a_container_native_identity_cannot_masquerade_as_seat_provenance() {
 }
 
 #[test]
-fn migration128_transaction_rolls_back_all_tables_and_version_on_ddl_failure() {
+fn migration130_transaction_rolls_back_all_tables_and_version_on_ddl_failure() {
     let mut c = Connection::open_in_memory().expect("fixture");
-    c.execute_batch("PRAGMA user_version=127; CREATE TABLE prepared_attestation_tokens (sentinel INTEGER) STRICT;").expect("collision fixture");
+    c.execute_batch("PRAGMA user_version=129; CREATE TABLE prepared_attestation_tokens (sentinel INTEGER) STRICT;").expect("collision fixture");
     {
         let tx = c.transaction().expect("transaction");
         assert!(
             tx.execute_batch(include_str!(
-                "../../migrations/0128_prepared_attestation_tokens.sql"
+                "../../migrations/0130_prepared_attestation_tokens.sql"
             ))
             .is_err()
         );
@@ -269,7 +269,7 @@ fn migration128_transaction_rolls_back_all_tables_and_version_on_ddl_failure() {
     assert_eq!(
         c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .expect("version"),
-        127
+        129
     );
     assert_eq!(c.query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='attestation_token_heads'",[],|r|r.get::<_,i64>(0)).expect("table"),0);
 }

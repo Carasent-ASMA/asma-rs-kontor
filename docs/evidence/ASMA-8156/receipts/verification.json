@@ -1,0 +1,358 @@
+{
+  "source_manifest_sha256": "eb7df8ef2f7318e95951fb3d3369c6852b33f69c88efcd0ec1a371372e23e8e5",
+  "runs": [
+    {
+      "name": "api-mcp",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-api",
+        "-p",
+        "kontor-mcp",
+        "--lib",
+        "--tests",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "seconds": 37.467,
+      "log": "api-mcp.log",
+      "log_sha256": "1e0caef3983368295b30b7d9256e90fad3ac6a5edf0c0ceadd91dec4b885134c",
+      "test_results": [
+        "test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s",
+        "test result: ok. 66 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ],
+      "raw_log": "api-mcp.log.raw.gz",
+      "raw_log_sha256": "0d91ce205a2859ee48aafac7670954b67c666a3fc463759c920ed1a7aa86659e",
+      "raw_archive_sha256": "ed02be70977dcef4c3532f41eefb544f3f15256634e1cfa7d99d1d0074c8ea38",
+      "log_normalization": "Trailing whitespace and extra final blank lines removed; raw bytes preserved in gzip archive."
+    },
+    {
+      "name": "http-cli",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-daemon",
+        "--test",
+        "experience_memory",
+        "-p",
+        "kontor-cli",
+        "--test",
+        "memory_parity",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "seconds": 63.496,
+      "log": "http-cli.log",
+      "log_sha256": "5bb5ccd18121d8928a8127042258d0b53dfefa7b37be1f2bfe6d23969a0667c3",
+      "test_results": [
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.35s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.73s"
+      ],
+      "raw_log": "http-cli.log.raw.gz",
+      "raw_log_sha256": "57b586c2edb65316bb747ba5a4750b4562dab1da05e1c47ffc31ee1daac6372a",
+      "raw_archive_sha256": "3dc35dd417013eee62386c1801fd1fb773e76f5585be43ffa3e67414a3e16ba0",
+      "log_normalization": "Trailing whitespace and extra final blank lines removed; raw bytes preserved in gzip archive."
+    },
+    {
+      "name": "parity",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-tests-contract",
+        "--test",
+        "mcp_parity",
+        "--test",
+        "mcp_cardinality",
+        "--test",
+        "mcp_mutants",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "seconds": 55.983,
+      "log": "parity.log",
+      "log_sha256": "1ce0055f364c83e0ebd833b8d0b02ef8c502698b0875fe88c4f2eddf9ce72873",
+      "test_results": [
+        "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s",
+        "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s",
+        "test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s"
+      ],
+      "raw_log": "parity.log.raw.gz",
+      "raw_log_sha256": "8e19be355cd29c799b0fcfdbe06d492a331ac1aa00568e98e93c0a11b07f42b2",
+      "raw_archive_sha256": "0d1c9d8ec65a3944c399e82e08d7c046f459cd9f92ad911a422f80086ccf0a50",
+      "log_normalization": "Trailing whitespace and extra final blank lines removed; raw bytes preserved in gzip archive."
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "-p",
+        "kontor-core",
+        "-p",
+        "kontor-store",
+        "-p",
+        "kontor-api",
+        "-p",
+        "kontor-daemon",
+        "-p",
+        "kontor-cli",
+        "-p",
+        "kontor-mcp",
+        "--all-targets",
+        "--offline",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 58.747,
+      "log": "clippy.log",
+      "log_sha256": "c39628cb478a0b21e7d1d680fb3a663412d39c4d908a10df117a6b76c231283d",
+      "test_results": []
+    },
+    {
+      "name": "fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 3.556,
+      "log": "fmt.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "test_results": []
+    },
+    {
+      "name": "diff",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 0.073,
+      "log": "diff.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "test_results": []
+    },
+    {
+      "name": "final-core",
+      "reproduce_command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-core",
+        "--lib",
+        "--test",
+        "experience_memory",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "log": "final-core.log",
+      "log_sha256": "56659b8c9685419578de0fd3ce82b9c72ab9b2916a3ba68ae83c60bf2c05b94b",
+      "test_results": [
+        "test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s"
+      ],
+      "raw_log": "final-core.log.raw.gz",
+      "raw_log_sha256": "fbd5eea2e10ae22d9d064c6d9164f1d8c8c93ef27e2c630089a9762148b49edd",
+      "raw_archive_sha256": "2a8234ba4b785d20452820b85549d95a5cae84e30e565ec6351363d0d8b32a8e",
+      "log_normalization": "Trailing whitespace and extra final blank lines removed; raw bytes preserved in gzip archive."
+    },
+    {
+      "name": "final-store",
+      "reproduce_command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--lib",
+        "memory::",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "log": "final-store.log",
+      "log_sha256": "a0139a6a9a8feb1c0e42088b78cd19c4fe03ea6ebf1bd33cdfba7d260d5983b8",
+      "test_results": [
+        "test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 89.89s"
+      ],
+      "raw_log": "final-store.log.raw.gz",
+      "raw_log_sha256": "637f97a1238a8c7ea30991a7cb6b7358c32ad7ea6950fd7081d0dbdaab55b0e6",
+      "raw_archive_sha256": "3042247ade88024c0dcdfbc55768d92627f18df727534fc83fe564f3ea946fdb",
+      "log_normalization": "Trailing whitespace and extra final blank lines removed; raw bytes preserved in gzip archive."
+    },
+    {
+      "name": "migration",
+      "reproduce_command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "schema_v1",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "log": "migration.log",
+      "log_sha256": "a8a3c291212120c1b4563342c3ccb5dd812c36a85b68e16fe20c4ca3f9074322",
+      "test_results": [
+        "test result: ok. 65 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 233.16s"
+      ],
+      "raw_log": "migration.log.raw.gz",
+      "raw_log_sha256": "c907b982be979bf6fc68db5c5e2592fe4d4a460bd0349ba37bd69f62dbdb6358",
+      "raw_archive_sha256": "e293d5f734bf85bc66fc8cb00223c4306e2da6f3311440804b50b5a5512e27e4",
+      "log_normalization": "Trailing whitespace and extra final blank lines removed; raw bytes preserved in gzip archive."
+    },
+    {
+      "name": "backup",
+      "reproduce_command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "backup_snapshot",
+        "memory_ledger_and_import_evidence_restore_while_fts_is_rebuilt",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "log": "backup.log",
+      "log_sha256": "791424420d36b7d8e9077291311aa0090062daacb9c405ee4039630f019f5a8d",
+      "test_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 5.10s"
+      ],
+      "raw_log": "backup.log.raw.gz",
+      "raw_log_sha256": "b46accff2e7de0f8b8074c99ccb0ddd01c6b221684feccb2b2e58d5c3d9f0b95",
+      "raw_archive_sha256": "f369f9a9c3639c722bdf16b947280a65763a21a65f8e412dd72d9dfa5646bc0f",
+      "log_normalization": "Trailing whitespace and extra final blank lines removed; raw bytes preserved in gzip archive."
+    },
+    {
+      "name": "dependencies",
+      "reproduce_command": [
+        "cargo",
+        "deny",
+        "--offline",
+        "check",
+        "licenses",
+        "bans",
+        "sources"
+      ],
+      "exit_code": 0,
+      "log": "dependencies.log",
+      "log_sha256": "5b80b34e4faf7b49060e716a1b396cb181fd757de386dddb345f9475de9ee0c5",
+      "test_results": [],
+      "raw_log": "dependencies.log.raw.gz",
+      "raw_log_sha256": "a8d7f1c98a33e42a71d32f70d05d78ffb3c125d8ec64c9d6fea5481386326608",
+      "raw_archive_sha256": "157aecc2b3b80889698cacbae2868f488e21b9b75a137e087149b9b39b31d47b",
+      "log_normalization": "Trailing whitespace and extra final blank lines removed; raw bytes preserved in gzip archive."
+    },
+    {
+      "name": "console-typecheck",
+      "reproduce_command": [
+        "node",
+        "<then-installed-typescript>/bin/tsc",
+        "--noEmit"
+      ],
+      "exit_code": 0,
+      "log": "console-typecheck.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "test_results": []
+    },
+    {
+      "name": "console-tests",
+      "reproduce_command": [
+        "node",
+        "<then-installed-vitest-4.1.10>/vitest.mjs",
+        "run"
+      ],
+      "exit_code": 0,
+      "log": "console-tests.log",
+      "log_sha256": "8f8e125af717fdfc2ddd8c24d8e862ce3edac439a8b26c4207f8b5b8d2c935ec",
+      "test_results": [
+        " Test Files  17 passed (17)",
+        "      Tests  305 passed (305)"
+      ],
+      "raw_log": "console-tests.log.raw.gz",
+      "raw_log_sha256": "bf8c1c54838c292d48639b47c34da48f815338252c3dcbc525e97d515853de52",
+      "raw_archive_sha256": "44bd97a678b893c14360c5ea48fe92baf1c16668b3f33cec0d0df8c3300ccfa3",
+      "log_normalization": "Trailing whitespace and extra final blank lines removed; raw bytes preserved in gzip archive."
+    },
+    {
+      "name": "client-generate",
+      "reproduce_command": [
+        "node",
+        "/Users/igor/.npm/_npx/f1e70922fc87e24a/node_modules/openapi-typescript/bin/cli.js",
+        "crates/kontor-api/contract/openapi.json",
+        "-o",
+        "apps/console/src/api/schema.d.ts"
+      ],
+      "exit_code": 0,
+      "log": "client-generate.log",
+      "log_sha256": "1a4f6f137baa075daa0b6ad2b94d85e01c678b32b4d5cbce0fdec7ee648f31e2",
+      "test_results": []
+    },
+    {
+      "name": "client-verify",
+      "reproduce_command": [
+        "node",
+        "/Users/igor/.npm/_npx/f1e70922fc87e24a/node_modules/openapi-typescript/bin/cli.js",
+        "crates/kontor-api/contract/openapi.json",
+        "-o",
+        "target/mem01-client-schema.d.ts"
+      ],
+      "exit_code": 0,
+      "log": "client-verify.log",
+      "log_sha256": "b060d53d262944eb984762edaa87452d0eb8b6c693de4101422b7596c889c95e",
+      "test_results": []
+    },
+    {
+      "name": "client-typecheck",
+      "reproduce_command": [
+        "/opt/homebrew/bin/tsc",
+        "--noEmit",
+        "--strict",
+        "--skipLibCheck",
+        "--lib",
+        "ES2022",
+        "apps/console/src/api/schema.d.ts"
+      ],
+      "exit_code": 0,
+      "log": "client-typecheck.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "test_results": []
+    },
+    {
+      "name": "client-generation-byte-parity",
+      "command": [
+        "cmp",
+        "apps/console/src/api/schema.d.ts",
+        "target/mem01-client-schema.d.ts"
+      ],
+      "exit_code": 0,
+      "generated_sha256": "f139d5ac32ddfc6d12fe7f07d4e22f9c9256c555a8db11e2ed00f8918afa5af4"
+    },
+    {
+      "name": "dependency-installation-reversed",
+      "directories": [
+        "node_modules",
+        "apps/console/node_modules",
+        "apps/desktop/node_modules"
+      ],
+      "all_absent": true
+    },
+    {
+      "name": "manifest-and-lock-unchanged",
+      "paths": []
+    }
+  ]
+}

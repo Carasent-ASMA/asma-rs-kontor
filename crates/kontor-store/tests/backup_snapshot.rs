@@ -166,16 +166,16 @@ fn a_nonempty_public_authority_snapshot_is_refused_before_destination_creation()
 }
 
 #[test]
-fn historical_pre127_files_retain_schema_refusal_and_additive_open_behavior() {
+fn historical_pre129_files_retain_schema_refusal_and_additive_open_behavior() {
     let home = TempDir::new().expect("home");
     let database = home.path().join("kontor.db");
     let store = SqliteStore::open(&database).expect("store");
     let realm = store.realm_id();
     drop(store);
     let connection = rusqlite::Connection::open(&database).expect("fixture connection");
-    connection.execute_batch("DROP TABLE prepared_attestation_tokens; DROP TABLE attestation_token_heads; DROP TABLE attestation_authority_keys; DROP TABLE attestation_authority_heads; PRAGMA user_version=126;").expect("exact pre127 fixture");
+    connection.execute_batch("DROP TABLE prepared_attestation_tokens; DROP TABLE attestation_token_heads; DROP TABLE attestation_authority_keys; DROP TABLE attestation_authority_heads; PRAGMA user_version=128;").expect("exact pre129 fixture");
     drop(connection);
-    let manifest = SnapshotManifest::describe(&database, realm, 126, at("2026-10-03T18:00:00Z"))
+    let manifest = SnapshotManifest::describe(&database, realm, 128, at("2026-10-03T18:00:00Z"))
         .expect("legacy fixture manifest");
     std::fs::write(
         SnapshotManifest::path_for(&database),
@@ -466,16 +466,16 @@ fn corrupted128_missing_token_tables_refuse_source_and_target_without_mutation()
 }
 
 #[test]
-fn empty_historical127_token_absence_preserves_schema_refusal_and_additive_open() {
+fn empty_historical129_token_absence_preserves_schema_refusal_and_additive_open() {
     let home = TempDir::new().expect("home");
     let database = home.path().join("kontor.db");
     let store = SqliteStore::open(&database).expect("store");
     let realm = store.realm_id();
     drop(store);
     let connection = rusqlite::Connection::open(&database).expect("fixture");
-    connection.execute_batch("DROP TABLE prepared_attestation_tokens; DROP TABLE attestation_token_heads; PRAGMA user_version=127;").expect("historical fixture");
+    connection.execute_batch("DROP TABLE prepared_attestation_tokens; DROP TABLE attestation_token_heads; PRAGMA user_version=129;").expect("historical fixture");
     drop(connection);
-    let manifest = SnapshotManifest::describe(&database, realm, 127, at("2026-10-03T20:00:00Z"))
+    let manifest = SnapshotManifest::describe(&database, realm, 129, at("2026-10-03T20:00:00Z"))
         .expect("manifest");
     std::fs::write(
         SnapshotManifest::path_for(&database),
@@ -493,7 +493,7 @@ fn empty_historical127_token_absence_preserves_schema_refusal_and_additive_open(
             .expect("additive open")
             .schema_version()
             .expect("version"),
-        128
+        130
     );
 }
 

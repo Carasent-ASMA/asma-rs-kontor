@@ -37,7 +37,7 @@ fn realm_preflight_refuses_absent_empty_or_unsupported_databases_without_repair(
 //
 // ASMA-8187 takes this binary from schema 119 to 122. The operator preflight
 // that installs a credential into a *stopped* Realm opens read-only and refuses
-// anything it cannot vouch for, so the question these tests settle is what a 122
+// anything it cannot vouch for, so the question these tests settle is what the joined 130
 // binary does when it meets a Realm that stopped at 119: it must refuse, and it
 // must not migrate on the way.
 // ---------------------------------------------------------------------------
@@ -52,7 +52,7 @@ fn realm_preflight_accepts_the_joined_schema_version() {
         store.schema_version().unwrap(),
         kontor_store::SCHEMA_VERSION
     );
-    assert_eq!(kontor_store::SCHEMA_VERSION, 128);
+    assert_eq!(kontor_store::SCHEMA_VERSION, 130);
     let expected = store.realm_metadata().clone();
     drop(store);
 
@@ -76,12 +76,20 @@ fn realm_preflight_refuses_a_realm_stopped_before_the_8187_migrations() {
     let path = root.path().join("kontor.sqlite3");
     drop(SqliteStore::open(&path).unwrap());
 
-    // Put the Realm back where one stopped before 0120 would be: the three
-    // tables those migrations add are gone and `user_version` says 119.
+    // Put the Realm back where one stopped before 0120 would be: the two
+    // upstream tables and the later memory tables are gone; `user_version` says 119.
     let connection = rusqlite::Connection::open(&path).unwrap();
     connection
         .execute_batch(
-            "DROP TABLE imported_record_evidence;
+            "DROP TABLE memory_projection_rebuild_results;
+             DROP TABLE memory_projection_rebuild_keys;
+             DROP TABLE memory_recall_keys;
+             DROP TABLE memory_recall_metadata;
+             DROP TABLE memory_experience_proposals;
+             DROP TABLE memory_projection_active;
+             DROP TABLE memory_projection_snapshots;
+             DROP TABLE memory_experience_eligibility;
+             DROP TABLE imported_record_evidence;
              DROP TABLE core_team_route_successions;
              PRAGMA user_version = 119;",
         )
@@ -91,7 +99,7 @@ fn realm_preflight_refuses_a_realm_stopped_before_the_8187_migrations() {
     let before = std::fs::read(&path).unwrap();
     assert!(
         SqliteStore::read_existing_realm(&path).is_err(),
-        "a 122 binary vouched for a Realm stopped at 119"
+        "a 130 binary vouched for a Realm stopped at 119"
     );
     assert_eq!(
         std::fs::read(&path).unwrap(),

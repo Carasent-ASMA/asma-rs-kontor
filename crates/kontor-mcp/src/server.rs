@@ -341,7 +341,7 @@ mod tests {
         );
         assert_eq!(
             served.len(),
-            22,
+            25,
             "the worker profile includes artifact recovery and OpenQuestion reads and reports"
         );
     }
@@ -471,7 +471,7 @@ mod tests {
         );
         assert_eq!(
             served.len(),
-            12,
+            14,
             "the worker profile includes OpenQuestion reads"
         );
         assert!(

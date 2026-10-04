@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 128;
+pub const SCHEMA_VERSION: i64 = 130;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -425,19 +425,28 @@ const MIGRATIONS: &[&str] = &[
     // Schema v122. A succession's receipt is proved to be its own, binds at most
     // one succession, and the instant it bound at is as frozen as the binding.
     include_str!("../migrations/0122_core_team_route_succession_receipt_identity.sql"),
-    // Schema v123. Realm idempotency bindings for fleet policy publication and
+    // Schema v123. Typed experience eligibility, immutable projections and recall metadata.
+    include_str!("../migrations/0123_experience_memory_projection.sql"),
+    // Schema v124. Immutable projection rebuild requests and original result receipts.
+    include_str!("../migrations/0124_memory_projection_rebuild_receipts.sql"),
+    // Schema v125. Realm idempotency bindings for fleet policy publication and
     // activation, and the permanence triggers the v28 rebuild dropped
     // (ASMA-8280).
-    include_str!("../migrations/0123_fleet_policy_operations.sql"),
-    // Schema v124. Realm idempotency bindings for fleet bundle publication and
+    include_str!("../migrations/0125_fleet_policy_operations.sql"),
+    // Schema v126. Realm idempotency bindings for fleet bundle publication and
     // activation (ASMA-8280 S-1).
-    include_str!("../migrations/0124_fleet_bundle_operations.sql"),
-    include_str!("../migrations/0125_planning_pair_family.sql"),
-    // The planning pair member's immutable known native session and the
-    // caller's same-native member recovery kind (ASMA-8282 frontier A).
-    include_str!("../migrations/0126_planning_pair_member_natives.sql"),
-    include_str!("../migrations/0127_attestation_authority_keys.sql"),
-    include_str!("../migrations/0128_prepared_attestation_tokens.sql"),
+    include_str!("../migrations/0126_fleet_bundle_operations.sql"),
+    // Schema v127. The closed `planning_pair` consultation family
+    // (ASMA-8282).
+    include_str!("../migrations/0127_planning_pair_family.sql"),
+    // Schema v128. The planning pair member's immutable known native session
+    // and the caller's same-native member recovery kind (ASMA-8282 frontier A).
+    include_str!("../migrations/0128_planning_pair_member_natives.sql"),
+    // Schema v129. Public issuer-key metadata for attestation authority
+    // (ASMA-8278).
+    include_str!("../migrations/0129_attestation_authority_keys.sql"),
+    // Schema v130. Permanent prepared attestation commitments (ASMA-8278).
+    include_str!("../migrations/0130_prepared_attestation_tokens.sql"),
 ];
 
 const _: () = assert!(
@@ -643,6 +652,12 @@ fn apply_pending(
     // transaction or none of them may move at all.
     if version < 47 {
         canonicalize_operational_topology_v47(&transaction)?;
+    }
+
+    // Schema v123's derived cache uses the canonical Rust validator, never a
+    // permissive SQL shape test. Its writes share the ordered migration transaction.
+    if version < 123 {
+        crate::memory::rebuild_experience_eligibility_in(&transaction)?;
     }
 
     // The Realm is created exactly once, by the open that created the schema. An
@@ -1030,7 +1045,7 @@ mod release_integration_tests {
 
         let store = crate::SqliteStore::open(&path).expect("additive upgrade");
         assert_eq!(store.realm_metadata().realm_id, realm.realm_id);
-        assert_eq!(store.schema_version().expect("upgraded version"), 128);
+        assert_eq!(store.schema_version().expect("upgraded version"), 130);
         drop(store);
         let connection = Connection::open(&path).expect("upgraded readback");
         let fingerprint: String = connection.query_row(

@@ -8,6 +8,7 @@ members = [
     "crates/kontor-runtime-ao",
     "crates/kontor-runtime-codex",
     "crates/kontor-context",
+    "crates/kontor-memory-cognee",
     "crates/kontor-accounts",
     "crates/kontor-teams",
     "crates/kontor-fleet",

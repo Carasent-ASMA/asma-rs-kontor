@@ -2804,8 +2804,8 @@ fn a_readback_whose_derived_or_redundant_values_are_wrong_is_refused() {
 // ASMA-8187 P2 — the upgrade asks the rule of the rows that predate it.
 // ---------------------------------------------------------------------------
 
-/// Rewind one realm to schema 121: drop what `0122` added, restore `0120`'s
-/// trigger, and say so in `user_version`.
+/// Rewind one realm to schema 121: remove the later 0123/0124 memory tables
+/// and what `0122` added, restore `0120`'s trigger, and stamp `user_version`.
 ///
 /// The rewind is what makes the upgrade reachable from a test at all. A realm
 /// that has already run `0122` cannot run it again, so a fixture that wants to
@@ -2841,7 +2841,15 @@ fn rewind_to_schema_121(path: &std::path::Path) {
     }
     connection
         .execute_batch(
-            "DROP INDEX ux_core_team_route_succession_receipt;
+            "DROP TABLE memory_projection_rebuild_results;
+             DROP TABLE memory_projection_rebuild_keys;
+             DROP TABLE memory_recall_keys;
+             DROP TABLE memory_recall_metadata;
+             DROP TABLE memory_experience_proposals;
+             DROP TABLE memory_projection_active;
+             DROP TABLE memory_projection_snapshots;
+             DROP TABLE memory_experience_eligibility;
+             DROP INDEX ux_core_team_route_succession_receipt;
              DROP TRIGGER core_team_route_succession_claim_is_frozen;",
         )
         .expect("the generation-122 artefacts are removed");

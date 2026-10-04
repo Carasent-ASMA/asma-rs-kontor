@@ -25,6 +25,7 @@ system behaviour instead of instructions somebody has to remember.
 | `<state-root>/fleet.yml` | Live model routing — domains, accounts, models, chains and seat bindings, read at every placement (optional; see below) |
 | `<state-root>/fleet-activation.json` | Generated: which published fleet policy placement reads, by content hash — and, for an aligned (schema_version 2) activation, which orchestration bundle and Core Team roster. Written only by activation; while it exists, `fleet.yml` is not read (see below) |
 | `<state-root>/core-team-history/`, `<state-root>/orchestration-history/` | Generated, immutable: canonical Core Team revisions and orchestration bundle manifests, each named by its content hash (see below) |
+| `<state-root>/memory-cognee.json` | Optional bounded experience-retrieval configuration; disabled by default (see below) |
 | `<state-root>/credentials.json` | The realm's three tier secrets, `0600` |
 | `<state-root>/endpoint.json` | Where the realm listens, when not on the default loopback port |
 | `<state-root>/provider-homes/` | One credential home per provider account — `CODEX_HOME` for Codex, `CLAUDE_CONFIG_DIR` for Claude |
@@ -33,6 +34,67 @@ system behaviour instead of instructions somebody has to remember.
 Everything in the database is published through a preview/apply pair with a
 content hash: the apply is compared against the hash the preview returned, so a
 specification cannot change between the two.
+
+## Experience memory transport (ASMA-8158 source candidate)
+
+`memory-cognee.json` is optional, strict JSON, at most 8 KiB. Absence keeps
+typed, bounded lexical recall enabled and performs no Cognee network work.
+Only explicitly `provider_eligible` approved revisions enter the store's minimal
+projection preview. The default document policy remains `local_only`.
+
+```json
+{
+  "enabled": false,
+  "endpoint": "http://127.0.0.1:8000",
+  "credential_alias": "experience-fixture",
+  "dataset_prefix": "kontor",
+  "timeout_ms": 1500
+}
+```
+
+| Key | Default and contract |
+| --- | --- |
+| `enabled` | `false`; explicit transport opt-in, separate from a document's projection policy |
+| `endpoint` | `null`; self-hosted HTTP loopback or HTTPS, without userinfo, query or fragment |
+| `credential_alias` | `null`; non-secret alias, never a credential value or a Jira credential |
+| `dataset_prefix` | `kontor`; v1 requires this value to preserve the accepted immutable `kontor_<project_uuid>_<memory_cursor>` dataset identity |
+| `timeout_ms` | `1500`; 1–1500 ms for the entire semantic operation, reserving at least 500 ms of the 2-second target for authoritative lexical selection |
+
+This source candidate qualifies **synthetic transport only**. Embeddings and
+fixture tests can compose `Client::new(config, synthetic_secret)` with
+`DaemonConfig::with_memory_cognee`. Ordinary startup validates the document and
+refuses `enabled: true` with static `cognee_unavailable` until an authorized
+credential/transport composition is supplied. It never reads Keychain, provider
+credentials or environment secrets. ASMA-8159 owns live credential resolution,
+release qualification and projection activation; configuration here does not
+claim those capabilities are deployed.
+
+The transport sends multipart `datasetName` and repeated `data` text files to
+`/api/v1/add`, then blocking `/api/v1/cognify`, then `/api/v1/search` with
+`search_type: CHUNKS`, a dataset-name filter and `top_k: 64`. CHUNKS text is
+parsed only for the embedded canonical identity; backend distance is negated
+into descending rank. The returned lesson/cues never supply prompt content.
+Every candidate is rehydrated and frozen by the canonical store transaction.
+The adapter's `qualify` method produces add/cognify/canary evidence and **does
+not activate a dataset**. Live ingestion/chunk identity and release-specific
+completion/dataset behavior require ASMA-8159 qualification.
+
+Search/response work is bounded to 64 candidates and 256 KiB before decoding;
+redirects, automatic retries and inherited proxies are disabled. Errors expose
+static reasons without upstream bodies. An absent/stale/failed/malformed/empty
+projection degrades to eligible FTS with no `list_memory` fallback. Recall
+selects at most 8 whole experiences within 32768 exact canonical UTF-8 bytes,
+including JSON array overhead. The general Context Pack ceiling remains 1 MiB.
+Context `memory_selection.selector_version` is now 2, with `ceiling_bytes: 32768`
+and `narrowed: true`. `omitted` stays empty because it cannot enumerate an
+unbounded corpus; frozen recall metadata supplies exclusion counts instead.
+
+Normal delivery root prompts append the exact frozen canonical array inside
+`<experience_memory>` and identify its project, original run, result hash and
+block hash. Downstream roles cite that same binding. Replays load historical
+canonical bytes with hash verification before retrieving again; approval,
+tombstone, task edits and projection changes do not replace the selection.
+An explicit purge returns the accepted typed refusal and preserves the binding.
 
 ## Jira-derived backlog and topology names
 

@@ -423,16 +423,16 @@ fn direct_sql_cannot_change_material_unrevoke_delete_or_jump_the_head() {
 }
 
 #[test]
-fn failed_migration_127_rolls_back_its_new_head_and_version() {
+fn failed_migration_129_rolls_back_its_new_head_and_version() {
     let (root, store, _scope) = fixture();
     drop(store);
     let connection = sql(&root);
     connection
         .execute_batch(
             "DROP TABLE attestation_authority_keys; DROP TABLE attestation_authority_heads;
-        CREATE TABLE attestation_authority_keys (collision INTEGER); PRAGMA user_version=126;",
+        CREATE TABLE attestation_authority_keys (collision INTEGER); PRAGMA user_version=128;",
         )
-        .expect("pre-v127 collision fixture");
+        .expect("pre-v129 collision fixture");
     drop(connection);
     assert!(SqliteStore::open(&root.path().join("kontor.db")).is_err());
     let connection = sql(&root);
@@ -440,7 +440,7 @@ fn failed_migration_127_rolls_back_its_new_head_and_version() {
         connection
             .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .expect("version"),
-        126
+        128
     );
     assert_eq!(
         connection

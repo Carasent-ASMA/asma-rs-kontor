@@ -2047,6 +2047,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/memory/experiences:classify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["classify"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/memory/experiences:propose": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["propose_experience"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/memory/import:apply": {
         parameters: {
             query?: never;
@@ -2073,6 +2105,102 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["import_preview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/memory/projection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["projection_readback"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/memory/projection:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["projection_preview"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/memory/projection:rebuild": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["projection_rebuild"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/memory/recall/{agent_run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["recall_readback"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/memory/recall:freeze": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["recall_freeze"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/memory/recall:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["recall_preview"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5764,6 +5892,20 @@ export interface components {
              */
             expected_revision: number;
         };
+        ContextMemoryBinding: {
+            /** Format: date-time */
+            bound_at: string;
+            ordered_revisions: components["schemas"]["FrozenRevision"][];
+            /** Format: uuid */
+            project_id: string;
+            result_hash: string;
+            run_id: string;
+            /** Format: int64 */
+            selection_cursor: number;
+            selection_spec: {
+                [key: string]: unknown;
+            };
+        };
         /**
          * @description One seat's context-window policy and the latest attempt to compact it.
          *
@@ -6380,6 +6522,8 @@ export interface components {
              */
             reserve_minor_units: number;
         };
+        /** @enum {string} */
+        DegradedReason: "absent" | "stale" | "timeout" | "unavailable" | "malformed" | "empty" | "no_eligible_candidates";
         /** @description One durable step in the deliberation path already tried. */
         DeliberationStepDto: {
             /** @description The consultation or recovery mechanism used. */
@@ -6919,6 +7063,103 @@ export interface components {
             /** @description The runtime family that reported it. */
             runtime_kind: string;
         };
+        /** @enum {string} */
+        EvidenceConfidence: "inferred" | "observed";
+        EvidenceRef: {
+            content_hash: string;
+            /** Format: uuid */
+            receipt_id: string;
+            /** @enum {string} */
+            type: "receipt";
+        } | {
+            content_hash: string;
+            /** @description Nonblank; at most 128 UTF-8 bytes; canonical sensitive-material validation applies. */
+            item_id: string;
+            /** Format: uuid */
+            project_id: string;
+            /** Format: uuid */
+            revision_id: string;
+            /** @enum {string} */
+            type: "memory_revision";
+        } | {
+            content_hash: string;
+            /** @description Nonblank; at most 1024 UTF-8 bytes; canonical sensitive-material validation applies. */
+            locator: string;
+            /** @enum {string} */
+            type: "artifact";
+        };
+        ExperienceClassification: {
+            identity: components["schemas"]["MemoryIdentity"];
+            projection_policy: components["schemas"]["ProjectionPolicy"] | null;
+            recall_eligible: boolean;
+        };
+        ExperienceClassificationResponse: {
+            classifications: components["schemas"]["ExperienceClassification"][];
+            realm_id: string;
+        };
+        /** @enum {string} */
+        ExperienceKind: "experience" | "lesson" | "mental_model";
+        ExperienceMemoryV1: {
+            actions: string[];
+            avoid: string[];
+            confidence: components["schemas"]["EvidenceConfidence"];
+            /** @enum {string} */
+            document_type: "experience_memory";
+            domains: string[];
+            evidence_refs: components["schemas"]["EvidenceRef"][];
+            future_cues: string[];
+            /** @description Nonblank; at most 4096 UTF-8 bytes; canonical sensitive-material validation applies. */
+            intent: string;
+            kind: components["schemas"]["ExperienceKind"];
+            /** @description Nonblank; at most 4096 UTF-8 bytes; canonical sensitive-material validation applies. */
+            lesson: string;
+            /** Format: date-time */
+            occurred_at: string;
+            outcome: components["schemas"]["ExperienceOutcome"];
+            projection_policy?: components["schemas"]["ProjectionPolicy"];
+            /** @enum {integer} */
+            schema_version: 1;
+            /** @description Nonblank; at most 4096 UTF-8 bytes; canonical sensitive-material validation applies. */
+            situation: string;
+            went_well: string[];
+            went_wrong: string[];
+        };
+        ExperienceOutcome: {
+            kind: components["schemas"]["OutcomeKind"];
+            /** @description Nonblank; at most 4096 UTF-8 bytes; canonical sensitive-material validation applies. */
+            summary: string;
+        };
+        ExperienceProposal: {
+            document: components["schemas"]["ExperienceMemoryV1"];
+            /** Format: int64 */
+            expected_revision: number;
+            item_id: string;
+            proposed_by: string;
+            provenance: components["schemas"]["MemoryProvenance"];
+        };
+        ExperienceProposalResponse: {
+            realm_id: string;
+            receipt: components["schemas"]["MemoryReceipt"];
+            revision: components["schemas"]["ExperienceRevision"];
+        };
+        ExperienceRevision: {
+            approved: boolean;
+            current: boolean;
+            document: components["schemas"]["ExperienceMemoryV1"];
+            item_id: string;
+            /** Format: uuid */
+            project_id: string;
+            /** Format: date-time */
+            proposed_at: string;
+            proposed_by: string;
+            provenance: components["schemas"]["MemoryProvenance"];
+            /** Format: int64 */
+            revision: number;
+            /** Format: uuid */
+            revision_id: string;
+            supersedes_id: string | null;
+            tombstoned: boolean;
+        };
         /** @description Fill one frozen, unwaived role slot that is owed a durable follow-up. */
         FillTeamRunSeatRequest: {
             /**
@@ -7220,6 +7461,11 @@ export interface components {
              * @description The catalog revision.
              */
             version: number;
+        };
+        FrozenRevision: {
+            content_hash: string;
+            /** Format: uuid */
+            revision_id: string;
         };
         /** @description A recorded discontinuity a reader is owed. */
         GapDto: {
@@ -7843,6 +8089,33 @@ export interface components {
             /** @description The task it applies to, for the task-scoped actions. */
             task_id?: string | null;
         };
+        MemoryIdentity: {
+            content_hash: string;
+            item_id: string;
+            /** Format: uuid */
+            project_id: string;
+            /** Format: uuid */
+            revision_id: string;
+        };
+        MemoryProvenance: {
+            history_unavailable: boolean;
+            legacy_last_write_wins: boolean;
+            source: string;
+            source_id?: string | null;
+        };
+        MemoryReceipt: {
+            aggregate_revision: number | null;
+            item_id: string | null;
+            operation: string;
+            /** Format: uuid */
+            project_id: string;
+            /** Format: uuid */
+            receipt_id: string;
+            /** Format: date-time */
+            recorded_at: string;
+            result_hash: string;
+            revision_id: string | null;
+        };
         /**
          * @description How much approved memory the resolved pack could carry.
          *
@@ -8161,6 +8434,8 @@ export interface components {
             /** @description The immutable approved revision of it. */
             revision_id: string;
         };
+        /** @enum {string} */
+        OutcomeKind: "success" | "failure" | "mixed";
         /** @description Exact queued downstream run and already-created native a partial recovery adopts. */
         PartialAdmissionSeatDto: {
             /** @description The unique current replacement-chain leaf for its frozen role slot. */
@@ -8854,6 +9129,54 @@ export interface components {
             /** @description The outcome, when the run is closed. */
             outcome?: string | null;
         };
+        ProjectionEntry: {
+            cues: string[];
+            identity: components["schemas"]["MemoryIdentity"];
+            /** @description Nonblank; at most 4096 UTF-8 bytes; canonical sensitive-material validation applies. */
+            lesson: string;
+        };
+        /**
+         * @default local_only
+         * @enum {string}
+         */
+        ProjectionPolicy: "local_only" | "provider_eligible";
+        ProjectionPreview: {
+            /** Format: int64 */
+            active_generation: number;
+            entries: components["schemas"]["ProjectionEntry"][];
+            snapshot: components["schemas"]["ProjectionSnapshot"];
+        };
+        ProjectionPreviewResponse: {
+            preview: components["schemas"]["ProjectionPreview"];
+            realm_id: string;
+        };
+        ProjectionReadback: {
+            active: components["schemas"]["ProjectionSnapshot"] | null;
+            adapter_available: boolean;
+            /** Format: int64 */
+            generation: number;
+            stale: boolean;
+        };
+        ProjectionRebuildRequest: {
+            /** Format: int64 */
+            expected_generation: number;
+            /** Format: int64 */
+            expected_memory_cursor: number;
+            preview_digest: string;
+        };
+        ProjectionResponse: {
+            projection: components["schemas"]["ProjectionReadback"];
+            realm_id: string;
+        };
+        ProjectionSnapshot: {
+            dataset: string;
+            digest: string;
+            identities: components["schemas"]["MemoryIdentity"][];
+            /** Format: int64 */
+            memory_cursor: number;
+            /** Format: uuid */
+            project_id: string;
+        };
         /** @description One promoted Quick session, now an epic. */
         PromotedSessionDto: {
             /** @description The epic the session became. */
@@ -9344,6 +9667,48 @@ export interface components {
              * @description The envelope contract it was created under.
              */
             schema_version: number;
+        };
+        RecallExclusions: {
+            /** Format: int64 */
+            budget: number;
+            /** Format: int64 */
+            duplicate: number;
+            /** Format: int64 */
+            invalid: number;
+            /** Format: int64 */
+            item_limit: number;
+        };
+        RecallFreezeRequest: {
+            agent_run_id: string;
+            task_id: string;
+        };
+        RecallMetadata: {
+            block_bytes: number;
+            block_hash: string;
+            exclusions: components["schemas"]["RecallExclusions"];
+            identities: components["schemas"]["MemoryIdentity"][];
+            intent_hash: string;
+            /** Format: int64 */
+            memory_cursor: number;
+            mode: components["schemas"]["RetrievalMode"];
+            projection_cursor: number | null;
+            projection_digest: string | null;
+            reason: components["schemas"]["DegradedReason"] | null;
+            /** @enum {integer} */
+            schema_version: 1;
+        };
+        RecallRequest: {
+            task_id: string;
+        };
+        RecallResponse: {
+            realm_id: string;
+            recall: components["schemas"]["RecalledMemory"];
+        };
+        RecalledMemory: {
+            binding: components["schemas"]["ContextMemoryBinding"];
+            canonical_block: string;
+            metadata: components["schemas"]["RecallMetadata"];
+            replayed: boolean;
         };
         /** @description The durable record of one command. */
         ReceiptDto: {
@@ -9948,6 +10313,8 @@ export interface components {
              */
             expected_revision: number;
         };
+        /** @enum {string} */
+        RetrievalMode: "semantic" | "lexical_degraded" | "none";
         /** @description One immutable specification revision, as a caller pins it. */
         RevisionRefDto: {
             /** @description The specification's stable id. */
@@ -17870,6 +18237,66 @@ export interface operations {
             };
         };
     };
+    classify: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExperienceClassificationResponse"];
+                };
+            };
+        };
+    };
+    propose_experience: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExperienceProposal"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExperienceProposalResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     import_apply: {
         parameters: {
             query?: never;
@@ -17911,6 +18338,203 @@ export interface operations {
         };
         responses: {
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    projection_readback: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectionResponse"];
+                };
+            };
+        };
+    };
+    projection_preview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectionPreviewResponse"];
+                };
+            };
+        };
+    };
+    projection_rebuild: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectionRebuildRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectionResponse"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    recall_readback: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                agent_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecallResponse"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    recall_freeze: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecallFreezeRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecallResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    recall_preview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecallRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecallResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
