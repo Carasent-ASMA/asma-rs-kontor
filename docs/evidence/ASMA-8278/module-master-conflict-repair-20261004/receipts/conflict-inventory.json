@@ -35,7 +35,7 @@
       "path": "crates/kontor-store/src/migrations.rs",
       "strategy": "union-with-renumbering",
       "detail": "Released master migrations 0123 (experience memory projection) and 0124 (projection rebuild receipts) kept in place; the six ASMA-8278 draft migrations renumbered 0123-0128 -> 0125-0130; SCHEMA_VERSION 128 -> 130.",
-      "verification": "released 0123/0124 SQL byte-identical to abe990 (diff clean); MIGRATIONS.len()==SCHEMA_VERSION const assert; schema_v1 v123 upgrade test green"
+      "verification": "released 0123/0124 SQL byte-identical to abe990 (diff clean; 0115-0124 verified in the correction packet); MIGRATIONS.len()==SCHEMA_VERSION const assert; the v123 memory-upgrade fixture is green in the pinned full suite at ced6db99 -- attribution corrected by the errata below; neither is a released-124 qualification"
     },
     {
       "path": "crates/kontor-store/tests/publication_attestations_immutable.rs",
@@ -53,7 +53,7 @@
       "path": "crates/kontor-store/tests/schema_v1.rs",
       "strategy": "union-with-renumbering",
       "detail": "Kept master's v121-v124 history lines and memory upgrade test and ours' v123-v126 test battery; version list extended through v129/v130 with assert 130; ASMA-8278 tests renamed v125/v126/v127/v128; include_str paths follow the renamed drafts; fixture constant V124_CONSULTATION_RUNS -> V126_CONSULTATION_RUNS.",
-      "verification": "schema_v1 69/69 green"
+      "verification": "schema_v1 69/69 green in the pinned full suite at ced6db99 (attribution corrected by the errata below); not a released-124 qualification"
     },
     {
       "path": "docs/CONFIGURATION.md",
@@ -107,6 +107,28 @@
       "from": 128,
       "to": 130,
       "where": "crates/kontor-store/src/backup/export.rs ensure_empty_attestation_ledger"
+    }
+  ],
+  "errata": [
+    {
+      "id": "M2-a",
+      "what": "The focused kontor-store run was implicitly credited as green; its raw meta records exit=101 with two failed v119-replay targets from before the fixture fix.",
+      "correction": "Labeled historical red; store coverage is the pinned full suite at ced6db99. The raw log and meta are unchanged."
+    },
+    {
+      "id": "M2-b",
+      "what": "Focused and clippy runs carry no commit pin and predate ced6db99.",
+      "correction": "Labeled unpinned (E1/E2); only the combined suite is pinned to a commit."
+    },
+    {
+      "id": "M2-c",
+      "what": "This file credited schema_v1/'69/69 green' as the migrations verification.",
+      "correction": "Attributed to the focused schema_v1 run and the pinned full log; explicitly not a released-124 qualification."
+    },
+    {
+      "id": "M1",
+      "what": "The owning plan required a real released-124 upgrade fixture; none existed.",
+      "correction": "Added released_124_upgrade_preserves_realm_bindings_and_memory_content in crates/kontor-store/src/migrations.rs (test-only), applying MIGRATIONS[..124] and seeding Realm/binding/0123-0124 memory rows; green immediately (no production bug revealed). Bound with raw receipts in docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/."
     }
   ]
 }

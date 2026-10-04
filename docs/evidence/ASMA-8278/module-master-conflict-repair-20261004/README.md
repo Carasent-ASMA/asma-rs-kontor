@@ -56,7 +56,7 @@ in `receipts/conflict-inventory.json`. The load-bearing rules:
   table list were corrected to also drop the additive tables from `0127-0130`
   so the real migration chain can replay; no assertion was weakened.
 
-## Verification at the committed head
+## Verification evidence (attribution corrected — see Errata)
 
 All commands ran with `CARGO_BUILD_JOBS=2`, the shared reusable target
 `/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target`,
@@ -64,14 +64,14 @@ All commands ran with `CARGO_BUILD_JOBS=2`, the shared reusable target
 
 | Gate | Result | Raw log |
 | --- | --- | --- |
-| `cargo fmt --all --check` | clean | — |
-| `cargo clippy --workspace --all-targets --locked -- -D warnings` | clean | `receipts/clippy.log` |
-| Focused `kontor-store` (all targets) | green | `receipts/focused-store.log` |
-| Focused `kontor-mcp` + `kontor-api` + `kontor-tests-contract` | green | `receipts/focused-mcp-api-contract.log` |
-| Focused daemon memory/projection/census | green | `receipts/focused-daemon-memory.log` |
-| Focused `loopback_api` | 570 passed, 1 ignored | `receipts/focused-daemon-loopback.log` |
-| Console `verify:api` and `typecheck` | clean | — |
-| Combined suite: prior 13 packages + `kontor-memory-cognee` | exit 0 | `receipts/full-combined.log` |
+| `cargo fmt --all --check` | clean; no raw receipt captured at the time (E1) | — |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | rc=0 at the time; receipt carries no commit pin (E1) | `receipts/clippy.log` |
+| Focused `kontor-store` (all targets) | **HISTORICAL RED before the fixture fix**: exit 101, two failed v119-replay targets (`receipts/focused-store.meta`); superseded by the pinned full suite | `receipts/focused-store.log` |
+| Focused `kontor-mcp` + `kontor-api` + `kontor-tests-contract` | green, no commit pin (E2) | `receipts/focused-mcp-api-contract.log` |
+| Focused daemon memory/projection/census | green, no commit pin (E2) | `receipts/focused-daemon-memory.log` |
+| Focused `loopback_api` | 570 passed, 1 ignored, no commit pin (E2) | `receipts/focused-daemon-loopback.log` |
+| Console `verify:api` and `typecheck` | clean; no raw receipt captured at the time (E1) | — |
+| Combined suite: prior 13 packages + `kontor-memory-cognee` | exit 0, pinned to `ced6db99` | `receipts/full-combined.log` |
 
 Combined suite at `ced6db99` (tree `ced6db99^{tree}`), command:
 
@@ -90,12 +90,50 @@ daemon) — see the full log; nothing was hidden and no ignored test was counted
 as a pass. This is new-candidate evidence; the old review PASS does not certify
 it.
 
+## Errata (2026-10-04, correction after independent review)
+
+These corrections were made under the ASMA-8278 correction dispatch; the new
+packet `docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/` binds
+them with fresh raw receipts. Every other artifact in this packet is unchanged.
+
+- **M2-a (mislabeled gate).** This file previously listed the focused
+  `kontor-store` run as "green". The raw receipt records `exit=101`: two targets
+  failed at the time it ran ("table planning_pair_placements already exists" in
+  the v119-replay fixtures, before the fixture fix). The table above now labels
+  that run historical red; store coverage comes from the pinned full suite at
+  `ced6db99`. The raw log and `.meta` are untouched.
+- **M2-b (over-claimed pin).** The former heading "Verification at the
+  committed head" was wrong for the focused and clippy runs: they predate the
+  `ced6db99` commit and carry no head pin. Only the combined suite is pinned to
+  a commit; the rest are labeled unpinned (E1/E2).
+- **M2-c (citation).** `receipts/conflict-inventory.json` credited
+  "schema_v1 v123 upgrade test green" and "69/69 green" as the migrations
+  verification. The honest attribution is the focused schema_v1 run and the
+  pinned full log, and neither is a released-124 qualification.
+- **M1 (missing released-124 check).** No real released-124 upgrade fixture
+  existed. The correction adds
+  `released_124_upgrade_preserves_realm_bindings_and_memory_content`, which
+  applies the exact `MIGRATIONS[..124]` chain, seeds a Realm, a permanent
+  binding and representative 0123/0124 memory/experience/projection/recall/
+  rebuild rows, then opens through `SqliteStore` to 130 and asserts identity,
+  content, permanence and guard preservation. It passed immediately: it is a
+  required regression net, not evidence of a production bug. Details and raw
+  logs are in the correction packet; migrations 0115-0124 are verified
+  byte-identical to `abe990acf754f66be66c3f5564077bb5d3333288`.
+- **Self-reference note.** `manifest.json` in this packet describes the bytes
+  at `d0d27332`, so the hashes it lists for this `README.md` and
+  `receipts/conflict-inventory.json` no longer match those two intentionally
+  corrected files. The original manifest is preserved unchanged and is not
+  rewritten; the correction packet carries the old/new hash inventory.
+
 ## Preservation
 
 - The six machine-local adapter groups (`.agents/`, `.asma/`, `.cursor/`,
   `.dsh/`, `AGENTS.md`, `CLAUDE.md`) remain untracked and are not part of any
   commit; `--include-untracked` was never used.
-- Prior evidence artifacts were copied, not rewritten.
+- Prior evidence artifacts were copied, not rewritten; the only intentional
+  byte changes are this `README.md` and `receipts/conflict-inventory.json`,
+  recorded in the Errata above.
 - Mutation targets `crates/kontor-fleet/src/allocation.rs`,
   `crates/kontor-runtime/.../commands/contribution.rs` and
   `.../commands/recovery.rs` remain byte-equal to the prior reviewed manifest
