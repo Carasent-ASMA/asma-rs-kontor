@@ -6,6 +6,7 @@ last_updated: 2026-09-02
 owner: Kontor Lead Software Architect
 status: Historical — KBI migration verified 2026-09-02
 tags: [kontor, naming, team-definition, topology, migration, ASMA-8062]
+workstream: kontor
 ---
 
 # Configuration-Driven Native Naming and Live Migration Plan
