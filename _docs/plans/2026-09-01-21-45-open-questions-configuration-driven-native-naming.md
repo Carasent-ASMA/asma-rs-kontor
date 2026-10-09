@@ -1,3 +1,7 @@
+---
+workstream: kontor
+---
+
 # ASMA-8062 / KBI-8062 — open questions
 
 Date: 2026-09-01

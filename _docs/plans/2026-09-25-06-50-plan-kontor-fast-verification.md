@@ -6,6 +6,7 @@ last_updated: 2026-09-25
 owner: Igor Efrem (manual orchestration through Paseo, one delivery team)
 status: Planned
 tags: [kontor, testing, performance, verification, sqlite, nextest, ASMA-8258]
+workstream: kontor
 ---
 
 # Kontor Fast Verification: Sub-Two-Minute Per-Task Tests and One Full Gate
