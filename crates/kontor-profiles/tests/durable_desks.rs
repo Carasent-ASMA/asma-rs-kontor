@@ -4,6 +4,8 @@
 //! from a bundled revision, so these tests pin the *rules* — what a desk
 //! declaration may say, what it renders, and what it must leave untouched —
 //! independently of which lineage version a successor is eventually shipped at.
+//! The last test reads the shipped successors themselves, to prove they only
+//! add the desk vocabulary and never become the default.
 
 use kontor_core::id::{DeskKey, TopologyKindKey};
 use kontor_core::naming::NativeNameValues;
@@ -283,4 +285,85 @@ fn a_definition_without_desks_keeps_its_exact_bytes_and_hash() {
     definition
         .validate_against(&topology)
         .expect("the default still composes");
+}
+
+/// The `kind` of every entry `after[field]` adds to `before[field]`, once every
+/// entry of `before[field]` is shown to survive unchanged.
+fn added_kinds(before: &serde_json::Value, after: &serde_json::Value, field: &str) -> Vec<String> {
+    let before = before[field].as_array().expect("an array");
+    let after = after[field].as_array().expect("an array");
+    for entry in before {
+        assert!(after.contains(entry), "{field} {} changed", entry["kind"]);
+    }
+    after
+        .iter()
+        .filter(|entry| !before.contains(entry))
+        .map(|entry| entry["kind"].as_str().expect("a kind").to_owned())
+        .collect()
+}
+
+#[test]
+fn the_shipped_desk_successors_only_add_desks_and_never_become_the_default() {
+    let domain = kontor_profiles::bundled_operational_domain().expect("the bundled domain");
+    let (default, default_topology) = defaults();
+    // Selection stays explicit: the first bundled definition is the default a
+    // project falls back to, and it declares no desk.
+    assert!(default.desks.is_empty(), "the default declares a desk");
+    let shipped = domain
+        .team_definitions
+        .iter()
+        .find(|definition| !definition.desks.is_empty())
+        .expect("a desk-capable successor is bundled");
+    let shipped_topology = domain
+        .topology_specs
+        .iter()
+        .find(|topology| {
+            topology.spec_id == shipped.topology.spec_id
+                && topology.version == shipped.topology.version
+        })
+        .expect("the successor's topology is bundled");
+    assert_eq!(shipped.definition_id, default.definition_id);
+    assert!(shipped.version > default.version);
+    assert_eq!(shipped_topology.spec_id, default_topology.spec_id);
+    assert!(shipped_topology.version > default_topology.version);
+    assert_eq!(
+        shipped.topology.canonical_hash.as_str(),
+        shipped_topology
+            .canonicalize()
+            .expect("canonical")
+            .hash()
+            .as_str(),
+        "the successor cites its topology by its exact hash"
+    );
+
+    // The topology: the default's, plus the two desk kinds, at a new version.
+    let mut before = serde_json::to_value(&default_topology).expect("serializes");
+    let after = serde_json::to_value(shipped_topology).expect("serializes");
+    assert_eq!(added_kinds(&before, &after, "node_kinds"), ["DESK", "DWS"]);
+    before["node_kinds"] = after["node_kinds"].clone();
+    before["version"] = after["version"].clone();
+    assert_eq!(
+        before, after,
+        "the topology successor changed more than its kinds"
+    );
+
+    // The definition: the default's, plus the two desk containers and the two
+    // desks, composed against that topology.
+    let mut before = serde_json::to_value(&default).expect("serializes");
+    let after = serde_json::to_value(shipped).expect("serializes");
+    assert_eq!(added_kinds(&before, &after, "containers"), ["DESK", "DWS"]);
+    before["containers"] = after["containers"].clone();
+    before["version"] = after["version"].clone();
+    before["topology"] = after["topology"].clone();
+    before["desks"] = after["desks"].clone();
+    assert_eq!(
+        before, after,
+        "the definition successor changed more than its desks"
+    );
+    assert_eq!(render(shipped, "DESK", "adam"), "DESK • ADAM");
+    assert_eq!(render(shipped, "DESK", "pr-review"), "DESK • PR REVIEW");
+    assert_eq!(render(shipped, "DWS", "adam"), "ADAM");
+    shipped
+        .validate_against(shipped_topology)
+        .expect("the successor composes");
 }
