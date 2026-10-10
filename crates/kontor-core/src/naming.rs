@@ -167,6 +167,8 @@ crate::closed_enum! {
         ItemCode => "ITEM_CODE",
         /// Immutable intake-time AI label.
         AiShortName => "AI_SHORT_NAME",
+        /// Exact display name a Team Definition declares for one durable desk.
+        DeskName => "DESK_NAME",
     }
 }
 
@@ -460,6 +462,12 @@ impl NativeNameValues {
         self.with(NativeNameToken::AiShortName, value.as_str())
     }
 
+    /// Add the declared `DESK_NAME` of one durable desk.
+    #[must_use]
+    pub fn with_desk_name(self, value: impl Into<String>) -> Self {
+        self.with(NativeNameToken::DeskName, value)
+    }
+
     fn with(mut self, token: NativeNameToken, value: impl Into<String>) -> Self {
         self.0.insert(token, value.into());
         self
@@ -514,6 +522,9 @@ impl NativeNameValues {
                 }
                 NativeNameToken::AiShortName => {
                     DomainError::invalid("NativeNameTemplate", "missing AI_SHORT_NAME")
+                }
+                NativeNameToken::DeskName => {
+                    DomainError::invalid("NativeNameTemplate", "missing DESK_NAME")
                 }
             })
     }

@@ -49,7 +49,7 @@ use crate::backup::BackupError;
 use crate::events::types::ensure_control_metadata;
 
 /// The export generation this build writes.
-pub const EXPORT_SCHEMA_VERSION: u32 = 13;
+pub const EXPORT_SCHEMA_VERSION: u32 = 14;
 
 /// The database generation that introduced the launch-intent supersession ledger.
 const LAUNCH_INTENT_SUPERSESSION_SCHEMA_VERSION: i64 = 109;
@@ -72,6 +72,20 @@ const CORE_TEAM_ROUTE_SUCCESSION_EXPORT_VERSION: u32 = 13;
 
 /// The record array introduced in generation 13.
 const CORE_TEAM_ROUTE_SUCCESSION_RECORD_FIELDS: [&str; 1] = ["core_team_route_successions"];
+
+/// The database generation that introduced durable desks.
+const DESK_SCHEMA_VERSION: i64 = 131;
+
+/// The export generation that first carried them.
+///
+/// A desk row is the only durable record of which nodes realize a declared
+/// desk and which Team Definition revision names it. A round trip that dropped
+/// it would leave the desk's nodes behind without the key that finds them, and
+/// a later ensure would place a second desk beside the first (ASMA-8450).
+const DESK_EXPORT_VERSION: u32 = 14;
+
+/// The record array introduced in generation 14.
+const DESK_RECORD_FIELDS: [&str; 1] = ["desks"];
 
 /// The record array introduced in generation 11.
 const LAUNCH_INTENT_SUPERSESSION_RECORD_FIELDS: [&str; 1] =
@@ -341,6 +355,12 @@ impl KontorExportV1 {
             })?;
             remove_core_team_route_succession_record_fields(records)?;
         }
+        if self.schema_version < DESK_EXPORT_VERSION {
+            let records = value.get_mut("records").ok_or(BackupError::Verification {
+                detail: "the export has no records object",
+            })?;
+            remove_desk_record_fields(records)?;
+        }
         canonical_bytes(&value)
     }
 
@@ -372,6 +392,9 @@ impl KontorExportV1 {
         }
         if self.schema_version < CORE_TEAM_ROUTE_SUCCESSION_EXPORT_VERSION {
             remove_core_team_route_succession_record_fields(&mut value)?;
+        }
+        if self.schema_version < DESK_EXPORT_VERSION {
+            remove_desk_record_fields(&mut value)?;
         }
         canonical_bytes(&value)
     }
@@ -535,6 +558,18 @@ impl KontorExportV1 {
         {
             return Err(BackupError::Verification {
                 detail: "the legacy export generation cannot prove Core Team route succession completeness",
+            });
+        }
+        if self.schema_version < DESK_EXPORT_VERSION && !self.records.desks.is_empty() {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries desks it did not define",
+            });
+        }
+        if self.schema_version < DESK_EXPORT_VERSION
+            && self.database_schema_version >= DESK_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove desk completeness",
             });
         }
         if self.schema_version < RETIRED_EVALUATOR_ATTESTATION_EXPORT_VERSION
@@ -1085,6 +1120,22 @@ impl KontorExportV1 {
                     .or_insert_with(|| serde_json::Value::Array(Vec::new()));
             }
         }
+        // The same back-fill for generation 14: a document from before desks
+        // existed has no desk array, and the guards above stop it claiming to
+        // represent a database that could hold one.
+        if found < DESK_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in DESK_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
         let export: Self =
             serde_json::from_value(value).map_err(|_| BackupError::Verification {
                 detail: "the export is not a document of this generation",
@@ -1183,6 +1234,20 @@ fn remove_core_team_route_succession_record_fields(
         detail: "the export records are not an object",
     })?;
     for field in CORE_TEAM_ROUTE_SUCCESSION_RECORD_FIELDS {
+        records.remove(field);
+    }
+    Ok(())
+}
+
+/// Remove the generation-14 desk field.
+///
+/// As for generation 13: a genuine older document never had this key, so every
+/// path that reproduces its original bytes takes the parse back-fill out again.
+fn remove_desk_record_fields(records: &mut serde_json::Value) -> Result<(), BackupError> {
+    let records = records.as_object_mut().ok_or(BackupError::Verification {
+        detail: "the export records are not an object",
+    })?;
+    for field in DESK_RECORD_FIELDS {
         records.remove(field);
     }
     Ok(())
@@ -1744,6 +1809,16 @@ exported_tables! {
         version: i64,
         canonical_hash: String,
         pinned_at: String,
+    }
+    desks: DesksRow from "desks" key(project_id, desk_key) {
+        project_id: String,
+        desk_key: String,
+        topology_node_id: String,
+        workspace_node_id: String,
+        team_definition_id: String,
+        team_definition_version: i64,
+        team_definition_hash: String,
+        created_at: String,
     }
     team_definition_migration_intents: TeamDefinitionMigrationIntentsRow from "team_definition_migration_intents" key(id) {
         id: String,
@@ -3028,6 +3103,11 @@ impl ExportedRecords {
         }
         if schema_version < CORE_TEAM_ROUTE_SUCCESSION_EXPORT_VERSION {
             for field in CORE_TEAM_ROUTE_SUCCESSION_RECORD_FIELDS {
+                continuity.record_counts.remove(field);
+            }
+        }
+        if schema_version < DESK_EXPORT_VERSION {
+            for field in DESK_RECORD_FIELDS {
                 continuity.record_counts.remove(field);
             }
         }

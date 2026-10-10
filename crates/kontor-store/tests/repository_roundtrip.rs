@@ -117,6 +117,7 @@ fn remove_v98_shape(connection: &Connection) {
 /// that leaked a row into a table the test did not think about would still be
 /// caught.
 const CENSUS_TABLES: &[&str] = &[
+    "desks",
     "attestation_authority_heads",
     "attestation_authority_keys",
     "attestation_token_heads",
@@ -2851,6 +2852,7 @@ fn apply_v115_to_legacy_fixture(fixture: &Fixture) {
          DROP TABLE attestation_token_heads;
          DROP TABLE attestation_authority_keys;
          DROP TABLE attestation_authority_heads;
+         DROP TABLE desks;
          PRAGMA user_version = 114;",
         )
         .expect("return empty v115 tables to exact prior schema");

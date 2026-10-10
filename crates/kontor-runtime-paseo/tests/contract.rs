@@ -8952,7 +8952,7 @@ fn child_request(node_id: TopologyNodeId, parent: Option<ContainerBinding>) -> C
         container_binding_id: ContainerBindingId::generate(),
         topology_node_id: node_id,
         topology: topology(),
-        scope: execution_scope(),
+        scope: Some(execution_scope()),
         capabilities: vec![
             NodeProjectionCapability::NativeChild,
             NodeProjectionCapability::SessionHost,
@@ -8986,7 +8986,7 @@ async fn exact_container_inspection_preserves_raw_uuid_titles_and_native_identit
         .inspect_container(&ContainerInspectRequest {
             binding: root_binding.clone(),
             native_parent: None,
-            scope: epic_execution_scope(),
+            scope: Some(epic_execution_scope()),
             epic_container: true,
             requested_at: at("2026-09-06T12:00:00Z"),
         })
@@ -9029,7 +9029,7 @@ async fn exact_container_inspection_preserves_raw_uuid_titles_and_native_identit
         .inspect_container(&ContainerInspectRequest {
             binding: child_binding.clone(),
             native_parent: Some(root_binding.identity.clone()),
-            scope: execution_scope(),
+            scope: Some(execution_scope()),
             epic_container: false,
             requested_at: at("2026-09-06T12:01:00Z"),
         })
@@ -9079,7 +9079,7 @@ async fn exact_container_inspection_rehydrates_launch_placement_after_restart() 
         .inspect_container(&ContainerInspectRequest {
             binding,
             native_parent: Some(parent.identity),
-            scope: execution_scope(),
+            scope: Some(execution_scope()),
             epic_container: false,
             requested_at: at("2026-09-19T20:35:38Z"),
         })
@@ -9162,7 +9162,7 @@ async fn container_inspection_never_resolves_a_matching_title_or_cwd() {
         .inspect_container(&ContainerInspectRequest {
             binding: missing,
             native_parent: Some(parent.identity),
-            scope: execution_scope(),
+            scope: Some(execution_scope()),
             epic_container: false,
             requested_at: at("2026-09-06T12:02:00Z"),
         })
@@ -9433,7 +9433,7 @@ fn ecp_request(node_id: TopologyNodeId, parent: ContainerBinding) -> ContainerRe
         container_binding_id: ContainerBindingId::generate(),
         topology_node_id: node_id,
         topology: topology(),
-        scope: epic_execution_scope(),
+        scope: Some(epic_execution_scope()),
         capabilities: vec![
             NodeProjectionCapability::NativeChild,
             NodeProjectionCapability::SessionHost,
@@ -10188,7 +10188,7 @@ async fn a_hosted_core_team_seat_launches_in_the_exact_local_ecp() {
         .inspect_container(&ContainerInspectRequest {
             binding: container.binding.clone(),
             native_parent: Some(bound_root(node(NODE_B)).identity),
-            scope: epic_execution_scope(),
+            scope: Some(epic_execution_scope()),
             epic_container: false,
             requested_at: at("2026-08-16T09:09:00Z"),
         })
@@ -11346,7 +11346,7 @@ async fn a_configured_root_is_adopted_by_exact_id_and_never_created() {
             container_binding_id: ContainerBindingId::generate(),
             topology_node_id: root_node,
             topology: topology(),
-            scope: epic_execution_scope(),
+            scope: Some(epic_execution_scope()),
             capabilities: vec![NodeProjectionCapability::NativeRoot],
             display_name: name("Epic · ASMA-7871"),
             parent: None,
@@ -11437,7 +11437,7 @@ async fn a_fresh_native_root_is_canonicalized_before_binding() {
         container_binding_id: ContainerBindingId::generate(),
         topology_node_id: node(NODE_B),
         topology: topology(),
-        scope: epic_execution_scope(),
+        scope: Some(epic_execution_scope()),
         capabilities: vec![NodeProjectionCapability::NativeRoot],
         display_name: name(desired_title),
         parent: None,
@@ -11500,7 +11500,7 @@ async fn a_fresh_native_root_requires_project_rename_before_creation() {
             container_binding_id: ContainerBindingId::generate(),
             topology_node_id: node(NODE_B),
             topology: topology(),
-            scope: epic_execution_scope(),
+            scope: Some(epic_execution_scope()),
             capabilities: vec![NodeProjectionCapability::NativeRoot],
             display_name: name("ESW • APIE-8101"),
             parent: None,
@@ -11584,7 +11584,7 @@ async fn a_fresh_native_root_refuses_a_stale_title_readback() {
             container_binding_id: ContainerBindingId::generate(),
             topology_node_id: node(NODE_B),
             topology: topology(),
-            scope: epic_execution_scope(),
+            scope: Some(epic_execution_scope()),
             capabilities: vec![NodeProjectionCapability::NativeRoot],
             display_name: name("ESW • APIE-8101"),
             parent: None,
@@ -11632,7 +11632,7 @@ async fn a_root_that_names_no_directory_is_refused_without_a_shared_checkout_fal
             container_binding_id: ContainerBindingId::generate(),
             topology_node_id: node(NODE_B),
             topology: topology(),
-            scope: epic_execution_scope(),
+            scope: Some(epic_execution_scope()),
             capabilities: vec![NodeProjectionCapability::NativeRoot],
             display_name: name("Epic · ASMA-7872"),
             parent: None,
@@ -11754,7 +11754,7 @@ async fn two_epics_share_one_plane_without_sharing_a_project_or_static_task_scop
             container_binding_id: ContainerBindingId::generate(),
             topology_node_id: node(NODE_B),
             topology: topology(),
-            scope: first_scope,
+            scope: Some(first_scope),
             capabilities: vec![NodeProjectionCapability::NativeRoot],
             display_name: name("Epic · ASMA-7744 · Kontor MVP"),
             parent: None,
@@ -11776,7 +11776,7 @@ async fn two_epics_share_one_plane_without_sharing_a_project_or_static_task_scop
             container_binding_id: ContainerBindingId::generate(),
             topology_node_id: second_node,
             topology: topology(),
-            scope: ExecutionScope::for_epic(second_epic),
+            scope: Some(ExecutionScope::for_epic(second_epic)),
             capabilities: vec![NodeProjectionCapability::NativeRoot],
             display_name: name("Epic · ASMA-9000 · QNR V2"),
             parent: None,
@@ -11853,7 +11853,7 @@ async fn two_epics_share_one_plane_without_sharing_a_project_or_static_task_scop
         container_binding_id: first.snapshot.binding.id,
         topology_node_id: first.snapshot.binding.topology_node_id,
         topology: topology(),
-        scope: epic_execution_scope(),
+        scope: Some(epic_execution_scope()),
         capabilities: vec![NodeProjectionCapability::NativeRoot],
         display_name: name("Epic · ASMA-7744 · Kontor MVP"),
         parent: None,
@@ -11870,12 +11870,12 @@ async fn two_epics_share_one_plane_without_sharing_a_project_or_static_task_scop
         .expect("the first persisted root re-attests");
     first_replay.container_binding_id = second.snapshot.binding.id;
     first_replay.topology_node_id = second.snapshot.binding.topology_node_id;
-    first_replay.scope = ExecutionScope::for_epic(EpicScope {
+    first_replay.scope = Some(ExecutionScope::for_epic(EpicScope {
         mini_project_id: MiniProjectId::parse("01890000-0000-7000-8000-0000000000c2")
             .expect("a second epic id"),
         external_epic_key: external("ASMA-9000"),
         short_title: name("QNR V2"),
-    });
+    }));
     first_replay.cwd = second.snapshot.binding.root.clone();
     first_replay.bound_native_id = Some(second.snapshot.binding.identity.native_id.clone());
     let second_restored = restarted
@@ -11998,7 +11998,7 @@ async fn ticket_materialization_creates_the_absent_checkout_before_workspace_reg
     )
     .expect("a fresh adapter");
     let request = ContainerRequest {
-        scope: ExecutionScope::for_task(
+        scope: Some(ExecutionScope::for_task(
             epic_scope(),
             TaskScope {
                 task_id: task(),
@@ -12006,7 +12006,7 @@ async fn ticket_materialization_creates_the_absent_checkout_before_workspace_reg
                 short_code: Some(external("ASMA-9001")),
                 worktree: worktree_root.clone(),
             },
-        ),
+        )),
         cwd: Some(worktree_root),
         task_id: Some(task()),
         ..child_request(node(NODE_A), Some(bound_root(node(NODE_B))))
@@ -12788,7 +12788,7 @@ fn bound_child_request(
 ) -> ContainerRequest {
     ContainerRequest {
         bound_native_id: Some(external(bound)),
-        scope,
+        scope: Some(scope),
         ..child_request(node_id, Some(bound_root(node(NODE_B))))
     }
 }
@@ -13065,7 +13065,7 @@ async fn an_exact_id_inspection_refuses_a_foreign_host_kind_or_generation() {
                 ..base.clone()
             },
             native_parent: Some(bound_root(node(NODE_B)).identity),
-            scope: execution_scope(),
+            scope: Some(execution_scope()),
             epic_container: false,
             requested_at: at("2026-08-16T09:05:00Z"),
         };
@@ -13095,7 +13095,7 @@ async fn an_exact_id_inspection_writes_nothing_either_way() {
         let request = ContainerInspectRequest {
             binding: bound_container_binding(),
             native_parent: Some(bound_root(node(NODE_B)).identity),
-            scope: execution_scope(),
+            scope: Some(execution_scope()),
             epic_container: false,
             requested_at: at("2026-08-16T09:05:00Z"),
         };
@@ -13320,7 +13320,7 @@ async fn a_refused_inspection_never_rehydrates_the_ledger() {
                     ..base.clone()
                 },
                 native_parent: Some(bound_root(node(NODE_B)).identity),
-                scope: execution_scope(),
+                scope: Some(execution_scope()),
                 epic_container: false,
                 requested_at: at("2026-08-16T09:05:00Z"),
             })
@@ -13358,7 +13358,7 @@ async fn a_complete_inspection_rehydrates_the_ledger_from_its_proof() {
         .inspect_container(&ContainerInspectRequest {
             binding: binding.clone(),
             native_parent: Some(bound_root(node(NODE_B)).identity),
-            scope: execution_scope(),
+            scope: Some(execution_scope()),
             epic_container: false,
             requested_at: at("2026-08-16T09:05:00Z"),
         })
@@ -13382,7 +13382,7 @@ async fn inspection_refuses_changed_child_cwd_before_rehydrating_either_ledger()
         .inspect_container(&ContainerInspectRequest {
             binding: binding.clone(),
             native_parent: Some(bound_root(node(NODE_B)).identity),
-            scope: execution_scope(),
+            scope: Some(execution_scope()),
             epic_container: false,
             requested_at: at("2026-09-20T12:00:00Z"),
         })
@@ -13409,7 +13409,7 @@ async fn inspection_refuses_changed_root_cwd_before_rehydrating_either_ledger() 
         .inspect_container(&ContainerInspectRequest {
             binding: binding.clone(),
             native_parent: None,
-            scope: epic_execution_scope(),
+            scope: Some(epic_execution_scope()),
             epic_container: true,
             requested_at: at("2026-09-20T12:00:00Z"),
         })
@@ -13442,7 +13442,7 @@ async fn inspection_refuses_inapplicable_workspace_shapes_before_rehydration() {
             .inspect_container(&ContainerInspectRequest {
                 binding: binding.clone(),
                 native_parent: Some(bound_root(node(NODE_B)).identity),
-                scope,
+                scope: Some(scope),
                 epic_container: false,
                 requested_at: at("2026-09-20T12:00:00Z"),
             })
@@ -13468,7 +13468,10 @@ async fn an_epic_consultation_worktree_reconciles_and_inspects_after_restart() {
     let plane = restarted_plane(workspace_list_of_kind("worktree"));
     let request = bound_child_request(node(NODE_A), WORKSPACE_ID, epic_execution_scope());
     assert!(
-        request.scope.task.is_none(),
+        request
+            .scope
+            .as_ref()
+            .is_some_and(|scope| scope.task.is_none()),
         "an epic review serves no ticket"
     );
     let prepared = plane
@@ -13481,7 +13484,7 @@ async fn an_epic_consultation_worktree_reconciles_and_inspects_after_restart() {
         .inspect_container(&ContainerInspectRequest {
             binding: prepared.snapshot.binding.clone(),
             native_parent: Some(bound_root(node(NODE_B)).identity),
-            scope: epic_execution_scope(),
+            scope: Some(epic_execution_scope()),
             epic_container: false,
             requested_at: at("2026-09-20T12:00:00Z"),
         })

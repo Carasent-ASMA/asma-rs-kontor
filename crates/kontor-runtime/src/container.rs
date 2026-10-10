@@ -371,7 +371,13 @@ pub struct ContainerRequest {
     /// without it an adapter has exactly one epic's keys to name and label
     /// things with, and a second epic's containers are titled, labelled and
     /// placed as though they were the first one's.
-    pub scope: ExecutionScope,
+    ///
+    /// `None` exactly when the node belongs to no epic: a project-level
+    /// container such as a durable desk or its workspace. An adapter must not
+    /// supply an epic of its own for one — there is none, and inventing one is
+    /// how a desk would come to be filed, labelled or closed with somebody's
+    /// epic.
+    pub scope: Option<ExecutionScope>,
     /// Whether this node is the native project that represents `scope.epic`.
     ///
     /// A topology may contain another native root above the epic (the shared
@@ -403,7 +409,10 @@ impl ContainerRequest {
     /// distinction is already durable in the scope every caller passes.
     #[must_use]
     pub const fn task_container(&self) -> bool {
-        self.scope.task.is_some()
+        match &self.scope {
+            Some(scope) => scope.task.is_some(),
+            None => false,
+        }
     }
 
     /// The shape this request's capabilities require.
@@ -464,6 +473,11 @@ impl ContainerRequest {
                 rule: "an epic project container must be a native_root",
             });
         }
+        if self.epic_container && self.scope.is_none() {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "an epic project container must name the epic it represents",
+            });
+        }
         Ok(projection)
     }
 }
@@ -499,7 +513,9 @@ pub struct ContainerInspectRequest {
     /// Complete exact native parent; required only for a native child.
     pub native_parent: Option<NativeRuntimeIdentity>,
     /// Durable execution scope, used only to rehydrate an exact ESW binding.
-    pub scope: ExecutionScope,
+    ///
+    /// `None` for a project-level container that belongs to no epic.
+    pub scope: Option<ExecutionScope>,
     /// Whether this root is the epic's ESW project.
     pub epic_container: bool,
     /// Observation instant supplied by the control plane.
@@ -535,6 +551,11 @@ impl ContainerInspectRequest {
         if self.epic_container && self.binding.projection != ContainerProjection::NativeRoot {
             return Err(RuntimeError::WorkspaceMismatch {
                 rule: "an epic container inspection must address a native_root",
+            });
+        }
+        if self.epic_container && self.scope.is_none() {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "an epic container inspection must name the epic it represents",
             });
         }
         Ok(())
@@ -1011,11 +1032,11 @@ mod tests {
             container_binding_id: ContainerBindingId::generate(),
             topology_node_id: node,
             topology: snapshot(),
-            scope: ExecutionScope::for_epic(EpicScope {
+            scope: Some(ExecutionScope::for_epic(EpicScope {
                 mini_project_id: MiniProjectId::generate(),
                 external_epic_key: ExternalId::parse("ASMA-CONTAINER").expect("epic key"),
                 short_title: ExternalName::parse("Container contract").expect("epic title"),
-            }),
+            })),
             capabilities,
             display_name: ExternalName::parse("Epic · ASMA-7871").expect("a display name"),
             parent: None,
