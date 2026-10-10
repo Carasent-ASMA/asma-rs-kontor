@@ -62,19 +62,34 @@ returns the original receipt and performs no native effect.
 ## Selecting a desk-capable definition
 
 The bundled default Team Definition declares no desks, and nothing selects a
-desk-capable revision implicitly.
+desk-capable revision implicitly. This build ships one, as additive immutable
+successors in the Operational lineages:
 
-1. Publish the topology successor that declares the `DESK` (parent `PSW`) and
-   `DWS` (parent `DESK`) kinds: `topology-specs:draft`, then
-   `topology-specs:publish`.
-2. Publish the Team Definition successor whose `topology` cites that exact
-   revision and hash, with the `DESK` / `DWS` containers and the `desks`
-   array: `team-definitions:validate`, then `team-definitions:publish`.
-3. Select it: `team-definition-selection:preview` for the exact
-   `{id, version}`, then `:apply` with the returned `preview_hash` and the
-   project revision.
-4. `topology:materialize` each desk and confirm the titles and `desk_key`
+| Revision | Version | What it adds to its predecessor |
+| --- | --- | --- |
+| Operational project session topology | v6 | the `DESK` (parent `PSW`) and `DWS` (parent `DESK`) kinds to v4 |
+| ASMA Operational Team Definition | v7 | the `DESK` / `DWS` containers and the `adam` / `pr-review` desks to v1, composed against topology v6 |
+
+The numbers are the lowest free in every known lineage: topology v5 is where
+every operator draft of v4 lands, Team Definition v2 and v3 are live, and v4
+to v6 are the reserved ASMA-8117 successors. Topology v1/v4 and Team Definition v1 are
+byte-identical to the previous build. A project publishes the shipped
+revisions the first time it reads its Team Definition; publication skips an
+address that already holds a revision.
+
+To use the shipped desks:
+
+1. `team-definition-selection:preview` for `{id, version: 7}`, then `:apply`
+   with the returned `preview_hash` and the project revision.
+2. `topology:materialize` each desk and confirm the titles and `desk_key`
    through `topology:inspect`.
+
+A project that needs other desks publishes its own successor the same way the
+shipped one is built: a topology revision that declares the desk kinds
+(`topology-specs:draft`, then `:publish`), then a Team Definition revision
+that cites that exact revision and hash with the desk containers and the
+`desks` array (`team-definitions:validate`, then `:publish`), then selection
+as above.
 
 Selection changes what future epics inherit as well. Existing epics keep
 their own pins.
@@ -91,10 +106,16 @@ their own pins.
 - **Binary rollback:** a pre-131 build refuses a schema-131 database. Restore
   the snapshot taken before the upgrade, per [`RECOVERY.md`](../../RECOVERY.md).
 
-## Open at this revision
+## Before deploying this build to a realm
 
-Which lineage versions the shipped desk successors occupy is a release decision
-still open with the coordinator: the live Team Definition lineage already holds
-versions beyond the bundled default and others are reserved. The tests publish
-the successors through the supported surfaces above and depend on no bundled
-version number.
+Bundled publication is by `(id, version)`: it skips an address that already
+holds a revision, and it runs at the start of every read of a project's Team
+Definition. Confirm in each realm that the Operational lineages hold no
+topology v6 and no Team Definition v7 of their own:
+
+- **Topology v6 occupied:** the shipped v7 cites the shipped v6 by its exact
+  hash, so publishing v7 is refused, and with it every read of that project's
+  Team Definition until the conflict is resolved.
+- **Team Definition v7 occupied:** the shipped v7 is skipped and is not
+  available there; selecting `{id, version: 7}` would select the realm's own
+  revision. Publish a desk-capable successor through the API instead.

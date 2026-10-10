@@ -357,10 +357,13 @@ A Team Definition declares its desks next to its containers:
 - A definition with no desks serializes without a `desks` key, so every
   revision published before desks keeps its exact canonical bytes and hash.
 - The project's *selected* Team Definition decides which desk keys exist. The
-  bundled default declares none: a desk-capable revision is published and then
-  selected through `team-definition-selection:preview` / `:apply`. Nothing
-  selects it implicitly, and an undeclared key is `placement_blocked` before
-  any desk row, node or native container is written.
+  bundled default declares none. This build also ships the desk-capable
+  successors — Operational topology v6 (v4 plus `DESK` and `DWS`) and Team
+  Definition v7 (v1 plus the two desk containers and both desks) — but a
+  project uses them only once v7 is selected through
+  `team-definition-selection:preview` / `:apply`. Nothing selects it
+  implicitly, and an undeclared key is `placement_blocked` before any desk
+  row, node or native container is written.
 - A desk pins the exact revision that was selected when it was first ensured,
   for its whole life. Selecting another revision later changes which desks a
   new key may name; it never renames, moves or retires an existing desk.
