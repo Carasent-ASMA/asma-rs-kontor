@@ -182,7 +182,7 @@ use kontor_core::consultation::{
 use kontor_core::id::{
     AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText,
     CanonicalDocument, CommandReceiptId, CommitteeRunId, ConnectorKey, ContentHash, CurrencyCode,
-    DescriptionPublicationId, ExecutionAuthorizationId, ExternalId, ExternalName, GateKey,
+    DescriptionPublicationId, DeskKey, ExecutionAuthorizationId, ExternalId, ExternalName, GateKey,
     IdempotencyKey, IntakeReceiptId, MiniProjectId, ModuleKey, Money, ProjectId,
     PublicationAttestationId, QuickSessionId, RoleCatalogId, RoleCode, RoleKey, RoleSlotId,
     RoleTurnId, RuntimeKindKey, SCHEMA_VERSION, SeatBindingId, SourceEventId, SpecVersion,
@@ -217,13 +217,14 @@ use kontor_core::repository::{
     RealmRepository, RepositoryError, RunRepository, RuntimeBinding, SeatLivenessObservation,
     SourceDisposition, SpecRepository, StoredCommitteeFinding, StoredCompletionProfile,
     StoredCompletionWake, StoredCompletionWakeDelivery, StoredConsultationProfileRevision,
-    StoredConsultationRun, StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion,
-    StoredEpicRoster, StoredHostedSeatLaunchIntent, StoredHostedTopologySeat, StoredPromotion,
-    StoredQuickSession, StoredRemediationProposal, SuccessionRepository, TaskTransitionRequest,
-    TaskWorkflow, TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
-    TeamDefinitionMigrationSubject, TeamDefinitionMigrationTargetState, TeamDefinitionRepository,
-    TicketLink, TicketRepository, TopologyContainerRecovery, TopologyContainerRecoveryDisposition,
-    TopologyRepository, WorkflowRepository,
+    StoredConsultationRun, StoredConsultationSeat, StoredCoreTeamRevision, StoredDesk,
+    StoredEpicCompletion, StoredEpicRoster, StoredHostedSeatLaunchIntent, StoredHostedTopologySeat,
+    StoredPromotion, StoredQuickSession, StoredRemediationProposal, SuccessionRepository,
+    TaskTransitionRequest, TaskWorkflow, TeamDefinitionMigrationObservation,
+    TeamDefinitionMigrationState, TeamDefinitionMigrationSubject,
+    TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TicketLink, TicketRepository,
+    TopologyContainerRecovery, TopologyContainerRecoveryDisposition, TopologyRepository,
+    WorkflowRepository,
 };
 use kontor_core::spec::HoldLiftCondition;
 use kontor_core::spec::{
@@ -232,8 +233,8 @@ use kontor_core::spec::{
     IntakeResult, ModelChainPolicy, ModelRef, ModelRung, NodeProjectionCapability,
     ProjectSessionTopologySpec, ProviderRef, RequestedContextPolicy, RoleCatalogRevision,
     SeatAutonomy, Shareability, ShareabilityTier, SourceIdentity, SourceProcessingState,
-    TeamDefinitionSnapshot, TeamDefinitionSpec, TeamRunSnapshot, TeamTemplateRevision,
-    TopologySnapshot, TriggerSpec,
+    TeamDefinitionSnapshot, TeamDefinitionSpec, TeamDeskDeclaration, TeamRunSnapshot,
+    TeamTemplateRevision, TopologySnapshot, TriggerSpec,
 };
 use kontor_core::state::{
     DerivedRunState, Freshness, GateVerdict, ImportedTaskState, NativeContainerBinding,
@@ -10404,6 +10405,7 @@ impl Services {
                 kind: None,
                 epic_id: None,
                 task_id: None,
+                desk_key: None,
                 key: "project_root".to_owned(),
             },
             SemanticTopologyTargetDto::QuickSession { quick_session_id } => TopologyScope {
@@ -10411,6 +10413,7 @@ impl Services {
                 kind: Some(delivery.quick_kind.clone()),
                 epic_id: None,
                 task_id: None,
+                desk_key: None,
                 key: format!("quick_session:{quick_session_id}"),
             },
             SemanticTopologyTargetDto::Epic { epic_id } => TopologyScope {
@@ -10418,6 +10421,7 @@ impl Services {
                 kind: Some(delivery.epic_kind.clone()),
                 epic_id: Some(self.epic_row(project_id, *epic_id)?.id),
                 task_id: None,
+                desk_key: None,
                 key: format!("epic:{epic_id}"),
             },
             SemanticTopologyTargetDto::EpicControl { epic_id } => TopologyScope {
@@ -10425,6 +10429,7 @@ impl Services {
                 kind: Some(delivery.control_kind.clone()),
                 epic_id: Some(self.epic_row(project_id, *epic_id)?.id),
                 task_id: None,
+                desk_key: None,
                 key: format!("epic_control:{epic_id}"),
             },
             SemanticTopologyTargetDto::Ticket { task_id } => {
@@ -10439,6 +10444,7 @@ impl Services {
                         )
                     })?),
                     task_id: Some(task.id),
+                    desk_key: None,
                     key: format!("ticket:{task_id}"),
                 }
             }
@@ -10450,6 +10456,7 @@ impl Services {
                     kind: Some(delivery.advisor_kind.clone()),
                     epic_id: Some(run.mini_project_id),
                     task_id: None,
+                    desk_key: None,
                     key: format!("advisor_consultation:{advisor_run_id}"),
                 }
             }
@@ -10463,9 +10470,20 @@ impl Services {
                     kind: Some(delivery.committee_kind.clone()),
                     epic_id: Some(run.mini_project_id),
                     task_id: None,
+                    desk_key: None,
                     key: format!("committee_consultation:{committee_run_id}"),
                 }
             }
+            // Neither a kind nor an epic: a desk takes both of its kinds from
+            // the Team Definition it is pinned to, and it never has an epic.
+            SemanticTopologyTargetDto::Desk { desk_key } => TopologyScope {
+                node_id: None,
+                kind: None,
+                epic_id: None,
+                task_id: None,
+                desk_key: Some(desk_key.clone()),
+                key: format!("desk:{desk_key}"),
+            },
         })
     }
 
@@ -10480,6 +10498,9 @@ impl Services {
         project_id: ProjectId,
         scope: &TopologyScope,
     ) -> Result<SessionTopologyNode, ApiError> {
+        if let Some(desk_key) = scope.desk_key.as_ref() {
+            return self.ensure_desk(project_id, desk_key);
+        }
         let _native_activity = self.native_activity()?;
         let state = self.state()?;
         let topology = self.project_topology(project_id)?;
@@ -10602,6 +10623,21 @@ impl Services {
         let nodes = state
             .with_store(|store| store.list_project_topology_nodes(project_id))
             .map_err(|error| self.refuse(&error))?;
+        if let Some(desk_key) = scope.desk_key.as_ref() {
+            // Exactly the desk's own two nodes, and none when it has never been
+            // ensured. Falling through would read a desk as the whole project.
+            let desk = state
+                .with_store(|store| store.get_desk(project_id, desk_key))
+                .map_err(|error| self.refuse(&error))?;
+            return Ok(nodes
+                .into_iter()
+                .filter(|node| {
+                    desk.as_ref().is_some_and(|desk| {
+                        node.id == desk.topology_node_id || node.id == desk.workspace_node_id
+                    })
+                })
+                .collect());
+        }
         Ok(match (scope.epic_id, &scope.kind) {
             (Some(epic_id), _) => nodes
                 .into_iter()
@@ -10609,6 +10645,253 @@ impl Services {
                 .collect(),
             (None, _) => nodes,
         })
+    }
+
+    /// Create one durable desk and its workspace, and return the workspace.
+    ///
+    /// The Quick-session precedent at project level: the desk row comes first
+    /// and carries the node ids the chain will use, so a retry that lost its
+    /// answer reconciles the same two nodes instead of placing a second desk.
+    ///
+    /// A key must be declared by the project's *selected* Team Definition when
+    /// the desk is first created, and that is checked before anything about
+    /// the desk is written. From then on the desk reads its kinds and names
+    /// from the revision it pinned, never from whatever the project selects
+    /// later. Nothing here reads, names or pins an epic.
+    fn ensure_desk(
+        &self,
+        project_id: ProjectId,
+        desk_key: &DeskKey,
+    ) -> Result<SessionTopologyNode, ApiError> {
+        let _native_activity = self.native_activity()?;
+        let state = self.state()?;
+        let existing = state
+            .with_store(|store| store.get_desk(project_id, desk_key))
+            .map_err(|error| self.refuse(&error))?;
+        let desk = match existing {
+            Some(desk) => desk,
+            None => {
+                let (snapshot, definition) = self.project_team_definition(project_id)?;
+                if definition.desk(desk_key).is_none() {
+                    return Err(self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the project's selected Team Definition declares no such desk",
+                    ));
+                }
+                let planned = StoredDesk {
+                    project_id,
+                    desk_key: desk_key.clone(),
+                    topology_node_id: TopologyNodeId::generate(),
+                    workspace_node_id: TopologyNodeId::generate(),
+                    team_definition: snapshot,
+                    created_at: kontor_api::now(),
+                };
+                match state.with_store(|store| store.create_desk(&planned)) {
+                    Ok(()) => planned,
+                    // Another ensure of the same desk won the race and this one
+                    // has written nothing, so reconcile against the winner's ids.
+                    Err(RepositoryError::Conflict { .. }) => state
+                        .with_store(|store| store.get_desk(project_id, desk_key))
+                        .map_err(|error| self.refuse(&error))?
+                        .ok_or_else(|| {
+                            self.deny(
+                                ApiErrorCode::Unavailable,
+                                "a desk was claimed by another command and then vanished",
+                            )
+                        })?,
+                    Err(error) => return Err(self.refuse(&error)),
+                }
+            }
+        };
+        let (definition, declaration) = self.desk_definition(&desk)?;
+        let root = self.ensure_scope_chain(
+            project_id,
+            &TopologyScope {
+                node_id: None,
+                kind: None,
+                epic_id: None,
+                task_id: None,
+                desk_key: None,
+                key: "project_root".to_owned(),
+            },
+        )?;
+        self.ensure_desk_node(
+            &desk,
+            desk.topology_node_id,
+            &declaration.kind,
+            root.id,
+            &definition.topology,
+        )?;
+        self.ensure_desk_node(
+            &desk,
+            desk.workspace_node_id,
+            &declaration.workspace_kind,
+            desk.topology_node_id,
+            &definition.topology,
+        )
+    }
+
+    /// Materialize one durable desk: its two nodes, then its native project and
+    /// the workspace inside it.
+    ///
+    /// The receipt names the project, because a desk belongs to no epic and
+    /// there is nothing narrower for it to name. A desk hosts no seat here:
+    /// what occupies one is a separate binding, made elsewhere.
+    async fn materialize_desk(
+        &self,
+        key: &IdempotencyKey,
+        project: &kontor_core::repository::Project,
+        scope: &TopologyScope,
+        intent: &CanonicalDocument,
+    ) -> Result<TopologyMutationDto, ApiError> {
+        let state = self.state()?;
+        let project_id = project.id;
+        let replayed = self
+            .replayed(key, intent, Some(&AggregateRef::Project { project_id }))?
+            .is_some();
+        if !replayed {
+            let leaf = self.ensure_scope_chain(project_id, scope)?;
+            let ContainerSubject::Desk {
+                desk, definition, ..
+            } = self.container_subject(&leaf)?
+            else {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the desk workspace resolved to a node that is not a desk's",
+                ));
+            };
+            let configured = definition.container(&leaf.kind).ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the desk's pinned Team Definition does not configure its workspace",
+                )
+            })?;
+            let projection = ContainerProjection::resolve(&configured.projection_capabilities)
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            if projection != ContainerProjection::LogicalOnly {
+                let runtime_kind = self.node_runtime_kind()?;
+                let adapter = state.runtimes().get(&runtime_kind).ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the node's configured runtime family is unavailable",
+                    )
+                })?;
+                adapter
+                    .prepare_plane()
+                    .await
+                    .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+                let cwd = self.desk_root(&desk)?;
+                self.ensure_container(project_id, &leaf, &cwd, adapter.as_ref())
+                    .await?;
+            }
+        }
+        let receipt_id = self.record(
+            key,
+            project_id,
+            CommandKind::EnsureProject,
+            AggregateRef::Project { project_id },
+            project.revision,
+            intent,
+        )?;
+        self.topology_mutation(project_id, None, receipt_id, replayed, project.revision)
+    }
+
+    /// One of a desk's two nodes, by the id its row froze.
+    ///
+    /// A node already there must be exactly the one the row planned — the
+    /// declared kind, below the planned parent, belonging to no epic or task.
+    /// Anything else is refused rather than adopted.
+    fn ensure_desk_node(
+        &self,
+        desk: &StoredDesk,
+        node_id: TopologyNodeId,
+        kind: &TopologyKindKey,
+        parent_id: TopologyNodeId,
+        topology: &TopologySnapshot,
+    ) -> Result<SessionTopologyNode, ApiError> {
+        let state = self.state()?;
+        let project_id = desk.project_id;
+        if let Some(node) = state
+            .with_store(|store| store.get_topology_node(project_id, node_id))
+            .map_err(|error| self.refuse(&error))?
+        {
+            if &node.kind != kind
+                || node.parent_id != Some(parent_id)
+                || node.mini_project_id.is_some()
+                || node.task_id.is_some()
+                || &node.topology != topology
+            {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "a desk node no longer matches the placement its desk planned",
+                ));
+            }
+            return Ok(node);
+        }
+        state
+            .with_store(|store| {
+                store.create_topology_node(&NewSessionTopologyNode {
+                    id: node_id,
+                    project_id,
+                    mini_project_id: None,
+                    topology: topology.clone(),
+                    kind: kind.clone(),
+                    parent_id: Some(parent_id),
+                    task_id: None,
+                    created_at: kontor_api::now(),
+                })
+            })
+            .map_err(|error| self.refuse(&error))
+    }
+
+    /// The exact Team Definition revision one desk pinned, and its declaration
+    /// there. A pin whose bytes no longer hash to the recorded value refuses.
+    fn desk_definition(
+        &self,
+        desk: &StoredDesk,
+    ) -> Result<(TeamDefinitionSpec, TeamDeskDeclaration), ApiError> {
+        let state = self.state()?;
+        let definition = state
+            .with_store(|store| {
+                store.get_team_definition(
+                    desk.project_id,
+                    desk.team_definition.definition_id,
+                    desk.team_definition.version,
+                )
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the desk's pinned Team Definition revision is unavailable",
+                )
+            })?;
+        let observed = TeamDefinitionSnapshot::from_revision(&definition)
+            .map_err(|error| self.refuse_domain(&error))?;
+        if observed != desk.team_definition {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the desk's Team Definition hash does not match its published bytes",
+            ));
+        }
+        let declaration = definition.desk(&desk.desk_key).cloned().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the desk's pinned Team Definition does not declare it",
+            )
+        })?;
+        Ok((definition, declaration))
+    }
+
+    /// The desk one node realizes, when it realizes one. A node that belongs
+    /// to an epic never does, so this is not even asked of it.
+    fn desk_of_node(&self, node: &SessionTopologyNode) -> Result<Option<StoredDesk>, ApiError> {
+        if node.mini_project_id.is_some() {
+            return Ok(None);
+        }
+        self.state()?
+            .with_store(|store| store.get_desk_by_node(node.project_id, node.id))
+            .map_err(|error| self.refuse(&error))
     }
 
     /// Pin one epic to the project's selected topology revision, once.
@@ -12066,13 +12349,46 @@ impl Services {
         let nodes = state
             .with_store(|store| store.list_project_topology_nodes(project_id))
             .map_err(|error| self.refuse(&error))?;
+        let desks = state
+            .with_store(|store| store.list_desks(project_id))
+            .map_err(|error| self.refuse(&error))?;
 
         let mut projected = Vec::new();
         for node in nodes {
             if epic_id.is_some() && node.mini_project_id != epic_id {
                 continue;
             }
-            let declared = spec
+            let desk_key = desks
+                .iter()
+                .find(|desk| desk.topology_node_id == node.id || desk.workspace_node_id == node.id)
+                .map(|desk| desk.desk_key.clone());
+            // A desk node is read through the exact revision it was placed
+            // under. Its kinds exist only from that revision on, so the
+            // project's default can be older and simply not declare them.
+            let node_spec = if desk_key.is_some() && node.topology != topology {
+                Some(
+                    state
+                        .with_store(|store| {
+                            store.get_topology_spec(
+                                project_id,
+                                node.topology.spec_id,
+                                node.topology.version,
+                            )
+                        })
+                        .map_err(|error| self.refuse(&error))?
+                        .ok_or_else(|| {
+                            self.deny(
+                                ApiErrorCode::Unavailable,
+                                "a desk node's pinned topology revision is not published",
+                            )
+                        })?,
+                )
+            } else {
+                None
+            };
+            let declared = node_spec
+                .as_ref()
+                .unwrap_or(&spec)
                 .node_kinds
                 .iter()
                 .find(|declared| declared.kind == node.kind)
@@ -12118,6 +12434,7 @@ impl Services {
                     .iter()
                     .map(|seat| self.seat_dto(seat))
                     .collect::<Result<Vec<_>, _>>()?,
+                desk_key,
             });
         }
 
@@ -13635,6 +13952,7 @@ impl Services {
                 kind: Some(self.domain.delivery.epic_kind.clone()),
                 epic_id: Some(epic_id),
                 task_id: None,
+                desk_key: None,
                 key: format!("epic:{epic_id}"),
             },
         )?;
@@ -14248,6 +14566,7 @@ impl Services {
                 kind: Some(self.domain.delivery.epic_kind.clone()),
                 epic_id: Some(epic_id),
                 task_id: None,
+                desk_key: None,
                 key: format!("epic:{epic_id}"),
             },
         )?;
@@ -17140,6 +17459,9 @@ struct TopologyScope {
     epic_id: Option<MiniProjectId>,
     /// The delivery task this scope serves, for the task-scoped kinds.
     task_id: Option<TaskId>,
+    /// The durable desk this scope names. A desk has no epic and no fixed
+    /// kind: both of its kinds come from the Team Definition it is pinned to.
+    desk_key: Option<DeskKey>,
     /// The scope's stable spelling in a canonical intent.
     key: String,
 }
@@ -17154,6 +17476,26 @@ impl TopologyScope {
     const fn epic_id(&self) -> Option<MiniProjectId> {
         self.epic_id
     }
+}
+
+/// What one native container belongs to.
+///
+/// An epic, whose runtime requests carry its execution scope and whose names
+/// come from the epic's pin; or a durable desk, which has no execution scope
+/// and reads its kinds and names from the revision the desk pinned.
+#[allow(clippy::large_enum_variant)]
+enum ContainerSubject {
+    /// The epic the container's node is scoped to.
+    Epic(MiniProjectId),
+    /// The desk the container's node realizes.
+    Desk {
+        /// The desk row, with its frozen node ids and pin.
+        desk: StoredDesk,
+        /// The exact pinned Team Definition revision.
+        definition: TeamDefinitionSpec,
+        /// The desk's declaration in that revision.
+        declaration: TeamDeskDeclaration,
+    },
 }
 
 /// Which exact-seat act is being performed.
@@ -23091,6 +23433,9 @@ impl ApplicationOperations for Services {
             "project": project_id.to_string(),
             "scope": scope.intent_key(),
         }))?;
+        if scope.desk_key.is_some() {
+            return self.materialize_desk(key, &project, &scope, &intent).await;
+        }
         let epic_id = scope.epic_id().ok_or_else(|| {
             self.deny(
                 ApiErrorCode::PlacementBlocked,
@@ -43197,13 +43542,13 @@ impl Services {
         adapter: &dyn RuntimeAdapter,
     ) -> Result<ContainerInspection, ApiError> {
         let state = self.state()?;
-        let epic_id = node.mini_project_id.ok_or_else(|| {
-            self.deny(
-                ApiErrorCode::PlacementBlocked,
-                "the bound container is not scoped to an epic",
-            )
-        })?;
-        let scope = self.execution_scope(project_id, epic_id, node.task_id, adapter)?;
+        let (scope, team_definition) = match self.container_subject(node)? {
+            ContainerSubject::Epic(epic_id) => (
+                Some(self.execution_scope(project_id, epic_id, node.task_id, adapter)?),
+                self.pinned_team_definition(project_id, epic_id)?,
+            ),
+            ContainerSubject::Desk { definition, .. } => (None, Some(definition)),
+        };
         let spec = state
             .with_store(|store| {
                 store.get_topology_spec(project_id, node.topology.spec_id, node.topology.version)
@@ -43215,7 +43560,6 @@ impl Services {
                     "the node's pinned topology revision is not published in this project",
                 )
             })?;
-        let team_definition = self.pinned_team_definition(project_id, epic_id)?;
         let capabilities = if let Some(definition) = team_definition.as_ref() {
             definition
                 .container(&node.kind)
@@ -43299,8 +43643,9 @@ impl Services {
             .inspect_container(&ContainerInspectRequest {
                 binding: durable.clone(),
                 native_parent: native_parent.clone(),
+                // A desk project is a native root that represents no epic.
+                epic_container: projection == ContainerProjection::NativeRoot && scope.is_some(),
                 scope,
-                epic_container: projection == ContainerProjection::NativeRoot,
                 requested_at: kontor_api::now(),
             })
             .await
@@ -43405,13 +43750,16 @@ impl Services {
     ) -> Result<ContainerBindingSnapshot, ApiError> {
         let _native_activity = self.native_activity()?;
         let state = self.state()?;
-        let epic_id = node.mini_project_id.ok_or_else(|| {
-            self.deny(
-                ApiErrorCode::PlacementBlocked,
-                "the requested container is not scoped to an epic",
-            )
-        })?;
-        let epic_scope = self.execution_scope(project_id, epic_id, None, adapter)?;
+        // A container belongs to an epic or to a durable desk, and to nothing
+        // else. A desk has no execution scope at all: its runtime request
+        // carries none, and its names and kinds come from the desk's own pin.
+        let subject = self.container_subject(node)?;
+        let epic_scope = match subject {
+            ContainerSubject::Epic(epic_id) => {
+                Some(self.execution_scope(project_id, epic_id, None, adapter)?)
+            }
+            ContainerSubject::Desk { .. } => None,
+        };
         let spec = state
             .with_store(|store| {
                 store.get_topology_spec(project_id, node.topology.spec_id, node.topology.version)
@@ -43423,7 +43771,10 @@ impl Services {
                     "the node's pinned topology revision is not published in this project",
                 )
             })?;
-        let team_definition = self.pinned_team_definition(project_id, epic_id)?;
+        let team_definition = match &subject {
+            ContainerSubject::Epic(epic_id) => self.pinned_team_definition(project_id, *epic_id)?,
+            ContainerSubject::Desk { definition, .. } => Some(definition.clone()),
+        };
 
         // Walk to the root first, then build downwards. Reading the ancestry
         // from stored rows rather than from the request is what stops a child
@@ -43480,11 +43831,12 @@ impl Services {
         let mut parent: Option<ContainerBinding> = None;
         let mut prepared = None;
         for level in &lineage {
-            let level_scope = match level.task_id {
-                Some(task_id) => {
-                    self.execution_scope(project_id, epic_id, Some(task_id), adapter)?
+            let level_scope = match (&subject, level.task_id) {
+                (ContainerSubject::Epic(epic_id), Some(task_id)) => {
+                    Some(self.execution_scope(project_id, *epic_id, Some(task_id), adapter)?)
                 }
-                None => epic_scope.clone(),
+                (ContainerSubject::Epic(_), None) => epic_scope.clone(),
+                (ContainerSubject::Desk { .. }, _) => None,
             };
             let capabilities = if let Some(definition) = team_definition.as_ref() {
                 definition
@@ -43535,8 +43887,14 @@ impl Services {
                             WorkspaceRoot::parse(root.as_str())
                                 .map_err(|error| self.refuse_domain(&error))?,
                         )
+                    } else if let ContainerSubject::Desk { desk, .. } = &subject {
+                        // The desk project and its workspace share the desk's
+                        // own directory, as an epic's ESW and ECP share theirs.
+                        Some(self.desk_root(desk)?)
                     } else if level.task_id.is_some() {
                         let worktree = level_scope
+                            .as_ref()
+                            .expect("an epic level always carries its execution scope")
                             .require_task()
                             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
                             .worktree
@@ -43571,7 +43929,16 @@ impl Services {
                 topology: level.topology.clone(),
                 scope: level_scope.clone(),
                 capabilities,
-                display_name: self.container_name(&spec, level, Some(&level_scope))?,
+                display_name: match &subject {
+                    ContainerSubject::Epic(_) => {
+                        self.container_name(&spec, level, level_scope.as_ref())?
+                    }
+                    ContainerSubject::Desk {
+                        definition,
+                        declaration,
+                        ..
+                    } => self.desk_container_name(definition, declaration, level)?,
+                },
                 parent: match projection {
                     ContainerProjection::NativeChild => parent.clone(),
                     ContainerProjection::NativeRoot | ContainerProjection::LogicalOnly => None,
@@ -43582,7 +43949,9 @@ impl Services {
                 cwd: level_cwd,
                 bound_native_id,
                 epic_container: projection == ContainerProjection::NativeRoot
-                    && level.mini_project_id == Some(epic_scope.epic.mini_project_id),
+                    && epic_scope.as_ref().is_some_and(|scope| {
+                        level.mini_project_id == Some(scope.epic.mini_project_id)
+                    }),
                 task_id: level.task_id,
                 team_run_id: None,
                 requested_at: kontor_api::now(),
@@ -43630,6 +43999,47 @@ impl Services {
                 "the node has no lineage to prepare a container along",
             )
         })
+    }
+
+    /// What one node's container belongs to. A node with no epic is a desk's
+    /// or nothing's, and nothing's has no container to prepare.
+    fn container_subject(&self, node: &SessionTopologyNode) -> Result<ContainerSubject, ApiError> {
+        if let Some(epic_id) = node.mini_project_id {
+            return Ok(ContainerSubject::Epic(epic_id));
+        }
+        let desk = self.desk_of_node(node)?.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the requested container belongs to neither an epic nor a desk",
+            )
+        })?;
+        let (definition, declaration) = self.desk_definition(&desk)?;
+        Ok(ContainerSubject::Desk {
+            desk,
+            definition,
+            declaration,
+        })
+    }
+
+    /// The stable registration directory one desk's project and workspace
+    /// share. Keyed by the desk node, so it can collide neither with the
+    /// project's own directory nor with another desk's.
+    fn desk_root(&self, desk: &StoredDesk) -> Result<WorkspaceRoot, ApiError> {
+        let mut root = self.runtime_roots.join(desk.project_id.to_string());
+        root.push(format!("desk-{}", desk.topology_node_id));
+        std::fs::create_dir_all(&root).map_err(|_| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the desk registration directory could not be created",
+            )
+        })?;
+        let root = root.to_str().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the desk registration directory is not valid UTF-8",
+            )
+        })?;
+        WorkspaceRoot::parse(root).map_err(|error| self.refuse_domain(&error))
     }
 
     /// The stable registration directory for a project or one of its epics.
@@ -44305,6 +44715,32 @@ impl Services {
             })?;
             values = values.with_topic(topic.as_str());
         }
+        container
+            .name_template
+            .render(&definition.separator, &values)
+            .map_err(|error| self.refuse_domain(&error))
+    }
+
+    /// Render one desk container from the exact template its desk pinned.
+    ///
+    /// A desk template may only spell `PREFIX`, `DESK_NAME` and literals — the
+    /// definition refuses anything else when it is published — so the two
+    /// values supplied here are all it can ever ask for.
+    fn desk_container_name(
+        &self,
+        definition: &TeamDefinitionSpec,
+        declaration: &TeamDeskDeclaration,
+        node: &SessionTopologyNode,
+    ) -> Result<ExternalName, ApiError> {
+        let container = definition.container(&node.kind).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the Team Definition does not configure this container kind",
+            )
+        })?;
+        let values = NativeNameValues::new()
+            .with_prefix(container.prefix.as_str())
+            .with_desk_name(declaration.display_name.as_str());
         container
             .name_template
             .render(&definition.separator, &values)

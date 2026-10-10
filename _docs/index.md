@@ -1,6 +1,6 @@
 # Kontor — Documentation Index
 
-> Canonical implementation-documentation root for the Kontor Rust control plane. Last updated: 2026-09-26.
+> Canonical implementation-documentation root for the Kontor Rust control plane. Last updated: 2026-10-10.
 
 ## Overview
 
@@ -15,6 +15,7 @@ This documentation covers implementation-local knowledge for the `asma-rs-kontor
 | Document | Summary | Status | When to Load |
 | --- | --- | --- | --- |
 | [Recommended teams and seats](reference/2026-09-04-23-35-reference-recommended-teams-and-seats.md) | Role responsibilities, fleet-design recommendations and explicit implementation limits | Recommendation | Designing teams or evaluating models for roles |
+| [Durable desks in kontord](reference/2026-10-10-23-55-reference-kontord-durable-desks.md) | ASMA-8450: epic-independent `DESK • ADAM` / `DESK • PR REVIEW` projects, their supported operations and limits, explicit successor selection and rollback | Candidate | Ensuring, materializing or reading back a desk; selecting or rolling back a desk-capable Team Definition |
 
 ### Plans (`plans/`)
 

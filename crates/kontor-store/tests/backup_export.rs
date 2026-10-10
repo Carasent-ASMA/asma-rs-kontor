@@ -1084,6 +1084,8 @@ fn generation_two_without_profile_selection_outcomes_remains_importable() {
         // succession key either, and leaving it in makes the fixture hash as
         // something no schema-2 emitter ever wrote (ASMA-8187).
         "core_team_route_successions",
+        // Generation fourteen's desks, for the same reason (ASMA-8450).
+        "desks",
     ] {
         legacy
             .pointer_mut("/records")

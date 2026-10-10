@@ -145,10 +145,22 @@ async fn publish_pair_document(
 /// Publish the bundled topology's successor with one read-only planning pair
 /// kind, and select it for future epics.
 async fn select_pair_topology(world: &World, project: &str) -> serde_json::Value {
-    let bundled = kontor_profiles::bundled_operational_domain()
-        .expect("the bundled domain validates")
+    // The topology the default Team Definition composes against, which the
+    // harness publishes; a later bundled successor (ASMA-8450's desks) is not
+    // the revision these tests extend.
+    let domain =
+        kontor_profiles::bundled_operational_domain().expect("the bundled domain validates");
+    let default = domain
+        .team_definitions
+        .first()
+        .expect("the bundled Team Definition");
+    let bundled = domain
         .topology_specs
-        .pop()
+        .into_iter()
+        .find(|topology| {
+            topology.spec_id == default.topology.spec_id
+                && topology.version == default.topology.version
+        })
         .expect("the bundled topology");
     let spec_id = bundled.spec_id.to_string();
     let base = bundled.version.get();

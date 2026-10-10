@@ -173,7 +173,7 @@ fn historical_pre129_files_retain_schema_refusal_and_additive_open_behavior() {
     let realm = store.realm_id();
     drop(store);
     let connection = rusqlite::Connection::open(&database).expect("fixture connection");
-    connection.execute_batch("DROP TABLE prepared_attestation_tokens; DROP TABLE attestation_token_heads; DROP TABLE attestation_authority_keys; DROP TABLE attestation_authority_heads; PRAGMA user_version=128;").expect("exact pre129 fixture");
+    connection.execute_batch("DROP TABLE desks; DROP TABLE prepared_attestation_tokens; DROP TABLE attestation_token_heads; DROP TABLE attestation_authority_keys; DROP TABLE attestation_authority_heads; PRAGMA user_version=128;").expect("exact pre129 fixture");
     drop(connection);
     let manifest = SnapshotManifest::describe(&database, realm, 128, at("2026-10-03T18:00:00Z"))
         .expect("legacy fixture manifest");
@@ -473,7 +473,7 @@ fn empty_historical129_token_absence_preserves_schema_refusal_and_additive_open(
     let realm = store.realm_id();
     drop(store);
     let connection = rusqlite::Connection::open(&database).expect("fixture");
-    connection.execute_batch("DROP TABLE prepared_attestation_tokens; DROP TABLE attestation_token_heads; PRAGMA user_version=129;").expect("historical fixture");
+    connection.execute_batch("DROP TABLE desks; DROP TABLE prepared_attestation_tokens; DROP TABLE attestation_token_heads; PRAGMA user_version=129;").expect("historical fixture");
     drop(connection);
     let manifest = SnapshotManifest::describe(&database, realm, 129, at("2026-10-03T20:00:00Z"))
         .expect("manifest");
@@ -493,7 +493,7 @@ fn empty_historical129_token_absence_preserves_schema_refusal_and_additive_open(
             .expect("additive open")
             .schema_version()
             .expect("version"),
-        130
+        SCHEMA_VERSION
     );
 }
 

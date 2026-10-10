@@ -27,7 +27,7 @@ use crate::consultation::{
 use crate::id::{
     AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText,
     CalendarExceptionId, CalendarProfileId, CanonicalDocument, CapacityObservationId,
-    CommandReceiptId, ConnectorKey, ContentHash, CredentialAlias, EventCursor,
+    CommandReceiptId, ConnectorKey, ContentHash, CredentialAlias, DeskKey, EventCursor,
     ExecutionAuthorizationId, ExternalId, ExternalIssueTypeKey, ExternalName, ExternalProjectKey,
     GateKey, GuardrailEvaluationId, IdempotencyKey, IntakeDecisionId, IntakeReceiptId,
     MiniProjectId, ModuleKey, OpenQuestionId, PersonaScenarioId, PhaseKey, ProjectId,
@@ -1250,6 +1250,27 @@ pub struct StoredQuickSession {
     pub disposition: SourceDisposition,
     /// Optimistic-concurrency revision.
     pub revision: AggregateRevision,
+    /// Creation instant.
+    pub created_at: Timestamp,
+}
+
+/// One durable desk, as it is stored.
+///
+/// Membership only: which two nodes realize the desk and which immutable Team
+/// Definition revision names and places them. A desk belongs to no epic and
+/// records no work subject, so nothing that closes an epic can reach it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredDesk {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The declared desk this row realizes. Unique within the project.
+    pub desk_key: DeskKey,
+    /// The desk's own node, directly below the project root.
+    pub topology_node_id: TopologyNodeId,
+    /// The one workspace node inside the desk.
+    pub workspace_node_id: TopologyNodeId,
+    /// The exact Team Definition revision the desk was created under.
+    pub team_definition: TeamDefinitionSnapshot,
     /// Creation instant.
     pub created_at: Timestamp,
 }

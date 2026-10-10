@@ -27966,6 +27966,26 @@
                 ]
               }
             }
+          },
+          {
+            "type": "object",
+            "description": "One durable desk and its workspace, which belong to the project rather\nthan to any epic. The key must be one the project's selected Team\nDefinition declares; the desk keeps that revision for its whole life.",
+            "required": [
+              "desk_key",
+              "scope"
+            ],
+            "properties": {
+              "desk_key": {
+                "type": "string",
+                "description": "The desk's declared key."
+              },
+              "scope": {
+                "type": "string",
+                "enum": [
+                  "desk"
+                ]
+              }
+            }
           }
         ],
         "description": "The scope a semantic topology operation acts on.\n\nA closed tagged union of the semantic ids Kontor already owns. This is the\nwhole of what a model may say about *where* it wants topology: it names a\nmeaning, and the server derives the kind, the parent and the native shape\nfrom the pinned specification. Adding a published kind to a specification\ntherefore needs no change here, and inventing a kind per call stays\nimpossible — which is the same rule stated as a type rather than as a\nvalidation."
@@ -29798,6 +29818,13 @@
           "desired_binding": {
             "$ref": "#/components/schemas/DesiredBindingDto",
             "description": "The native shape the server derived."
+          },
+          "desk_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The durable desk this node realizes — the desk itself or its workspace\n— and absent for every node that is not part of one. A desk belongs to\nno epic, so this is the only membership such a node reports."
           },
           "kind_key": {
             "type": "string",
