@@ -325,6 +325,54 @@ is `placement_blocked`; there is no role fallback.
 The complete canonical fixture is
 `crates/kontor-profiles/fixtures/operational-domain.json`.
 
+## Durable desks (ASMA-8450)
+
+A durable desk is a native project that belongs to the Kontor project rather
+than to any epic: `DESK • ADAM` and `DESK • PR REVIEW`, each with one `ADAM`
+workspace inside it. A desk has no Jira epic, no backlog code and no task, so
+nothing that closes, archives or migrates an epic can select it.
+
+A Team Definition declares its desks next to its containers:
+
+```json
+"desks": [
+  { "desk_key": "adam", "display_name": "ADAM", "kind": "DESK", "workspace_kind": "DWS" },
+  { "desk_key": "pr-review", "display_name": "PR REVIEW", "kind": "DESK", "workspace_kind": "DWS" }
+]
+```
+
+| Native object | Template | Example |
+| --- | --- | --- |
+| desk project | `PREFIX`, `DESK_NAME` | `DESK • PR REVIEW` |
+| desk workspace | `PREFIX` | `ADAM` |
+
+- `DESK_NAME` renders the declaring desk's `display_name`. Only a container
+  some desk declares as its `kind` or `workspace_kind` may render it, and those
+  containers may render only `PREFIX`, `DESK_NAME` and literals: no epic, task,
+  scope or topic token can reach a desk's native name.
+- The desk kind must be a root container that the cited topology places
+  directly below the project root; the workspace kind must be configured with
+  the desk kind as its parent. Duplicate desk keys or display names, and a
+  display name containing the separator glyph, are refused at validation.
+- A definition with no desks serializes without a `desks` key, so every
+  revision published before desks keeps its exact canonical bytes and hash.
+- The project's *selected* Team Definition decides which desk keys exist. The
+  bundled default declares none: a desk-capable revision is published and then
+  selected through `team-definition-selection:preview` / `:apply`. Nothing
+  selects it implicitly, and an undeclared key is `placement_blocked` before
+  any desk row, node or native container is written.
+- A desk pins the exact revision that was selected when it was first ensured,
+  for its whole life. Selecting another revision later changes which desks a
+  new key may name; it never renames, moves or retires an existing desk.
+
+Desks are addressed through the same semantic topology operations as every
+other scope — `topology:ensure`, `:materialize` and `:drift` with
+`{"scope": "desk", "desk_key": "adam"}` — on `/v1`, the MCP topology tools and
+the CLI generated from them. Their receipts name the project. A topology
+projection reports `desk_key` on both of a desk's nodes; an epic-scoped
+projection never includes them. The node `retire` / `archive` routes refuse a
+desk's nodes (`placement_blocked`), so no epic closeout path can retire one.
+
 ## Publication and migration
 
 - Validate and publish immutable revisions with
