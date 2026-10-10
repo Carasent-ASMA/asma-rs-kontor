@@ -53,6 +53,9 @@ mod planning_pair;
 #[path = "loopback/experience_launch.rs"]
 mod experience_launch;
 
+#[path = "loopback/durable_desks.rs"]
+mod durable_desks;
+
 #[tokio::test]
 async fn open_question_commands_preserve_authority_history_and_completion_blockers() {
     use kontor_core::id::OpenQuestionId;

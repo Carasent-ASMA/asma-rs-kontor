@@ -1205,4 +1205,52 @@ mod tests {
         assert!(snapshot.ensure_node(other).is_err());
         assert!(snapshot.ensure_node(node).is_ok());
     }
+
+    #[test]
+    fn a_container_of_no_epic_is_valid_until_it_claims_to_be_an_epic() {
+        // A durable desk and its workspace belong to the project: their
+        // requests carry no epic, and that alone is coherent.
+        let node = TopologyNodeId::generate();
+        let mut desk = request(node, vec![NodeProjectionCapability::NativeRoot]);
+        desk.scope = None;
+        assert_eq!(
+            desk.validate().expect("a project-level root"),
+            ContainerProjection::NativeRoot
+        );
+        assert!(!desk.task_container());
+        let mut workspace = request(node, vec![NodeProjectionCapability::NativeChild]);
+        workspace.scope = None;
+        workspace.parent = Some(binding(
+            TopologyNodeId::generate(),
+            ContainerProjection::NativeRoot,
+        ));
+        assert!(workspace.validate().is_ok());
+
+        // An epic's own project must say which epic it is.
+        desk.epic_container = true;
+        assert_eq!(
+            desk.validate()
+                .expect_err("an epic container without its epic"),
+            RuntimeError::WorkspaceMismatch {
+                rule: "an epic project container must name the epic it represents"
+            }
+        );
+        let mut inspect = ContainerInspectRequest {
+            binding: binding(node, ContainerProjection::NativeRoot),
+            native_parent: None,
+            scope: None,
+            epic_container: false,
+            requested_at: Timestamp::now(),
+        };
+        assert!(inspect.validate().is_ok());
+        inspect.epic_container = true;
+        assert_eq!(
+            inspect
+                .validate()
+                .expect_err("an epic inspection without its epic"),
+            RuntimeError::WorkspaceMismatch {
+                rule: "an epic container inspection must name the epic it represents"
+            }
+        );
+    }
 }

@@ -13373,6 +13373,56 @@ async fn a_complete_inspection_rehydrates_the_ledger_from_its_proof() {
     assert!(plane.daemon.mutations().is_empty(), "still read-only");
 }
 
+/// A durable desk's workspace belongs to no epic. Inspecting it proves the
+/// container exactly as for an epic's child, but must not file its project in
+/// the epic-keyed project ledger, or the desk would answer for that epic's
+/// later launches (ASMA-8450).
+#[tokio::test]
+async fn a_desk_workspace_inspection_rehydrates_its_container_and_no_epic_project() {
+    let plane = restarted_plane(workspace_list_of_kind("worktree"));
+    let binding = bound_container_binding();
+    plane
+        .adapter
+        .inspect_container(&ContainerInspectRequest {
+            binding: binding.clone(),
+            native_parent: Some(bound_root(node(NODE_B)).identity),
+            scope: None,
+            epic_container: false,
+            requested_at: at("2026-08-16T09:05:00Z"),
+        })
+        .await
+        .expect("the exact desk workspace is proved");
+    assert_eq!(
+        plane
+            .adapter
+            .container_binding(binding.topology_node_id)
+            .expect("a proved inspection rehydrates")
+            .binding
+            .identity,
+        binding.identity
+    );
+    assert!(
+        plane.adapter.project_binding().is_none(),
+        "a desk's project is nobody's epic project"
+    );
+    assert!(plane.daemon.mutations().is_empty(), "still read-only");
+
+    // The same proof under an epic scope does file the epic's project, which
+    // is what makes the absence above a property of the desk.
+    let epic = restarted_plane(workspace_list_of_kind("worktree"));
+    epic.adapter
+        .inspect_container(&ContainerInspectRequest {
+            binding,
+            native_parent: Some(bound_root(node(NODE_B)).identity),
+            scope: Some(execution_scope()),
+            epic_container: false,
+            requested_at: at("2026-08-16T09:05:00Z"),
+        })
+        .await
+        .expect("the exact epic child is proved");
+    assert!(epic.adapter.project_binding().is_some());
+}
+
 #[tokio::test]
 async fn inspection_refuses_changed_child_cwd_before_rehydrating_either_ledger() {
     let plane = restarted_plane(v(WORKSPACE_OTHER_CWD));
