@@ -33,6 +33,7 @@ use crate::container::{
     ContainerBindingSnapshot, ContainerInspectRequest, ContainerInspection,
     ContainerRecoveryOutcome, ContainerRecoveryRequest,
 };
+use crate::durable_seat::{HostedSeatCensus, HostedSeatCensusRequest, HostedSeatScope};
 use crate::observation::{ControlPlaneObservation, NativeSession, ReconciliationReport};
 use crate::provenance::{FleetLaunchProvenance, FleetProvenanceObservation};
 use crate::request::{
@@ -582,8 +583,8 @@ pub struct HostedSeatLaunchRequest {
     pub container: ContainerBindingSnapshot,
     /// Working directory read back on the ECP.
     pub cwd: WorkspaceRoot,
-    /// Durable epic execution scope.
-    pub scope: ExecutionScope,
+    /// Whose seat this is: an epic's, or a durable desk's (ASMA-8451).
+    pub scope: HostedSeatScope,
     /// Initial leadership handoff.
     pub prompt: BoundedText,
     /// Durable role persona, separate from the one-turn handoff in `prompt`.
@@ -1198,6 +1199,21 @@ pub trait RuntimeAdapter: Send + Sync {
         &self,
         _request: &HostedSeatInspectRequest,
     ) -> RuntimeResult<HostedSeatInspection> {
+        Err(RuntimeError::UnsupportedCapability {
+            capability: crate::capability::RuntimeCapability::Inspect,
+        })
+    }
+
+    /// Every native carrying one hosted seat's binding label, archived ones
+    /// included (ASMA-8451). Read-only.
+    ///
+    /// An empty census is evidence that no native carries the seat, so a
+    /// runtime that cannot answer completely must refuse rather than return
+    /// one.
+    async fn census_hosted_seat(
+        &self,
+        _request: &HostedSeatCensusRequest,
+    ) -> RuntimeResult<HostedSeatCensus> {
         Err(RuntimeError::UnsupportedCapability {
             capability: crate::capability::RuntimeCapability::Inspect,
         })

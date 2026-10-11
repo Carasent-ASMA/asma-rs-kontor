@@ -290,6 +290,7 @@ use kontor_runtime::container::{
     ContainerInspection, ContainerProjection, ContainerRecoveryRequest, ContainerRecreationRequest,
     ContainerRequest, RetitleContainerRequest,
 };
+use kontor_runtime::durable_seat::HostedSeatScope;
 use kontor_runtime::observation::ControlPlaneObservation;
 use kontor_runtime::request::{
     CorrelationChallengeCompletionRequest, CorrelationChallengeRequest, HistoryRequest,
@@ -27231,7 +27232,7 @@ impl ApplicationOperations for Services {
                         display_name,
                         container: container.clone(),
                         cwd: cwd.clone(),
-                        scope: scope.clone(),
+                        scope: HostedSeatScope::Epic(scope.clone()),
                         prompt,
                         role_prompt: role_persona.as_ref().map(|persona| persona.prompt.clone()),
                         credential: ConsultationCredential::new(
@@ -27997,7 +27998,7 @@ impl ApplicationOperations for Services {
                     display_name,
                     container,
                     cwd,
-                    scope,
+                    scope: HostedSeatScope::Epic(scope),
                     prompt,
                     role_prompt: role_persona.as_ref().map(|persona| persona.prompt.clone()),
                     credential: ConsultationCredential::new(
