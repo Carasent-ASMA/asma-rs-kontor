@@ -1,0 +1,28 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
+     Running tests/loopback_api.rs (.qualification/target-carrier-archive/debug/deps/loopback_api-159166d87db36a05)
+
+running 21 tests
+test desk_adams::a_binding_proves_an_unanswered_ad_hoc_launch_never_took_effect ... ok
+test desk_adams::a_binding_recovers_and_fences_an_ad_hoc_launch_that_lost_its_answer ... ok
+test desk_adams::a_binding_whose_fence_lost_its_answer_resumes_and_finishes_the_fence ... ok
+test desk_adams::a_binding_waits_for_an_ad_hoc_launch_in_flight_and_fences_its_native ... ok
+test desk_adams::a_cross_vendor_handoff_fences_the_lsa_before_the_tpm_launches_and_replays ... ok
+test desk_adams::a_desk_adam_claim_resolves_the_desk_workspace_and_binds_the_subject_seat ... ok
+test desk_adams::a_desk_adam_title_freezes_the_epic_name_and_refuses_a_forged_segment ... ok
+test desk_adams::a_desk_adam_origin_is_checked_whole_before_any_graph_write ... ok
+test desk_adams::a_desk_led_epic_places_its_lsa_on_the_desk_with_a_role_led_title_and_no_ecp ... ok
+test desk_adams::a_handoff_naming_anything_but_the_exact_live_predecessor_refuses_before_effects ... ok
+test desk_adams::a_handoff_that_lost_its_answer_resumes_from_the_step_it_reached ... ok
+test desk_adams::a_legacy_epic_keeps_its_ecp_and_refuses_the_desk_adam_routes ... ok
+test desk_adams::a_same_vendor_handoff_is_refused_before_any_effect ... ok
+test desk_adams::an_ad_hoc_desk_adam_launches_its_lsa_in_the_desk_project_with_no_epic ... ok
+test desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk ... ok
+test desk_adams::an_ad_hoc_desk_adam_opens_its_subject_and_lsa_with_a_frozen_topic ... ok
+test desk_adams::an_epic_binds_its_ad_hoc_origin_after_fencing_it_and_launches_a_fresh_lsa_with_the_capsule ... ok
+test desk_adams::an_epic_desk_adam_is_placed_in_the_desk_project_while_its_subject_stays_the_epics ... ok
+test desk_adams::qualification_adam::several_carriers_refuse_origin_binding_without_fencing_or_graph_writes ... ok
+test desk_adams::an_open_that_waits_on_a_binding_launches_nothing_for_the_moved_topic ... ok
+test desk_adams::two_epic_adams_in_one_workspace_never_share_ownership_credentials_or_evidence ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 596 filtered out; finished in 10.89s
+

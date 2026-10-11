@@ -1,0 +1,8 @@
+{
+  "first_command": "asma git commit --push --create-pr --draft --force --without-attestation",
+  "result": "CLI reported no pending pushes and attempted PR creation without publishing the new remote branch; GitHub refused the absent head",
+  "bounded_next_step": "commit these concrete exact-head verification and cleanup receipts, then use normal asma commit --push --create-pr --draft --without-attestation",
+  "source_change": false,
+  "force_push": false,
+  "rewrite": false
+}

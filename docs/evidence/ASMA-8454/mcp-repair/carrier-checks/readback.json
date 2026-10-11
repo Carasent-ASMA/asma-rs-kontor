@@ -1,0 +1,7 @@
+{
+  "head": "810a3413a878070d94846de30aa098327c5d35d2",
+  "tree": "6bc6ec17ad09eda68adf70d18e7a86fd663a3c9a",
+  "all_eight_gates_pass": true,
+  "source_inputs_match_manifest": true,
+  "gate_index_sha256": "98d918d1f4d45e8ef3d945e2b059bca9e0f664e9d9a80755592fbb274397cb0b"
+}
