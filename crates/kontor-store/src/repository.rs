@@ -2691,6 +2691,39 @@ fn topology_spec_in(
     stored_document(&json, hash.as_str())
 }
 
+/// Whether the published revision a node's pin addresses hosts the node's
+/// sessions in its parent's container.
+///
+/// Read by the pin's address alone: this asks only how that immutable revision
+/// hosts the kind. Checking the pin's own hash belongs to the paths that guard
+/// pin integrity, and refusing here would reach a drifted legacy node before
+/// them. A pin that addresses no published revision declares no such kind.
+fn hosted_in_parent_in(
+    transaction: &Transaction<'_>,
+    node: &SessionTopologyNode,
+) -> RepositoryResult<bool> {
+    let found: Option<(String, String)> = transaction
+        .query_row(
+            "SELECT definition, definition_hash FROM topology_specs
+             WHERE project_id = ?1 AND spec_id = ?2 AND version = ?3",
+            params![
+                node.project_id.to_string(),
+                node.topology.spec_id.to_string(),
+                version_column(node.topology.version)
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(backend)?;
+    let Some((json, hash)) = found else {
+        return Ok(false);
+    };
+    let spec: ProjectSessionTopologySpec = stored_document(&json, &hash)?;
+    Ok(spec.node_kind(&node.kind).is_some_and(|kind| {
+        NodeProjectionCapability::hosts_in_parent(&kind.projection_capabilities)
+    }))
+}
+
 /// Move every existing node in one epic onto the target immutable topology
 /// stamp, after proving that the target can still represent the exact hierarchy,
 /// native containers and seats already held.
@@ -2814,11 +2847,7 @@ fn repin_mini_project_nodes_in(
         // Where a node's sessions live is not vocabulary. A node that borrows
         // its parent's container never gains one of its own, and a node with
         // its own never starts borrowing, whatever the target declares.
-        let current = topology_spec_in(transaction, snapshot.project_id, &node.topology)?;
-        let hosted_in_parent = current.node_kind(&node.kind).is_some_and(|kind| {
-            NodeProjectionCapability::hosts_in_parent(&kind.projection_capabilities)
-        });
-        if hosted_in_parent
+        if hosted_in_parent_in(transaction, &node)?
             != NodeProjectionCapability::hosts_in_parent(&declared.projection_capabilities)
         {
             return Err(conflict(
@@ -11614,10 +11643,7 @@ impl TopologyRepository for SqliteStore {
                 |row| Ok(read_topology_node(row)),
             )
             .map_err(backend)??;
-        let spec = topology_spec_in(&transaction, request.project_id, &node.topology)?;
-        if spec.node_kind(&node.kind).is_some_and(|kind| {
-            NodeProjectionCapability::hosts_in_parent(&kind.projection_capabilities)
-        }) {
+        if hosted_in_parent_in(&transaction, &node)? {
             return Err(conflict(
                 "native container binding",
                 "a node hosted in its parent's container owns no native container",

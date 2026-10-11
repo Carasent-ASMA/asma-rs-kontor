@@ -909,6 +909,51 @@ fn a_subject_hosts_one_live_session_and_owns_no_container() {
     );
 }
 
+/// The parent-hosting guard asks the published revision how a kind hosts its
+/// sessions; it never adds a refusal of its own for a drifted pin hash. That
+/// stays with the paths that guard pin integrity, so a legacy node refuses
+/// exactly where it did before.
+#[test]
+fn the_container_guard_reads_hosting_without_refusing_a_drifted_pin() {
+    let f = Fixture::build();
+    let subject = f.open(&f.adam, Some(f.epic(&f.leadership)), "drifted");
+    let drifted = kontor_core::id::ContentHash::of(b"drifted")
+        .as_str()
+        .to_owned();
+    for node in [f.adam.workspace_node_id, subject.topology_node_id] {
+        assert_eq!(
+            f.raw()
+                .execute(
+                    "UPDATE topology_nodes SET spec_hash = ?1 WHERE id = ?2",
+                    rusqlite::params![drifted, node.to_string()],
+                )
+                .expect("the fixture drifts the pin"),
+            1
+        );
+    }
+    let binding = |node: TopologyNodeId, native_id: &str| NewNativeContainerBinding {
+        topology_node_id: node,
+        project_id: f.project_id,
+        container_binding_id: ExternalId::parse(native_id).expect("an id"),
+        identity: native(native_id),
+        observed_kind: ObservedContainerKind::Workspace,
+        canonical_cwd: None,
+        readback: None,
+        bound_at: f.created_at,
+        observed_at: f.created_at,
+    };
+    f.store
+        .bind_topology_node_container(&binding(f.adam.workspace_node_id, "wks_drifted"))
+        .expect("a node that hosts its own sessions binds as before");
+    assert!(
+        f.store
+            .bind_topology_node_container(&binding(subject.topology_node_id, "wks_subject"))
+            .expect_err("a subject still owns no container")
+            .to_string()
+            .contains("owns no native container")
+    );
+}
+
 #[test]
 fn a_retired_seat_no_longer_holds_its_subject() {
     let f = Fixture::build();
