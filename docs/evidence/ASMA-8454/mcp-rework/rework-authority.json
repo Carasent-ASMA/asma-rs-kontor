@@ -1,0 +1,13 @@
+{
+  "date": "2026-10-11",
+  "rejected_carrier": "255d8c936759d1969427842d3919994d7b9dafee",
+  "reported_gate_dispositions": {"QA": "PASS", "AUD": "FAIL blocking B1 containment race", "advisor": "healthy-native recovery open"},
+  "provenance": "coordinator dispositions and direct user rework instruction in this session; full peer findings were not independently re-issued by this seat",
+  "scope": ["fd-anchored publication and deterministic substitution regression", "healthy-native pending recovery plus read-only validation", "no new seat credential is written wording", "focused gates, failure matrix, new head and delta evidence"],
+  "branch": "fix/ASMA-8454-desk-seat-mcp-composition",
+  "source_seat": "SWE ASMA-8454 qualification owner / Codex; authorized repair implementer",
+  "source_native_id": "not exposed by this runtime; not inferred",
+  "receiver_native_id": "4aff4a6d-4989-41e8-b0ad-ac24aa02130e",
+  "next_phase": "coordinator routes same QA/AUD seats at exact newer head, then completion committee",
+  "hold": "held packages untouched; PR 300 draft; no merge or dependent released rehearsal"
+}

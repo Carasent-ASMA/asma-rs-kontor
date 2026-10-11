@@ -1,0 +1,9 @@
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 38.98s
+     Running tests/loopback_api.rs (.qualification/target-carrier-archive/debug/deps/loopback_api-159166d87db36a05)
+
+running 1 test
+test desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 616 filtered out; finished in 6.15s
+

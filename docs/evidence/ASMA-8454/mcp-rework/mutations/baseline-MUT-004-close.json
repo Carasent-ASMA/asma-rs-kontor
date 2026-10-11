@@ -1,0 +1,22 @@
+{
+  "name": "baseline-MUT-004-close",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "pr_reviews::",
+    "--",
+    "--test-threads=2"
+  ],
+  "started_at": "2026-10-11T20:11:48.245116+00:00",
+  "exit": 0,
+  "log_sha256": "84f111cde42dbecf1d9a98f6cdd3f479c2af36812bb902a8bc451e34013c0b9b",
+  "test_summaries": [
+    "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 606 filtered out; finished in 7.28s"
+  ],
+  "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee"
+}

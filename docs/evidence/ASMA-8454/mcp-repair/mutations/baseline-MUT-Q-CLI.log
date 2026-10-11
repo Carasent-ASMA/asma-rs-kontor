@@ -1,0 +1,20 @@
+   Compiling kontor-scheduler v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-scheduler)
+   Compiling kontor-mcp v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-mcp)
+   Compiling kontor-runtime-paseo v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-runtime-paseo)
+   Compiling kontor-calendar v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-calendar)
+   Compiling kontor-accounts v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-accounts)
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-store)
+   Compiling kontor-cli v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-cli)
+   Compiling kontor-jira v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-jira)
+   Compiling kontor-memory-cognee v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-memory-cognee)
+   Compiling kontor-api v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-api)
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 33.85s
+     Running tests/durable_desk_parity.rs (.qualification/target-carrier-archive/debug/deps/durable_desk_parity-7af01c73fe2303f5)
+
+running 1 test
+ASMA-8454 undeclared desk CLI refusal exit: 3
+test desk_ensure_and_undeclared_refusal_match_http_mcp_and_cli ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.08s
+

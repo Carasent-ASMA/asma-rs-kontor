@@ -6098,6 +6098,14 @@ impl PaseoAdapter {
         let workspace = self.fetch_workspace_in(&project, &workspace_id).await?;
         self.verify_hosted_workspace_placement(&workspace, &project, &request.cwd)?;
 
+        let composition_mode = match (&request.scope, &workspace.workspace_kind) {
+            (
+                HostedSeatScope::Desk { .. },
+                PaseoWorkspaceKind::Directory | PaseoWorkspaceKind::LocalCheckout,
+            ) => crate::seat_mcp::HostedCompositionMode::OwnedDirectory,
+            _ => crate::seat_mcp::HostedCompositionMode::Worktree,
+        };
+
         let labels = self.hosted_seat_labels(request, &project, &workspace_id)?;
         let seat_labels = [(
             label::SEAT_BINDING.to_owned(),
@@ -6156,20 +6164,57 @@ impl PaseoAdapter {
             },
         )?;
 
+        let recovered_agent = match recovered_id.as_ref() {
+            Some(native_id) => {
+                let agent = self.fetch_agent(native_id).await?;
+                self.verify_agent_placement(&agent, &workspace_id, &labels)?;
+                Self::verify_agent_route(&agent, &request.model_rung, request.autonomy)?;
+                Some(agent)
+            }
+            None => None,
+        };
+        let pre_thread_reload = recovered_agent.as_ref().is_some_and(|agent| {
+            agent.provider_session_id().is_none()
+                && matches!(
+                    agent.status,
+                    PaseoAgentStatus::Error | PaseoAgentStatus::Closed
+                )
+        });
+        // Healthy exact natives only recover a pending pair and validate; file
+        // publication belongs to fresh creation or a proved pre-thread reload.
+        let composition = if recovered_id.is_none()
+            || (pre_thread_reload
+                && matches!(
+                    composition_mode,
+                    crate::seat_mcp::HostedCompositionMode::OwnedDirectory
+                )) {
+            crate::seat_mcp::compose_for_hosted_seat(
+                self.config.seat_mcp.as_ref(),
+                request.model_rung.provider.0.as_str(),
+                std::path::Path::new(request.cwd.as_str()),
+                composition_mode,
+            )
+        } else if matches!(
+            composition_mode,
+            crate::seat_mcp::HostedCompositionMode::OwnedDirectory
+        ) {
+            crate::seat_mcp::validate_recovered_hosted_directory(
+                self.config.seat_mcp.as_ref(),
+                request.model_rung.provider.0.as_str(),
+                std::path::Path::new(request.cwd.as_str()),
+            )
+        } else {
+            Ok(())
+        };
+        composition.map_err(|error| {
+            tracing::warn!(%error, "hosted seat MCP composition failed");
+            RuntimeError::LaunchNotAdmitted {
+                rule: crate::seat_mcp::hosted_composition_refusal(&error),
+            }
+        })?;
         let (native_id, created) = match recovered_id {
             Some(native_id) => (native_id, false),
             None => {
-                crate::seat_mcp::compose_for_hosted_seat(
-                    self.config.seat_mcp.as_ref(),
-                    request.model_rung.provider.0.as_str(),
-                    std::path::Path::new(request.cwd.as_str()),
-                )
-                .map_err(|error| {
-                    tracing::warn!(%error, "hosted seat MCP composition failed");
-                    RuntimeError::LaunchNotAdmitted {
-                        rule: "hosted seat MCP composition failed in the ECP",
-                    }
-                })?;
                 let mut creation = PaseoRpc::hosted_seat_agent_create(
                     self.next_request_id(),
                     &workspace_id,
@@ -6208,7 +6253,10 @@ impl PaseoAdapter {
                 (native_id, true)
             }
         };
-        let mut agent = self.fetch_agent(&native_id).await?;
+        let mut agent = match recovered_agent {
+            Some(agent) => agent,
+            None => self.fetch_agent(&native_id).await?,
+        };
         self.verify_agent_placement(&agent, &workspace_id, &labels)?;
         // The readback asserts the autonomy the launch asked for, which is what
         // makes the pair evidence: a seat that came back in another mode fails

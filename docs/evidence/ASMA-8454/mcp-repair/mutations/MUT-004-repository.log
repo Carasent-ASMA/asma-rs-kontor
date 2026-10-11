@@ -1,0 +1,27 @@
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-store)
+   Compiling kontor-api v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-api)
+   Compiling kontor-memory-cognee v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-memory-cognee)
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 52.56s
+     Running tests/loopback_api.rs (.qualification/target-carrier-archive/debug/deps/loopback_api-159166d87db36a05)
+
+running 1 test
+test pr_reviews::the_same_number_in_two_repositories_is_two_reviews_and_a_task_key_names_its_task ... FAILED
+
+failures:
+
+---- pr_reviews::the_same_number_in_two_repositories_is_two_reviews_and_a_task_key_names_its_task stdout ----
+
+thread 'pr_reviews::the_same_number_in_two_repositories_is_two_reviews_and_a_task_key_names_its_task' (106202590) panicked at crates/kontor-daemon/tests/loopback/pr_reviews.rs:451:5:
+assertion `left == right` failed: {"realm_id":"01a12c61-c8e4-7f92-8681-8cf8682938d8","code":"ensure_mismatch","rule":"this pull request's review was opened under another Jira key","current_revision":null,"oldest_retained_cursor":null,"newest_cursor":null,"subject":"PR review","action":"open it under the key it was first opened under; nothing was placed"}
+  left: 409
+ right: 200
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    pr_reviews::the_same_number_in_two_repositories_is_two_reviews_and_a_task_key_names_its_task
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 616 filtered out; finished in 2.36s
+
+error: test failed, to rerun pass `-p kontor-daemon --test loopback_api`

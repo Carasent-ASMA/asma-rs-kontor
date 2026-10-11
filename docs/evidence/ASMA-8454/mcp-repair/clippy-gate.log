@@ -1,0 +1,5 @@
+    Checking kontor-core v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-core)
+    Checking kontor-runtime v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-runtime)
+    Checking kontor-tests-contract v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/tests/contract)
+    Checking kontor-runtime-paseo v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-runtime-paseo)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 13.17s

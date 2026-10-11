@@ -1,0 +1,326 @@
+[
+  {
+    "name": "paseo",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-runtime-paseo",
+      "--lib",
+      "--test",
+      "contract"
+    ],
+    "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor",
+    "started_at": "2026-10-11T19:59:21.271462+00:00",
+    "finished_at": "2026-10-11T19:59:36.701712+00:00",
+    "exit": 0,
+    "log_sha256": "788959b63f013c7d6cfa0151bcadf1084530e6cc41381b5d2d498d96ee6f14e4",
+    "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+    "tested_input_sha256": {
+      "Cargo.lock": "0eeee22c33074018b56239506d48d03acb329b115af508dc987044c350249a02",
+      "crates/kontor-runtime-paseo/Cargo.toml": "0dc6bbe90312d2fa95804daea84d060521bcdaaa90d502a06bf66b2d05bf941d",
+      "crates/kontor-runtime-paseo/src/adapter.rs": "ce59e06f384bd370e5b550cc6739eae74af4445c2e5af3c10e6d9570dad3c570",
+      "crates/kontor-runtime-paseo/src/seat_mcp.rs": "ca3c41e22ddc4bf3f9297506d11ecc49eb665314f66cfb81e7c069e642b65a97",
+      "crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs": "084f367b03a6dad78c643d8d368c896b125e2808bdaa2d77aa9db6e7ed48dcdc",
+      "crates/kontor-runtime-paseo/tests/contract.rs": "bc213f1745ae6edd8500d4f943a89a5d176fea76ab79bdf96b6ad664fbc018bd",
+      "crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs": "238f40e06460462c733182f63c22787225bdb8cbb348b80e8a11a362d4b1a095"
+    },
+    "environment": {
+      "RUSTC_WRAPPER": "",
+      "CARGO_NET_OFFLINE": "true",
+      "RUST_TEST_THREADS": "2",
+      "CARGO_TARGET_DIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/target-carrier-archive",
+      "TMPDIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-rework/tmp",
+      "GIT_CEILING_DIRECTORIES": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-rework/tmp",
+      "SWAGGER_UI_DOWNLOAD_URL": "file:///Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/swagger-ui.zip"
+    },
+    "test_summaries": [
+      "test result: ok. 146 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.56s",
+      "test result: ok. 316 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.31s"
+    ]
+  },
+  {
+    "name": "fmt",
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--check"
+    ],
+    "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor",
+    "started_at": "2026-10-11T19:59:36.720250+00:00",
+    "finished_at": "2026-10-11T19:59:40.052542+00:00",
+    "exit": 0,
+    "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+    "tested_input_sha256": {
+      "Cargo.lock": "0eeee22c33074018b56239506d48d03acb329b115af508dc987044c350249a02",
+      "crates/kontor-runtime-paseo/Cargo.toml": "0dc6bbe90312d2fa95804daea84d060521bcdaaa90d502a06bf66b2d05bf941d",
+      "crates/kontor-runtime-paseo/src/adapter.rs": "ce59e06f384bd370e5b550cc6739eae74af4445c2e5af3c10e6d9570dad3c570",
+      "crates/kontor-runtime-paseo/src/seat_mcp.rs": "ca3c41e22ddc4bf3f9297506d11ecc49eb665314f66cfb81e7c069e642b65a97",
+      "crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs": "084f367b03a6dad78c643d8d368c896b125e2808bdaa2d77aa9db6e7ed48dcdc",
+      "crates/kontor-runtime-paseo/tests/contract.rs": "bc213f1745ae6edd8500d4f943a89a5d176fea76ab79bdf96b6ad664fbc018bd",
+      "crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs": "238f40e06460462c733182f63c22787225bdb8cbb348b80e8a11a362d4b1a095"
+    },
+    "environment": {
+      "RUSTC_WRAPPER": "",
+      "CARGO_NET_OFFLINE": "true",
+      "RUST_TEST_THREADS": "2",
+      "CARGO_TARGET_DIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/target-carrier-archive",
+      "TMPDIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-rework/tmp",
+      "GIT_CEILING_DIRECTORIES": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-rework/tmp",
+      "SWAGGER_UI_DOWNLOAD_URL": "file:///Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/swagger-ui.zip"
+    },
+    "test_summaries": []
+  },
+  {
+    "name": "clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "-p",
+      "kontor-runtime-paseo",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor",
+    "started_at": "2026-10-11T19:59:40.071031+00:00",
+    "finished_at": "2026-10-11T19:59:45.691987+00:00",
+    "exit": 0,
+    "log_sha256": "f8448fb11a0b8311d804a6d5b45b9e63a8f4db2ed216f836d078d72426653e0f",
+    "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+    "tested_input_sha256": {
+      "Cargo.lock": "0eeee22c33074018b56239506d48d03acb329b115af508dc987044c350249a02",
+      "crates/kontor-runtime-paseo/Cargo.toml": "0dc6bbe90312d2fa95804daea84d060521bcdaaa90d502a06bf66b2d05bf941d",
+      "crates/kontor-runtime-paseo/src/adapter.rs": "ce59e06f384bd370e5b550cc6739eae74af4445c2e5af3c10e6d9570dad3c570",
+      "crates/kontor-runtime-paseo/src/seat_mcp.rs": "ca3c41e22ddc4bf3f9297506d11ecc49eb665314f66cfb81e7c069e642b65a97",
+      "crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs": "084f367b03a6dad78c643d8d368c896b125e2808bdaa2d77aa9db6e7ed48dcdc",
+      "crates/kontor-runtime-paseo/tests/contract.rs": "bc213f1745ae6edd8500d4f943a89a5d176fea76ab79bdf96b6ad664fbc018bd",
+      "crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs": "238f40e06460462c733182f63c22787225bdb8cbb348b80e8a11a362d4b1a095"
+    },
+    "environment": {
+      "RUSTC_WRAPPER": "",
+      "CARGO_NET_OFFLINE": "true",
+      "RUST_TEST_THREADS": "2",
+      "CARGO_TARGET_DIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/target-carrier-archive",
+      "TMPDIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-rework/tmp",
+      "GIT_CEILING_DIRECTORIES": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-rework/tmp",
+      "SWAGGER_UI_DOWNLOAD_URL": "file:///Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/swagger-ui.zip"
+    },
+    "test_summaries": []
+  },
+  {
+    "name": "durable_desks",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "durable_desks::",
+      "--",
+      "--test-threads=2"
+    ],
+    "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor",
+    "started_at": "2026-10-11T19:59:45.711016+00:00",
+    "finished_at": "2026-10-11T20:00:31.683840+00:00",
+    "exit": 0,
+    "log_sha256": "5cbf350ef872e5628049845a10952bb046b639904199806f1d263f9af2f3b5a9",
+    "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+    "tested_input_sha256": {
+      "Cargo.lock": "0eeee22c33074018b56239506d48d03acb329b115af508dc987044c350249a02",
+      "crates/kontor-runtime-paseo/Cargo.toml": "0dc6bbe90312d2fa95804daea84d060521bcdaaa90d502a06bf66b2d05bf941d",
+      "crates/kontor-runtime-paseo/src/adapter.rs": "ce59e06f384bd370e5b550cc6739eae74af4445c2e5af3c10e6d9570dad3c570",
+      "crates/kontor-runtime-paseo/src/seat_mcp.rs": "ca3c41e22ddc4bf3f9297506d11ecc49eb665314f66cfb81e7c069e642b65a97",
+      "crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs": "084f367b03a6dad78c643d8d368c896b125e2808bdaa2d77aa9db6e7ed48dcdc",
+      "crates/kontor-runtime-paseo/tests/contract.rs": "bc213f1745ae6edd8500d4f943a89a5d176fea76ab79bdf96b6ad664fbc018bd",
+      "crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs": "238f40e06460462c733182f63c22787225bdb8cbb348b80e8a11a362d4b1a095"
+    },
+    "environment": {
+      "RUSTC_WRAPPER": "",
+      "CARGO_NET_OFFLINE": "true",
+      "RUST_TEST_THREADS": "2",
+      "CARGO_TARGET_DIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/target-carrier-archive",
+      "TMPDIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-rework/tmp",
+      "GIT_CEILING_DIRECTORIES": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-rework/tmp",
+      "SWAGGER_UI_DOWNLOAD_URL": "file:///Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/swagger-ui.zip"
+    },
+    "test_summaries": [
+      "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 612 filtered out; finished in 2.89s"
+    ]
+  },
+  {
+    "name": "durable_seats",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "durable_seats::",
+      "--",
+      "--test-threads=2"
+    ],
+    "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor",
+    "started_at": "2026-10-11T20:00:31.702988+00:00",
+    "finished_at": "2026-10-11T20:00:35.582092+00:00",
+    "exit": 0,
+    "log_sha256": "719e8700ebb129b34cd050394e62843edaff42c93dad1ef321721922aa91db4f",
+    "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+    "tested_input_sha256": {
+      "Cargo.lock": "0eeee22c33074018b56239506d48d03acb329b115af508dc987044c350249a02",
+      "crates/kontor-runtime-paseo/Cargo.toml": "0dc6bbe90312d2fa95804daea84d060521bcdaaa90d502a06bf66b2d05bf941d",
+      "crates/kontor-runtime-paseo/src/adapter.rs": "ce59e06f384bd370e5b550cc6739eae74af4445c2e5af3c10e6d9570dad3c570",
+      "crates/kontor-runtime-paseo/src/seat_mcp.rs": "ca3c41e22ddc4bf3f9297506d11ecc49eb665314f66cfb81e7c069e642b65a97",
+      "crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs": "084f367b03a6dad78c643d8d368c896b125e2808bdaa2d77aa9db6e7ed48dcdc",
+      "crates/kontor-runtime-paseo/tests/contract.rs": "bc213f1745ae6edd8500d4f943a89a5d176fea76ab79bdf96b6ad664fbc018bd",
+      "crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs": "238f40e06460462c733182f63c22787225bdb8cbb348b80e8a11a362d4b1a095"
+    },
+    "environment": {
+      "RUSTC_WRAPPER": "",
+      "CARGO_NET_OFFLINE": "true",
+      "RUST_TEST_THREADS": "2",
+      "CARGO_TARGET_DIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/target-carrier-archive",
+      "TMPDIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-rework/tmp",
+      "GIT_CEILING_DIRECTORIES": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-rework/tmp",
+      "SWAGGER_UI_DOWNLOAD_URL": "file:///Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/swagger-ui.zip"
+    },
+    "test_summaries": [
+      "test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 608 filtered out; finished in 3.55s"
+    ]
+  },
+  {
+    "name": "desk_adams",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "desk_adams::",
+      "--",
+      "--test-threads=2"
+    ],
+    "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor",
+    "started_at": "2026-10-11T20:00:35.602703+00:00",
+    "finished_at": "2026-10-11T20:00:46.976753+00:00",
+    "exit": 0,
+    "log_sha256": "f40ce2ca27dc6c9b77ee798ae21e34ef109ea6c8b1821eda59cb11745518fb8d",
+    "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+    "tested_input_sha256": {
+      "Cargo.lock": "0eeee22c33074018b56239506d48d03acb329b115af508dc987044c350249a02",
+      "crates/kontor-runtime-paseo/Cargo.toml": "0dc6bbe90312d2fa95804daea84d060521bcdaaa90d502a06bf66b2d05bf941d",
+      "crates/kontor-runtime-paseo/src/adapter.rs": "ce59e06f384bd370e5b550cc6739eae74af4445c2e5af3c10e6d9570dad3c570",
+      "crates/kontor-runtime-paseo/src/seat_mcp.rs": "ca3c41e22ddc4bf3f9297506d11ecc49eb665314f66cfb81e7c069e642b65a97",
+      "crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs": "084f367b03a6dad78c643d8d368c896b125e2808bdaa2d77aa9db6e7ed48dcdc",
+      "crates/kontor-runtime-paseo/tests/contract.rs": "bc213f1745ae6edd8500d4f943a89a5d176fea76ab79bdf96b6ad664fbc018bd",
+      "crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs": "238f40e06460462c733182f63c22787225bdb8cbb348b80e8a11a362d4b1a095"
+    },
+    "environment": {
+      "RUSTC_WRAPPER": "",
+      "CARGO_NET_OFFLINE": "true",
+      "RUST_TEST_THREADS": "2",
+      "CARGO_TARGET_DIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/target-carrier-archive",
+      "TMPDIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-rework/tmp",
+      "GIT_CEILING_DIRECTORIES": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-rework/tmp",
+      "SWAGGER_UI_DOWNLOAD_URL": "file:///Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/swagger-ui.zip"
+    },
+    "test_summaries": [
+      "test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 596 filtered out; finished in 11.04s"
+    ]
+  },
+  {
+    "name": "pr_reviews",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "pr_reviews::",
+      "--",
+      "--test-threads=2"
+    ],
+    "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor",
+    "started_at": "2026-10-11T20:00:46.997537+00:00",
+    "finished_at": "2026-10-11T20:00:54.561913+00:00",
+    "exit": 0,
+    "log_sha256": "f439f554acde30ae5bfa42f385300d8ab256cfc33f4368b8ba190ded74ee8f56",
+    "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+    "tested_input_sha256": {
+      "Cargo.lock": "0eeee22c33074018b56239506d48d03acb329b115af508dc987044c350249a02",
+      "crates/kontor-runtime-paseo/Cargo.toml": "0dc6bbe90312d2fa95804daea84d060521bcdaaa90d502a06bf66b2d05bf941d",
+      "crates/kontor-runtime-paseo/src/adapter.rs": "ce59e06f384bd370e5b550cc6739eae74af4445c2e5af3c10e6d9570dad3c570",
+      "crates/kontor-runtime-paseo/src/seat_mcp.rs": "ca3c41e22ddc4bf3f9297506d11ecc49eb665314f66cfb81e7c069e642b65a97",
+      "crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs": "084f367b03a6dad78c643d8d368c896b125e2808bdaa2d77aa9db6e7ed48dcdc",
+      "crates/kontor-runtime-paseo/tests/contract.rs": "bc213f1745ae6edd8500d4f943a89a5d176fea76ab79bdf96b6ad664fbc018bd",
+      "crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs": "238f40e06460462c733182f63c22787225bdb8cbb348b80e8a11a362d4b1a095"
+    },
+    "environment": {
+      "RUSTC_WRAPPER": "",
+      "CARGO_NET_OFFLINE": "true",
+      "RUST_TEST_THREADS": "2",
+      "CARGO_TARGET_DIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/target-carrier-archive",
+      "TMPDIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-rework/tmp",
+      "GIT_CEILING_DIRECTORIES": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-rework/tmp",
+      "SWAGGER_UI_DOWNLOAD_URL": "file:///Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/swagger-ui.zip"
+    },
+    "test_summaries": [
+      "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 606 filtered out; finished in 7.23s"
+    ]
+  },
+  {
+    "name": "cli_parity",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kontor-cli",
+      "--test",
+      "durable_desk_parity",
+      "--",
+      "--nocapture"
+    ],
+    "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor",
+    "started_at": "2026-10-11T20:00:54.582339+00:00",
+    "finished_at": "2026-10-11T20:01:17.126777+00:00",
+    "exit": 0,
+    "log_sha256": "6b35bdd8b62185886c3dbd1cc61753bcd7d9414cdbad12f8a74561eb570ef5fd",
+    "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+    "tested_input_sha256": {
+      "Cargo.lock": "0eeee22c33074018b56239506d48d03acb329b115af508dc987044c350249a02",
+      "crates/kontor-runtime-paseo/Cargo.toml": "0dc6bbe90312d2fa95804daea84d060521bcdaaa90d502a06bf66b2d05bf941d",
+      "crates/kontor-runtime-paseo/src/adapter.rs": "ce59e06f384bd370e5b550cc6739eae74af4445c2e5af3c10e6d9570dad3c570",
+      "crates/kontor-runtime-paseo/src/seat_mcp.rs": "ca3c41e22ddc4bf3f9297506d11ecc49eb665314f66cfb81e7c069e642b65a97",
+      "crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs": "084f367b03a6dad78c643d8d368c896b125e2808bdaa2d77aa9db6e7ed48dcdc",
+      "crates/kontor-runtime-paseo/tests/contract.rs": "bc213f1745ae6edd8500d4f943a89a5d176fea76ab79bdf96b6ad664fbc018bd",
+      "crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs": "238f40e06460462c733182f63c22787225bdb8cbb348b80e8a11a362d4b1a095"
+    },
+    "environment": {
+      "RUSTC_WRAPPER": "",
+      "CARGO_NET_OFFLINE": "true",
+      "RUST_TEST_THREADS": "2",
+      "CARGO_TARGET_DIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/target-carrier-archive",
+      "TMPDIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-rework/tmp",
+      "GIT_CEILING_DIRECTORIES": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-rework/tmp",
+      "SWAGGER_UI_DOWNLOAD_URL": "file:///Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/swagger-ui.zip"
+    },
+    "test_summaries": [
+      "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.95s"
+    ]
+  }
+]

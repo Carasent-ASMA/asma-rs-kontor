@@ -1,0 +1,20 @@
+{
+  "name": "MCP-eligible",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "kontor-runtime-paseo",
+    "--test",
+    "contract",
+    "hosted_directory::"
+  ],
+  "started_at": "2026-10-11T18:59:06.233144+00:00",
+  "exit": 101,
+  "log_sha256": "60e8b57f63a58d8e815adb3e89bc643debb14b9d6f1f39880b1085278f628f4e",
+  "test_summaries": [
+    "test result: FAILED. 1 passed; 7 failed; 0 ignored; 0 measured; 306 filtered out; finished in 0.08s"
+  ],
+  "runtime_checkout_HEAD": "813135fd8b46deb1893b6181a04d42f4785752ca"
+}

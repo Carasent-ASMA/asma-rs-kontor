@@ -1,0 +1,36 @@
+   Compiling kontor-runtime-paseo v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-runtime-paseo)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.32s
+     Running tests/contract.rs (.qualification/target-carrier-archive/debug/deps/contract-63a44ea052ee6141)
+
+running 8 tests
+test hosted_directory::enabled_claude_directory_claim_is_metadata_only_and_retains_exact_scope ... ok
+test hosted_directory::enabled_claude_directory_launch_replacement_and_subjects_keep_distinct_authority ... ok
+test hosted_directory::enabled_claude_directory_refuses_invalid_configuration_and_incomplete_publication_without_create ... FAILED
+test hosted_directory::enabled_claude_directory_lost_ack_recovers_same_native_and_reconciles_before_reload ... FAILED
+test hosted_directory::enabled_claude_directory_wrong_placement_stays_refused_without_files ... ok
+test hosted_directory::enabled_claude_directory_retitle_keeps_identity_and_files ... ok
+test hosted_directory::enabled_composition_restore_bindings_keeps_snapshot_and_does_not_publish_files ... ok
+test hosted_directory::enabled_directory_cross_vendor_replacement_and_route_correction_keep_shared_files ... ok
+
+failures:
+
+---- hosted_directory::enabled_claude_directory_refuses_invalid_configuration_and_incomplete_publication_without_create stdout ----
+
+thread 'hosted_directory::enabled_claude_directory_refuses_invalid_configuration_and_incomplete_publication_without_create' (106302933) panicked at crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs:227:5:
+assertion failed: matches!(f.plane.adapter.launch_hosted_seat(&f.request).await,
+    Err(RuntimeError::LaunchNotAdmitted { .. }))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- hosted_directory::enabled_claude_directory_lost_ack_recovers_same_native_and_reconciles_before_reload stdout ----
+
+thread 'hosted_directory::enabled_claude_directory_lost_ack_recovers_same_native_and_reconciles_before_reload' (106302886) panicked at crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs:299:10:
+called `Result::unwrap_err()` on an `Ok` value: ConsultationLaunchOutcome { identity: NativeRuntimeIdentity { runtime_kind: RuntimeKindKey("paseo.agent"), host: ExternalName("paseo-dev"), generation: 1, native_id: ExternalId("agt_implement") }, provider_session_id: Some(ExternalId("prov_sess_1")), observed_at: 2026-08-16T09:10:00Z, created: false, fleet_provenance: NotRequested, planning_pair: None }
+
+
+failures:
+    hosted_directory::enabled_claude_directory_lost_ack_recovers_same_native_and_reconciles_before_reload
+    hosted_directory::enabled_claude_directory_refuses_invalid_configuration_and_incomplete_publication_without_create
+
+test result: FAILED. 6 passed; 2 failed; 0 ignored; 0 measured; 306 filtered out; finished in 0.44s
+
+error: test failed, to rerun pass `-p kontor-runtime-paseo --test contract`

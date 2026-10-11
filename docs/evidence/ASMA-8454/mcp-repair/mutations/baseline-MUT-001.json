@@ -1,0 +1,22 @@
+{
+  "name": "baseline-MUT-001",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "durable_desks::",
+    "--",
+    "--test-threads=2"
+  ],
+  "started_at": "2026-10-11T19:01:57.368378+00:00",
+  "exit": 0,
+  "log_sha256": "92777ca312dcced6ba2b9f69d88a2d9fae13c93d79dd5989ecaf035a41826ac0",
+  "test_summaries": [
+    "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 612 filtered out; finished in 2.88s"
+  ],
+  "runtime_checkout_HEAD": "813135fd8b46deb1893b6181a04d42f4785752ca"
+}

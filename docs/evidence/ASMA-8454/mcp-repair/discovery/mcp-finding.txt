@@ -1,0 +1,27 @@
+# ASMA-8454: released Claude desk Adam MCP refusal — HOLD
+
+Merged source `813135fd8b46deb1893b6181a04d42f4785752ca` remains unchanged. Installed daemon SHA-256 `321731a12b724ee68a1432b41f51cfcab71b2cb4f4194c0d6a8bb9ead728bfe1` matches the executing process.
+
+Fresh realm `01a12c14-54e6-7230-a503-5973bac3749a`, fixture project `01a0064a-e056-7603-9968-ef64fdaacb75`. The faithful fixture reports both projectKind and workspaceKind as directory. Both exact successors were selected through HTTP before desk-led apply, in source order: topology v5 `5c8d6d480fbf997a1217dec51574b842e4eb2d9a53cbbb00e56367252a81d54b`, definition v8 `79def4231c04072de862998f9743eee5e02e79ff4297609f0bfed98faf72f074`.
+
+Both desks materialized; a Codex fixture durable-seat reconcile succeeded with occupancy generation 1. Both Paseo-direct declarations remain unchecked/unbound. Old-pin and canonical-definition comparisons passed. Both logical desk-led epics applied HTTP 200.
+
+The first Claude epic Adam materialization returned HTTP 422 unsupported_capability: rule “the runtime would not admit this launch”, action “hosted seat MCP composition failed in the ECP”. Exact request: POST `/v1/projects/01a0064a-e056-7603-9968-ef64fdaacb75/epics/01a12c14-f0c8-7621-8475-0a8b124fb61c/core-team/seats:materialize`; key `released-epic-adam-ASMA-999911`; expected_revision 1; LSA route claude / claude-opus-5 / high. Request/response receipt retained verbatim.
+
+## Concrete composition boundary
+
+`crates/kontor-runtime-paseo/src/adapter.rs:6162` calls `compose_for_hosted_seat` before `hosted_seat_agent_create` (:6173). :6169 wraps composition failure as LaunchNotAdmitted. `seat_mcp.rs:342–343` dispatches Claude to cwd composition. :256 resolves the Git exclude path before writing either seat file. :426–436 invokes `git -C <cwd> rev-parse --git-path info/exclude` and refuses if the cwd is not a Git worktree.
+
+Observed desk ADAM project `prj_a7b60d4d-0ab4-482c-bcbb-b6c6ac478de5`, workspace `wks_8f08b353-53ef-4651-9170-01fc5df47bbd`, title ADAM, kind directory. Its cwd is `.qualification/release-complete/realm/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12c14-5e7d-7871-87a9-e612a44a0292` under this checkout. The local desk root has no .git, .mcp.json, or Claude local settings. A read-only Git probe with the daemon's same GIT_CEILING_DIRECTORIES isolation exited 128, “not a git repository”. This is evidence for the non-Git composer refusal; the daemon warning log does not render its underlying error field, so the root-cause conclusion uses source plus the independent probe.
+
+The composer file is byte-identical across 430975a3, e376f405 and 813135fd. The adapter is identical between e376f405 and 813135fd, but differs from 430975a3, which predates TASK-003. The unchanged Git-only helper is incompatible with the newly supported non-Git desk launch shape for Claude; helper age alone does not exonerate the feature's integrated acceptance.
+
+The positive desk and epic-desk-Adam adapter contract tests (`tests/contract.rs:15591`, :15656) use RecordedPaseo and `config` with seat_mcp None (:571). They prove directory placement and labels, not enabled Claude filesystem MCP composition. The source whole-change test uses a fake runtime. This released test therefore reaches an integration boundary those passes did not prove.
+
+## Preservation and exact effects
+
+Dependent steps stopped immediately. Daemon PID 11937 received SIGINT and OS proc_pidpath reports absence; realm file-set digests are preserved. Read-only queries used a copied DB/WAL/SHM set and verified the original bytes unchanged. Native counts: two desk projects, two ADAM workspaces, one agent total and one create-agent request (the earlier successful Codex durable fixture). The refused Claude launch created no agent. A Claude LSA binding and prepared generation-1 intent exist, with no observed native; both subject nodes already exist from the successful logical epic applies. This is not a zero-total-effects claim.
+
+No guard disabled, no Git initialization of a desk root, no provider substitution, no source repair, no raw checkpoint or WAL deletion. The earlier placement-shape and selection-mismatch discovery packages remain preserved. Cleanup owner is Codex ASMA-8454; the held realm and its isolated fixture are retained pending disposition. Reports remains unresolved. Full four-structure native readback, restore/replay, rollback, partial PR close/retry and final fixture cleanup have not completed.
+
+Commands: `python3 .qualification/release-complete/accept.py establish` (passed); `python3 .qualification/release-complete/accept.py structures` (held at this refusal). Exact request/response, selection receipts, native readback, source identities, Git probe and file-set preservation accompany this finding. Recommend a scoped production/integration disposition and targeted re-review before dependent rehearsal resumes; no workaround applied.

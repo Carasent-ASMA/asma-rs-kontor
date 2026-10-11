@@ -1,0 +1,29 @@
+{
+  "at": "2026-10-11T17:48:52.868808+00:00",
+  "method": "POST",
+  "path": "/v1/projects/01a0064a-e056-7603-9968-ef64fdaacb75/epics/01a12c14-f0c8-7621-8475-0a8b124fb61c/core-team/seats:materialize",
+  "key": "released-epic-adam-ASMA-999911",
+  "request_body": {
+    "expected_revision": 1,
+    "routes": [
+      {
+        "role_code": "LSA",
+        "model_route": {
+          "provider": "claude",
+          "model": "claude-opus-5",
+          "effort": "high"
+        }
+      }
+    ]
+  },
+  "status": 422,
+  "response": {
+    "realm_id": "01a12c14-54e6-7230-a503-5973bac3749a",
+    "code": "unsupported_capability",
+    "rule": "the runtime would not admit this launch",
+    "current_revision": null,
+    "oldest_retained_cursor": null,
+    "newest_cursor": null,
+    "action": "hosted seat MCP composition failed in the ECP"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "MUT-Q-ATOMIC",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "pr_reviews::qualification::a_new_desk_under_a_parent_that_already_knows_an_older_desk_kind_refuses_without_effects",
+    "--",
+    "--test-threads=2"
+  ],
+  "started_at": "2026-10-11T19:18:06.578924+00:00",
+  "exit": 101,
+  "log_sha256": "8218cfe472118f292d628a6f105fb207d5727d4b649efa9ddd18543f61ea0b95",
+  "test_summaries": [
+    "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 616 filtered out; finished in 2.66s"
+  ],
+  "runtime_checkout_HEAD": "813135fd8b46deb1893b6181a04d42f4785752ca"
+}

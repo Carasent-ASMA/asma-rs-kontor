@@ -1,0 +1,42 @@
+{
+  "name": "cli_parity",
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kontor-cli",
+    "--test",
+    "durable_desk_parity",
+    "--",
+    "--nocapture"
+  ],
+  "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor",
+  "started_at": "2026-10-11T20:00:54.582339+00:00",
+  "finished_at": "2026-10-11T20:01:17.126777+00:00",
+  "exit": 0,
+  "log_sha256": "6b35bdd8b62185886c3dbd1cc61753bcd7d9414cdbad12f8a74561eb570ef5fd",
+  "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+  "tested_input_sha256": {
+    "Cargo.lock": "0eeee22c33074018b56239506d48d03acb329b115af508dc987044c350249a02",
+    "crates/kontor-runtime-paseo/Cargo.toml": "0dc6bbe90312d2fa95804daea84d060521bcdaaa90d502a06bf66b2d05bf941d",
+    "crates/kontor-runtime-paseo/src/adapter.rs": "ce59e06f384bd370e5b550cc6739eae74af4445c2e5af3c10e6d9570dad3c570",
+    "crates/kontor-runtime-paseo/src/seat_mcp.rs": "ca3c41e22ddc4bf3f9297506d11ecc49eb665314f66cfb81e7c069e642b65a97",
+    "crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs": "084f367b03a6dad78c643d8d368c896b125e2808bdaa2d77aa9db6e7ed48dcdc",
+    "crates/kontor-runtime-paseo/tests/contract.rs": "bc213f1745ae6edd8500d4f943a89a5d176fea76ab79bdf96b6ad664fbc018bd",
+    "crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs": "238f40e06460462c733182f63c22787225bdb8cbb348b80e8a11a362d4b1a095"
+  },
+  "environment": {
+    "RUSTC_WRAPPER": "",
+    "CARGO_NET_OFFLINE": "true",
+    "RUST_TEST_THREADS": "2",
+    "CARGO_TARGET_DIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/target-carrier-archive",
+    "TMPDIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-rework/tmp",
+    "GIT_CEILING_DIRECTORIES": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-rework/tmp",
+    "SWAGGER_UI_DOWNLOAD_URL": "file:///Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/swagger-ui.zip"
+  },
+  "test_summaries": [
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.95s"
+  ]
+}

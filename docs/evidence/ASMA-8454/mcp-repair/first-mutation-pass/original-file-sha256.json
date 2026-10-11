@@ -1,0 +1,13 @@
+{
+  "crates/kontor-daemon/src/applications.rs": "db734bdac8c5ce623924ff10cce53e8aaea2fcee9c085b087fc09206ca4f44fa",
+  "crates/kontor-core/src/durable_seat.rs": "10faa9acc8e9098b9a04f087f6e39e610f184ee1d76d130d61d6bfcae948f241",
+  "crates/kontor-daemon/src/applications/durable_seats.rs": "01ed5e08ef88fdd2eb8e5114635205c42a61daa671b55aa7551aed1a528cadbe",
+  "crates/kontor-daemon/src/applications/desk_adams.rs": "4ea807ae089dfe5421fab6594755e709adf08c5367e6434342d70b53e652379d",
+  "crates/kontor-store/src/repository/pr_reviews.rs": "0b3d3cd8243a05095a406d5cdac7f967afcd966430423d0fb9ebcef701724f9e",
+  "crates/kontor-daemon/src/applications/pr_reviews.rs": "58974e343c215318d271e6e2eff087d0d92c88202e84669ed30926ca83303186",
+  "crates/kontor-store/src/repository.rs": "93054e8a62994d6139646951332cd0f9911f38db21e50d012a4e644047d66556",
+  "crates/kontor-cli/src/output.rs": "e2f67dc81bd9b9bf70c3632a4c51b5577971b98aad0074203a5bdb1a653d0cab",
+  "crates/kontor-store/src/repository/desks.rs": "ddfb5ecc4f5fa40311795fb90bf68f4d22715c4200a7f80749e4a61ffad66fe8",
+  "crates/kontor-runtime-paseo/src/adapter.rs": "a6712e84a6fb895fa06b18bb66f2067d0fbf274b256edd18f5d943441127b264",
+  "crates/kontor-runtime-paseo/src/seat_mcp.rs": "c3300ec16a47eceb7079817878c6b98bf51d2946c118afbf2845a392afdc5fa2"
+}

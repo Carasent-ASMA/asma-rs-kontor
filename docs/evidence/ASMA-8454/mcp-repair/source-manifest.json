@@ -1,0 +1,25 @@
+{
+  "base": "813135fd8b46deb1893b6181a04d42f4785752ca",
+  "source_head": "4c7c2a1110259dddc802c0ee647129f156f2ac41",
+  "source_tree": "94ebdb12a0442080a7344c1572be9f8a3cc5a962",
+  "branch": "fix/ASMA-8454-desk-seat-mcp-composition",
+  "tested_input_sha256": {
+    "Cargo.lock": "0eeee22c33074018b56239506d48d03acb329b115af508dc987044c350249a02",
+    "crates/kontor-runtime-paseo/Cargo.toml": "0dc6bbe90312d2fa95804daea84d060521bcdaaa90d502a06bf66b2d05bf941d",
+    "crates/kontor-runtime-paseo/src/adapter.rs": "a6712e84a6fb895fa06b18bb66f2067d0fbf274b256edd18f5d943441127b264",
+    "crates/kontor-runtime-paseo/src/seat_mcp.rs": "c3300ec16a47eceb7079817878c6b98bf51d2946c118afbf2845a392afdc5fa2",
+    "crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs": "d602d6320e6a9ab82a02bd9dfa893c15add5d0944a943e06d410a49a84bb08a6",
+    "crates/kontor-runtime-paseo/tests/contract.rs": "bc213f1745ae6edd8500d4f943a89a5d176fea76ab79bdf96b6ad664fbc018bd",
+    "crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs": "223495d119905948426a56cdc8792fdfa61085c8c0fec185b42951a163779872"
+  },
+  "only_source_paths_changed": [
+    "Cargo.lock",
+    "crates/kontor-runtime-paseo/Cargo.toml",
+    "crates/kontor-runtime-paseo/src/adapter.rs",
+    "crates/kontor-runtime-paseo/src/seat_mcp.rs",
+    "crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs",
+    "crates/kontor-runtime-paseo/tests/contract.rs",
+    "crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs"
+  ],
+  "qualification": "own-author production-adapter/recorded transport plus real filesystem; not released executable acceptance"
+}

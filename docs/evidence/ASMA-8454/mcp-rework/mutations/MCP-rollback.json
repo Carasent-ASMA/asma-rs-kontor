@@ -1,0 +1,19 @@
+{
+  "name": "MCP-rollback",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "kontor-runtime-paseo",
+    "--lib",
+    "seat_mcp::directory_tests::"
+  ],
+  "started_at": "2026-10-11T20:19:43.343102+00:00",
+  "exit": 101,
+  "log_sha256": "0d456f5a9e20592eece0560361dae68948d5aebd1da22bd3960eb3c5ec3c166d",
+  "test_summaries": [
+    "test result: FAILED. 13 passed; 2 failed; 0 ignored; 0 measured; 131 filtered out; finished in 1.36s"
+  ],
+  "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee"
+}

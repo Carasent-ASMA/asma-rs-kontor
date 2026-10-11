@@ -1,0 +1,515 @@
+//! Filesystem publication failures, exact recovery and shared-cwd exclusion.
+use super::*;
+
+fn fixture() -> (tempfile::TempDir, SeatMcp, PathBuf) {
+    let directory = tempfile::tempdir().unwrap();
+    let cwd = directory.path().join("desk");
+    let state_root = directory.path().join("realm");
+    std::fs::create_dir(&cwd).unwrap();
+    std::fs::create_dir(&state_root).unwrap();
+    (
+        directory,
+        SeatMcp {
+            command: "/owned/bin/kontor-mcp".into(),
+            state_root,
+        },
+        cwd,
+    )
+}
+
+fn compose(seat: &SeatMcp, cwd: &Path) -> io::Result<()> {
+    compose_for_hosted_seat(
+        Some(seat),
+        "claude-work",
+        cwd,
+        HostedCompositionMode::OwnedDirectory,
+    )
+}
+
+fn originals(cwd: &Path) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+    (
+        directory_file(&cwd.join(".claude/settings.local.json")).unwrap(),
+        directory_file(&cwd.join(".mcp.json")).unwrap(),
+    )
+}
+
+fn seed(cwd: &Path) {
+    std::fs::create_dir(cwd.join(".claude")).unwrap();
+    std::fs::write(
+        cwd.join(".mcp.json"),
+        b" {\"mcpServers\":{\"foreign\":{\"command\":\"foreign-mcp\"}}} ",
+    )
+    .unwrap();
+    std::fs::write(
+        cwd.join(".claude/settings.local.json"),
+        b"{\"permissions\":{\"allow\":[\"Read\"]}}\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn hosted_directory_preserves_foreign_content_and_skips_identical_bytes() {
+    let (_fixture, seat, cwd) = fixture();
+    seed(&cwd);
+    compose(&seat, &cwd).unwrap();
+    let (settings, mcp) = originals(&cwd);
+    let settings: serde_json::Value = serde_json::from_slice(settings.as_ref().unwrap()).unwrap();
+    let mcp: serde_json::Value = serde_json::from_slice(mcp.as_ref().unwrap()).unwrap();
+    assert_eq!(settings["permissions"]["allow"][0], "Read");
+    assert_eq!(settings["enableAllProjectMcpServers"], true);
+    assert_eq!(mcp["mcpServers"]["foreign"]["command"], "foreign-mcp");
+    assert_eq!(
+        mcp["mcpServers"]["kontor"],
+        mcp_file_entry(&seat.command, &seat.state_root, "leadership")
+    );
+    let before = originals(&cwd);
+    let modified = std::fs::metadata(cwd.join(".mcp.json"))
+        .unwrap()
+        .modified()
+        .unwrap();
+    compose_hosted_directory(&seat, "claude", &cwd, &mut |_| {
+        panic!("identical bytes must not stage or publish")
+    })
+    .unwrap();
+    assert_eq!(originals(&cwd), before);
+    assert_eq!(
+        std::fs::metadata(cwd.join(".mcp.json"))
+            .unwrap()
+            .modified()
+            .unwrap(),
+        modified
+    );
+    assert!(!cwd.join(".git").exists());
+    assert!(
+        !publication_record(&seat, &std::fs::canonicalize(&cwd).unwrap())
+            .unwrap()
+            .exists()
+    );
+    assert!(
+        !String::from_utf8(before.1.unwrap())
+            .unwrap()
+            .contains("KONTOR_AUTH")
+    );
+}
+
+#[test]
+fn invalid_second_json_is_refused_before_any_file_or_directory_change() {
+    for invalid in [b"not JSON".as_slice(), b"[]", b"{\"mcpServers\":[]}"] {
+        let (_fixture, seat, cwd) = fixture();
+        std::fs::write(cwd.join(".mcp.json"), invalid).unwrap();
+        assert!(compose(&seat, &cwd).is_err());
+        assert_eq!(std::fs::read(cwd.join(".mcp.json")).unwrap(), invalid);
+        assert!(!cwd.join(".claude").exists());
+        assert!(
+            !seat
+                .state_root
+                .join("hosted-directory-publications")
+                .exists()
+        );
+    }
+}
+
+#[test]
+fn handled_stage_publish_and_readback_failures_restore_exact_bytes_and_absence() {
+    for populated in [false, true] {
+        for step in [
+            PublicationStep::StageSettings,
+            PublicationStep::StageMcp,
+            PublicationStep::PublishSettings,
+            PublicationStep::PublishMcp,
+            PublicationStep::Readback,
+        ] {
+            let (_fixture, seat, cwd) = fixture();
+            if populated {
+                seed(&cwd);
+            }
+            let before = originals(&cwd);
+            let error = compose_hosted_directory(&seat, "claude", &cwd, &mut |at| {
+                if at == step {
+                    Err(io::Error::other(format!("injected {step:?}")))
+                } else {
+                    Ok(())
+                }
+            })
+            .unwrap_err();
+            assert!(error.to_string().contains("injected"), "{step:?}: {error}");
+            assert_eq!(originals(&cwd), before, "{step:?}");
+            if !populated {
+                assert!(!cwd.join(".claude").exists());
+            }
+            assert!(
+                !publication_record(&seat, &std::fs::canonicalize(&cwd).unwrap())
+                    .unwrap()
+                    .exists()
+            );
+            assert!(!std::fs::read_dir(&cwd).unwrap().any(|e| {
+                e.unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".kontor-")
+            }));
+            compose(&seat, &cwd).unwrap();
+        }
+    }
+}
+
+#[test]
+fn rollback_failure_blocks_launch_with_precise_pending_recovery_then_converges() {
+    let (_fixture, seat, cwd) = fixture();
+    seed(&cwd);
+    let before = originals(&cwd);
+    let error = compose_hosted_directory(&seat, "claude", &cwd, &mut |step| {
+        if matches!(
+            step,
+            PublicationStep::PublishMcp | PublicationStep::RollbackSettings
+        ) {
+            Err(io::Error::other("injected publication/rollback failure"))
+        } else {
+            Ok(())
+        }
+    })
+    .unwrap_err();
+    assert!(hosted_composition_refusal(&error).contains("cleanup is incomplete"));
+    assert_ne!(originals(&cwd).0, before.0);
+    assert_eq!(originals(&cwd).1, before.1);
+    assert!(
+        publication_record(&seat, &std::fs::canonicalize(&cwd).unwrap())
+            .unwrap()
+            .exists()
+    );
+    // A route correction to a non-Claude provider must still restore the pair.
+    compose_for_hosted_seat(
+        Some(&seat),
+        "codex",
+        &cwd,
+        HostedCompositionMode::OwnedDirectory,
+    )
+    .unwrap();
+    assert_eq!(originals(&cwd), before);
+    compose(&seat, &cwd).unwrap();
+}
+
+#[test]
+fn interruption_between_publications_restores_originals_before_next_subject() {
+    let (_fixture, seat, cwd) = fixture();
+    seed(&cwd);
+    let before = originals(&cwd);
+    let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        compose_hosted_directory(&seat, "claude", &cwd, &mut |step| {
+            assert_ne!(
+                step,
+                PublicationStep::PublishMcp,
+                "simulated process interruption"
+            );
+            Ok(())
+        })
+    }));
+    assert!(interrupted.is_err());
+    assert_ne!(originals(&cwd).0, before.0);
+    assert_eq!(originals(&cwd).1, before.1);
+    compose_for_hosted_seat(
+        Some(&seat),
+        "opencode",
+        &cwd,
+        HostedCompositionMode::OwnedDirectory,
+    )
+    .unwrap();
+    assert_eq!(originals(&cwd), before);
+    compose(&seat, &cwd).unwrap();
+}
+
+#[test]
+fn interruption_after_complete_pair_retains_it_and_requires_cleanup_before_use() {
+    let (_fixture, seat, cwd) = fixture();
+    let error = compose_hosted_directory(&seat, "claude", &cwd, &mut |step| {
+        if step == PublicationStep::Cleanup {
+            Err(io::Error::other("interrupted before record removal"))
+        } else {
+            Ok(())
+        }
+    })
+    .unwrap_err();
+    assert!(hosted_composition_refusal(&error).contains("incomplete"));
+    let pair = originals(&cwd);
+    compose(&seat, &cwd).unwrap();
+    assert_eq!(originals(&cwd), pair);
+    assert!(
+        !publication_record(&seat, &std::fs::canonicalize(&cwd).unwrap())
+            .unwrap()
+            .exists()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn hosted_directory_refuses_escaping_settings_mcp_and_journal_paths() {
+    for component in [".claude", ".mcp.json", "journal"] {
+        let (fixture, seat, cwd) = fixture();
+        let foreign = fixture.path().join("foreign");
+        std::fs::create_dir(&foreign).unwrap();
+        let target = foreign.join("settings.local.json");
+        std::fs::write(&target, b"{\"human\":true}").unwrap();
+        let link = match component {
+            "journal" => seat.state_root.join("hosted-directory-publications"),
+            other => cwd.join(other),
+        };
+        std::os::unix::fs::symlink(
+            if component == ".mcp.json" {
+                &target
+            } else {
+                &foreign
+            },
+            &link,
+        )
+        .unwrap();
+        assert!(compose(&seat, &cwd).is_err(), "{component}");
+        assert_eq!(std::fs::read(&target).unwrap(), b"{\"human\":true}");
+        assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
+    }
+}
+
+#[test]
+fn malformed_git_is_a_refusal_and_real_git_keeps_the_existing_exclude_behavior() {
+    let (_fixture, seat, cwd) = fixture();
+    std::fs::write(cwd.join(".git"), "gitdir: /absent/kontor-test-repository").unwrap();
+    assert!(compose(&seat, &cwd).is_err());
+    assert!(!cwd.join(".mcp.json").exists());
+    std::fs::remove_file(cwd.join(".git")).unwrap();
+    assert!(
+        std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .arg(&cwd)
+            .status()
+            .unwrap()
+            .success()
+    );
+    compose(&seat, &cwd).unwrap();
+    compose(&seat, &cwd).unwrap();
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&cwd)
+        .args(["status", "--porcelain"])
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    assert!(status.stdout.is_empty());
+    let exclude = std::fs::read_to_string(git_exclude_path(&cwd).unwrap()).unwrap();
+    for line in CLAUDE_EXCLUDED {
+        assert_eq!(exclude.lines().filter(|present| present == line).count(), 1);
+    }
+}
+
+#[test]
+fn two_subjects_serialize_on_canonical_cwd_and_keep_one_shared_nonsecret_surface() {
+    let (_fixture, seat, cwd) = fixture();
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let first_seat = seat.clone();
+    let first_cwd = cwd.clone();
+    let first = std::thread::spawn(move || {
+        compose_hosted_directory(&first_seat, "claude-work", &first_cwd, &mut |step| {
+            if step == PublicationStep::StageSettings {
+                // Check the live publication's exclusion directly; a timeout
+                // alone can mistake slow scheduling or Git I/O for locking.
+                let canonical = std::fs::canonicalize(&first_cwd).unwrap();
+                let shared = directory_lock(&canonical);
+                assert!(matches!(
+                    shared.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ));
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            }
+            Ok(())
+        })
+    });
+    entered_rx.recv().unwrap();
+    let second_seat = seat.clone();
+    let second_cwd = cwd.join(".");
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let second = std::thread::spawn(move || {
+        let result = compose(&second_seat, &second_cwd);
+        done_tx.send(result.is_ok()).unwrap();
+        result
+    });
+    assert!(
+        done_rx
+            .recv_timeout(std::time::Duration::from_millis(50))
+            .is_err()
+    );
+    release_tx.send(()).unwrap();
+    first.join().unwrap().unwrap();
+    second.join().unwrap().unwrap();
+    assert!(done_rx.recv().unwrap());
+    assert!(serde_json::from_slice::<serde_json::Value>(originals(&cwd).1.as_ref().unwrap()).unwrap()["mcpServers"]["kontor"].is_object());
+}
+
+#[test]
+fn disabled_and_foreign_providers_do_not_publish_files() {
+    let (_fixture, seat, cwd) = fixture();
+    for provider in ["codex", "opencode", "foreign"] {
+        compose_for_hosted_seat(
+            Some(&seat),
+            provider,
+            &cwd,
+            HostedCompositionMode::OwnedDirectory,
+        )
+        .unwrap();
+    }
+    compose_for_hosted_seat(None, "claude", &cwd, HostedCompositionMode::OwnedDirectory).unwrap();
+    assert_eq!(originals(&cwd), (None, None));
+    assert!(!cwd.join(".claude").exists());
+    assert!(
+        !seat
+            .state_root
+            .join("hosted-directory-publications")
+            .exists()
+    );
+}
+
+#[test]
+fn publication_child_process() {
+    let Some(root) = std::env::var_os("KONTOR_DIRECTORY_TEST_CHILD") else {
+        return;
+    };
+    let root = PathBuf::from(root);
+    let seat = SeatMcp {
+        command: "kontor-mcp".into(),
+        state_root: root.join("realm"),
+    };
+    compose_hosted_directory(&seat, "claude", &root.join("desk"), &mut |step| {
+        if step == PublicationStep::PublishMcp {
+            std::process::exit(86);
+        }
+        Ok(())
+    })
+    .unwrap();
+    panic!("the child should exit between publications");
+}
+
+#[test]
+fn real_process_exit_between_publications_recovers_originals_from_the_daemon_record() {
+    let (fixture, seat, cwd) = fixture();
+    seed(&cwd);
+    let before = originals(&cwd);
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "seat_mcp::directory_tests::publication_child_process",
+            "--nocapture",
+        ])
+        .env("KONTOR_DIRECTORY_TEST_CHILD", fixture.path())
+        .status()
+        .unwrap();
+    assert_eq!(status.code(), Some(86));
+    assert_ne!(originals(&cwd).0, before.0);
+    assert_eq!(originals(&cwd).1, before.1);
+    compose_for_hosted_seat(
+        Some(&seat),
+        "codex",
+        &cwd,
+        HostedCompositionMode::OwnedDirectory,
+    )
+    .unwrap();
+    assert_eq!(originals(&cwd), before);
+    compose(&seat, &cwd).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_parent_substituted_during_staging_cannot_redirect_publication_or_cleanup() {
+    let (fixture, seat, cwd) = fixture();
+    let foreign = fixture.path().join("foreign");
+    std::fs::create_dir(&foreign).unwrap();
+    let saved = cwd.join("saved-claude");
+    let error = compose_hosted_directory(&seat, "claude", &cwd, &mut |step| {
+        if step == PublicationStep::StageSettings {
+            std::fs::rename(cwd.join(".claude"), &saved).unwrap();
+            std::os::unix::fs::symlink(&foreign, cwd.join(".claude")).unwrap();
+        }
+        Ok(())
+    })
+    .unwrap_err();
+    assert!(hosted_composition_refusal(&error).contains("incomplete"));
+    assert_eq!(std::fs::read_dir(&foreign).unwrap().count(), 0);
+    assert!(
+        publication_record(&seat, &std::fs::canonicalize(&cwd).unwrap())
+            .unwrap()
+            .exists()
+    );
+    std::fs::remove_file(cwd.join(".claude")).unwrap();
+    std::fs::rename(saved, cwd.join(".claude")).unwrap();
+    compose(&seat, &cwd).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn directory_relative_stage_and_replace_refuse_a_symlink_parent() {
+    let (fixture, _seat, cwd) = fixture();
+    let foreign = fixture.path().join("foreign");
+    std::fs::create_dir(&foreign).unwrap();
+    std::os::unix::fs::symlink(&foreign, cwd.join(".claude")).unwrap();
+    let stage = cwd.join(".claude/stage.tmp");
+    let target = cwd.join(".claude/settings.local.json");
+    let canonical = std::fs::canonicalize(&cwd).unwrap();
+    let mut fs = DirectoryIo::new(&canonical, &canonical).unwrap();
+    assert!(fs.stage(&stage, b"{}").is_err());
+    std::fs::write(cwd.join("stage.tmp"), b"{}").unwrap();
+    assert!(
+        fs.replace(&cwd.join("stage.tmp"), &target, &mut |_| Ok(()))
+            .is_err()
+    );
+    assert_eq!(std::fs::read_dir(&foreign).unwrap().count(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn ancestry_substitution_between_parent_validation_and_replace_is_refused() {
+    for publication_number in [1, 2] {
+        let (fixture, seat, old_cwd) = fixture();
+        let host = fixture.path().join("host");
+        std::fs::create_dir(&host).unwrap();
+        let cwd = host.join("desk");
+        std::fs::rename(old_cwd, &cwd).unwrap();
+        seed(&cwd);
+        let before = originals(&cwd);
+        let foreign = fixture.path().join("foreign");
+        std::fs::create_dir(&foreign).unwrap();
+        let foreign_cwd = foreign.join("desk");
+        std::fs::create_dir(&foreign_cwd).unwrap();
+        seed(&foreign_cwd);
+        let foreign_before = originals(&foreign_cwd);
+        let saved = fixture.path().join("saved-host");
+        let mut validated = 0;
+        let error = compose_hosted_directory(&seat, "claude", &cwd, &mut |step| {
+            if step == PublicationStep::ReplaceValidated {
+                validated += 1;
+                if validated == publication_number {
+                    // The former implementation opened the source parent,
+                    // then re-resolved the target through this foreign link.
+                    std::fs::rename(&host, &saved).unwrap();
+                    std::os::unix::fs::symlink(&foreign, &host).unwrap();
+                }
+            }
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(hosted_composition_refusal(&error).contains("incomplete"));
+        assert!(error.to_string().contains("identity"));
+        assert_eq!(originals(&foreign_cwd), foreign_before);
+        assert_eq!(std::fs::read_dir(&foreign_cwd).unwrap().count(), 2);
+        assert!(publication_record(&seat, &cwd).unwrap().exists());
+        std::fs::remove_file(&host).unwrap();
+        std::fs::rename(saved, &host).unwrap();
+        // Pending rollback uses the saved originals, then a supported retry.
+        compose_for_hosted_seat(
+            Some(&seat),
+            "codex",
+            &cwd,
+            HostedCompositionMode::OwnedDirectory,
+        )
+        .unwrap();
+        assert_eq!(originals(&cwd), before);
+        compose(&seat, &cwd).unwrap();
+    }
+}

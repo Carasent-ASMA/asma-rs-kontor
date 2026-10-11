@@ -1,0 +1,9 @@
+   Compiling kontor-runtime-paseo v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-runtime-paseo)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.87s
+     Running unittests src/lib.rs (.qualification/target-carrier-archive/debug/deps/kontor_runtime_paseo-9a7a79f0433c9b08)
+
+running 1 test
+test seat_mcp::directory_tests::ancestry_substitution_between_parent_validation_and_replace_is_refused ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 145 filtered out; finished in 0.28s
+

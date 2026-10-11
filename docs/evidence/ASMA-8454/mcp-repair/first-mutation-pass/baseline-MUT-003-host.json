@@ -1,0 +1,22 @@
+{
+  "name": "baseline-MUT-003-host",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk",
+    "--",
+    "--test-threads=2"
+  ],
+  "started_at": "2026-10-11T18:48:09.556297+00:00",
+  "exit": 0,
+  "log_sha256": "1c93a54a52f6ce6b839ec3cce2f2a3b1db1853d77975eb11dc2c8316dfd0b256",
+  "test_summaries": [
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 616 filtered out; finished in 5.96s"
+  ],
+  "runtime_checkout_HEAD": "813135fd8b46deb1893b6181a04d42f4785752ca"
+}

@@ -1,0 +1,22 @@
+{
+  "name": "MUT-001",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "durable_desks::",
+    "--",
+    "--test-threads=2"
+  ],
+  "started_at": "2026-10-11T19:02:55.556906+00:00",
+  "exit": 101,
+  "log_sha256": "70d61c46d2aba7eef8e0285b4bc6bd892eea7a8eaaec4615154fcecdaf772e20",
+  "test_summaries": [
+    "test result: FAILED. 0 passed; 5 failed; 0 ignored; 0 measured; 612 filtered out; finished in 2.42s"
+  ],
+  "runtime_checkout_HEAD": "813135fd8b46deb1893b6181a04d42f4785752ca"
+}

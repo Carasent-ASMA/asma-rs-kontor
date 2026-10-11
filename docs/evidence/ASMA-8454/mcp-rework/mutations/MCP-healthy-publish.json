@@ -1,0 +1,20 @@
+{
+  "name": "MCP-healthy-publish",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "kontor-runtime-paseo",
+    "--test",
+    "contract",
+    "hosted_directory::"
+  ],
+  "started_at": "2026-10-11T20:20:11.807037+00:00",
+  "exit": 101,
+  "log_sha256": "e8e4b87d3cd58ec6bbed2640e0a659403aca9ad8976c0accde9ccdd352e70fcb",
+  "test_summaries": [
+    "test result: FAILED. 8 passed; 2 failed; 0 ignored; 0 measured; 306 filtered out; finished in 0.72s"
+  ],
+  "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee"
+}

@@ -1,0 +1,13 @@
+{
+  "time": "2026-10-11T19:28:45.203007+00:00",
+  "owner": "Codex / ASMA-8454 qualification owner",
+  "target": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/final-head/tmp",
+  "command": "python3 .qualification/mcp-repair/cleanup-final-head.py",
+  "top_level_entries_before": 5,
+  "recursive_entries_before": 120,
+  "regular_file_bytes_before": 13271040,
+  "inventory_sha256": "47a4af038c49cd07df43abca79fa915603fb5348eabe0e3b1cbe27c4643539fc",
+  "scope": "only repair test TMPDIR; no held discovery realm/package, real native or unrelated Cargo target",
+  "absent_after": true,
+  "entries_after": 0
+}

@@ -1,0 +1,24 @@
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 40.07s
+     Running tests/loopback_api.rs (.qualification/target-carrier-archive/debug/deps/loopback_api-159166d87db36a05)
+
+running 1 test
+test desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk ... FAILED
+
+failures:
+
+---- desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk stdout ----
+
+thread 'desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk' (106943177) panicked at crates/kontor-daemon/tests/loopback/desk_adams.rs:2739:5:
+assertion `left == right` failed
+  left: "01a12c94-e365-7dd2-84fb-54830c9ae3a8"
+ right: "01a12c94-e49b-7af2-90a0-cb0c3fdb60d5"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 616 filtered out; finished in 4.72s
+
+error: test failed, to rerun pass `-p kontor-daemon --test loopback_api`

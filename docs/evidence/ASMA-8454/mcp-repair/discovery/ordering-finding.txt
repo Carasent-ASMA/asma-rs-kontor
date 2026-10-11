@@ -1,0 +1,23 @@
+# ASMA-8454: partial logical apply ordering — bounded diagnosis
+
+Source inspected: merged `813135fd8b46deb1893b6181a04d42f4785752ca`; comparison `430975a3788734e8aeb49a116252e0bf3ab4009f` and `e376f4059e47de8fb40956d4dbfbf6920dabc4ec`. No production changes.
+
+The classification is mixed. Generic epic-before-control-node ordering already exists at 430975a3. The desk Adam subject-before-node path was introduced in TASK-003: `applications/desk_adams.rs` is absent at 430975a3, and its bytes are identical at e376f405 and 813135fd. This is not caused by the two TASK-005 repairs, but the orphan desk-subject effect cannot honestly be classified as entirely pre-existing before this epic's desk Adam feature.
+
+## Exact ordering
+
+At merged `crates/kontor-daemon/src/applications.rs:32733`, `store.apply_epic` writes the epic/tasks before `govern_epic` at :32805. Governance ensures the control/leadership chain at :7940; the desk-led branch at :10673 calls `ensure_epic_subject`. The separately identified task path at :43037 also calls that helper; :42960 is a selected-topology publication check in that task path, not the epic-row write.
+
+`crates/kontor-daemon/src/applications/desk_adams.rs:114` plans and records the subject. `record_subject` invokes the store write at :166. Only then does :135 call `ensure_subject_node`, whose node write is :214. `crates/kontor-store/src/repository.rs:10639` refuses an absent kind (`SessionTopologyNode`, “names a kind absent from the pinned topology specification”). Its predicate remains the same as the earlier store's check at :10824.
+
+At 430975a3, `applications.rs:32542` writes the epic before governance at :32607; :7874–7892 ensures the control chain afterwards. Numbered git-show hunks and full-file digests accompany this finding.
+
+## One released legacy probe
+
+Commands: `python3 .qualification/release-legacy-probe/probe.py` initially stopped before apply because synthetic topology revision 6 was already published (409 revision_conflict). Then `python3 .qualification/release-legacy-probe/resume-probe.py` reused only that owned disposable probe, with unused synthetic revision 1001; it performed exactly one mismatched-pair `epics:apply`. Both helpers and logs are copied here.
+
+The released executable selected a topology with ECP removed while leaving the non-desk-led definition v2 selected. The synthetic apply returned HTTP 400 invalid_request, subject SessionTopologyNode. Readback: one epic row `01a12c1c-4635-7d21-a7a4-361da39bad3c`, zero desk Adam subjects, zero native agents. This supports the source-based pre-existing classification of generic epic-first persistence, without implying desk-subject persistence existed before TASK-003.
+
+The probe daemon stopped via SIGINT. OS absence was verified; the supported released export drained its WAL and read schema/export generation 17. Its synthetic fixture process was terminated; probe receipts are retained, cleanup owner Codex ASMA-8454. No external Jira publication, real seat, migration, or old pin change occurred.
+
+The original selection-mismatch discovery remains immutable at `.qualification/release-corrected/selection-discovery`: epic pinned v4, orphan subject referencing definition v8, zero orphan desks, one previously successful fixture native. No repair or repin attempted. Coordinator disposition is required for the new desk-subject ordering finding before any repair.

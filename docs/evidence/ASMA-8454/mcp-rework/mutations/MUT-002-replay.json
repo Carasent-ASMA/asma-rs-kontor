@@ -1,0 +1,22 @@
+{
+  "name": "MUT-002-replay",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "durable_seats::a_missing_daemon_seat_launches_once_and_a_replay_never_launches_again",
+    "--",
+    "--test-threads=2"
+  ],
+  "started_at": "2026-10-11T20:06:23.024764+00:00",
+  "exit": 101,
+  "log_sha256": "347f3152277627a3389b6c09f2423401f9f0a9b5961ad78e1e77b264410f489f",
+  "test_summaries": [
+    "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 616 filtered out; finished in 2.26s"
+  ],
+  "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee"
+}

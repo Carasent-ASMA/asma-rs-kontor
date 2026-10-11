@@ -1,0 +1,22 @@
+{
+  "name": "baseline-MUT-Q-CLI",
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kontor-cli",
+    "--test",
+    "durable_desk_parity",
+    "--",
+    "--nocapture"
+  ],
+  "started_at": "2026-10-11T20:15:24.334627+00:00",
+  "exit": 0,
+  "log_sha256": "7f1a9415a9aa406279ea5d2e37c9fac9ba0f0223b51cab9f68797a9849a63086",
+  "test_summaries": [
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.92s"
+  ],
+  "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee"
+}

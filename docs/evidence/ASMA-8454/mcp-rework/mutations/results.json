@@ -1,0 +1,815 @@
+[
+  {
+    "name": "MUT-001",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "durable_desks::",
+      "--",
+      "--test-threads=2"
+    ],
+    "started_at": "2026-10-11T20:01:29.070510+00:00",
+    "exit": 101,
+    "log_sha256": "e8c8b09010cb12cc03e3498f0324e8bddee189d22df53e7791ea1edb01a8b75d",
+    "test_summaries": [
+      "test result: FAILED. 0 passed; 5 failed; 0 ignored; 0 measured; 612 filtered out; finished in 2.36s"
+    ],
+    "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+    "file": "crates/kontor-daemon/src/applications.rs",
+    "line": 10755,
+    "claim": "An epic prerequisite prevents independent desk materialization",
+    "original_sha256": "db734bdac8c5ce623924ff10cce53e8aaea2fcee9c085b087fc09206ca4f44fa",
+    "seeded_sha256": "efeaaeef9ccefb92977daaf7cba3d5448c94bd171b06f4936bfe6452f23d5d53",
+    "result": "KILLED",
+    "failed_tests": [
+      "durable_desks::a_desk_refused_at_native_preparation_keeps_only_its_ensured_nodes",
+      "durable_desks::a_restarted_daemon_reads_back_and_reconciles_the_same_desks",
+      "durable_desks::an_undeclared_desk_is_refused_before_any_desk_state_or_native_effect",
+      "durable_desks::both_desks_materialize_read_back_and_replay_without_an_epic",
+      "durable_desks::no_epic_operation_can_retire_or_archive_a_desk"
+    ],
+    "failure_excerpts": [
+      "thread 'durable_desks::a_desk_refused_at_native_preparation_keeps_only_its_ensured_nodes' (106846811) panicked at crates/kontor-daemon/tests/loopback/durable_desks.rs:402:5:\nassertion `left == right` failed: {\"realm_id\":\"01a12c8e-f525-7bf1-bc2f-855e91aaf713\",\"code\":\"placement_blocked\",\"rule\":\"mutant requires an epic for a desk\",\"current_revision\":null,\"oldest_retained_cursor\":null,\"newest_cursor\":null,\"action\":\"resolve where the work belongs in the topology, then retry\"}\n  left: String(\"placement_blocked\")\n right: \"unavailable\"\n\n---- durable_desks::a_restarted_daemon_reads_back_and_reconciles_the_same_desks stdout ----\n\n",
+      "thread 'durable_desks::a_restarted_daemon_reads_back_and_reconciles_the_same_desks' (106846812) panicked at crates/kontor-daemon/tests/loopback/durable_desks.rs:603:5:\nassertion `left == right` failed: {\"realm_id\":\"01a12c8e-f525-7bf1-bc2f-855e91aaf713\",\"code\":\"placement_blocked\",\"rule\":\"mutant requires an epic for a desk\",\"current_revision\":null,\"oldest_retained_cursor\":null,\"newest_cursor\":null,\"action\":\"resolve where the work belongs in the topology, then retry\"}\n  left: 409\n right: 200\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n---- durable_desks::an_undeclared_desk_is_refused_before_any_desk_state_or_native_effect stdout ----\n",
+      "thread 'durable_desks::an_undeclared_desk_is_refused_before_any_desk_state_or_native_effect' (106847030) panicked at crates/kontor-daemon/tests/loopback/durable_desks.rs:284:5:\nensure adam: {\"realm_id\":\"01a12c8e-f525-7bf1-bc2f-855e91aaf713\",\"code\":\"placement_blocked\",\"rule\":\"mutant requires an epic for a desk\",\"current_revision\":null,\"oldest_retained_cursor\":null,\"newest_cursor\":null,\"action\":\"resolve where the work belongs in the topology, then retry\"}\n\n---- durable_desks::both_desks_materialize_read_back_and_replay_without_an_epic stdout ----\n\nthread 'durable_desks::both_desks_materialize_read_back_and_replay_without_an_epic' (106847031) panicked at crates/kontor-daemon/tests/loopback/durable_desks.rs:467:5:\nassertion `left == right` failed: {\"realm_id\":\"01a12c8e-f525-7bf1-bc2f-855e91aaf713\",\"code\":\"placement_blocked\",\"rule\":\"mutant requires an epic for a desk\",\"current_revision\":null,\"oldest_retained_cursor\":null,\"newest_cursor\":null,\"action\":\"resolve where the work belongs in the topology, then retry\"}\n",
+      "thread 'durable_desks::no_epic_operation_can_retire_or_archive_a_desk' (106847033) panicked at crates/kontor-daemon/tests/loopback/durable_desks.rs:708:5:\nassertion `left == right` failed: {\"realm_id\":\"01a12c8e-f525-7bf1-bc2f-855e91aaf713\",\"code\":\"placement_blocked\",\"rule\":\"mutant requires an epic for a desk\",\"current_revision\":null,\"oldest_retained_cursor\":null,\"newest_cursor\":null,\"action\":\"resolve where the work belongs in the topology, then retry\"}\n  left: 409\n right: 200\n\n\nfailures:\n"
+    ]
+  },
+  {
+    "name": "MUT-002-busy",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "durable_seats::a_seat_that_is_not_proved_missing_is_never_restarted",
+      "--",
+      "--test-threads=2"
+    ],
+    "started_at": "2026-10-11T20:02:52.366696+00:00",
+    "exit": 101,
+    "log_sha256": "ee8e5475383d9f0d50e8ee6c1049ea342e4a99e10921da6111ed37a065320860",
+    "test_summaries": [
+      "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 616 filtered out; finished in 2.31s"
+    ],
+    "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+    "file": "crates/kontor-core/src/durable_seat.rs",
+    "line": 492,
+    "claim": "Busy becomes authority to launch",
+    "original_sha256": "10faa9acc8e9098b9a04f087f6e39e610f184ee1d76d130d61d6bfcae948f241",
+    "seeded_sha256": "e371f92be347746aa2a8eeefdd193c6828add82703d8f6d28fb9b521b2591404",
+    "result": "KILLED",
+    "failed_tests": [
+      "durable_seats::a_seat_that_is_not_proved_missing_is_never_restarted"
+    ],
+    "failure_excerpts": [
+      "thread 'durable_seats::a_seat_that_is_not_proved_missing_is_never_restarted' (106891472) panicked at crates/kontor-daemon/tests/loopback/durable_seats.rs:737:9:\nassertion `left == right` failed: busy\n  left: (\"busy\", \"working\", \"launch\")\n right: (\"busy\", \"working\", \"none\")\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\n"
+    ]
+  },
+  {
+    "name": "MUT-002-unchecked",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "durable_seats::a_seat_that_is_not_proved_missing_is_never_restarted",
+      "--",
+      "--test-threads=2"
+    ],
+    "started_at": "2026-10-11T20:04:04.099996+00:00",
+    "exit": 101,
+    "log_sha256": "3fb2bcbc9f44c0b04cec88317b58383646b2e1ed4c2f0608bdbeb5bb76882603",
+    "test_summaries": [
+      "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 616 filtered out; finished in 2.29s"
+    ],
+    "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+    "file": "crates/kontor-core/src/durable_seat.rs",
+    "line": 492,
+    "claim": "Unchecked becomes authority to launch",
+    "original_sha256": "10faa9acc8e9098b9a04f087f6e39e610f184ee1d76d130d61d6bfcae948f241",
+    "seeded_sha256": "305a684a6f2351225a9dcda4f6736331a93fd44bfd8eec33c3da924d71fbcb41",
+    "result": "KILLED",
+    "failed_tests": [
+      "durable_seats::a_seat_that_is_not_proved_missing_is_never_restarted"
+    ],
+    "failure_excerpts": [
+      "thread 'durable_seats::a_seat_that_is_not_proved_missing_is_never_restarted' (106898246) panicked at crates/kontor-daemon/tests/loopback/durable_seats.rs:773:9:\nassertion `left == right` failed\n  left: (\"unchecked\", \"census_failed\", \"launch\")\n right: (\"unchecked\", \"census_failed\", \"none\")\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\n"
+    ]
+  },
+  {
+    "name": "MUT-002-replay",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "durable_seats::a_missing_daemon_seat_launches_once_and_a_replay_never_launches_again",
+      "--",
+      "--test-threads=2"
+    ],
+    "started_at": "2026-10-11T20:06:23.024764+00:00",
+    "exit": 101,
+    "log_sha256": "347f3152277627a3389b6c09f2423401f9f0a9b5961ad78e1e77b264410f489f",
+    "test_summaries": [
+      "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 616 filtered out; finished in 2.26s"
+    ],
+    "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+    "file": "crates/kontor-daemon/src/applications/durable_seats.rs",
+    "line": 246,
+    "claim": "A recorded launch is re-executed after its native vanishes",
+    "original_sha256": "01ed5e08ef88fdd2eb8e5114635205c42a61daa671b55aa7551aed1a528cadbe",
+    "seeded_sha256": "65c0b04fd66071d0abd3d0ddd6c6855523b45ee9c6abc8dd61cef380b8471d5e",
+    "result": "KILLED",
+    "failed_tests": [
+      "durable_seats::a_missing_daemon_seat_launches_once_and_a_replay_never_launches_again"
+    ],
+    "failure_excerpts": [
+      "thread 'durable_seats::a_missing_daemon_seat_launches_once_and_a_replay_never_launches_again' (106908945) panicked at crates/kontor-daemon/tests/loopback/durable_seats.rs:410:5:\nassertion `left == right` failed\n  left: (\"missing\", \"native_absent\", \"launch\")\n right: (\"missing\", \"native_absent\", \"none\")\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\n"
+    ]
+  },
+  {
+    "name": "MUT-003-host",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk",
+      "--",
+      "--test-threads=2"
+    ],
+    "started_at": "2026-10-11T20:07:52.609160+00:00",
+    "exit": 101,
+    "log_sha256": "cf9d2ab013be611601a7c9f6dbb3314e670a95fd8f7fdc9d7bbf1c52c65f7567",
+    "test_summaries": [
+      "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 616 filtered out; finished in 4.72s"
+    ],
+    "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+    "file": "crates/kontor-daemon/src/applications.rs",
+    "line": 10736,
+    "claim": "All Adam subjects on the shared host answer an epic-control lookup",
+    "original_sha256": "db734bdac8c5ce623924ff10cce53e8aaea2fcee9c085b087fc09206ca4f44fa",
+    "seeded_sha256": "dda4a5d3caa53e64f87c3c3715ff3e1e4e82fd1f8368a2ad7b445bd74a0b1021",
+    "result": "KILLED",
+    "failed_tests": [
+      "desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk"
+    ],
+    "failure_excerpts": [
+      "thread 'desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk' (106943177) panicked at crates/kontor-daemon/tests/loopback/desk_adams.rs:2739:5:\nassertion `left == right` failed\n  left: \"01a12c94-e365-7dd2-84fb-54830c9ae3a8\"\n right: \"01a12c94-e49b-7af2-90a0-cb0c3fdb60d5\"\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\n"
+    ]
+  },
+  {
+    "name": "MUT-003-authority",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk",
+      "--",
+      "--test-threads=2"
+    ],
+    "started_at": "2026-10-11T20:08:39.757868+00:00",
+    "exit": 101,
+    "log_sha256": "a8b33773e26a2ce9f9afcc5dc7087b4eb4b9f77ec8cab650a32255720951c3ac",
+    "test_summaries": [
+      "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 616 filtered out; finished in 4.24s"
+    ],
+    "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+    "file": "crates/kontor-daemon/src/applications.rs",
+    "line": 18775,
+    "claim": "Completion control authority accepts any active seat in the shared desk, including its durable seat and sibling subjects, regardless of role",
+    "original_sha256": "db734bdac8c5ce623924ff10cce53e8aaea2fcee9c085b087fc09206ca4f44fa",
+    "seeded_sha256": "996abccf8cc08cc80b6e442d91452db15464a82e77efc90199cfb14b1a93bbb3",
+    "result": "KILLED",
+    "failed_tests": [
+      "desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk"
+    ],
+    "failure_excerpts": [
+      "thread 'desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk' (106953130) panicked at crates/kontor-daemon/tests/loopback/desk_adams.rs:2737:5:\nassertion `left == right` failed: {\"realm_id\":\"01a12c95-8fc1-73f3-8244-17414637d348\",\"code\":\"placement_blocked\",\"rule\":\"this epic's control plane holds more than one live seat for the role\",\"current_revision\":null,\"oldest_retained_cursor\":null,\"newest_cursor\":null,\"subject\":\"completion wake\",\"action\":\"retire the seats this completion should not answer to, so exactly one remains, then advance it again; nothing was changed\"}\n  left: 409\n right: 200\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\n"
+    ]
+  },
+  {
+    "name": "MUT-003-ecp",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk",
+      "--",
+      "--test-threads=2"
+    ],
+    "started_at": "2026-10-11T20:09:25.929683+00:00",
+    "exit": 101,
+    "log_sha256": "ffc780f35ae116deba443f10a364b759d26924c50bb6dc0b0db26a1cb27c0a13",
+    "test_summaries": [
+      "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 616 filtered out; finished in 2.36s"
+    ],
+    "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+    "file": "crates/kontor-daemon/src/applications/desk_adams.rs",
+    "line": 78,
+    "claim": "The control resolver always requires historical ECP",
+    "original_sha256": "4ea807ae089dfe5421fab6594755e709adf08c5367e6434342d70b53e652379d",
+    "seeded_sha256": "e922b5c3c006739e7b37c257fc07a4ca7959dfabd728e3fbd1bf09c63655a0f1",
+    "result": "KILLED",
+    "failed_tests": [
+      "desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk"
+    ],
+    "failure_excerpts": [
+      "thread 'desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk' (106957568) panicked at crates/kontor-daemon/tests/loopback/desk_adams.rs:370:5:\nassertion `left == right` failed: {\"realm_id\":\"01a12c96-3abf-7cf2-ae72-0003fbfe0823\",\"code\":\"placement_blocked\",\"rule\":\"a desk-led epic has no control plane of its own\",\"current_revision\":null,\"oldest_retained_cursor\":null,\"newest_cursor\":null,\"action\":\"resolve where the work belongs in the topology, then retry\"}\n  left: 409\n right: 200\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\n"
+    ]
+  },
+  {
+    "name": "MUT-004-repository",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "pr_reviews::the_same_number_in_two_repositories_is_two_reviews_and_a_task_key_names_its_task",
+      "--",
+      "--test-threads=2"
+    ],
+    "started_at": "2026-10-11T20:10:49.409208+00:00",
+    "exit": 101,
+    "log_sha256": "2b1a47fc75f32025a1cd506d06f0257d8cc43d3182a4b1aee83113a25d109356",
+    "test_summaries": [
+      "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 616 filtered out; finished in 2.39s"
+    ],
+    "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+    "file": "crates/kontor-store/src/repository/pr_reviews.rs",
+    "line": 119,
+    "claim": "Repository is dropped from PR lookup identity",
+    "original_sha256": "0b3d3cd8243a05095a406d5cdac7f967afcd966430423d0fb9ebcef701724f9e",
+    "seeded_sha256": "3211c0f0ed6163efa6908a86dd0e3d6faa5698e3c52e8602eeef8dcd367c7ce2",
+    "result": "KILLED",
+    "failed_tests": [
+      "pr_reviews::the_same_number_in_two_repositories_is_two_reviews_and_a_task_key_names_its_task"
+    ],
+    "failure_excerpts": [
+      "thread 'pr_reviews::the_same_number_in_two_repositories_is_two_reviews_and_a_task_key_names_its_task' (106967132) panicked at crates/kontor-daemon/tests/loopback/pr_reviews.rs:451:5:\nassertion `left == right` failed: {\"realm_id\":\"01a12c97-c2f4-71e0-bf85-b94340c0d57e\",\"code\":\"ensure_mismatch\",\"rule\":\"this pull request's review was opened under another Jira key\",\"current_revision\":null,\"oldest_retained_cursor\":null,\"newest_cursor\":null,\"subject\":\"PR review\",\"action\":\"open it under the key it was first opened under; nothing was placed\"}\n  left: 409\n right: 200\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\n"
+    ]
+  },
+  {
+    "name": "MUT-004-close",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "pr_reviews::",
+      "--",
+      "--test-threads=2"
+    ],
+    "started_at": "2026-10-11T20:12:51.711434+00:00",
+    "exit": 101,
+    "log_sha256": "22f92b78d5b5c4b0f81f32d114b059a59ef9541451f576139dcb769cacff25fd",
+    "test_summaries": [
+      "test result: FAILED. 9 passed; 2 failed; 0 ignored; 0 measured; 606 filtered out; finished in 7.75s"
+    ],
+    "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+    "file": "crates/kontor-daemon/src/applications/pr_reviews.rs",
+    "line": 1040,
+    "claim": "Closing one PR enumerates every desk and sibling subject seat",
+    "original_sha256": "58974e343c215318d271e6e2eff087d0d92c88202e84669ed30926ca83303186",
+    "seeded_sha256": "8cf7353ebad6e72d0ef9dd31e6eefa7832e5ebd4f84e1d409d55ee15ac08b887",
+    "result": "KILLED",
+    "failed_tests": [
+      "pr_reviews::closing_one_review_keeps_the_desk_its_durable_seat_and_the_other_review",
+      "pr_reviews::qualification::four_structures_restore_replay_and_selection_rollback_keep_old_pins_and_natives"
+    ],
+    "failure_excerpts": [
+      "thread 'pr_reviews::closing_one_review_keeps_the_desk_its_durable_seat_and_the_other_review' (107003263) panicked at crates/kontor-daemon/tests/loopback/pr_reviews.rs:939:5:\nassertion `left == right` failed: [InspectContainer(TopologyNodeId(01a12c99-714d-7892-9656-de2e18acb762)), DiscoverCapabilities, InspectContainer(TopologyNodeId(01a12c99-714d-7892-9656-de2e18acb762)), DiscoverCapabilities, InspectContainer(TopologyNodeId(01a12c99-7164-7c62-8f3c-75651dd27e87)), DiscoverCapabilities, InspectContainer(TopologyNodeId(01a12c99-714d-7892-9656-de2e18acb762)), DiscoverCapabilities, InspectContainer(TopologyNodeId(01a12c99-71d1-7b12-ab55-da49ed648958)), DiscoverCapabilities, InspectContainer(TopologyNodeId(01a12c99-714d-7892-9656-de2e18acb762)), DiscoverCapabilities, RetireHostedSeat(SeatBindingId(01a12c99-7220-7ca1-9072-69716fd5d3cc)), InspectContainer(TopologyNodeId(01a12c99-714d-7892-9656-de2e18acb762)), DiscoverCapabilities, RetireHostedSeat(SeatBindingId(01a12c99-716a-7211-8327-6bc2d00d23c0)), InspectContainer(TopologyNodeId(01a12c99-7164-7c62-8f3c-75651dd27e87)), DiscoverCapabilities, RetireHostedSeat(SeatBindingId(01a12c99-7170-7222-b69d-d881a0654911)), InspectContainer(TopologyNodeId(01a12c99-7164-7c62-8f3c-75651dd27e87)), DiscoverCapabilities, RetireHostedSeat(SeatBindingId(01a12c99-7177-7d11-af57-d2b8593d25da)), InspectContainer(TopologyNodeId(01a12c99-7164-7c62-8f3c-75651dd27e87)), DiscoverCapabilities, RetireHostedSeat(SeatBindingId(01a12c99-717e-7ea1-af3c-15d52cd9a6f1)), InspectContainer(TopologyNodeId(01a12c99-714d-7892-9656-de2e18acb762)), DiscoverCapabilities, RetireHostedSeat(SeatBindingId(01a12c99-71d7-7900-b9b1-de167623f61d)), InspectContainer(TopologyNodeId(01a12c99-71d1-7b12-ab55-da49ed648958)), DiscoverCapabilities, RetireHostedSeat(SeatBindingId(01a12c99-71de-70d0-a9a1-419683ae1b5f)), InspectContainer(TopologyNodeId(01a12c99-71d1-7b12-ab55-da49ed648958)), DiscoverCapabilities, RetireHostedSeat(SeatBindingId(01a12c99-71e5-7422-b718-7c96fe5c2f98)), InspectContainer(TopologyNodeId(01a12c99-71d1-7b12-ab55-da49ed648958)), DiscoverCapabilities, RetireHostedSeat(SeatBindingId(01a12c99-71ec-7113-8cd6-8fccf65d98bb))]\n  left: {SeatBindingId(01a12c99-716a-7211-8327-6bc2d00d23c0), SeatBindingId(01a12c99-7170-7222-b69d-d881a0654911), SeatBindingId(01a12c99-7177-7d11-af57-d2b8593d25da), SeatBindingId(01a12c99-717e-7ea1-af3c-15d52cd9a6f1), SeatBindingId(01a12c99-71d7-7900-b9b1-de167623f61d), SeatBindingId(01a12c99-71de-70d0-a9a1-419683ae1b5f), SeatBindingId(01a12c99-71e5-7422-b718-7c96fe5c2f98), SeatBindingId(01a12c99-71ec-7113-8cd6-8fccf65d98bb), SeatBindingId(01a12c99-7220-7ca1-9072-69716fd5d3cc)}\n right: {SeatBindingId(01a12c99-716a-7211-8327-6bc2d00d23c0), SeatBindingId(01a12c99-7170-7222-b69d-d881a0654911), SeatBindingId(01a12c99-7177-7d11-af57-d2b8593d25da), SeatBindingId(01a12c99-717e-7ea1-af3c-15d52cd9a6f1)}\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n---- pr_reviews::qualification::four_structures_restore_replay_and_selection_rollback_keep_old_pins_and_natives stdout ----\n",
+      "thread 'pr_reviews::qualification::four_structures_restore_replay_and_selection_rollback_keep_old_pins_and_natives' (107003884) panicked at crates/kontor-daemon/tests/loopback/qualification.rs:572:5:\nassertion `left == right` failed\n  left: Object {\"adam\": Object {\"container\": Object {\"cwd\": String(\"/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-rework/tmp/.tmphrP8OJ/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12c99-745c-78d3-a732-6ae11478c8c7\"), \"native_id\": String(\"native-container-4\"), \"observed_kind\": String(\"workspace\"), \"parent_native_id\": String(\"native-container-3\"), \"title\": String(\"ADAM\"), \"topology_node_id\": String(\"01a12c99-745c-78d3-a732-6af72d15c9d5\")}, \"kind\": String(\"PRA\"), \"parent_id\": String(\"01a12c99-745c-78d3-a732-6af72d15c9d5\"), \"seats\": Array [], \"topology_node_id\": String(\"01a12c99-7837-7383-be56-8a2a54aedead\")}, \"created_at\": String(\"2026-10-11T20:13:37.719611Z\"), \"desk_key\": String(\"pr-review\"), \"epic_id\": String(\"01a12c99-7328-7c51-b644-15c13428e2d7\"), \"external_key\": String(\"ASMA-448126286\"), \"number\": Number(102), \"open\": Bool(false), \"repository\": String(\"Carasent-ASMA/asma-rs-kontor\"), \"room\": Object {\"container\": Object {\"cwd\": String(\"/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-rework/tmp/.tmphrP8OJ/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12c99-745c-78d3-a732-6ae11478c8c7-room-01a12c99-7837-7383-be56-8a33861a79e8\"), \"native_id\": String(\"native-container-14\"), \"observed_kind\": String(\"workspace\"), \"parent_native_id\": String(\"native-container-3\"), \"title\": String(\"RSW \u2022 ASMA-448126286 \u2022 asma-rs-kontor#102\"), \"topology_node_id\": String(\"01a12c99-7837-7383-be56-8a33861a79e8\")}, \"kind\": String(\"RSW\"), \"parent_id\": String(\"01a12c99-745c-78d3-a732-6ae11478c8c7\"), \"seats\": Array [], \"topology_node_id\": String(\"01a12c99-7837-7383-be56-8a33861a79e8\")}, \"team_definition\": Object {\"id\": String(\"01936f5a-2000-7000-8000-000000000001\"), \"version\": Number(8)}}\n right: Object {\"adam\": Object {\"container\": Object {\"cwd\": String(\"/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-rework/tmp/.tmphrP8OJ/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12c99-745c-78d3-a732-6ae11478c8c7\"), \"native_id\": String(\"native-container-4\"), \"observed_kind\": String(\"workspace\"), \"parent_native_id\": String(\"native-container-3\"), \"title\": String(\"ADAM\"), \"topology_node_id\": String(\"01a12c99-745c-78d3-a732-6af72d15c9d5\")}, \"kind\": String(\"PRA\"), \"parent_id\": String(\"01a12c99-745c-78d3-a732-6af72d15c9d5\"), \"seats\": Array [Object {\"native_id\": String(\"native-hosted-seat-15\"), \"occupancy_generation\": Number(1), \"role_code\": String(\"TPM\"), \"seat_binding_id\": String(\"01a12c99-785a-7202-bce5-cef484f6b187\"), \"slot_id\": String(\"tpm\"), \"title\": String(\"TPM \u2022 ASMA-448126286 \u2022 asma-rs-kontor#102\")}], \"topology_node_id\": String(\"01a12c99-7837-7383-be56-8a2a54aedead\")}, \"created_at\": String(\"2026-10-11T20:13:37.719611Z\"), \"desk_key\": String(\"pr-review\"), \"epic_id\": String(\"01a12c99-7328-7c51-b644-15c13428e2d7\"), \"external_key\": String(\"ASMA-448126286\"), \"number\": Number(102), \"open\": Bool(true), \"repository\": String(\"Carasent-ASMA/asma-rs-kontor\"), \"room\": Object {\"container\": Object {\"cwd\": String(\"/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-rework/tmp/.tmphrP8OJ/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12c99-745c-78d3-a732-6ae11478c8c7-room-01a12c99-7837-7383-be56-8a33861a79e8\"), \"native_id\": String(\"native-container-14\"), \"observed_kind\": String(\"workspace\"), \"parent_native_id\": String(\"native-container-3\"), \"title\": String(\"RSW \u2022 ASMA-448126286 \u2022 asma-rs-kontor#102\"), \"topology_node_id\": String(\"01a12c99-7837-7383-be56-8a33861a79e8\")}, \"kind\": String(\"RSW\"), \"parent_id\": String(\"01a12c99-745c-78d3-a732-6ae11478c8c7\"), \"seats\": Array [Object {\"native_id\": String(\"native-hosted-seat-16\"), \"occupancy_generation\": Number(1), \"role_code\": String(\"AUD\"), \"seat_binding_id\": String(\"01a12c99-7862-7453-870b-ceec1933f559\"), \"slot_id\": String(\"rev-a\"), \"title\": String(\"REV A\")}, Object {\"native_id\": String(\"native-hosted-seat-17\"), \"occupancy_generation\": Number(1), \"role_code\": String(\"AUD\"), \"seat_binding_id\": String(\"01a12c99-7869-7f51-93b0-83fbcfd9f4bc\"), \"slot_id\": String(\"rev-b\"), \"title\": String(\"REV B\")}, Object {\"native_id\": String(\"native-hosted-seat-18\"), \"occupancy_generation\": Number(1), \"role_code\": String(\"AUD\"), \"seat_binding_id\": String(\"01a12c99-7870-7fb0-bba8-225ae806266a\"), \"slot_id\": String(\"judge\"), \"title\": String(\"JUDGE\")}], \"topology_node_id\": String(\"01a12c99-7837-7383-be56-8a33861a79e8\")}, \"team_definition\": Object {\"id\": String(\"01936f5a-2000-7000-8000-000000000001\"), \"version\": Number(8)}}\n\n\nfailures:\n"
+    ]
+  },
+  {
+    "name": "MUT-005",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "pr_reviews::qualification::four_structures_restore_replay_and_selection_rollback_keep_old_pins_and_natives",
+      "--",
+      "--test-threads=2"
+    ],
+    "started_at": "2026-10-11T20:14:24.660831+00:00",
+    "exit": 101,
+    "log_sha256": "7dd69d6b896cf30287ff15d8537323160d69b15ad082e29c5585d5202bb23d57",
+    "test_summaries": [
+      "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 616 filtered out; finished in 2.32s"
+    ],
+    "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+    "file": "crates/kontor-store/src/repository.rs",
+    "line": 23903,
+    "claim": "An existing epic reads the project successor instead of its own frozen pin",
+    "original_sha256": "93054e8a62994d6139646951332cd0f9911f38db21e50d012a4e644047d66556",
+    "seeded_sha256": "9b2ef54fbe0b6f9eaedf1d4471ace00a5671676940afeed7f343a4632cbb4e8d",
+    "result": "KILLED",
+    "failed_tests": [
+      "pr_reviews::qualification::four_structures_restore_replay_and_selection_rollback_keep_old_pins_and_natives"
+    ],
+    "failure_excerpts": [
+      "thread 'pr_reviews::qualification::four_structures_restore_replay_and_selection_rollback_keep_old_pins_and_natives' (107020407) panicked at crates/kontor-daemon/tests/loopback/qualification.rs:248:5:\nassertion `left == right` failed: selection must never migrate an existing epic\n  left: TeamDefinitionSnapshot { definition_id: TeamDefinitionId(01936f5a-2000-7000-8000-000000000001), version: SpecVersion(8), canonical_hash: ContentHash(\"79def4231c04072de862998f9743eee5e02e79ff4297609f0bfed98faf72f074\") }\n right: TeamDefinitionSnapshot { definition_id: TeamDefinitionId(01936f5a-2000-7000-8000-000000000001), version: SpecVersion(2), canonical_hash: ContentHash(\"093b0d852d2be02fd08e442446e860b43fa6506bd973e2b627afec357fcd4dc4\") }\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\n"
+    ]
+  },
+  {
+    "name": "MUT-Q-CLI",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kontor-cli",
+      "--test",
+      "durable_desk_parity",
+      "--",
+      "--nocapture"
+    ],
+    "started_at": "2026-10-11T20:16:03.979749+00:00",
+    "exit": 101,
+    "log_sha256": "5b2d3e54ac780028a384963fb509ab7cf1fc4de06b7e110511dc057a097ae2f2",
+    "test_summaries": [
+      "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.93s"
+    ],
+    "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+    "file": "crates/kontor-cli/src/output.rs",
+    "line": 81,
+    "claim": "placement_blocked falls through to protocol exit 1 while the refusal body remains identical",
+    "original_sha256": "e2f67dc81bd9b9bf70c3632a4c51b5577971b98aad0074203a5bdb1a653d0cab",
+    "seeded_sha256": "40ba68381a1a98a0363325022d6c16361356a56cf2e2e6c5074092ba44baf47f",
+    "result": "KILLED",
+    "failed_tests": [
+      "desk_ensure_and_undeclared_refusal_match_http_mcp_and_cli"
+    ],
+    "failure_excerpts": [
+      "thread 'desk_ensure_and_undeclared_refusal_match_http_mcp_and_cli' (107025045) panicked at crates/kontor-cli/tests/durable_desk_parity.rs:222:13:\nassertion `left == right` failed: placement requires an explicit operator decision\n  left: 1\n right: 3\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\ntest desk_ensure_and_undeclared_refusal_match_http_mcp_and_cli ... FAILED\n\n"
+    ]
+  },
+  {
+    "name": "MUT-Q-ATOMIC",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "pr_reviews::qualification::a_new_desk_under_a_parent_that_already_knows_an_older_desk_kind_refuses_without_effects",
+      "--",
+      "--test-threads=2"
+    ],
+    "started_at": "2026-10-11T20:17:09.227710+00:00",
+    "exit": 101,
+    "log_sha256": "f4c27977bfa647243dda6248ba5dbb6085a1d16cf0b2b625b5876c92840aac9b",
+    "test_summaries": [
+      "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 616 filtered out; finished in 4.61s"
+    ],
+    "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+    "file": "crates/kontor-store/src/repository/desks.rs",
+    "line": 48,
+    "claim": "Commit the successor reservation before node validation, leaving a desk row after revision_conflict",
+    "original_sha256": "ddfb5ecc4f5fa40311795fb90bf68f4d22715c4200a7f80749e4a61ffad66fe8",
+    "seeded_sha256": "4053d04d07ec3f8bc451da021472759e96d2ddf25a4793a7bffe38257b9f09da",
+    "result": "KILLED",
+    "failed_tests": [
+      "pr_reviews::qualification::a_new_desk_under_a_parent_that_already_knows_an_older_desk_kind_refuses_without_effects"
+    ],
+    "failure_excerpts": [
+      "thread 'pr_reviews::qualification::a_new_desk_under_a_parent_that_already_knows_an_older_desk_kind_refuses_without_effects' (107051460) panicked at crates/kontor-daemon/tests/loopback/qualification.rs:156:5:\nassertion `left == right` failed\n  left: Object {\"bindings\": Array [Object {\"container\": Null, \"hosted\": Array [], \"node\": Object {\"created_at\": String(\"2026-10-11T20:18:27.631533Z\"), \"id\": String(\"01a12c9d-e4af-7883-9707-b273606bdade\"), \"kind\": String(\"PSW\"), \"lifecycle\": String(\"active\"), \"placement\": String(\"unbound\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"revision\": Number(1), \"topology\": Object {\"canonical_hash\": String(\"9ad73b1fd31daa3e723ffe444b7a1064f72a252e230d3c4973a7b0295d939970\"), \"spec_id\": String(\"01936f5a-1000-7000-8000-000000000001\"), \"version\": Number(5)}, \"updated_at\": String(\"2026-10-11T20:18:27.631533Z\")}, \"seats\": Array []}, Object {\"container\": Null, \"hosted\": Array [], \"node\": Object {\"created_at\": String(\"2026-10-11T20:18:27.631533Z\"), \"id\": String(\"01a12c9d-e4cc-7a70-a502-f327caf5c7d3\"), \"kind\": String(\"ESW\"), \"lifecycle\": String(\"active\"), \"mini_project_id\": String(\"01a12c9d-e45a-7830-9aac-13fa754a972c\"), \"parent_id\": String(\"01a12c9d-e4af-7883-9707-b273606bdade\"), \"placement\": String(\"unbound\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"revision\": Number(1), \"topology\": Object {\"canonical_hash\": String(\"9ad73b1fd31daa3e723ffe444b7a1064f72a252e230d3c4973a7b0295d939970\"), \"spec_id\": String(\"01936f5a-1000-7000-8000-000000000001\"), \"version\": Number(5)}, \"updated_at\": String(\"2026-10-11T20:18:27.631533Z\")}, \"seats\": Array []}, Object {\"container\": Null, \"hosted\": Array [Null, Null], \"node\": Object {\"created_at\": String(\"2026-10-11T20:18:27.631533Z\"), \"id\": String(\"01a12c9d-e4d3-7d40-ab90-0e6cff529aa5\"), \"kind\": String(\"ECP\"), \"lifecycle\": String(\"active\"), \"mini_project_id\": String(\"01a12c9d-e45a-7830-9aac-13fa754a972c\"), \"parent_id\": String(\"01a12c9d-e4cc-7a70-a502-f327caf5c7d3\"), \"placement\": String(\"unbound\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"revision\": Number(1), \"topology\": Object {\"canonical_hash\": String(\"9ad73b1fd31daa3e723ffe444b7a1064f72a252e230d3c4973a7b0295d939970\"), \"spec_id\": String(\"01936f5a-1000-7000-8000-000000000001\"), \"version\": Number(5)}, \"updated_at\": String(\"2026-10-11T20:18:27.631533Z\")}, \"seats\": Array [Object {\"attach_deadline\": String(\"2026-10-11T20:28:27.549556Z\"), \"created_at\": String(\"2026-10-11T20:18:27.549556Z\"), \"id\": String(\"01a12c9d-e4d7-7a40-b182-8b461c93a5e9\"), \"lifecycle\": String(\"active\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"revision\": Number(1), \"role\": Object {\"catalog_id\": String(\"01936f5a-1000-7000-8000-000000000002\"), \"catalog_revision\": Number(1), \"role_code\": String(\"LSA\"), \"standard_title\": String(\"Lead Software Architect\")}, \"role_slot_id\": String(\"lsa\"), \"topology_node_id\": String(\"01a12c9d-e4d3-7d40-ab90-0e6cff529aa5\"), \"updated_at\": String(\"2026-10-11T20:18:27.549556Z\")}, Object {\"attach_deadline\": String(\"2026-10-11T20:28:27.549556Z\"), \"created_at\": String(\"2026-10-11T20:18:27.549556Z\"), \"id\": String(\"01a12c9d-e4de-7f42-98e4-a217b59cb742\"), \"lifecycle\": String(\"active\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"revision\": Number(1), \"role\": Object {\"catalog_id\": String(\"01936f5a-1000-7000-8000-000000000002\"), \"catalog_revision\": Number(1), \"role_code\": String(\"TPM\"), \"standard_title\": String(\"Technical Program Manager\")}, \"role_slot_id\": String(\"tpm\"), \"topology_node_id\": String(\"01a12c9d-e4d3-7d40-ab90-0e6cff529aa5\"), \"updated_at\": String(\"2026-10-11T20:18:27.549556Z\")}]}, Object {\"container\": Object {\"cwd\": String(\"/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-rework/tmp/.tmpEiY6QH/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12c9d-e503-7322-894d-3d3cc0266ce1\"), \"id\": String(\"01a12c9d-e54d-7361-9d8f-a82d22dfaf92\"), \"identity\": Object {\"generation\": Number(1), \"host\": String(\"fake-host\"), \"native_id\": String(\"native-container-1\"), \"runtime_kind\": String(\"fake.runtime\")}, \"kind\": String(\"project\"), \"parent\": Null, \"title\": String(\"DESK \u2022 ADAM\")}, \"hosted\": Array [], \"node\": Object {\"created_at\": String(\"2026-10-11T20:18:27.715079Z\"), \"id\": String(\"01a12c9d-e503-7322-894d-3d3cc0266ce1\"), \"kind\": String(\"DESK\"), \"lifecycle\": String(\"active\"), \"parent_id\": String(\"01a12c9d-e4af-7883-9707-b273606bdade\"), \"placement\": String(\"bound\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"revision\": Number(2), \"topology\": Object {\"canonical_hash\": String(\"9ad73b1fd31daa3e723ffe444b7a1064f72a252e230d3c4973a7b0295d939970\"), \"spec_id\": String(\"01936f5a-1000-7000-8000-000000000001\"), \"version\": Number(5)}, \"updated_at\": String(\"2026-10-11T20:18:27.790145Z\")}, \"seats\": Array []}, Object {\"container\": Object {\"cwd\": String(\"/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-rework/tmp/.tmpEiY6QH/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12c9d-e503-7322-894d-3d3cc0266ce1\"), \"id\": String(\"01a12c9d-e553-7132-a3b7-06b3f3c8cf65\"), \"identity\": Object {\"generation\": Number(1), \"host\": String(\"fake-host\"), \"native_id\": String(\"native-container-2\"), \"runtime_kind\": String(\"fake.runtime\")}, \"kind\": String(\"workspace\"), \"parent\": Object {\"generation\": Number(1), \"host\": String(\"fake-host\"), \"native_id\": String(\"native-container-1\"), \"runtime_kind\": String(\"fake.runtime\")}, \"title\": String(\"ADAM\")}, \"hosted\": Array [], \"node\": Object {\"created_at\": String(\"2026-10-11T20:18:27.715079Z\"), \"id\": String(\"01a12c9d-e503-7322-894d-3d49950e814b\"), \"kind\": String(\"DWS\"), \"lifecycle\": String(\"active\"), \"parent_id\": String(\"01a12c9d-e503-7322-894d-3d3cc0266ce1\"), \"placement\": String(\"bound\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"revision\": Number(2), \"topology\": Object {\"canonical_hash\": String(\"9ad73b1fd31daa3e723ffe444b7a1064f72a252e230d3c4973a7b0295d939970\"), \"spec_id\": String(\"01936f5a-1000-7000-8000-000000000001\"), \"version\": Number(5)}, \"updated_at\": String(\"2026-10-11T20:18:27.796102Z\")}, \"seats\": Array []}], \"desks\": Array [Object {\"created_at\": String(\"2026-10-11T20:18:27.715079Z\"), \"desk_key\": String(\"adam\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"team_definition\": Object {\"canonical_hash\": String(\"0af3f9314db6d7dd63f8160e4b491cf5b9afb4b5531e68e747a9c0ef98284033\"), \"definition_id\": String(\"01936f5a-2000-7000-8000-000000000001\"), \"version\": Number(3)}, \"topology_node_id\": String(\"01a12c9d-e503-7322-894d-3d3cc0266ce1\"), \"workspace_node_id\": String(\"01a12c9d-e503-7322-894d-3d49950e814b\")}, Object {\"created_at\": String(\"2026-10-11T20:18:28.483504Z\"), \"desk_key\": String(\"pr-review\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"team_definition\": Object {\"canonical_hash\": String(\"f737ad911dd378aab30aace942b372be46513355f5ebc0c8aea46b77f6fb3991\"), \"definition_id\": String(\"01936f5a-2000-7000-8000-000000000001\"), \"version\": Number(8)}, \"topology_node_id\": String(\"01a12c9d-e803-7eb2-b20e-01558fae0aa9\"), \"workspace_node_id\": String(\"01a12c9d-e803-7eb2-b20e-016b87da5bf8\")}], \"old_pin\": Object {\"canonical_hash\": String(\"0af3f9314db6d7dd63f8160e4b491cf5b9afb4b5531e68e747a9c0ef98284033\"), \"definition_id\": String(\"01936f5a-2000-7000-8000-000000000001\"), \"version\": Number(3)}, \"reviews\": Array []}\n right: Object {\"bindings\": Array [Object {\"container\": Null, \"hosted\": Array [], \"node\": Object {\"created_at\": String(\"2026-10-11T20:18:27.631533Z\"), \"id\": String(\"01a12c9d-e4af-7883-9707-b273606bdade\"), \"kind\": String(\"PSW\"), \"lifecycle\": String(\"active\"), \"placement\": String(\"unbound\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"revision\": Number(1), \"topology\": Object {\"canonical_hash\": String(\"9ad73b1fd31daa3e723ffe444b7a1064f72a252e230d3c4973a7b0295d939970\"), \"spec_id\": String(\"01936f5a-1000-7000-8000-000000000001\"), \"version\": Number(5)}, \"updated_at\": String(\"2026-10-11T20:18:27.631533Z\")}, \"seats\": Array []}, Object {\"container\": Null, \"hosted\": Array [], \"node\": Object {\"created_at\": String(\"2026-10-11T20:18:27.631533Z\"), \"id\": String(\"01a12c9d-e4cc-7a70-a502-f327caf5c7d3\"), \"kind\": String(\"ESW\"), \"lifecycle\": String(\"active\"), \"mini_project_id\": String(\"01a12c9d-e45a-7830-9aac-13fa754a972c\"), \"parent_id\": String(\"01a12c9d-e4af-7883-9707-b273606bdade\"), \"placement\": String(\"unbound\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"revision\": Number(1), \"topology\": Object {\"canonical_hash\": String(\"9ad73b1fd31daa3e723ffe444b7a1064f72a252e230d3c4973a7b0295d939970\"), \"spec_id\": String(\"01936f5a-1000-7000-8000-000000000001\"), \"version\": Number(5)}, \"updated_at\": String(\"2026-10-11T20:18:27.631533Z\")}, \"seats\": Array []}, Object {\"container\": Null, \"hosted\": Array [Null, Null], \"node\": Object {\"created_at\": String(\"2026-10-11T20:18:27.631533Z\"), \"id\": String(\"01a12c9d-e4d3-7d40-ab90-0e6cff529aa5\"), \"kind\": String(\"ECP\"), \"lifecycle\": String(\"active\"), \"mini_project_id\": String(\"01a12c9d-e45a-7830-9aac-13fa754a972c\"), \"parent_id\": String(\"01a12c9d-e4cc-7a70-a502-f327caf5c7d3\"), \"placement\": String(\"unbound\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"revision\": Number(1), \"topology\": Object {\"canonical_hash\": String(\"9ad73b1fd31daa3e723ffe444b7a1064f72a252e230d3c4973a7b0295d939970\"), \"spec_id\": String(\"01936f5a-1000-7000-8000-000000000001\"), \"version\": Number(5)}, \"updated_at\": String(\"2026-10-11T20:18:27.631533Z\")}, \"seats\": Array [Object {\"attach_deadline\": String(\"2026-10-11T20:28:27.549556Z\"), \"created_at\": String(\"2026-10-11T20:18:27.549556Z\"), \"id\": String(\"01a12c9d-e4d7-7a40-b182-8b461c93a5e9\"), \"lifecycle\": String(\"active\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"revision\": Number(1), \"role\": Object {\"catalog_id\": String(\"01936f5a-1000-7000-8000-000000000002\"), \"catalog_revision\": Number(1), \"role_code\": String(\"LSA\"), \"standard_title\": String(\"Lead Software Architect\")}, \"role_slot_id\": String(\"lsa\"), \"topology_node_id\": String(\"01a12c9d-e4d3-7d40-ab90-0e6cff529aa5\"), \"updated_at\": String(\"2026-10-11T20:18:27.549556Z\")}, Object {\"attach_deadline\": String(\"2026-10-11T20:28:27.549556Z\"), \"created_at\": String(\"2026-10-11T20:18:27.549556Z\"), \"id\": String(\"01a12c9d-e4de-7f42-98e4-a217b59cb742\"), \"lifecycle\": String(\"active\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"revision\": Number(1), \"role\": Object {\"catalog_id\": String(\"01936f5a-1000-7000-8000-000000000002\"), \"catalog_revision\": Number(1), \"role_code\": String(\"TPM\"), \"standard_title\": String(\"Technical Program Manager\")}, \"role_slot_id\": String(\"tpm\"), \"topology_node_id\": String(\"01a12c9d-e4d3-7d40-ab90-0e6cff529aa5\"), \"updated_at\": String(\"2026-10-11T20:18:27.549556Z\")}]}, Object {\"container\": Object {\"cwd\": String(\"/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-rework/tmp/.tmpEiY6QH/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12c9d-e503-7322-894d-3d3cc0266ce1\"), \"id\": String(\"01a12c9d-e54d-7361-9d8f-a82d22dfaf92\"), \"identity\": Object {\"generation\": Number(1), \"host\": String(\"fake-host\"), \"native_id\": String(\"native-container-1\"), \"runtime_kind\": String(\"fake.runtime\")}, \"kind\": String(\"project\"), \"parent\": Null, \"title\": String(\"DESK \u2022 ADAM\")}, \"hosted\": Array [], \"node\": Object {\"created_at\": String(\"2026-10-11T20:18:27.715079Z\"), \"id\": String(\"01a12c9d-e503-7322-894d-3d3cc0266ce1\"), \"kind\": String(\"DESK\"), \"lifecycle\": String(\"active\"), \"parent_id\": String(\"01a12c9d-e4af-7883-9707-b273606bdade\"), \"placement\": String(\"bound\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"revision\": Number(2), \"topology\": Object {\"canonical_hash\": String(\"9ad73b1fd31daa3e723ffe444b7a1064f72a252e230d3c4973a7b0295d939970\"), \"spec_id\": String(\"01936f5a-1000-7000-8000-000000000001\"), \"version\": Number(5)}, \"updated_at\": String(\"2026-10-11T20:18:27.790145Z\")}, \"seats\": Array []}, Object {\"container\": Object {\"cwd\": String(\"/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-rework/tmp/.tmpEiY6QH/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12c9d-e503-7322-894d-3d3cc0266ce1\"), \"id\": String(\"01a12c9d-e553-7132-a3b7-06b3f3c8cf65\"), \"identity\": Object {\"generation\": Number(1), \"host\": String(\"fake-host\"), \"native_id\": String(\"native-container-2\"), \"runtime_kind\": String(\"fake.runtime\")}, \"kind\": String(\"workspace\"), \"parent\": Object {\"generation\": Number(1), \"host\": String(\"fake-host\"), \"native_id\": String(\"native-container-1\"), \"runtime_kind\": String(\"fake.runtime\")}, \"title\": String(\"ADAM\")}, \"hosted\": Array [], \"node\": Object {\"created_at\": String(\"2026-10-11T20:18:27.715079Z\"), \"id\": String(\"01a12c9d-e503-7322-894d-3d49950e814b\"), \"kind\": String(\"DWS\"), \"lifecycle\": String(\"active\"), \"parent_id\": String(\"01a12c9d-e503-7322-894d-3d3cc0266ce1\"), \"placement\": String(\"bound\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"revision\": Number(2), \"topology\": Object {\"canonical_hash\": String(\"9ad73b1fd31daa3e723ffe444b7a1064f72a252e230d3c4973a7b0295d939970\"), \"spec_id\": String(\"01936f5a-1000-7000-8000-000000000001\"), \"version\": Number(5)}, \"updated_at\": String(\"2026-10-11T20:18:27.796102Z\")}, \"seats\": Array []}], \"desks\": Array [Object {\"created_at\": String(\"2026-10-11T20:18:27.715079Z\"), \"desk_key\": String(\"adam\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"team_definition\": Object {\"canonical_hash\": String(\"0af3f9314db6d7dd63f8160e4b491cf5b9afb4b5531e68e747a9c0ef98284033\"), \"definition_id\": String(\"01936f5a-2000-7000-8000-000000000001\"), \"version\": Number(3)}, \"topology_node_id\": String(\"01a12c9d-e503-7322-894d-3d3cc0266ce1\"), \"workspace_node_id\": String(\"01a12c9d-e503-7322-894d-3d49950e814b\")}], \"old_pin\": Object {\"canonical_hash\": String(\"0af3f9314db6d7dd63f8160e4b491cf5b9afb4b5531e68e747a9c0ef98284033\"), \"definition_id\": String(\"01936f5a-2000-7000-8000-000000000001\"), \"version\": Number(3)}, \"reviews\": Array []}\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\n"
+    ]
+  },
+  {
+    "name": "MCP-eligible",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-runtime-paseo",
+      "--test",
+      "contract",
+      "hosted_directory::"
+    ],
+    "started_at": "2026-10-11T20:19:00.662899+00:00",
+    "exit": 101,
+    "log_sha256": "1473d5c8bc6b3d81d14d5ab893ba287c093a502a24cab2608c97ea88f47e5edd",
+    "test_summaries": [
+      "test result: FAILED. 1 passed; 9 failed; 0 ignored; 0 measured; 306 filtered out; finished in 0.10s"
+    ],
+    "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+    "file": "crates/kontor-runtime-paseo/src/adapter.rs",
+    "line": 6105,
+    "claim": "Recreate the escaped non-Git Claude refusal",
+    "original_sha256": "ce59e06f384bd370e5b550cc6739eae74af4445c2e5af3c10e6d9570dad3c570",
+    "seeded_sha256": "6f2032e0e771fc0f06988ef243f582d6465f6f59c317251b7ca41c32291a87ad",
+    "result": "KILLED",
+    "failed_tests": [
+      "hosted_directory::enabled_claude_directory_launch_replacement_and_subjects_keep_distinct_authority",
+      "hosted_directory::enabled_claude_directory_claim_is_metadata_only_and_retains_exact_scope",
+      "hosted_directory::enabled_claude_directory_lost_ack_recovers_same_native_and_reconciles_before_reload",
+      "hosted_directory::enabled_claude_directory_retitle_keeps_identity_and_files",
+      "hosted_directory::enabled_claude_directory_refuses_invalid_configuration_and_incomplete_publication_without_create",
+      "hosted_directory::enabled_composition_restore_bindings_keeps_snapshot_and_does_not_publish_files",
+      "hosted_directory::enabled_directory_cross_vendor_replacement_and_route_correction_keep_shared_files",
+      "hosted_directory::healthy_directory_replay_recovers_pending_originals_without_republishing",
+      "hosted_directory::healthy_directory_replay_retains_session_and_validates_without_publication"
+    ],
+    "failure_excerpts": [
+      "thread 'hosted_directory::enabled_claude_directory_launch_replacement_and_subjects_keep_distinct_authority' (107071491) panicked at crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs:137:10:\ncalled `Result::unwrap()` on an `Err` value: LaunchNotAdmitted { rule: \"hosted seat MCP composition failed in the ECP\" }\n\n---- hosted_directory::enabled_claude_directory_claim_is_metadata_only_and_retains_exact_scope stdout ----\n\nthread 'hosted_directory::enabled_claude_directory_claim_is_metadata_only_and_retains_exact_scope' (107071490) panicked at crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs:390:10:\ncalled `Result::unwrap()` on an `Err` value: LaunchNotAdmitted { rule: \"hosted seat MCP composition failed in the ECP\" }\n",
+      "thread 'hosted_directory::enabled_claude_directory_lost_ack_recovers_same_native_and_reconciles_before_reload' (107071521) panicked at crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs:265:5:\nassertion `left == right` failed\n  left: 0\n right: 1\n\n---- hosted_directory::enabled_claude_directory_retitle_keeps_identity_and_files stdout ----\n\n",
+      "thread 'hosted_directory::enabled_claude_directory_retitle_keeps_identity_and_files' (107071549) panicked at crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs:349:10:\ncalled `Result::unwrap()` on an `Err` value: LaunchNotAdmitted { rule: \"hosted seat MCP composition failed in the ECP\" }\n\n---- hosted_directory::enabled_claude_directory_refuses_invalid_configuration_and_incomplete_publication_without_create stdout ----\n\nthread 'hosted_directory::enabled_claude_directory_refuses_invalid_configuration_and_incomplete_publication_without_create' (107071522) panicked at crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs:243:5:\nassertion failed: matches!(refusal, RuntimeError::LaunchNotAdmitted { rule } if\n",
+      "thread 'hosted_directory::enabled_composition_restore_bindings_keeps_snapshot_and_does_not_publish_files' (107071577) panicked at crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs:430:10:\ncalled `Result::unwrap()` on an `Err` value: LaunchNotAdmitted { rule: \"hosted seat MCP composition failed in the ECP\" }\n\n---- hosted_directory::enabled_directory_cross_vendor_replacement_and_route_correction_keep_shared_files stdout ----\n\nthread 'hosted_directory::enabled_directory_cross_vendor_replacement_and_route_correction_keep_shared_files' (107071584) panicked at crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs:467:10:\ncalled `Result::unwrap()` on an `Err` value: LaunchNotAdmitted { rule: \"hosted seat MCP composition failed in the ECP\" }\n",
+      "thread 'hosted_directory::healthy_directory_replay_recovers_pending_originals_without_republishing' (107071606) panicked at crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs:605:5:\nassertion failed: matches!(f.plane.adapter.launch_hosted_seat(&f.request).await,\n    Err(RuntimeError::LaunchNotAdmitted { .. }))\n\n---- hosted_directory::healthy_directory_replay_retains_session_and_validates_without_publication stdout ----\n\nthread 'hosted_directory::healthy_directory_replay_retains_session_and_validates_without_publication' (107071607) panicked at crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs:541:10:\n"
+    ]
+  },
+  {
+    "name": "MCP-recovered",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-runtime-paseo",
+      "--test",
+      "contract",
+      "hosted_directory::"
+    ],
+    "started_at": "2026-10-11T20:19:09.136128+00:00",
+    "exit": 101,
+    "log_sha256": "10a24a880f26508393e9ad39448dc5afa8ba686136861da0f2e001f419822324",
+    "test_summaries": [
+      "test result: FAILED. 9 passed; 1 failed; 0 ignored; 0 measured; 306 filtered out; finished in 0.48s"
+    ],
+    "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+    "file": "crates/kontor-runtime-paseo/src/adapter.rs",
+    "line": 6186,
+    "claim": "Bypass pending publication before exact-native reload",
+    "original_sha256": "ce59e06f384bd370e5b550cc6739eae74af4445c2e5af3c10e6d9570dad3c570",
+    "seeded_sha256": "fc8f8b58d3763f841e089affc55b7aaed3f47ce50c48eef48c0a90730f8b2997",
+    "result": "KILLED",
+    "failed_tests": [
+      "hosted_directory::enabled_claude_directory_lost_ack_recovers_same_native_and_reconciles_before_reload"
+    ],
+    "failure_excerpts": [
+      "thread 'hosted_directory::enabled_claude_directory_lost_ack_recovers_same_native_and_reconciles_before_reload' (107073271) panicked at crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs:316:10:\ncalled `Result::unwrap()` on an `Err` value: LaunchNotAdmitted { rule: \"hosted seat MCP composition failed in the ECP\" }\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    hosted_directory::enabled_claude_directory_lost_ack_recovers_same_native_and_reconciles_before_reload\n"
+    ]
+  },
+  {
+    "name": "MCP-ignore-refusal",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-runtime-paseo",
+      "--test",
+      "contract",
+      "hosted_directory::"
+    ],
+    "started_at": "2026-10-11T20:19:17.688115+00:00",
+    "exit": 101,
+    "log_sha256": "692f49f9f219f998eae4344477791d95c9ea09138465658d2ce34ca2207afa62",
+    "test_summaries": [
+      "test result: FAILED. 6 passed; 4 failed; 0 ignored; 0 measured; 306 filtered out; finished in 0.55s"
+    ],
+    "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+    "file": "crates/kontor-runtime-paseo/src/adapter.rs",
+    "line": 6209,
+    "claim": "Ignore incomplete composition and create a native",
+    "original_sha256": "ce59e06f384bd370e5b550cc6739eae74af4445c2e5af3c10e6d9570dad3c570",
+    "seeded_sha256": "4d0ee697ef18a98674633d5d404964a4732fd168e49217f888f90a75b9268162",
+    "result": "KILLED",
+    "failed_tests": [
+      "hosted_directory::enabled_claude_directory_lost_ack_recovers_same_native_and_reconciles_before_reload",
+      "hosted_directory::enabled_claude_directory_refuses_invalid_configuration_and_incomplete_publication_without_create",
+      "hosted_directory::healthy_directory_replay_recovers_pending_originals_without_republishing",
+      "hosted_directory::healthy_directory_replay_retains_session_and_validates_without_publication"
+    ],
+    "failure_excerpts": [
+      "thread 'hosted_directory::enabled_claude_directory_lost_ack_recovers_same_native_and_reconciles_before_reload' (107074772) panicked at crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs:297:5:\nassertion failed: matches!(refusal, RuntimeError::LaunchNotAdmitted { rule } if\n    rule.contains(\"cleanup is incomplete\"))\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n---- hosted_directory::enabled_claude_directory_refuses_invalid_configuration_and_incomplete_publication_without_create stdout ----\n\n",
+      "thread 'hosted_directory::enabled_claude_directory_refuses_invalid_configuration_and_incomplete_publication_without_create' (107074800) panicked at crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs:227:5:\nassertion failed: matches!(f.plane.adapter.launch_hosted_seat(&f.request).await,\n    Err(RuntimeError::LaunchNotAdmitted { .. }))\n\n---- hosted_directory::healthy_directory_replay_recovers_pending_originals_without_republishing stdout ----\n\nthread 'hosted_directory::healthy_directory_replay_recovers_pending_originals_without_republishing' (107074860) panicked at crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs:605:5:\n",
+      "thread 'hosted_directory::healthy_directory_replay_retains_session_and_validates_without_publication' (107074862) panicked at crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs:581:5:\nassertion failed: matches!(f.plane.adapter.launch_hosted_seat(&f.request).await,\n    Err(RuntimeError::LaunchNotAdmitted { .. }))\n\n\nfailures:\n    hosted_directory::enabled_claude_directory_lost_ack_recovers_same_native_and_reconciles_before_reload\n"
+    ]
+  },
+  {
+    "name": "MCP-write",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-runtime-paseo",
+      "--lib",
+      "seat_mcp::directory_tests::"
+    ],
+    "started_at": "2026-10-11T20:19:32.944690+00:00",
+    "exit": 101,
+    "log_sha256": "74dafb1c1e9485edf483f84b5e2c1eb2c3c0ed47764f55e88aeff99969b1dbc4",
+    "test_summaries": [
+      "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 145 filtered out; finished in 0.00s",
+      "test result: FAILED. 3 passed; 12 failed; 0 ignored; 0 measured; 131 filtered out; finished in 0.02s"
+    ],
+    "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+    "file": "crates/kontor-runtime-paseo/src/seat_mcp.rs",
+    "line": 1037,
+    "claim": "Skip the directory publication",
+    "original_sha256": "ca3c41e22ddc4bf3f9297506d11ecc49eb665314f66cfb81e7c069e642b65a97",
+    "seeded_sha256": "a8f5871bd79865ad7cceb0df6f3e6ece1f4b5e400dab7f6c1b0e31f45673cd03",
+    "result": "KILLED",
+    "failed_tests": [
+      "seat_mcp::directory_tests::a_parent_substituted_during_staging_cannot_redirect_publication_or_cleanup",
+      "seat_mcp::directory_tests::ancestry_substitution_between_parent_validation_and_replace_is_refused",
+      "seat_mcp::directory_tests::handled_stage_publish_and_readback_failures_restore_exact_bytes_and_absence",
+      "seat_mcp::directory_tests::hosted_directory_refuses_escaping_settings_mcp_and_journal_paths",
+      "seat_mcp::directory_tests::interruption_after_complete_pair_retains_it_and_requires_cleanup_before_use",
+      "seat_mcp::directory_tests::hosted_directory_preserves_foreign_content_and_skips_identical_bytes",
+      "seat_mcp::directory_tests::invalid_second_json_is_refused_before_any_file_or_directory_change",
+      "seat_mcp::directory_tests::interruption_between_publications_restores_originals_before_next_subject",
+      "seat_mcp::directory_tests::malformed_git_is_a_refusal_and_real_git_keeps_the_existing_exclude_behavior",
+      "seat_mcp::directory_tests::rollback_failure_blocks_launch_with_precise_pending_recovery_then_converges",
+      "seat_mcp::directory_tests::two_subjects_serialize_on_canonical_cwd_and_keep_one_shared_nonsecret_surface",
+      "seat_mcp::directory_tests::publication_child_process",
+      "seat_mcp::directory_tests::real_process_exit_between_publications_recovers_originals_from_the_daemon_record"
+    ],
+    "failure_excerpts": [
+      "thread 'seat_mcp::directory_tests::publication_child_process' (107076855) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:387:5:\nthe child should exit between publications\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\ntest seat_mcp::directory_tests::publication_child_process ... FAILED\n\nfailures:\n\n",
+      "thread 'seat_mcp::directory_tests::a_parent_substituted_during_staging_cannot_redirect_publication_or_cleanup' (107076829) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:432:6:\ncalled `Result::unwrap_err()` on an `Ok` value: ()\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n---- seat_mcp::directory_tests::ancestry_substitution_between_parent_validation_and_replace_is_refused stdout ----\n\nthread 'seat_mcp::directory_tests::ancestry_substitution_between_parent_validation_and_replace_is_refused' (107076830) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:496:10:\n",
+      "thread 'seat_mcp::directory_tests::handled_stage_publish_and_readback_failures_restore_exact_bytes_and_absence' (107076833) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:134:14:\ncalled `Result::unwrap_err()` on an `Ok` value: ()\n\n---- seat_mcp::directory_tests::hosted_directory_refuses_escaping_settings_mcp_and_journal_paths stdout ----\n\nthread 'seat_mcp::directory_tests::hosted_directory_refuses_escaping_settings_mcp_and_journal_paths' (107076835) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:265:9:\n.claude\n",
+      "thread 'seat_mcp::directory_tests::interruption_after_complete_pair_retains_it_and_requires_cleanup_before_use' (107076839) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:231:6:\ncalled `Result::unwrap_err()` on an `Ok` value: ()\n\n---- seat_mcp::directory_tests::hosted_directory_preserves_foreign_content_and_skips_identical_bytes stdout ----\n\nthread 'seat_mcp::directory_tests::hosted_directory_preserves_foreign_content_and_skips_identical_bytes' (107076834) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:59:5:\nassertion `left == right` failed\n",
+      "thread 'seat_mcp::directory_tests::invalid_second_json_is_refused_before_any_file_or_directory_change' (107076844) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:100:9:\nassertion failed: compose(&seat, &cwd).is_err()\n\n---- seat_mcp::directory_tests::interruption_between_publications_restores_originals_before_next_subject stdout ----\n\nthread 'seat_mcp::directory_tests::interruption_between_publications_restores_originals_before_next_subject' (107076840) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:207:5:\nassertion failed: interrupted.is_err()\n",
+      "thread 'seat_mcp::directory_tests::malformed_git_is_a_refusal_and_real_git_keeps_the_existing_exclude_behavior' (107076845) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:275:5:\nassertion failed: compose(&seat, &cwd).is_err()\n\n---- seat_mcp::directory_tests::rollback_failure_blocks_launch_with_precise_pending_recovery_then_converges stdout ----\n\nthread 'seat_mcp::directory_tests::rollback_failure_blocks_launch_with_precise_pending_recovery_then_converges' (107076848) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:171:6:\ncalled `Result::unwrap_err()` on an `Ok` value: ()\n",
+      "thread 'seat_mcp::directory_tests::two_subjects_serialize_on_canonical_cwd_and_keep_one_shared_nonsecret_surface' (107076852) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:326:23:\ncalled `Result::unwrap()` on an `Err` value: RecvError\n\n---- seat_mcp::directory_tests::real_process_exit_between_publications_recovers_originals_from_the_daemon_record stdout ----\n\nthread 'seat_mcp::directory_tests::real_process_exit_between_publications_recovers_originals_from_the_daemon_record' (107076847) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:404:5:\nassertion `left == right` failed\n"
+    ]
+  },
+  {
+    "name": "MCP-journal",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-runtime-paseo",
+      "--lib",
+      "seat_mcp::directory_tests::"
+    ],
+    "started_at": "2026-10-11T20:19:37.360070+00:00",
+    "exit": 101,
+    "log_sha256": "f58baa798ba37fd9f553a12afc90d254db9e0481e29280f48d31b6e93666aa4e",
+    "test_summaries": [
+      "test result: FAILED. 10 passed; 5 failed; 0 ignored; 0 measured; 131 filtered out; finished in 1.68s"
+    ],
+    "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+    "file": "crates/kontor-runtime-paseo/src/seat_mcp.rs",
+    "line": 1051,
+    "claim": "Ignore interrupted pair originals on next route/subject",
+    "original_sha256": "ca3c41e22ddc4bf3f9297506d11ecc49eb665314f66cfb81e7c069e642b65a97",
+    "seeded_sha256": "91ca758752ceddd4a172bf555c9fc4f802c4733f5c992f002ae1835a322140c2",
+    "result": "KILLED",
+    "failed_tests": [
+      "seat_mcp::directory_tests::ancestry_substitution_between_parent_validation_and_replace_is_refused",
+      "seat_mcp::directory_tests::interruption_after_complete_pair_retains_it_and_requires_cleanup_before_use",
+      "seat_mcp::directory_tests::interruption_between_publications_restores_originals_before_next_subject",
+      "seat_mcp::directory_tests::real_process_exit_between_publications_recovers_originals_from_the_daemon_record",
+      "seat_mcp::directory_tests::rollback_failure_blocks_launch_with_precise_pending_recovery_then_converges"
+    ],
+    "failure_excerpts": [
+      "thread 'seat_mcp::directory_tests::ancestry_substitution_between_parent_validation_and_replace_is_refused' (107077479) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:512:9:\nassertion `left == right` failed\n  left: (Some([123, 10, 32, 32, 34, 101, 110, 97, 98, 108, 101, 65, 108, 108, 80, 114, 111, 106, 101, 99, 116, 77, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 32, 116, 114, 117, 101, 44, 10, 32, 32, 34, 112, 101, 114, 109, 105, 115, 115, 105, 111, 110, 115, 34, 58, 32, 123, 10, 32, 32, 32, 32, 34, 97, 108, 108, 111, 119, 34, 58, 32, 91, 10, 32, 32, 32, 32, 32, 32, 34, 82, 101, 97, 100, 34, 10, 32, 32, 32, 32, 93, 10, 32, 32, 125, 10, 125, 10]), Some([32, 123, 34, 109, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 123, 34, 102, 111, 114, 101, 105, 103, 110, 34, 58, 123, 34, 99, 111, 109, 109, 97, 110, 100, 34, 58, 34, 102, 111, 114, 101, 105, 103, 110, 45, 109, 99, 112, 34, 125, 125, 125, 32]))\n right: (Some([123, 34, 112, 101, 114, 109, 105, 115, 115, 105, 111, 110, 115, 34, 58, 123, 34, 97, 108, 108, 111, 119, 34, 58, 91, 34, 82, 101, 97, 100, 34, 93, 125, 125, 10]), Some([32, 123, 34, 109, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 123, 34, 102, 111, 114, 101, 105, 103, 110, 34, 58, 123, 34, 99, 111, 109, 109, 97, 110, 100, 34, 58, 34, 102, 111, 114, 101, 105, 103, 110, 45, 109, 99, 112, 34, 125, 125, 125, 32]))\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n---- seat_mcp::directory_tests::interruption_after_complete_pair_retains_it_and_requires_cleanup_before_use stdout ----\n",
+      "thread 'seat_mcp::directory_tests::interruption_after_complete_pair_retains_it_and_requires_cleanup_before_use' (107077667) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:236:5:\nassertion failed: !publication_record(&seat,\n                &std::fs::canonicalize(&cwd).unwrap()).unwrap().exists()\n\n---- seat_mcp::directory_tests::interruption_between_publications_restores_originals_before_next_subject stdout ----\n\nthread 'seat_mcp::directory_tests::interruption_between_publications_restores_originals_before_next_subject' (107077716) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:199:13:\n",
+      "thread 'seat_mcp::directory_tests::interruption_between_publications_restores_originals_before_next_subject' (107077716) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:217:5:\nassertion `left == right` failed\n  left: (Some([123, 10, 32, 32, 34, 101, 110, 97, 98, 108, 101, 65, 108, 108, 80, 114, 111, 106, 101, 99, 116, 77, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 32, 116, 114, 117, 101, 44, 10, 32, 32, 34, 112, 101, 114, 109, 105, 115, 115, 105, 111, 110, 115, 34, 58, 32, 123, 10, 32, 32, 32, 32, 34, 97, 108, 108, 111, 119, 34, 58, 32, 91, 10, 32, 32, 32, 32, 32, 32, 34, 82, 101, 97, 100, 34, 10, 32, 32, 32, 32, 93, 10, 32, 32, 125, 10, 125, 10]), Some([32, 123, 34, 109, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 123, 34, 102, 111, 114, 101, 105, 103, 110, 34, 58, 123, 34, 99, 111, 109, 109, 97, 110, 100, 34, 58, 34, 102, 111, 114, 101, 105, 103, 110, 45, 109, 99, 112, 34, 125, 125, 125, 32]))\n right: (Some([123, 34, 112, 101, 114, 109, 105, 115, 115, 105, 111, 110, 115, 34, 58, 123, 34, 97, 108, 108, 111, 119, 34, 58, 91, 34, 82, 101, 97, 100, 34, 93, 125, 125, 10]), Some([32, 123, 34, 109, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 123, 34, 102, 111, 114, 101, 105, 103, 110, 34, 58, 123, 34, 99, 111, 109, 109, 97, 110, 100, 34, 58, 34, 102, 111, 114, 101, 105, 103, 110, 45, 109, 99, 112, 34, 125, 125, 125, 32]))\n\n---- seat_mcp::directory_tests::real_process_exit_between_publications_recovers_originals_from_the_daemon_record stdout ----\n\n",
+      "thread 'seat_mcp::directory_tests::real_process_exit_between_publications_recovers_originals_from_the_daemon_record' (107077966) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:414:5:\nassertion `left == right` failed\n  left: (Some([123, 10, 32, 32, 34, 101, 110, 97, 98, 108, 101, 65, 108, 108, 80, 114, 111, 106, 101, 99, 116, 77, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 32, 116, 114, 117, 101, 44, 10, 32, 32, 34, 112, 101, 114, 109, 105, 115, 115, 105, 111, 110, 115, 34, 58, 32, 123, 10, 32, 32, 32, 32, 34, 97, 108, 108, 111, 119, 34, 58, 32, 91, 10, 32, 32, 32, 32, 32, 32, 34, 82, 101, 97, 100, 34, 10, 32, 32, 32, 32, 93, 10, 32, 32, 125, 10, 125, 10]), Some([32, 123, 34, 109, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 123, 34, 102, 111, 114, 101, 105, 103, 110, 34, 58, 123, 34, 99, 111, 109, 109, 97, 110, 100, 34, 58, 34, 102, 111, 114, 101, 105, 103, 110, 45, 109, 99, 112, 34, 125, 125, 125, 32]))\n right: (Some([123, 34, 112, 101, 114, 109, 105, 115, 115, 105, 111, 110, 115, 34, 58, 123, 34, 97, 108, 108, 111, 119, 34, 58, 91, 34, 82, 101, 97, 100, 34, 93, 125, 125, 10]), Some([32, 123, 34, 109, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 123, 34, 102, 111, 114, 101, 105, 103, 110, 34, 58, 123, 34, 99, 111, 109, 109, 97, 110, 100, 34, 58, 34, 102, 111, 114, 101, 105, 103, 110, 45, 109, 99, 112, 34, 125, 125, 125, 32]))\n\n---- seat_mcp::directory_tests::rollback_failure_blocks_launch_with_precise_pending_recovery_then_converges stdout ----\n\n",
+      "thread 'seat_mcp::directory_tests::rollback_failure_blocks_launch_with_precise_pending_recovery_then_converges' (107078001) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:188:5:\nassertion `left == right` failed\n  left: (Some([123, 10, 32, 32, 34, 101, 110, 97, 98, 108, 101, 65, 108, 108, 80, 114, 111, 106, 101, 99, 116, 77, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 32, 116, 114, 117, 101, 44, 10, 32, 32, 34, 112, 101, 114, 109, 105, 115, 115, 105, 111, 110, 115, 34, 58, 32, 123, 10, 32, 32, 32, 32, 34, 97, 108, 108, 111, 119, 34, 58, 32, 91, 10, 32, 32, 32, 32, 32, 32, 34, 82, 101, 97, 100, 34, 10, 32, 32, 32, 32, 93, 10, 32, 32, 125, 10, 125, 10]), Some([32, 123, 34, 109, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 123, 34, 102, 111, 114, 101, 105, 103, 110, 34, 58, 123, 34, 99, 111, 109, 109, 97, 110, 100, 34, 58, 34, 102, 111, 114, 101, 105, 103, 110, 45, 109, 99, 112, 34, 125, 125, 125, 32]))\n right: (Some([123, 34, 112, 101, 114, 109, 105, 115, 115, 105, 111, 110, 115, 34, 58, 123, 34, 97, 108, 108, 111, 119, 34, 58, 91, 34, 82, 101, 97, 100, 34, 93, 125, 125, 10]), Some([32, 123, 34, 109, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 123, 34, 102, 111, 114, 101, 105, 103, 110, 34, 58, 123, 34, 99, 111, 109, 109, 97, 110, 100, 34, 58, 34, 102, 111, 114, 101, 105, 103, 110, 45, 109, 99, 112, 34, 125, 125, 125, 32]))\n\n\nfailures:\n"
+    ]
+  },
+  {
+    "name": "MCP-rollback",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-runtime-paseo",
+      "--lib",
+      "seat_mcp::directory_tests::"
+    ],
+    "started_at": "2026-10-11T20:19:43.343102+00:00",
+    "exit": 101,
+    "log_sha256": "0d456f5a9e20592eece0560361dae68948d5aebd1da22bd3960eb3c5ec3c166d",
+    "test_summaries": [
+      "test result: FAILED. 13 passed; 2 failed; 0 ignored; 0 measured; 131 filtered out; finished in 1.36s"
+    ],
+    "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+    "file": "crates/kontor-runtime-paseo/src/seat_mcp.rs",
+    "line": 1176,
+    "claim": "Delete journal/temps without restoring the prior bytes",
+    "original_sha256": "ca3c41e22ddc4bf3f9297506d11ecc49eb665314f66cfb81e7c069e642b65a97",
+    "seeded_sha256": "4c6bbcbe9b1dbdb80db4c6f631c10ef85d85f7c3cabf59d36cef9d6f6e38f800",
+    "result": "KILLED",
+    "failed_tests": [
+      "seat_mcp::directory_tests::handled_stage_publish_and_readback_failures_restore_exact_bytes_and_absence",
+      "seat_mcp::directory_tests::rollback_failure_blocks_launch_with_precise_pending_recovery_then_converges"
+    ],
+    "failure_excerpts": [
+      "thread 'seat_mcp::directory_tests::handled_stage_publish_and_readback_failures_restore_exact_bytes_and_absence' (107078966) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:136:13:\nassertion `left == right` failed: PublishMcp\n  left: (Some([123, 10, 32, 32, 34, 101, 110, 97, 98, 108, 101, 65, 108, 108, 80, 114, 111, 106, 101, 99, 116, 77, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 32, 116, 114, 117, 101, 10, 125, 10]), None)\n right: (None, None)\n\n---- seat_mcp::directory_tests::rollback_failure_blocks_launch_with_precise_pending_recovery_then_converges stdout ----\n\n",
+      "thread 'seat_mcp::directory_tests::rollback_failure_blocks_launch_with_precise_pending_recovery_then_converges' (107079541) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:172:5:\nassertion failed: hosted_composition_refusal(&error).contains(\"cleanup is incomplete\")\n\n\nfailures:\n    seat_mcp::directory_tests::handled_stage_publish_and_readback_failures_restore_exact_bytes_and_absence\n    seat_mcp::directory_tests::rollback_failure_blocks_launch_with_precise_pending_recovery_then_converges\n"
+    ]
+  },
+  {
+    "name": "MCP-cwd-lock",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-runtime-paseo",
+      "--lib",
+      "seat_mcp::directory_tests::"
+    ],
+    "started_at": "2026-10-11T20:19:49.382737+00:00",
+    "exit": 101,
+    "log_sha256": "f13631dca3c36ba716c4858dfe5d9c3ddeee5a8cd0f9fe5d6cb4a4d949ce2d6e",
+    "test_summaries": [
+      "test result: FAILED. 14 passed; 1 failed; 0 ignored; 0 measured; 131 filtered out; finished in 1.90s"
+    ],
+    "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+    "file": "crates/kontor-runtime-paseo/src/seat_mcp.rs",
+    "line": 1045,
+    "claim": "Allow two subjects to publish concurrently in the same canonical cwd",
+    "original_sha256": "ca3c41e22ddc4bf3f9297506d11ecc49eb665314f66cfb81e7c069e642b65a97",
+    "seeded_sha256": "53cc2bba6efbfab9abb01fd73fc022274aa936830567a5b9e9bf931e14898067",
+    "result": "KILLED",
+    "failed_tests": [
+      "seat_mcp::directory_tests::two_subjects_serialize_on_canonical_cwd_and_keep_one_shared_nonsecret_surface"
+    ],
+    "failure_excerpts": [
+      "thread '<unnamed>' (107081490) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:316:17:\nassertion failed: matches!(shared.try_lock(), Err(std::sync::TryLockError::WouldBlock))\n\nthread 'seat_mcp::directory_tests::two_subjects_serialize_on_canonical_cwd_and_keep_one_shared_nonsecret_surface' (107081489) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:326:23:\ncalled `Result::unwrap()` on an `Err` value: RecvError\n\n\n"
+    ]
+  },
+  {
+    "name": "MCP-json-guard",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-runtime-paseo",
+      "--lib",
+      "seat_mcp::directory_tests::"
+    ],
+    "started_at": "2026-10-11T20:19:55.809221+00:00",
+    "exit": 101,
+    "log_sha256": "c47214885930f9b57cbc5430e6abb6ee36277c79e0a047086072f5dcfb5bd8f0",
+    "test_summaries": [
+      "test result: FAILED. 14 passed; 1 failed; 0 ignored; 0 measured; 131 filtered out; finished in 2.18s"
+    ],
+    "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+    "file": "crates/kontor-runtime-paseo/src/seat_mcp.rs",
+    "line": 772,
+    "claim": "Accept malformed second JSON and publish an empty object",
+    "original_sha256": "ca3c41e22ddc4bf3f9297506d11ecc49eb665314f66cfb81e7c069e642b65a97",
+    "seeded_sha256": "8d2376f3c80a9c3257d574178bb9a1c6b784c9d736b66ba7e3ef3bee58c545eb",
+    "result": "KILLED",
+    "failed_tests": [
+      "seat_mcp::directory_tests::invalid_second_json_is_refused_before_any_file_or_directory_change"
+    ],
+    "failure_excerpts": [
+      "thread 'seat_mcp::directory_tests::invalid_second_json_is_refused_before_any_file_or_directory_change' (107082684) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:100:9:\nassertion failed: compose(&seat, &cwd).is_err()\n\n\nfailures:\n    seat_mcp::directory_tests::invalid_second_json_is_refused_before_any_file_or_directory_change\n\n"
+    ]
+  },
+  {
+    "name": "MCP-B1-path-reopen",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-runtime-paseo",
+      "--lib",
+      "seat_mcp::directory_tests::ancestry_substitution_between_parent_validation_and_replace_is_refused"
+    ],
+    "started_at": "2026-10-11T20:20:07.266526+00:00",
+    "exit": 101,
+    "log_sha256": "85ed545c39560f5d9791a0b4d4b07ff411a1365d4a7ddc665210230a71f641b6",
+    "test_summaries": [
+      "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 145 filtered out; finished in 0.06s"
+    ],
+    "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+    "file": "crates/kontor-runtime-paseo/src/seat_mcp.rs",
+    "line": 662,
+    "claim": "Recreate AUD B1: reopen separate parents by pathname across deterministic ancestry substitution; foreign destination changes",
+    "original_sha256": "ca3c41e22ddc4bf3f9297506d11ecc49eb665314f66cfb81e7c069e642b65a97",
+    "seeded_sha256": "073bddd9c36191f3751da129a82523c083ed8398ccdeb3b433e178f8910cc0c6",
+    "result": "KILLED",
+    "failed_tests": [
+      "seat_mcp::directory_tests::ancestry_substitution_between_parent_validation_and_replace_is_refused"
+    ],
+    "failure_excerpts": [
+      "thread 'seat_mcp::directory_tests::ancestry_substitution_between_parent_validation_and_replace_is_refused' (107084497) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:499:9:\nassertion `left == right` failed\n  left: (Some([123, 10, 32, 32, 34, 101, 110, 97, 98, 108, 101, 65, 108, 108, 80, 114, 111, 106, 101, 99, 116, 77, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 32, 116, 114, 117, 101, 44, 10, 32, 32, 34, 112, 101, 114, 109, 105, 115, 115, 105, 111, 110, 115, 34, 58, 32, 123, 10, 32, 32, 32, 32, 34, 97, 108, 108, 111, 119, 34, 58, 32, 91, 10, 32, 32, 32, 32, 32, 32, 34, 82, 101, 97, 100, 34, 10, 32, 32, 32, 32, 93, 10, 32, 32, 125, 10, 125, 10]), Some([32, 123, 34, 109, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 123, 34, 102, 111, 114, 101, 105, 103, 110, 34, 58, 123, 34, 99, 111, 109, 109, 97, 110, 100, 34, 58, 34, 102, 111, 114, 101, 105, 103, 110, 45, 109, 99, 112, 34, 125, 125, 125, 32]))\n right: (Some([123, 34, 112, 101, 114, 109, 105, 115, 115, 105, 111, 110, 115, 34, 58, 123, 34, 97, 108, 108, 111, 119, 34, 58, 91, 34, 82, 101, 97, 100, 34, 93, 125, 125, 10]), Some([32, 123, 34, 109, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 123, 34, 102, 111, 114, 101, 105, 103, 110, 34, 58, 123, 34, 99, 111, 109, 109, 97, 110, 100, 34, 58, 34, 102, 111, 114, 101, 105, 103, 110, 45, 109, 99, 112, 34, 125, 125, 125, 32]))\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\n"
+    ]
+  },
+  {
+    "name": "MCP-healthy-publish",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-runtime-paseo",
+      "--test",
+      "contract",
+      "hosted_directory::"
+    ],
+    "started_at": "2026-10-11T20:20:11.807037+00:00",
+    "exit": 101,
+    "log_sha256": "e8e4b87d3cd58ec6bbed2640e0a659403aca9ad8976c0accde9ccdd352e70fcb",
+    "test_summaries": [
+      "test result: FAILED. 8 passed; 2 failed; 0 ignored; 0 measured; 306 filtered out; finished in 0.72s"
+    ],
+    "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+    "file": "crates/kontor-runtime-paseo/src/adapter.rs",
+    "line": 6201,
+    "claim": "Republish missing/different files on healthy exact-native replay",
+    "original_sha256": "ce59e06f384bd370e5b550cc6739eae74af4445c2e5af3c10e6d9570dad3c570",
+    "seeded_sha256": "853620f8526c3a547fa130be2a224c47eb9375c85265dcb09bb4d52c24faa2a4",
+    "result": "KILLED",
+    "failed_tests": [
+      "hosted_directory::healthy_directory_replay_recovers_pending_originals_without_republishing",
+      "hosted_directory::healthy_directory_replay_retains_session_and_validates_without_publication"
+    ],
+    "failure_excerpts": [
+      "thread 'hosted_directory::healthy_directory_replay_recovers_pending_originals_without_republishing' (107088360) panicked at crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs:605:5:\nassertion failed: matches!(f.plane.adapter.launch_hosted_seat(&f.request).await,\n    Err(RuntimeError::LaunchNotAdmitted { .. }))\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n---- hosted_directory::healthy_directory_replay_retains_session_and_validates_without_publication stdout ----\n\n",
+      "thread 'hosted_directory::healthy_directory_replay_retains_session_and_validates_without_publication' (107088452) panicked at crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs:578:5:\nassertion `left == right` failed\n  left: [123, 10, 32, 32, 34, 101, 110, 97, 98, 108, 101, 65, 108, 108, 80, 114, 111, 106, 101, 99, 116, 77, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 32, 116, 114, 117, 101, 44, 10, 32, 32, 34, 102, 111, 114, 101, 105, 103, 110, 34, 58, 32, 34, 114, 101, 116, 97, 105, 110, 101, 100, 34, 10, 125, 10]\n right: [123, 34, 101, 110, 97, 98, 108, 101, 65, 108, 108, 80, 114, 111, 106, 101, 99, 116, 77, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 116, 114, 117, 101, 44, 34, 102, 111, 114, 101, 105, 103, 110, 34, 58, 34, 114, 101, 116, 97, 105, 110, 101, 100, 34, 125]\n\n\nfailures:\n"
+    ]
+  },
+  {
+    "name": "MCP-healthy-ignore-validation",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-runtime-paseo",
+      "--test",
+      "contract",
+      "hosted_directory::"
+    ],
+    "started_at": "2026-10-11T20:20:20.809517+00:00",
+    "exit": 101,
+    "log_sha256": "65dd70baa64651fe44666ba44d8cadde13f01a0a7e4eb8c781692dff07092bb8",
+    "test_summaries": [
+      "test result: FAILED. 8 passed; 2 failed; 0 ignored; 0 measured; 306 filtered out; finished in 0.75s"
+    ],
+    "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee",
+    "file": "crates/kontor-runtime-paseo/src/seat_mcp.rs",
+    "line": 986,
+    "claim": "Skip pending recovery and read-only validation for healthy exact natives",
+    "original_sha256": "ca3c41e22ddc4bf3f9297506d11ecc49eb665314f66cfb81e7c069e642b65a97",
+    "seeded_sha256": "ab648526f7cf3ce78a889274dae1d54880d08d05449f268b9d182cb4fd37a3a3",
+    "result": "KILLED",
+    "failed_tests": [
+      "hosted_directory::healthy_directory_replay_recovers_pending_originals_without_republishing",
+      "hosted_directory::healthy_directory_replay_retains_session_and_validates_without_publication"
+    ],
+    "failure_excerpts": [
+      "thread 'hosted_directory::healthy_directory_replay_recovers_pending_originals_without_republishing' (107090925) panicked at crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs:605:5:\nassertion failed: matches!(f.plane.adapter.launch_hosted_seat(&f.request).await,\n    Err(RuntimeError::LaunchNotAdmitted { .. }))\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n---- hosted_directory::healthy_directory_replay_retains_session_and_validates_without_publication stdout ----\n\n",
+      "thread 'hosted_directory::healthy_directory_replay_retains_session_and_validates_without_publication' (107090926) panicked at crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs:581:5:\nassertion failed: matches!(f.plane.adapter.launch_hosted_seat(&f.request).await,\n    Err(RuntimeError::LaunchNotAdmitted { .. }))\n\n\nfailures:\n    hosted_directory::healthy_directory_replay_recovers_pending_originals_without_republishing\n"
+    ]
+  }
+]

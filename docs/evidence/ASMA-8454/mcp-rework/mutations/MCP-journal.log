@@ -1,0 +1,76 @@
+   Compiling kontor-runtime-paseo v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-runtime-paseo)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.71s
+     Running unittests src/lib.rs (.qualification/target-carrier-archive/debug/deps/kontor_runtime_paseo-9a7a79f0433c9b08)
+
+running 15 tests
+test seat_mcp::directory_tests::a_parent_substituted_during_staging_cannot_redirect_publication_or_cleanup ... ok
+test seat_mcp::directory_tests::directory_relative_stage_and_replace_refuse_a_symlink_parent ... ok
+test seat_mcp::directory_tests::disabled_and_foreign_providers_do_not_publish_files ... ok
+test seat_mcp::directory_tests::ancestry_substitution_between_parent_validation_and_replace_is_refused ... FAILED
+test seat_mcp::directory_tests::hosted_directory_preserves_foreign_content_and_skips_identical_bytes ... ok
+test seat_mcp::directory_tests::hosted_directory_refuses_escaping_settings_mcp_and_journal_paths ... ok
+test seat_mcp::directory_tests::interruption_after_complete_pair_retains_it_and_requires_cleanup_before_use ... FAILED
+test seat_mcp::directory_tests::interruption_between_publications_restores_originals_before_next_subject ... FAILED
+test seat_mcp::directory_tests::invalid_second_json_is_refused_before_any_file_or_directory_change ... ok
+test seat_mcp::directory_tests::malformed_git_is_a_refusal_and_real_git_keeps_the_existing_exclude_behavior ... ok
+test seat_mcp::directory_tests::publication_child_process ... ok
+
+running 1 test
+test seat_mcp::directory_tests::real_process_exit_between_publications_recovers_originals_from_the_daemon_record ... FAILED
+test seat_mcp::directory_tests::rollback_failure_blocks_launch_with_precise_pending_recovery_then_converges ... FAILED
+test seat_mcp::directory_tests::two_subjects_serialize_on_canonical_cwd_and_keep_one_shared_nonsecret_surface ... ok
+test seat_mcp::directory_tests::handled_stage_publish_and_readback_failures_restore_exact_bytes_and_absence ... ok
+
+failures:
+
+---- seat_mcp::directory_tests::ancestry_substitution_between_parent_validation_and_replace_is_refused stdout ----
+
+thread 'seat_mcp::directory_tests::ancestry_substitution_between_parent_validation_and_replace_is_refused' (107077479) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:512:9:
+assertion `left == right` failed
+  left: (Some([123, 10, 32, 32, 34, 101, 110, 97, 98, 108, 101, 65, 108, 108, 80, 114, 111, 106, 101, 99, 116, 77, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 32, 116, 114, 117, 101, 44, 10, 32, 32, 34, 112, 101, 114, 109, 105, 115, 115, 105, 111, 110, 115, 34, 58, 32, 123, 10, 32, 32, 32, 32, 34, 97, 108, 108, 111, 119, 34, 58, 32, 91, 10, 32, 32, 32, 32, 32, 32, 34, 82, 101, 97, 100, 34, 10, 32, 32, 32, 32, 93, 10, 32, 32, 125, 10, 125, 10]), Some([32, 123, 34, 109, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 123, 34, 102, 111, 114, 101, 105, 103, 110, 34, 58, 123, 34, 99, 111, 109, 109, 97, 110, 100, 34, 58, 34, 102, 111, 114, 101, 105, 103, 110, 45, 109, 99, 112, 34, 125, 125, 125, 32]))
+ right: (Some([123, 34, 112, 101, 114, 109, 105, 115, 115, 105, 111, 110, 115, 34, 58, 123, 34, 97, 108, 108, 111, 119, 34, 58, 91, 34, 82, 101, 97, 100, 34, 93, 125, 125, 10]), Some([32, 123, 34, 109, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 123, 34, 102, 111, 114, 101, 105, 103, 110, 34, 58, 123, 34, 99, 111, 109, 109, 97, 110, 100, 34, 58, 34, 102, 111, 114, 101, 105, 103, 110, 45, 109, 99, 112, 34, 125, 125, 125, 32]))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- seat_mcp::directory_tests::interruption_after_complete_pair_retains_it_and_requires_cleanup_before_use stdout ----
+
+thread 'seat_mcp::directory_tests::interruption_after_complete_pair_retains_it_and_requires_cleanup_before_use' (107077667) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:236:5:
+assertion failed: !publication_record(&seat,
+                &std::fs::canonicalize(&cwd).unwrap()).unwrap().exists()
+
+---- seat_mcp::directory_tests::interruption_between_publications_restores_originals_before_next_subject stdout ----
+
+thread 'seat_mcp::directory_tests::interruption_between_publications_restores_originals_before_next_subject' (107077716) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:199:13:
+assertion `left != right` failed: simulated process interruption
+  left: PublishMcp
+ right: PublishMcp
+
+thread 'seat_mcp::directory_tests::interruption_between_publications_restores_originals_before_next_subject' (107077716) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:217:5:
+assertion `left == right` failed
+  left: (Some([123, 10, 32, 32, 34, 101, 110, 97, 98, 108, 101, 65, 108, 108, 80, 114, 111, 106, 101, 99, 116, 77, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 32, 116, 114, 117, 101, 44, 10, 32, 32, 34, 112, 101, 114, 109, 105, 115, 115, 105, 111, 110, 115, 34, 58, 32, 123, 10, 32, 32, 32, 32, 34, 97, 108, 108, 111, 119, 34, 58, 32, 91, 10, 32, 32, 32, 32, 32, 32, 34, 82, 101, 97, 100, 34, 10, 32, 32, 32, 32, 93, 10, 32, 32, 125, 10, 125, 10]), Some([32, 123, 34, 109, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 123, 34, 102, 111, 114, 101, 105, 103, 110, 34, 58, 123, 34, 99, 111, 109, 109, 97, 110, 100, 34, 58, 34, 102, 111, 114, 101, 105, 103, 110, 45, 109, 99, 112, 34, 125, 125, 125, 32]))
+ right: (Some([123, 34, 112, 101, 114, 109, 105, 115, 115, 105, 111, 110, 115, 34, 58, 123, 34, 97, 108, 108, 111, 119, 34, 58, 91, 34, 82, 101, 97, 100, 34, 93, 125, 125, 10]), Some([32, 123, 34, 109, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 123, 34, 102, 111, 114, 101, 105, 103, 110, 34, 58, 123, 34, 99, 111, 109, 109, 97, 110, 100, 34, 58, 34, 102, 111, 114, 101, 105, 103, 110, 45, 109, 99, 112, 34, 125, 125, 125, 32]))
+
+---- seat_mcp::directory_tests::real_process_exit_between_publications_recovers_originals_from_the_daemon_record stdout ----
+
+thread 'seat_mcp::directory_tests::real_process_exit_between_publications_recovers_originals_from_the_daemon_record' (107077966) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:414:5:
+assertion `left == right` failed
+  left: (Some([123, 10, 32, 32, 34, 101, 110, 97, 98, 108, 101, 65, 108, 108, 80, 114, 111, 106, 101, 99, 116, 77, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 32, 116, 114, 117, 101, 44, 10, 32, 32, 34, 112, 101, 114, 109, 105, 115, 115, 105, 111, 110, 115, 34, 58, 32, 123, 10, 32, 32, 32, 32, 34, 97, 108, 108, 111, 119, 34, 58, 32, 91, 10, 32, 32, 32, 32, 32, 32, 34, 82, 101, 97, 100, 34, 10, 32, 32, 32, 32, 93, 10, 32, 32, 125, 10, 125, 10]), Some([32, 123, 34, 109, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 123, 34, 102, 111, 114, 101, 105, 103, 110, 34, 58, 123, 34, 99, 111, 109, 109, 97, 110, 100, 34, 58, 34, 102, 111, 114, 101, 105, 103, 110, 45, 109, 99, 112, 34, 125, 125, 125, 32]))
+ right: (Some([123, 34, 112, 101, 114, 109, 105, 115, 115, 105, 111, 110, 115, 34, 58, 123, 34, 97, 108, 108, 111, 119, 34, 58, 91, 34, 82, 101, 97, 100, 34, 93, 125, 125, 10]), Some([32, 123, 34, 109, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 123, 34, 102, 111, 114, 101, 105, 103, 110, 34, 58, 123, 34, 99, 111, 109, 109, 97, 110, 100, 34, 58, 34, 102, 111, 114, 101, 105, 103, 110, 45, 109, 99, 112, 34, 125, 125, 125, 32]))
+
+---- seat_mcp::directory_tests::rollback_failure_blocks_launch_with_precise_pending_recovery_then_converges stdout ----
+
+thread 'seat_mcp::directory_tests::rollback_failure_blocks_launch_with_precise_pending_recovery_then_converges' (107078001) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:188:5:
+assertion `left == right` failed
+  left: (Some([123, 10, 32, 32, 34, 101, 110, 97, 98, 108, 101, 65, 108, 108, 80, 114, 111, 106, 101, 99, 116, 77, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 32, 116, 114, 117, 101, 44, 10, 32, 32, 34, 112, 101, 114, 109, 105, 115, 115, 105, 111, 110, 115, 34, 58, 32, 123, 10, 32, 32, 32, 32, 34, 97, 108, 108, 111, 119, 34, 58, 32, 91, 10, 32, 32, 32, 32, 32, 32, 34, 82, 101, 97, 100, 34, 10, 32, 32, 32, 32, 93, 10, 32, 32, 125, 10, 125, 10]), Some([32, 123, 34, 109, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 123, 34, 102, 111, 114, 101, 105, 103, 110, 34, 58, 123, 34, 99, 111, 109, 109, 97, 110, 100, 34, 58, 34, 102, 111, 114, 101, 105, 103, 110, 45, 109, 99, 112, 34, 125, 125, 125, 32]))
+ right: (Some([123, 34, 112, 101, 114, 109, 105, 115, 115, 105, 111, 110, 115, 34, 58, 123, 34, 97, 108, 108, 111, 119, 34, 58, 91, 34, 82, 101, 97, 100, 34, 93, 125, 125, 10]), Some([32, 123, 34, 109, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 123, 34, 102, 111, 114, 101, 105, 103, 110, 34, 58, 123, 34, 99, 111, 109, 109, 97, 110, 100, 34, 58, 34, 102, 111, 114, 101, 105, 103, 110, 45, 109, 99, 112, 34, 125, 125, 125, 32]))
+
+
+failures:
+    seat_mcp::directory_tests::ancestry_substitution_between_parent_validation_and_replace_is_refused
+    seat_mcp::directory_tests::interruption_after_complete_pair_retains_it_and_requires_cleanup_before_use
+    seat_mcp::directory_tests::interruption_between_publications_restores_originals_before_next_subject
+    seat_mcp::directory_tests::real_process_exit_between_publications_recovers_originals_from_the_daemon_record
+    seat_mcp::directory_tests::rollback_failure_blocks_launch_with_precise_pending_recovery_then_converges
+
+test result: FAILED. 10 passed; 5 failed; 0 ignored; 0 measured; 131 filtered out; finished in 1.68s
+
+error: test failed, to rerun pass `-p kontor-runtime-paseo --lib`

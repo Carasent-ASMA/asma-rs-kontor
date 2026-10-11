@@ -54,6 +54,11 @@
 //! OpenCode; their MCP surface must not depend on Claude's local files.
 //! Account-qualified Claude provider ids such as `claude-work` and
 //! `claude-personal` are the same harness boundary and are composed too.
+//!
+//! A proved Desk-scoped local directory uses a separate publication path:
+//! settings then MCP, exact originals in a private daemon-owned journal, and
+//! recovery under a canonical-cwd lock before any create/reload. It does not
+//! make delivery or consultation callers eligible for non-Git composition.
 
 use crate::posture::SeatPosture;
 use std::io;
@@ -333,17 +338,860 @@ pub fn compose_for_seat(
 /// This is only Claude's cwd configuration. Every provider also receives the
 /// leadership MCP in its creation frame via `PaseoRpc::with_leadership_mcp`;
 /// the scoped credential remains exclusively in that frame's secret channel.
-pub fn compose_for_hosted_seat(
+/// Selected only after the adapter proves the exact hosting workspace.
+#[derive(Clone, Copy)]
+pub(crate) enum HostedCompositionMode {
+    Worktree,
+    OwnedDirectory,
+}
+
+pub(crate) fn compose_for_hosted_seat(
     seat: Option<&SeatMcp>,
     provider: &str,
     cwd: &Path,
+    mode: HostedCompositionMode,
 ) -> io::Result<()> {
+    if let (Some(seat), HostedCompositionMode::OwnedDirectory) = (seat, mode) {
+        // Recovery is required even when a route correction now selects a
+        // different provider. Credentials never enter these shared files.
+        return compose_hosted_directory(seat, provider, cwd, &mut |_| Ok(()));
+    }
     match seat {
         Some(seat) if crate::client::built_in_provider(provider) == "claude" => {
             seat.compose(cwd, "leadership")
         }
         _ => Ok(()),
     }
+}
+
+/// Pending publication/rollback failures must not claim zero effects.
+pub(crate) fn hosted_composition_refusal(error: &io::Error) -> &'static str {
+    if error
+        .get_ref()
+        .is_some_and(|error| error.is::<IncompletePublication>())
+    {
+        "hosted directory MCP cleanup is incomplete; publication recovery must finish before create or reload"
+    } else {
+        "hosted seat MCP composition failed in the ECP"
+    }
+}
+
+#[derive(Debug)]
+struct IncompletePublication(String);
+
+impl std::fmt::Display for IncompletePublication {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "incomplete hosted directory MCP cleanup: {}",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for IncompletePublication {}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DirectoryFile {
+    original: Option<Vec<u8>>,
+    rendered: Vec<u8>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DirectoryPublication {
+    version: u32,
+    cwd: PathBuf,
+    attempt: uuid::Uuid,
+    created_claude_directory: bool,
+    settings: DirectoryFile,
+    mcp: DirectoryFile,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PublicationStep {
+    StageSettings,
+    StageMcp,
+    PublishSettings,
+    PublishMcp,
+    Readback,
+    RollbackSettings,
+    RollbackMcp,
+    Cleanup,
+    ReplaceValidated,
+}
+
+// All adapter instances and all subjects sharing a cwd use this same lock.
+// The daemon's state-root lock excludes another process using its journal.
+fn directory_lock(cwd: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
+    type Locks = std::collections::BTreeMap<PathBuf, std::sync::Arc<std::sync::Mutex<()>>>;
+    static LOCKS: std::sync::OnceLock<std::sync::Mutex<Locks>> = std::sync::OnceLock::new();
+    let mut locks = LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    locks.entry(cwd.to_owned()).or_default().clone()
+}
+
+// Retain every directory link from / to each owned root. All reads, writes,
+// renames and cleanup use these descriptors, never a second pathname open.
+struct DirectoryAnchor {
+    path: PathBuf,
+    #[cfg(unix)]
+    lineage: Vec<(std::sync::Arc<std::fs::File>, std::ffi::OsString)>,
+}
+
+impl DirectoryAnchor {
+    fn open(path: &Path) -> io::Result<Self> {
+        #[cfg(unix)]
+        {
+            use rustix::fs::{Mode, OFlags};
+            let root = std::fs::File::from(rustix::fs::open(
+                "/",
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )?);
+            let mut anchor = Self {
+                path: PathBuf::from("/"),
+                lineage: vec![(std::sync::Arc::new(root), Default::default())],
+            };
+            for component in path.components() {
+                match component {
+                    std::path::Component::RootDir => {}
+                    std::path::Component::Normal(name) => anchor = anchor.child(name)?,
+                    _ => {
+                        return Err(io::Error::other(
+                            "hosted directory must be an absolute canonical path",
+                        ));
+                    }
+                }
+            }
+            anchor.verify()?;
+            Ok(anchor)
+        }
+        #[cfg(not(unix))]
+        {
+            if std::fs::canonicalize(path)? != path || !check_directory(path)? {
+                return Err(io::Error::other("hosted directory is not canonical"));
+            }
+            Ok(Self {
+                path: path.to_owned(),
+            })
+        }
+    }
+
+    #[cfg(unix)]
+    fn fd(&self) -> &std::fs::File {
+        &self.lineage.last().unwrap().0
+    }
+
+    fn child(&self, name: &std::ffi::OsStr) -> io::Result<Self> {
+        self.verify()?;
+        #[cfg(unix)]
+        {
+            use rustix::fs::{Mode, OFlags};
+            let file = std::fs::File::from(rustix::fs::openat(
+                self.fd(),
+                name,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )?);
+            let mut lineage = self.lineage.clone();
+            lineage.push((std::sync::Arc::new(file), name.to_owned()));
+            let child = Self {
+                path: self.path.join(name),
+                lineage,
+            };
+            child.verify()?;
+            Ok(child)
+        }
+        #[cfg(not(unix))]
+        {
+            Self::open(&self.path.join(name))
+        }
+    }
+
+    fn verify(&self) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            for pair in self.lineage.windows(2) {
+                let retained = rustix::fs::fstat(pair[1].0.as_ref())?;
+                let linked = rustix::fs::statat(
+                    pair[0].0.as_ref(),
+                    &pair[1].1,
+                    rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+                )
+                .map_err(|error| {
+                    io::Error::other(format!(
+                        "retained hosted directory identity cannot be verified: {error}"
+                    ))
+                })?;
+                if retained.st_dev != linked.st_dev || retained.st_ino != linked.st_ino {
+                    return Err(io::Error::other(
+                        "retained hosted directory identity changed",
+                    ));
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        if std::fs::canonicalize(&self.path)? != self.path || !check_directory(&self.path)? {
+            return Err(io::Error::other(
+                "retained hosted directory identity changed",
+            ));
+        }
+        Ok(())
+    }
+
+    fn sync(&self) -> io::Result<()> {
+        self.verify()?;
+        #[cfg(unix)]
+        self.fd().sync_all()?;
+        #[cfg(not(unix))]
+        std::fs::File::open(&self.path)?.sync_all()?;
+        self.verify()
+    }
+}
+
+struct DirectoryIo {
+    directories: std::collections::BTreeMap<PathBuf, DirectoryAnchor>,
+}
+
+impl DirectoryIo {
+    fn new(cwd: &Path, state_root: &Path) -> io::Result<Self> {
+        let mut directories = std::collections::BTreeMap::new();
+        for root in [cwd, state_root] {
+            directories.insert(root.to_owned(), DirectoryAnchor::open(root)?);
+        }
+        Ok(Self { directories })
+    }
+
+    fn directory(&mut self, path: &Path) -> io::Result<&DirectoryAnchor> {
+        if !self.directories.contains_key(path) {
+            let parent = path
+                .parent()
+                .ok_or_else(|| io::Error::other("path is outside owned hosted roots"))?;
+            let anchor = self.directory(parent)?.child(path.file_name().unwrap())?;
+            self.directories.insert(path.to_owned(), anchor);
+        }
+        let anchor = &self.directories[path];
+        anchor.verify()?;
+        Ok(anchor)
+    }
+
+    fn exists(&mut self, path: &Path) -> io::Result<bool> {
+        match self.directory(path) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn read(&mut self, path: &Path) -> io::Result<Option<Vec<u8>>> {
+        let result = (|| {
+            use std::io::Read as _;
+            let parent = self.directory(path.parent().unwrap())?;
+            #[cfg(unix)]
+            let mut file = {
+                use rustix::fs::{Mode, OFlags};
+                std::fs::File::from(rustix::fs::openat(
+                    parent.fd(),
+                    path.file_name().unwrap(),
+                    OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+                    Mode::empty(),
+                )?)
+            };
+            #[cfg(not(unix))]
+            let mut file = {
+                let metadata = std::fs::symlink_metadata(path)?;
+                if metadata.is_symlink() {
+                    return Err(io::Error::other("hosted configuration is a symlink"));
+                }
+                std::fs::File::open(path)?
+            };
+            if !file.metadata()?.is_file() {
+                return Err(io::Error::other(
+                    "hosted configuration is not a regular file",
+                ));
+            }
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)?;
+            parent.verify()?;
+            Ok(Some(bytes))
+        })();
+        match result {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            other => other,
+        }
+    }
+
+    fn stage(&mut self, path: &Path, bytes: &[u8]) -> io::Result<()> {
+        use std::io::Write as _;
+        let parent = self.directory(path.parent().unwrap())?;
+        #[cfg(unix)]
+        let mut file = {
+            use rustix::fs::{Mode, OFlags};
+            std::fs::File::from(rustix::fs::openat(
+                parent.fd(),
+                path.file_name().unwrap(),
+                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::RUSR | Mode::WUSR,
+            )?)
+        };
+        #[cfg(not(unix))]
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        parent.sync()
+    }
+
+    fn replace(
+        &mut self,
+        temporary: &Path,
+        destination: &Path,
+        fault: &mut impl FnMut(PublicationStep) -> io::Result<()>,
+    ) -> io::Result<()> {
+        if temporary.parent() != destination.parent() {
+            return Err(io::Error::other(
+                "hosted publication must replace within one retained directory",
+            ));
+        }
+        let parent = self.directory(destination.parent().unwrap())?;
+        // Deterministic seam at the old source-open/target-open interval.
+        fault(PublicationStep::ReplaceValidated)?;
+        parent.verify()?;
+        #[cfg(unix)]
+        rustix::fs::renameat(
+            parent.fd(),
+            temporary.file_name().unwrap(),
+            parent.fd(),
+            destination.file_name().unwrap(),
+        )?;
+        #[cfg(not(unix))]
+        std::fs::rename(temporary, destination)?;
+        parent.sync()
+    }
+
+    fn create(&mut self, path: &Path) -> io::Result<()> {
+        let parent = self.directory(path.parent().unwrap())?;
+        #[cfg(unix)]
+        rustix::fs::mkdirat(
+            parent.fd(),
+            path.file_name().unwrap(),
+            rustix::fs::Mode::RWXU,
+        )?;
+        #[cfg(not(unix))]
+        std::fs::create_dir(path)?;
+        parent.sync()?;
+        self.directory(path)?;
+        Ok(())
+    }
+
+    fn remove(&mut self, path: &Path, directory: bool) -> io::Result<()> {
+        let result = (|| {
+            let parent = self.directory(path.parent().unwrap())?;
+            #[cfg(unix)]
+            rustix::fs::unlinkat(
+                parent.fd(),
+                path.file_name().unwrap(),
+                if directory {
+                    rustix::fs::AtFlags::REMOVEDIR
+                } else {
+                    rustix::fs::AtFlags::empty()
+                },
+            )?;
+            #[cfg(not(unix))]
+            if directory {
+                std::fs::remove_dir(path)?;
+            } else {
+                std::fs::remove_file(path)?;
+            }
+            parent.sync()
+        })();
+        if result.is_ok() && directory {
+            self.directories.remove(path);
+        }
+        match result {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        }
+    }
+
+    fn verify(&mut self) -> io::Result<()> {
+        for directory in self.directories.values() {
+            directory.verify()?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+fn directory_file(path: &Path) -> io::Result<Option<Vec<u8>>> {
+    let root = std::fs::canonicalize(path.parent().unwrap_or(Path::new("/")))
+        .or_else(|_| std::fs::canonicalize(path.parent().unwrap().parent().unwrap()))?;
+    DirectoryIo::new(&root, &root)?.read(path)
+}
+
+fn check_directory(path: &Path) -> io::Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() && !metadata.is_symlink() => Ok(true),
+        Ok(_) => Err(io::Error::other(format!(
+            "{} is not an owned directory",
+            path.display()
+        ))),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn directory_paths(cwd: &Path) -> io::Result<(PathBuf, PathBuf)> {
+    if std::fs::canonicalize(cwd)? != cwd {
+        return Err(io::Error::other(
+            "the canonical hosted cwd changed during publication",
+        ));
+    }
+    check_directory(&cwd.join(".claude"))?;
+    Ok((
+        cwd.join(".claude/settings.local.json"),
+        cwd.join(".mcp.json"),
+    ))
+}
+
+fn render_directory_json(
+    original: Option<&[u8]>,
+    mutate: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>) -> io::Result<()>,
+) -> io::Result<Vec<u8>> {
+    let mut object = match original {
+        None => serde_json::Map::new(),
+        Some(bytes) => match serde_json::from_slice(bytes) {
+            Ok(serde_json::Value::Object(object)) => object,
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "hosted configuration must be a JSON object",
+                ));
+            }
+        },
+    };
+    mutate(&mut object)?;
+    let mut bytes =
+        serde_json::to_vec_pretty(&serde_json::Value::Object(object)).map_err(io::Error::other)?;
+    bytes.push(b'\n');
+    Ok(bytes)
+}
+
+fn hosted_git_worktree(cwd: &Path) -> io::Result<bool> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .env("LC_ALL", "C")
+        .output()?;
+    if output.status.success() && output.stdout == b"true\n" {
+        return Ok(true);
+    }
+    // Distinguish a genuine non-repository from permission, ownership, broken
+    // repository and executable errors. None of those authorizes a fallback.
+    if output.status.code() == Some(128)
+        && String::from_utf8_lossy(&output.stderr)
+            .starts_with("fatal: not a git repository (or any of the parent directories): .git")
+        && !hosted_git_marker(cwd)?
+    {
+        return Ok(false);
+    }
+    Err(io::Error::other(format!(
+        "hosted Git probe refused: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    )))
+}
+
+fn hosted_git_marker(cwd: &Path) -> io::Result<bool> {
+    let ceilings = std::env::var_os("GIT_CEILING_DIRECTORIES")
+        .map(|value| {
+            std::env::split_paths(&value)
+                .filter_map(|path| std::fs::canonicalize(path).ok())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for parent in cwd.ancestors() {
+        if ceilings.iter().any(|ceiling| ceiling == parent) {
+            break;
+        }
+        match parent.join(".git").symlink_metadata() {
+            Ok(_) => return Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(false)
+}
+
+impl DirectoryPublication {
+    fn temporary(&self, settings: bool, restoring: bool) -> PathBuf {
+        let directory = if settings {
+            self.cwd.join(".claude")
+        } else {
+            self.cwd.clone()
+        };
+        directory.join(format!(
+            ".kontor-{}-{}.tmp",
+            self.attempt,
+            if restoring { "restore" } else { "stage" }
+        ))
+    }
+
+    fn verify_current(&self, fs: &mut DirectoryIo) -> io::Result<()> {
+        fs.verify()?;
+        let (settings, mcp) = directory_paths(&self.cwd)?;
+        for (path, file) in [(settings, &self.settings), (mcp, &self.mcp)] {
+            let current = fs.read(&path)?;
+            if current != file.original && current.as_deref() != Some(file.rendered.as_slice()) {
+                return Err(io::Error::other(format!(
+                    "{} changed outside the pending publication",
+                    path.display()
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn complete(&self, fs: &mut DirectoryIo) -> io::Result<bool> {
+        fs.verify()?;
+        let (settings, mcp) = directory_paths(&self.cwd)?;
+        Ok(
+            fs.read(&settings)?.as_deref() == Some(self.settings.rendered.as_slice())
+                && fs.read(&mcp)?.as_deref() == Some(self.mcp.rendered.as_slice()),
+        )
+    }
+
+    fn rollback(
+        &self,
+        fs: &mut DirectoryIo,
+        fault: &mut impl FnMut(PublicationStep) -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.verify_current(fs)?;
+        let (settings, mcp) = directory_paths(&self.cwd)?;
+        for (path, file, is_settings, step) in [
+            (
+                settings,
+                &self.settings,
+                true,
+                PublicationStep::RollbackSettings,
+            ),
+            (mcp, &self.mcp, false, PublicationStep::RollbackMcp),
+        ] {
+            if fs.read(&path)? == file.original {
+                continue;
+            }
+            fault(step)?;
+            match &file.original {
+                Some(bytes) => {
+                    let temporary = self.temporary(is_settings, true);
+                    fs.remove(&temporary, false)?;
+                    fs.stage(&temporary, bytes)?;
+                    directory_paths(&self.cwd)?;
+                    fs.replace(&temporary, &path, fault)?;
+                }
+                None => fs.remove(&path, false)?,
+            }
+            fs.directory(path.parent().expect("a hosted file has a parent"))?
+                .sync()?;
+        }
+        Ok(())
+    }
+
+    fn cleanup(&self, fs: &mut DirectoryIo, record: &Path, rolled_back: bool) -> io::Result<()> {
+        fs.verify()?;
+        directory_paths(&self.cwd)?;
+        for settings in [true, false] {
+            for restoring in [true, false] {
+                fs.remove(&self.temporary(settings, restoring), false)?;
+            }
+        }
+        if rolled_back && self.created_claude_directory && fs.exists(&self.cwd.join(".claude"))? {
+            // Only this attempt's now-empty directory; foreign contents stay.
+            match fs.remove(&self.cwd.join(".claude"), true) {
+                Ok(()) => fs.directory(&self.cwd)?.sync()?,
+                Err(error) if error.kind() == io::ErrorKind::DirectoryNotEmpty => {}
+                Err(error) => return Err(error),
+            }
+        }
+        fs.directory(&self.cwd)?.sync()?;
+        fs.remove(record, false)?;
+        fs.directory(record.parent().expect("a publication record has a parent"))?
+            .sync()
+    }
+}
+
+fn publication_record(seat: &SeatMcp, cwd: &Path) -> io::Result<PathBuf> {
+    let root = std::fs::canonicalize(&seat.state_root)?;
+    let directory = root.join("hosted-directory-publications");
+    check_directory(&directory)?;
+    let key = kontor_core::id::ContentHash::of(cwd.as_os_str().as_encoded_bytes());
+    Ok(directory.join(format!("{key}.json")))
+}
+
+fn recover_directory_publication(
+    fs: &mut DirectoryIo,
+    record: &Path,
+    cwd: &Path,
+    fault: &mut impl FnMut(PublicationStep) -> io::Result<()>,
+) -> io::Result<()> {
+    let Some(bytes) = fs.read(record).map_err(|error| {
+        io::Error::other(IncompletePublication(format!(
+            "{}: {error}",
+            record.display()
+        )))
+    })?
+    else {
+        return Ok(());
+    };
+    let mut recover = || -> io::Result<()> {
+        let publication: DirectoryPublication =
+            serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+        if publication.version != 1 || publication.cwd != cwd {
+            return Err(io::Error::other(
+                "publication record does not name this canonical cwd/version",
+            ));
+        }
+        for bytes in [&publication.settings.rendered, &publication.mcp.rendered] {
+            if !serde_json::from_slice::<serde_json::Value>(bytes)
+                .is_ok_and(|value| value.is_object())
+            {
+                return Err(io::Error::other(
+                    "publication record has invalid rendered JSON",
+                ));
+            }
+        }
+        publication.verify_current(fs)?;
+        let complete = publication.complete(fs)?;
+        if !complete {
+            publication.rollback(fs, fault)?;
+        }
+        publication.cleanup(fs, record, !complete)
+    };
+    recover().map_err(|error| {
+        io::Error::other(IncompletePublication(format!(
+            "{}: {error}",
+            record.display()
+        )))
+    })
+}
+
+/// Healthy exact-native replay recovers pending writes, then only validates.
+/// Missing/different required config refuses; unrelated content is not rendered.
+pub(crate) fn validate_recovered_hosted_directory(
+    seat: Option<&SeatMcp>,
+    provider: &str,
+    cwd: &Path,
+) -> io::Result<()> {
+    let Some(seat) = seat else {
+        return Ok(());
+    };
+    let cwd = std::fs::canonicalize(cwd)?;
+    let lock = directory_lock(&cwd);
+    let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
+    let state_root = std::fs::canonicalize(&seat.state_root)?;
+    let mut fs = DirectoryIo::new(&cwd, &state_root)?;
+    let record = publication_record(seat, &cwd)?;
+    recover_directory_publication(&mut fs, &record, &cwd, &mut |_| Ok(()))?;
+    if crate::client::built_in_provider(provider) != "claude" {
+        return Ok(());
+    }
+    let mut read_object = |path: &Path| -> io::Result<serde_json::Value> {
+        let bytes = fs.read(path)?.ok_or_else(|| {
+            io::Error::other(
+                "healthy hosted seat configuration is missing; replay does not publish",
+            )
+        })?;
+        let object: serde_json::Value = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+        if !object.is_object() {
+            return Err(io::Error::other(
+                "healthy hosted configuration must be a JSON object",
+            ));
+        }
+        Ok(object)
+    };
+    let settings = read_object(&cwd.join(".claude/settings.local.json"))?;
+    let mcp = read_object(&cwd.join(".mcp.json"))?;
+    if settings.get("enableAllProjectMcpServers") != Some(&serde_json::json!(true))
+        || mcp
+            .get("mcpServers")
+            .and_then(|servers| servers.get("kontor"))
+            != Some(&mcp_file_entry(
+                &seat.command,
+                &seat.state_root,
+                "leadership",
+            ))
+    {
+        return Err(io::Error::other(
+            "healthy hosted seat configuration differs; replay does not publish",
+        ));
+    }
+    fs.verify()
+}
+
+fn compose_hosted_directory(
+    seat: &SeatMcp,
+    provider: &str,
+    cwd: &Path,
+    fault: &mut impl FnMut(PublicationStep) -> io::Result<()>,
+) -> io::Result<()> {
+    let cwd = std::fs::canonicalize(cwd)?;
+    let lock = directory_lock(&cwd);
+    // A caught interruption may poison this process's lock; the persisted
+    // record, rather than in-memory state, decides whether publication is safe.
+    let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
+    let state_root = std::fs::canonicalize(&seat.state_root)?;
+    let mut fs = DirectoryIo::new(&cwd, &state_root)?;
+    let record = publication_record(seat, &cwd)?;
+    recover_directory_publication(&mut fs, &record, &cwd, fault)?;
+    if crate::client::built_in_provider(provider) != "claude" {
+        return Ok(());
+    }
+    if hosted_git_worktree(&cwd)? {
+        return seat.compose(&cwd, "leadership");
+    }
+    let (settings_path, mcp_path) = directory_paths(&cwd)?;
+    let settings_original = fs.read(&settings_path)?;
+    let mcp_original = fs.read(&mcp_path)?;
+    // Both objects are read/validated/rendered before even creating .claude.
+    let settings = DirectoryFile {
+        rendered: render_directory_json(settings_original.as_deref(), |object| {
+            object.insert(
+                "enableAllProjectMcpServers".to_owned(),
+                serde_json::json!(true),
+            );
+            Ok(())
+        })?,
+        original: settings_original,
+    };
+    let mcp = DirectoryFile {
+        rendered: render_directory_json(mcp_original.as_deref(), |object| {
+            let servers = object
+                .entry("mcpServers")
+                .or_insert_with(|| serde_json::json!({}));
+            let servers = servers.as_object_mut().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "existing .mcp.json has non-object mcpServers",
+                )
+            })?;
+            servers.insert(
+                "kontor".to_owned(),
+                mcp_file_entry(&seat.command, &seat.state_root, "leadership"),
+            );
+            Ok(())
+        })?,
+        original: mcp_original,
+    };
+    if settings.original.as_deref() == Some(settings.rendered.as_slice())
+        && mcp.original.as_deref() == Some(mcp.rendered.as_slice())
+    {
+        return Ok(());
+    }
+    let publication = DirectoryPublication {
+        version: 1,
+        cwd: cwd.clone(),
+        attempt: uuid::Uuid::now_v7(),
+        created_claude_directory: !fs.exists(&cwd.join(".claude"))?,
+        settings,
+        mcp,
+    };
+    if !fs.exists(record.parent().unwrap())? {
+        match fs.create(record.parent().unwrap()) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                fs.exists(record.parent().unwrap())?;
+            }
+            Err(error) => return Err(error),
+        }
+        fs.directory(record.parent().unwrap().parent().unwrap())?
+            .sync()?;
+    }
+    // Write and fsync originals before any destination changes. A process
+    // interruption leaves a record the prepared-intent retry must reconcile.
+    let record_temp = record.with_extension(format!("{}.tmp", publication.attempt));
+    let bytes = serde_json::to_vec(&publication).map_err(io::Error::other)?;
+    let record_result = (|| {
+        fs.stage(&record_temp, &bytes)?;
+        fs.replace(&record_temp, &record, &mut |_| Ok(()))?;
+        fs.directory(record.parent().unwrap())?.sync()
+    })();
+    if let Err(error) = record_result {
+        fs.remove(&record_temp, false)?;
+        recover_directory_publication(&mut fs, &record, &cwd, fault)?;
+        return Err(error);
+    }
+    let result = (|| {
+        if publication.created_claude_directory {
+            fs.create(&cwd.join(".claude"))?;
+            fs.directory(&cwd)?.sync()?;
+        }
+        for (file, settings, step) in [
+            (&publication.settings, true, PublicationStep::StageSettings),
+            (&publication.mcp, false, PublicationStep::StageMcp),
+        ] {
+            if file.original.as_deref() == Some(file.rendered.as_slice()) {
+                continue;
+            }
+            fault(step)?;
+            directory_paths(&cwd)?;
+            fs.stage(&publication.temporary(settings, false), &file.rendered)?;
+        }
+        for (path, file, settings, step) in [
+            (
+                settings_path,
+                &publication.settings,
+                true,
+                PublicationStep::PublishSettings,
+            ),
+            (
+                mcp_path,
+                &publication.mcp,
+                false,
+                PublicationStep::PublishMcp,
+            ),
+        ] {
+            if file.original.as_deref() == Some(file.rendered.as_slice()) {
+                continue;
+            }
+            fault(step)?;
+            publication.verify_current(&mut fs)?;
+            fs.replace(&publication.temporary(settings, false), &path, fault)?;
+            fs.directory(path.parent().unwrap())?.sync()?;
+        }
+        fault(PublicationStep::Readback)?;
+        if !publication.complete(&mut fs)? {
+            return Err(io::Error::other(
+                "hosted MCP pair readback differs from publication",
+            ));
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        if let Err(cleanup) = publication
+            .rollback(&mut fs, fault)
+            .and_then(|()| publication.cleanup(&mut fs, &record, true))
+        {
+            return Err(io::Error::other(IncompletePublication(format!(
+                "{error}; {}: {cleanup}",
+                record.display()
+            ))));
+        }
+        return Err(error);
+    }
+    fault(PublicationStep::Cleanup)
+        .and_then(|()| publication.cleanup(&mut fs, &record, false))
+        .map_err(|error| {
+            io::Error::other(IncompletePublication(format!(
+                "{}: {error}",
+                record.display()
+            )))
+        })
 }
 
 /// Merge-write `<cwd>/.mcp.json`: overwrite only the `kontor` server entry.
@@ -353,14 +1201,7 @@ fn write_mcp_json(
     state_root: &Path,
     serve_profile: &str,
 ) -> io::Result<()> {
-    let kontor = serde_json::json!({
-        "command": command,
-        "args": [
-            "--state-root", state_root.to_string_lossy(),
-            "--credential-tier", "operator",
-            "--serve-profile", serve_profile,
-        ],
-    });
+    let kontor = mcp_file_entry(command, state_root, serve_profile);
     merge_json(&cwd.join(".mcp.json"), |document| {
         let servers = document
             .entry("mcpServers")
@@ -375,6 +1216,17 @@ fn write_mcp_json(
                 "existing .mcp.json has a non-object `mcpServers`; refusing to clobber it",
             )),
         }
+    })
+}
+
+fn mcp_file_entry(command: &str, state_root: &Path, serve_profile: &str) -> serde_json::Value {
+    serde_json::json!({
+        "command": command,
+        "args": [
+            "--state-root", state_root.to_string_lossy(),
+            "--credential-tier", "operator",
+            "--serve-profile", serve_profile,
+        ],
     })
 }
 
@@ -478,6 +1330,10 @@ fn exclude_from_git(path: &Path, lines: &[&str]) -> io::Result<()> {
 }
 
 #[cfg(test)]
+#[path = "seat_mcp_directory_tests.rs"]
+mod directory_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -561,8 +1417,13 @@ mod tests {
     #[test]
     fn hosted_leadership_composition_selects_the_completion_profile() {
         let repo = repo();
-        compose_for_hosted_seat(Some(&seat("/realm/state")), "claude-personal", repo.path())
-            .expect("leadership composition");
+        compose_for_hosted_seat(
+            Some(&seat("/realm/state")),
+            "claude-personal",
+            repo.path(),
+            HostedCompositionMode::Worktree,
+        )
+        .expect("leadership composition");
 
         let mcp: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(repo.path().join(".mcp.json")).expect("written"),

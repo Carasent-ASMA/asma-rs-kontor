@@ -1,0 +1,21 @@
+   Compiling kontor-cli v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-cli)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.64s
+     Running tests/durable_desk_parity.rs (.qualification/target-carrier-archive/debug/deps/durable_desk_parity-7af01c73fe2303f5)
+
+running 1 test
+
+thread 'desk_ensure_and_undeclared_refusal_match_http_mcp_and_cli' (106018698) panicked at crates/kontor-cli/tests/durable_desk_parity.rs:222:13:
+assertion `left == right` failed: placement requires an explicit operator decision
+  left: 1
+ right: 3
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test desk_ensure_and_undeclared_refusal_match_http_mcp_and_cli ... FAILED
+
+failures:
+
+failures:
+    desk_ensure_and_undeclared_refusal_match_http_mcp_and_cli
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.99s
+
+error: test failed, to rerun pass `-p kontor-cli --test durable_desk_parity`

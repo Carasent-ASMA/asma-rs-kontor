@@ -1,0 +1,19 @@
+{
+  "name": "MCP-journal",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "kontor-runtime-paseo",
+    "--lib",
+    "seat_mcp::directory_tests::"
+  ],
+  "started_at": "2026-10-11T18:59:42.864564+00:00",
+  "exit": 101,
+  "log_sha256": "c3a8e35e98d84acab628c5db3344ef704cf4c037f243f4eae9a8c69f28123255",
+  "test_summaries": [
+    "test result: FAILED. 10 passed; 4 failed; 0 ignored; 0 measured; 131 filtered out; finished in 1.82s"
+  ],
+  "runtime_checkout_HEAD": "813135fd8b46deb1893b6181a04d42f4785752ca"
+}

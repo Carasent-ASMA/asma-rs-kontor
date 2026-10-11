@@ -24,6 +24,8 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }
+# Directory-relative no-follow publication uses the workspace's existing pin.
+rustix = { workspace = true }
 # The CLI `--host` target carries a remote password, so it is held in a
 # zeroizing wrapper inside the transport and never crosses back out.
 secrecy = { workspace = true }

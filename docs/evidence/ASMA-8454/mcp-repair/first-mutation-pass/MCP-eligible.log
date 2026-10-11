@@ -1,0 +1,81 @@
+   Compiling kontor-runtime-paseo v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-runtime-paseo)
+warning: variant `OwnedDirectory` is never constructed
+   --> crates/kontor-runtime-paseo/src/seat_mcp.rs:345:5
+    |
+343 | pub(crate) enum HostedCompositionMode {
+    |                 --------------------- variant in this enum
+344 |     Worktree,
+345 |     OwnedDirectory,
+    |     ^^^^^^^^^^^^^^
+    |
+    = note: `HostedCompositionMode` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `kontor-runtime-paseo` (lib) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.10s
+     Running tests/contract.rs (.qualification/target-carrier-archive/debug/deps/contract-63a44ea052ee6141)
+
+running 8 tests
+test hosted_directory::enabled_claude_directory_claim_is_metadata_only_and_retains_exact_scope ... FAILED
+test hosted_directory::enabled_claude_directory_launch_replacement_and_subjects_keep_distinct_authority ... FAILED
+test hosted_directory::enabled_claude_directory_lost_ack_recovers_same_native_and_reconciles_before_reload ... FAILED
+test hosted_directory::enabled_claude_directory_retitle_keeps_identity_and_files ... FAILED
+test hosted_directory::enabled_claude_directory_refuses_invalid_configuration_and_incomplete_publication_without_create ... FAILED
+test hosted_directory::enabled_claude_directory_wrong_placement_stays_refused_without_files ... ok
+test hosted_directory::enabled_directory_cross_vendor_replacement_and_route_correction_keep_shared_files ... FAILED
+test hosted_directory::enabled_composition_restore_bindings_keeps_snapshot_and_does_not_publish_files ... FAILED
+
+failures:
+
+---- hosted_directory::enabled_claude_directory_claim_is_metadata_only_and_retains_exact_scope stdout ----
+
+thread 'hosted_directory::enabled_claude_directory_claim_is_metadata_only_and_retains_exact_scope' (106063225) panicked at crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs:385:10:
+called `Result::unwrap()` on an `Err` value: LaunchNotAdmitted { rule: "hosted seat MCP composition failed in the ECP" }
+
+---- hosted_directory::enabled_claude_directory_launch_replacement_and_subjects_keep_distinct_authority stdout ----
+
+thread 'hosted_directory::enabled_claude_directory_launch_replacement_and_subjects_keep_distinct_authority' (106063226) panicked at crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs:137:10:
+called `Result::unwrap()` on an `Err` value: LaunchNotAdmitted { rule: "hosted seat MCP composition failed in the ECP" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- hosted_directory::enabled_claude_directory_lost_ack_recovers_same_native_and_reconciles_before_reload stdout ----
+
+thread 'hosted_directory::enabled_claude_directory_lost_ack_recovers_same_native_and_reconciles_before_reload' (106063255) panicked at crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs:265:5:
+assertion `left == right` failed
+  left: 0
+ right: 1
+
+---- hosted_directory::enabled_claude_directory_retitle_keeps_identity_and_files stdout ----
+
+thread 'hosted_directory::enabled_claude_directory_retitle_keeps_identity_and_files' (106063283) panicked at crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs:344:10:
+called `Result::unwrap()` on an `Err` value: LaunchNotAdmitted { rule: "hosted seat MCP composition failed in the ECP" }
+
+---- hosted_directory::enabled_claude_directory_refuses_invalid_configuration_and_incomplete_publication_without_create stdout ----
+
+thread 'hosted_directory::enabled_claude_directory_refuses_invalid_configuration_and_incomplete_publication_without_create' (106063256) panicked at crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs:243:5:
+assertion failed: matches!(refusal, RuntimeError::LaunchNotAdmitted { rule } if
+    rule.contains("cleanup is incomplete"))
+
+---- hosted_directory::enabled_directory_cross_vendor_replacement_and_route_correction_keep_shared_files stdout ----
+
+thread 'hosted_directory::enabled_directory_cross_vendor_replacement_and_route_correction_keep_shared_files' (106063312) panicked at crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs:462:10:
+called `Result::unwrap()` on an `Err` value: LaunchNotAdmitted { rule: "hosted seat MCP composition failed in the ECP" }
+
+---- hosted_directory::enabled_composition_restore_bindings_keeps_snapshot_and_does_not_publish_files stdout ----
+
+thread 'hosted_directory::enabled_composition_restore_bindings_keeps_snapshot_and_does_not_publish_files' (106063311) panicked at crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs:425:10:
+called `Result::unwrap()` on an `Err` value: LaunchNotAdmitted { rule: "hosted seat MCP composition failed in the ECP" }
+
+
+failures:
+    hosted_directory::enabled_claude_directory_claim_is_metadata_only_and_retains_exact_scope
+    hosted_directory::enabled_claude_directory_launch_replacement_and_subjects_keep_distinct_authority
+    hosted_directory::enabled_claude_directory_lost_ack_recovers_same_native_and_reconciles_before_reload
+    hosted_directory::enabled_claude_directory_refuses_invalid_configuration_and_incomplete_publication_without_create
+    hosted_directory::enabled_claude_directory_retitle_keeps_identity_and_files
+    hosted_directory::enabled_composition_restore_bindings_keeps_snapshot_and_does_not_publish_files
+    hosted_directory::enabled_directory_cross_vendor_replacement_and_route_correction_keep_shared_files
+
+test result: FAILED. 1 passed; 7 failed; 0 ignored; 0 measured; 306 filtered out; finished in 0.08s
+
+error: test failed, to rerun pass `-p kontor-runtime-paseo --test contract`

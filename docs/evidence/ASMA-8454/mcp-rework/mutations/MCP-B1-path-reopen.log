@@ -1,0 +1,24 @@
+   Compiling kontor-runtime-paseo v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-runtime-paseo)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.87s
+     Running unittests src/lib.rs (.qualification/target-carrier-archive/debug/deps/kontor_runtime_paseo-9a7a79f0433c9b08)
+
+running 1 test
+test seat_mcp::directory_tests::ancestry_substitution_between_parent_validation_and_replace_is_refused ... FAILED
+
+failures:
+
+---- seat_mcp::directory_tests::ancestry_substitution_between_parent_validation_and_replace_is_refused stdout ----
+
+thread 'seat_mcp::directory_tests::ancestry_substitution_between_parent_validation_and_replace_is_refused' (107084497) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:499:9:
+assertion `left == right` failed
+  left: (Some([123, 10, 32, 32, 34, 101, 110, 97, 98, 108, 101, 65, 108, 108, 80, 114, 111, 106, 101, 99, 116, 77, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 32, 116, 114, 117, 101, 44, 10, 32, 32, 34, 112, 101, 114, 109, 105, 115, 115, 105, 111, 110, 115, 34, 58, 32, 123, 10, 32, 32, 32, 32, 34, 97, 108, 108, 111, 119, 34, 58, 32, 91, 10, 32, 32, 32, 32, 32, 32, 34, 82, 101, 97, 100, 34, 10, 32, 32, 32, 32, 93, 10, 32, 32, 125, 10, 125, 10]), Some([32, 123, 34, 109, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 123, 34, 102, 111, 114, 101, 105, 103, 110, 34, 58, 123, 34, 99, 111, 109, 109, 97, 110, 100, 34, 58, 34, 102, 111, 114, 101, 105, 103, 110, 45, 109, 99, 112, 34, 125, 125, 125, 32]))
+ right: (Some([123, 34, 112, 101, 114, 109, 105, 115, 115, 105, 111, 110, 115, 34, 58, 123, 34, 97, 108, 108, 111, 119, 34, 58, 91, 34, 82, 101, 97, 100, 34, 93, 125, 125, 10]), Some([32, 123, 34, 109, 99, 112, 83, 101, 114, 118, 101, 114, 115, 34, 58, 123, 34, 102, 111, 114, 101, 105, 103, 110, 34, 58, 123, 34, 99, 111, 109, 109, 97, 110, 100, 34, 58, 34, 102, 111, 114, 101, 105, 103, 110, 45, 109, 99, 112, 34, 125, 125, 125, 32]))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    seat_mcp::directory_tests::ancestry_substitution_between_parent_validation_and_replace_is_refused
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 145 filtered out; finished in 0.06s
+
+error: test failed, to rerun pass `-p kontor-runtime-paseo --lib`

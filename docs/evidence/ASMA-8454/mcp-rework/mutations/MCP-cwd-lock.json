@@ -1,0 +1,19 @@
+{
+  "name": "MCP-cwd-lock",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "kontor-runtime-paseo",
+    "--lib",
+    "seat_mcp::directory_tests::"
+  ],
+  "started_at": "2026-10-11T20:19:49.382737+00:00",
+  "exit": 101,
+  "log_sha256": "f13631dca3c36ba716c4858dfe5d9c3ddeee5a8cd0f9fe5d6cb4a4d949ce2d6e",
+  "test_summaries": [
+    "test result: FAILED. 14 passed; 1 failed; 0 ignored; 0 measured; 131 filtered out; finished in 1.90s"
+  ],
+  "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee"
+}
