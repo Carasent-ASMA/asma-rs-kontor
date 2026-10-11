@@ -48,6 +48,12 @@ This documentation covers implementation-local knowledge for the `asma-rs-kontor
 | [ASMA-8121 export event-kind gap](reports/2026-09-26-08-28-report-asma-8121-export-event-kind-kontor-operational-gap.md) | Deployed export failure on command-intent fields, exact snapshot/restore identity proof and ASMA-8049 MUT-003 qualification. | Open — correction/qualification/deployment pending | Qualifying backup/export continuity or ASMA-8049 closeout |
 | [ASMA-8196 prepared-intent recovery](reports/2026-09-26-05-06-report-asma-8196-prepared-intent-recovery.md) | Real crash-boundary regression, same-native rematerialization, frozen-authority refusal, independent QA finding and preserved worktree-recovery evidence. | Candidate verified; qualification/deployment pending | Qualifying or deploying the ASMA-8196 recovery, or auditing the safe-carry incident |
 
+### Operations (`operations/`)
+
+| Document | Summary | Status | When to Load |
+| --- | --- | --- | --- |
+| [Durable desk qualification runbook](operations/2026-10-11-15-28-runbook-durable-desk-qualification.md) | Disposable integrated restore/replay, declaration comparison, mutations and coordinator release/readback steps. | In Review | Reproducing ASMA-8454 or preparing its evidence-gated release |
+
 ### Contracts (root)
 
 | Document | Summary | Status | When to Load |

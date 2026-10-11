@@ -15,7 +15,7 @@ use kontor_core::spec::TeamDefinitionSpec;
 use kontor_runtime::durable_seat::HostedSeatScope;
 
 /// The desk and leadership-subject kinds a desk-led topology adds.
-const DESK_LED_KINDS: &str = r#"[
+pub(super) const DESK_LED_KINDS: &str = r#"[
   {"kind": "DESK", "allowed_parents": ["PSW"], "cardinality": {"minimum": 0},
    "projection_capabilities": ["native_root"], "read_only": false,
    "name_template": {"segments": [{"kind": "token", "value": "AREA_CODE"}]},
@@ -42,7 +42,7 @@ const DESK_LED_KINDS: &str = r#"[
 ]"#;
 
 /// The containers a desk-led definition adds, with the role-led seat titles.
-const DESK_LED_CONTAINERS: &str = r#"[
+pub(super) const DESK_LED_CONTAINERS: &str = r#"[
   {"kind": "DESK", "parent": null, "prefix": "DESK", "projection_capabilities": ["native_root"],
    "read_only": false,
    "name_template": {"segments": [{"kind": "token", "value": "PREFIX"},
@@ -72,7 +72,11 @@ const DESKS: &str = r#"[
   {"desk_key": "pr-review", "display_name": "PR REVIEW", "kind": "DESK", "workspace_kind": "DWS"}
 ]"#;
 
-const LEADERSHIP: &str = r#"{"desk_key": "adam", "epic_kind": "ADE", "ad_hoc_kind": "ADH"}"#;
+pub(super) const LEADERSHIP: &str =
+    r#"{"desk_key": "adam", "epic_kind": "ADE", "ad_hoc_kind": "ADH"}"#;
+
+#[path = "qualification_adam.rs"]
+mod qualification_adam;
 
 /// A Claude route: the LSA plans on Anthropic.
 fn claude_route() -> serde_json::Value {

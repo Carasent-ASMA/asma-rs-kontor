@@ -16,6 +16,9 @@ use kontor_core::repository::{StoredDesk, StoredPrReviewSubject};
 use kontor_core::spec::TeamDefinitionSpec;
 use kontor_runtime::durable_seat::HostedSeatScope;
 
+#[path = "qualification.rs"]
+mod qualification;
+
 const ROOT_REPOSITORY: &str = "Carasent-ASMA/asma-modules";
 const MODULE_REPOSITORY: &str = "Carasent-ASMA/asma-rs-kontor";
 
@@ -144,6 +147,21 @@ async fn review_realm(slug: &str, review: Option<&str>) -> Review {
 /// Publish a successor of the project's topology and Team Definition with
 /// the review kinds, and select both, before any session node exists.
 async fn select_review_definition(world: &World, project: &str, review: Option<&str>) {
+    select_qualification_definition(world, project, review, false).await;
+}
+
+/// Reuse the publication journey for the combined TASK-005 fixture.
+async fn select_qualification_definition(
+    world: &World,
+    project: &str,
+    review: Option<&str>,
+    leadership: bool,
+) {
+    let prefix = if leadership {
+        "qualification"
+    } else {
+        "pr-review"
+    };
     let project_id = ProjectId::parse(project).expect("a project id");
     let selected = world.daemon.state().with_store(|store| {
         let selected = store
@@ -183,18 +201,25 @@ async fn select_review_definition(world: &World, project: &str, review: Option<&
         current = next;
     }
     let mut node_kinds = current.json()["document"]["node_kinds"].clone();
-    let missing: Vec<serde_json::Value> =
-        serde_json::from_str::<Vec<serde_json::Value>>(REVIEW_KINDS)
-            .expect("kinds")
-            .into_iter()
-            .filter(|kind| {
-                node_kinds
-                    .as_array()
-                    .expect("node kinds")
-                    .iter()
-                    .all(|declared| declared["kind"] != kind["kind"])
-            })
-            .collect();
+    let mut kinds = serde_json::from_str::<Vec<serde_json::Value>>(REVIEW_KINDS).expect("kinds");
+    if leadership {
+        kinds.extend(
+            serde_json::from_str::<Vec<serde_json::Value>>(super::desk_adams::DESK_LED_KINDS)
+                .expect("leadership kinds")
+                .into_iter()
+                .filter(|kind| ["ADE", "ADH"].contains(&kind["kind"].as_str().unwrap_or_default())),
+        );
+    }
+    let missing: Vec<serde_json::Value> = kinds
+        .into_iter()
+        .filter(|kind| {
+            node_kinds
+                .as_array()
+                .expect("node kinds")
+                .iter()
+                .all(|declared| declared["kind"] != kind["kind"])
+        })
+        .collect();
     node_kinds
         .as_array_mut()
         .expect("node kinds")
@@ -210,7 +235,7 @@ async fn select_review_definition(world: &World, project: &str, review: Option<&
         }),
     )
     .signed_as(world, "admin")
-    .with_key("pr-review-topology-draft")
+    .with_key(format!("{prefix}-topology-draft"))
     .send(world)
     .await;
     assert_eq!(drafted.status, 200, "{}", drafted.body);
@@ -223,7 +248,7 @@ async fn select_review_definition(world: &World, project: &str, review: Option<&
         }),
     )
     .signed_as(world, "admin")
-    .with_key("pr-review-topology-publish")
+    .with_key(format!("{prefix}-topology-publish"))
     .send(world)
     .await;
     assert_eq!(published.status, 200, "{}", published.body);
@@ -244,7 +269,7 @@ async fn select_review_definition(world: &World, project: &str, review: Option<&
         }),
     )
     .signed_as(world, "admin")
-    .with_key("pr-review-topology-select")
+    .with_key(format!("{prefix}-topology-select"))
     .send(world)
     .await;
     assert_eq!(chosen.status, 200, "{}", chosen.body);
@@ -265,7 +290,7 @@ async fn select_review_definition(world: &World, project: &str, review: Option<&
     let mut definition = serde_json::to_value(&selected).expect("serializes");
     // Only a declared review may render a pull request, so an undeclared
     // definition carries the desks alone.
-    let containers: Vec<serde_json::Value> =
+    let mut containers: Vec<serde_json::Value> =
         serde_json::from_str::<Vec<serde_json::Value>>(REVIEW_CONTAINERS)
             .expect("containers")
             .into_iter()
@@ -274,10 +299,25 @@ async fn select_review_definition(world: &World, project: &str, review: Option<&
                     || ["DESK", "DWS"].contains(&container["kind"].as_str().unwrap_or_default())
             })
             .collect();
-    definition["containers"]
-        .as_array_mut()
-        .expect("containers")
-        .extend(containers);
+    if leadership {
+        containers.extend(
+            serde_json::from_str::<Vec<serde_json::Value>>(super::desk_adams::DESK_LED_CONTAINERS)
+                .expect("leadership containers")
+                .into_iter()
+                .filter(|kind| ["ADE", "ADH"].contains(&kind["kind"].as_str().unwrap_or_default())),
+        );
+        definition["desk_leadership"] =
+            serde_json::from_str(super::desk_adams::LEADERSHIP).expect("leadership");
+    }
+    let existing = definition["containers"].as_array_mut().expect("containers");
+    for container in containers {
+        if existing
+            .iter()
+            .all(|declared| declared["kind"] != container["kind"])
+        {
+            existing.push(container);
+        }
+    }
     definition["desks"] = serde_json::from_str(DESKS).expect("desks");
     if let Some(review) = review {
         definition["pr_review"] = serde_json::from_str(review).expect("pr_review");
@@ -311,7 +351,7 @@ async fn select_review_definition(world: &World, project: &str, review: Option<&
         }),
     )
     .signed_as(world, "admin")
-    .with_key("pr-review-definition-publish")
+    .with_key(format!("{prefix}-definition-publish"))
     .send(world)
     .await;
     assert_eq!(published.status, 200, "{}", published.body);
@@ -334,7 +374,7 @@ async fn select_review_definition(world: &World, project: &str, review: Option<&
         }),
     )
     .signed_as(world, "admin")
-    .with_key("pr-review-definition-select")
+    .with_key(format!("{prefix}-definition-select"))
     .send(world)
     .await;
     assert_eq!(chosen.status, 200, "{}", chosen.body);
