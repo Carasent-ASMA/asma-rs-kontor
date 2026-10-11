@@ -1,0 +1,22 @@
+{
+  "name": "baseline-MUT-005",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "pr_reviews::qualification::four_structures_restore_replay_and_selection_rollback_keep_old_pins_and_natives",
+    "--",
+    "--test-threads=2"
+  ],
+  "started_at": "2026-10-11T18:54:29.026394+00:00",
+  "exit": 0,
+  "log_sha256": "526dfc51a36ce3fe4483a63fcdd07e594c55465a9ffe21dc104dd9a4369d519a",
+  "test_summaries": [
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 616 filtered out; finished in 4.24s"
+  ],
+  "runtime_checkout_HEAD": "813135fd8b46deb1893b6181a04d42f4785752ca"
+}

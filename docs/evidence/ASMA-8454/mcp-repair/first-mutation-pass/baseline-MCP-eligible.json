@@ -1,0 +1,20 @@
+{
+  "name": "baseline-MCP-eligible",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "kontor-runtime-paseo",
+    "--test",
+    "contract",
+    "hosted_directory::"
+  ],
+  "started_at": "2026-10-11T18:58:49.449596+00:00",
+  "exit": 0,
+  "log_sha256": "219da850f41799622b703e20ca12e4a0ad2034f8ca635515dc3cd2b7e016ce53",
+  "test_summaries": [
+    "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 306 filtered out; finished in 0.51s"
+  ],
+  "runtime_checkout_HEAD": "813135fd8b46deb1893b6181a04d42f4785752ca"
+}

@@ -1,0 +1,22 @@
+{
+  "name": "baseline-MUT-004-repository",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "pr_reviews::the_same_number_in_two_repositories_is_two_reviews_and_a_task_key_names_its_task",
+    "--",
+    "--test-threads=2"
+  ],
+  "started_at": "2026-10-11T18:51:01.902509+00:00",
+  "exit": 0,
+  "log_sha256": "2b6c1a922d61156e5a2bfc7fe28644b495620888a2a7cef844cb1d6a3b82485d",
+  "test_summaries": [
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 616 filtered out; finished in 2.41s"
+  ],
+  "runtime_checkout_HEAD": "813135fd8b46deb1893b6181a04d42f4785752ca"
+}

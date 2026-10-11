@@ -1,0 +1,41 @@
+{
+  "name": "paseo",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "kontor-runtime-paseo",
+    "--lib",
+    "--test",
+    "contract"
+  ],
+  "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor",
+  "started_at": "2026-10-11T18:39:20.308365+00:00",
+  "finished_at": "2026-10-11T18:39:35.410042+00:00",
+  "exit": 0,
+  "log_sha256": "4e7d0a3aa7b8e8c9800e6f0869ad1033829abc1f74b9f09142fef9101ad26048",
+  "runtime_checkout_HEAD": "813135fd8b46deb1893b6181a04d42f4785752ca",
+  "tested_input_sha256": {
+    "Cargo.lock": "0eeee22c33074018b56239506d48d03acb329b115af508dc987044c350249a02",
+    "crates/kontor-runtime-paseo/Cargo.toml": "0dc6bbe90312d2fa95804daea84d060521bcdaaa90d502a06bf66b2d05bf941d",
+    "crates/kontor-runtime-paseo/src/adapter.rs": "a6712e84a6fb895fa06b18bb66f2067d0fbf274b256edd18f5d943441127b264",
+    "crates/kontor-runtime-paseo/src/seat_mcp.rs": "c3300ec16a47eceb7079817878c6b98bf51d2946c118afbf2845a392afdc5fa2",
+    "crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs": "64013e1f57742dd3ddf3fb03b8b41a72603323c680a13d47d4083c18b78aa36e",
+    "crates/kontor-runtime-paseo/tests/contract.rs": "bc213f1745ae6edd8500d4f943a89a5d176fea76ab79bdf96b6ad664fbc018bd",
+    "crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs": "223495d119905948426a56cdc8792fdfa61085c8c0fec185b42951a163779872"
+  },
+  "environment": {
+    "RUSTC_WRAPPER": "",
+    "CARGO_NET_OFFLINE": "true",
+    "RUST_TEST_THREADS": "2",
+    "CARGO_TARGET_DIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/target-carrier-archive",
+    "TMPDIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
+    "GIT_CEILING_DIRECTORIES": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
+    "SWAGGER_UI_DOWNLOAD_URL": "file:///Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/swagger-ui.zip"
+  },
+  "test_summaries": [
+    "test result: ok. 145 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.89s",
+    "test result: ok. 314 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.25s"
+  ]
+}

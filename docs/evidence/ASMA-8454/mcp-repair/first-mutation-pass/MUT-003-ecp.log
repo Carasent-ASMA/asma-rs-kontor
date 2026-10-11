@@ -1,0 +1,24 @@
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 36.26s
+     Running tests/loopback_api.rs (.qualification/target-carrier-archive/debug/deps/loopback_api-159166d87db36a05)
+
+running 1 test
+test desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk ... FAILED
+
+failures:
+
+---- desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk stdout ----
+
+thread 'desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk' (105959567) panicked at crates/kontor-daemon/tests/loopback/desk_adams.rs:370:5:
+assertion `left == right` failed: {"realm_id":"01a12c4d-d039-7d03-bbac-f2bbd9de37bc","code":"placement_blocked","rule":"a desk-led epic has no control plane of its own","current_revision":null,"oldest_retained_cursor":null,"newest_cursor":null,"action":"resolve where the work belongs in the topology, then retry"}
+  left: 409
+ right: 200
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 616 filtered out; finished in 2.32s
+
+error: test failed, to rerun pass `-p kontor-daemon --test loopback_api`

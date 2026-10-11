@@ -1,0 +1,33 @@
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-daemon)
+warning: unused variable: `role_code`
+     --> crates/kontor-daemon/src/applications.rs:18753:9
+      |
+18753 |         role_code: &str,
+      |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_role_code`
+      |
+      = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `kontor-daemon` (lib) generated 1 warning (run `cargo fix --lib -p kontor-daemon` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 36.39s
+     Running tests/loopback_api.rs (.qualification/target-carrier-archive/debug/deps/loopback_api-159166d87db36a05)
+
+running 1 test
+test desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk ... FAILED
+
+failures:
+
+---- desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk stdout ----
+
+thread 'desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk' (106190143) panicked at crates/kontor-daemon/tests/loopback/desk_adams.rs:2737:5:
+assertion `left == right` failed: {"realm_id":"01a12c5f-a6d5-7630-90b9-5f1482f0b64e","code":"placement_blocked","rule":"this epic's control plane holds more than one live seat for the role","current_revision":null,"oldest_retained_cursor":null,"newest_cursor":null,"subject":"completion wake","action":"retire the seats this completion should not answer to, so exactly one remains, then advance it again; nothing was changed"}
+  left: 409
+ right: 200
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 616 filtered out; finished in 4.11s
+
+error: test failed, to rerun pass `-p kontor-daemon --test loopback_api`

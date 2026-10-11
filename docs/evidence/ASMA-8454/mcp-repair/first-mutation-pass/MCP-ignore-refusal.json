@@ -1,0 +1,20 @@
+{
+  "name": "MCP-ignore-refusal",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "kontor-runtime-paseo",
+    "--test",
+    "contract",
+    "hosted_directory::"
+  ],
+  "started_at": "2026-10-11T18:59:23.553671+00:00",
+  "exit": 101,
+  "log_sha256": "4ffae3382ed9e5934a0346f87d587f6e2f895e5d588edab036996bb7f345ae9c",
+  "test_summaries": [
+    "test result: FAILED. 6 passed; 2 failed; 0 ignored; 0 measured; 306 filtered out; finished in 0.47s"
+  ],
+  "runtime_checkout_HEAD": "813135fd8b46deb1893b6181a04d42f4785752ca"
+}

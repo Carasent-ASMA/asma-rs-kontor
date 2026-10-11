@@ -1,0 +1,22 @@
+{
+  "name": "MUT-Q-CLI",
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kontor-cli",
+    "--test",
+    "durable_desk_parity",
+    "--",
+    "--nocapture"
+  ],
+  "started_at": "2026-10-11T19:16:59.166845+00:00",
+  "exit": 101,
+  "log_sha256": "c077a6ace153cc1777c17641db4908b259c81e3dbb80fa8967050d5eebe169ac",
+  "test_summaries": [
+    "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.04s"
+  ],
+  "runtime_checkout_HEAD": "813135fd8b46deb1893b6181a04d42f4785752ca"
+}

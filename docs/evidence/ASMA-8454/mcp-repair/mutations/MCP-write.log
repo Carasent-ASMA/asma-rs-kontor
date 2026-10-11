@@ -1,0 +1,114 @@
+   Compiling kontor-runtime-paseo v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-runtime-paseo)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.80s
+     Running unittests src/lib.rs (.qualification/target-carrier-archive/debug/deps/kontor_runtime_paseo-9a7a79f0433c9b08)
+
+running 14 tests
+test seat_mcp::directory_tests::a_parent_substituted_during_staging_cannot_redirect_publication_or_cleanup ... FAILED
+test seat_mcp::directory_tests::directory_relative_stage_and_replace_refuse_a_symlink_parent ... ok
+test seat_mcp::directory_tests::disabled_and_foreign_providers_do_not_publish_files ... ok
+test seat_mcp::directory_tests::handled_stage_publish_and_readback_failures_restore_exact_bytes_and_absence ... FAILED
+test seat_mcp::directory_tests::hosted_directory_refuses_escaping_settings_mcp_and_journal_paths ... FAILED
+test seat_mcp::directory_tests::hosted_directory_preserves_foreign_content_and_skips_identical_bytes ... FAILED
+test seat_mcp::directory_tests::interruption_after_complete_pair_retains_it_and_requires_cleanup_before_use ... FAILED
+test seat_mcp::directory_tests::interruption_between_publications_restores_originals_before_next_subject ... FAILED
+test seat_mcp::directory_tests::invalid_second_json_is_refused_before_any_file_or_directory_change ... FAILED
+test seat_mcp::directory_tests::publication_child_process ... ok
+test seat_mcp::directory_tests::malformed_git_is_a_refusal_and_real_git_keeps_the_existing_exclude_behavior ... FAILED
+test seat_mcp::directory_tests::rollback_failure_blocks_launch_with_precise_pending_recovery_then_converges ... FAILED
+test seat_mcp::directory_tests::two_subjects_serialize_on_canonical_cwd_and_keep_one_shared_nonsecret_surface ... FAILED
+
+running 1 test
+
+thread 'seat_mcp::directory_tests::publication_child_process' (106305282) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:387:5:
+the child should exit between publications
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test seat_mcp::directory_tests::publication_child_process ... FAILED
+
+failures:
+
+failures:
+    seat_mcp::directory_tests::publication_child_process
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 144 filtered out; finished in 0.00s
+
+test seat_mcp::directory_tests::real_process_exit_between_publications_recovers_originals_from_the_daemon_record ... FAILED
+
+failures:
+
+---- seat_mcp::directory_tests::a_parent_substituted_during_staging_cannot_redirect_publication_or_cleanup stdout ----
+
+thread 'seat_mcp::directory_tests::a_parent_substituted_during_staging_cannot_redirect_publication_or_cleanup' (106305266) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:432:6:
+called `Result::unwrap_err()` on an `Ok` value: ()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- seat_mcp::directory_tests::handled_stage_publish_and_readback_failures_restore_exact_bytes_and_absence stdout ----
+
+thread 'seat_mcp::directory_tests::handled_stage_publish_and_readback_failures_restore_exact_bytes_and_absence' (106305269) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:134:14:
+called `Result::unwrap_err()` on an `Ok` value: ()
+
+---- seat_mcp::directory_tests::hosted_directory_refuses_escaping_settings_mcp_and_journal_paths stdout ----
+
+thread 'seat_mcp::directory_tests::hosted_directory_refuses_escaping_settings_mcp_and_journal_paths' (106305271) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:265:9:
+.claude
+
+---- seat_mcp::directory_tests::hosted_directory_preserves_foreign_content_and_skips_identical_bytes stdout ----
+
+thread 'seat_mcp::directory_tests::hosted_directory_preserves_foreign_content_and_skips_identical_bytes' (106305270) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:59:5:
+assertion `left == right` failed
+  left: Null
+ right: true
+
+---- seat_mcp::directory_tests::interruption_after_complete_pair_retains_it_and_requires_cleanup_before_use stdout ----
+
+thread 'seat_mcp::directory_tests::interruption_after_complete_pair_retains_it_and_requires_cleanup_before_use' (106305272) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:231:6:
+called `Result::unwrap_err()` on an `Ok` value: ()
+
+---- seat_mcp::directory_tests::interruption_between_publications_restores_originals_before_next_subject stdout ----
+
+thread 'seat_mcp::directory_tests::interruption_between_publications_restores_originals_before_next_subject' (106305273) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:207:5:
+assertion failed: interrupted.is_err()
+
+---- seat_mcp::directory_tests::invalid_second_json_is_refused_before_any_file_or_directory_change stdout ----
+
+thread 'seat_mcp::directory_tests::invalid_second_json_is_refused_before_any_file_or_directory_change' (106305274) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:100:9:
+assertion failed: compose(&seat, &cwd).is_err()
+
+---- seat_mcp::directory_tests::malformed_git_is_a_refusal_and_real_git_keeps_the_existing_exclude_behavior stdout ----
+
+thread 'seat_mcp::directory_tests::malformed_git_is_a_refusal_and_real_git_keeps_the_existing_exclude_behavior' (106305275) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:275:5:
+assertion failed: compose(&seat, &cwd).is_err()
+
+---- seat_mcp::directory_tests::rollback_failure_blocks_launch_with_precise_pending_recovery_then_converges stdout ----
+
+thread 'seat_mcp::directory_tests::rollback_failure_blocks_launch_with_precise_pending_recovery_then_converges' (106305278) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:171:6:
+called `Result::unwrap_err()` on an `Ok` value: ()
+
+---- seat_mcp::directory_tests::two_subjects_serialize_on_canonical_cwd_and_keep_one_shared_nonsecret_surface stdout ----
+
+thread 'seat_mcp::directory_tests::two_subjects_serialize_on_canonical_cwd_and_keep_one_shared_nonsecret_surface' (106305280) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:326:23:
+called `Result::unwrap()` on an `Err` value: RecvError
+
+---- seat_mcp::directory_tests::real_process_exit_between_publications_recovers_originals_from_the_daemon_record stdout ----
+
+thread 'seat_mcp::directory_tests::real_process_exit_between_publications_recovers_originals_from_the_daemon_record' (106305277) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:404:5:
+assertion `left == right` failed
+  left: Some(101)
+ right: Some(86)
+
+
+failures:
+    seat_mcp::directory_tests::a_parent_substituted_during_staging_cannot_redirect_publication_or_cleanup
+    seat_mcp::directory_tests::handled_stage_publish_and_readback_failures_restore_exact_bytes_and_absence
+    seat_mcp::directory_tests::hosted_directory_preserves_foreign_content_and_skips_identical_bytes
+    seat_mcp::directory_tests::hosted_directory_refuses_escaping_settings_mcp_and_journal_paths
+    seat_mcp::directory_tests::interruption_after_complete_pair_retains_it_and_requires_cleanup_before_use
+    seat_mcp::directory_tests::interruption_between_publications_restores_originals_before_next_subject
+    seat_mcp::directory_tests::invalid_second_json_is_refused_before_any_file_or_directory_change
+    seat_mcp::directory_tests::malformed_git_is_a_refusal_and_real_git_keeps_the_existing_exclude_behavior
+    seat_mcp::directory_tests::real_process_exit_between_publications_recovers_originals_from_the_daemon_record
+    seat_mcp::directory_tests::rollback_failure_blocks_launch_with_precise_pending_recovery_then_converges
+    seat_mcp::directory_tests::two_subjects_serialize_on_canonical_cwd_and_keep_one_shared_nonsecret_surface
+
+test result: FAILED. 3 passed; 11 failed; 0 ignored; 0 measured; 131 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p kontor-runtime-paseo --lib`

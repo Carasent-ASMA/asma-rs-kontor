@@ -1,0 +1,13 @@
+{
+  "time": "2026-10-11T19:25:35.628160+00:00",
+  "owner": "Codex / ASMA-8454 qualification owner",
+  "target": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
+  "command": "python3 .qualification/mcp-repair/cleanup-tmp.py",
+  "top_level_entries_before": 52,
+  "recursive_entries_before": 213,
+  "regular_file_bytes_before": 165888653,
+  "inventory_sha256": "30e39853ca92789fc5e8d3bde7a187b5396fea57a2e5b79225e019fdb77cedc9",
+  "scope": "only repair test TMPDIR; no held discovery realm/package, real native or unrelated Cargo target",
+  "absent_after": true,
+  "entries_after": 0
+}

@@ -1,0 +1,66 @@
+# ASMA-8454 released-stop WAL diagnosis
+
+> **Date:** 2026-10-11 17:14 UTC
+> **Status:** HOLD — coordinator disposition pending
+> **Author:** Codex, independent ASMA-8454 qualification owner
+> **Category:** report
+> **Scope:** Merged `813135fd`, pre-repair `e376f405`, owned disposable diagnostic realms only
+> **Summary:** Bounded diagnosis reproduced retained WAL after real SIGINT on both revisions. An existing supported export command drains a copied stopped realm through normal SQLite close. The original evidence remains unchanged; dependent release rehearsal has not resumed.
+
+## When to Load
+
+Load for the coordinator's WAL disposition or for the separately scoped shutdown follow-up. Do not use as authority to resume the rehearsal or alter a live realm.
+
+## Finding and recommendation
+
+Classify this as a **pre-existing shutdown/ownership defect**, not an ASMA-8454 regression. The source establishes a strong reference cycle: `ApiState` owns an `Arc<Services>` through `Applications`, and `Services::state` owns the same `ApiState`. That retains the SQLite store when the daemon value is consumed. Shutdown signals stop, releases the lock and logs success without breaking the cycle or explicitly closing/checkpointing the connection. The normal last-connection close therefore does not run through this ownership path. This is source analysis supported by real-process reproduction, not an instrumented destructor trace.
+
+Recommend option **(i)**: approve an explicit stopped-realm export/check-WAL step using the already-supported released command, then resume the rehearsal under that documented procedure. Also record the reference cycle and incomplete shutdown closure as a separately owned follow-up. No repair, raw SQL checkpoint, journal-mode change, or manual WAL deletion was made. The original realm is still held pending the coordinator's decision.
+
+## Source facts at merged HEAD
+
+| Fact | File:line |
+| --- | --- |
+| Store owns one `rusqlite::Connection`; normal open configures it and validates/migrates the schema | `crates/kontor-store/src/lib.rs:175`, `:263` |
+| Busy timeout 30 seconds; journal mode WAL set and verified; foreign keys enabled. No checkpoint pragma override in this configuration body | `crates/kontor-store/src/migrations.rs:49`, `:475`, `:496`, `:512` |
+| API store lives in `Mutex<SqliteStore>` inside `Arc<Inner>`; `Inner` also owns application services | `crates/kontor-api/src/state.rs:294`, `:302`, `:311`, `:316`, `:878` |
+| `Applications` is `Arc<dyn ApplicationOperations>` | `crates/kontor-api/src/applications.rs:9150` |
+| Services hold `OnceLock<ApiState>`; attach retains the state strongly | `crates/kontor-daemon/src/applications.rs:1051`, `:1195` |
+| Composition installs cloned services in the state and cloned state back in services | `crates/kontor-daemon/src/lib.rs:588`, `:602`, `:604` |
+| SIGINT/Ctrl-C invokes stream stop; serving completes and calls daemon shutdown | `crates/kontor-daemon/src/main.rs:386`, `:389`, `:392`, `:430` |
+| Shutdown settles barrier pending, signals stop and logs “realm released”; no explicit store close, checkpoint or cycle break | `crates/kontor-daemon/src/lib.rs:1441` |
+| Supported export opens a standalone normal store and returns after constructing the redacted export | `crates/kontor-daemon/src/recovery.rs:155` |
+| Restore takes the state-root lock and refuses non-empty WAL before destination classification or publication | `crates/kontor-daemon/src/recovery.rs:137`; `crates/kontor-store/src/backup/restore.rs:93`, `:134` |
+| Restore's later best-effort `wal_checkpoint(TRUNCATE)` cannot drain WAL already refused above | `crates/kontor-store/src/backup/restore.rs:241`, `:360` |
+
+The released bundled SQLite probe observes version **3.53.2**, WAL, automatic checkpoint threshold **1000 pages**, `journal_size_limit=-1`, `synchronous=2`, and `NO_CKPT_ON_CLOSE=false`. These are observations of a separate normal connection to an exact diagnostic copy, not a live query of the daemon's private connection. The configuration source sets no checkpoint overrides. Rusqlite's `InnerConnection` destructor calls `close()` (`rusqlite-0.40.2/src/inner_connection.rs:412`), which calls `sqlite3_close` (`:157`). Bundled SQLite's `sqlite3PagerClose`/`sqlite3WalClose` attempt a checkpoint and remove sidecars when eligible for exclusive last-connection close (`libsqlite3-sys/.../sqlite3.c:63794`, `:69964`). That is conditional behavior; every rehearsal must inspect the actual WAL after the supported command.
+
+## Bounded observations and exact commands
+
+All paths below are relative to the ASMA-8454 checkout. The diagnosis used copies of only `kontor.db`, `kontor.db-wal` and `kontor.db-shm`. Original credentials were neither copied nor used by diagnostic probes. Both fresh daemons used their own freshly minted credentials and empty runtime fleets; they created no native fixture agents.
+
+| Operation | Result | Receipt |
+| --- | --- | --- |
+| `wal-diagnosis/store-open-close normal-store-copy/kontor.db` (diagnostic Rust helper linked to merged release libraries; public `SqliteStore::open`, integrity check, drop) | 358,472-byte WAL → absent; no explicit checkpoint | `normal-store-result.json` |
+| `.qualification/release/install/kontor-daemon --state-root .qualification/release/wal-diagnosis/export-copy-2 export --out .qualification/release/wal-diagnosis/redacted-export.json` | Exit 0; WAL and SHM absent; export generation 17 | `supported-export-result.json` |
+| `.qualification/release/install/kontor-daemon --state-root .qualification/release/wal-diagnosis/fresh-merged --port 0`, then actual `SIGINT`/wait | Exit 0, OS process absent; WAL **3,337,232 bytes** | `fresh-merged-result.json` |
+| `cargo build --offline --locked -p kontor-daemon` from `.qualification/reproduction/base-e376f405`, isolated `CARGO_TARGET_DIR=.qualification/reproduction/target-base`; then `target-base/debug/kontor-daemon --state-root .qualification/release/wal-diagnosis/fresh-base --port 0`, actual `SIGINT`/wait | Clean-base build exit 0; process exit 0, OS absent; WAL **3,337,232 bytes** | `base-build.json`, `fresh-base-result.json` |
+| `git diff --exit-code e376f4059e47de8fb40956d4dbfbf6920dabc4ec 813135fd8b46deb1893b6181a04d42f4785752ca -- <explicit implicated paths>` | Exit 0, empty diff | `code-provenance.json`, `implicated-files.diff` |
+
+The drivers, complete argument arrays, build environment, source hashes, stdout/stderr and file digests are retained beside this report. One fresh run per revision bounds the diagnosis; this does not claim all configurations were exercised. The base is a dev-profile executable, so identical symptoms establish pre-existence across profiles without claiming a second optimized base build.
+
+All **4088 tracked base files** were verified against exact `git show e376f405:<path>` bytes before building. Store open/configuration, all backup files, API state/service contract, daemon composition/shutdown/main and recovery are byte-identical between the two revisions. `applications.rs` differs only in the approved `ensure_desk` repair; its service-state and attach sections are individually byte-identical. The Cargo.lock addition is a CLI test dependency; SQLite dependency versions/checksums are unchanged.
+
+Both normal store close and released export yield the same checkpointed main database SHA-256 `fc0086c77608eb371dd10ff7f348c01dcc2179a766d5af332b6fb7e06ee7e12d`. The export has records hash `8714507f02f17c8ef78717be613299264200f4c567abb69b664e197facc68267`, SHA-256 `b25235d1c6e90f83081223e6bc53b497008a8ecc01843745bcbf9695853dc05e` and actual `schema_version=17`. This proves the generation readout and drain on a copy, not four-structure release acceptance.
+
+Original evidence remains exact: DB `3f7f001969653cdf8da7c19f0c281e117034e88e19b85e03af83e4c6603c3c89`; WAL **358,472 bytes**, `878950ef8b3f87e62fcff5c4b1aa5651530a6a8975a50db666fa0fb625531861`; SHM `4a2b9f90a209277478b3120f936904750617ad77722c062cbe0d24529747b16a`. See `original-preserved-after.json`. No snapshot/restore was attempted on the original. The first diagnostic export itself succeeded, but a recorder filename collision overwrote its output with a command receipt and raised `KeyError`. That recorder mistake and log are preserved; the export was repeated on another exact copy with distinct filenames.
+
+## Proposed procedure and remaining gate
+
+The exact proposed text/commands are in [proposed-runbook-amendment.md](proposed-runbook-amendment.md). Existing `RECOVERY.md` supports `export`, but its restore section does not explicitly tell an operator to drain a WAL before restore. Its statement that restore checkpoints the outgoing database does not overcome the earlier non-empty-WAL refusal. This proposed procedural amendment makes that prerequisite explicit using supported commands only.
+
+The original frozen report/runbook are untouched. The four JUDGE wording corrections are recorded separately in [release-record.json](../release-record.json): runtime-HEAD labels do not attest uncommitted source bytes; mutation baselines were per distinct target, not per seed; Q-002 concerns the blocked declaration block, not the file; generation 17 in frozen evidence was source-derived. The new diagnostic released export observation is separately dated.
+
+Completed release build hashes, original process-executable equality, 223-retained-database orphan audit and the 226-entry/746,204,937-byte cleanup receipt remain in the parent release directory. All diagnostic daemons and the isolated fixture server have stopped; diagnostic files and the original realm remain owned by Codex for disposition. No live seat, credential, recovery owner, epic pin, watchdog or fleet was touched. Full fixture deletion remains pending while evidence is preserved.
+
+Four-structure released readbacks, successor selection, full old-pin/native comparison, supported real-stop restore/replay, desk-less rollback and released partial PR-close convergence remain **unproven**. Reports stays unresolved. Residual limits include Igor's pending same-vendor/keep_native credential decision, unproven live lost-reply timing, refused title collision, non-atomic close/misleading unavailable advice, the untested no-proved-container close branch, and the accepted unrelated message-proof timestamp defect. See the full limit list and proposed **held** Reports row in `release-record.json`.

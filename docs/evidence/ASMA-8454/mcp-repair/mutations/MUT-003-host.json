@@ -1,0 +1,22 @@
+{
+  "name": "MUT-003-host",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk",
+    "--",
+    "--test-threads=2"
+  ],
+  "started_at": "2026-10-11T19:09:06.528958+00:00",
+  "exit": 101,
+  "log_sha256": "069f18c31da26daf7c442ae85386d3d8786c87838b617f7a7217bb0c72ee48c1",
+  "test_summaries": [
+    "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 616 filtered out; finished in 4.14s"
+  ],
+  "runtime_checkout_HEAD": "813135fd8b46deb1893b6181a04d42f4785752ca"
+}

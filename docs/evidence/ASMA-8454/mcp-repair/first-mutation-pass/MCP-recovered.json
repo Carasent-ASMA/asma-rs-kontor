@@ -1,0 +1,20 @@
+{
+  "name": "MCP-recovered",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "kontor-runtime-paseo",
+    "--test",
+    "contract",
+    "hosted_directory::"
+  ],
+  "started_at": "2026-10-11T18:59:14.074776+00:00",
+  "exit": 101,
+  "log_sha256": "1120e11f05f4ac70fe9dd71d799ab53fc2ffe3203f5cca4419bcfc929a3080e3",
+  "test_summaries": [
+    "test result: FAILED. 7 passed; 1 failed; 0 ignored; 0 measured; 306 filtered out; finished in 0.43s"
+  ],
+  "runtime_checkout_HEAD": "813135fd8b46deb1893b6181a04d42f4785752ca"
+}

@@ -1,0 +1,121 @@
+{
+  "source_sha": "813135fd8b46deb1893b6181a04d42f4785752ca",
+  "files": {
+    "430975a3-composition-call.txt": {
+      "bytes": 772,
+      "sha256": "13bcd4d70e45adf45b6e1a04c803e9fd9654fa45eb4d58f2a0dfb83b36480457"
+    },
+    "813135fd-composition-call.txt": {
+      "bytes": 772,
+      "sha256": "7049718b304bbdf5fe51610e1ad148fc4220b086125c8fc3edf2eebe1cf739a4"
+    },
+    "adapter-base-identity.json": {
+      "bytes": 268,
+      "sha256": "a77c9ecfd65223fe2fb788e20db38282e8fcdefe2c708547cfd0401693fed116"
+    },
+    "context.json": {
+      "bytes": 20814,
+      "sha256": "df525564485e1c94687d849502463a14fe869cfe9e438188e97e7dda94dbcad6"
+    },
+    "daemon-2.log": {
+      "bytes": 2706,
+      "sha256": "d8e637278d979cd19f50d50083dfa89946d779b438d132e29757b63e0be8eb9e"
+    },
+    "desk_adam_subjects.json": {
+      "bytes": 1127,
+      "sha256": "58a7373f7058cc169df6e2c039e58f2537c5bbe0bdb64452a46ba83d853dfcac"
+    },
+    "desks.json": {
+      "bytes": 936,
+      "sha256": "4a2f7b719af5a1571e6a10be2d89edd953fbb16a9d68f7ea023101aff372a9aa"
+    },
+    "e376f405-composition-call.txt": {
+      "bytes": 772,
+      "sha256": "7049718b304bbdf5fe51610e1ad148fc4220b086125c8fc3edf2eebe1cf739a4"
+    },
+    "finding.md": {
+      "bytes": 4951,
+      "sha256": "05f6e4b3d4ea05a3f94cad0206752c13a5a54338a5fb37d3492e8d5d3d808774"
+    },
+    "fixture-state.json": {
+      "bytes": 12665,
+      "sha256": "c55d41f4e615a4e1b9fdc85137a6e1f08ade6d6f6251727ebef18148711e664b"
+    },
+    "git-exclude-probe.json": {
+      "bytes": 696,
+      "sha256": "98d1bd347e79f4ef903954f8160be6c620fbacdf615a57ed0300b9ea9b78123e"
+    },
+    "hosted_topology_seat_launch_intents.json": {
+      "bytes": 901,
+      "sha256": "82199f03f9ea4096d5acbce12753a4736f7db5ba6ad5f37539ce88295315e35a"
+    },
+    "hosted_topology_seats.json": {
+      "bytes": 555,
+      "sha256": "1831ef928fe3deb332abdc98cfb7e982c054f5610cae61319ef1785152c36a42"
+    },
+    "implicated-source-identity.json": {
+      "bytes": 774,
+      "sha256": "4fa7f8a37cd75a2bcc1e1e1ad46f2cb95d5b1b57e8de879a7c724389488dc48f"
+    },
+    "preservation.json": {
+      "bytes": 664,
+      "sha256": "aa52a9c494db471fa6d96310d6ceaf0442b67a78dfbc438191cf15e58327a4bb"
+    },
+    "readonly-copy-receipt.json": {
+      "bytes": 617,
+      "sha256": "d87f36908d4efc2d606cea3a7f3e6e462f1d4e0f9f2b3d0cd27cdbea652885e5"
+    },
+    "released-999911.json": {
+      "bytes": 2730,
+      "sha256": "837ebecabb43a484eef93cec78a663e93a552f7fbe95ac9d639afe4da9d7b941"
+    },
+    "released-999921.json": {
+      "bytes": 2725,
+      "sha256": "c525e929e209bd0699af8e9b156059b18236d900f477619660d8f8c9efc85f1a"
+    },
+    "released-epic-adam-ASMA-999911.json": {
+      "bytes": 835,
+      "sha256": "c5b0e2dbcbd2b4e51972b2b36ed91b5e9700964af3f56fbe975d9d5af2e2c551"
+    },
+    "released-seats-after-reconcile.json": {
+      "bytes": 1971,
+      "sha256": "3ac42329f5294d47266731678f929ba9de9555316233170dc5c0d71911c525de"
+    },
+    "released-seats-before-reconcile.json": {
+      "bytes": 1881,
+      "sha256": "c7deccfc8033d2f93aec08242d773529c3bdef55e3da7d425c3f9cdf3943a026"
+    },
+    "released-successor-selection-apply.json": {
+      "bytes": 797,
+      "sha256": "9ae6c9e017dab382ec3dba21ad18db96a5c79327db04f6def975f5d6276b2f29"
+    },
+    "released-topology-selection-apply.json": {
+      "bytes": 783,
+      "sha256": "4828800448e72b69c0129cca56bbe8ce3d08c5bc3df5ad899f60b76130b89f04"
+    },
+    "seat_bindings.json": {
+      "bytes": 5944,
+      "sha256": "7809402926bc5d3b2e03067570fe7c06e4dde714903fff2ee1248e158cd18d3e"
+    },
+    "seat_mcp-base-identity.json": {
+      "bytes": 268,
+      "sha256": "1de30654f4eecd39d73b53dd7961473daba7ffc6183b151ecf7cb0d112a83703"
+    },
+    "structures.log": {
+      "bytes": 1459,
+      "sha256": "aa611f2a4e2ac969e3ad7b8de4c6481a590281faabb34fa156c1129105584b51"
+    },
+    "table-names.json": {
+      "bytes": 597,
+      "sha256": "df94b0b9dac1483801bab83dbc366c07258cad32bb3f20381ec42f6891ea3219"
+    },
+    "topology_node_containers.json": {
+      "bytes": 4235,
+      "sha256": "4908b3aab104888d45ab3b07123b6f232f862c3559b223b5bed4859a44560421"
+    },
+    "topology_nodes.json": {
+      "bytes": 6513,
+      "sha256": "af8108a7a3396b552b02606a1e0fa4bd0f32ad40ebdb5ff4beabee7f5acacbe2"
+    }
+  }
+}

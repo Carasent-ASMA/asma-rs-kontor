@@ -1,0 +1,22 @@
+{
+  "name": "MUT-002-unchecked",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "durable_seats::a_seat_that_is_not_proved_missing_is_never_restarted",
+    "--",
+    "--test-threads=2"
+  ],
+  "started_at": "2026-10-11T18:45:14.954766+00:00",
+  "exit": 101,
+  "log_sha256": "38dcc41b4b75b0085529f5e2aed22f20cd96428df1962b21ce8b725f4bf46afe",
+  "test_summaries": [
+    "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 616 filtered out; finished in 2.28s"
+  ],
+  "runtime_checkout_HEAD": "813135fd8b46deb1893b6181a04d42f4785752ca"
+}

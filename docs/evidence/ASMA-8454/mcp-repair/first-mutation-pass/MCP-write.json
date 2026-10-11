@@ -1,0 +1,20 @@
+{
+  "name": "MCP-write",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "kontor-runtime-paseo",
+    "--lib",
+    "seat_mcp::directory_tests::"
+  ],
+  "started_at": "2026-10-11T18:59:38.558772+00:00",
+  "exit": 101,
+  "log_sha256": "2a80927b015d29f32302d5c6783622b49a8b6d9deb136d5bbff885bb9da857b4",
+  "test_summaries": [
+    "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 144 filtered out; finished in 0.00s",
+    "test result: FAILED. 3 passed; 11 failed; 0 ignored; 0 measured; 131 filtered out; finished in 0.01s"
+  ],
+  "runtime_checkout_HEAD": "813135fd8b46deb1893b6181a04d42f4785752ca"
+}
