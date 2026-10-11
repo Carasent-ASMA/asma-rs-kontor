@@ -125,6 +125,11 @@ The CLI serves the same three tools through the shared registry. Receipts are
 `open_pr_review` and `close_pr_review`, and both target the project: a
 pull request is not an aggregate, and the PR desk belongs to no epic.
 
+Open and close are operator tier on purpose. Placing a review room and its
+seats on an existing desk is a desk-operator operation, like declaring and
+reconciling durable seats (ASMA-8451). Opening an ad-hoc desk Adam
+(ASMA-8452) creates leadership, so it stays admin tier.
+
 ### Open
 
 ```json
@@ -186,6 +191,13 @@ stands, with no effects. The same key with another body is
 `idempotency_conflict`. A fresh key for a review that is already open
 converges on the same nodes, seats and sessions.
 
+This differs, deliberately, from the ad-hoc desk Adam open (ASMA-8452).
+Replaying that open re-runs its effects and converges on the same subject.
+Replaying a review open answers `unchanged` and asks the runtime nothing,
+which is what "replay reuses each subject's bindings" requires. Both are
+convergent: repeating either one never places a second subject, node, seat
+or session.
+
 ### Close
 
 ```json
@@ -206,7 +218,12 @@ converges on the same nodes, seats and sessions.
 Nothing else is touched: not the desk, its workspace, its durable seats, or
 any other review. The row, both nodes and the room's native workspace stay.
 Opening the same pull request again reuses the nodes and the room and places
-fresh seats at generation 1. A pull request with no review on the desk is
+fresh seats at generation 1.
+
+Keeping the room is preservation, not a leak. Closing a pull request never
+archives the desk or its durable seats (REQ-006). The emptied room stays
+bound to its review, so a reopen lands in the same room rather than
+creating a second one. A pull request with no review on the desk is
 `not_found`. A replayed close returns its receipt with no effects.
 
 ### Readback
@@ -229,12 +246,17 @@ The list is ordered by when each review was opened.
 - **Governed project only.** A repository is authorized through the ASMA forge
   mapping, which only the governed ASMA project has. In any other project
   every open is refused (`forbidden`).
-- **Titles show the repository's name without its owner.** A review whose title
+- **Titles show the repository's name without its owner.** The approved title
+  format (REQ-006) is `TPM • <key> • <repo>#<n>` and `RSW • <key> • <repo>#<n>`,
+  with no owner. Identity still includes the owner, but two repositories of
+  one name under different owners can render one title. A review whose title
   would equal another review's on the same desk, such as the same name and
-  number under another owner, is refused (`placement_blocked`).
-- **Close does not archive the room.** Its native workspace stays in the desk
-  project, empty, until the same pull request is opened again. Kontor offers
-  no operation that removes it.
+  number under another owner, is refused (`placement_blocked`). It is never
+  renamed or retitled. If the case appears live, it becomes a scoped
+  question, not a silent format change.
+- **Close keeps the room.** By design (see Close), its native workspace stays
+  in the desk project, empty, until the same pull request is opened again.
+  Kontor offers no operation that removes it.
 - **No rerouting or in-place relaunch.** A route differing from a live
   session's is refused (`placement_blocked`). Opening over a session that
   died answers `stale_binding` and relaunches nothing. In both cases, close
