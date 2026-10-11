@@ -53,9 +53,13 @@ enforced where the nodes are placed and used:
   allows. When the review's revision is newer than the desk's, the store's
   bridge admits only the two edges the row registers: the Adam below the
   desk's workspace and the room below the desk.
-- Before rendering a title or placing a session, the daemon checks again that
-  the Adam is below the desk's registered workspace and the room is below the
-  desk (`placement_blocked` otherwise).
+- The daemon checks the parents again where it uses the review's native
+  placement (`placement_blocked` otherwise): the Adam must be below the desk's
+  registered workspace, and the room directly below the desk. Both checks run
+  when an open with routes prepares the room and the Adam's workspace, before
+  any session is placed or its title rendered, and when close proves the
+  workspaces. Readback repeats only the Adam's check: it renders the room's
+  seat titles without checking the room's parent.
 
 The Adam and room nodes are not scoped to the epic. The epic, and the task
 when there is one, are facts on the row, so nothing is written into the
@@ -234,10 +238,34 @@ or session.
    desk workspace for the Adam, the room for the reviewers. If one no longer
    matches its binding, the close is refused whole before any session is
    fenced, so the Adam's session is never retired while the room's survive.
+   A workspace with no container binding at all is refused the same way
+   (`stale_binding`). The daemon's own open binds the workspace before it
+   launches a session, so only a session row written outside that sequence
+   can reach this; the store does not require the binding when it records a
+   hosted session.
 3. Each live session of the Adam and room is retired in the desk project and
    moved into its seat's history. A session the runtime proves already gone
    counts as fenced.
 4. Each seat is released.
+
+Close is not atomic. The proofs come first, but the sessions are then retired
+one at a time. If the runtime fails after the first retirement, for example
+when a retirement's answer is lost, the close is refused with the runtime's
+code (`unavailable` for a lost answer). That refusal's generic advice says
+nothing was changed, which is not true here:
+
+- The sessions already retired stay retired and move into their seats'
+  history.
+- No seat is released and no receipt is recorded, so the review still reads
+  back as open, with those seats showing no native.
+
+Retrying the close with the same key converges. The failed attempt recorded
+no receipt, so the retry runs in full:
+
+- It retires only the sessions still recorded as live. A session the runtime
+  had already retired counts as fenced.
+- It then releases every seat of the review and records the receipt. A
+  replay after that answers `unchanged`.
 
 Nothing else is touched: not the desk, its workspace, its durable seats, or
 any other review. The row, both nodes and the room's native workspace stay.
@@ -285,6 +313,9 @@ The list is ordered by when each review was opened.
   session's is refused (`placement_blocked`). Opening over a session that
   died answers `stale_binding` and relaunches nothing. In both cases, close
   the review (a dead session counts as gone) and open it again.
+- **Close is not atomic.** A runtime failure part-way through a close leaves
+  the sessions retired so far retired; retrying the close with the same key
+  completes it (see Close).
 - **No supervision.** Kontor does not watch or restart review sessions. The
   durable seats on the desk are reconciled as ASMA-8451 describes; review seats
   are not durable seats.
