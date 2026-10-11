@@ -264,51 +264,41 @@ fn node_id(node: &serde_json::Value) -> TopologyNodeId {
     TopologyNodeId::parse(node["topology_node_id"].as_str().expect("a node id")).expect("an id")
 }
 
-#[tokio::test]
-async fn an_undeclared_desk_is_refused_before_any_desk_state_or_native_effect() {
-    let (world, project) = desk_world("desk-undeclared").await;
-    let calls_before = world.fake.calls().len();
-
-    // The bundled default declares no desk, and nothing selects one silently.
-    for operation in ["ensure", "materialize"] {
-        let refused = desk_call(
-            &world,
-            &project,
-            operation,
-            "adam",
-            &format!("desk-undeclared-{operation}"),
-        )
-        .await;
-        assert_eq!(
-            refused.json()["code"],
-            "placement_blocked",
-            "{}",
-            refused.body
-        );
-        assert!(
-            refused.body.contains("declares no such desk"),
-            "{}",
-            refused.body
-        );
-    }
-    // Selected, but still not a key the selection declares.
-    select_desk_definition(&world, &project).await;
-    let refused = desk_call(
-        &world,
-        &project,
-        "materialize",
-        "nope",
-        "desk-undeclared-key",
-    )
-    .await;
+/// Refuse one desk operation for a key the selected revision does not declare,
+/// and prove it recorded no receipt.
+async fn assert_undeclared(world: &World, project: &str, operation: &str, desk: &str) {
+    let key = format!("desk-undeclared-{operation}-{desk}");
+    let refused = desk_call(world, project, operation, desk, &key).await;
     assert_eq!(
         refused.json()["code"],
         "placement_blocked",
-        "{}",
+        "{operation} {desk}: {}",
         refused.body
     );
+    assert!(
+        refused.body.contains("declares no such desk"),
+        "{operation} {desk}: {}",
+        refused.body
+    );
+    let receipt = world.daemon.state().with_store(|store| {
+        store
+            .get_receipt_by_key(&IdempotencyKey::parse(&key).expect("a key"))
+            .expect("the receipt reads")
+    });
+    assert!(receipt.is_none(), "{operation} {desk} recorded a receipt");
+}
 
+#[tokio::test]
+async fn an_undeclared_desk_is_refused_before_any_desk_state_or_native_effect() {
+    let (world, project) = desk_world("desk-undeclared").await;
     let project_id = ProjectId::parse(&project).expect("a project id");
+    let calls_before = world.fake.calls().len();
+
+    // The bundled default declares no desk, and nothing selects one silently.
+    // Drift is a readback, but it may not answer for a desk that cannot exist.
+    for operation in ["ensure", "materialize", "drift"] {
+        assert_undeclared(&world, &project, operation, "adam").await;
+    }
     world.daemon.state().with_store(|store| {
         assert!(store.list_desks(project_id).expect("lists").is_empty());
         assert!(
@@ -323,8 +313,139 @@ async fn an_undeclared_desk_is_refused_before_any_desk_state_or_native_effect() 
     assert!(
         world.fake.calls()[calls_before..]
             .iter()
-            .all(|call| !matches!(call, AdapterCall::PrepareContainer(_))),
+            .all(|call| !matches!(
+                call,
+                AdapterCall::PrepareContainer(_) | AdapterCall::InspectContainer(_)
+            )),
         "a refused desk reaches no native container operation"
+    );
+
+    // Selected, but still not a key the selection declares. A placed desk
+    // stands beside it, so a refusal that observed anything would show.
+    select_desk_definition(&world, &project).await;
+    let placed = desk_call(&world, &project, "materialize", "adam", "desk-placed").await;
+    assert_eq!(placed.status, 200, "{}", placed.body);
+    let placed = desk_nodes(&placed.json()["projection"], "adam");
+    let observed = || {
+        world.daemon.state().with_store(|store| {
+            placed
+                .iter()
+                .map(|node| {
+                    store
+                        .get_topology_node_container(project_id, node_id(node))
+                        .expect("the binding reads")
+                        .expect("the placed desk is bound")
+                })
+                .collect::<Vec<_>>()
+        })
+    };
+    let before = observed();
+    let calls_before = world.fake.calls().len();
+    for operation in ["ensure", "materialize", "drift"] {
+        assert_undeclared(&world, &project, operation, "nope").await;
+    }
+    assert_eq!(observed(), before, "a refused desk changed an observation");
+    assert!(
+        world.fake.calls()[calls_before..]
+            .iter()
+            .all(|call| !matches!(
+                call,
+                AdapterCall::PrepareContainer(_) | AdapterCall::InspectContainer(_)
+            )),
+        "a refused desk reaches no native container operation"
+    );
+    world.daemon.state().with_store(|store| {
+        let desks = store.list_desks(project_id).expect("lists");
+        assert_eq!(
+            desks
+                .iter()
+                .map(|desk| desk.desk_key.as_str())
+                .collect::<Vec<_>>(),
+            ["adam"],
+            "only the declared desk exists"
+        );
+        assert_eq!(
+            store
+                .list_project_topology_nodes(project_id)
+                .expect("lists")
+                .iter()
+                .filter(|node| ["DESK", "DWS"].contains(&node.kind.as_str()))
+                .map(|node| node.id)
+                .collect::<BTreeSet<_>>(),
+            placed.iter().map(node_id).collect::<BTreeSet<_>>(),
+            "no desk node exists beyond the declared desk's"
+        );
+    });
+}
+
+/// Materialize ensures the desk first, then prepares its natives. A refusal at
+/// native preparation — a transport failure here, or the runtime's own refusal
+/// of an epic claim that names no epic — therefore comes after the desk row
+/// and both nodes exist: they stay, nothing native is bound, no receipt is
+/// recorded, and a retry reconciles the same two nodes.
+#[tokio::test]
+async fn a_desk_refused_at_native_preparation_keeps_only_its_ensured_nodes() {
+    let (world, project) = desk_world("desk-prepare-refused").await;
+    select_desk_definition(&world, &project).await;
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    world.fake.push_step(ScriptStep::TransportFailure {
+        operation: RuntimeCapability::PrepareProject,
+    });
+    let calls_before = world.fake.calls().len();
+    let refused = desk_call(&world, &project, "materialize", "adam", "desk-adam-prepare").await;
+    assert_eq!(refused.json()["code"], "unavailable", "{}", refused.body);
+
+    let desk = world.daemon.state().with_store(|store| {
+        let mut desks = store.list_desks(project_id).expect("lists");
+        assert_eq!(desks.len(), 1, "the ensured desk stays");
+        let desk = desks.remove(0);
+        assert_eq!(desk.desk_key.as_str(), "adam");
+        for node in [desk.topology_node_id, desk.workspace_node_id] {
+            assert!(
+                store
+                    .get_topology_node(project_id, node)
+                    .expect("the node reads")
+                    .is_some(),
+                "the ensured node stays"
+            );
+            assert!(
+                store
+                    .get_topology_node_container(project_id, node)
+                    .expect("the binding reads")
+                    .is_none(),
+                "nothing native is bound"
+            );
+        }
+        assert!(
+            store
+                .get_receipt_by_key(&IdempotencyKey::parse("desk-adam-prepare").expect("key"))
+                .expect("the receipt reads")
+                .is_none(),
+            "a refused materialize records no receipt"
+        );
+        desk
+    });
+    assert!(
+        world.fake.calls()[calls_before..]
+            .iter()
+            .all(|call| !matches!(call, AdapterCall::PrepareContainer(_))),
+        "no native container was prepared"
+    );
+
+    // The same key again is a first answer, not a replay, and it places the
+    // natives of exactly the nodes the refused attempt ensured.
+    let retried = desk_call(&world, &project, "materialize", "adam", "desk-adam-prepare").await;
+    assert_eq!(retried.status, 200, "{}", retried.body);
+    assert_eq!(retried.json()["receipt"]["applied"], "created");
+    let nodes = desk_nodes(&retried.json()["projection"], "adam");
+    assert_eq!(
+        nodes.iter().map(node_id).collect::<Vec<_>>(),
+        [desk.topology_node_id, desk.workspace_node_id]
+    );
+    assert!(
+        nodes.iter().all(|node| !node["observed_binding"].is_null()),
+        "{}",
+        retried.body
     );
 }
 

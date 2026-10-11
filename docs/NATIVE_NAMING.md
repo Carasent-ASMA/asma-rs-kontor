@@ -362,8 +362,8 @@ A Team Definition declares its desks next to its containers:
   Definition v7 (v1 plus the two desk containers and both desks) — but a
   project uses them only once v7 is selected through
   `team-definition-selection:preview` / `:apply`. Nothing selects it
-  implicitly, and an undeclared key is `placement_blocked` before any desk
-  row, node or native container is written.
+  implicitly, and an undeclared key is `placement_blocked` by ensure,
+  materialize and drift before any receipt, desk row, node or native call.
 - A desk pins the exact revision that was selected when it was first ensured,
   for its whole life. Selecting another revision later changes which desks a
   new key may name; it never renames, moves or retires an existing desk.

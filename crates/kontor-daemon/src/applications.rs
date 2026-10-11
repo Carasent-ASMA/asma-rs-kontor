@@ -10629,6 +10629,12 @@ impl Services {
             let desk = state
                 .with_store(|store| store.get_desk(project_id, desk_key))
                 .map_err(|error| self.refuse(&error))?;
+            // A key no desk row holds reads back as nothing only when the
+            // selected revision declares it; otherwise a readback would answer
+            // for a desk that ensure and materialize refuse to create.
+            if desk.is_none() {
+                self.declared_desk_definition(project_id, desk_key)?;
+            }
             return Ok(nodes
                 .into_iter()
                 .filter(|node| {
@@ -10671,13 +10677,7 @@ impl Services {
         let desk = match existing {
             Some(desk) => desk,
             None => {
-                let (snapshot, definition) = self.project_team_definition(project_id)?;
-                if definition.desk(desk_key).is_none() {
-                    return Err(self.deny(
-                        ApiErrorCode::PlacementBlocked,
-                        "the project's selected Team Definition declares no such desk",
-                    ));
-                }
+                let snapshot = self.declared_desk_definition(project_id, desk_key)?;
                 let planned = StoredDesk {
                     project_id,
                     desk_key: desk_key.clone(),
@@ -10729,6 +10729,27 @@ impl Services {
             desk.topology_node_id,
             &definition.topology,
         )
+    }
+
+    /// The project's selected Team Definition revision, refused unless it
+    /// declares `desk_key`. A new desk pins exactly this revision.
+    ///
+    /// Every desk operation that meets a key no desk row holds asks this one
+    /// question, so ensure, materialize and drift refuse an undeclared key
+    /// alike, before anything is recorded, observed or prepared.
+    fn declared_desk_definition(
+        &self,
+        project_id: ProjectId,
+        desk_key: &DeskKey,
+    ) -> Result<TeamDefinitionSnapshot, ApiError> {
+        let (snapshot, definition) = self.project_team_definition(project_id)?;
+        if definition.desk(desk_key).is_none() {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the project's selected Team Definition declares no such desk",
+            ));
+        }
+        Ok(snapshot)
     }
 
     /// Materialize one durable desk: its two nodes, then its native project and

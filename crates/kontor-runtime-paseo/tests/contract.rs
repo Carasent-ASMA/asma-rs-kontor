@@ -13423,6 +13423,64 @@ async fn a_desk_workspace_inspection_rehydrates_its_container_and_no_epic_projec
     assert!(epic.adapter.project_binding().is_some());
 }
 
+/// A desk request never claims to be an epic's container. One that did would
+/// be refused by its shape alone, before Paseo is asked anything, so the
+/// refusal leaves no native project or ledger entry behind (ASMA-8450).
+#[tokio::test]
+async fn an_epic_claim_without_its_epic_is_refused_before_any_paseo_call() {
+    let plane = restarted_plane(workspace_list_of_kind("worktree"));
+    let calls_before = plane.daemon.calls();
+    let prepared = plane
+        .adapter
+        .prepare_container(&ContainerRequest {
+            container_binding_id: ContainerBindingId::generate(),
+            topology_node_id: node(NODE_B),
+            topology: topology(),
+            scope: None,
+            capabilities: vec![NodeProjectionCapability::NativeRoot],
+            display_name: name("DESK · ADAM"),
+            parent: None,
+            cwd: Some(WorkspaceRoot::parse(CWD).expect("an absolute path")),
+            bound_native_id: None,
+            epic_container: true,
+            task_id: None,
+            team_run_id: None,
+            requested_at: at("2026-08-16T09:05:00Z"),
+        })
+        .await
+        .expect_err("an epic container without its epic");
+    assert_eq!(
+        prepared,
+        RuntimeError::WorkspaceMismatch {
+            rule: "an epic project container must name the epic it represents"
+        }
+    );
+    let inspected = plane
+        .adapter
+        .inspect_container(&ContainerInspectRequest {
+            binding: bound_root(node(NODE_B)),
+            native_parent: None,
+            scope: None,
+            epic_container: true,
+            requested_at: at("2026-08-16T09:05:00Z"),
+        })
+        .await
+        .expect_err("an epic inspection without its epic");
+    assert_eq!(
+        inspected,
+        RuntimeError::WorkspaceMismatch {
+            rule: "an epic container inspection must name the epic it represents"
+        }
+    );
+    assert_eq!(
+        plane.daemon.calls(),
+        calls_before,
+        "Paseo was asked nothing"
+    );
+    assert!(plane.adapter.container_binding(node(NODE_B)).is_none());
+    assert!(plane.adapter.project_binding().is_none());
+}
+
 #[tokio::test]
 async fn inspection_refuses_changed_child_cwd_before_rehydrating_either_ledger() {
     let plane = restarted_plane(v(WORKSPACE_OTHER_CWD));

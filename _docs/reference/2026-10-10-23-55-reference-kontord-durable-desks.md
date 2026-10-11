@@ -45,9 +45,18 @@ returns the original receipt and performs no native effect.
   refuse a desk's nodes with `placement_blocked`, and epic completion,
   closeout and Team Definition migration never select them. There is no
   supported way to retire or delete a desk in this revision.
-- **Declared keys only.** A key the project's selected Team Definition does
-  not declare is refused (`placement_blocked`) before any desk row, node or
-  native container is written.
+- **Where a native refusal lands.** The runtime refuses, from the request's
+  shape alone and before it asks Paseo anything, a container request or
+  inspection that claims to be an epic's project without naming the epic.
+  Desk requests never make that claim. That refusal, like any failure while
+  preparing a desk's natives, comes after materialize has ensured the desk
+  row and both nodes: they stay, nothing native is bound, no receipt is
+  recorded, and a retry with the same key reconciles the same two nodes.
+- **Declared keys only.** A key that no desk row holds and the project's
+  selected Team Definition does not declare is refused (`placement_blocked`)
+  by ensure, materialize and drift alike, before any receipt, desk row, node,
+  observation or native call. A desk that already exists keeps answering
+  after a later selection stops declaring its key (see Rollback).
 - **No occupants yet.** TASK-001 places desks and their workspaces only.
   Hosting seats in a desk workspace, and binding an occupant to an epic or a
   pull request, are later tasks of ASMA-8449; seat launch still requires an
