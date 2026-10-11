@@ -1,8 +1,7 @@
 # Desk Adams in kontord
 
 > Status: ASMA-8452 (ASMA-8449) draft candidate. It describes what the desk Adam
-> contract supports at this revision, what it refuses, and which evidence is
-> still open until the rebase onto ASMA-8451. Naming rules are in
+> contract supports at this revision and what it refuses. Naming rules are in
 > [`docs/NATIVE_NAMING.md`](../../docs/NATIVE_NAMING.md#desk-adams-asma-8452).
 > Desks themselves are described in
 > [Durable desks in kontord](2026-10-10-23-55-reference-kontord-durable-desks.md).
@@ -28,6 +27,21 @@ Desk membership and work subject are kept apart:
   and permanent: database triggers refuse UPDATE and DELETE.
 - There is at most one epic subject per epic, and a subject hosts at most one
   live session at a time. The store enforces both.
+
+### Native placement
+
+Every desk Adam session, epic and ad-hoc alike, is launched on ASMA-8451's
+epic-free hosted-seat launcher, in the desk's own native project
+(`HostedSeatScope::Desk`). The project, the workspace and the working
+directory are the desk workspace's, read from its binding by exact persisted
+id. The legacy ECP keeps its epic placement unchanged.
+
+The placement is only where the native runs. The epic is carried by the
+logical subject: each seat's authority is derived from seat to subject to
+epic, and admission, ownership, callbacks, consultations, attestation,
+completion, route correction, launch-intent claim and supersession, Core Team
+reads, promotion and close all resolve the subject. Nothing is written into
+the epic's project ledger or onto any of the epic's own nodes.
 
 ## Declaring desk leadership
 
@@ -62,14 +76,16 @@ before anything is written.
 | Place an epic's Adam | `POST /v1/projects/{id}/epics:apply` under a desk-led selection | The epic subject and its node below the desk workspace; no ECP |
 | Launch the planning LSA | `POST …/epics/{epic}/core-team/seats:materialize` with one `LSA` route | `LSA • <epic key> • <topic>` in the desk workspace |
 | Hand off to the TPM | `POST …/epics/{epic}/core-team/desk-adam:handoff` | Fences the LSA, then launches `TPM • <epic key> • <topic>` |
-| Open an ad-hoc Adam | `POST /v1/projects/{id}/desk-adams/ad-hoc:open` with `topic` | The ad-hoc subject, its node and its LSA seat; no native launch (see limits) |
-| Bind an ad-hoc origin | `epics:apply` with `desk_adam_origin: {"subject": <node id>}` | Fences the ad-hoc seats, then records the epic subject with that origin |
+| Correct a route | `POST …/epics/{epic}/core-team/routes:preview`, then `routes:apply` | Retires the session in the desk workspace and relaunches the same seat there at the next generation |
+| Open an ad-hoc Adam | `POST /v1/projects/{id}/desk-adams/ad-hoc:open` with `topic`, optionally `model_route` | The ad-hoc subject, its node and its LSA seat; with a route, the LSA's native in the desk project |
+| Judge a binding | `POST /v1/projects/{id}/epics:preview` with `desk_adam_origin` | The same judgement apply makes; nothing is fenced or written |
+| Bind an ad-hoc origin | `epics:apply` with `desk_adam_origin: {"subject": <node id>}` | Fences the ad-hoc sessions and seats, then records the epic subject with that origin |
 | Deliver | `topology:materialize`, `execution:arm`, `scheduler:start` as for any epic | ESW and TSW as before; the delivery owner is the subject's `tpm` seat |
 | Complete and close | `completion:advance`, epic `lifecycle` `close_epic` | Answers to the subject's TPM; closing releases only that seat |
 
 MCP serves the handoff as `kontor_desk_adam_handoff` and the ad-hoc open as
-`kontor_desk_adam_ad_hoc_open`, both at admin tier. `kontor_epic_apply` takes
-the optional `desk_adam_origin`. Receipts are `hand_off_desk_adam` (target:
+`kontor_desk_adam_ad_hoc_open`, both at admin tier. `kontor_epic_apply` and
+`kontor_epic_preview` take the optional `desk_adam_origin`. Receipts are `hand_off_desk_adam` (target:
 the epic) and `open_ad_hoc_desk_adam` (target: the project). A binding is
 part of the `epics:apply` receipt, whose intent names the origin.
 
@@ -118,6 +134,13 @@ desk, its node, and one LSA seat titled `LSA • ADHOC • <topic>`. A replay, o
 another open of the same topic, converges on the same subject. A topic that
 has already moved to an epic is refused (`placement_blocked`).
 
+With a `model_route`, the open also launches the LSA's native session at
+generation 1, in the desk project with no epic label, and answers its
+`lsa_native_id`. The route is parsed before anything is written. A later open
+of the topic, with the same route or none, finds that session and launches
+nothing. A different route is refused (`placement_blocked`) before any
+effect: an ad-hoc native is never re-routed or relaunched (see limits).
+
 An epic adopts an ad-hoc topic declaratively, on `epics:apply`:
 
 ```json
@@ -128,11 +151,18 @@ An epic adopts an ad-hoc topic declaratively, on `epics:apply`:
   exactly those of a plain apply.
 - Every check runs before any graph write. The epic must be desk-led on the
   same desk. The origin must exist, must be an ad-hoc subject on that desk,
-  and must be bound to no epic. None of its seats may hold a native session.
-  Any other case is refused, and nothing is written.
-- The ad-hoc seats are retired before the epic subject row is written, and the
-  store refuses the row otherwise. A bound ad-hoc subject never seats or hosts
-  anyone again, and nothing on it is rewritten.
+  and must be bound to no epic. The runtime holding any of its live sessions
+  must be configured (`unavailable` otherwise). Any other case is refused, and
+  nothing is written. `epics:preview` makes the same judgement and fences
+  nothing.
+- Each live ad-hoc session is retired in the desk workspace and moved into
+  its seat's history, and then the ad-hoc seats are retired, before the epic
+  subject row is written. The store refuses the row while any origin seat is
+  active or hosted. Only a session the runtime proves absent counts as gone:
+  a retire whose answer was lost leaves the occupancy, the seat and the topic
+  as they were, and a retry with the same key finishes the fence and the
+  binding. A bound ad-hoc subject never seats or hosts anyone again, and
+  nothing on it is rewritten.
 - The epic subject records the origin and freezes the epic's own name as its
   topic. The epic's LSA then launches fresh, with a fresh credential, and its
   initial prompt carries a canonical `desk_adam_binding` capsule naming the
@@ -150,18 +180,18 @@ An epic adopts an ad-hoc topic declaratively, on `epics:apply`:
   `codex` is OpenAI.
 - **No same-native keep.** `desk_adam_origin.keep_native: true` is refused
   (`unsupported_capability`), pending the same decision.
-- **Ad-hoc native launch is open until ASMA-8451.** `ad-hoc:open` with a
-  `model_route` is refused (`unsupported_capability`): the ad-hoc LSA needs
-  the epic-free hosted-seat launcher that ASMA-8451 lands. For the same reason
-  an origin with any natively hosted seat is refused. The ad-hoc native
-  evidence, and the fence-then-relaunch tests that need a live ad-hoc native,
-  are added when this branch is rebased onto ASMA-8451.
-- **Native evidence is the fake runtime's.** Every native effect here
-  (placement in the desk workspace, retire, relaunch, restart resolution) is
-  proved against the scripted fake. The live Paseo launch moves onto
-  ASMA-8451's launcher at the rebase. Desk container preparation stays
-  epic-free, so the adapter never records a desk workspace under an epic's
-  project.
+- **Desk Adam natives carry no epic label.** They carry no epic or
+  mini-project label. The epic is identified by the logical subject and by
+  the epic key in the title. Tooling that groups natives by epic label will
+  not see desk Adams.
+- **An ad-hoc native is not relaunched or re-routed.** If it dies, or needs
+  another route, the topic is bound to an epic, whose LSA launches fresh, or
+  another topic is opened.
+- **Native evidence.** The daemon's native effects (desk placement, retire,
+  relaunch, restart resolution) are proved against the scripted fake. The
+  Paseo contract tests prove the desk launch itself against recorded Paseo:
+  the desk project read by exact id, the seat's own labels with no epic, and
+  nothing in the epic-keyed project ledger.
 - **Backlog import.** `desk_adam_origin` is accepted only on `epics:apply`;
   a backlog import that carries it is refused (`invalid_request`).
 - **Titles never retitle.** A later rename of the epic leaves every subject
@@ -169,12 +199,12 @@ An epic adopts an ad-hoc topic declaratively, on `epics:apply`:
 
 ## Schema, backup and rollback
 
-- Schema 133 adds `desk_adam_subjects` and rebuilds `command_receipts` for the
-  two new command kinds. Schema 132 is reserved for ASMA-8451: this branch
-  carries a no-op placeholder at 132 that is dropped at the rebase.
-- Export generation 15 carries the subject records. ASMA-8451 takes 15, so
-  the subjects move to generation 16 at the rebase. Older generations cannot
-  represent a database that holds subjects and are refused for one.
+- Schema 133 adds `desk_adam_subjects` and rebuilds `command_receipts` as
+  ASMA-8451's schema 132 left it, durable-seat kinds included, with the two
+  new command kinds.
+- Export generation 16 carries the subject records; ASMA-8451's durable seat
+  declarations are generation 15. Older generations cannot represent a
+  database that holds subjects and are refused for one.
 - Subjects are permanent. Selecting a definition without `desk_leadership`
   stops *new* epics from being desk-led. Epics already pinned stay desk-led.
 - A pre-133 build refuses a schema-133 database. Restore the snapshot taken

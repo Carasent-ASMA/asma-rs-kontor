@@ -405,8 +405,8 @@ Declaring, reporting and reconciling these seats is described in
 A Team Definition that declares `desk_leadership` leads its epics from a desk:
 each epic, and each ad-hoc topic, gets a subject node directly below the
 desk's workspace, and its leadership sessions run in that workspace's native
-container. The subject kinds own no container (`parent_session_host` only), so
-they name seats, not natives:
+container, in the desk's own native project. The subject kinds own no
+container (`parent_session_host` only), so they name seats, not natives:
 
 | Seat | Template | Example |
 | --- | --- | --- |
@@ -425,6 +425,8 @@ they name seats, not natives:
 - The epic and ad-hoc subjects are distinct kinds whose parent is the declared
   desk's workspace kind. A definition without `desk_leadership` keeps its exact
   bytes and hash.
+- A desk Adam native carries its seat labels and no epic or mini-project
+  label. The title's epic key and the daemon's subject are what name its epic.
 
 The operations, handoff and support limits are in
 [Desk Adams in kontord](../_docs/reference/2026-10-11-05-36-reference-kontord-desk-adams.md).
