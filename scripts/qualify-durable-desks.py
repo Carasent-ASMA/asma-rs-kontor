@@ -50,6 +50,7 @@ def environment() -> dict[str, str]:
 def run(name: str, command: list[str]) -> dict[str, object]:
     """Record command, time, exit status and complete output digest."""
     started = datetime.now(timezone.utc).isoformat()
+    started_head = git("rev-parse", "HEAD").strip()
     log = OUTPUT / f"{name}.log"
     print(f"Running {name}", flush=True)
     with log.open("wb") as stream:
@@ -58,6 +59,7 @@ def run(name: str, command: list[str]) -> dict[str, object]:
     output = log.read_bytes()
     receipt = {
         "name": name, "head": git("rev-parse", "HEAD").strip(),
+        "started_head": started_head,
         "started_at": started, "command": command,
         "exit_code": result.returncode, "log": str(log.relative_to(ROOT)),
         "log_sha256": digest(output),

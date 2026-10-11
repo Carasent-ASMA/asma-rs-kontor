@@ -3,7 +3,7 @@
     "id": "MUT-001",
     "file": "crates/kontor-daemon/src/applications.rs",
     "before": "    fn ensure_desk(\n        &self,\n        project_id: ProjectId,\n        desk_key: &DeskKey,\n    ) -> Result<SessionTopologyNode, ApiError> {\n        let _native_activity = self.native_activity()?;\n        let state = self.state()?;\n",
-    "after": "    fn ensure_desk(\n        &self,\n        project_id: ProjectId,\n        desk_key: &DeskKey,\n    ) -> Result<SessionTopologyNode, ApiError> {\n        if desk_key.as_str() == \"adam\" {\n            return Err(self.deny(ApiErrorCode::PlacementBlocked, \"mutant requires an epic for a desk\"));\n        }\n        let _native_activity = self.native_activity()?;\n        let state = self.state()?;\n",
+    "after": "    fn ensure_desk(\n        &self,\n        project_id: ProjectId,\n        desk_key: &DeskKey,\n    ) -> Result<SessionTopologyNode, ApiError> {\n        let _native_activity = self.native_activity()?;\n        let state = self.state()?;\n        if state.with_store(|store| store.list_mini_projects(project_id))\n            .map_err(|error| self.refuse(&error))?.is_empty() {\n            return Err(self.deny(ApiErrorCode::PlacementBlocked, \"mutant requires an epic for a desk\"));\n        }\n",
     "suite": "durable_desks::",
     "claim": "An epic prerequisite prevents independent desk materialization"
   },
