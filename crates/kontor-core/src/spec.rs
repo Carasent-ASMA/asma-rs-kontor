@@ -668,6 +668,26 @@ crate::closed_enum! {
         NativeChild => "native_child",
         /// The node may own persistent native sessions.
         SessionHost => "session_host",
+        /// The node owns no native container of its own: it hosts persistent
+        /// sessions inside its immediate parent's native session host, and
+        /// names the work those sessions do separately from where they sit.
+        ParentSessionHost => "parent_session_host",
+    }
+}
+
+impl NodeProjectionCapability {
+    /// Whether a kind with these capabilities may own persistent seats, in its
+    /// own native container or in its parent's.
+    #[must_use]
+    pub fn hosts_sessions(capabilities: &[Self]) -> bool {
+        capabilities.contains(&Self::SessionHost) || capabilities.contains(&Self::ParentSessionHost)
+    }
+
+    /// Whether a kind with these capabilities places its seats in its
+    /// immediate parent's native container rather than in one of its own.
+    #[must_use]
+    pub fn hosts_in_parent(capabilities: &[Self]) -> bool {
+        capabilities.contains(&Self::ParentSessionHost)
     }
 }
 
@@ -852,6 +872,32 @@ pub struct TeamDefinitionSpec {
     /// every pin already taken on them — are unchanged.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub desks: Vec<TeamDeskDeclaration>,
+    /// Where an epic pinned to this revision is led from, when it is led from
+    /// a durable desk rather than from a control plane inside the epic.
+    ///
+    /// Absent from every revision that does not declare it, so their canonical
+    /// bytes and pins are unchanged, and an epic pinned to one keeps the
+    /// historical control plane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desk_leadership: Option<TeamDeskLeadership>,
+}
+
+/// The desk an epic's leadership session is placed in, and the subject kinds
+/// that name which work each session there does.
+///
+/// Desk membership and work subject stay separate: every subject is a node of
+/// its own below the desk's workspace, owns no native container and borrows
+/// the workspace's. Seats are bound to the subject, so the epic they act for is
+/// the subject's, never the shared workspace's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TeamDeskLeadership {
+    /// The declared desk whose workspace hosts every leadership session.
+    pub desk_key: crate::id::DeskKey,
+    /// Container kind of one epic's leadership subject.
+    pub epic_kind: TopologyKindKey,
+    /// Container kind of one leadership subject opened before any epic exists.
+    pub ad_hoc_kind: TopologyKindKey,
 }
 
 /// One durable desk a Team Definition declares.
@@ -950,14 +996,29 @@ impl TeamDefinitionSpec {
                 let segments = template
                     .segments()
                     .expect("validated Team Definition templates are typed");
-                if segments.len() != 1
-                    || !matches!(
-                        segments.first(),
-                        Some(crate::naming::NativeNameSegment::Token(
-                            NativeNameToken::RoleCode | NativeNameToken::SlotDisplayName
-                        ))
-                    )
-                {
+                let role_led = matches!(
+                    segments.first(),
+                    Some(crate::naming::NativeNameSegment::Token(
+                        NativeNameToken::RoleCode | NativeNameToken::SlotDisplayName
+                    ))
+                );
+                // A seat that borrows a shared container is told apart from
+                // its neighbours there by the work it does, so its title may
+                // follow the role with that subject. Every other seat stays the
+                // bare role or label its container already scopes.
+                let names_its_subject =
+                    NodeProjectionCapability::hosts_in_parent(&container.projection_capabilities)
+                        && segments.len() > 1
+                        && segments.iter().skip(1).all(|segment| {
+                            matches!(
+                                segment,
+                                crate::naming::NativeNameSegment::Literal(_)
+                                    | crate::naming::NativeNameSegment::Token(
+                                        NativeNameToken::EpicJiraKey | NativeNameToken::Topic
+                                    )
+                            )
+                        });
+                if !role_led || (segments.len() != 1 && !names_its_subject) {
                     return Err(DomainError::invalid(
                         "TeamDefinitionSpec",
                         "seat templates must contain exactly ROLE_CODE or SLOT_DISPLAY_NAME and no container scope",
@@ -1102,6 +1163,7 @@ impl TeamDefinitionSpec {
         }
 
         let desk_kinds = self.validate_desks(&kinds)?;
+        self.validate_desk_leadership(&kinds)?;
         // Desks are additional project-level roots. Every other container
         // still descends from the one delivery root, exactly as before.
         let roots: Vec<_> = self
@@ -1225,6 +1287,74 @@ impl TeamDefinitionSpec {
             }
         }
         Ok(desk_kinds)
+    }
+
+    /// Validate where this revision places its epics' leadership, when it
+    /// places it on a desk.
+    ///
+    /// Both subject kinds sit directly below the declared desk's workspace,
+    /// own no container and render a role-led seat title. Only the epic
+    /// subject may render the epic's key: an ad-hoc subject has no epic.
+    fn validate_desk_leadership(
+        &self,
+        kinds: &BTreeMap<&TopologyKindKey, &TeamContainerDefinition>,
+    ) -> DomainResult<()> {
+        let Some(leadership) = &self.desk_leadership else {
+            return Ok(());
+        };
+        let desk = self.desk(&leadership.desk_key).ok_or_else(|| {
+            DomainError::invalid(
+                "TeamDefinitionSpec",
+                "desk leadership names a desk this revision does not declare",
+            )
+        })?;
+        if leadership.epic_kind == leadership.ad_hoc_kind {
+            return Err(DomainError::invalid(
+                "TeamDefinitionSpec",
+                "the epic and ad-hoc leadership subjects must be distinct kinds",
+            ));
+        }
+        for (kind, epic) in [
+            (&leadership.epic_kind, true),
+            (&leadership.ad_hoc_kind, false),
+        ] {
+            let subject = kinds
+                .get(kind)
+                .filter(|subject| {
+                    subject.parent.as_ref() == Some(&desk.workspace_kind)
+                        && subject.projection_capabilities
+                            == [NodeProjectionCapability::ParentSessionHost]
+                })
+                .ok_or_else(|| {
+                    DomainError::invalid(
+                        "TeamDefinitionSpec",
+                        "a leadership subject must be a parent_session_host directly below the desk's workspace",
+                    )
+                })?;
+            let segments = subject
+                .seat_name_template
+                .as_ref()
+                .and_then(NativeNameTemplate::segments)
+                .ok_or_else(|| {
+                    DomainError::invalid(
+                        "TeamDefinitionSpec",
+                        "a leadership subject must declare its seat template",
+                    )
+                })?;
+            let names_epic = segments.iter().any(|segment| {
+                matches!(
+                    segment,
+                    crate::naming::NativeNameSegment::Token(NativeNameToken::EpicJiraKey)
+                )
+            });
+            if !epic && names_epic {
+                return Err(DomainError::invalid(
+                    "TeamDefinitionSpec",
+                    "an ad-hoc leadership subject has no epic key to render",
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Validate this definition against its exact pinned topology document.
@@ -1431,10 +1561,7 @@ impl ProjectSessionTopologySpec {
             declared.cardinality.validate()?;
             Self::validate_capabilities(&declared.projection_capabilities)?;
             declared.name_template.validate()?;
-            if declared
-                .projection_capabilities
-                .contains(&NodeProjectionCapability::SessionHost)
-            {
+            if NodeProjectionCapability::hosts_sessions(&declared.projection_capabilities) {
                 declared
                     .seat_name_template
                     .as_ref()
@@ -1522,6 +1649,26 @@ impl ProjectSessionTopologySpec {
                     ));
                 }
             }
+            // A kind that borrows its parent's container has a parent to borrow
+            // from only when every parent it may sit below is itself a native
+            // container that hosts sessions.
+            if NodeProjectionCapability::hosts_in_parent(&declared.projection_capabilities)
+                && (declared.allowed_parents.is_empty()
+                    || !declared.allowed_parents.iter().all(|parent| {
+                        kinds.get(parent).is_some_and(|parent| {
+                            let capabilities = &parent.projection_capabilities;
+                            capabilities.contains(&NodeProjectionCapability::SessionHost)
+                                && (capabilities.contains(&NodeProjectionCapability::NativeRoot)
+                                    || capabilities
+                                        .contains(&NodeProjectionCapability::NativeChild))
+                        })
+                    }))
+            {
+                return Err(DomainError::invalid(
+                    "ProjectSessionTopologySpec",
+                    "a parent_session_host may sit only below native session hosts",
+                ));
+            }
         }
 
         let mut indegree: BTreeMap<&TopologyKindKey, usize> = self
@@ -1564,6 +1711,14 @@ impl ProjectSessionTopologySpec {
             return Err(DomainError::invalid(
                 "ProjectSessionTopologySpec",
                 "logical_only is exclusive",
+            ));
+        }
+        // It owns no container, so any native projection beside it would
+        // describe a second place for the same seats.
+        if distinct.contains(&NodeProjectionCapability::ParentSessionHost) && distinct.len() != 1 {
+            return Err(DomainError::invalid(
+                "ProjectSessionTopologySpec",
+                "parent_session_host is exclusive",
             ));
         }
         if distinct.contains(&NodeProjectionCapability::NativeRoot)
