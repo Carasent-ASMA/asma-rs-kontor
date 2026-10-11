@@ -165,10 +165,9 @@ BEGIN
     SELECT RAISE(ABORT, 'a desk Adam subject hosts one live session at a time');
 END;
 
--- The v128 receipt shape with four more kinds: opening an ad-hoc desk Adam
--- and handing a desk Adam subject from one phase owner to the next, and the
--- two durable-seat kinds reserved for the sibling desk-seat generation, so
--- either generation can land first without narrowing the other's receipts.
+-- The v132 receipt shape, durable-seat kinds included, with two more kinds:
+-- opening an ad-hoc desk Adam and handing a desk Adam subject from one phase
+-- owner to the next.
 CREATE TABLE command_receipts_v133 (
     id TEXT NOT NULL PRIMARY KEY CHECK (length(id) = 36 AND id NOT GLOB '*[^0-9a-f-]*'),
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,

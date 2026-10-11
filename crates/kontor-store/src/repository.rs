@@ -2847,7 +2847,7 @@ fn repin_mini_project_nodes_in(
         // Where a node's sessions live is not vocabulary. A node that borrows
         // its parent's container never gains one of its own, and a node with
         // its own never starts borrowing, whatever the target declares.
-        if hosted_in_parent_in(transaction, &node)?
+        if hosted_in_parent_in(transaction, node)?
             != NodeProjectionCapability::hosts_in_parent(&declared.projection_capabilities)
         {
             return Err(conflict(
