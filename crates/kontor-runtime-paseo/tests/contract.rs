@@ -92,6 +92,9 @@ use kontor_runtime_paseo::fixture::{RecordedMcp, RecordedPaseo};
 use kontor_runtime_paseo::mcp::PaseoMcp;
 use kontor_runtime_paseo::wire::{MAX_FRAME_BYTES, label};
 
+#[path = "contract/hosted_directory.rs"]
+mod hosted_directory;
+
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------

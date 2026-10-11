@@ -6098,6 +6098,14 @@ impl PaseoAdapter {
         let workspace = self.fetch_workspace_in(&project, &workspace_id).await?;
         self.verify_hosted_workspace_placement(&workspace, &project, &request.cwd)?;
 
+        let composition_mode = match (&request.scope, &workspace.workspace_kind) {
+            (
+                HostedSeatScope::Desk { .. },
+                PaseoWorkspaceKind::Directory | PaseoWorkspaceKind::LocalCheckout,
+            ) => crate::seat_mcp::HostedCompositionMode::OwnedDirectory,
+            _ => crate::seat_mcp::HostedCompositionMode::Worktree,
+        };
+
         let labels = self.hosted_seat_labels(request, &project, &workspace_id)?;
         let seat_labels = [(
             label::SEAT_BINDING.to_owned(),
@@ -6156,20 +6164,30 @@ impl PaseoAdapter {
             },
         )?;
 
+        // An exact native recovered after a lost acknowledgement still has to
+        // reconcile the shared directory's pending publication before reload.
+        if recovered_id.is_none()
+            || matches!(
+                composition_mode,
+                crate::seat_mcp::HostedCompositionMode::OwnedDirectory
+            )
+        {
+            crate::seat_mcp::compose_for_hosted_seat(
+                self.config.seat_mcp.as_ref(),
+                request.model_rung.provider.0.as_str(),
+                std::path::Path::new(request.cwd.as_str()),
+                composition_mode,
+            )
+            .map_err(|error| {
+                tracing::warn!(%error, "hosted seat MCP composition failed");
+                RuntimeError::LaunchNotAdmitted {
+                    rule: crate::seat_mcp::hosted_composition_refusal(&error),
+                }
+            })?;
+        }
         let (native_id, created) = match recovered_id {
             Some(native_id) => (native_id, false),
             None => {
-                crate::seat_mcp::compose_for_hosted_seat(
-                    self.config.seat_mcp.as_ref(),
-                    request.model_rung.provider.0.as_str(),
-                    std::path::Path::new(request.cwd.as_str()),
-                )
-                .map_err(|error| {
-                    tracing::warn!(%error, "hosted seat MCP composition failed");
-                    RuntimeError::LaunchNotAdmitted {
-                        rule: "hosted seat MCP composition failed in the ECP",
-                    }
-                })?;
                 let mut creation = PaseoRpc::hosted_seat_agent_create(
                     self.next_request_id(),
                     &workspace_id,
