@@ -27,6 +27,7 @@
 
 mod artifact_submission;
 mod committee_evidence;
+mod desk_adams;
 mod durable_seats;
 mod memory_projection;
 mod open_questions;
@@ -2606,6 +2607,21 @@ impl Services {
                 ApiErrorCode::InvalidRequest,
                 "a final backlog export must contain at least one epic",
             ));
+        }
+        // Binding an ad-hoc desk Adam fences its sessions, which an import
+        // does not do; refused rather than silently dropped.
+        if request
+            .epics
+            .iter()
+            .any(|epic| epic.desk_adam_origin.is_some())
+        {
+            return Err(self
+                .deny(
+                    ApiErrorCode::InvalidRequest,
+                    "desk_adam_origin is accepted only on epics:apply",
+                )
+                .about("desk Adam binding")
+                .advising("import the epic without it, then bind the origin with epics:apply"));
         }
         let prepared = request
             .epics
@@ -7071,17 +7087,32 @@ impl Services {
                 .collect::<Vec<_>>();
             (found.len() == 1).then(|| (*found[0]).clone())
         };
+        // A desk-led epic has no ECP. Its control member is its desk Adam
+        // subject, which owns no container: what reads back for it is the
+        // desk workspace its sessions run in, named and inspected from the
+        // desk's own pin.
+        let desk_led = definition.desk_leadership.as_ref();
+        let control_kind =
+            desk_led.map_or(&self.domain.delivery.control_kind, |led| &led.epic_kind);
         let (Some(esw), Some(ecp), Some(tsw)) = (
             exact(&self.domain.delivery.epic_kind, None),
-            exact(&self.domain.delivery.control_kind, None),
+            exact(control_kind, None),
             exact(&self.domain.delivery.task_kind, Some(task_id)),
         ) else {
             return Ok(PlacementAdmission::NativeTopologyUnconfirmed);
         };
+        let (control_role, control) = match desk_led {
+            None => ("ecp", ecp.clone()),
+            Some(_) => match self.subject_host(&ecp)? {
+                Some((host, _)) => ("desk_workspace", host),
+                None => return Ok(PlacementAdmission::NativeTopologyUnconfirmed),
+            },
+        };
         if esw.lifecycle != TopologyLifecycle::Active
             || ecp.lifecycle != TopologyLifecycle::Active
+            || control.lifecycle != TopologyLifecycle::Active
             || tsw.lifecycle != TopologyLifecycle::Active
-            || ecp.parent_id != Some(esw.id)
+            || (desk_led.is_none() && ecp.parent_id != Some(esw.id))
             || tsw.parent_id != Some(esw.id)
             || definition.container(&esw.kind).is_none()
             || definition.container(&ecp.kind).is_none()
@@ -7093,7 +7124,7 @@ impl Services {
         let mut readbacks = Vec::with_capacity(3);
         for (role, node, scope) in [
             ("esw", &esw, &epic_scope),
-            ("ecp", &ecp, &epic_scope),
+            (control_role, &control, &epic_scope),
             ("tsw", &tsw, &task_scope),
         ] {
             let Some(binding) = state
@@ -7112,8 +7143,16 @@ impl Services {
                 Ok(inspection) => inspection,
                 Err(_) => return Ok(PlacementAdmission::NativeTopologyUnconfirmed),
             };
-            let expected_title =
-                self.container_name_from_definition(&definition, node, Some(scope), None)?;
+            let expected_title = match self.container_subject(node)? {
+                ContainerSubject::Desk {
+                    definition: desk_definition,
+                    declaration,
+                    ..
+                } => self.desk_container_name(&desk_definition, &declaration, node)?,
+                ContainerSubject::Epic(_) => {
+                    self.container_name_from_definition(&definition, node, Some(scope), None)?
+                }
+            };
             let expected_cwd = binding
                 .canonical_cwd
                 .as_ref()
@@ -7149,7 +7188,7 @@ impl Services {
                 "topology_correlation": inspection.correlation.label.to_string(),
             }));
         }
-        let attestation = CanonicalDocument::from_value(&serde_json::json!({
+        let mut attested = serde_json::json!({
             "schema_version": 1,
             "project_id": project_id.to_string(),
             "epic_id": epic_id.to_string(),
@@ -7161,8 +7200,14 @@ impl Services {
             "team_definition_hash": pin.definition.canonical_hash.as_str(),
             "worktree": canonical_worktree.as_str(),
             "containers": readbacks,
-        }))
-        .map_err(|error| self.refuse_domain(&error))?;
+        });
+        // Added only for a desk-led epic, so a legacy attestation keeps its
+        // exact bytes and digest.
+        if desk_led.is_some() {
+            attested["desk_adam_subject"] = serde_json::json!(ecp.id.to_string());
+        }
+        let attestation =
+            CanonicalDocument::from_value(&attested).map_err(|error| self.refuse_domain(&error))?;
         Ok(PlacementAdmission::Confirmed {
             attestation_digest: attestation.hash().clone(),
         })
@@ -7877,6 +7922,7 @@ impl Services {
             Some(frozen) => frozen,
             None => {
                 let roster = self.epic_bootstrap_roster(project_id)?;
+                self.refuse_desk_led_roster_for(project_id, epic_id, &roster)?;
                 self.freeze_roster(project_id, epic_id, &roster, None, now)?;
                 roster
             }
@@ -7942,8 +7988,10 @@ impl Services {
             });
         };
         let state = self.state()?;
+        // A desk Adam subject is placed once its desk's workspace is.
+        let host = self.session_container_node(control)?;
         let materialized = state
-            .with_store(|store| store.get_topology_node_container(project_id, control.id))
+            .with_store(|store| store.get_topology_node_container(project_id, host.id))
             .map_err(|error| self.refuse(&error))?
             .is_some();
         let seats = state
@@ -7963,12 +8011,19 @@ impl Services {
             }
         }
         let declared = u32::try_from(seats.len()).unwrap_or(u32::MAX);
+        // A desk Adam subject is staffed by its one phase owner: its LSA while
+        // planning, its TPM while coordinating, never both at once.
+        let required = if host.id == control.id {
+            declared
+        } else {
+            declared.min(1)
+        };
         // Most-blocking first: a seat cannot be launched into a workspace that
         // was never bound, so naming the seat call while the node is unbound
         // would send the operator at the step that cannot yet succeed.
         let completes_with = if !materialized {
             Some("kontor_topology_materialize on scope epic_control".to_owned())
-        } else if staffed < declared {
+        } else if staffed < required {
             Some(
                 "kontor_core_team_materialize with a native route for each unstaffed role"
                     .to_owned(),
@@ -8591,7 +8646,7 @@ impl Services {
         // frozen roster content and does not participate in the instant the
         // durable reads below have to share.
         let mut seats = self.core_team_seat_dtos(&roster.revision)?;
-        let control_kind = self.domain.delivery.control_kind.clone();
+        let control_kind = self.epic_control_kind(project_id, epic_id)?;
         let role_codes: Vec<_> = seats
             .iter()
             .map(|seat| seat.role.role_code.clone())
@@ -8788,6 +8843,7 @@ impl Services {
         may_bind_native: bool,
     ) -> Result<AuthoritativeNative, ApiError> {
         let state = self.state()?;
+        let node = &self.session_container_node(node)?;
         let container = state
             .with_store(|store| store.get_topology_node_container(project_id, node.id))
             .map_err(|error| self.refuse(&error))?
@@ -9282,12 +9338,13 @@ impl Services {
                     "the requested persistent Core Team SeatBinding is not active",
                 )
             })?;
+        let control_kind = self.epic_control_kind(project_id, epic_id)?;
         let node = state
             .with_store(|store| store.get_topology_node(project_id, binding.topology_node_id))
             .map_err(|error| self.refuse(&error))?
             .filter(|node| {
                 node.mini_project_id == Some(epic_id)
-                    && node.kind == self.domain.delivery.control_kind
+                    && node.kind == control_kind
                     && node.task_id.is_none()
             })
             .ok_or_else(|| {
@@ -9525,12 +9582,13 @@ impl Services {
                     "the requested persistent Core Team SeatBinding is not active",
                 )
             })?;
+        let control_kind = self.epic_control_kind(project_id, epic_id)?;
         let node = state
             .with_store(|store| store.get_topology_node(project_id, binding.topology_node_id))
             .map_err(|error| self.refuse(&error))?
             .filter(|node| {
                 node.mini_project_id == Some(epic_id)
-                    && node.kind == self.domain.delivery.control_kind
+                    && node.kind == control_kind
                     && node.task_id.is_none()
             })
             .ok_or_else(|| {
@@ -9611,8 +9669,9 @@ impl Services {
             ));
         }
 
+        let host = self.session_container_node(&node)?;
         let container = state
-            .with_store(|store| store.get_topology_node_container(project_id, node.id))
+            .with_store(|store| store.get_topology_node_container(project_id, host.id))
             .map_err(|error| self.refuse(&error))?
             .ok_or_else(|| {
                 self.deny(
@@ -10432,7 +10491,7 @@ impl Services {
             },
             SemanticTopologyTargetDto::EpicControl { epic_id } => TopologyScope {
                 node_id: None,
-                kind: Some(delivery.control_kind.clone()),
+                kind: Some(self.epic_control_kind(project_id, *epic_id)?),
                 epic_id: Some(self.epic_row(project_id, *epic_id)?.id),
                 task_id: None,
                 desk_key: None,
@@ -10596,6 +10655,19 @@ impl Services {
         )?;
         if kind == self.domain.delivery.epic_kind {
             return Ok(epic);
+        }
+        // A desk-led epic's leadership is a subject below its desk's workspace,
+        // and it has no control plane of its own to place.
+        if let Some(led) = self.epic_desk_leadership(project_id, epic_id)? {
+            if kind == led.leadership.epic_kind {
+                return self.ensure_epic_subject(project_id, epic_id, &led, &topology);
+            }
+            if kind == self.domain.delivery.control_kind {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "a desk-led epic has no control plane of its own",
+                ));
+            }
         }
 
         // A task-scoped node is unique per task; every other epic-scoped kind
@@ -12751,10 +12823,15 @@ impl Services {
         // from the control-plane container. Attention must inspect that exact
         // native or an archived/missing worker would be falsely refreshed merely
         // because its container remains live.
+        let container_node = match state
+            .with_store(|store| store.get_topology_node(project_id, seat.topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+        {
+            Some(node) => self.session_container_node(&node)?.id,
+            None => seat.topology_node_id,
+        };
         let container = state
-            .with_store(|store| {
-                store.get_topology_node_container(project_id, seat.topology_node_id)
-            })
+            .with_store(|store| store.get_topology_node_container(project_id, container_node))
             .map_err(|error| self.refuse(&error))?;
         let hosted = if seat.team_run_id.is_none() {
             state
@@ -26691,7 +26768,7 @@ impl ApplicationOperations for Services {
         seat_binding_id: SeatBindingId,
     ) -> Result<HostedSeatOccupancyChainDto, ApiError> {
         let state = self.state()?;
-        let control_kind = self.domain.delivery.control_kind.clone();
+        let control_kind = self.epic_control_kind(project_id, epic_id)?;
 
         // One acquisition for the whole chain.
         //
@@ -27091,6 +27168,7 @@ impl ApplicationOperations for Services {
         let proved_control = self
             .prove_existing_bound_container(project_id, &control)
             .await?;
+        self.refuse_second_desk_adam(project_id, &control, &routes)?;
 
         // Missing seats only. Every seat already there keeps its identity,
         // because a seat binding is what a running agent is attached to. This
@@ -27106,7 +27184,7 @@ impl ApplicationOperations for Services {
                     "the runtime selected for Core Team placement is not configured",
                 )
             })?;
-            let cwd = self.runtime_root(project_id, Some(epic_id))?;
+            let cwd = self.seat_launch_root(&control)?;
             let container = self
                 .ensure_container(project_id, &control, &cwd, adapter.as_ref())
                 .await?;
@@ -27175,13 +27253,22 @@ impl ApplicationOperations for Services {
                     &seat.role.role_code,
                     Some(&seat.role_slot_id),
                 )?;
-                let prompt = BoundedText::parse(&format!(
+                let mut prompt = format!(
                     "Persistent {} seat for epic {}. Continue only work authorized through Kontor. Await or act on the bounded handoff supplied with this launch, then remain reusable under SeatBinding {}. Use the generation-fenced KONTOR_AUTH value only for this seat's supported identity-bound routes and never disclose it.",
                     seat.role.role_code.as_str(),
                     scope.epic.external_epic_key.as_str(),
                     seat_binding_id,
-                ))
-                .map_err(|error| self.refuse_domain(&error))?;
+                );
+                // Only an LSA whose desk Adam subject was bound from an ad-hoc
+                // one carries a capsule; every other launch keeps its bytes.
+                if let Some(capsule) =
+                    self.desk_adam_launch_capsule(&control, &seat.role.role_code)?
+                {
+                    prompt.push_str(" Desk Adam binding handoff: ");
+                    prompt.push_str(&capsule);
+                }
+                let prompt =
+                    BoundedText::parse(&prompt).map_err(|error| self.refuse_domain(&error))?;
                 // Launch intent, not live configuration, survives a lost
                 // acknowledgement and a restart.
                 //
@@ -27384,6 +27471,28 @@ impl ApplicationOperations for Services {
         })
     }
 
+    /// Hand one desk-led epic's Adam subject from its LSA to its TPM (ASMA-8452).
+    async fn hand_off_desk_adam(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &kontor_api::applications::DeskAdamHandoffRequest,
+    ) -> Result<kontor_api::applications::DeskAdamHandoffDto, ApiError> {
+        self.desk_adam_handoff(key, project_id, epic_id, request)
+            .await
+    }
+
+    /// Open one ad-hoc desk Adam subject (ASMA-8452).
+    async fn open_ad_hoc_desk_adam(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &kontor_api::applications::AdHocDeskAdamOpenRequest,
+    ) -> Result<kontor_api::applications::AdHocDeskAdamDto, ApiError> {
+        self.open_ad_hoc_subject(key, project_id, request).await
+    }
+
     /// Supersede one never-bound prepared launch intent (ASMA-7869).
     async fn supersede_core_team_launch_intent(
         &self,
@@ -27421,12 +27530,13 @@ impl ApplicationOperations for Services {
                     "the requested persistent Core Team SeatBinding is not active",
                 )
             })?;
+        let control_kind = self.epic_control_kind(project_id, epic_id)?;
         let node = state
             .with_store(|store| store.get_topology_node(project_id, binding.topology_node_id))
             .map_err(|error| self.refuse(&error))?
             .filter(|node| {
                 node.mini_project_id == Some(epic_id)
-                    && node.kind == self.domain.delivery.control_kind
+                    && node.kind == control_kind
                     && node.task_id.is_none()
             })
             .ok_or_else(|| {
@@ -27573,8 +27683,9 @@ impl ApplicationOperations for Services {
                 })?;
             self.hosted_seat_lineage(project_id, &node, &binding, &predecessor, true)
                 .await?;
+            let host = self.session_container_node(&node)?;
             let container = state
-                .with_store(|store| store.get_topology_node_container(project_id, node.id))
+                .with_store(|store| store.get_topology_node_container(project_id, host.id))
                 .map_err(|error| self.refuse(&error))?
                 .ok_or_else(|| {
                     self.deny(
@@ -29013,6 +29124,7 @@ impl ApplicationOperations for Services {
             // their next try is refused with "the epic's roster moved since the
             // caller previewed it" — naming an edit that was theirs. Re-reading
             // the epic and previewing again clears it.
+            self.refuse_desk_led_roster_for(project_id, epic_id, &target)?;
             self.freeze_roster(project_id, epic_id, &target, target.quick_session_id, now)?;
             let control = self.ensure_scope_chain(
                 project_id,
@@ -32463,6 +32575,21 @@ impl ApplicationOperations for Services {
                 .expect("an epic intent is an object")
                 .insert("initial_hold".to_owned(), hold_intent);
         }
+        // Widened only when named, so an apply without a desk Adam origin keeps
+        // its pre-field intent bytes and its existing receipt stays replayable.
+        if let Some(origin) = &request.desk_adam_origin {
+            let mut origin_intent = serde_json::json!({ "subject": origin.subject.to_string() });
+            if origin.keep_native {
+                origin_intent
+                    .as_object_mut()
+                    .expect("a desk Adam origin intent is an object")
+                    .insert("keep_native".to_owned(), serde_json::json!(true));
+            }
+            intent_document
+                .as_object_mut()
+                .expect("an epic intent is an object")
+                .insert("desk_adam_origin".to_owned(), origin_intent);
+        }
         let intent = self.intent(&intent_document)?;
         if let Some(receipt) = self.replayed(key, &intent, None)? {
             let AggregateRef::MiniProject { mini_project_id } = receipt.target else {
@@ -32479,6 +32606,9 @@ impl ApplicationOperations for Services {
                 ),
                 None => None,
             };
+            if let Some(origin) = &request.desk_adam_origin {
+                self.bind_desk_adam_origin(project_id, mini_project_id, origin)?;
+            }
             // Also on replay. Governance is installed only after a requested
             // hold has converged, so recovery preserves the admission barrier.
             self.govern_epic(project_id, mini_project_id)?;
@@ -32495,6 +32625,11 @@ impl ApplicationOperations for Services {
             execution_scope,
             tasks,
         } = self.prepare_epic(project_id, request, now)?;
+        self.refuse_ungovernable_desk_led_epic(
+            project_id,
+            &request.name,
+            request.desk_adam_origin.as_ref(),
+        )?;
 
         // A fresh key must not retrofit an "initial" hold onto an already
         // governed epic. Preflight before any write; the only admitted retry is
@@ -32601,6 +32736,12 @@ impl ApplicationOperations for Services {
             None => None,
         };
 
+        // Fenced and bound while the graph is still ungoverned, so no seat of
+        // the epic can launch from it before its leadership names its origin.
+        if let Some(origin) = &request.desk_adam_origin {
+            self.bind_desk_adam_origin(project_id, applied.mini_project_id, origin)?;
+        }
+
         // An epic is born governed only after any requested kickoff hold is
         // durable. The scheduler refuses an ungoverned graph at every earlier
         // crash boundary.
@@ -32695,6 +32836,13 @@ impl ApplicationOperations for Services {
             execution_scope,
             tasks,
         } = self.prepare_epic(project_id, request, now)?;
+        // The same desk-led judgement apply makes before its first write, so a
+        // desk Adam origin, topic or roster apply would refuse is refused here.
+        self.refuse_ungovernable_desk_led_epic(
+            project_id,
+            &request.name,
+            request.desk_adam_origin.as_ref(),
+        )?;
         let preview = state
             .with_store(|store| {
                 store.preview_epic(&EpicApplication {
@@ -42827,21 +42975,26 @@ impl Services {
         // The epic's control plane, which is what a delivery seat belongs to.
         // Created with the task's node rather than lazily beside it: the seat
         // that owns this task's seats has to exist before they can name it.
-        self.ensure_node(
-            scoped
-                .iter()
-                .find(|node| node.kind == self.domain.delivery.control_kind),
-            NewSessionTopologyNode {
-                id: TopologyNodeId::generate(),
-                project_id,
-                mini_project_id: Some(epic_id),
-                topology: topology.clone(),
-                kind: self.domain.delivery.control_kind.clone(),
-                parent_id: Some(epic.id),
-                task_id: None,
-                created_at: now,
-            },
-        )?;
+        // A desk-led epic has none; its owner lives on its desk Adam subject.
+        if let Some(led) = self.epic_desk_leadership(project_id, epic_id)? {
+            self.ensure_epic_subject(project_id, epic_id, &led, &topology)?;
+        } else {
+            self.ensure_node(
+                scoped
+                    .iter()
+                    .find(|node| node.kind == self.domain.delivery.control_kind),
+                NewSessionTopologyNode {
+                    id: TopologyNodeId::generate(),
+                    project_id,
+                    mini_project_id: Some(epic_id),
+                    topology: topology.clone(),
+                    kind: self.domain.delivery.control_kind.clone(),
+                    parent_id: Some(epic.id),
+                    task_id: None,
+                    created_at: now,
+                },
+            )?;
+        }
 
         // A task row can predate the ECP repair above. Return it only after the
         // whole owning chain has been ensured; returning at function entry
@@ -42945,11 +43098,12 @@ impl Services {
         let Some(epic_id) = task_node.mini_project_id else {
             return Ok(None);
         };
+        let control_kind = self.epic_control_kind(project_id, epic_id)?;
         let Some(control) = state
             .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
             .map_err(|error| self.refuse(&error))?
             .into_iter()
-            .find(|node| node.kind == self.domain.delivery.control_kind)
+            .find(|node| node.kind == control_kind)
         else {
             return Err(self.deny(
                 ApiErrorCode::PlacementBlocked,
@@ -43128,11 +43282,12 @@ impl Services {
     ) -> Result<(), ApiError> {
         let state = self.state()?;
         self.ensure_no_team_definition_migration(project_id, epic_id)?;
+        let control_kind = self.epic_control_kind(project_id, epic_id)?;
         let Some(control) = state
             .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
             .map_err(|error| self.refuse(&error))?
             .into_iter()
-            .find(|node| node.kind == self.domain.delivery.control_kind)
+            .find(|node| node.kind == control_kind)
         else {
             // An epic nothing was ever admitted under has no control plane, and
             // closing it is not the moment to build one.
@@ -43747,6 +43902,7 @@ impl Services {
         node: &SessionTopologyNode,
     ) -> Result<Option<ContainerBindingSnapshot>, ApiError> {
         let state = self.state()?;
+        let node = &self.session_container_node(node)?;
         let Some(binding) = state
             .with_store(|store| store.get_topology_node_container(project_id, node.id))
             .map_err(|error| self.refuse(&error))?
@@ -43774,6 +43930,7 @@ impl Services {
         adapter: &dyn RuntimeAdapter,
     ) -> Result<ContainerBindingSnapshot, ApiError> {
         let state = self.state()?;
+        let node = &self.session_container_node(node)?;
         let binding = state
             .with_store(|store| store.get_topology_node_container(project_id, node.id))
             .map_err(|error| self.refuse(&error))?
@@ -43806,6 +43963,18 @@ impl Services {
     ) -> Result<ContainerBindingSnapshot, ApiError> {
         let _native_activity = self.native_activity()?;
         let state = self.state()?;
+        // A desk Adam subject owns no container: its sessions run in its
+        // desk's workspace, prepared exactly as the desk's own is, epic-free
+        // and from the desk's pin.
+        let hosted = self.subject_host(node)?;
+        let desk_cwd;
+        let (node, cwd) = match &hosted {
+            Some((host, desk)) => {
+                desk_cwd = self.desk_root(desk)?;
+                (host, &desk_cwd)
+            }
+            None => (node, cwd),
+        };
         // A container belongs to an epic or to a durable desk, and to nothing
         // else. A desk has no execution scope at all: its runtime request
         // carries none, and its names and kinds come from the desk's own pin.
@@ -44855,6 +45024,17 @@ impl Services {
         role_slot_id: Option<&RoleSlotId>,
     ) -> Result<ExternalName, ApiError> {
         let state = self.state()?;
+        // A desk Adam's title comes from the revision that placed its subject,
+        // which an ad-hoc subject has without any epic.
+        if let Some(definition) = self.subject_definition(node)? {
+            let role_slot_id = role_slot_id.ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "a Team Definition seat requires an exact configured slot identity",
+                )
+            })?;
+            return self.seat_name_from_definition(&definition, node, role_slot_id);
+        }
         if let Some(epic_id) = node.mini_project_id
             && let Some(definition) = self.pinned_team_definition(project_id, epic_id)?
         {
@@ -44977,6 +45157,11 @@ impl Services {
                 )
             })?;
             values = values.with_slot_display_name(display_name.as_str());
+        }
+        if template_uses_token(template, NativeNameToken::Topic)
+            || template_uses_token(template, NativeNameToken::EpicJiraKey)
+        {
+            values = self.desk_adam_title_values(node, template, values)?;
         }
         template
             .render(&definition.separator, &values)

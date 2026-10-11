@@ -641,6 +641,21 @@ const INITIAL_EXECUTION_HOLD: &[FieldSpec] = &[
     ),
 ];
 
+/// The ad-hoc desk Adam a desk-led epic's leadership is bound from.
+const DESK_ADAM_ORIGIN: &[FieldSpec] = &[
+    field(
+        "subject",
+        ArgType::TopologyNodeId,
+        "The ad-hoc desk Adam subject node, on the epic's own desk and bound to no other epic.",
+    ),
+    optional_field(
+        "keep_native",
+        ArgType::Bool,
+        "Keep the ad-hoc native session. Refused: whether a seat credential may follow \
+         its session is a pending decision; the epic's LSA launches fresh.",
+    ),
+];
+
 /// One explicit provider/model route for an authorized recovery operation.
 const RUNTIME_MODEL_ROUTE: &[FieldSpec] = &[
     field("provider", ArgType::Text, "The provider catalog key."),
@@ -1999,6 +2014,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::Object(INITIAL_EXECUTION_HOLD),
                 "A covering authorization apply persists already revoked before the epic becomes governable.",
             ),
+            opt(
+                "desk_adam_origin",
+                Place::Body,
+                ArgType::Object(DESK_ADAM_ORIGIN),
+                "The ad-hoc desk Adam a desk-led epic's leadership would continue; judged as apply judges it, and nothing is fenced.",
+            ),
             req(
                 "tasks",
                 Place::Body,
@@ -2077,6 +2098,12 @@ pub static REGISTRY: &[ToolSpec] = &[
                 Place::Body,
                 ArgType::Object(INITIAL_EXECUTION_HOLD),
                 "A covering authorization apply persists already revoked before the epic becomes governable.",
+            ),
+            opt(
+                "desk_adam_origin",
+                Place::Body,
+                ArgType::Object(DESK_ADAM_ORIGIN),
+                "The ad-hoc desk Adam a desk-led epic's leadership continues; its sessions are fenced before the epic's subject is placed.",
             ),
             req(
                 "tasks",
@@ -7099,6 +7126,98 @@ pub static REGISTRY: &[ToolSpec] = &[
             ),
         ],
         about: "Archive one exact idle native predecessor and refill the same Core Team SeatBinding.",
+    },
+    ToolSpec {
+        name: "kontor_desk_adam_handoff",
+        tier: CallerTier::Admin,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/core-team/desk-adam:handoff",
+        },
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::EpicSelector,
+                "The desk-led epic, by UUID or exact confirmed Jira key.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The epic revision the caller read.",
+            ),
+            req(
+                "from_seat_binding_id",
+                Place::Body,
+                ArgType::SeatBindingId,
+                "The subject's planning LSA seat.",
+            ),
+            req(
+                "expected_native_id",
+                Place::Body,
+                ArgType::ExternalId,
+                "The exact LSA native the caller read.",
+            ),
+            req(
+                "expected_generation",
+                Place::Body,
+                ArgType::U64,
+                "The exact LSA runtime generation.",
+            ),
+            req(
+                "to_seat_binding_id",
+                Place::Body,
+                ArgType::SeatBindingId,
+                "The subject's coordinating TPM seat.",
+            ),
+            req(
+                "model_route",
+                Place::Body,
+                ArgType::Object(RUNTIME_MODEL_ROUTE),
+                "The TPM route, on another vendor than the LSA's.",
+            ),
+        ],
+        about: "Fence a desk-led epic's planning LSA, then launch its coordinating TPM. Across vendors only.",
+    },
+    ToolSpec {
+        name: "kontor_desk_adam_ad_hoc_open",
+        tier: CallerTier::Admin,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/desk-adams/ad-hoc:open",
+        },
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "topic",
+                Place::Body,
+                ArgType::ExternalName,
+                "The topic, frozen into the LSA title `LSA • ADHOC • <topic>`.",
+            ),
+            opt(
+                "model_route",
+                Place::Body,
+                ArgType::Object(RUNTIME_MODEL_ROUTE),
+                "A native launch route. Refused until the epic-free hosted-seat contract lands.",
+            ),
+        ],
+        about: "Open one ad-hoc desk Adam subject and its LSA seat on the project's leadership desk.",
     },
     ToolSpec {
         name: "kontor_core_team_launch_intent_supersede",
