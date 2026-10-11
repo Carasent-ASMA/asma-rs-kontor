@@ -7214,10 +7214,10 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "model_route",
                 Place::Body,
                 ArgType::Object(RUNTIME_MODEL_ROUTE),
-                "A native launch route. Refused until the epic-free hosted-seat contract lands.",
+                "A route for the LSA's native session, launched in the desk workspace with no epic label; omit it to record only the subject and its seat.",
             ),
         ],
-        about: "Open one ad-hoc desk Adam subject and its LSA seat on the project's leadership desk.",
+        about: "Open one ad-hoc desk Adam subject and its LSA seat on the project's leadership desk, and launch the LSA when a route is named.",
     },
     ToolSpec {
         name: "kontor_core_team_launch_intent_supersede",

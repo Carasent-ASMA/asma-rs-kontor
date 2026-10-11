@@ -284,6 +284,44 @@ impl Services {
         }
     }
 
+    /// Where a hosted seat on `node` is placed natively: its desk's own
+    /// project for a desk Adam subject, the epic's project otherwise.
+    ///
+    /// The placement is only where the native lives. A desk Adam's native
+    /// carries no epic or mini-project label and nothing is filed under its
+    /// epic; the epic it acts for is its subject's, read from the subject row
+    /// on every path that asks.
+    pub(super) fn hosted_seat_scope(
+        &self,
+        node: &SessionTopologyNode,
+        scope: &ExecutionScope,
+    ) -> Result<HostedSeatScope, ApiError> {
+        match self.subject_host(node)? {
+            Some((_, desk)) => self.desk_seat_scope(&desk),
+            None => Ok(HostedSeatScope::Epic(scope.clone())),
+        }
+    }
+
+    /// The desk placement of a desk Adam's native: the desk workspace's exact
+    /// persisted parent, read by id, as for every durable desk seat.
+    fn desk_seat_scope(&self, desk: &StoredDesk) -> Result<HostedSeatScope, ApiError> {
+        let parent = self
+            .state()?
+            .with_store(|store| {
+                store.get_topology_node_container(desk.project_id, desk.topology_node_id)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the desk is not materialized; materialize it before launching a desk Adam",
+                )
+            })?;
+        Ok(HostedSeatScope::Desk {
+            project: parent.identity,
+        })
+    }
+
     /// The exact definition revision a subject's seat titles render from.
     pub(super) fn subject_definition(
         &self,
@@ -610,8 +648,16 @@ impl Services {
         }
 
         if !fenced {
-            self.fence_planning_session(project_id, &subject, &predecessor)
-                .await?;
+            self.fence_subject_session(
+                project_id,
+                &subject,
+                &predecessor,
+                (
+                    "desk Adam handoff to the coordinating TPM",
+                    "desk Adam handoff; the planning session was already gone",
+                ),
+            )
+            .await?;
         }
 
         // The TPM launches through the one materialization every Core Team
@@ -691,14 +737,18 @@ impl Services {
             })
     }
 
-    /// Retire the planning session's native and move it into the seat's route
-    /// history. The readback of the desk workspace is the fence: a workspace
-    /// the runtime no longer holds refuses here, before anything is retired.
-    async fn fence_planning_session(
+    /// Retire one session of a subject and move it into its seat's route
+    /// history, recording the first reason when the runtime retired it and
+    /// the second when it proved the session already gone. The readback of
+    /// the desk workspace is the fence: a workspace the runtime no longer
+    /// holds refuses here, before anything is retired, and only a session the
+    /// runtime proves absent is treated as gone.
+    async fn fence_subject_session(
         &self,
         project_id: ProjectId,
         subject: &StoredDeskAdamSubject,
         predecessor: &StoredHostedTopologySeat,
+        (retired_reason, absent_reason): (&'static str, &'static str),
     ) -> Result<(), ApiError> {
         let _native_activity = self.native_activity()?;
         let state = self.state()?;
@@ -726,7 +776,7 @@ impl Services {
             .ok_or_else(|| {
                 self.deny(
                     ApiErrorCode::StaleBinding,
-                    "the desk workspace has no proved native container to fence the planning session in",
+                    "the desk workspace has no proved native container to fence the session in",
                 )
             })?;
         let placement = HostedSeatRetirePlacement {
@@ -750,14 +800,10 @@ impl Services {
             })
             .await
         {
-            Ok(retired) => (
-                retired.archived_at,
-                "desk Adam handoff to the coordinating TPM",
-            ),
-            Err(error) if error.proves_hosted_predecessor_absent() => (
-                kontor_api::now(),
-                "desk Adam handoff; the planning session was already gone",
-            ),
+            Ok(retired) => (retired.archived_at, retired_reason),
+            Err(error) if error.proves_hosted_predecessor_absent() => {
+                (kontor_api::now(), absent_reason)
+            }
             Err(error) => return Err(ApiError::from_runtime(state.realm_id(), &error)),
         };
         state
@@ -771,35 +817,36 @@ impl Services {
     /// Open one ad-hoc desk Adam on the desk the project's selected Team
     /// Definition leads from, or return the subject its topic already opened.
     ///
-    /// Logical only for now: the subject, its node and its LSA seat. An
-    /// ad-hoc subject has no epic, and the hosted-seat launch contract still
-    /// requires one, so a route for its native session refuses before any
-    /// effect rather than inventing an epic or a launcher of its own. The
-    /// epic-free contract arrives with the sibling desk-seat work (ASMA-8451).
+    /// The subject, its node and its LSA seat, and with a `model_route` the
+    /// LSA's native session, launched in the desk workspace on the epic-free
+    /// hosted-seat contract (ASMA-8451). The route is parsed before anything
+    /// is written.
     pub(super) async fn open_ad_hoc_subject(
         &self,
         key: &IdempotencyKey,
         project_id: ProjectId,
         request: &AdHocDeskAdamOpenRequest,
     ) -> Result<AdHocDeskAdamDto, ApiError> {
-        if request.model_route.is_some() {
-            return Err(self
-                .deny(
-                    ApiErrorCode::UnsupportedCapability,
-                    "an ad-hoc desk Adam launches only on the epic-free hosted-seat contract",
-                )
-                .about("ad-hoc desk Adam")
-                .advising(
-                    "open it without a model_route; its native launch arrives with the epic-free hosted-seat contract (ASMA-8451); nothing was placed",
-                ));
-        }
         let state = self.state()?;
-        let intent = self.intent(&serde_json::json!({
+        let fleet = self.fleet.current();
+        let model_rung = request
+            .model_route
+            .as_ref()
+            .map(|route| parse_runtime_model_route(route, fleet.as_deref()))
+            .transpose()
+            .map_err(|error| self.refuse_domain(&error))?;
+        let mut intent_document = serde_json::json!({
             "schema_version": 1,
             "operation": "open_ad_hoc_desk_adam",
             "project": project_id.to_string(),
             "topic": request.topic.as_str(),
-        }))?;
+        });
+        // Widened only when named, so a logical-only open keeps its intent
+        // bytes and its receipt stays replayable.
+        if let Some(route) = &request.model_route {
+            intent_document["model_route"] = serde_json::json!(route);
+        }
+        let intent = self.intent(&intent_document)?;
         let target = AggregateRef::Project { project_id };
         self.replayed(key, &intent, Some(&target))?;
         let project = state
@@ -873,6 +920,14 @@ impl Services {
         let node = self.ensure_subject_node(&subject, &placed.ad_hoc_kind, &definition.topology)?;
         let lsa = self.ensure_ad_hoc_lsa(project_id, &node, &definition, placed)?;
         let lsa_title = self.seat_name_from_definition(&definition, &node, &lsa.role_slot_id)?;
+        if let Some(model_rung) = &model_rung {
+            self.launch_ad_hoc_lsa(project_id, &node, &subject, &lsa, &lsa_title, model_rung)
+                .await?;
+        }
+        let lsa_native_id = state
+            .with_store(|store| store.get_hosted_topology_seat(project_id, lsa.id))
+            .map_err(|error| self.refuse(&error))?
+            .map(|hosted| hosted.native_identity.native_id);
         let (receipt_id, created) = self.record_classified(
             key,
             project_id,
@@ -885,6 +940,7 @@ impl Services {
             subject: desk_adam_subject_dto(&subject),
             lsa_seat_binding_id: lsa.id,
             lsa_title,
+            lsa_native_id,
             receipt: MutationReceiptDto {
                 realm_id: state.realm_id(),
                 receipt_id: receipt_id.to_string(),
@@ -990,6 +1046,204 @@ impl Services {
         }
     }
 
+    /// Launch the ad-hoc LSA's first native, or prove the one it already has.
+    ///
+    /// This is the generation-one launch of a Core Team leadership seat,
+    /// addressed to the desk instead of an epic: the desk workspace's proved
+    /// container and directory, and the desk's own native project, with no
+    /// epic label and nothing filed under an epic. An ad-hoc native is never
+    /// re-routed or relaunched; its topic moves to an epic, whose LSA launches
+    /// fresh, or a new topic is opened.
+    async fn launch_ad_hoc_lsa(
+        &self,
+        project_id: ProjectId,
+        node: &SessionTopologyNode,
+        subject: &StoredDeskAdamSubject,
+        seat: &SeatBinding,
+        title: &ExternalName,
+        model_rung: &ModelRung,
+    ) -> Result<(), ApiError> {
+        let _native_activity = self.native_activity()?;
+        let state = self.state()?;
+        let runtime_kind = self.node_runtime_kind()?;
+        let adapter = state.runtimes().get(&runtime_kind).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the runtime selected for desk Adam placement is not configured",
+            )
+        })?;
+        if !adapter.provider_available(model_rung.provider.0.as_str()) {
+            return Err(ApiError::from_runtime(
+                state.realm_id(),
+                &RuntimeError::ProviderUnavailable {
+                    provider: model_rung.provider.0.clone(),
+                },
+            ));
+        }
+        if let Some(existing) = state
+            .with_store(|store| store.get_hosted_topology_seat(project_id, seat.id))
+            .map_err(|error| self.refuse(&error))?
+        {
+            if &existing.model_rung != model_rung {
+                return Err(self
+                    .deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "this ad-hoc desk Adam is already live under a different route",
+                    )
+                    .about("ad-hoc desk Adam")
+                    .advising(
+                        "open it with the route it runs under, or bind its topic to an epic, whose LSA launches fresh",
+                    ));
+            }
+            return self
+                .reuse_bound_core_team_seat(
+                    project_id,
+                    seat.id,
+                    &existing,
+                    model_rung,
+                    adapter.as_ref(),
+                )
+                .await
+                .map_err(|error| {
+                    error.about("ad-hoc desk Adam").advising(
+                        "an ad-hoc desk Adam is not relaunched; bind its topic to an epic, whose LSA launches fresh, or open another topic",
+                    )
+                });
+        }
+        let cwd = self.seat_launch_root(node)?;
+        let container = self
+            .ensure_container(project_id, node, &cwd, adapter.as_ref())
+            .await?;
+        let (_, desk) = self.subject_host(node)?.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "an ad-hoc desk Adam subject is not below its desk's workspace",
+            )
+        })?;
+        let scope = self.desk_seat_scope(&desk)?;
+        let capabilities = adapter
+            .discover_capabilities()
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let context_policy = ContextPolicySnapshot::standard(
+            &capabilities.limits.context_window,
+            capabilities.supports(RuntimeCapability::ContextPolicy),
+            SCHEMA_VERSION,
+            kontor_api::now(),
+        )
+        .map_err(|error| self.refuse_domain(&error))?;
+        let prompt = BoundedText::parse(&format!(
+            "Ad-hoc {} seat on desk {} for the topic {}. It belongs to no epic until one adopts the topic. Continue only work authorized through Kontor, then remain reusable under SeatBinding {}. Use the generation-fenced KONTOR_AUTH value only for this seat's supported identity-bound routes and never disclose it.",
+            seat.role.role_code.as_str(),
+            subject.desk_key.as_str(),
+            subject.topic.as_str(),
+            seat.id,
+        ))
+        .map_err(|error| self.refuse_domain(&error))?;
+        // A prepared intent means an earlier attempt resolved this
+        // generation's authority and may have created the native before its
+        // answer was lost: the replay asks for what that attempt did.
+        let autonomy = match state
+            .with_store(|store| {
+                store.get_hosted_seat_launch_intent(project_id, seat.id, FIRST_HOSTED_OCCUPANCY)
+            })
+            .map_err(|error| self.refuse(&error))?
+        {
+            Some(intent) => intent.autonomy,
+            None => freeze_hosted_seat_autonomy(adapter.declared_autonomy()),
+        };
+        state
+            .with_store(|store| {
+                store.prepare_hosted_seat_launch_intent(&StoredHostedSeatLaunchIntent {
+                    project_id,
+                    seat_binding_id: seat.id,
+                    occupancy_generation: FIRST_HOSTED_OCCUPANCY,
+                    autonomy,
+                    model_rung: model_rung.clone(),
+                    state: HostedSeatLaunchIntentState::Prepared,
+                    observed_native_id: None,
+                    prepared_at: kontor_api::now(),
+                    installed_at: None,
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+        let role_persona = self.freeze_role_persona(&seat.role.role_code)?;
+        if let Some(persona) = role_persona.as_ref() {
+            state
+                .with_store(|store| {
+                    store.record_hosted_seat_role_persona(
+                        project_id,
+                        seat.id,
+                        FIRST_HOSTED_OCCUPANCY,
+                        persona,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
+        let outcome = adapter
+            .launch_hosted_seat(&HostedSeatLaunchRequest {
+                seat_binding_id: seat.id,
+                role_slot_id: seat.role_slot_id.clone(),
+                display_name: title.clone(),
+                container,
+                cwd,
+                scope,
+                prompt,
+                role_prompt: role_persona.as_ref().map(|persona| persona.prompt.clone()),
+                credential: ConsultationCredential::new(
+                    state
+                        .credentials()
+                        .seat_credential_for_generation(seat.id, FIRST_HOSTED_OCCUPANCY),
+                ),
+                fenced_predecessor_native_ids: Vec::new(),
+                model_rung: model_rung.clone(),
+                fleet_provenance: None,
+                autonomy,
+                context_policy,
+                requested_at: kontor_api::now(),
+            })
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let hosted = StoredHostedTopologySeat {
+            project_id,
+            seat_binding_id: seat.id,
+            model_rung: model_rung.clone(),
+            native_identity: outcome.identity,
+            autonomy,
+            provider_session_id: outcome.provider_session_id,
+            observed_at: outcome.observed_at,
+        };
+        state
+            .with_store(|store| store.bind_hosted_topology_seat(&hosted))
+            .map_err(|error| self.refuse(&error))?;
+        state
+            .with_store(|store| {
+                store.install_hosted_seat_launch_intent(
+                    project_id,
+                    seat.id,
+                    FIRST_HOSTED_OCCUPANCY,
+                    &hosted.native_identity.native_id,
+                    hosted.observed_at,
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
+        state
+            .with_store(|store| {
+                store.observe_seat_binding(
+                    project_id,
+                    seat.id,
+                    &SeatLivenessObservation {
+                        attached_at: Some(hosted.observed_at),
+                        runtime_reported: Some(kontor_core::state::ObservedRunState::Running),
+                        ..SeatLivenessObservation::default()
+                    },
+                    hosted.observed_at,
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
+        Ok(())
+    }
+
     /// Check one `desk_adam_origin` against the epic it would bind, before
     /// anything is written, and return the ad-hoc subject it names.
     ///
@@ -1048,25 +1302,27 @@ impl Services {
                 "the epic's desk Adam is already placed from another origin",
             ));
         }
-        // An ad-hoc native cannot exist before the epic-free launch contract,
-        // and fencing one needs that contract too. Refused rather than left
-        // running beside the epic's LSA.
+        // A live ad-hoc session is fenced after the epic's graph is written and
+        // before its subject row. The runtime holding it must at least be
+        // configured, or that fence could never run.
         for seat in state
             .with_store(|store| store.list_seat_bindings(project_id, origin.subject))
             .map_err(|error| self.refuse(&error))?
         {
-            if state
+            if let Some(hosted) = state
                 .with_store(|store| store.get_hosted_topology_seat(project_id, seat.id))
                 .map_err(|error| self.refuse(&error))?
-                .is_some()
+                && state
+                    .runtimes()
+                    .get(&hosted.native_identity.runtime_kind)
+                    .is_none()
             {
                 return Err(self
                     .deny(
-                        ApiErrorCode::UnsupportedCapability,
-                        "an ad-hoc desk Adam with a native session is fenced only on the epic-free hosted-seat contract",
+                        ApiErrorCode::Unavailable,
+                        "the runtime holding the ad-hoc desk Adam's session is not configured",
                     )
-                    .about("desk Adam binding")
-                    .advising("bind it once the epic-free contract lands (ASMA-8451); nothing was placed"));
+                    .about("desk Adam binding"));
             }
         }
         Ok(source)
@@ -1074,13 +1330,16 @@ impl Services {
 
     /// Bind one desk-led epic's leadership to an ad-hoc subject.
     ///
-    /// The ad-hoc seats are fenced first, then the epic's subject row is
-    /// written naming its origin; the schema refuses the row while any ad-hoc
-    /// seat is still active or occupied. The ad-hoc row and its seats' history
-    /// are never rewritten, and the epic's LSA later launches as a fresh native
-    /// with its own credential and the handoff capsule. Runs on every apply
-    /// that names the origin, replays included, and converges.
-    pub(super) fn bind_desk_adam_origin(
+    /// The ad-hoc seats are fenced first: each live session is retired in the
+    /// desk workspace and archived, then every seat is released. Only then is
+    /// the epic's subject row written naming its origin; the schema refuses
+    /// the row while any ad-hoc seat is still active or occupied. The ad-hoc
+    /// row and its seats' history are never rewritten, and the epic's LSA
+    /// later launches as a fresh native with its own credential and the
+    /// handoff capsule. Runs on every apply that names the origin, replays
+    /// included, and converges: a fence that could not finish is finished by
+    /// the retry.
+    pub(super) async fn bind_desk_adam_origin(
         &self,
         project_id: ProjectId,
         epic_id: MiniProjectId,
@@ -1099,13 +1358,28 @@ impl Services {
             return Ok(());
         }
         let state = self.state()?;
-        let now = kontor_api::now();
-        for seat in state
+        let seats = state
             .with_store(|store| store.list_seat_bindings(project_id, source.topology_node_id))
-            .map_err(|error| self.refuse(&error))?
-            .into_iter()
-            .filter(SeatBinding::is_non_terminal)
-        {
+            .map_err(|error| self.refuse(&error))?;
+        for seat in &seats {
+            if let Some(hosted) = state
+                .with_store(|store| store.get_hosted_topology_seat(project_id, seat.id))
+                .map_err(|error| self.refuse(&error))?
+            {
+                self.fence_subject_session(
+                    project_id,
+                    &source,
+                    &hosted,
+                    (
+                        "desk Adam binding of an ad-hoc topic to an epic",
+                        "desk Adam binding; the ad-hoc session was already gone",
+                    ),
+                )
+                .await?;
+            }
+        }
+        let now = kontor_api::now();
+        for seat in seats.into_iter().filter(SeatBinding::is_non_terminal) {
             state
                 .with_store(|store| {
                     store.observe_seat_binding(

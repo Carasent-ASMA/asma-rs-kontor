@@ -1520,10 +1520,9 @@ pub struct AdHocDeskAdamOpenRequest {
     /// its seat titles; it may not carry a title separator glyph.
     #[schema(value_type = String)]
     pub topic: ExternalName,
-    /// A route for the ad-hoc LSA's native session.
-    ///
-    /// Refused for now: an ad-hoc subject has no epic, and the hosted-seat
-    /// launch contract still requires one.
+    /// A route for the ad-hoc LSA's native session, launched in the desk
+    /// workspace with no epic label. Absent, only the subject and its seat
+    /// are recorded.
     #[serde(default)]
     pub model_route: Option<RuntimeModelRouteRequest>,
 }
@@ -1560,12 +1559,16 @@ pub struct DeskAdamSubjectDto {
 pub struct AdHocDeskAdamDto {
     /// The subject.
     pub subject: DeskAdamSubjectDto,
-    /// Its LSA seat. Logical only until the epic-free launch contract lands.
+    /// Its LSA seat.
     #[schema(value_type = String)]
     pub lsa_seat_binding_id: SeatBindingId,
     /// The title the LSA's session renders.
     #[schema(value_type = String)]
     pub lsa_title: ExternalName,
+    /// The LSA's native session, once one was launched for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub lsa_native_id: Option<ExternalId>,
     /// The receipt it was committed under.
     pub receipt: MutationReceiptDto,
 }

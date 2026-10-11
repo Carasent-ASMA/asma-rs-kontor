@@ -13538,9 +13538,16 @@
           "receipt"
         ],
         "properties": {
+          "lsa_native_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The LSA's native session, once one was launched for it."
+          },
           "lsa_seat_binding_id": {
             "type": "string",
-            "description": "Its LSA seat. Logical only until the epic-free launch contract lands."
+            "description": "Its LSA seat."
           },
           "lsa_title": {
             "type": "string",
@@ -13570,7 +13577,7 @@
               },
               {
                 "$ref": "#/components/schemas/RuntimeModelRouteRequest",
-                "description": "A route for the ad-hoc LSA's native session.\n\nRefused for now: an ad-hoc subject has no epic, and the hosted-seat\nlaunch contract still requires one."
+                "description": "A route for the ad-hoc LSA's native session, launched in the desk\nworkspace with no epic label. Absent, only the subject and its seat\nare recorded."
               }
             ]
           },

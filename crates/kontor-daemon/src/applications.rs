@@ -27201,6 +27201,7 @@ impl ApplicationOperations for Services {
                 ));
             }
             let scope = self.execution_scope(project_id, epic_id, None, adapter.as_ref())?;
+            let hosted_scope = self.hosted_seat_scope(&control, &scope)?;
             let capabilities = adapter
                 .discover_capabilities()
                 .await
@@ -27353,7 +27354,7 @@ impl ApplicationOperations for Services {
                         display_name,
                         container: container.clone(),
                         cwd: cwd.clone(),
-                        scope: HostedSeatScope::Epic(scope.clone()),
+                        scope: hosted_scope.clone(),
                         prompt,
                         role_prompt: role_persona.as_ref().map(|persona| persona.prompt.clone()),
                         credential: ConsultationCredential::new(
@@ -28039,7 +28040,7 @@ impl ApplicationOperations for Services {
                         "the Core Team control-plane node no longer exists",
                     )
                 })?;
-            let cwd = self.runtime_root(project_id, Some(epic_id))?;
+            let cwd = self.seat_launch_root(&control)?;
             let container = self
                 .ensure_container(project_id, &control, &cwd, adapter.as_ref())
                 .await?;
@@ -28143,7 +28144,7 @@ impl ApplicationOperations for Services {
                     display_name,
                     container,
                     cwd,
-                    scope: HostedSeatScope::Epic(scope),
+                    scope: self.hosted_seat_scope(&control, &scope)?,
                     prompt,
                     role_prompt: role_persona.as_ref().map(|persona| persona.prompt.clone()),
                     credential: ConsultationCredential::new(
@@ -32607,7 +32608,8 @@ impl ApplicationOperations for Services {
                 None => None,
             };
             if let Some(origin) = &request.desk_adam_origin {
-                self.bind_desk_adam_origin(project_id, mini_project_id, origin)?;
+                self.bind_desk_adam_origin(project_id, mini_project_id, origin)
+                    .await?;
             }
             // Also on replay. Governance is installed only after a requested
             // hold has converged, so recovery preserves the admission barrier.
@@ -32739,7 +32741,8 @@ impl ApplicationOperations for Services {
         // Fenced and bound while the graph is still ungoverned, so no seat of
         // the epic can launch from it before its leadership names its origin.
         if let Some(origin) = &request.desk_adam_origin {
-            self.bind_desk_adam_origin(project_id, applied.mini_project_id, origin)?;
+            self.bind_desk_adam_origin(project_id, applied.mini_project_id, origin)
+                .await?;
         }
 
         // An epic is born governed only after any requested kickoff hold is

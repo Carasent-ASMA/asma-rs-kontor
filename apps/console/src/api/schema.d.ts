@@ -4140,7 +4140,9 @@ export interface components {
         };
         /** @description What opening an ad-hoc desk Adam produced. */
         AdHocDeskAdamDto: {
-            /** @description Its LSA seat. Logical only until the epic-free launch contract lands. */
+            /** @description The LSA's native session, once one was launched for it. */
+            lsa_native_id?: string | null;
+            /** @description Its LSA seat. */
             lsa_seat_binding_id: string;
             /** @description The title the LSA's session renders. */
             lsa_title: string;
