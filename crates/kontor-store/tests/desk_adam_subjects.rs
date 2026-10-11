@@ -1239,9 +1239,11 @@ fn the_typed_export_carries_subjects_and_no_older_generation_can_carry_or_concea
         }
     };
 
+    // Generation 15 (schema 132) is the last one before subjects: it proves
+    // durable seat declarations, so only the subject check can refuse it.
     let mut carrying = base.clone();
-    carrying["schema_version"] = json!(14);
-    carrying["database_schema_version"] = json!(131);
+    carrying["schema_version"] = json!(15);
+    carrying["database_schema_version"] = json!(132);
     rehash(&mut carrying);
     assert_eq!(
         refusal(carrying),
@@ -1249,7 +1251,7 @@ fn the_typed_export_carries_subjects_and_no_older_generation_can_carry_or_concea
     );
 
     let mut concealing = base.clone();
-    concealing["schema_version"] = json!(14);
+    concealing["schema_version"] = json!(15);
     concealing["records"]["desk_adam_subjects"] = json!([]);
     concealing["continuity_summary"]["record_counts"]["desk_adam_subjects"] = json!(0);
     rehash(&mut concealing);
