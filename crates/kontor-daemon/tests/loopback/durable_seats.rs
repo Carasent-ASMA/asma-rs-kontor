@@ -795,6 +795,9 @@ async fn a_seat_of_an_unmaterialized_desk_is_refused_before_any_binding() {
             .expect("a binding"),
     )
     .expect("an id");
+    // The seat is observed first, census included, so the runtime is asked.
+    // The refusal comes after that and before the binding, the launch intent
+    // and any launch, which is what this counts.
     let calls_before = world.fake.calls().len();
     let refused = Call::post(
         format!("{}:reconcile", seats_path(&project, "adam")),

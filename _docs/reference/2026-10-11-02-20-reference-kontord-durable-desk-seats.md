@@ -140,8 +140,10 @@ in `kontor-core`, before any effect.
   key.
 
 A launch needs the desk to be materialized. A desk that is only ensured is
-refused with `placement_blocked`. The refusal comes before any seat binding,
-launch intent or runtime call. The first launch creates the seat's
+refused with `placement_blocked`. The seat is observed first, census
+included, so the runtime may already have been asked. The refusal comes
+before Kontor creates the seat's SeatBinding or launch intent, and before
+any launch. The first launch creates the seat's
 SeatBinding in the desk workspace, using the seat key as its role slot. The
 native is placed in the desk's own native project, which is read back by
 exact id. It carries the seat's correlation labels and no epic or
@@ -185,10 +187,17 @@ mini-project label.
   and no restart for them, even when the runtime shows them missing.
 - **Operator-selected only.** Nothing reconciles on a schedule, at daemon
   start, or for seats that were not selected.
-- **Launch and reconcile only.** This revision has no route to message,
-  wake, retire or archive a desk seat. The epic hosted-seat routes were not
-  extended to desk seats. Stop a daemon-owned seat by archiving it in Paseo;
-  it is then reported `archived` and never restarted.
+- **No dedicated lifecycle operations.** There is no desk-seat operation to
+  wake, retire or archive a seat; reconciliation only launches and recovers.
+  - A launched daemon-owned seat can be messaged directly through the
+    generic seat message route,
+    `POST /v1/projects/{project_id}/seat-bindings/{seat_binding_id}/messages`
+    (`kontor_topology_seat_message_send`, operator).
+  - The generic seat retire route (`kontor_seat_retire`) refuses a desk seat
+    with `placement_blocked`, because it fences retirement through an epic.
+  - A Paseo-direct seat has no SeatBinding, so no Kontor route reaches it.
+  - Stop a daemon-owned seat by archiving it in Paseo. It is then reported
+    `archived` and never restarted.
 - **Not atomic across seats.** If a later seat fails after an earlier seat
   in the same call was launched, the earlier seat stays launched and bound,
   and no receipt is recorded. A retry with the same key finds that seat
