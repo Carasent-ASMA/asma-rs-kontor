@@ -5848,8 +5848,15 @@ impl PaseoAdapter {
     ) -> RuntimeResult<PaseoHostedSeatClaimPlan> {
         let declared = self.declared().await?;
         preflight(&declared, &OperationContext::new(RuntimeCapability::Adopt))?;
-        let scope = self.effective_scope(&request.scope)?;
-        let project = self.require_project_for(&scope)?;
+        // A desk Adam's claimant is found where its launch would place it:
+        // in the desk's own project, never through the epic's ledger.
+        let (project, scope) = match &request.scope {
+            HostedSeatScope::Epic(scope) => {
+                let scope = self.effective_scope(scope)?;
+                (self.require_project_for(&scope)?, Some(scope))
+            }
+            HostedSeatScope::Desk { project } => (self.desk_seat_project(project).await?, None),
+        };
         let workspace_id = request.container_native_id.as_str();
         let workspace = self.fetch_workspace_in(&project, workspace_id).await?;
         self.verify_hosted_workspace_placement(&workspace, &project, &request.cwd)?;
@@ -5901,14 +5908,22 @@ impl PaseoAdapter {
                 })
                 .transpose()?,
         };
-        let claimant_labels = self.hosted_labels(
-            request.seat_binding_id,
-            &request.role_slot_id,
-            &scope,
-            &project,
-            workspace_id,
-            &request.cwd,
-        )?;
+        let claimant_labels = match &scope {
+            Some(scope) => self.hosted_labels(
+                request.seat_binding_id,
+                &request.role_slot_id,
+                scope,
+                &project,
+                workspace_id,
+                &request.cwd,
+            )?,
+            None => Self::desk_seat_labels(
+                request.seat_binding_id,
+                &request.role_slot_id,
+                workspace_id,
+                &request.cwd,
+            ),
+        };
         if Self::claimant_has_foreign_ownership(&claimant, &claimant_labels) {
             return Err(RuntimeError::SlotAlreadyAdmitted {
                 rule: "the claimant already belongs to another Kontor or native seat",

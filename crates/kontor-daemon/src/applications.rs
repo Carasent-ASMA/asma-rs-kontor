@@ -1082,6 +1082,10 @@ pub struct Services {
     /// Serializes durable desk seat reconciliation (ASMA-8451), so two
     /// reconciliations of one seat never both reach the runtime.
     durable_seat_guard: tokio::sync::Mutex<()>,
+    /// Serializes an ad-hoc desk Adam's launch with the binding of its topic
+    /// to an epic (ASMA-8452), so a binding never censuses an origin seat
+    /// while a launch on it is still on its way to the runtime.
+    desk_adam_guard: tokio::sync::Mutex<()>,
     /// Native cleanup excludes placement, migration and hosted work until exact
     /// readback and logical release finish. The realm's exclusive state-root
     /// lock supplies the single-process boundary; native identities and durable
@@ -1172,6 +1176,7 @@ impl Services {
             provider_probe_guard: tokio::sync::Mutex::new(()),
             succession_guard: tokio::sync::Mutex::new(()),
             durable_seat_guard: tokio::sync::Mutex::new(()),
+            desk_adam_guard: tokio::sync::Mutex::new(()),
             native_lifecycle_guard: tokio::sync::RwLock::new(()),
             quota_signals,
             fleet,
@@ -9714,7 +9719,7 @@ impl Services {
             display_name,
             container_native_id: proved_container.binding.identity.native_id.clone(),
             cwd,
-            scope,
+            scope: self.hosted_seat_scope(&node, &scope)?,
             claimant_native_id: request.claimant_native_id.clone(),
             expected_claimant_provider_session_id: None,
             expected_predecessor: predecessor.as_ref().map(|predecessor| {

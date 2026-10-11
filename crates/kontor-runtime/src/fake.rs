@@ -939,6 +939,9 @@ struct FakeState {
     /// epic's project or a desk's, which is all a test can see of the labels
     /// and project a real runtime derives from it.
     hosted_launch_scopes: BTreeMap<SeatBindingId, HostedSeatScope>,
+    /// Where the last claim of each hosted seat, previewed or applied, asked
+    /// its claimant to be found: an epic's project or a desk's.
+    hosted_claim_scopes: BTreeMap<SeatBindingId, HostedSeatScope>,
     /// Terminal hosted natives retained so retirement and recovery are replayable.
     archived_hosted_seats: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
     /// Stable message ledger per exact hosted native. A logical seat may be
@@ -1636,6 +1639,7 @@ impl ScriptedFakeRuntime {
                 hosted_role_prompts: BTreeMap::new(),
                 hosted_initial_prompts: BTreeMap::new(),
                 hosted_launch_scopes: BTreeMap::new(),
+                hosted_claim_scopes: BTreeMap::new(),
                 archived_hosted_seats: BTreeMap::new(),
                 hosted_messages: BTreeMap::new(),
                 hosted_claim_routes: BTreeMap::new(),
@@ -2537,6 +2541,11 @@ impl ScriptedFakeRuntime {
         self.lock().hosted_census_refusal = Some(error);
     }
 
+    /// Answer hosted-seat censuses again after [`Self::refuse_hosted_census`].
+    pub fn answer_hosted_census(&self) {
+        self.lock().hosted_census_refusal = None;
+    }
+
     /// The predecessors the latest launch of this binding named as fenced.
     #[must_use]
     pub fn hosted_launch_fence(&self, seat_binding_id: SeatBindingId) -> Option<Vec<ExternalId>> {
@@ -2757,6 +2766,13 @@ impl ScriptedFakeRuntime {
     #[must_use]
     pub fn hosted_launch_scope(&self, seat: SeatBindingId) -> Option<HostedSeatScope> {
         self.lock().hosted_launch_scopes.get(&seat).cloned()
+    }
+
+    /// The placement the last claim of one hosted seat, previewed or
+    /// applied, asked for.
+    #[must_use]
+    pub fn hosted_claim_scope(&self, seat: SeatBindingId) -> Option<HostedSeatScope> {
+        self.lock().hosted_claim_scopes.get(&seat).cloned()
     }
 
     /// The route a consultation seat was launched on.
@@ -4680,6 +4696,9 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         state
             .calls
             .push(AdapterCall::PreviewClaimHostedSeat(request.seat_binding_id));
+        state
+            .hosted_claim_scopes
+            .insert(request.seat_binding_id, request.scope.clone());
         let (container_native_id, provider_session_id, _) = state
             .seat_titles
             .get(&request.claimant_native_id)

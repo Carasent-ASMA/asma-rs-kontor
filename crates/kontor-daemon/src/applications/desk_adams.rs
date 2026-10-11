@@ -16,6 +16,7 @@ use kontor_api::applications::{
 use kontor_core::repository::StoredDeskAdamSubject;
 use kontor_core::spec::TeamDeskLeadership;
 use kontor_runtime::adapter::HostedSeatRetirePlacement;
+use kontor_runtime::durable_seat::HostedSeatCensusRequest;
 
 /// The desk leadership that governs one epic.
 pub(super) struct DeskLed {
@@ -1063,8 +1064,50 @@ impl Services {
         title: &ExternalName,
         model_rung: &ModelRung,
     ) -> Result<(), ApiError> {
+        let held = self.desk_adam_guard.lock().await;
+        self.launch_ad_hoc_lsa_held(project_id, node, subject, seat, title, model_rung, &held)
+            .await
+    }
+
+    /// [`Self::launch_ad_hoc_lsa`], for a caller that already holds the desk
+    /// Adam guard: an open, or a binding recovering a launch that lost its
+    /// answer.
+    ///
+    /// Under the guard the seat and its topic are read again. A binding that
+    /// finished while this launch waited has released the seat and moved the
+    /// topic, and nothing may reach the runtime for either after that.
+    #[allow(clippy::too_many_arguments)]
+    async fn launch_ad_hoc_lsa_held(
+        &self,
+        project_id: ProjectId,
+        node: &SessionTopologyNode,
+        subject: &StoredDeskAdamSubject,
+        seat: &SeatBinding,
+        title: &ExternalName,
+        model_rung: &ModelRung,
+        _held: &tokio::sync::MutexGuard<'_, ()>,
+    ) -> Result<(), ApiError> {
         let _native_activity = self.native_activity()?;
         let state = self.state()?;
+        let seated = state
+            .with_store(|store| store.get_seat_binding(project_id, seat.id))
+            .map_err(|error| self.refuse(&error))?
+            .is_some_and(|seat| seat.is_non_terminal());
+        let moved = state
+            .with_store(|store| {
+                store.get_desk_adam_subject_bound_from(project_id, subject.topology_node_id)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .is_some();
+        if !seated || moved {
+            return Err(self
+                .deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "this ad-hoc desk Adam topic has already moved to an epic",
+                )
+                .about("ad-hoc desk Adam")
+                .advising("open another topic, or work in the epic it moved to"));
+        }
         let runtime_kind = self.node_runtime_kind()?;
         let adapter = state.runtimes().get(&runtime_kind).ok_or_else(|| {
             self.deny(
@@ -1303,20 +1346,24 @@ impl Services {
             ));
         }
         // A live ad-hoc session is fenced after the epic's graph is written and
-        // before its subject row. The runtime holding it must at least be
-        // configured, or that fence could never run.
+        // before its subject row, and a launch that lost its answer is
+        // censused first. The runtime holding, or launching, the session must
+        // at least be configured, or that fence could never run.
         for seat in state
             .with_store(|store| store.list_seat_bindings(project_id, origin.subject))
             .map_err(|error| self.refuse(&error))?
         {
-            if let Some(hosted) = state
+            let runtime_kind = match state
                 .with_store(|store| store.get_hosted_topology_seat(project_id, seat.id))
                 .map_err(|error| self.refuse(&error))?
-                && state
-                    .runtimes()
-                    .get(&hosted.native_identity.runtime_kind)
-                    .is_none()
             {
+                Some(hosted) => Some(hosted.native_identity.runtime_kind),
+                None if self.unconfirmed_launch(project_id, &seat)?.is_some() => {
+                    self.node_runtime_kind().ok()
+                }
+                None => continue,
+            };
+            if runtime_kind.is_none_or(|kind| state.runtimes().get(&kind).is_none()) {
                 return Err(self
                     .deny(
                         ApiErrorCode::Unavailable,
@@ -1328,10 +1375,125 @@ impl Services {
         Ok(source)
     }
 
+    /// The prepared launch intent of an origin seat that records no
+    /// occupancy: a launch that may have created its native and then lost the
+    /// answer, so the empty occupancy proves nothing.
+    fn unconfirmed_launch(
+        &self,
+        project_id: ProjectId,
+        seat: &SeatBinding,
+    ) -> Result<Option<StoredHostedSeatLaunchIntent>, ApiError> {
+        let state = self.state()?;
+        if !seat.is_non_terminal()
+            || state
+                .with_store(|store| store.get_hosted_topology_seat(project_id, seat.id))
+                .map_err(|error| self.refuse(&error))?
+                .is_some()
+        {
+            return Ok(None);
+        }
+        let generation = state
+            .with_store(|store| {
+                store.list_hosted_topology_seat_history_native_ids(project_id, seat.id)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .len();
+        let generation = u64::try_from(generation)
+            .unwrap_or(u64::MAX)
+            .saturating_add(1);
+        Ok(state
+            .with_store(|store| {
+                store.get_hosted_seat_launch_intent(project_id, seat.id, generation)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .filter(|intent| intent.state == HostedSeatLaunchIntentState::Prepared))
+    }
+
+    /// Settle an origin seat whose launch prepared its intent and recorded no
+    /// native, before the binding fences the origin.
+    ///
+    /// The runtime is censused as a durable desk seat's recovery censuses it
+    /// (ASMA-8451). No live carrier proves the launch never took effect, or
+    /// that its native is already archived: there is nothing to fence. One
+    /// live carrier is recovered by replaying the launch under its prepared
+    /// intent, which binds that native rather than creating another, and the
+    /// fence then retires it. Anything else, a census included that does not
+    /// answer, refuses before anything is released, and a retry with the same
+    /// key resumes here.
+    async fn settle_unconfirmed_origin_launch(
+        &self,
+        project_id: ProjectId,
+        source: &StoredDeskAdamSubject,
+        seat: &SeatBinding,
+        held: &tokio::sync::MutexGuard<'_, ()>,
+    ) -> Result<(), ApiError> {
+        let Some(intent) = self.unconfirmed_launch(project_id, seat)? else {
+            return Ok(());
+        };
+        let state = self.state()?;
+        let runtime_kind = self.node_runtime_kind()?;
+        let adapter = state.runtimes().get(&runtime_kind).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the runtime holding the ad-hoc desk Adam's session is not configured",
+            )
+            .about("desk Adam binding")
+        })?;
+        let census = adapter
+            .census_hosted_seat(&HostedSeatCensusRequest {
+                seat_binding_id: seat.id,
+                requested_at: kontor_api::now(),
+            })
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        match census
+            .carriers
+            .iter()
+            .filter(|carrier| !carrier.archived)
+            .count()
+        {
+            0 => Ok(()),
+            1 => {
+                let node = state
+                    .with_store(|store| store.get_topology_node(project_id, source.topology_node_id))
+                    .map_err(|error| self.refuse(&error))?
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::PlacementBlocked,
+                            "the ad-hoc desk Adam's node is missing",
+                        )
+                    })?;
+                let definition = self.published_definition(project_id, &source.team_definition)?;
+                let title =
+                    self.seat_name_from_definition(&definition, &node, &seat.role_slot_id)?;
+                self.launch_ad_hoc_lsa_held(
+                    project_id,
+                    &node,
+                    source,
+                    seat,
+                    &title,
+                    &intent.model_rung,
+                    held,
+                )
+                .await
+            }
+            _ => Err(self
+                .deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "several live sessions carry the ad-hoc desk Adam's seat",
+                )
+                .about("desk Adam binding")
+                .advising(
+                    "retire the sessions Kontor did not launch, then retry with the same key; nothing was released",
+                )),
+        }
+    }
+
     /// Bind one desk-led epic's leadership to an ad-hoc subject.
     ///
-    /// The ad-hoc seats are fenced first: each live session is retired in the
-    /// desk workspace and archived, then every seat is released. Only then is
+    /// The ad-hoc seats are fenced first: a launch that lost its answer is
+    /// settled against the runtime, each live session is retired in the desk
+    /// workspace and archived, then every seat is released. Only then is
     /// the epic's subject row written naming its origin; the schema refuses
     /// the row while any ad-hoc seat is still active or occupied. The ad-hoc
     /// row and its seats' history are never rewritten, and the epic's LSA
@@ -1345,6 +1507,9 @@ impl Services {
         epic_id: MiniProjectId,
         origin: &DeskAdamOriginRequest,
     ) -> Result<(), ApiError> {
+        // Held from the census to the subject row, so no ad-hoc launch can
+        // reach the runtime for the origin between them.
+        let held = self.desk_adam_guard.lock().await;
         let led = self
             .epic_desk_leadership(project_id, epic_id)?
             .ok_or_else(|| self.not_desk_led())?;
@@ -1361,6 +1526,10 @@ impl Services {
         let seats = state
             .with_store(|store| store.list_seat_bindings(project_id, source.topology_node_id))
             .map_err(|error| self.refuse(&error))?;
+        for seat in &seats {
+            self.settle_unconfirmed_origin_launch(project_id, &source, seat, &held)
+                .await?;
+        }
         for seat in &seats {
             if let Some(hosted) = state
                 .with_store(|store| store.get_hosted_topology_seat(project_id, seat.id))

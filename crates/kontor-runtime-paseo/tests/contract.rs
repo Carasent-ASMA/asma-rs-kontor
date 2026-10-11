@@ -10854,7 +10854,7 @@ async fn an_existing_session_claim_preserves_identity_and_releases_duplicate_tit
         display_name: name(canonical_title),
         container_native_id: external(WORKSPACE_ID),
         cwd: root(),
-        scope: epic_execution_scope(),
+        scope: HostedSeatScope::Epic(epic_execution_scope()),
         claimant_native_id: external(AGENT_ID),
         expected_claimant_provider_session_id: None,
         expected_predecessor: None,
@@ -10950,7 +10950,7 @@ async fn a_sibling_workspace_title_does_not_block_an_exact_hosted_seat_claim() {
             display_name: name(canonical_title),
             container_native_id: external(WORKSPACE_ID),
             cwd: root(),
-            scope: epic_execution_scope(),
+            scope: HostedSeatScope::Epic(epic_execution_scope()),
             claimant_native_id: external(AGENT_ID),
             expected_claimant_provider_session_id: None,
             expected_predecessor: None,
@@ -13678,7 +13678,7 @@ async fn a_hosted_claim_refuses_a_moved_claimant_with_a_valid_ecp() {
             display_name: name("LSA"),
             container_native_id: external(WORKSPACE_ID),
             cwd: root(),
-            scope: epic_execution_scope(),
+            scope: HostedSeatScope::Epic(epic_execution_scope()),
             claimant_native_id: external(AGENT_ID),
             expected_claimant_provider_session_id: None,
             expected_predecessor: None,
@@ -15708,6 +15708,113 @@ async fn an_epic_desk_adam_launches_in_the_desk_project_and_names_no_epic() {
         create["labels"], adam_labels,
         "a desk Adam carries exactly its seat labels and no epic"
     );
+    assert!(
+        plane.adapter.project_binding().is_none(),
+        "nothing is filed in the epic-keyed project ledger"
+    );
+}
+
+/// A desk Adam's claim (ASMA-8452) finds its claimant where its launch would
+/// place it: in the desk's own native project, read back by id, never through
+/// the epic-keyed project ledger, which holds nothing for its epic. The
+/// claimant takes the seat's title and labels and no epic or mini-project
+/// label, and the ledger stays empty.
+#[tokio::test]
+async fn a_desk_adam_claim_resolves_the_desk_project_and_names_no_epic() {
+    let seat_binding_id = SeatBindingId::generate();
+    let title = "LSA • ASMA-8449 • kontord durable desks";
+    let adam_labels = [
+        (label::SEAT_BINDING.to_owned(), seat_binding_id.to_string()),
+        (label::HOSTED_SEAT.to_owned(), "true".to_owned()),
+        (label::ROLE.to_owned(), "lsa".to_owned()),
+        (label::ROLE_SLOT.to_owned(), "lsa".to_owned()),
+        (label::WORKSPACE_ID.to_owned(), WORKSPACE_ID.to_owned()),
+        (label::WORKTREE.to_owned(), CWD.to_owned()),
+    ]
+    .into_iter()
+    .collect::<BTreeMap<_, _>>();
+    let mut claimant_before = v(AGENT);
+    claimant_before["agent"]["title"] = serde_json::json!("hand-started LSA");
+    claimant_before["agent"]["labels"] = serde_json::json!({});
+    let mut claimant_after = claimant_before.clone();
+    claimant_after["agent"]["title"] = serde_json::json!(title);
+    claimant_after["agent"]["labels"] = serde_json::to_value(&adam_labels).expect("labels");
+    let listing = |claimant: &serde_json::Value| {
+        serde_json::json!({
+            "requestId": "req-fixture",
+            "entries": [
+                { "agent": claimant["agent"].clone(), "project": claimant["project"].clone() }
+            ],
+            "pageInfo": { "nextCursor": null, "prevCursor": null, "hasMore": false }
+        })
+    };
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering(
+            &PaseoCommand::agent_update(AGENT_ID, Some(title), &adam_labels),
+            r#"{"agentId":"agt_implement"}"#,
+        )
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .answering_rpc("fetch_workspaces_request", desk_workspace_listing())
+        .then_answering_rpc("fetch_agent_request", claimant_before.clone())
+        .then_answering_rpc("fetch_agent_request", claimant_before.clone())
+        .answering_rpc("fetch_agent_request", claimant_after.clone())
+        .then_answering_rpc("fetch_agents_request", listing(&claimant_before))
+        .then_answering_rpc("fetch_agents_request", listing(&claimant_before))
+        .answering_rpc("fetch_agents_request", listing(&claimant_after));
+    let (plane, _) = desk_plane(recorded).await;
+    let request = HostedSeatClaimRequest {
+        seat_binding_id,
+        role_slot_id: slot("lsa"),
+        display_name: name(title),
+        container_native_id: external(WORKSPACE_ID),
+        cwd: root(),
+        scope: HostedSeatScope::Desk {
+            project: bound_root(node(NODE_B)).identity,
+        },
+        claimant_native_id: external(AGENT_ID),
+        expected_claimant_provider_session_id: None,
+        expected_predecessor: None,
+        requested_at: at("2026-10-11T09:00:00Z"),
+    };
+
+    // The epic's placement cannot resolve the claim: no epic project exists.
+    let through_the_epic = plane
+        .adapter
+        .preview_hosted_seat_claim(&HostedSeatClaimRequest {
+            scope: HostedSeatScope::Epic(epic_execution_scope()),
+            ..request.clone()
+        })
+        .await
+        .expect_err("the epic ledger holds no project for a desk Adam");
+    assert!(
+        matches!(through_the_epic, RuntimeError::WorkspaceMismatch { .. }),
+        "{through_the_epic:?}"
+    );
+
+    let preview = plane
+        .adapter
+        .preview_hosted_seat_claim(&request)
+        .await
+        .expect("the claimant is found in the desk workspace");
+    assert_eq!(preview.identity.native_id.as_str(), AGENT_ID);
+    assert!(!preview.already_claimed);
+    assert!(preview.title_conflicts.is_empty());
+
+    let mut apply = request;
+    apply.expected_claimant_provider_session_id = preview.provider_session_id.clone();
+    let outcome = plane
+        .adapter
+        .claim_hosted_seat(&apply)
+        .await
+        .expect("the desk Adam claim is applied and re-read");
+    assert!(outcome.changed);
+    assert!(outcome.claim.already_claimed);
+    assert_eq!(outcome.claim.identity, preview.identity);
+    // The only write is the claimant's title and its exact desk labels.
+    assert_eq!(plane.daemon.count("agent update agt_implement"), 1);
+    assert_eq!(plane.daemon.count("agent archive"), 0);
     assert!(
         plane.adapter.project_binding().is_none(),
         "nothing is filed in the epic-keyed project ledger"
