@@ -470,6 +470,280 @@
           }
         }
       ]
+    },
+    {
+      "schema_version": 1,
+      "spec_id": "01936f5a-1000-7000-8000-000000000001",
+      "version": 6,
+      "name": "Operational project session topology",
+      "name_separator": " · ",
+      "root_kind": "PSW",
+      "node_kinds": [
+        {
+          "kind": "PSW",
+          "allowed_parents": [],
+          "cardinality": {
+            "minimum": 1,
+            "maximum": 1
+          },
+          "projection_capabilities": [
+            "native_root"
+          ],
+          "read_only": false,
+          "name_template": {
+            "segments": [
+              { "kind": "literal", "value": "Project Session Workspace" }
+            ]
+          },
+          "code_help": {
+            "full_name": "Project Session Workspace",
+            "meaning": "Logical root grouping the Quick and Epic session scopes of one Kontor Project.",
+            "category": "session_topology",
+            "lifecycle": "current"
+          }
+        },
+        {
+          "kind": "QSW",
+          "allowed_parents": [
+            "PSW"
+          ],
+          "cardinality": {
+            "minimum": 0
+          },
+          "projection_capabilities": [
+            "native_child",
+            "session_host"
+          ],
+          "read_only": false,
+          "name_template": {
+            "segments": [
+              { "kind": "literal", "value": "Quick Session Workspace" }
+            ]
+          },
+          "seat_name_template": {
+            "segments": [
+              { "kind": "token", "value": "AREA_CODE" }
+            ]
+          },
+          "code_help": {
+            "full_name": "Quick Session Workspace",
+            "meaning": "Ad-hoc single-role session scope that may later provide an epic promotion handoff.",
+            "category": "session_topology",
+            "lifecycle": "current"
+          }
+        },
+        {
+          "kind": "ESW",
+          "allowed_parents": [
+            "PSW"
+          ],
+          "cardinality": {
+            "minimum": 0
+          },
+          "projection_capabilities": [
+            "native_root"
+          ],
+          "read_only": false,
+          "name_template": {
+            "segments": [
+              { "kind": "token", "value": "AREA_CODE" },
+              { "kind": "token", "value": "ITEM_CODE" }
+            ]
+          },
+          "code_help": {
+            "full_name": "Epic Session Workspace",
+            "meaning": "Complete logical boundary for one concrete epic; Paseo projects it as one epic project.",
+            "category": "session_topology",
+            "lifecycle": "current"
+          }
+        },
+        {
+          "kind": "ECP",
+          "allowed_parents": [
+            "ESW"
+          ],
+          "cardinality": {
+            "minimum": 1,
+            "maximum": 1
+          },
+          "projection_capabilities": [
+            "native_child",
+            "session_host"
+          ],
+          "read_only": false,
+          "name_template": {
+            "segments": [
+              { "kind": "token", "value": "AREA_CODE" },
+              { "kind": "token", "value": "ITEM_CODE" }
+            ]
+          },
+          "seat_name_template": {
+            "segments": [
+              { "kind": "token", "value": "AREA_CODE" },
+              { "kind": "token", "value": "ITEM_CODE" }
+            ]
+          },
+          "code_help": {
+            "full_name": "Epic Control Plane",
+            "meaning": "Specification-defined ESW child grouping persistent epic leadership, coordination and authorized ad-hoc seats in one runtime session host.",
+            "category": "session_topology",
+            "lifecycle": "current"
+          }
+        },
+        {
+          "kind": "TSW",
+          "allowed_parents": [
+            "ESW"
+          ],
+          "cardinality": {
+            "minimum": 0
+          },
+          "projection_capabilities": [
+            "native_child",
+            "session_host"
+          ],
+          "read_only": false,
+          "name_template": {
+            "segments": [
+              { "kind": "token", "value": "AREA_CODE" },
+              { "kind": "token", "value": "ITEM_CODE" }
+            ]
+          },
+          "seat_name_template": {
+            "segments": [
+              { "kind": "token", "value": "AREA_CODE" },
+              { "kind": "token", "value": "ITEM_CODE" }
+            ]
+          },
+          "code_help": {
+            "full_name": "Ticket Session Workspace",
+            "meaning": "Delivery workspace for one ticket and all persistent seats in that ticket's TeamRun.",
+            "category": "session_topology",
+            "lifecycle": "current"
+          }
+        },
+        {
+          "kind": "ASW",
+          "allowed_parents": [
+            "ESW"
+          ],
+          "cardinality": {
+            "minimum": 0
+          },
+          "projection_capabilities": [
+            "native_child",
+            "session_host"
+          ],
+          "read_only": true,
+          "name_template": {
+            "segments": [
+              { "kind": "literal", "value": "Advisor Session Workspace" }
+            ]
+          },
+          "seat_name_template": {
+            "segments": [
+              { "kind": "token", "value": "AREA_CODE" }
+            ]
+          },
+          "code_help": {
+            "full_name": "Advisor Session Workspace",
+            "meaning": "Read-only workspace for one Advisor consultation and one Advisor seat.",
+            "category": "session_topology",
+            "lifecycle": "current"
+          }
+        },
+        {
+          "kind": "CSW",
+          "allowed_parents": [
+            "ESW"
+          ],
+          "cardinality": {
+            "minimum": 0
+          },
+          "projection_capabilities": [
+            "native_child",
+            "session_host"
+          ],
+          "read_only": true,
+          "name_template": {
+            "segments": [
+              { "kind": "literal", "value": "Committee Session Workspace" }
+            ]
+          },
+          "seat_name_template": {
+            "segments": [
+              { "kind": "token", "value": "AREA_CODE" }
+            ]
+          },
+          "code_help": {
+            "full_name": "Committee Session Workspace",
+            "meaning": "Read-only workspace for one Committee run or topic and its template-declared seats.",
+            "category": "session_topology",
+            "lifecycle": "current"
+          }
+        },
+        {
+          "kind": "DESK",
+          "allowed_parents": ["PSW"],
+          "cardinality": { "minimum": 0 },
+          "projection_capabilities": ["native_root"],
+          "read_only": false,
+          "name_template": {
+            "segments": [
+              { "kind": "token", "value": "AREA_CODE" }
+            ]
+          },
+          "code_help": {
+            "full_name": "Durable Desk",
+            "meaning": "Project-level native project that no epic owns; created by explicit selection and never retired by an epic closeout.",
+            "category": "session_topology",
+            "lifecycle": "current"
+          }
+        },
+        {
+          "kind": "DWS",
+          "allowed_parents": ["DESK"],
+          "cardinality": { "minimum": 1, "maximum": 1 },
+          "projection_capabilities": ["native_child", "session_host"],
+          "read_only": false,
+          "name_template": {
+            "segments": [
+              { "kind": "token", "value": "AREA_CODE" }
+            ]
+          },
+          "seat_name_template": {
+            "segments": [
+              { "kind": "token", "value": "AREA_CODE" }
+            ]
+          },
+          "code_help": {
+            "full_name": "Desk Workspace",
+            "meaning": "The one native workspace inside a durable desk, hosting the desk's sessions.",
+            "category": "session_topology",
+            "lifecycle": "current"
+          }
+        }
+      ],
+      "historical_codes": [
+        {
+          "kind": "TSC",
+          "help": {
+            "full_name": "Ticket Session Committee",
+            "meaning": "Historical name accepted only at read or import boundaries and normalized to CSW.",
+            "category": "session_topology",
+            "lifecycle": "compatibility"
+          }
+        },
+        {
+          "kind": "PASE",
+          "help": {
+            "full_name": "Removed historical topology term",
+            "meaning": "Obsolete term that must not be emitted or seeded by new state.",
+            "category": "session_topology",
+            "lifecycle": "retired"
+          }
+        }
+      ]
     }
   ],
   "team_definitions": [
@@ -618,6 +892,193 @@
               "capability_profile": "committee-judge"
             }
           ]
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "definition_id": "01936f5a-2000-7000-8000-000000000001",
+      "version": 7,
+      "name": "ASMA Operational Team Definition",
+      "topology": {
+        "spec_id": "01936f5a-1000-7000-8000-000000000001",
+        "version": 6,
+        "canonical_hash": "fa9c97101e7b82569805055c7ebcc795aaaf7221fbf5bdc30f767d255dae8eae"
+      },
+      "separator": " • ",
+      "containers": [
+        {
+          "kind": "ESW",
+          "parent": null,
+          "prefix": "ESW",
+          "projection_capabilities": ["native_root"],
+          "read_only": false,
+          "name_template": {
+            "segments": [
+              { "kind": "token", "value": "PREFIX" },
+              { "kind": "token", "value": "EPIC_ITEM_CODE" }
+            ]
+          }
+        },
+        {
+          "kind": "ECP",
+          "parent": "ESW",
+          "prefix": "ECP",
+          "projection_capabilities": ["native_child", "session_host"],
+          "read_only": false,
+          "name_template": {
+            "segments": [
+              { "kind": "token", "value": "PREFIX" },
+              { "kind": "token", "value": "EPIC_ITEM_CODE" }
+            ]
+          },
+          "seat_name_template": {
+            "segments": [
+              { "kind": "token", "value": "ROLE_CODE" }
+            ]
+          },
+          "slots": [
+            {
+              "slot_id": "lsa",
+              "role_code": "LSA",
+              "capability_profile": "epic-leadership"
+            },
+            {
+              "slot_id": "tpm",
+              "role_code": "TPM",
+              "capability_profile": "epic-coordination"
+            }
+          ]
+        },
+        {
+          "kind": "TSW",
+          "parent": "ESW",
+          "prefix": "TSW",
+          "projection_capabilities": ["native_child", "session_host"],
+          "read_only": false,
+          "name_template": {
+            "segments": [
+              { "kind": "token", "value": "PREFIX" },
+              { "kind": "token", "value": "TASK_ITEM_CODE" }
+            ]
+          },
+          "seat_name_template": {
+            "segments": [
+              { "kind": "token", "value": "ROLE_CODE" }
+            ]
+          },
+          "team_slots": [
+            { "slot_id": "scope", "role_code": "SA", "capability_profile": "delivery-standard" },
+            { "slot_id": "implement", "role_code": "SWE", "capability_profile": "delivery-standard" },
+            { "slot_id": "verify", "role_code": "QA", "capability_profile": "delivery-standard" },
+            { "slot_id": "audit", "role_code": "AUD", "capability_profile": "delivery-high" }
+          ]
+        },
+        {
+          "kind": "ASW",
+          "parent": "ESW",
+          "prefix": "ASW",
+          "projection_capabilities": ["native_child", "session_host"],
+          "read_only": true,
+          "name_template": {
+            "segments": [
+              { "kind": "token", "value": "PREFIX" },
+              { "kind": "token", "value": "SCOPE_ITEM_CODE" },
+              { "kind": "token", "value": "TOPIC" }
+            ]
+          },
+          "seat_name_template": {
+            "segments": [
+              { "kind": "token", "value": "ROLE_CODE" }
+            ]
+          },
+          "slots": [
+            {
+              "slot_id": "software-architect",
+              "role_code": "SA",
+              "capability_profile": "independent-advisor"
+            },
+            {
+              "slot_id": "auditor",
+              "role_code": "AUD",
+              "capability_profile": "independent-advisor"
+            }
+          ]
+        },
+        {
+          "kind": "CSW",
+          "parent": "ESW",
+          "prefix": "CSW",
+          "projection_capabilities": ["native_child", "session_host"],
+          "read_only": true,
+          "name_template": {
+            "segments": [
+              { "kind": "token", "value": "PREFIX" },
+              { "kind": "token", "value": "SCOPE_ITEM_CODE" },
+              { "kind": "token", "value": "TOPIC" }
+            ]
+          },
+          "seat_name_template": {
+            "segments": [
+              { "kind": "token", "value": "SLOT_DISPLAY_NAME" }
+            ]
+          },
+          "slots": [
+            {
+              "slot_id": "reviewer-a",
+              "display_name": "SEAT A",
+              "capability_profile": "independent-reviewer"
+            },
+            {
+              "slot_id": "reviewer-b",
+              "display_name": "SEAT B",
+              "capability_profile": "independent-reviewer"
+            },
+            {
+              "slot_id": "judge",
+              "display_name": "JUDGE",
+              "capability_profile": "committee-judge"
+            }
+          ]
+        },
+        {
+          "kind": "DESK",
+          "parent": null,
+          "prefix": "DESK",
+          "projection_capabilities": ["native_root"],
+          "read_only": false,
+          "name_template": {
+            "segments": [
+              { "kind": "token", "value": "PREFIX" },
+              { "kind": "token", "value": "DESK_NAME" }
+            ]
+          }
+        },
+        {
+          "kind": "DWS",
+          "parent": "DESK",
+          "prefix": "ADAM",
+          "projection_capabilities": ["native_child", "session_host"],
+          "read_only": false,
+          "name_template": {
+            "segments": [
+              { "kind": "token", "value": "PREFIX" }
+            ]
+          }
+        }
+      ],
+      "desks": [
+        {
+          "desk_key": "adam",
+          "display_name": "ADAM",
+          "kind": "DESK",
+          "workspace_kind": "DWS"
+        },
+        {
+          "desk_key": "pr-review",
+          "display_name": "PR REVIEW",
+          "kind": "DESK",
+          "workspace_kind": "DWS"
         }
       ]
     }

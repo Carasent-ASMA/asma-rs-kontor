@@ -114,7 +114,7 @@ fn child_request(node_id: TopologyNodeId, scope: ExecutionScope) -> ContainerReq
         container_binding_id: ContainerBindingId::generate(),
         topology_node_id: node_id,
         topology: topology(),
-        scope,
+        scope: Some(scope),
         capabilities: vec![NodeProjectionCapability::NativeChild],
         display_name: name("A bound container"),
         parent: Some(parent_binding()),

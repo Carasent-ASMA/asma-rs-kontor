@@ -60,11 +60,11 @@ fn container_request(node_id: TopologyNodeId, title: &str) -> ContainerRequest {
         container_binding_id: ContainerBindingId::generate(),
         topology_node_id: node_id,
         topology: topology(),
-        scope: ExecutionScope::for_epic(EpicScope {
+        scope: Some(ExecutionScope::for_epic(EpicScope {
             mini_project_id: MiniProjectId::generate(),
             external_epic_key: ExternalId::parse("ASMA-RETITLE").expect("epic key"),
             short_title: name("Retitle contract"),
-        }),
+        })),
         capabilities: vec![NodeProjectionCapability::NativeRoot],
         display_name: name(title),
         parent: None,

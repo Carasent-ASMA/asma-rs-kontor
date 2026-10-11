@@ -143,6 +143,7 @@ use uuid::Uuid;
 
 use crate::SqliteStore;
 mod attestation_authority;
+mod desks;
 use crate::events::append::stored_payload;
 use crate::events::replay::{EVENT_COLUMNS, read_event};
 use crate::graph::{Applied, IdempotencyBinding};
@@ -10883,21 +10884,34 @@ impl TopologyRepository for SqliteStore {
                 // The unscoped project root outlives individual epic pins.
                 // Its direct epic boundary may span revisions of one lineage
                 // only when both immutable specifications permit that edge.
+                //
+                // A project-level kind a later revision introduces (a durable
+                // desk) has no edge in the root's older revision to agree
+                // with. It may hang off that root unscoped only from a newer
+                // revision, and only when the older one does not declare the
+                // kind at all; a kind the root's revision does declare keeps
+                // the rule above.
                 let historical_project_root = if parent.topology != request.topology
                     && parent.lifecycle == TopologyLifecycle::Active
                     && parent.topology.spec_id == request.topology.spec_id
                     && parent.mini_project_id.is_none()
                     && parent.parent_id.is_none()
-                    && request.mini_project_id.is_some()
                     && request.task_id.is_none()
                     && parent.kind == spec.root_kind
                 {
                     let parent_spec =
                         topology_spec_in(&transaction, request.project_id, &parent.topology)?;
                     parent.kind == parent_spec.root_kind
-                        && parent_spec.node_kinds.iter().any(|kind| {
-                            kind.kind == request.kind && kind.allowed_parents.contains(&parent.kind)
-                        })
+                        && match parent_spec.node_kind(&request.kind) {
+                            Some(kind) => {
+                                request.mini_project_id.is_some()
+                                    && kind.allowed_parents.contains(&parent.kind)
+                            }
+                            None => {
+                                request.mini_project_id.is_none()
+                                    && request.topology.version > parent.topology.version
+                            }
+                        }
                 } else {
                     false
                 };

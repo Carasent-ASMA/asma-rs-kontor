@@ -3298,15 +3298,18 @@ fn without_quota(document: &mut serde_json::Value) {
     // is absent from a generation-7 document's *records* as well as its
     // vocabulary: the canonical byte path strips it below 13, so a fixture that
     // carries it hashes as something no generation-7 emitter ever wrote
-    // (ASMA-8187).
-    document["records"]
-        .as_object_mut()
-        .expect("records are an object")
-        .remove("core_team_route_successions");
+    // (ASMA-8187). Generation fourteen's desks likewise (ASMA-8450).
+    for key in ["core_team_route_successions", "desks"] {
+        document["records"]
+            .as_object_mut()
+            .expect("records are an object")
+            .remove(key);
+    }
     for key in [
         "succession_attempts",
         "succession_receipts",
         "core_team_route_successions",
+        "desks",
     ] {
         document["continuity_summary"]["record_counts"]
             .as_object_mut()

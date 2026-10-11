@@ -147,6 +147,7 @@ fn definition() -> TeamDefinitionSpec {
                 ],
             ),
         ],
+        desks: Vec::new(),
     }
 }
 

@@ -143,6 +143,7 @@ fn recommended() -> TeamDefinitionSpec {
                 ],
             ),
         ],
+        desks: Vec::new(),
     }
 }
 

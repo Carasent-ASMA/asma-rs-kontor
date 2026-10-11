@@ -45,7 +45,7 @@ use kontor_core::authority::{SubjectAuthority, SubjectOrigin};
 use kontor_core::backlog_identity::{EpicBacklogCode, LegacyEpicBacklogCode};
 use kontor_core::id::{
     AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, BoundedText, CommitteeRunId,
-    ContentHash, ExternalId, ExternalName, IdempotencyKey, MiniProjectId, OpenQuestionId,
+    ContentHash, DeskKey, ExternalId, ExternalName, IdempotencyKey, MiniProjectId, OpenQuestionId,
     ProjectId, ProviderUsageObservationId, PublicationAttestationId, QuickSessionId, RoleCatalogId,
     RoleCode, RoleSlotId, RuntimeKindKey, SeatBindingId, SpecVersion, TaskId, TeamDefinitionId,
     TeamRunId, Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId,
@@ -307,6 +307,12 @@ pub struct TopologyNodeDto {
     pub observed_binding: Option<ObservedBindingDto>,
     /// The seats this node hosts, in stable slot order.
     pub seats: Vec<TopologySeatDto>,
+    /// The durable desk this node realizes — the desk itself or its workspace
+    /// — and absent for every node that is not part of one. A desk belongs to
+    /// no epic, so this is the only membership such a node reports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub desk_key: Option<DeskKey>,
     /// Current aggregate revision for an exact optimistic-concurrency mutation.
     #[schema(value_type = u64)]
     pub revision: AggregateRevision,
@@ -361,6 +367,14 @@ pub enum SemanticTopologyTargetDto {
         /// The consultation.
         #[schema(value_type = String)]
         committee_run_id: CommitteeRunId,
+    },
+    /// One durable desk and its workspace, which belong to the project rather
+    /// than to any epic. The key must be one the project's selected Team
+    /// Definition declares; the desk keeps that revision for its whole life.
+    Desk {
+        /// The desk's declared key.
+        #[schema(value_type = String)]
+        desk_key: DeskKey,
     },
 }
 

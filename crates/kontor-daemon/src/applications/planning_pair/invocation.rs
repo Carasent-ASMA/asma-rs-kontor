@@ -291,6 +291,7 @@ impl<'a> InvokeOwner for InvokePorts<'a> {
                 kind: Some(self.0.domain.delivery.epic_kind.clone()),
                 epic_id: Some(epic_id),
                 task_id: None,
+                desk_key: None,
                 key: format!("epic:{epic_id}"),
             },
         )

@@ -3309,7 +3309,13 @@ impl PaseoAdapter {
         if !request.epic_container {
             return Ok(());
         }
-        let scope = self.effective_scope(&request.scope)?;
+        let scope = request
+            .scope
+            .as_ref()
+            .ok_or(RuntimeError::WorkspaceMismatch {
+                rule: "an epic project container must name the epic it represents",
+            })?;
+        let scope = self.effective_scope(scope)?;
         let project = self.read_project_by_id(native_id.as_str()).await?;
         let epic_id = Self::external_epic_id(&scope)?;
         let _ = self.settle_project(
@@ -3333,7 +3339,13 @@ impl PaseoAdapter {
         generation: u64,
     ) -> RuntimeResult<(NativeRuntimeIdentity, ContainerCorrelationEvidence, bool)> {
         if let Some(task_id) = request.task_id {
-            let scope = self.effective_scope(&request.scope)?;
+            let scope = request
+                .scope
+                .as_ref()
+                .ok_or(RuntimeError::WorkspaceMismatch {
+                    rule: "the container task does not match its durable execution scope",
+                })?;
+            let scope = self.effective_scope(scope)?;
             if scope.require_task()?.task_id != task_id {
                 return Err(RuntimeError::WorkspaceMismatch {
                     rule: "the container task does not match its durable execution scope",
@@ -3347,10 +3359,17 @@ impl PaseoAdapter {
             .ok_or(RuntimeError::WorkspaceMismatch {
                 rule: "a native_child must say which directory it works in",
             })?;
-        let binding = crate::checkout::ManagedBranchBinding::from_scopes([
-            &request.scope,
-            &self.effective_scope(&request.scope)?,
-        ]);
+        // A project-level container (a durable desk's workspace) has no scope
+        // and therefore no confirmed key: it may adopt an existing directory
+        // but can never be the reason a managed branch is created.
+        let effective = request
+            .scope
+            .as_ref()
+            .map(|scope| self.effective_scope(scope))
+            .transpose()?;
+        let binding = crate::checkout::ManagedBranchBinding::from_scopes(
+            request.scope.iter().chain(effective.iter()),
+        );
         crate::checkout::prepare_managed_worktree(
             &self.config.scope.project_root_cwd,
             cwd,
@@ -7632,7 +7651,13 @@ impl RuntimeAdapter for PaseoAdapter {
                 let identity = self.identity(ExternalId::parse(&project.id)?, generation);
                 let cwd = WorkspaceRoot::parse(&project.root_path)?;
                 if request.epic_container {
-                    let epic_id = Self::external_epic_id(&request.scope)?;
+                    let scope = request
+                        .scope
+                        .as_ref()
+                        .ok_or(RuntimeError::WorkspaceMismatch {
+                            rule: "an epic container inspection must name the epic it represents",
+                        })?;
+                    let epic_id = Self::external_epic_id(scope)?;
                     project_to_remember = Some(PaseoProjectBinding {
                         mini_project_id: epic_id,
                         host_key: self.config.host_key.clone(),
@@ -7662,21 +7687,22 @@ impl RuntimeAdapter for PaseoAdapter {
                     });
                 }
                 let project = self.read_project_by_id(parent.native_id.as_str()).await?;
-                let project_binding = PaseoProjectBinding {
-                    mini_project_id: Self::external_epic_id(&request.scope)?,
-                    host_key: self.config.host_key.clone(),
-                    project_id: ExternalId::parse(&project.id)?,
-                    observed_name: project.display_name,
-                };
+                let project_id = ExternalId::parse(&project.id)?;
                 let workspace = self
-                    .fetch_workspace_in(&project_binding, expected.native_id.as_str())
-                    .await?;
+                    .fetch_workspaces(project_id.as_str())
+                    .await?
+                    .into_iter()
+                    .find(|workspace| workspace.id == expected.native_id.as_str())
+                    .ok_or(RuntimeError::CorrelationFailed)?;
                 if workspace.project_id != parent.native_id.as_str() {
                     return Err(RuntimeError::WorkspaceMismatch {
                         rule: "the inspected container is outside its exact persisted parent",
                     });
                 }
-                let task_container = request.scope.task.is_some();
+                let task_container = request
+                    .scope
+                    .as_ref()
+                    .is_some_and(|scope| scope.task.is_some());
                 if !container_workspace_kind(workspace.workspace_kind)
                     .is_applicable_to(task_container)
                 {
@@ -7688,7 +7714,19 @@ impl RuntimeAdapter for PaseoAdapter {
                 // the child. A restarted adapter needs that ephemeral project
                 // binding as well as the child binding before it can compose a
                 // launch in the inspected workspace.
-                project_to_remember = Some(project_binding);
+                //
+                // The ledger is keyed by epic, so only an epic's child may
+                // write it. A desk's workspace belongs to no epic, and keying
+                // its project under one would let the desk answer for that
+                // epic's later launches.
+                if let Some(scope) = request.scope.as_ref() {
+                    project_to_remember = Some(PaseoProjectBinding {
+                        mini_project_id: Self::external_epic_id(scope)?,
+                        host_key: self.config.host_key.clone(),
+                        project_id,
+                        observed_name: project.display_name,
+                    });
+                }
                 let identity = self.identity(ExternalId::parse(&workspace.id)?, generation);
                 let cwd = WorkspaceRoot::parse(&workspace.workspace_directory)?;
                 (

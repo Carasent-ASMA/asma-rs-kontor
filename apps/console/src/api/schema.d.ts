@@ -10851,6 +10851,11 @@ export interface components {
             committee_run_id: string;
             /** @enum {string} */
             scope: "committee_consultation";
+        } | {
+            /** @description The desk's declared key. */
+            desk_key: string;
+            /** @enum {string} */
+            scope: "desk";
         };
         /** @description What repairing one bound delivery seat's runtime labels is asked for. */
         SessionLabelsReconcileRequest: {
@@ -11734,6 +11739,12 @@ export interface components {
         TopologyNodeDto: {
             /** @description The native shape the server derived. */
             desired_binding: components["schemas"]["DesiredBindingDto"];
+            /**
+             * @description The durable desk this node realizes — the desk itself or its workspace
+             *     — and absent for every node that is not part of one. A desk belongs to
+             *     no epic, so this is the only membership such a node reports.
+             */
+            desk_key?: string | null;
             /** @description The data-defined kind the pinned specification declares. */
             kind_key: string;
             /** @description Logical lifecycle. */

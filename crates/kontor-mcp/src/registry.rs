@@ -5140,7 +5140,7 @@ pub static REGISTRY: &[ToolSpec] = &[
                 Place::Body,
                 ArgType::Json,
                 "The semantic scope: a project root, Quick session, epic, epic control, ticket, \
-                 Advisor or Committee consultation.",
+                 Advisor or Committee consultation, or a durable desk by its declared key.",
             ),
             req(
                 "expected_revision",
@@ -5172,7 +5172,7 @@ pub static REGISTRY: &[ToolSpec] = &[
                 Place::Body,
                 ArgType::Json,
                 "The semantic scope: a project root, Quick session, epic, epic control, ticket, \
-                 Advisor or Committee consultation.",
+                 Advisor or Committee consultation, or a durable desk by its declared key.",
             ),
             req(
                 "expected_revision",
@@ -5204,7 +5204,7 @@ pub static REGISTRY: &[ToolSpec] = &[
                 Place::Body,
                 ArgType::Json,
                 "The semantic scope: a project root, Quick session, epic, epic control, ticket, \
-                 Advisor or Committee consultation.",
+                 Advisor or Committee consultation, or a durable desk by its declared key.",
             ),
             req(
                 "expected_revision",

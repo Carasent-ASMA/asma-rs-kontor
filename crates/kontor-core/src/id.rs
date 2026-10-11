@@ -533,6 +533,12 @@ open_keys! {
     /// never persisted. An alias that the resolver policy does not already
     /// approve resolves to nothing, so an alias is not a capability.
     CredentialAlias,
+    /// Names one durable desk a Team Definition declares, such as `adam` or
+    /// `pr-review`.
+    ///
+    /// The key is the desk's identity inside one project. Its rendered title
+    /// is declared beside it and is never parsed back into a key.
+    DeskKey,
 }
 
 impl ModuleKey {

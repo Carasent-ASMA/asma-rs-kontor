@@ -845,6 +845,33 @@ pub struct TeamDefinitionSpec {
     pub separator: NameSeparator,
     /// Configured native hierarchy, in deterministic declaration order.
     pub containers: Vec<TeamContainerDefinition>,
+    /// Durable desks this revision declares, in deterministic order.
+    ///
+    /// A desk is a project-level native container that no epic owns. It is
+    /// absent from revisions that declare none, so their canonical bytes — and
+    /// every pin already taken on them — are unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub desks: Vec<TeamDeskDeclaration>,
+}
+
+/// One durable desk a Team Definition declares.
+///
+/// The desk is the native project (`DESK • ADAM`); its workspace is the one
+/// native child placed inside it (`ADAM`). Both are named by their container
+/// templates. This declaration only says which desks exist and which value the
+/// `DESK_NAME` token renders for each: an undeclared key has no place, and a
+/// title is never read back as an identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TeamDeskDeclaration {
+    /// Stable desk identity inside one project.
+    pub desk_key: crate::id::DeskKey,
+    /// Exact value rendered by the `DESK_NAME` token.
+    pub display_name: crate::id::ExternalName,
+    /// Root container kind the desk materializes as.
+    pub kind: TopologyKindKey,
+    /// Container kind of the one workspace placed inside the desk.
+    pub workspace_kind: TopologyKindKey,
 }
 
 /// Immutable reference pinned by a project default or epic.
@@ -1074,10 +1101,13 @@ impl TeamDefinitionSpec {
             }
         }
 
+        let desk_kinds = self.validate_desks(&kinds)?;
+        // Desks are additional project-level roots. Every other container
+        // still descends from the one delivery root, exactly as before.
         let roots: Vec<_> = self
             .containers
             .iter()
-            .filter(|container| container.parent.is_none())
+            .filter(|container| container.parent.is_none() && !desk_kinds.contains(&container.kind))
             .collect();
         if roots.len() != 1 {
             return Err(DomainError::invalid(
@@ -1107,6 +1137,94 @@ impl TeamDefinitionSpec {
             }
         }
         Ok(())
+    }
+
+    /// Validate the desk declarations and return the desk container kinds.
+    ///
+    /// A desk kind is a root container; its workspace kind is that root's
+    /// direct child. Both render from the desk alone, so neither may ask for
+    /// an epic, task or consultation value, and no other container may ask for
+    /// `DESK_NAME`.
+    fn validate_desks<'a>(
+        &'a self,
+        kinds: &BTreeMap<&'a TopologyKindKey, &'a TeamContainerDefinition>,
+    ) -> DomainResult<BTreeSet<&'a TopologyKindKey>> {
+        if self.desks.len() > 64 {
+            return Err(DomainError::invalid(
+                "TeamDefinitionSpec",
+                "must declare at most 64 desks",
+            ));
+        }
+        let mut keys = BTreeSet::new();
+        let mut names = BTreeSet::new();
+        let mut desk_kinds = BTreeSet::new();
+        let mut desk_scoped = BTreeSet::new();
+        for desk in &self.desks {
+            if !keys.insert(&desk.desk_key) || !names.insert(&desk.display_name) {
+                return Err(DomainError::invalid(
+                    "TeamDefinitionSpec",
+                    "declares a duplicate desk key or desk name",
+                ));
+            }
+            if desk.display_name.as_str().contains(self.separator.as_str())
+                || desk
+                    .display_name
+                    .as_str()
+                    .contains(['\u{2022}', '\u{00b7}'])
+            {
+                return Err(DomainError::invalid(
+                    "TeamDefinitionSpec",
+                    "a desk name must not contain a separator glyph",
+                ));
+            }
+            let root = kinds.get(&desk.kind).filter(|root| root.parent.is_none());
+            let workspace = kinds
+                .get(&desk.workspace_kind)
+                .filter(|workspace| workspace.parent.as_ref() == Some(&desk.kind));
+            if root.is_none() || workspace.is_none() {
+                return Err(DomainError::invalid(
+                    "TeamDefinitionSpec",
+                    "a desk must name a root container and a workspace container below it",
+                ));
+            }
+            desk_kinds.insert(&desk.kind);
+            desk_scoped.insert(&desk.kind);
+            desk_scoped.insert(&desk.workspace_kind);
+        }
+        for container in &self.containers {
+            let segments = container
+                .name_template
+                .segments()
+                .expect("container templates were validated as typed");
+            let desk_only = segments.iter().all(|segment| {
+                matches!(
+                    segment,
+                    crate::naming::NativeNameSegment::Literal(_)
+                        | crate::naming::NativeNameSegment::Token(
+                            NativeNameToken::Prefix | NativeNameToken::DeskName
+                        )
+                )
+            });
+            let uses_desk_name = segments.iter().any(|segment| {
+                matches!(
+                    segment,
+                    crate::naming::NativeNameSegment::Token(NativeNameToken::DeskName)
+                )
+            });
+            if desk_scoped.contains(&container.kind) && !desk_only {
+                return Err(DomainError::invalid(
+                    "TeamDefinitionSpec",
+                    "a desk container may render only PREFIX, DESK_NAME and literals",
+                ));
+            }
+            if uses_desk_name && !desk_scoped.contains(&container.kind) {
+                return Err(DomainError::invalid(
+                    "TeamDefinitionSpec",
+                    "only a declared desk container may render DESK_NAME",
+                ));
+            }
+        }
+        Ok(desk_kinds)
     }
 
     /// Validate this definition against its exact pinned topology document.
@@ -1154,6 +1272,18 @@ impl TeamDefinitionSpec {
                 ));
             }
         }
+        // A desk hangs directly off the project root; nothing else in the
+        // topology may be its parent.
+        if self.desks.iter().any(|desk| {
+            topology
+                .node_kind(&desk.kind)
+                .is_none_or(|legal| legal.allowed_parents != [topology.root_kind.clone()])
+        }) {
+            return Err(DomainError::invalid(
+                "TeamDefinitionSpec",
+                "declares a desk its topology validator does not place below the project root",
+            ));
+        }
         Ok(())
     }
 
@@ -1199,6 +1329,12 @@ impl TeamDefinitionSpec {
             .find(|slot| &slot.slot_id == slot_id)
     }
 
+    /// Find one declared durable desk.
+    #[must_use]
+    pub fn desk(&self, desk_key: &crate::id::DeskKey) -> Option<&TeamDeskDeclaration> {
+        self.desks.iter().find(|desk| &desk.desk_key == desk_key)
+    }
+
     /// Find one configured container kind.
     #[must_use]
     pub fn container(&self, kind: &TopologyKindKey) -> Option<&TeamContainerDefinition> {
@@ -1234,12 +1370,13 @@ fn validate_team_definition_template(template: &NativeNameTemplate) -> DomainRes
                         | NativeNameToken::Topic
                         | NativeNameToken::RoleCode
                         | NativeNameToken::SlotDisplayName
+                        | NativeNameToken::DeskName
                 )
         )
     }) {
         return Err(DomainError::invalid(
             "TeamDefinitionSpec",
-            "Team Definition templates may use only PREFIX, EPIC_ITEM_CODE, TASK_ITEM_CODE, SCOPE_ITEM_CODE, EPIC_JIRA_KEY, TASK_JIRA_KEY, SCOPE_JIRA_KEY, TOPIC, ROLE_CODE and SLOT_DISPLAY_NAME",
+            "Team Definition templates may use only PREFIX, EPIC_ITEM_CODE, TASK_ITEM_CODE, SCOPE_ITEM_CODE, EPIC_JIRA_KEY, TASK_JIRA_KEY, SCOPE_JIRA_KEY, TOPIC, ROLE_CODE, SLOT_DISPLAY_NAME and DESK_NAME",
         ));
     }
     Ok(())

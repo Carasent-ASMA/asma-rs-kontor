@@ -3802,7 +3802,10 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             });
         }
         if request.binding.projection == ContainerProjection::NativeChild {
-            let task_container = request.scope.task.is_some();
+            let task_container = request
+                .scope
+                .as_ref()
+                .is_some_and(|scope| scope.task.is_some());
             let kind = state
                 .container_kinds
                 .get(&request.binding.topology_node_id)

@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 130;
+pub const SCHEMA_VERSION: i64 = 131;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -447,6 +447,9 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0129_attestation_authority_keys.sql"),
     // Schema v130. Permanent prepared attestation commitments (ASMA-8278).
     include_str!("../migrations/0130_prepared_attestation_tokens.sql"),
+    // Schema v131. Durable desks: project-level native projects no epic owns,
+    // with their key, planned nodes and Team Definition pin (ASMA-8450).
+    include_str!("../migrations/0131_durable_desks.sql"),
 ];
 
 const _: () = assert!(
@@ -1045,7 +1048,7 @@ mod release_integration_tests {
 
         let store = crate::SqliteStore::open(&path).expect("additive upgrade");
         assert_eq!(store.realm_metadata().realm_id, realm.realm_id);
-        assert_eq!(store.schema_version().expect("upgraded version"), 130);
+        assert_eq!(store.schema_version().expect("upgraded version"), 131);
         drop(store);
         let connection = Connection::open(&path).expect("upgraded readback");
         let fingerprint: String = connection.query_row(
@@ -1334,7 +1337,7 @@ mod release_integration_tests {
         drop(connection);
 
         let store = crate::SqliteStore::open(&path).expect("released 124 upgrades");
-        assert_eq!(store.schema_version().expect("upgraded version"), 130);
+        assert_eq!(store.schema_version().expect("upgraded version"), 131);
         assert_eq!(store.realm_metadata().realm_id, realm.realm_id);
         let binding = store
             .memory_binding(ProjectId::parse(PROJECT).expect("project id"), RUN)
@@ -1349,7 +1352,7 @@ mod release_integration_tests {
         let connection = Connection::open(&path).expect("upgraded readback");
         assert_eq!(
             read_user_version(&connection).expect("upgraded version"),
-            130
+            131
         );
         let fingerprint: String = connection
             .query_row(

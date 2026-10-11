@@ -195,6 +195,7 @@ fn every_token_keeps_its_exact_serialized_spelling() {
         (NativeNameToken::KontorBacklogCode, "KONTOR_BACKLOG_CODE"),
         (NativeNameToken::ItemCode, "ITEM_CODE"),
         (NativeNameToken::AiShortName, "AI_SHORT_NAME"),
+        (NativeNameToken::DeskName, "DESK_NAME"),
     ];
     assert_eq!(
         expected.len(),
