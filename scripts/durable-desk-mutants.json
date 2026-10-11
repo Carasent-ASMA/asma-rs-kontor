@@ -36,7 +36,7 @@
     "file": "crates/kontor-daemon/src/applications.rs",
     "before": "            (Some(epic_id), _) => nodes\n                .into_iter()\n                .filter(|node| node.mini_project_id == Some(epic_id))\n                .collect(),",
     "after": "            (Some(epic_id), _) => nodes\n                .into_iter()\n                .filter(|node| node.mini_project_id == Some(epic_id) || node.kind.as_str() == \"ADE\")\n                .collect(),",
-    "suite": "desk_adams::two_epic_adams_in_one_workspace_never_share_ownership_credentials_or_evidence",
+    "suite": "desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk",
     "claim": "All Adam subjects on the shared host answer an epic-control lookup"
   },
   {
@@ -44,7 +44,7 @@
     "file": "crates/kontor-daemon/src/applications.rs",
     "before": "        Ok(self\n            .state()?\n            .with_store(|store| store.list_seat_bindings(project_id, control.id))\n            .map_err(|error| self.refuse(&error))?\n            .into_iter()\n            .filter(|seat| {\n                seat.role.role_code.as_str() == role_code\n                    && seat.lifecycle != TopologyLifecycle::Retired\n            })\n            .map(|seat| seat.id)\n            .collect())",
     "after": "        let host = control.parent_id.unwrap_or(control.id);\n        Ok(self.state()?.with_store(|store| {\n            let nodes = store.list_project_topology_nodes(project_id)?;\n            let mut seats = Vec::new();\n            for node in nodes.into_iter().filter(|node| node.id == host || node.parent_id == Some(host)) {\n                seats.extend(store.list_seat_bindings(project_id, node.id)?);\n            }\n            Ok::<_, RepositoryError>(seats)\n        }).map_err(|error| self.refuse(&error))?.into_iter()\n            .filter(|seat| seat.lifecycle != TopologyLifecycle::Retired)\n            .map(|seat| seat.id).collect())",
-    "suite": "desk_adams::two_epic_adams_in_one_workspace_never_share_ownership_credentials_or_evidence",
+    "suite": "desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk",
     "claim": "Completion control authority accepts any active seat in the shared desk, including its durable seat and sibling subjects, regardless of role"
   },
   {
