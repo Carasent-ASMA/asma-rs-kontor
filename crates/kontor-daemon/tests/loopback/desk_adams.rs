@@ -984,39 +984,61 @@ async fn a_handoff_naming_anything_but_the_exact_live_predecessor_refuses_before
     assert!(!receipt_recorded(&realm, "desk-adam-exact-host"));
 }
 
-/// Seat a same-role LSA on the desk workspace itself, beside the epic
-/// subjects: the shape a durable desk seat has, as a disposable fixture.
-fn desk_level_lsa(
-    realm: &DeskLed,
-    workspace: TopologyNodeId,
-    like: SeatBindingId,
-) -> SeatBindingId {
-    let role = seats_on(realm, subject_node_of_seat(realm, like))
-        .into_iter()
-        .find(|seat| seat.id == like)
-        .expect("the template seat")
-        .role;
-    let now = kontor_api::now();
-    realm
-        .world
-        .daemon
-        .state()
-        .with_store(|store| {
-            store.create_seat_binding(&kontor_core::repository::NewSeatBinding {
-                id: SeatBindingId::generate(),
-                project_id: realm.project_id,
-                topology_node_id: workspace,
-                role_slot_id: kontor_core::id::RoleSlotId::parse("desk-lsa").expect("a slot"),
-                role,
-                task_id: None,
-                team_run_id: None,
-                attach_deadline: now,
-                parent_seat_binding_id: None,
-                created_at: now,
-            })
-        })
-        .expect("the desk-level seat is recorded")
-        .id
+/// Declare a daemon-owned durable `LSA` seat on the `adam` desk through
+/// ASMA-8451's supported operations, launch it by reconciling the desk, and
+/// return its SeatBinding and live native.
+async fn durable_desk_lsa(realm: &DeskLed, seat_key: &str) -> (SeatBindingId, ExternalId) {
+    let seats = format!("/v1/projects/{}/desks/adam/seats", realm.project);
+    let declared = Call::post(
+        format!("{seats}:declare"),
+        &serde_json::json!({
+            "expected_revision": current_project_revision(&realm.world, &realm.project).await,
+            "seat_key": seat_key,
+            "role_code": "LSA",
+            "seat_label": "DESK WATCH",
+            "model_route": claude_route(),
+            "recovery_owner": "daemon",
+            "decided_by": "Igor",
+            "decided_on": "2026-10-11",
+        }),
+    )
+    .signed_as(&realm.world, "operator")
+    .with_key(format!("{seat_key}-declare"))
+    .send(&realm.world)
+    .await;
+    assert_eq!(declared.status, 200, "{}", declared.body);
+    let seat = seat_id(
+        declared.json()["seat"]["seat_binding_id"]
+            .as_str()
+            .expect("a daemon-owned seat plans its binding"),
+    );
+    let launched = Call::post(
+        format!("{seats}:reconcile"),
+        &serde_json::json!({
+            "expected_revision": current_project_revision(&realm.world, &realm.project).await,
+            "seat_keys": [seat_key],
+            "restart_missing": true,
+        }),
+    )
+    .signed_as(&realm.world, "operator")
+    .with_key(format!("{seat_key}-launch"))
+    .send(&realm.world)
+    .await;
+    assert_eq!(launched.status, 200, "{}", launched.body);
+    let reported = launched.json()["seats"]
+        .as_array()
+        .expect("the reconciled seats")
+        .iter()
+        .find(|reported| reported["seat_key"] == seat_key)
+        .expect("the declared seat is reported")
+        .clone();
+    assert_eq!(reported["decision"], "launch", "{}", launched.body);
+    let native = hosted(realm, seat)
+        .expect("the durable seat is hosted")
+        .native_identity
+        .native_id;
+    assert_eq!(reported["native_id"], native.as_str());
+    (seat, native)
 }
 
 fn subject_node_of_seat(realm: &DeskLed, seat: SeatBindingId) -> TopologyNodeId {
@@ -1078,10 +1100,20 @@ async fn two_epic_adams_in_one_workspace_never_share_ownership_credentials_or_ev
         realm.world.fake.seat_title(&beta_native).as_deref(),
         Some(title("LSA", "Beta desk").as_str())
     );
-    let durable = desk_level_lsa(&realm, workspace, alpha_lsa);
+    // A durable same-role seat of the desk itself, declared and launched
+    // through ASMA-8451's supported operations: an LSA bound to the shared
+    // workspace, live in the same desk project, and belonging to no epic.
+    let (durable, durable_native) = durable_desk_lsa(&realm, "desk-watch").await;
+    assert_eq!(subject_node_of_seat(&realm, durable), workspace);
+    assert_eq!(seat_row(&realm, durable).role.role_code.as_str(), "LSA");
+    assert_desk_placed(&realm, durable);
+    assert_eq!(
+        realm.world.fake.seat_title(&durable_native).as_deref(),
+        Some("LSA • DESK WATCH")
+    );
 
     // Credentials and evidence: each LSA acts for its own epic only, in both
-    // directions, and the desk-level seat for neither.
+    // directions, and the desk's durable seat for neither.
     for (seat, own, foreign) in [(alpha_lsa, &alpha, &beta), (beta_lsa, &beta, &alpha)] {
         let own_answer = act_as_seat(&realm, own, seat, 1).await;
         assert_eq!(own_answer.status, 200, "{}", own_answer.body);
@@ -1097,8 +1129,35 @@ async fn two_epic_adams_in_one_workspace_never_share_ownership_credentials_or_ev
     }
     for epic in [&alpha, &beta] {
         let desk_answer = act_as_seat(&realm, epic, durable, 1).await;
-        assert_ne!(desk_answer.status, 200, "{}", desk_answer.body);
+        assert_eq!(desk_answer.status, 403, "{}", desk_answer.body);
+        assert!(
+            desk_answer.body.contains("active seat of this exact epic"),
+            "{}",
+            desk_answer.body
+        );
     }
+    // Nor does either epic's LSA pass for the desk's durable seat: the desk's
+    // own report lists its declared seat alone, never a desk Adam.
+    let report = Call::get(format!("/v1/projects/{}/desks/adam/seats", realm.project))
+        .signed_as(&realm.world, "observer")
+        .send(&realm.world)
+        .await;
+    assert_eq!(report.status, 200, "{}", report.body);
+    let reported: Vec<_> = report.json()["seats"]
+        .as_array()
+        .expect("the desk's seats")
+        .iter()
+        .map(|seat| (seat["seat_key"].clone(), seat["native_id"].clone()))
+        .collect();
+    assert_eq!(
+        reported,
+        vec![(
+            serde_json::json!("desk-watch"),
+            serde_json::json!(durable_native.as_str())
+        )],
+        "{}",
+        report.body
+    );
 
     // Ownership: each epic's Core Team reads back only its own subject's seats.
     for (epic, subject, foreign) in [
@@ -1185,6 +1244,21 @@ async fn two_epic_adams_in_one_workspace_never_share_ownership_credentials_or_ev
     assert_eq!(beta_still.status, 200, "{}", beta_still.body);
     let alpha_tpm_on_beta = act_as_seat(&realm, &beta, alpha_tpm, 1).await;
     assert_eq!(alpha_tpm_on_beta.status, 403, "{}", alpha_tpm_on_beta.body);
+    // And the desk's durable seat, in the same workspace, was never touched.
+    assert_eq!(
+        hosted(&realm, durable)
+            .expect("the durable seat is still live")
+            .native_identity
+            .native_id,
+        durable_native
+    );
+    assert!(
+        realm
+            .world
+            .fake
+            .last_hosted_retire_placement(durable)
+            .is_none()
+    );
 }
 
 async fn open_ad_hoc(realm: &DeskLed, body: serde_json::Value, key: &str) -> Answer {
