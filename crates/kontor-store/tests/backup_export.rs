@@ -1086,6 +1086,8 @@ fn generation_two_without_profile_selection_outcomes_remains_importable() {
         "core_team_route_successions",
         // Generation fourteen's desks, for the same reason (ASMA-8450).
         "desks",
+        // Generation fifteen's durable seat declarations (ASMA-8451).
+        "durable_seat_declarations",
     ] {
         legacy
             .pointer_mut("/records")

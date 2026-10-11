@@ -2310,6 +2310,17 @@ fn an_authentic_schema_twelve_document_verifies_and_imports_with_an_empty_backfi
         .expect("a counts object")
         .remove("desks")
         .expect("the current generation counts desks");
+    // Generation fifteen's durable seat declarations later again (ASMA-8451).
+    document["records"]
+        .as_object_mut()
+        .expect("a records object")
+        .remove("durable_seat_declarations")
+        .expect("the current generation carries durable seat declarations");
+    document["continuity_summary"]["record_counts"]
+        .as_object_mut()
+        .expect("a counts object")
+        .remove("durable_seat_declarations")
+        .expect("the current generation counts durable seat declarations");
     let authentic_records_bytes = {
         let mut bytes = serde_json::to_vec(&document["records"]).expect("the records serialize");
         bytes.push(b'\n');
@@ -2828,6 +2839,7 @@ fn rewind_to_schema_121(path: &std::path::Path) {
     // also remove the later additive tables, or a forward open would correctly
     // refuse to create them again. Refuse to erase any fixture evidence.
     for table in [
+        "durable_seat_declarations",
         "desks",
         "prepared_attestation_tokens",
         "attestation_token_heads",

@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 131;
+pub const SCHEMA_VERSION: i64 = 132;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -450,6 +450,9 @@ const MIGRATIONS: &[&str] = &[
     // Schema v131. Durable desks: project-level native projects no epic owns,
     // with their key, planned nodes and Team Definition pin (ASMA-8450).
     include_str!("../migrations/0131_durable_desks.sql"),
+    // Schema v132. Dated durable desk seat declarations and the receipt kinds
+    // that declare and reconcile them (ASMA-8451).
+    include_str!("../migrations/0132_durable_desk_seats.sql"),
 ];
 
 const _: () = assert!(
@@ -1048,7 +1051,7 @@ mod release_integration_tests {
 
         let store = crate::SqliteStore::open(&path).expect("additive upgrade");
         assert_eq!(store.realm_metadata().realm_id, realm.realm_id);
-        assert_eq!(store.schema_version().expect("upgraded version"), 131);
+        assert_eq!(store.schema_version().expect("upgraded version"), 132);
         drop(store);
         let connection = Connection::open(&path).expect("upgraded readback");
         let fingerprint: String = connection.query_row(
@@ -1337,7 +1340,7 @@ mod release_integration_tests {
         drop(connection);
 
         let store = crate::SqliteStore::open(&path).expect("released 124 upgrades");
-        assert_eq!(store.schema_version().expect("upgraded version"), 131);
+        assert_eq!(store.schema_version().expect("upgraded version"), 132);
         assert_eq!(store.realm_metadata().realm_id, realm.realm_id);
         let binding = store
             .memory_binding(ProjectId::parse(PROJECT).expect("project id"), RUN)
@@ -1352,7 +1355,7 @@ mod release_integration_tests {
         let connection = Connection::open(&path).expect("upgraded readback");
         assert_eq!(
             read_user_version(&connection).expect("upgraded version"),
-            131
+            132
         );
         let fingerprint: String = connection
             .query_row(

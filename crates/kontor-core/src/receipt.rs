@@ -260,6 +260,19 @@ closed_enum! {
         /// session, as the frozen caller: the same SeatBinding, generation,
         /// frozen context and session, read back again. Never a replacement.
         RecoverPlanningPairSeat => "recover_planning_pair_seat",
+        /// Record one dated decision that a durable desk holds one long-lived
+        /// seat (ASMA-8451).
+        ///
+        /// The project is the aggregate, as for a desk: a desk belongs to no
+        /// epic, so there is nothing narrower for the receipt to name.
+        DeclareDurableSeat => "declare_durable_seat",
+        /// Reconcile one desk's declared seats: report each, and launch only
+        /// the explicitly selected daemon-owned seats proved missing.
+        ///
+        /// Distinct from [`CommandKind::DeclareDurableSeat`]: one kind for
+        /// both would let the receipt that recorded a decision be cited as
+        /// the authority that launched a seat.
+        ReconcileDurableSeats => "reconcile_durable_seats",
         /// Open one ad-hoc Quick session under the project's session base.
         ///
         /// The project is the aggregate. A Quick session creates no MiniProject
@@ -657,6 +670,12 @@ impl CommandKind {
             | Self::RecordPlanningPairAnswer
             | Self::RecordPlanningPairDisposition
             | Self::RecoverPlanningPairSeat => witness(matches!(target, A::MiniProject)),
+            // A durable desk belongs to no epic, and neither a desk nor a seat
+            // is an aggregate a command may name: the project is the one
+            // aggregate both certainly have.
+            Self::DeclareDurableSeat | Self::ReconcileDurableSeats => {
+                witness(matches!(target, A::Project))
+            }
         }
     }
 
