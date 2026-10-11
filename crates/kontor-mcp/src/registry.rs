@@ -656,6 +656,20 @@ const DESK_ADAM_ORIGIN: &[FieldSpec] = &[
     ),
 ];
 
+/// One pull request: its forge repository and number, its whole identity.
+const PULL_REQUEST: &[FieldSpec] = &[
+    field(
+        "repository",
+        ArgType::Text,
+        "The forge repository as exact owner/name.",
+    ),
+    field(
+        "number",
+        ArgType::U64,
+        "The pull request's positive number in that repository.",
+    ),
+];
+
 /// One explicit provider/model route for an authorized recovery operation.
 const RUNTIME_MODEL_ROUTE: &[FieldSpec] = &[
     field("provider", ArgType::Text, "The provider catalog key."),
@@ -1272,6 +1286,116 @@ pub static REGISTRY: &[ToolSpec] = &[
             ),
         ],
         about: "Reconcile selected durable seats: only a selected, daemon-owned, proved-missing seat is launched; busy, archived, duplicate, mismatched and unchecked seats are reported, never restarted.",
+    },
+    ToolSpec {
+        name: "kontor_desk_pr_reviews_list",
+        tier: CallerTier::Observer,
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/desks/{desk_key}/pr-reviews",
+        },
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "desk_key",
+                Place::Path,
+                ArgType::OpenKey,
+                "The PR desk by its declared key.",
+            ),
+        ],
+        about: "Report every pull request's review on a desk: its Adam tab and review room, their containers and current seats. Read-only.",
+    },
+    ToolSpec {
+        name: "kontor_desk_pr_review_open",
+        tier: CallerTier::Operator,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/desks/{desk_key}/pr-reviews:open",
+        },
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "desk_key",
+                Place::Path,
+                ArgType::OpenKey,
+                "The PR desk by its declared key.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The project revision the caller read.",
+            ),
+            req(
+                "external_key",
+                Place::Body,
+                ArgType::ExternalId,
+                "The exact confirmed epic or task tracker key; it must authorize the repository.",
+            ),
+            req(
+                "pull_request",
+                Place::Body,
+                ArgType::Object(PULL_REQUEST),
+                "The pull request; repository and number are its identity.",
+            ),
+            opt(
+                "model_routes",
+                Place::Body,
+                ArgType::Json,
+                "Exact route {provider, model, effort?} per slot id: the Adam's slot and every room slot, each once. Omit to place and seat the review without launching.",
+            ),
+        ],
+        about: "Open one pull request's review on a PR desk: its Adam tab in the desk workspace and its review room below the desk, and launch every seat when routes are named. Reopening reuses the review's nodes.",
+    },
+    ToolSpec {
+        name: "kontor_desk_pr_review_close",
+        tier: CallerTier::Operator,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/desks/{desk_key}/pr-reviews:close",
+        },
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "desk_key",
+                Place::Path,
+                ArgType::OpenKey,
+                "The PR desk by its declared key.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The project revision the caller read.",
+            ),
+            req(
+                "pull_request",
+                Place::Body,
+                ArgType::Object(PULL_REQUEST),
+                "The pull request whose review closes.",
+            ),
+        ],
+        about: "Close one pull request's review: fence and release its own seats only. The desk, its durable seats and every other review keep running.",
     },
     // ---- Observer: projections, catalogs and session content -----------------
     ToolSpec {

@@ -49,6 +49,7 @@ mod memory_schema;
 pub mod open_questions;
 pub mod openapi;
 pub mod planning_pair;
+pub mod pr_reviews;
 pub mod sessions;
 pub mod state;
 
@@ -302,6 +303,9 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/projects/{project_id}/desks/{desk_key}/seats", get(durable_seats::list_durable_seats))
         .route("/v1/projects/{project_id}/desks/{desk_key}/seats:declare", post(durable_seats::declare_durable_seat))
         .route("/v1/projects/{project_id}/desks/{desk_key}/seats:reconcile", post(durable_seats::reconcile_durable_seats))
+        .route("/v1/projects/{project_id}/desks/{desk_key}/pr-reviews", get(pr_reviews::list_pr_reviews))
+        .route("/v1/projects/{project_id}/desks/{desk_key}/pr-reviews:open", post(pr_reviews::open_pr_review))
+        .route("/v1/projects/{project_id}/desks/{desk_key}/pr-reviews:close", post(pr_reviews::close_pr_review))
         .route("/v1/health", get(control::health))
         .route("/v1/realm", get(control::realm))
         .route("/v1/projects/{project_id}/memory", get(memory::list))
