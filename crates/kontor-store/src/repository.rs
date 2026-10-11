@@ -10624,6 +10624,197 @@ impl SqliteStore {
     }
 }
 
+/// Insert one topology node under the caller's existing transaction.
+/// Validation and bridge predicates are identical to the single-node write.
+fn create_topology_node_in(
+    transaction: &Transaction<'_>,
+    request: &NewSessionTopologyNode,
+) -> RepositoryResult<SessionTopologyNode> {
+    let spec = topology_spec_in(transaction, request.project_id, &request.topology)?;
+    let declared = spec
+        .node_kinds
+        .iter()
+        .find(|declared| declared.kind == request.kind)
+        .ok_or(DomainError::Invalid {
+            subject: "SessionTopologyNode",
+            rule: "names a kind absent from the pinned topology specification",
+        })?;
+
+    if let Some(mini_project_id) = request.mini_project_id {
+        let pinned: Option<(String, i64, String)> = transaction
+            .query_row(
+                "SELECT spec_id, version, canonical_hash
+                     FROM mini_project_topology_snapshots
+                     WHERE project_id = ?1 AND mini_project_id = ?2",
+                params![request.project_id.to_string(), mini_project_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((spec_id, version, hash)) = pinned else {
+            return Err(RepositoryError::NotFound {
+                subject: "mini-project topology snapshot",
+            });
+        };
+        if TopologySpecId::parse(&spec_id)? != request.topology.spec_id
+            || read_version(version)? != request.topology.version
+            || ContentHash::parse(&hash)? != request.topology.canonical_hash
+        {
+            return Err(conflict(
+                "topology node",
+                "the node topology differs from the MiniProject snapshot",
+            ));
+        }
+    }
+
+    match request.parent_id {
+        None if request.kind != spec.root_kind => {
+            return Err(DomainError::invalid(
+                "SessionTopologyNode",
+                "only the declared root kind may omit a parent",
+            )
+            .into());
+        }
+        Some(_) if request.kind == spec.root_kind => {
+            return Err(DomainError::invalid(
+                "SessionTopologyNode",
+                "the declared root kind must not have a parent",
+            )
+            .into());
+        }
+        Some(parent_id) => {
+            let parent: Option<RepositoryResult<SessionTopologyNode>> = transaction
+                .query_row(
+                    &format!(
+                        "SELECT {TOPOLOGY_NODE_COLUMNS} FROM topology_nodes
+                             WHERE project_id = ?1 AND id = ?2"
+                    ),
+                    params![request.project_id.to_string(), parent_id.to_string()],
+                    |row| Ok(read_topology_node(row)),
+                )
+                .optional()
+                .map_err(backend)?;
+            let parent = parent.transpose()?.ok_or(RepositoryError::NotFound {
+                subject: "topology parent",
+            })?;
+            // The unscoped project root outlives individual epic pins.
+            // Its direct epic boundary may span revisions of one lineage
+            // only when both immutable specifications permit that edge.
+            //
+            // A project-level kind a later revision introduces (a durable
+            // desk) has no edge in the root's older revision to agree
+            // with. It may hang off that root unscoped only from a newer
+            // revision, and only when the older one does not declare the
+            // kind at all; a kind the root's revision does declare keeps
+            // the rule above.
+            let historical_project_root = if parent.topology != request.topology
+                && parent.lifecycle == TopologyLifecycle::Active
+                && parent.topology.spec_id == request.topology.spec_id
+                && parent.mini_project_id.is_none()
+                && parent.parent_id.is_none()
+                && request.task_id.is_none()
+                && parent.kind == spec.root_kind
+            {
+                let parent_spec =
+                    topology_spec_in(transaction, request.project_id, &parent.topology)?;
+                parent.kind == parent_spec.root_kind
+                    && match parent_spec.node_kind(&request.kind) {
+                        Some(kind) => {
+                            request.mini_project_id.is_some()
+                                && kind.allowed_parents.contains(&parent.kind)
+                        }
+                        None => {
+                            request.mini_project_id.is_none()
+                                && request.topology.version > parent.topology.version
+                        }
+                    }
+            } else {
+                false
+            };
+            let desk_subject = parent.topology != request.topology
+                && desk_subject_bridge(transaction, request, &spec, declared, &parent)?;
+            let pr_review = parent.topology != request.topology
+                && !desk_subject
+                && pr_review_bridge(transaction, request, &spec, declared, &parent)?;
+            if parent.lifecycle.is_terminal()
+                || parent
+                    .mini_project_id
+                    .is_some_and(|scope| Some(scope) != request.mini_project_id)
+                || (parent.topology != request.topology
+                    && !historical_project_root
+                    && !desk_subject
+                    && !pr_review)
+                || !declared.allowed_parents.contains(&parent.kind)
+            {
+                return Err(conflict(
+                    "topology node",
+                    "the parent is terminal, outside the node scope, or has an illegal kind",
+                ));
+            }
+        }
+        None => {}
+    }
+
+    if let Some(maximum) = declared.cardinality.maximum {
+        let count: i64 = transaction
+            .query_row(
+                "SELECT count(*) FROM topology_nodes
+                     WHERE project_id = ?1
+                       AND mini_project_id IS ?2
+                       AND parent_id IS ?3
+                       AND kind = ?4
+                       AND lifecycle <> 'archived'",
+                params![
+                    request.project_id.to_string(),
+                    request.mini_project_id.map(|id| id.to_string()),
+                    request.parent_id.map(|id| id.to_string()),
+                    request.kind.as_str(),
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if count >= i64::from(maximum) {
+            return Err(conflict(
+                "topology node",
+                "the declared maximum cardinality is already occupied",
+            ));
+        }
+    }
+
+    transaction
+        .execute(
+            "INSERT INTO topology_nodes
+                     (id, project_id, mini_project_id, spec_id, spec_version, spec_hash,
+                      kind, parent_id, lifecycle, placement, revision, created_at, updated_at,
+                      task_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'active', 'unbound', 1, ?9, ?9, ?10)",
+            params![
+                request.id.to_string(),
+                request.project_id.to_string(),
+                request.mini_project_id.map(|id| id.to_string()),
+                request.topology.spec_id.to_string(),
+                version_column(request.topology.version),
+                request.topology.canonical_hash.as_str(),
+                request.kind.as_str(),
+                request.parent_id.map(|id| id.to_string()),
+                text(request.created_at),
+                request.task_id.map(|id| id.to_string()),
+            ],
+        )
+        .map_err(backend)?;
+    let node = transaction
+        .query_row(
+            &format!(
+                "SELECT {TOPOLOGY_NODE_COLUMNS} FROM topology_nodes
+                     WHERE project_id = ?1 AND id = ?2"
+            ),
+            params![request.project_id.to_string(), request.id.to_string()],
+            |row| Ok(read_topology_node(row)),
+        )
+        .map_err(backend)??;
+    Ok(node)
+}
+
 impl TopologyRepository for SqliteStore {
     fn publish_topology_spec(
         &self,
@@ -10995,188 +11186,7 @@ impl TopologyRepository for SqliteStore {
         request: &NewSessionTopologyNode,
     ) -> RepositoryResult<SessionTopologyNode> {
         let transaction = self.begin()?;
-        let spec = topology_spec_in(&transaction, request.project_id, &request.topology)?;
-        let declared = spec
-            .node_kinds
-            .iter()
-            .find(|declared| declared.kind == request.kind)
-            .ok_or(DomainError::Invalid {
-                subject: "SessionTopologyNode",
-                rule: "names a kind absent from the pinned topology specification",
-            })?;
-
-        if let Some(mini_project_id) = request.mini_project_id {
-            let pinned: Option<(String, i64, String)> = transaction
-                .query_row(
-                    "SELECT spec_id, version, canonical_hash
-                     FROM mini_project_topology_snapshots
-                     WHERE project_id = ?1 AND mini_project_id = ?2",
-                    params![request.project_id.to_string(), mini_project_id.to_string()],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                )
-                .optional()
-                .map_err(backend)?;
-            let Some((spec_id, version, hash)) = pinned else {
-                return Err(RepositoryError::NotFound {
-                    subject: "mini-project topology snapshot",
-                });
-            };
-            if TopologySpecId::parse(&spec_id)? != request.topology.spec_id
-                || read_version(version)? != request.topology.version
-                || ContentHash::parse(&hash)? != request.topology.canonical_hash
-            {
-                return Err(conflict(
-                    "topology node",
-                    "the node topology differs from the MiniProject snapshot",
-                ));
-            }
-        }
-
-        match request.parent_id {
-            None if request.kind != spec.root_kind => {
-                return Err(DomainError::invalid(
-                    "SessionTopologyNode",
-                    "only the declared root kind may omit a parent",
-                )
-                .into());
-            }
-            Some(_) if request.kind == spec.root_kind => {
-                return Err(DomainError::invalid(
-                    "SessionTopologyNode",
-                    "the declared root kind must not have a parent",
-                )
-                .into());
-            }
-            Some(parent_id) => {
-                let parent: Option<RepositoryResult<SessionTopologyNode>> = transaction
-                    .query_row(
-                        &format!(
-                            "SELECT {TOPOLOGY_NODE_COLUMNS} FROM topology_nodes
-                             WHERE project_id = ?1 AND id = ?2"
-                        ),
-                        params![request.project_id.to_string(), parent_id.to_string()],
-                        |row| Ok(read_topology_node(row)),
-                    )
-                    .optional()
-                    .map_err(backend)?;
-                let parent = parent.transpose()?.ok_or(RepositoryError::NotFound {
-                    subject: "topology parent",
-                })?;
-                // The unscoped project root outlives individual epic pins.
-                // Its direct epic boundary may span revisions of one lineage
-                // only when both immutable specifications permit that edge.
-                //
-                // A project-level kind a later revision introduces (a durable
-                // desk) has no edge in the root's older revision to agree
-                // with. It may hang off that root unscoped only from a newer
-                // revision, and only when the older one does not declare the
-                // kind at all; a kind the root's revision does declare keeps
-                // the rule above.
-                let historical_project_root = if parent.topology != request.topology
-                    && parent.lifecycle == TopologyLifecycle::Active
-                    && parent.topology.spec_id == request.topology.spec_id
-                    && parent.mini_project_id.is_none()
-                    && parent.parent_id.is_none()
-                    && request.task_id.is_none()
-                    && parent.kind == spec.root_kind
-                {
-                    let parent_spec =
-                        topology_spec_in(&transaction, request.project_id, &parent.topology)?;
-                    parent.kind == parent_spec.root_kind
-                        && match parent_spec.node_kind(&request.kind) {
-                            Some(kind) => {
-                                request.mini_project_id.is_some()
-                                    && kind.allowed_parents.contains(&parent.kind)
-                            }
-                            None => {
-                                request.mini_project_id.is_none()
-                                    && request.topology.version > parent.topology.version
-                            }
-                        }
-                } else {
-                    false
-                };
-                let desk_subject = parent.topology != request.topology
-                    && desk_subject_bridge(&transaction, request, &spec, declared, &parent)?;
-                let pr_review = parent.topology != request.topology
-                    && !desk_subject
-                    && pr_review_bridge(&transaction, request, &spec, declared, &parent)?;
-                if parent.lifecycle.is_terminal()
-                    || parent
-                        .mini_project_id
-                        .is_some_and(|scope| Some(scope) != request.mini_project_id)
-                    || (parent.topology != request.topology
-                        && !historical_project_root
-                        && !desk_subject
-                        && !pr_review)
-                    || !declared.allowed_parents.contains(&parent.kind)
-                {
-                    return Err(conflict(
-                        "topology node",
-                        "the parent is terminal, outside the node scope, or has an illegal kind",
-                    ));
-                }
-            }
-            None => {}
-        }
-
-        if let Some(maximum) = declared.cardinality.maximum {
-            let count: i64 = transaction
-                .query_row(
-                    "SELECT count(*) FROM topology_nodes
-                     WHERE project_id = ?1
-                       AND mini_project_id IS ?2
-                       AND parent_id IS ?3
-                       AND kind = ?4
-                       AND lifecycle <> 'archived'",
-                    params![
-                        request.project_id.to_string(),
-                        request.mini_project_id.map(|id| id.to_string()),
-                        request.parent_id.map(|id| id.to_string()),
-                        request.kind.as_str(),
-                    ],
-                    |row| row.get(0),
-                )
-                .map_err(backend)?;
-            if count >= i64::from(maximum) {
-                return Err(conflict(
-                    "topology node",
-                    "the declared maximum cardinality is already occupied",
-                ));
-            }
-        }
-
-        transaction
-            .execute(
-                "INSERT INTO topology_nodes
-                     (id, project_id, mini_project_id, spec_id, spec_version, spec_hash,
-                      kind, parent_id, lifecycle, placement, revision, created_at, updated_at,
-                      task_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'active', 'unbound', 1, ?9, ?9, ?10)",
-                params![
-                    request.id.to_string(),
-                    request.project_id.to_string(),
-                    request.mini_project_id.map(|id| id.to_string()),
-                    request.topology.spec_id.to_string(),
-                    version_column(request.topology.version),
-                    request.topology.canonical_hash.as_str(),
-                    request.kind.as_str(),
-                    request.parent_id.map(|id| id.to_string()),
-                    text(request.created_at),
-                    request.task_id.map(|id| id.to_string()),
-                ],
-            )
-            .map_err(backend)?;
-        let node = transaction
-            .query_row(
-                &format!(
-                    "SELECT {TOPOLOGY_NODE_COLUMNS} FROM topology_nodes
-                     WHERE project_id = ?1 AND id = ?2"
-                ),
-                params![request.project_id.to_string(), request.id.to_string()],
-                |row| Ok(read_topology_node(row)),
-            )
-            .map_err(backend)??;
+        let node = create_topology_node_in(&transaction, request)?;
         transaction.commit().map_err(backend)?;
         Ok(node)
     }
