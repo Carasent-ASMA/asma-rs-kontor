@@ -15647,6 +15647,73 @@ async fn a_desk_seat_launches_in_its_desk_project_and_names_no_epic() {
     );
 }
 
+/// An epic's desk Adam is placed exactly like a durable desk seat (ASMA-8452,
+/// launch ruling (a)): in the desk's own native project, carrying its
+/// role-led title and its seat labels and no epic or mini-project label. The
+/// epic is named only by the title's key and by the daemon's logical subject,
+/// and nothing is filed in the epic-keyed project ledger.
+#[tokio::test]
+async fn an_epic_desk_adam_launches_in_the_desk_project_and_names_no_epic() {
+    let seat_binding_id = SeatBindingId::generate();
+    let title = "LSA • ASMA-8449 • kontord durable desks";
+    let adam_labels = serde_json::json!({
+        label::SEAT_BINDING: seat_binding_id.to_string(),
+        label::HOSTED_SEAT: "true",
+        label::ROLE: "lsa",
+        label::ROLE_SLOT: "lsa",
+        label::WORKSPACE_ID: WORKSPACE_ID,
+        label::WORKTREE: CWD,
+    });
+    let mut agent = v(AGENT);
+    agent["agent"]["title"] = serde_json::json!(title);
+    agent["agent"]["labels"] = adam_labels.clone();
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .answering_rpc("fetch_workspaces_request", desk_workspace_listing())
+        .answering_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY))
+        .answering_rpc(
+            "create_agent_request",
+            serde_json::json!({"status": "agent_created", "agent": {"id": AGENT_ID}}),
+        )
+        .answering_rpc("fetch_agent_request", agent);
+    let (plane, container) = desk_plane(recorded).await;
+    let request = HostedSeatLaunchRequest {
+        role_slot_id: slot("lsa"),
+        display_name: name(title),
+        prompt: text(
+            "Core Team LSA seat of epic ASMA-8449, led from desk adam. Continue only work authorized through Kontor.",
+        ),
+        ..desk_seat_launch(
+            seat_binding_id,
+            container,
+            bound_root(node(NODE_B)).identity,
+        )
+    };
+
+    let outcome = plane
+        .adapter
+        .launch_hosted_seat(&request)
+        .await
+        .expect("the desk Adam launches in its desk project");
+
+    assert!(outcome.created);
+    let sent = plane.daemon.sent_messages("create_agent_request");
+    let [create] = sent.as_slice() else {
+        panic!("exactly one create was sent: {sent:?}")
+    };
+    assert_eq!(create["workspaceId"], WORKSPACE_ID);
+    assert_eq!(
+        create["labels"], adam_labels,
+        "a desk Adam carries exactly its seat labels and no epic"
+    );
+    assert!(
+        plane.adapter.project_binding().is_none(),
+        "nothing is filed in the epic-keyed project ledger"
+    );
+}
+
 /// The desk project is the exact persisted parent or nothing. A parent from
 /// another runtime, host or generation, or one Paseo no longer holds, is
 /// refused before any agent is created.

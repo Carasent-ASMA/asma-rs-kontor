@@ -58,7 +58,7 @@ use crate::container::{
     ContainerRecreationRequest, ContainerRequest, ContainerWorkspaceKind, RetitleContainerOutcome,
     RetitleContainerRequest,
 };
-use crate::durable_seat::{HostedSeatCensus, HostedSeatCensusRequest};
+use crate::durable_seat::{HostedSeatCensus, HostedSeatCensusRequest, HostedSeatScope};
 use crate::observation::{
     ControlPlaneObservation, CorrelationEvidence, NativeSession, ObservationSource,
     ReconciliationReport, reconcile, timestamp_control_sequence,
@@ -935,6 +935,10 @@ struct FakeState {
     /// beside the persona so a test can prove the two are different values
     /// rather than one value written twice.
     hosted_initial_prompts: BTreeMap<SeatBindingId, BoundedText>,
+    /// Where the last launch of each hosted seat asked to be placed: an
+    /// epic's project or a desk's, which is all a test can see of the labels
+    /// and project a real runtime derives from it.
+    hosted_launch_scopes: BTreeMap<SeatBindingId, HostedSeatScope>,
     /// Terminal hosted natives retained so retirement and recovery are replayable.
     archived_hosted_seats: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
     /// Stable message ledger per exact hosted native. A logical seat may be
@@ -1631,6 +1635,7 @@ impl ScriptedFakeRuntime {
                 declared_autonomy: None,
                 hosted_role_prompts: BTreeMap::new(),
                 hosted_initial_prompts: BTreeMap::new(),
+                hosted_launch_scopes: BTreeMap::new(),
                 archived_hosted_seats: BTreeMap::new(),
                 hosted_messages: BTreeMap::new(),
                 hosted_claim_routes: BTreeMap::new(),
@@ -2746,6 +2751,12 @@ impl ScriptedFakeRuntime {
     #[must_use]
     pub fn hosted_initial_prompt(&self, seat: SeatBindingId) -> Option<BoundedText> {
         self.lock().hosted_initial_prompts.get(&seat).cloned()
+    }
+
+    /// The placement the last launch of one hosted seat asked for.
+    #[must_use]
+    pub fn hosted_launch_scope(&self, seat: SeatBindingId) -> Option<HostedSeatScope> {
+        self.lock().hosted_launch_scopes.get(&seat).cloned()
     }
 
     /// The route a consultation seat was launched on.
@@ -4509,6 +4520,9 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         state
             .hosted_initial_prompts
             .insert(request.seat_binding_id, request.prompt.clone());
+        state
+            .hosted_launch_scopes
+            .insert(request.seat_binding_id, request.scope.clone());
         state.hosted_launch_fences.insert(
             request.seat_binding_id,
             request.fenced_predecessor_native_ids.clone(),

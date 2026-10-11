@@ -4,12 +4,15 @@
 //! A desk-led Team Definition places an epic's leadership on a subject node
 //! below the `ADAM` desk workspace instead of on a per-epic control plane. The
 //! definition is published and selected through the supported Admin surfaces,
-//! never taken from a bundled revision. Native evidence here is the fake
-//! runtime's: interim until the epic-free hosted-seat launcher of ASMA-8451 is
-//! the one these seats launch on.
+//! never taken from a bundled revision. Every desk Adam native, epic and
+//! ad-hoc alike, launches on the epic-free hosted-seat contract of ASMA-8451
+//! in the desk's own project. Native evidence here is the fake runtime's:
+//! what placement each launch asked for. The labels and project a real Paseo
+//! derives from that placement are proved in the Paseo adapter's contract.
 
 use super::*;
 use kontor_core::spec::TeamDefinitionSpec;
+use kontor_runtime::durable_seat::HostedSeatScope;
 
 /// The desk and leadership-subject kinds a desk-led topology adds.
 const DESK_LED_KINDS: &str = r#"[
@@ -339,6 +342,24 @@ async fn apply_epic(
         .await
 }
 
+/// Judge the same epic as `apply_epic` would apply it, writing nothing.
+async fn preview_epic(realm: &DeskLed, name: &str, origin: serde_json::Value) -> Answer {
+    let mut body = epic_body(
+        current_project_revision(&realm.world, &realm.project).await,
+        name,
+        &realm.category,
+        serde_json::json!([{"title": format!("{name} work")}]),
+    );
+    body["desk_adam_origin"] = origin;
+    Call::post(
+        format!("/v1/projects/{}/epics:preview", realm.project),
+        &body,
+    )
+    .signed_as(&realm.world, "admin")
+    .send(&realm.world)
+    .await
+}
+
 /// Apply one epic that must succeed, with its Jira identity confirmed.
 async fn applied_epic(realm: &DeskLed, name: &str, key: &str) -> String {
     let applied = apply_epic(realm, name, key, None).await;
@@ -551,6 +572,48 @@ fn calls_since(realm: &DeskLed, before: usize) -> Vec<AdapterCall> {
     realm.world.fake.calls()[before..].to_vec()
 }
 
+/// The `adam` desk every desk Adam of these realms is led from.
+fn adam_desk(realm: &DeskLed) -> kontor_core::repository::StoredDesk {
+    realm
+        .world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.get_desk(
+                realm.project_id,
+                &kontor_core::id::DeskKey::parse("adam").expect("a desk key"),
+            )
+        })
+        .expect("the desk reads")
+        .expect("the adam desk is materialized")
+}
+
+/// Assert that `seat`'s last launch asked to be placed in the `adam` desk's
+/// own native project, the desk workspace's exact persisted parent, and named
+/// no epic.
+fn assert_desk_placed(realm: &DeskLed, seat: SeatBindingId) {
+    let desk = adam_desk(realm);
+    let project = container(realm, desk.topology_node_id).identity;
+    assert_eq!(
+        container(realm, desk.workspace_node_id)
+            .readback
+            .expect("a complete readback")
+            .native_parent,
+        Some(project.clone()),
+        "the desk workspace hangs under the desk's own project"
+    );
+    let scope = realm
+        .world
+        .fake
+        .hosted_launch_scope(seat)
+        .expect("the seat was launched");
+    assert!(
+        scope.epic().is_none(),
+        "a desk Adam names no epic: {scope:?}"
+    );
+    assert_eq!(scope, HostedSeatScope::Desk { project });
+}
+
 #[tokio::test]
 async fn a_desk_led_epic_places_its_lsa_on_the_desk_with_a_role_led_title_and_no_ecp() {
     let realm = desk_led_realm("desk-adam-placement").await;
@@ -585,6 +648,7 @@ async fn a_desk_led_epic_places_its_lsa_on_the_desk_with_a_role_led_title_and_no
         realm.world.fake.seat_title(&native).as_deref(),
         Some(title("LSA", "Durable desks").as_str())
     );
+    assert_desk_placed(&realm, lsa);
     // The session borrows the desk workspace's native container; the subject
     // node never gets one of its own.
     let calls = calls_since(&realm, before);
@@ -689,6 +753,7 @@ async fn a_cross_vendor_handoff_fences_the_lsa_before_the_tpm_launches_and_repla
             .as_deref(),
         Some(title("TPM", "Handoff epic").as_str())
     );
+    assert_desk_placed(&realm, tpm);
 
     // The fenced LSA's credential names no live occupancy; the TPM's does.
     let fenced = act_as_seat(&realm, &epic, lsa, 1).await;
@@ -1005,6 +1070,10 @@ async fn two_epic_adams_in_one_workspace_never_share_ownership_credentials_or_ev
         planning_lsa(&realm, &alpha, "desk-adam-isolation-a-lsa").await;
     let (beta_lsa, beta_native, _) = planning_lsa(&realm, &beta, "desk-adam-isolation-b-lsa").await;
     assert_ne!(alpha_native, beta_native);
+    // Both are placed in the one desk project with no epic; nothing below
+    // tells them apart but their subjects, which is what every check reads.
+    assert_desk_placed(&realm, alpha_lsa);
+    assert_desk_placed(&realm, beta_lsa);
     assert_eq!(
         realm.world.fake.seat_title(&beta_native).as_deref(),
         Some(title("LSA", "Beta desk").as_str())
@@ -1148,6 +1217,41 @@ async fn ad_hoc(realm: &DeskLed, topic: &str, key: &str) -> (TopologyNodeId, Sea
     )
 }
 
+/// Open one ad-hoc desk Adam with its LSA launched on Claude, and return its
+/// subject node, LSA seat and live native.
+async fn ad_hoc_live(
+    realm: &DeskLed,
+    topic: &str,
+    key: &str,
+) -> (TopologyNodeId, SeatBindingId, ExternalId) {
+    let opened = open_ad_hoc(
+        realm,
+        serde_json::json!({"topic": topic, "model_route": claude_route()}),
+        key,
+    )
+    .await;
+    assert_eq!(opened.status, 200, "{}", opened.body);
+    let lsa = seat_id(
+        opened.json()["lsa_seat_binding_id"]
+            .as_str()
+            .expect("an LSA seat"),
+    );
+    let native = hosted(realm, lsa)
+        .expect("the ad-hoc LSA is hosted")
+        .native_identity
+        .native_id;
+    (
+        TopologyNodeId::parse(
+            opened.json()["subject"]["topology_node_id"]
+                .as_str()
+                .expect("a subject node"),
+        )
+        .expect("a node id"),
+        lsa,
+        native,
+    )
+}
+
 fn seat_row(realm: &DeskLed, seat: SeatBindingId) -> kontor_core::state::SeatBinding {
     realm
         .world
@@ -1170,7 +1274,7 @@ fn epic_named(realm: &DeskLed, name: &str) -> bool {
 }
 
 #[tokio::test]
-async fn an_ad_hoc_desk_adam_opens_its_subject_and_lsa_with_a_frozen_topic_and_no_native() {
+async fn an_ad_hoc_desk_adam_opens_its_subject_and_lsa_with_a_frozen_topic() {
     let realm = desk_led_realm("desk-adam-ad-hoc").await;
     let before = realm.world.fake.calls().len();
     let opened = open_ad_hoc(
@@ -1212,10 +1316,8 @@ async fn an_ad_hoc_desk_adam_opens_its_subject_and_lsa_with_a_frozen_topic_and_n
     let seat = seat_row(&realm, lsa);
     assert_eq!(seat.topology_node_id, subject);
     assert_eq!(seat.role.role_code.as_str(), "LSA");
-    assert!(
-        hosted(&realm, lsa).is_none(),
-        "no native until the epic-free launcher"
-    );
+    assert!(hosted(&realm, lsa).is_none(), "no native without a route");
+    assert!(opened.json()["lsa_native_id"].is_null(), "{}", opened.body);
     assert!(
         calls_since(&realm, before)
             .iter()
@@ -1254,21 +1356,16 @@ async fn an_ad_hoc_desk_adam_opens_its_subject_and_lsa_with_a_frozen_topic_and_n
     assert_eq!(again.json()["lsa_seat_binding_id"], lsa.to_string());
     assert_eq!(seats_on(&realm, subject).len(), 1);
 
-    // A native launch waits on the epic-free contract; a separator glyph
-    // could forge a title segment. Both refuse before anything is placed.
+    // A separator glyph could forge a title segment, and a route that names
+    // no catalog model cannot launch. Each refuses before anything is placed.
     let routed = open_ad_hoc(
         &realm,
-        serde_json::json!({"topic": "Routed topic", "model_route": claude_route()}),
+        serde_json::json!({"topic": "Routed topic",
+                           "model_route": {"provider": "claude", "model": ""}}),
         "desk-adam-ad-hoc-routed",
     )
     .await;
-    assert_eq!(
-        routed.json()["code"],
-        "unsupported_capability",
-        "{}",
-        routed.body
-    );
-    assert!(routed.body.contains("ASMA-8451"), "{}", routed.body);
+    assert_eq!(routed.status, 400, "{}", routed.body);
     assert!(!receipt_recorded(&realm, "desk-adam-ad-hoc-routed"));
     for (topic, key) in [
         ("Kontor • triage", "desk-adam-ad-hoc-bullet"),
@@ -1331,7 +1428,9 @@ async fn an_ad_hoc_desk_adam_opens_its_subject_and_lsa_with_a_frozen_topic_and_n
 async fn an_epic_binds_its_ad_hoc_origin_after_fencing_it_and_launches_a_fresh_lsa_with_the_capsule()
  {
     let realm = desk_led_realm("desk-adam-bind").await;
-    let (origin, ad_hoc_lsa) = ad_hoc(&realm, "Desk planning", "desk-adam-bind-open").await;
+    let (origin, ad_hoc_lsa, ad_hoc_native) =
+        ad_hoc_live(&realm, "Desk planning", "desk-adam-bind-open").await;
+    let ad_hoc_occupancy = hosted(&realm, ad_hoc_lsa).expect("the ad-hoc LSA is live");
     let before = realm.world.fake.calls().len();
     let applied = apply_epic(
         &realm,
@@ -1347,8 +1446,41 @@ async fn an_epic_binds_its_ad_hoc_origin_after_fencing_it_and_launches_a_fresh_l
         .to_owned();
     confirm_test_epic_identity(&realm.world, &realm.project, &epic);
 
-    // The ad-hoc seat was fenced and its row is untouched; the epic's subject
-    // names it as its origin and renders the epic's own frozen name.
+    // The ad-hoc session was retired in the desk workspace and moved into its
+    // seat's history, and the seat was retired, before the epic's subject was
+    // written; the epic's subject names it as its origin and renders the
+    // epic's own frozen name.
+    let workspace = container(&realm, adam_desk(&realm).workspace_node_id);
+    let placement = realm
+        .world
+        .fake
+        .last_hosted_retire_placement(ad_hoc_lsa)
+        .flatten()
+        .expect("the ad-hoc session was retired in an exact placement");
+    assert_eq!(placement.workspace_native_id, workspace.identity.native_id);
+    assert_eq!(
+        Some(placement.canonical_cwd.as_str()),
+        workspace
+            .canonical_cwd
+            .as_ref()
+            .map(kontor_core::id::ExternalName::as_str)
+    );
+    assert!(hosted(&realm, ad_hoc_lsa).is_none(), "no live occupancy");
+    assert_eq!(
+        realm
+            .world
+            .daemon
+            .state()
+            .with_store(|store| store.get_hosted_topology_seat_history(
+                realm.project_id,
+                ad_hoc_lsa,
+                &ad_hoc_native
+            ))
+            .expect("the history reads")
+            .expect("the ad-hoc session is in its seat's history")
+            .native_identity,
+        ad_hoc_occupancy.native_identity
+    );
     assert_eq!(
         seat_row(&realm, ad_hoc_lsa).lifecycle,
         TopologyLifecycle::Retired
@@ -1366,10 +1498,17 @@ async fn an_epic_binds_its_ad_hoc_origin_after_fencing_it_and_launches_a_fresh_l
     assert_eq!(subject.origin_topology_node_id, Some(origin));
     assert_eq!(subject.topic.as_str(), "Bound epic");
     assert_ne!(subject.topology_node_id, origin);
-    assert!(calls_since(&realm, before).iter().all(|call| !matches!(
-        call,
-        AdapterCall::LaunchHostedSeat(_) | AdapterCall::RetireHostedSeat(_)
-    )));
+    assert_eq!(
+        calls_since(&realm, before)
+            .into_iter()
+            .filter(|call| matches!(
+                call,
+                AdapterCall::LaunchHostedSeat(_) | AdapterCall::RetireHostedSeat(_)
+            ))
+            .collect::<Vec<_>>(),
+        vec![AdapterCall::RetireHostedSeat(ad_hoc_lsa)],
+        "binding fences the ad-hoc session and launches nothing"
+    );
     let receipt = realm.world.daemon.state().with_store(|store| {
         store
             .get_receipt_by_key(&IdempotencyKey::parse("desk-adam-bind-apply").expect("a key"))
@@ -1382,7 +1521,9 @@ async fn an_epic_binds_its_ad_hoc_origin_after_fencing_it_and_launches_a_fresh_l
     // credential, and the server-owned capsule naming where its work came from.
     let (lsa, native, generation) = planning_lsa(&realm, &epic, "desk-adam-bind-lsa").await;
     assert_ne!(lsa, ad_hoc_lsa);
+    assert_ne!(native, ad_hoc_native, "the epic's LSA is a fresh native");
     assert_eq!(generation, 1);
+    assert_desk_placed(&realm, lsa);
     assert_eq!(
         realm.world.fake.seat_title(&native).as_deref(),
         Some(title("LSA", "Bound epic").as_str())
@@ -1403,6 +1544,9 @@ async fn an_epic_binds_its_ad_hoc_origin_after_fencing_it_and_launches_a_fresh_l
     assert!(prompt.contains("Desk planning"), "{prompt}");
     let planning = act_as_seat(&realm, &epic, lsa, 1).await;
     assert_eq!(planning.status, 200, "{}", planning.body);
+    // The ad-hoc session's credential did not travel: it acts for nothing.
+    let fenced = act_as_seat(&realm, &epic, ad_hoc_lsa, 1).await;
+    assert_ne!(fenced.status, 200, "{}", fenced.body);
 
     // The same apply replays, and a fresh key naming the same origin
     // converges on the one placement.
@@ -1427,20 +1571,258 @@ async fn an_epic_binds_its_ad_hoc_origin_after_fencing_it_and_launches_a_fresh_l
         subject.topology_node_id
     );
 
-    // The bound ad-hoc topic seats no one again.
-    let reopened = open_ad_hoc(
+    // The bound ad-hoc topic seats and hosts no one again, routed or not.
+    let before = realm.world.fake.calls().len();
+    for (body, key) in [
+        (
+            serde_json::json!({"topic": "Desk planning"}),
+            "desk-adam-bind-reopen",
+        ),
+        (
+            serde_json::json!({"topic": "Desk planning", "model_route": claude_route()}),
+            "desk-adam-bind-relaunch",
+        ),
+    ] {
+        let reopened = open_ad_hoc(&realm, body, key).await;
+        assert_eq!(
+            reopened.json()["code"],
+            "placement_blocked",
+            "{}",
+            reopened.body
+        );
+    }
+    assert!(calls_since(&realm, before).is_empty());
+    assert_eq!(seats_on(&realm, origin).len(), 1);
+    assert!(hosted(&realm, ad_hoc_lsa).is_none());
+}
+
+/// An ad-hoc desk Adam opened with a route launches its LSA in the desk's own
+/// native project: no epic, no container of its own, and one native that
+/// every later open of the topic finds rather than relaunches.
+#[tokio::test]
+async fn an_ad_hoc_desk_adam_launches_its_lsa_in_the_desk_project_with_no_epic() {
+    let realm = desk_led_realm("desk-adam-ad-hoc-live").await;
+    let before = realm.world.fake.calls().len();
+    let opened = open_ad_hoc(
         &realm,
-        serde_json::json!({"topic": "Desk planning"}),
-        "desk-adam-bind-reopen",
+        serde_json::json!({"topic": "Live triage", "model_route": claude_route()}),
+        "desk-adam-ad-hoc-live-open",
+    )
+    .await;
+    assert_eq!(opened.status, 200, "{}", opened.body);
+    let subject = TopologyNodeId::parse(
+        opened.json()["subject"]["topology_node_id"]
+            .as_str()
+            .expect("a node"),
+    )
+    .expect("a node id");
+    let lsa = seat_id(
+        opened.json()["lsa_seat_binding_id"]
+            .as_str()
+            .expect("a seat"),
+    );
+    let live = hosted(&realm, lsa).expect("the ad-hoc LSA is hosted");
+    let native = live.native_identity.native_id.clone();
+    assert_eq!(live.native_identity.generation, 1);
+    assert_eq!(opened.json()["lsa_native_id"], native.as_str());
+    assert_eq!(
+        realm.world.fake.seat_title(&native).as_deref(),
+        Some("LSA • ADHOC • Live triage")
+    );
+    assert_desk_placed(&realm, lsa);
+    let prompt = realm
+        .world
+        .fake
+        .hosted_initial_prompt(lsa)
+        .expect("the ad-hoc launch prompt");
+    assert!(prompt.as_str().contains("belongs to no epic"), "{prompt:?}");
+    let calls = calls_since(&realm, before);
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| matches!(call, AdapterCall::LaunchHostedSeat(_)))
+            .collect::<Vec<_>>(),
+        vec![&AdapterCall::LaunchHostedSeat(lsa)],
+        "{calls:?}"
+    );
+    assert!(
+        calls.iter().all(|call| !matches!(
+            call,
+            AdapterCall::PrepareContainer(id) | AdapterCall::CreateNativeContainer(id)
+                if *id == subject
+        )),
+        "{calls:?}"
+    );
+    assert!(
+        realm
+            .world
+            .daemon
+            .state()
+            .with_store(|store| store.get_topology_node_container(realm.project_id, subject))
+            .expect("the binding reads")
+            .is_none(),
+        "the subject borrows the desk workspace's container"
+    );
+
+    // A replay, another key with the same route, and a logical-only open all
+    // find the one native; none launches another.
+    let before = realm.world.fake.calls().len();
+    let replayed = open_ad_hoc(
+        &realm,
+        serde_json::json!({"topic": "Live triage", "model_route": claude_route()}),
+        "desk-adam-ad-hoc-live-open",
     )
     .await;
     assert_eq!(
-        reopened.json()["code"],
+        replayed.json()["receipt"]["applied"],
+        "unchanged",
+        "{}",
+        replayed.body
+    );
+    for (body, key) in [
+        (
+            serde_json::json!({"topic": "Live triage", "model_route": claude_route()}),
+            "desk-adam-ad-hoc-live-again",
+        ),
+        (
+            serde_json::json!({"topic": "Live triage"}),
+            "desk-adam-ad-hoc-live-logical",
+        ),
+    ] {
+        let again = open_ad_hoc(&realm, body, key).await;
+        assert_eq!(again.status, 200, "{}", again.body);
+        assert_eq!(again.json()["lsa_seat_binding_id"], lsa.to_string());
+        assert_eq!(again.json()["lsa_native_id"], native.as_str());
+    }
+    assert!(
+        calls_since(&realm, before)
+            .iter()
+            .all(|call| !matches!(call, AdapterCall::LaunchHostedSeat(_))),
+        "{:?}",
+        calls_since(&realm, before)
+    );
+
+    // A live ad-hoc native is never re-routed: another route refuses before
+    // any effect, and the session stands.
+    let before = realm.world.fake.calls().len();
+    let rerouted = open_ad_hoc(
+        &realm,
+        serde_json::json!({"topic": "Live triage", "model_route": codex_route()}),
+        "desk-adam-ad-hoc-live-rerouted",
+    )
+    .await;
+    assert_eq!(
+        rerouted.json()["code"],
         "placement_blocked",
         "{}",
-        reopened.body
+        rerouted.body
     );
-    assert_eq!(seats_on(&realm, origin).len(), 1);
+    assert!(!receipt_recorded(&realm, "desk-adam-ad-hoc-live-rerouted"));
+    assert!(calls_since(&realm, before).is_empty());
+    let still = hosted(&realm, lsa).expect("the ad-hoc LSA stands");
+    assert_eq!(still.native_identity, live.native_identity);
+    assert_eq!(seats_on(&realm, subject).len(), 1);
+}
+
+/// A binding whose ad-hoc retire lost its acknowledgement leaves everything
+/// the fence had not finished as it was, and the same apply finishes it.
+#[tokio::test]
+async fn a_binding_whose_fence_lost_its_answer_resumes_and_finishes_the_fence() {
+    let realm = desk_led_realm("desk-adam-bind-resume").await;
+    let (origin, ad_hoc_lsa, ad_hoc_native) =
+        ad_hoc_live(&realm, "Resumed planning", "desk-adam-bind-resume-open").await;
+    realm.world.fake.lose_next_hosted_retire_ack(ad_hoc_lsa);
+    let before = realm.world.fake.calls().len();
+    let lost = apply_epic(
+        &realm,
+        "Resumed epic",
+        "desk-adam-bind-resume-apply",
+        Some(serde_json::json!({"subject": origin})),
+    )
+    .await;
+    assert_eq!(lost.json()["code"], "unavailable", "{}", lost.body);
+    assert!(!receipt_recorded(&realm, "desk-adam-bind-resume-apply"));
+    // Only a session the runtime proves absent counts as gone: the occupancy,
+    // the seat and the topic's freedom all stand, and no epic subject exists.
+    assert_eq!(
+        hosted(&realm, ad_hoc_lsa)
+            .expect("the occupancy stands")
+            .native_identity
+            .native_id,
+        ad_hoc_native
+    );
+    assert_eq!(
+        seat_row(&realm, ad_hoc_lsa).lifecycle,
+        TopologyLifecycle::Active
+    );
+    assert!(
+        realm
+            .world
+            .daemon
+            .state()
+            .with_store(|store| store.get_desk_adam_subject_bound_from(realm.project_id, origin))
+            .expect("the binding reads")
+            .is_none(),
+        "the topic is bound to no epic yet"
+    );
+
+    let resumed = apply_epic(
+        &realm,
+        "Resumed epic",
+        "desk-adam-bind-resume-apply",
+        Some(serde_json::json!({"subject": origin})),
+    )
+    .await;
+    assert_eq!(resumed.status, 200, "{}", resumed.body);
+    let epic = resumed.json()["epic_id"]
+        .as_str()
+        .expect("an epic")
+        .to_owned();
+    assert_eq!(
+        calls_since(&realm, before)
+            .into_iter()
+            .filter(|call| matches!(
+                call,
+                AdapterCall::LaunchHostedSeat(_) | AdapterCall::RetireHostedSeat(_)
+            ))
+            .collect::<Vec<_>>(),
+        vec![AdapterCall::RetireHostedSeat(ad_hoc_lsa)],
+        "the session is retired natively once, and nothing launches"
+    );
+    let workspace = container(&realm, adam_desk(&realm).workspace_node_id);
+    assert_eq!(
+        realm
+            .world
+            .fake
+            .last_hosted_retire_placement(ad_hoc_lsa)
+            .flatten()
+            .expect("the retry asked in an exact placement")
+            .workspace_native_id,
+        workspace.identity.native_id
+    );
+    assert!(hosted(&realm, ad_hoc_lsa).is_none());
+    assert!(
+        realm
+            .world
+            .daemon
+            .state()
+            .with_store(|store| store.get_hosted_topology_seat_history(
+                realm.project_id,
+                ad_hoc_lsa,
+                &ad_hoc_native
+            ))
+            .expect("the history reads")
+            .is_some(),
+        "the ad-hoc session is in its seat's history"
+    );
+    assert_eq!(
+        seat_row(&realm, ad_hoc_lsa).lifecycle,
+        TopologyLifecycle::Retired
+    );
+    assert_eq!(
+        subject_of(&realm, &epic).origin_topology_node_id,
+        Some(origin)
+    );
 }
 
 #[tokio::test]
@@ -1548,6 +1930,9 @@ async fn a_desk_adam_origin_is_checked_whole_before_any_graph_write() {
         let key = format!("desk-adam-origin-{case}");
         let existed = epic_named(&realm, name);
         let before = realm.world.fake.calls().len();
+        // Preview judges the origin exactly as apply does.
+        let previewed = preview_epic(&realm, name, origin_body.clone()).await;
+        assert_eq!(previewed.json()["code"], code, "{case}: {}", previewed.body);
         let refused = apply_epic(&realm, name, &key, Some(origin_body)).await;
         assert_eq!(refused.json()["code"], code, "{case}: {}", refused.body);
         assert_eq!(
@@ -1564,38 +1949,29 @@ async fn a_desk_adam_origin_is_checked_whole_before_any_graph_write() {
         );
     }
 
-    // An ad-hoc seat that holds a native occupancy is never bound past it:
-    // fencing one needs the epic-free hosted-seat contract.
-    let (occupied, occupied_lsa) =
-        ad_hoc(&realm, "Occupied topic", "desk-adam-origin-occupied").await;
-    let donor = applied_epic(&realm, "Donor epic", "desk-adam-origin-donor").await;
-    let (donor_lsa, _, _) = planning_lsa(&realm, &donor, "desk-adam-origin-donor-lsa").await;
-    let mut occupancy = hosted(&realm, donor_lsa).expect("the donor occupancy");
-    occupancy.seat_binding_id = occupied_lsa;
-    occupancy.native_identity.native_id =
-        ExternalId::parse("native-ad-hoc-occupant").expect("an id");
-    realm
-        .world
-        .daemon
-        .state()
-        .with_store(|store| store.bind_hosted_topology_seat(&occupancy))
-        .expect("the fixture occupancy binds");
-    let refused = apply_epic(
+    // A preview that would bind fences nothing: the live ad-hoc session and
+    // its seat stand, and no epic or subject is written.
+    let (live, live_lsa, live_native) =
+        ad_hoc_live(&realm, "Live topic", "desk-adam-origin-live").await;
+    let before = realm.world.fake.calls().len();
+    let previewed = preview_epic(
         &realm,
-        "Occupied epic",
-        "desk-adam-origin-occupied-apply",
-        Some(serde_json::json!({"subject": occupied})),
+        "Previewed epic",
+        serde_json::json!({"subject": live}),
     )
     .await;
+    assert_eq!(previewed.status, 200, "{}", previewed.body);
+    assert!(calls_since(&realm, before).is_empty());
+    assert!(!epic_named(&realm, "Previewed epic"));
     assert_eq!(
-        refused.json()["code"],
-        "unsupported_capability",
-        "{}",
-        refused.body
+        hosted(&realm, live_lsa)
+            .expect("the ad-hoc session stands")
+            .native_identity
+            .native_id,
+        live_native
     );
-    assert!(!epic_named(&realm, "Occupied epic"));
     assert_eq!(
-        seat_row(&realm, occupied_lsa).lifecycle,
+        seat_row(&realm, live_lsa).lifecycle,
         TopologyLifecycle::Active
     );
 
@@ -1827,6 +2203,7 @@ async fn a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk
     let beta = applied_epic(&realm, "Neighbour epic", "desk-adam-delivery-beta").await;
     let (beta_lsa, beta_native, _) =
         planning_lsa(&realm, &beta, "desk-adam-delivery-beta-lsa").await;
+    assert_desk_placed(&realm, beta_lsa);
     let beta_subject = subject_of(&realm, &beta).topology_node_id;
     let beta_seats = seats_on(&realm, beta_subject);
 
@@ -1976,6 +2353,183 @@ async fn a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk
     assert!(epic_node(&realm, &alpha, "ECP").is_none());
 }
 
+/// Launch ruling (a): an epic's desk Adam is placed in the desk's own native
+/// project and names no epic, while its subject, and the authority its seats
+/// derive from it, stay the epic's. Nothing of the desk is recorded under the
+/// epic, across a restart, the handoff and a route correction.
+#[tokio::test]
+async fn an_epic_desk_adam_is_placed_in_the_desk_project_while_its_subject_stays_the_epics() {
+    let realm = desk_led_realm("desk-adam-scope").await;
+    let epic = applied_epic(&realm, "Scoped epic", "desk-adam-scope-epic").await;
+    let placed = Call::post(
+        format!("/v1/projects/{}/topology:materialize", realm.project),
+        &serde_json::json!({
+            "target": {"scope": "epic", "epic_id": epic},
+            "expected_revision": current_project_revision(&realm.world, &realm.project).await,
+        }),
+    )
+    .signed_as(&realm.world, "operator")
+    .with_key("desk-adam-scope-esw")
+    .send(&realm.world)
+    .await;
+    assert_eq!(placed.status, 200, "{}", placed.body);
+    let esw = epic_node(&realm, &epic, "ESW").expect("the epic's ESW");
+    let esw_binding = container(&realm, esw.id);
+
+    let (lsa, native, generation) = planning_lsa(&realm, &epic, "desk-adam-scope-lsa").await;
+    assert_desk_placed(&realm, lsa);
+    let desk = adam_desk(&realm);
+    let desk_natives = [
+        container(&realm, desk.topology_node_id).identity,
+        container(&realm, desk.workspace_node_id).identity,
+    ];
+    assert!(!desk_natives.contains(&esw_binding.identity));
+    assert_eq!(
+        realm.world.fake.seat_title(&native).as_deref(),
+        Some(title("LSA", "Scoped epic").as_str())
+    );
+    let subject = subject_of(&realm, &epic).topology_node_id;
+    assert_eq!(subject_node_of_seat(&realm, lsa), subject);
+    assert_eq!(node(&realm, subject).mini_project_id, Some(epic_id(&epic)));
+    let acts = act_as_seat(&realm, &epic, lsa, 1).await;
+    assert_eq!(acts.status, 200, "{}", acts.body);
+
+    // The epic's own bindings, read by node: the subject has none, the ESW's
+    // is unchanged, and none of them is the desk's or its workspace's.
+    let epic_ledger = |realm: &DeskLed| {
+        realm.world.daemon.state().with_store(|store| {
+            let nodes = store
+                .list_topology_nodes(realm.project_id, Some(epic_id(&epic)))
+                .expect("the epic's nodes read");
+            nodes
+                .iter()
+                .filter_map(|node| {
+                    store
+                        .get_topology_node_container(realm.project_id, node.id)
+                        .expect("the binding reads")
+                        .map(|binding| (node.id, binding))
+                })
+                .collect::<Vec<_>>()
+        })
+    };
+    let assert_nothing_of_the_desk_under_the_epic = |realm: &DeskLed| {
+        let ledger = epic_ledger(realm);
+        assert!(
+            ledger
+                .iter()
+                .all(|(id, binding)| *id != subject && !desk_natives.contains(&binding.identity)),
+            "{ledger:?}"
+        );
+        assert_eq!(container(realm, esw.id), esw_binding);
+    };
+    assert_nothing_of_the_desk_under_the_epic(&realm);
+
+    // After a restart the handoff fences the LSA in the desk workspace and
+    // places the TPM in the desk project too.
+    let realm = restarted(realm).await;
+    let tpm = tpm_of(&realm, &epic);
+    let handed = hand_off(
+        &realm,
+        &epic,
+        (lsa, &native, generation),
+        tpm,
+        codex_route(),
+        "desk-adam-scope-handoff",
+    )
+    .await;
+    assert_eq!(handed.status, 200, "{}", handed.body);
+    assert_desk_placed(&realm, tpm);
+    assert_eq!(subject_node_of_seat(&realm, tpm), subject);
+    let coordinating = act_as_seat(&realm, &epic, tpm, 1).await;
+    assert_eq!(coordinating.status, 200, "{}", coordinating.body);
+    assert_nothing_of_the_desk_under_the_epic(&realm);
+
+    // A route correction relaunches the TPM in the same desk placement, on
+    // the same seat of the same subject, at its next occupancy.
+    let predecessor = hosted(&realm, tpm).expect("the TPM is hosted");
+    let correction = serde_json::json!({
+        "expected_revision": epic_revision(&realm, &epic),
+        "seat_binding_id": tpm,
+        "expected_native_id": predecessor.native_identity.native_id,
+        "expected_generation": predecessor.native_identity.generation,
+        "desired_model_route": claude_route(),
+    });
+    let preview = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{epic}/core-team/routes:preview",
+            realm.project
+        ),
+        &correction,
+    )
+    .signed_as(&realm.world, "admin")
+    .send(&realm.world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let mut apply = correction.clone();
+    apply["preview_hash"] = preview.json()["preview_hash"].clone();
+    let routed = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{epic}/core-team/routes:apply",
+            realm.project
+        ),
+        &apply,
+    )
+    .signed_as(&realm.world, "admin")
+    .with_key("desk-adam-scope-route")
+    .send(&realm.world)
+    .await;
+    assert_eq!(routed.status, 200, "{}", routed.body);
+    let workspace = container(&realm, desk.workspace_node_id);
+    let retired = realm
+        .world
+        .fake
+        .last_hosted_retire_placement(tpm)
+        .flatten()
+        .expect("the predecessor was retired in an exact placement");
+    assert_eq!(retired.workspace_native_id, workspace.identity.native_id);
+    assert_eq!(
+        Some(retired.canonical_cwd.as_str()),
+        workspace
+            .canonical_cwd
+            .as_ref()
+            .map(kontor_core::id::ExternalName::as_str)
+    );
+    let successor = hosted(&realm, tpm).expect("the TPM is hosted again");
+    assert_ne!(
+        successor.native_identity.native_id,
+        predecessor.native_identity.native_id
+    );
+    assert_eq!(
+        realm
+            .world
+            .daemon
+            .state()
+            .with_store(
+                |store| store.hosted_topology_seat_occupancy_generation(realm.project_id, tpm)
+            )
+            .expect("the occupancy reads"),
+        Some(2),
+        "the seat's second occupancy"
+    );
+    let corrected = act_as_seat(&realm, &epic, tpm, 2).await;
+    assert_eq!(corrected.status, 200, "{}", corrected.body);
+    assert_eq!(
+        routed.json()["successor_native_id"],
+        successor.native_identity.native_id.as_str()
+    );
+    assert_desk_placed(&realm, tpm);
+    assert_eq!(subject_node_of_seat(&realm, tpm), subject);
+    assert_eq!(
+        realm
+            .world
+            .fake
+            .seat_title(&successor.native_identity.native_id)
+            .as_deref(),
+        Some(title("TPM", "Scoped epic").as_str())
+    );
+    assert_nothing_of_the_desk_under_the_epic(&realm);
+}
+
 /// An epic under a definition that declares no desk leadership keeps the
 /// legacy path whole: its leadership lives on its own ECP, no subject is
 /// written, its apply intent carries no origin, and the desk Adam routes
@@ -2002,6 +2556,18 @@ async fn a_legacy_epic_keeps_its_ecp_and_refuses_the_desk_adam_routes() {
     );
 
     let (lsa, native, generation) = planning_lsa(&realm, &epic, "desk-adam-legacy-lsa").await;
+    // The historical ECP launch keeps its epic placement.
+    let scope = realm
+        .world
+        .fake
+        .hosted_launch_scope(lsa)
+        .expect("the LSA was launched");
+    assert!(
+        scope
+            .epic()
+            .is_some_and(|scope| scope.is_epic(epic_id(&epic))),
+        "{scope:?}"
+    );
     let control = node(&realm, subject_node_of_seat(&realm, lsa));
     assert_eq!(control.kind.as_str(), "ECP");
     assert_eq!(control.mini_project_id, Some(epic_id(&epic)));
