@@ -48,10 +48,17 @@ returns the original receipt and performs no native effect.
 - **Where a native refusal lands.** The runtime refuses, from the request's
   shape alone and before it asks Paseo anything, a container request or
   inspection that claims to be an epic's project without naming the epic.
-  Desk requests never make that claim. That refusal, like any failure while
-  preparing a desk's natives, comes after materialize has ensured the desk
-  row and both nodes: they stay, nothing native is bound, no receipt is
-  recorded, and a retry with the same key reconciles the same two nodes.
+  Desk requests never make that claim. Materialize first ensures the desk
+  row and both nodes, then prepares the natives from the desk project down,
+  binding each before it prepares the next. Materialization is not atomic:
+  - a refusal before the first container is bound (that runtime refusal, or
+    a failure preparing the desk project) leaves the row and both nodes with
+    nothing native bound;
+  - a later failure, such as one preparing the workspace, leaves the
+    bindings already made in place.
+
+  Either way no receipt is recorded, and a retry with the same key
+  reconciles the same two node ids.
 - **Declared keys only.** A key that no desk row holds and the project's
   selected Team Definition does not declare is refused (`placement_blocked`)
   by ensure, materialize and drift alike, before any receipt, desk row, node,
