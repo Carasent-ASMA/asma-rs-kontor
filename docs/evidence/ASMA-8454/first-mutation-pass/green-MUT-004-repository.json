@@ -1,0 +1,22 @@
+{
+  "name": "green-MUT-004-repository",
+  "head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+  "started_head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+  "started_at": "2026-10-11T14:23:02.230282+00:00",
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "pr_reviews::the_same_number_in_two_repositories_is_two_reviews_and_a_task_key_names_its_task",
+    "--",
+    "--test-threads=2"
+  ],
+  "exit_code": 0,
+  "log": ".qualification/green-MUT-004-repository.log",
+  "log_sha256": "7bcc0e087d3e2702092ad523d25a48d4d10aae840b7059568be4633d8f9398c3"
+}

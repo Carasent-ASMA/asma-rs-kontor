@@ -1,0 +1,123 @@
+{
+  "base": "e376f4059e47de8fb40956d4dbfbf6920dabc4ec",
+  "previous_classes_unchanged": true,
+  "additions": {
+    "placement_blocked": {
+      "class": "Refused",
+      "exit": 3
+    },
+    "ensure_mismatch": {
+      "class": "Refused",
+      "exit": 3
+    },
+    "handoff_unsettled": {
+      "class": "Refused",
+      "exit": 3
+    },
+    "delivery_unconfirmed": {
+      "class": "Conflict",
+      "exit": 4
+    },
+    "proof_scan_incomplete": {
+      "class": "Unavailable",
+      "exit": 5
+    },
+    "provider_usage_throttled": {
+      "class": "Unavailable",
+      "exit": 5
+    },
+    "rename_pending": {
+      "class": "Absent",
+      "exit": 6
+    }
+  },
+  "direct_surface_codes": {
+    "forbidden": {
+      "exit_class": "Refused",
+      "direct_surface_files": [
+        "crates/kontor-daemon/src/applications/durable_seats.rs",
+        "crates/kontor-daemon/src/applications/pr_reviews.rs"
+      ],
+      "exit_code": 3
+    },
+    "invalid_request": {
+      "exit_class": "Local",
+      "direct_surface_files": [
+        "crates/kontor-daemon/src/applications/durable_seats.rs",
+        "crates/kontor-daemon/src/applications/desk_adams.rs",
+        "crates/kontor-daemon/src/applications/pr_reviews.rs"
+      ],
+      "exit_code": 2
+    },
+    "not_found": {
+      "exit_class": "Absent",
+      "direct_surface_files": [
+        "crates/kontor-daemon/src/applications/durable_seats.rs",
+        "crates/kontor-daemon/src/applications/desk_adams.rs",
+        "crates/kontor-daemon/src/applications/pr_reviews.rs"
+      ],
+      "exit_code": 6
+    },
+    "placement_blocked": {
+      "exit_class": "Refused",
+      "direct_surface_files": [
+        "crates/kontor-daemon/src/applications/durable_seats.rs",
+        "crates/kontor-daemon/src/applications/desk_adams.rs",
+        "crates/kontor-daemon/src/applications/pr_reviews.rs"
+      ],
+      "exit_code": 3
+    },
+    "stale_binding": {
+      "exit_class": "Conflict",
+      "direct_surface_files": [
+        "crates/kontor-daemon/src/applications/durable_seats.rs",
+        "crates/kontor-daemon/src/applications/desk_adams.rs",
+        "crates/kontor-daemon/src/applications/pr_reviews.rs"
+      ],
+      "exit_code": 4
+    },
+    "unavailable": {
+      "exit_class": "Unavailable",
+      "direct_surface_files": [
+        "crates/kontor-daemon/src/applications/durable_seats.rs",
+        "crates/kontor-daemon/src/applications/desk_adams.rs",
+        "crates/kontor-daemon/src/applications/pr_reviews.rs"
+      ],
+      "exit_code": 5
+    },
+    "revision_conflict": {
+      "exit_class": "Conflict",
+      "direct_surface_files": [
+        "crates/kontor-daemon/src/applications/desk_adams.rs"
+      ],
+      "exit_code": 4
+    },
+    "unsupported_capability": {
+      "exit_class": "Absent",
+      "direct_surface_files": [
+        "crates/kontor-daemon/src/applications/desk_adams.rs"
+      ],
+      "exit_code": 6
+    },
+    "ensure_mismatch": {
+      "exit_class": "Refused",
+      "direct_surface_files": [
+        "crates/kontor-daemon/src/applications/pr_reviews.rs"
+      ],
+      "exit_code": 3
+    }
+  },
+  "shared_path_existing_codes": {
+    "idempotency_conflict": "Conflict",
+    "revision_conflict": "Conflict",
+    "stale_binding": "Conflict",
+    "unsupported_capability": "Absent"
+  },
+  "new_shared_path_codes": [
+    "delivery_unconfirmed",
+    "handoff_unsettled",
+    "proof_scan_incomplete",
+    "provider_usage_throttled",
+    "rename_pending"
+  ]
+}

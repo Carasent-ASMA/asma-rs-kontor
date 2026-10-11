@@ -1,0 +1,20 @@
+{
+  "name": "surface-parity",
+  "head": "e376f4059e47de8fb40956d4dbfbf6920dabc4ec",
+  "started_at": "2026-10-11T13:35:17.143866+00:00",
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kontor-cli",
+    "--test",
+    "durable_desk_parity",
+    "--",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "log": ".qualification/surface-parity.log",
+  "log_sha256": "d99f7f6e2de1d291d383e8fe73144d51f7ee6699de2c70580d8f1e85118a19c5"
+}

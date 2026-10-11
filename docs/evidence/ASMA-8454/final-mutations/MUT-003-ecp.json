@@ -1,0 +1,22 @@
+{
+  "name": "MUT-003-ecp",
+  "head": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
+  "started_head": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
+  "started_at": "2026-10-11T14:48:15.721116+00:00",
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk",
+    "--",
+    "--test-threads=2"
+  ],
+  "exit_code": 101,
+  "log": ".qualification/MUT-003-ecp.log",
+  "log_sha256": "8552369dec5f97124eef2ae1bd13ffd4f84b0fec9adb6fc8b0a9871679c02d20"
+}

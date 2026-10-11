@@ -1,0 +1,22 @@
+{
+  "name": "MUT-004-close",
+  "head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+  "started_head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+  "started_at": "2026-10-11T14:25:48.918383+00:00",
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "pr_reviews::",
+    "--",
+    "--test-threads=2"
+  ],
+  "exit_code": 101,
+  "log": ".qualification/MUT-004-close.log",
+  "log_sha256": "16d6e93a0ff70fceec8042f933a77b2e2e66610ac61adb8bafa9874b150959e1"
+}

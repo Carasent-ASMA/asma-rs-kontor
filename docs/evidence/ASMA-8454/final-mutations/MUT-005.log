@@ -1,0 +1,27 @@
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-store)
+   Compiling kontor-memory-cognee v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-memory-cognee)
+   Compiling kontor-api v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-api)
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 54.88s
+     Running tests/loopback_api.rs (target/debug/deps/loopback_api-6520399e83adc025)
+
+running 1 test
+test pr_reviews::qualification::four_structures_restore_replay_and_selection_rollback_keep_old_pins_and_natives ... FAILED
+
+failures:
+
+---- pr_reviews::qualification::four_structures_restore_replay_and_selection_rollback_keep_old_pins_and_natives stdout ----
+
+thread 'pr_reviews::qualification::four_structures_restore_replay_and_selection_rollback_keep_old_pins_and_natives' (102544492) panicked at crates/kontor-daemon/tests/loopback/qualification.rs:248:5:
+assertion `left == right` failed: selection must never migrate an existing epic
+  left: TeamDefinitionSnapshot { definition_id: TeamDefinitionId(01936f5a-2000-7000-8000-000000000001), version: SpecVersion(8), canonical_hash: ContentHash("79def4231c04072de862998f9743eee5e02e79ff4297609f0bfed98faf72f074") }
+ right: TeamDefinitionSnapshot { definition_id: TeamDefinitionId(01936f5a-2000-7000-8000-000000000001), version: SpecVersion(2), canonical_hash: ContentHash("093b0d852d2be02fd08e442446e860b43fa6506bd973e2b627afec357fcd4dc4") }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    pr_reviews::qualification::four_structures_restore_replay_and_selection_rollback_keep_old_pins_and_natives
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 616 filtered out; finished in 2.24s
+
+error: test failed, to rerun pass `-p kontor-daemon --test loopback_api`

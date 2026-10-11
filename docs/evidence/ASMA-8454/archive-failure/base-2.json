@@ -1,0 +1,25 @@
+{
+  "name": "base-2",
+  "source_commit": "e376f4059e47de8fb40956d4dbfbf6920dabc4ec",
+  "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/reproduction/base-e376f405",
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "message_delivery_proofs::legacy_message_proof_duplicate_split_across_pages_is_terminal_without_delivery",
+    "--",
+    "--nocapture",
+    "--test-threads=2"
+  ],
+  "target_dir": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/reproduction/target-base",
+  "started_at": "2026-10-11T15:13:11.685937+00:00",
+  "exit_code": 0,
+  "log": ".qualification/reproduction/base-2.log",
+  "log_sha256": "a97a881dc42184e10ef06e49caa8d0743b17fbb73ddbb43dd8b4030fb57358e9",
+  "source_unmodified": true
+}

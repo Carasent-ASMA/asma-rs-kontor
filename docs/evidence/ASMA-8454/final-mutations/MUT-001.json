@@ -1,0 +1,22 @@
+{
+  "name": "MUT-001",
+  "head": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
+  "started_head": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
+  "started_at": "2026-10-11T14:40:37.868113+00:00",
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "durable_desks::",
+    "--",
+    "--test-threads=2"
+  ],
+  "exit_code": 101,
+  "log": ".qualification/MUT-001.log",
+  "log_sha256": "135f1ff2f11e4330c6ac595300bf4c749e8d234f9f28d5373e4971723595d020"
+}

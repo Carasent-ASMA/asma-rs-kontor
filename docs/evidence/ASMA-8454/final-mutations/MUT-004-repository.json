@@ -1,0 +1,22 @@
+{
+  "name": "MUT-004-repository",
+  "head": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
+  "started_head": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
+  "started_at": "2026-10-11T14:49:39.999688+00:00",
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "pr_reviews::the_same_number_in_two_repositories_is_two_reviews_and_a_task_key_names_its_task",
+    "--",
+    "--test-threads=2"
+  ],
+  "exit_code": 101,
+  "log": ".qualification/MUT-004-repository.log",
+  "log_sha256": "dd4517427050c0928aaf10d6a00f476634a4a713c74b800fd1914b462c6779c5"
+}

@@ -1,0 +1,79 @@
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-store)
+   Compiling kontor-cli v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-cli)
+   Compiling kontor-memory-cognee v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-memory-cognee)
+   Compiling kontor-api v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-api)
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 32.97s
+     Running unittests src/main.rs (target/debug/deps/kontor-b93b2c9532b1c750)
+
+running 22 tests
+test commands::tests::every_tool_has_exactly_one_subcommand_and_no_command_is_invented ... ok
+test commands::tests::committee_initial_recovery_profiles_are_exposed_by_the_admin_cli_command ... ok
+test commands::tests::a_declared_number_reaches_the_dispatcher_as_a_number ... ok
+test commands::tests::every_command_is_declared_exactly_once_whatever_its_execution_class ... ok
+test commands::tests::the_command_spelling_is_mechanical ... ok
+test commands::tests::a_value_of_the_wrong_shape_is_refused_before_anything_is_dispatched ... ok
+test commands::tests::a_missing_required_flag_is_refused_by_the_parser ... ok
+test output::tests::a_closed_pipe_is_a_clean_exit_and_any_other_write_failure_is_not ... ok
+test output::tests::a_written_document_keeps_the_class_it_was_given ... ok
+test output::tests::a_refusal_from_the_daemon_keeps_its_body_and_earns_its_own_class ... ok
+test output::tests::an_unrecognised_code_is_a_protocol_problem_and_not_a_refusal ... ok
+test output::tests::desk_operator_refusals_pin_corrective_actions_and_exact_exit_codes ... ok
+test output::tests::each_code_lands_in_the_class_that_says_what_to_do_next ... ok
+test output::tests::every_code_in_the_closed_vocabulary_has_a_class_and_none_is_zero ... ok
+test output::tests::the_exit_classes_are_the_numbers_a_script_branches_on ... ok
+test commands::tests::a_declared_object_reaches_the_dispatcher_as_an_object ... ok
+test commands::tests::committee_re_review_is_exposed_by_the_generated_cli_command ... ok
+test commands::tests::a_declared_object_array_reaches_the_dispatcher_as_an_array ... ok
+test commands::tests::native_less_committee_reroute_is_exposed_by_the_admin_cli_command ... ok
+test commands::tests::delivery_seat_recovery_and_quota_projection_are_generated_from_the_registry ... ok
+test commands::tests::the_gate_rejection_recovery_spelling_is_the_one_operators_are_given ... ok
+test commands::tests::the_tree_is_valid_and_every_flag_matches_its_declared_argument ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/durable_desk_parity.rs (target/debug/deps/durable_desk_parity-65d679d71e766b7b)
+
+running 1 test
+test desk_ensure_and_undeclared_refusal_match_http_mcp_and_cli ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.96s
+
+     Running tests/fleet_bundle.rs (target/debug/deps/fleet_bundle-bc20d45a6912553b)
+
+running 1 test
+test a_bundle_is_proposed_published_and_activated_through_the_generated_cli ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.09s
+
+     Running tests/local_resolve.rs (target/debug/deps/local_resolve-dc8e8b969492c54b)
+
+running 10 tests
+test a_joint_allocation_is_one_snapshot_through_the_shared_allocator ... ok
+test a_planning_pair_on_one_actual_vendor_is_blocked_whole ... ok
+test the_local_read_keeps_its_tier_its_schema_and_takes_no_base_url ... ok
+test a_planning_pair_is_one_placement_through_the_shared_reader ... ok
+test a_planning_pair_request_carries_no_caller_or_native_authority ... ok
+test a_joint_request_names_one_mode_and_the_declared_shape ... ok
+test an_aligned_bundle_resolves_every_seat_class_without_a_daemon ... ok
+test a_planning_pair_names_seat_a_then_seat_b_and_resolvable_bindings ... ok
+test the_local_read_fails_closed_and_never_falls_back ... ok
+test the_three_request_forms_are_mutually_exclusive ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+
+     Running tests/memory_parity.rs (target/debug/deps/memory_parity-6632e19151a36e12)
+
+running 2 tests
+test native_memory_http_and_cli_share_realm_revision_and_cursor ... ok
+test typed_memory_http_cli_and_mcp_share_proposal_projection_and_classification ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.19s
+
+     Running tests/version.rs (target/debug/deps/version-52655206ef23fba9)
+
+running 1 test
+test version_is_one_line_and_exits_immediately ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

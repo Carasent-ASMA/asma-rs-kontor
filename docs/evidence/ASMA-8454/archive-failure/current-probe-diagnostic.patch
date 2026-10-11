@@ -1,0 +1,35 @@
+--- original/crates/kontor-daemon/tests/loopback/message_delivery_proofs.rs
++++ scratch/crates/kontor-daemon/tests/loopback/message_delivery_proofs.rs
+@@ -302,7 +302,19 @@
+         .fake
+         .observe_turn_completion(&held, message, kontor_api::now())
+         .unwrap();
+-    assert_eq!(step(&world, run, message, 0, "start").await.status, 200);
++    let answer = step(&world, run, message, 0, "start").await;
++    if answer.status != 200 {
++        let issued = world.daemon.state().message_issuance(message).unwrap().unwrap();
++        let anchor = world.daemon.state().with_store(|store| store.message_delivery_proof_anchor(&issued));
++        let prior: Vec<_> = world.fake.content(&held).iter().filter_map(|event| {
++            if let kontor_runtime::timeline::EventSubject::Message(id) = &event.subject {
++                if *id != message { return Some(world.daemon.state().message_issuance(*id)); }
++            }
++            None
++        }).collect();
++        eprintln!("READONLY_PROBE status={} body={} issued={:?} anchor={:?} prior={:?}", answer.status, answer.body, issued, anchor, prior);
++    }
++    assert_eq!(answer.status, 200, "{}", answer.body);
+     let completed = finish(&world, run, message).await;
+     assert_eq!(completed.state, "duplicate");
+     assert_eq!(completed.occurrences, 2);
+@@ -601,3 +613,11 @@
+     }
+     unknown(&world, message);
+ }
++
++#[test]
++fn qualification_readonly_repeat_probe() {
++    for round in 1..=100 {
++        eprintln!("READONLY_PROBE round={round}");
++        legacy_message_proof_duplicate_split_across_pages_is_terminal_without_delivery();
++    }
++}

@@ -1,0 +1,58 @@
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 37.88s
+     Running tests/loopback_api.rs (target/debug/deps/loopback_api-6520399e83adc025)
+
+running 5 tests
+test durable_desks::a_desk_refused_at_native_preparation_keeps_only_its_ensured_nodes ... FAILED
+test durable_desks::a_restarted_daemon_reads_back_and_reconciles_the_same_desks ... FAILED
+test durable_desks::an_undeclared_desk_is_refused_before_any_desk_state_or_native_effect ... FAILED
+test durable_desks::both_desks_materialize_read_back_and_replay_without_an_epic ... FAILED
+test durable_desks::no_epic_operation_can_retire_or_archive_a_desk ... FAILED
+
+failures:
+
+---- durable_desks::a_desk_refused_at_native_preparation_keeps_only_its_ensured_nodes stdout ----
+
+thread 'durable_desks::a_desk_refused_at_native_preparation_keeps_only_its_ensured_nodes' (102387635) panicked at crates/kontor-daemon/tests/loopback/durable_desks.rs:402:5:
+assertion `left == right` failed: {"realm_id":"01a12b69-360a-7d21-a642-8e62b2a62bde","code":"placement_blocked","rule":"mutant requires an epic for a desk","current_revision":null,"oldest_retained_cursor":null,"newest_cursor":null,"action":"resolve where the work belongs in the topology, then retry"}
+  left: String("placement_blocked")
+ right: "unavailable"
+
+---- durable_desks::a_restarted_daemon_reads_back_and_reconciles_the_same_desks stdout ----
+
+thread 'durable_desks::a_restarted_daemon_reads_back_and_reconciles_the_same_desks' (102387636) panicked at crates/kontor-daemon/tests/loopback/durable_desks.rs:603:5:
+assertion `left == right` failed: {"realm_id":"01a12b69-360a-7d21-a642-8e62b2a62bde","code":"placement_blocked","rule":"mutant requires an epic for a desk","current_revision":null,"oldest_retained_cursor":null,"newest_cursor":null,"action":"resolve where the work belongs in the topology, then retry"}
+  left: 409
+ right: 200
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- durable_desks::an_undeclared_desk_is_refused_before_any_desk_state_or_native_effect stdout ----
+
+thread 'durable_desks::an_undeclared_desk_is_refused_before_any_desk_state_or_native_effect' (102387924) panicked at crates/kontor-daemon/tests/loopback/durable_desks.rs:284:5:
+ensure adam: {"realm_id":"01a12b69-360a-7d21-a642-8e62b2a62bde","code":"placement_blocked","rule":"mutant requires an epic for a desk","current_revision":null,"oldest_retained_cursor":null,"newest_cursor":null,"action":"resolve where the work belongs in the topology, then retry"}
+
+---- durable_desks::both_desks_materialize_read_back_and_replay_without_an_epic stdout ----
+
+thread 'durable_desks::both_desks_materialize_read_back_and_replay_without_an_epic' (102387925) panicked at crates/kontor-daemon/tests/loopback/durable_desks.rs:467:5:
+assertion `left == right` failed: {"realm_id":"01a12b69-360a-7d21-a642-8e62b2a62bde","code":"placement_blocked","rule":"mutant requires an epic for a desk","current_revision":null,"oldest_retained_cursor":null,"newest_cursor":null,"action":"resolve where the work belongs in the topology, then retry"}
+  left: 409
+ right: 200
+
+---- durable_desks::no_epic_operation_can_retire_or_archive_a_desk stdout ----
+
+thread 'durable_desks::no_epic_operation_can_retire_or_archive_a_desk' (102387929) panicked at crates/kontor-daemon/tests/loopback/durable_desks.rs:708:5:
+assertion `left == right` failed: {"realm_id":"01a12b69-360a-7d21-a642-8e62b2a62bde","code":"placement_blocked","rule":"mutant requires an epic for a desk","current_revision":null,"oldest_retained_cursor":null,"newest_cursor":null,"action":"resolve where the work belongs in the topology, then retry"}
+  left: 409
+ right: 200
+
+
+failures:
+    durable_desks::a_desk_refused_at_native_preparation_keeps_only_its_ensured_nodes
+    durable_desks::a_restarted_daemon_reads_back_and_reconciles_the_same_desks
+    durable_desks::an_undeclared_desk_is_refused_before_any_desk_state_or_native_effect
+    durable_desks::both_desks_materialize_read_back_and_replay_without_an_epic
+    durable_desks::no_epic_operation_can_retire_or_archive_a_desk
+
+test result: FAILED. 0 passed; 5 failed; 0 ignored; 0 measured; 612 filtered out; finished in 2.33s
+
+error: test failed, to rerun pass `-p kontor-daemon --test loopback_api`

@@ -1,0 +1,16 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.27s
+     Running tests/loopback_api.rs (target/debug/deps/loopback_api-6520399e83adc025)
+
+running 9 tests
+test durable_seats::a_declaration_or_selection_that_is_not_one_exact_decision_is_refused ... ok
+test durable_seats::a_lost_launch_answer_is_recovered_by_the_same_native_after_a_restart ... ok
+test durable_seats::a_missing_daemon_seat_launches_once_and_a_replay_never_launches_again ... ok
+test durable_seats::a_recovery_binds_only_the_native_the_census_saw ... ok
+test durable_seats::a_seat_of_an_unmaterialized_desk_is_refused_before_any_binding ... ok
+test durable_seats::a_seat_that_is_not_proved_missing_is_never_restarted ... ok
+test durable_seats::qualification_seats::generic_retire_refuses_a_desk_seat_without_native_or_store_effects ... ok
+test durable_seats::the_asma_8419_seats_are_declared_paseo_direct_and_never_touched ... ok
+test durable_seats::two_concurrent_reconciliations_launch_a_missing_seat_once ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 608 filtered out; finished in 3.51s
+

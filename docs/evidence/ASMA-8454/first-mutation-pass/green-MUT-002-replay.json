@@ -1,0 +1,22 @@
+{
+  "name": "green-MUT-002-replay",
+  "head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+  "started_head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+  "started_at": "2026-10-11T14:17:36.705654+00:00",
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "durable_seats::a_missing_daemon_seat_launches_once_and_a_replay_never_launches_again",
+    "--",
+    "--test-threads=2"
+  ],
+  "exit_code": 0,
+  "log": ".qualification/green-MUT-002-replay.log",
+  "log_sha256": "36849d180523675c06a71df440c3c1510b1d0ed00e4ed5ee8d6f27590d3d312a"
+}

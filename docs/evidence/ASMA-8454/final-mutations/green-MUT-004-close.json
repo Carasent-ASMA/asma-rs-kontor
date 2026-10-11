@@ -1,0 +1,22 @@
+{
+  "name": "green-MUT-004-close",
+  "head": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
+  "started_head": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
+  "started_at": "2026-10-11T14:50:35.961703+00:00",
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "pr_reviews::",
+    "--",
+    "--test-threads=2"
+  ],
+  "exit_code": 0,
+  "log": ".qualification/green-MUT-004-close.log",
+  "log_sha256": "c28fbb24d601f432f14681779adf962485b7e70c466c17e2bc85d5173fbfad07"
+}

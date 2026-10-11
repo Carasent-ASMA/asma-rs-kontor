@@ -1,0 +1,22 @@
+{
+  "name": "green-MUT-001",
+  "head": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
+  "started_head": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
+  "started_at": "2026-10-11T14:40:33.880311+00:00",
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "durable_desks::",
+    "--",
+    "--test-threads=2"
+  ],
+  "exit_code": 0,
+  "log": ".qualification/green-MUT-001.log",
+  "log_sha256": "f2617b8c773c6adc9c86ff74382f4b35e5e7b874619d3283f05d895ffa98ea63"
+}

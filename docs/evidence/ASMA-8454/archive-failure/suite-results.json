@@ -1,0 +1,50 @@
+[
+  {
+    "name": "base-full",
+    "source_commit": "e376f4059e47de8fb40956d4dbfbf6920dabc4ec",
+    "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/reproduction/base-e376f405",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "--",
+      "--nocapture",
+      "--test-threads=2"
+    ],
+    "target_dir": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/reproduction/target-base",
+    "started_at": "2026-10-11T15:14:35.093400+00:00",
+    "exit_code": 0,
+    "log": ".qualification/reproduction/base-full.log",
+    "log_sha256": "ca9b03563787b6c82deab332f932aeb37a097d59bcf40e41653b4a154cefe6d9",
+    "source_unmodified": true
+  },
+  {
+    "name": "current-full",
+    "source_commit": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
+    "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "--",
+      "--nocapture",
+      "--test-threads=2"
+    ],
+    "target_dir": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target",
+    "started_at": "2026-10-11T15:14:35.093649+00:00",
+    "exit_code": 0,
+    "log": ".qualification/reproduction/current-full.log",
+    "log_sha256": "a99cf15fc204bd4b80dcefcfa5a07331057ec3afd71926fe2dfc34a2124fafde",
+    "source_unmodified": true
+  }
+]

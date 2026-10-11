@@ -1,0 +1,22 @@
+{
+  "name": "MUT-Q-ATOMIC",
+  "head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+  "started_head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+  "started_at": "2026-10-11T14:30:02.192152+00:00",
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "pr_reviews::qualification::a_new_desk_under_a_parent_that_already_knows_an_older_desk_kind_refuses_without_effects",
+    "--",
+    "--test-threads=2"
+  ],
+  "exit_code": 101,
+  "log": ".qualification/MUT-Q-ATOMIC.log",
+  "log_sha256": "e947d6c42fe6781d19b1d2ae82e69908e1326d1abef102ca7dfd75e9e519f011"
+}

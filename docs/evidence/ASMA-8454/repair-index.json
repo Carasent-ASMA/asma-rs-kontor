@@ -1,0 +1,52 @@
+{
+  "surface-parity-before": {
+    "receipt": "repairs/surface-parity-before.json",
+    "committed_log": "repairs/surface-parity-before.log",
+    "original_log": ".qualification/surface-parity.log",
+    "sha256": "d99f7f6e2de1d291d383e8fe73144d51f7ee6699de2c70580d8f1e85118a19c5",
+    "exit_code": 0,
+    "head": "e376f4059e47de8fb40956d4dbfbf6920dabc4ec",
+    "started_head": null,
+    "passed_tests": 1
+  },
+  "surface-parity": {
+    "receipt": "repairs/surface-parity.json",
+    "committed_log": "repairs/surface-parity.log",
+    "original_log": ".qualification/surface-parity.log",
+    "sha256": "6028ce8722920fa24c0fa3a671c0aa4c538a031e5727fb90bcae2fe5586bbd73",
+    "exit_code": 0,
+    "head": "e376f4059e47de8fb40956d4dbfbf6920dabc4ec",
+    "started_head": null,
+    "passed_tests": 1
+  },
+  "topology-boundary-before": {
+    "receipt": "repairs/topology-boundary-before.json",
+    "committed_log": "repairs/topology-boundary-before.log",
+    "original_log": ".qualification/topology-boundary.log",
+    "sha256": "f01de5df723d953e9bcac3c333c21378870cd7c29830bf158ab7c2fcefd9e80c",
+    "exit_code": 101,
+    "head": "e376f4059e47de8fb40956d4dbfbf6920dabc4ec",
+    "started_head": null,
+    "passed_tests": 0
+  },
+  "topology-boundary": {
+    "receipt": "repairs/topology-boundary.json",
+    "committed_log": "repairs/topology-boundary.log",
+    "original_log": ".qualification/topology-boundary.log",
+    "sha256": "aebfd74a4b49ef0dddb5980a7f90bc59154892b2ce6362b3bae3ec8d75d67fc5",
+    "exit_code": 0,
+    "head": "e376f4059e47de8fb40956d4dbfbf6920dabc4ec",
+    "started_head": null,
+    "passed_tests": 1
+  },
+  "completion-strengthened": {
+    "receipt": "repairs/completion-strengthened.json",
+    "committed_log": "repairs/completion-strengthened.log",
+    "original_log": ".qualification/completion-strengthened.log",
+    "sha256": "847e4974afa1181cb07ba38c9a892e9a4a3c9e32a7ec2fbf44875a717b4fd09e",
+    "exit_code": 0,
+    "head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+    "started_head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+    "passed_tests": 1
+  }
+}

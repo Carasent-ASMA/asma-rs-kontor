@@ -1,0 +1,41 @@
+   Compiling kontor-core v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-core)
+   Compiling kontor-runtime v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-runtime)
+   Compiling kontor-policy v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-policy)
+   Compiling kontor-context v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-context)
+   Compiling kontor-fleet v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-fleet)
+   Compiling kontor-mcp v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-mcp)
+   Compiling kontor-fleet-activation v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-fleet-activation)
+   Compiling kontor-scheduler v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-scheduler)
+   Compiling kontor-teams v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-teams)
+   Compiling kontor-runtime-paseo v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-runtime-paseo)
+   Compiling kontor-profiles v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-profiles)
+   Compiling kontor-calendar v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-calendar)
+   Compiling kontor-accounts v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-accounts)
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-store)
+   Compiling kontor-jira v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-jira)
+   Compiling kontor-memory-cognee v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-memory-cognee)
+   Compiling kontor-api v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-api)
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 07s
+     Running tests/loopback_api.rs (target/debug/deps/loopback_api-6520399e83adc025)
+
+running 1 test
+test durable_seats::a_seat_that_is_not_proved_missing_is_never_restarted ... FAILED
+
+failures:
+
+---- durable_seats::a_seat_that_is_not_proved_missing_is_never_restarted stdout ----
+
+thread 'durable_seats::a_seat_that_is_not_proved_missing_is_never_restarted' (102113817) panicked at crates/kontor-daemon/tests/loopback/durable_seats.rs:737:9:
+assertion `left == right` failed: busy
+  left: ("busy", "working", "launch")
+ right: ("busy", "working", "none")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    durable_seats::a_seat_that_is_not_proved_missing_is_never_restarted
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 616 filtered out; finished in 2.30s
+
+error: test failed, to rerun pass `-p kontor-daemon --test loopback_api`

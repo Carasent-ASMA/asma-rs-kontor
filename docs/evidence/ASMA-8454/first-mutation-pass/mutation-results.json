@@ -1,0 +1,458 @@
+[
+  {
+    "id": "MUT-001",
+    "file": "crates/kontor-daemon/src/applications.rs",
+    "before": "    fn ensure_desk(\n        &self,\n        project_id: ProjectId,\n        desk_key: &DeskKey,\n    ) -> Result<SessionTopologyNode, ApiError> {\n        let _native_activity = self.native_activity()?;\n        let state = self.state()?;\n",
+    "after": "    fn ensure_desk(\n        &self,\n        project_id: ProjectId,\n        desk_key: &DeskKey,\n    ) -> Result<SessionTopologyNode, ApiError> {\n        let _native_activity = self.native_activity()?;\n        let state = self.state()?;\n        if state.with_store(|store| store.list_mini_projects(project_id))\n            .map_err(|error| self.refuse(&error))?.is_empty() {\n            return Err(self.deny(ApiErrorCode::PlacementBlocked, \"mutant requires an epic for a desk\"));\n        }\n",
+    "suite": "durable_desks::",
+    "claim": "An epic prerequisite prevents independent desk materialization",
+    "name": "MUT-001",
+    "head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+    "started_head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+    "started_at": "2026-10-11T14:13:50.062622+00:00",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "durable_desks::",
+      "--",
+      "--test-threads=2"
+    ],
+    "exit_code": 101,
+    "log": ".qualification/MUT-001.log",
+    "log_sha256": "50326c15f4fa7b618c7f18506c4c9f9ed799dae19295b0d429ac2dfdf494c13e",
+    "line": 10755,
+    "source_sha256": "db734bdac8c5ce623924ff10cce53e8aaea2fcee9c085b087fc09206ca4f44fa",
+    "seeded_sha256": "efeaaeef9ccefb92977daaf7cba3d5448c94bd171b06f4936bfe6452f23d5d53",
+    "result": "KILLED",
+    "failed_tests": [
+      "durable_desks::a_desk_refused_at_native_preparation_keeps_only_its_ensured_nodes",
+      "durable_desks::a_restarted_daemon_reads_back_and_reconciles_the_same_desks",
+      "durable_desks::an_undeclared_desk_is_refused_before_any_desk_state_or_native_effect",
+      "durable_desks::both_desks_materialize_read_back_and_replay_without_an_epic",
+      "durable_desks::no_epic_operation_can_retire_or_archive_a_desk"
+    ],
+    "failure_excerpts": [
+      "thread 'durable_desks::a_desk_refused_at_native_preparation_keeps_only_its_ensured_nodes' (102105411) panicked at crates/kontor-daemon/tests/loopback/durable_desks.rs:402:5:\nassertion `left == right` failed: {\"realm_id\":\"01a12b50-b1f9-7e21-a67a-071b3082c80c\",\"code\":\"placement_blocked\",\"rule\":\"mutant requires an epic for a desk\",\"current_revision\":null,\"oldest_retained_cursor\":null,\"newest_cursor\":null,\"action\":\"resolve where the work belongs in the topology, then retry\"}\n  left: String(\"placement_blocked\")\n right: \"unavailable\"\n\n---- durable_desks::a_restarted_daemon_reads_back_and_reconciles_the_same_desks stdout ----\n",
+      "thread 'durable_desks::a_restarted_daemon_reads_back_and_reconciles_the_same_desks' (102105412) panicked at crates/kontor-daemon/tests/loopback/durable_desks.rs:603:5:\nassertion `left == right` failed: {\"realm_id\":\"01a12b50-b1f9-7e21-a67a-071b3082c80c\",\"code\":\"placement_blocked\",\"rule\":\"mutant requires an epic for a desk\",\"current_revision\":null,\"oldest_retained_cursor\":null,\"newest_cursor\":null,\"action\":\"resolve where the work belongs in the topology, then retry\"}\n  left: 409\n right: 200\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n",
+      "thread 'durable_desks::an_undeclared_desk_is_refused_before_any_desk_state_or_native_effect' (102105527) panicked at crates/kontor-daemon/tests/loopback/durable_desks.rs:284:5:\nensure adam: {\"realm_id\":\"01a12b50-b1f9-7e21-a67a-071b3082c80c\",\"code\":\"placement_blocked\",\"rule\":\"mutant requires an epic for a desk\",\"current_revision\":null,\"oldest_retained_cursor\":null,\"newest_cursor\":null,\"action\":\"resolve where the work belongs in the topology, then retry\"}\n\n---- durable_desks::both_desks_materialize_read_back_and_replay_without_an_epic stdout ----\n\nthread 'durable_desks::both_desks_materialize_read_back_and_replay_without_an_epic' (102105528) panicked at crates/kontor-daemon/tests/loopback/durable_desks.rs:467:5:\n",
+      "thread 'durable_desks::no_epic_operation_can_retire_or_archive_a_desk' (102105529) panicked at crates/kontor-daemon/tests/loopback/durable_desks.rs:708:5:\nassertion `left == right` failed: {\"realm_id\":\"01a12b50-b1f9-7e21-a67a-071b3082c80c\",\"code\":\"placement_blocked\",\"rule\":\"mutant requires an epic for a desk\",\"current_revision\":null,\"oldest_retained_cursor\":null,\"newest_cursor\":null,\"action\":\"resolve where the work belongs in the topology, then retry\"}\n  left: 409\n right: 200\n\n\n"
+    ]
+  },
+  {
+    "id": "MUT-002-busy",
+    "file": "crates/kontor-core/src/durable_seat.rs",
+    "before": "        (DurableSeatStatus::Missing, _) => DurableSeatDecision::Launch,",
+    "after": "        (DurableSeatStatus::Missing, _) => DurableSeatDecision::Launch,\n        (DurableSeatStatus::Busy, _) => DurableSeatDecision::Launch,",
+    "suite": "durable_seats::a_seat_that_is_not_proved_missing_is_never_restarted",
+    "claim": "Busy becomes authority to launch",
+    "name": "MUT-002-busy",
+    "head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+    "started_head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+    "started_at": "2026-10-11T14:15:15.308338+00:00",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "durable_seats::a_seat_that_is_not_proved_missing_is_never_restarted",
+      "--",
+      "--test-threads=2"
+    ],
+    "exit_code": 101,
+    "log": ".qualification/MUT-002-busy.log",
+    "log_sha256": "968c7d433ed135794e6b4a12e1f27fc6315bd7f10a637d2ee50a5f2fea586e4d",
+    "line": 492,
+    "source_sha256": "10faa9acc8e9098b9a04f087f6e39e610f184ee1d76d130d61d6bfcae948f241",
+    "seeded_sha256": "e371f92be347746aa2a8eeefdd193c6828add82703d8f6d28fb9b521b2591404",
+    "result": "KILLED",
+    "failed_tests": [
+      "durable_seats::a_seat_that_is_not_proved_missing_is_never_restarted"
+    ],
+    "failure_excerpts": [
+      "thread 'durable_seats::a_seat_that_is_not_proved_missing_is_never_restarted' (102113817) panicked at crates/kontor-daemon/tests/loopback/durable_seats.rs:737:9:\nassertion `left == right` failed: busy\n  left: (\"busy\", \"working\", \"launch\")\n right: (\"busy\", \"working\", \"none\")\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n"
+    ]
+  },
+  {
+    "id": "MUT-002-unchecked",
+    "file": "crates/kontor-core/src/durable_seat.rs",
+    "before": "        (DurableSeatStatus::Missing, _) => DurableSeatDecision::Launch,",
+    "after": "        (DurableSeatStatus::Missing, _) => DurableSeatDecision::Launch,\n        (DurableSeatStatus::Unchecked, _) => DurableSeatDecision::Launch,",
+    "suite": "durable_seats::a_seat_that_is_not_proved_missing_is_never_restarted",
+    "claim": "Unchecked becomes authority to launch",
+    "name": "MUT-002-unchecked",
+    "head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+    "started_head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+    "started_at": "2026-10-11T14:16:27.186600+00:00",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "durable_seats::a_seat_that_is_not_proved_missing_is_never_restarted",
+      "--",
+      "--test-threads=2"
+    ],
+    "exit_code": 101,
+    "log": ".qualification/MUT-002-unchecked.log",
+    "log_sha256": "bf3a6ab1b3722b76bcfaebff4ce6929351a943d801eda42018166906a83568ac",
+    "line": 492,
+    "source_sha256": "10faa9acc8e9098b9a04f087f6e39e610f184ee1d76d130d61d6bfcae948f241",
+    "seeded_sha256": "305a684a6f2351225a9dcda4f6736331a93fd44bfd8eec33c3da924d71fbcb41",
+    "result": "KILLED",
+    "failed_tests": [
+      "durable_seats::a_seat_that_is_not_proved_missing_is_never_restarted"
+    ],
+    "failure_excerpts": [
+      "thread 'durable_seats::a_seat_that_is_not_proved_missing_is_never_restarted' (102119232) panicked at crates/kontor-daemon/tests/loopback/durable_seats.rs:773:9:\nassertion `left == right` failed\n  left: (\"unchecked\", \"census_failed\", \"launch\")\n right: (\"unchecked\", \"census_failed\", \"none\")\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n"
+    ]
+  },
+  {
+    "id": "MUT-002-replay",
+    "file": "crates/kontor-daemon/src/applications/durable_seats.rs",
+    "before": "            let decision = if replayed {",
+    "after": "            let decision = if false && replayed {",
+    "suite": "durable_seats::a_missing_daemon_seat_launches_once_and_a_replay_never_launches_again",
+    "claim": "A recorded launch is re-executed after its native vanishes",
+    "name": "MUT-002-replay",
+    "head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+    "started_head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+    "started_at": "2026-10-11T14:18:54.148910+00:00",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "durable_seats::a_missing_daemon_seat_launches_once_and_a_replay_never_launches_again",
+      "--",
+      "--test-threads=2"
+    ],
+    "exit_code": 101,
+    "log": ".qualification/MUT-002-replay.log",
+    "log_sha256": "8290c382814b72de30ed6c4a353028521c13288ed6e54efaa6b04e0903a1c995",
+    "line": 246,
+    "source_sha256": "01ed5e08ef88fdd2eb8e5114635205c42a61daa671b55aa7551aed1a528cadbe",
+    "seeded_sha256": "65c0b04fd66071d0abd3d0ddd6c6855523b45ee9c6abc8dd61cef380b8471d5e",
+    "result": "KILLED",
+    "failed_tests": [
+      "durable_seats::a_missing_daemon_seat_launches_once_and_a_replay_never_launches_again"
+    ],
+    "failure_excerpts": [
+      "thread 'durable_seats::a_missing_daemon_seat_launches_once_and_a_replay_never_launches_again' (102160901) panicked at crates/kontor-daemon/tests/loopback/durable_seats.rs:410:5:\nassertion `left == right` failed\n  left: (\"missing\", \"native_absent\", \"launch\")\n right: (\"missing\", \"native_absent\", \"none\")\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n"
+    ]
+  },
+  {
+    "id": "MUT-003-host",
+    "file": "crates/kontor-daemon/src/applications.rs",
+    "before": "            (Some(epic_id), _) => nodes\n                .into_iter()\n                .filter(|node| node.mini_project_id == Some(epic_id))\n                .collect(),",
+    "after": "            (Some(epic_id), _) => nodes\n                .into_iter()\n                .filter(|node| node.mini_project_id == Some(epic_id) || node.kind.as_str() == \"ADE\")\n                .collect(),",
+    "suite": "desk_adams::two_epic_adams_in_one_workspace_never_share_ownership_credentials_or_evidence",
+    "claim": "All Adam subjects on the shared host answer an epic-control lookup",
+    "name": "MUT-003-host",
+    "head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+    "started_head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+    "started_at": "2026-10-11T14:20:16.420939+00:00",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "desk_adams::two_epic_adams_in_one_workspace_never_share_ownership_credentials_or_evidence",
+      "--",
+      "--test-threads=2"
+    ],
+    "exit_code": 0,
+    "log": ".qualification/MUT-003-host.log",
+    "log_sha256": "4457285261c91299a7c2a965233d264d58b28e0cc0336170f039d1236eda1cc1",
+    "line": 10736,
+    "source_sha256": "db734bdac8c5ce623924ff10cce53e8aaea2fcee9c085b087fc09206ca4f44fa",
+    "seeded_sha256": "dda4a5d3caa53e64f87c3c3715ff3e1e4e82fd1f8368a2ad7b445bd74a0b1021",
+    "result": "SURVIVED",
+    "failed_tests": [],
+    "failure_excerpts": []
+  },
+  {
+    "id": "MUT-003-authority",
+    "file": "crates/kontor-daemon/src/applications.rs",
+    "before": "        Ok(self\n            .state()?\n            .with_store(|store| store.list_seat_bindings(project_id, control.id))\n            .map_err(|error| self.refuse(&error))?\n            .into_iter()\n            .filter(|seat| {\n                seat.role.role_code.as_str() == role_code\n                    && seat.lifecycle != TopologyLifecycle::Retired\n            })\n            .map(|seat| seat.id)\n            .collect())",
+    "after": "        let host = control.parent_id.unwrap_or(control.id);\n        Ok(self.state()?.with_store(|store| {\n            let nodes = store.list_project_topology_nodes(project_id)?;\n            let mut seats = Vec::new();\n            for node in nodes.into_iter().filter(|node| node.id == host || node.parent_id == Some(host)) {\n                seats.extend(store.list_seat_bindings(project_id, node.id)?);\n            }\n            Ok::<_, RepositoryError>(seats)\n        }).map_err(|error| self.refuse(&error))?.into_iter()\n            .filter(|seat| seat.lifecycle != TopologyLifecycle::Retired)\n            .map(|seat| seat.id).collect())",
+    "suite": "desk_adams::two_epic_adams_in_one_workspace_never_share_ownership_credentials_or_evidence",
+    "claim": "Completion control authority accepts any active seat in the shared desk, including its durable seat and sibling subjects, regardless of role",
+    "name": "MUT-003-authority",
+    "head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+    "started_head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+    "started_at": "2026-10-11T14:20:57.033949+00:00",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "desk_adams::two_epic_adams_in_one_workspace_never_share_ownership_credentials_or_evidence",
+      "--",
+      "--test-threads=2"
+    ],
+    "exit_code": 0,
+    "log": ".qualification/MUT-003-authority.log",
+    "log_sha256": "a47f26090448617872f46eee70a37abae530817758856b8eaa8e09459dae83ad",
+    "line": 18775,
+    "source_sha256": "db734bdac8c5ce623924ff10cce53e8aaea2fcee9c085b087fc09206ca4f44fa",
+    "seeded_sha256": "996abccf8cc08cc80b6e442d91452db15464a82e77efc90199cfb14b1a93bbb3",
+    "result": "SURVIVED",
+    "failed_tests": [],
+    "failure_excerpts": []
+  },
+  {
+    "id": "MUT-003-ecp",
+    "file": "crates/kontor-daemon/src/applications/desk_adams.rs",
+    "before": "            Some(led) => led.leadership.epic_kind,",
+    "after": "            Some(_led) => self.domain.delivery.control_kind.clone(),",
+    "suite": "desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk",
+    "claim": "The control resolver always requires historical ECP",
+    "name": "MUT-003-ecp",
+    "head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+    "started_head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+    "started_at": "2026-10-11T14:22:21.140324+00:00",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk",
+      "--",
+      "--test-threads=2"
+    ],
+    "exit_code": 101,
+    "log": ".qualification/MUT-003-ecp.log",
+    "log_sha256": "b46906d258a3ca6165a63156fcdf6fc26848e3fdfd66adc223c7809c8aa08e7e",
+    "line": 78,
+    "source_sha256": "4ea807ae089dfe5421fab6594755e709adf08c5367e6434342d70b53e652379d",
+    "seeded_sha256": "e922b5c3c006739e7b37c257fc07a4ca7959dfabd728e3fbd1bf09c63655a0f1",
+    "result": "KILLED",
+    "failed_tests": [
+      "desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk"
+    ],
+    "failure_excerpts": [
+      "thread 'desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk' (102178581) panicked at crates/kontor-daemon/tests/loopback/desk_adams.rs:370:5:\nassertion `left == right` failed: {\"realm_id\":\"01a12b58-74f3-7e83-8543-0afb9fe7221f\",\"code\":\"placement_blocked\",\"rule\":\"a desk-led epic has no control plane of its own\",\"current_revision\":null,\"oldest_retained_cursor\":null,\"newest_cursor\":null,\"action\":\"resolve where the work belongs in the topology, then retry\"}\n  left: 409\n right: 200\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n"
+    ]
+  },
+  {
+    "id": "MUT-004-repository",
+    "file": "crates/kontor-store/src/repository/pr_reviews.rs",
+    "before": "                       AND repository = ?3 AND pull_request_number = ?4",
+    "after": "                       AND pull_request_number = ?4",
+    "suite": "pr_reviews::the_same_number_in_two_repositories_is_two_reviews_and_a_task_key_names_its_task",
+    "claim": "Repository is dropped from PR lookup identity",
+    "name": "MUT-004-repository",
+    "head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+    "started_head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+    "started_at": "2026-10-11T14:23:45.280849+00:00",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "pr_reviews::the_same_number_in_two_repositories_is_two_reviews_and_a_task_key_names_its_task",
+      "--",
+      "--test-threads=2"
+    ],
+    "exit_code": 101,
+    "log": ".qualification/MUT-004-repository.log",
+    "log_sha256": "038a74df52def8e8e1975ce79040725329a53588edf95af4b723f54335f2665e",
+    "line": 119,
+    "source_sha256": "0b3d3cd8243a05095a406d5cdac7f967afcd966430423d0fb9ebcef701724f9e",
+    "seeded_sha256": "3211c0f0ed6163efa6908a86dd0e3d6faa5698e3c52e8602eeef8dcd367c7ce2",
+    "result": "KILLED",
+    "failed_tests": [
+      "pr_reviews::the_same_number_in_two_repositories_is_two_reviews_and_a_task_key_names_its_task"
+    ],
+    "failure_excerpts": [
+      "thread 'pr_reviews::the_same_number_in_two_repositories_is_two_reviews_and_a_task_key_names_its_task' (102218654) panicked at crates/kontor-daemon/tests/loopback/pr_reviews.rs:451:5:\nassertion `left == right` failed: {\"realm_id\":\"01a12b5a-076f-7eb0-ba67-7d8a439c8bbf\",\"code\":\"ensure_mismatch\",\"rule\":\"this pull request's review was opened under another Jira key\",\"current_revision\":null,\"oldest_retained_cursor\":null,\"newest_cursor\":null,\"subject\":\"PR review\",\"action\":\"open it under the key it was first opened under; nothing was placed\"}\n  left: 409\n right: 200\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n"
+    ]
+  },
+  {
+    "id": "MUT-004-close",
+    "file": "crates/kontor-daemon/src/applications/pr_reviews.rs",
+    "before": "    pub(super) async fn close_pr_review_subject(\n        &self,\n        key: &IdempotencyKey,\n        project_id: ProjectId,\n        desk_key: &DeskKey,\n        request: &ClosePrReviewRequest,\n    ) -> Result<PrReviewOutcomeDto, ApiError> {\n        let state = self.state()?;\n        let pull_request = self.pull_request(&request.pull_request)?;\n        let project = self.project_at(project_id, request.expected_revision)?;\n        let intent = self.intent(&serde_json::json!({\n            \"schema_version\": 1,\n            \"operation\": \"close_pr_review\",\n            \"project\": project_id.to_string(),\n            \"desk\": desk_key.as_str(),\n            \"repository\": pull_request.repository().as_str(),\n            \"number\": pull_request.number(),\n        }))?;\n        let target = AggregateRef::Project { project_id };\n        let _held = self.pr_review_guard.lock().await;\n        let replayed = self.replayed(key, &intent, Some(&target))?.is_some();\n        let subject = self.stored_pr_review(project_id, desk_key, &pull_request)?;\n        if !replayed {\n            let mut seats = Vec::new();\n            for node_id in [subject.adam_node_id, subject.room_node_id] {",
+    "after": "    pub(super) async fn close_pr_review_subject(\n        &self,\n        key: &IdempotencyKey,\n        project_id: ProjectId,\n        desk_key: &DeskKey,\n        request: &ClosePrReviewRequest,\n    ) -> Result<PrReviewOutcomeDto, ApiError> {\n        let state = self.state()?;\n        let pull_request = self.pull_request(&request.pull_request)?;\n        let project = self.project_at(project_id, request.expected_revision)?;\n        let intent = self.intent(&serde_json::json!({\n            \"schema_version\": 1,\n            \"operation\": \"close_pr_review\",\n            \"project\": project_id.to_string(),\n            \"desk\": desk_key.as_str(),\n            \"repository\": pull_request.repository().as_str(),\n            \"number\": pull_request.number(),\n        }))?;\n        let target = AggregateRef::Project { project_id };\n        let _held = self.pr_review_guard.lock().await;\n        let replayed = self.replayed(key, &intent, Some(&target))?.is_some();\n        let subject = self.stored_pr_review(project_id, desk_key, &pull_request)?;\n        if !replayed {\n            let mut seats = Vec::new();\n            for node_id in state.with_store(|store| store.list_project_topology_nodes(project_id))\n                .map_err(|error| self.refuse(&error))?.into_iter().map(|node| node.id) {",
+    "suite": "pr_reviews::",
+    "claim": "Closing one PR enumerates every desk and sibling subject seat",
+    "name": "MUT-004-close",
+    "head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+    "started_head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+    "started_at": "2026-10-11T14:25:48.918383+00:00",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "pr_reviews::",
+      "--",
+      "--test-threads=2"
+    ],
+    "exit_code": 101,
+    "log": ".qualification/MUT-004-close.log",
+    "log_sha256": "16d6e93a0ff70fceec8042f933a77b2e2e66610ac61adb8bafa9874b150959e1",
+    "line": 1040,
+    "source_sha256": "58974e343c215318d271e6e2eff087d0d92c88202e84669ed30926ca83303186",
+    "seeded_sha256": "8cf7353ebad6e72d0ef9dd31e6eefa7832e5ebd4f84e1d409d55ee15ac08b887",
+    "result": "KILLED",
+    "failed_tests": [
+      "pr_reviews::closing_one_review_keeps_the_desk_its_durable_seat_and_the_other_review",
+      "pr_reviews::qualification::four_structures_restore_replay_and_selection_rollback_keep_old_pins_and_natives"
+    ],
+    "failure_excerpts": [
+      "thread 'pr_reviews::closing_one_review_keeps_the_desk_its_durable_seat_and_the_other_review' (102226798) panicked at crates/kontor-daemon/tests/loopback/pr_reviews.rs:939:5:\nassertion `left == right` failed: [InspectContainer(TopologyNodeId(01a12b5b-b08e-7eb0-9ae8-3fd3484d3dc7)), DiscoverCapabilities, InspectContainer(TopologyNodeId(01a12b5b-b08e-7eb0-9ae8-3fd3484d3dc7)), DiscoverCapabilities, InspectContainer(TopologyNodeId(01a12b5b-b0a6-7b50-992f-40708913d29c)), DiscoverCapabilities, InspectContainer(TopologyNodeId(01a12b5b-b08e-7eb0-9ae8-3fd3484d3dc7)), DiscoverCapabilities, InspectContainer(TopologyNodeId(01a12b5b-b112-75e2-bb2a-db8eb1136015)), DiscoverCapabilities, InspectContainer(TopologyNodeId(01a12b5b-b08e-7eb0-9ae8-3fd3484d3dc7)), DiscoverCapabilities, RetireHostedSeat(SeatBindingId(01a12b5b-b15d-73f0-9c8b-fbfd60d9d227)), InspectContainer(TopologyNodeId(01a12b5b-b08e-7eb0-9ae8-3fd3484d3dc7)), DiscoverCapabilities, RetireHostedSeat(SeatBindingId(01a12b5b-b0ab-73d1-82f8-79bcb260acc1)), InspectContainer(TopologyNodeId(01a12b5b-b0a6-7b50-992f-40708913d29c)), DiscoverCapabilities, RetireHostedSeat(SeatBindingId(01a12b5b-b0b2-7a11-b857-6c47bd98eb3f)), InspectContainer(TopologyNodeId(01a12b5b-b0a6-7b50-992f-40708913d29c)), DiscoverCapabilities, RetireHostedSeat(SeatBindingId(01a12b5b-b0b9-7481-ad72-0b01ad465681)), InspectContainer(TopologyNodeId(01a12b5b-b0a6-7b50-992f-40708913d29c)), DiscoverCapabilities, RetireHostedSeat(SeatBindingId(01a12b5b-b0bf-73c3-8319-8d09d4b318bf)), InspectContainer(TopologyNodeId(01a12b5b-b08e-7eb0-9ae8-3fd3484d3dc7)), DiscoverCapabilities, RetireHostedSeat(SeatBindingId(01a12b5b-b117-7db1-aec4-c60c18738c30)), InspectContainer(TopologyNodeId(01a12b5b-b112-75e2-bb2a-db8eb1136015)), DiscoverCapabilities, RetireHostedSeat(SeatBindingId(01a12b5b-b11e-7a11-9215-1812256e2f51)), InspectContainer(TopologyNodeId(01a12b5b-b112-75e2-bb2a-db8eb1136015)), DiscoverCapabilities, RetireHostedSeat(SeatBindingId(01a12b5b-b124-7a00-8aeb-8251dc527924)), InspectContainer(TopologyNodeId(01a12b5b-b112-75e2-bb2a-db8eb1136015)), DiscoverCapabilities, RetireHostedSeat(SeatBindingId(01a12b5b-b12b-77a0-852d-9b946f533dec))]\n  left: {SeatBindingId(01a12b5b-b0ab-73d1-82f8-79bcb260acc1), SeatBindingId(01a12b5b-b0b2-7a11-b857-6c47bd98eb3f), SeatBindingId(01a12b5b-b0b9-7481-ad72-0b01ad465681), SeatBindingId(01a12b5b-b0bf-73c3-8319-8d09d4b318bf), SeatBindingId(01a12b5b-b117-7db1-aec4-c60c18738c30), SeatBindingId(01a12b5b-b11e-7a11-9215-1812256e2f51), SeatBindingId(01a12b5b-b124-7a00-8aeb-8251dc527924), SeatBindingId(01a12b5b-b12b-77a0-852d-9b946f533dec), SeatBindingId(01a12b5b-b15d-73f0-9c8b-fbfd60d9d227)}\n right: {SeatBindingId(01a12b5b-b0ab-73d1-82f8-79bcb260acc1), SeatBindingId(01a12b5b-b0b2-7a11-b857-6c47bd98eb3f), SeatBindingId(01a12b5b-b0b9-7481-ad72-0b01ad465681), SeatBindingId(01a12b5b-b0bf-73c3-8319-8d09d4b318bf)}\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n",
+      "thread 'pr_reviews::qualification::four_structures_restore_replay_and_selection_rollback_keep_old_pins_and_natives' (102226810) panicked at crates/kontor-daemon/tests/loopback/qualification.rs:572:5:\nassertion `left == right` failed\n  left: Object {\"adam\": Object {\"container\": Object {\"cwd\": String(\"/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/.tmpxSP82X/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12b5b-b383-74b2-a799-b6a6aa91b001\"), \"native_id\": String(\"native-container-4\"), \"observed_kind\": String(\"workspace\"), \"parent_native_id\": String(\"native-container-3\"), \"title\": String(\"ADAM\"), \"topology_node_id\": String(\"01a12b5b-b383-74b2-a799-b6b4140984ae\")}, \"kind\": String(\"PRA\"), \"parent_id\": String(\"01a12b5b-b383-74b2-a799-b6b4140984ae\"), \"seats\": Array [], \"topology_node_id\": String(\"01a12b5b-b6da-7bb0-8f2f-8e2c9db22c77\")}, \"created_at\": String(\"2026-10-11T14:26:33.306142Z\"), \"desk_key\": String(\"pr-review\"), \"epic_id\": String(\"01a12b5b-b258-7aa1-a670-6ab1f3890c21\"), \"external_key\": String(\"ASMA-448126286\"), \"number\": Number(102), \"open\": Bool(false), \"repository\": String(\"Carasent-ASMA/asma-rs-kontor\"), \"room\": Object {\"container\": Object {\"cwd\": String(\"/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/.tmpxSP82X/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12b5b-b383-74b2-a799-b6a6aa91b001-room-01a12b5b-b6da-7bb0-8f2f-8e3c22cab93b\"), \"native_id\": String(\"native-container-14\"), \"observed_kind\": String(\"workspace\"), \"parent_native_id\": String(\"native-container-3\"), \"title\": String(\"RSW \u2022 ASMA-448126286 \u2022 asma-rs-kontor#102\"), \"topology_node_id\": String(\"01a12b5b-b6da-7bb0-8f2f-8e3c22cab93b\")}, \"kind\": String(\"RSW\"), \"parent_id\": String(\"01a12b5b-b383-74b2-a799-b6a6aa91b001\"), \"seats\": Array [], \"topology_node_id\": String(\"01a12b5b-b6da-7bb0-8f2f-8e3c22cab93b\")}, \"team_definition\": Object {\"id\": String(\"01936f5a-2000-7000-8000-000000000001\"), \"version\": Number(8)}}\n right: Object {\"adam\": Object {\"container\": Object {\"cwd\": String(\"/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/.tmpxSP82X/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12b5b-b383-74b2-a799-b6a6aa91b001\"), \"native_id\": String(\"native-container-4\"), \"observed_kind\": String(\"workspace\"), \"parent_native_id\": String(\"native-container-3\"), \"title\": String(\"ADAM\"), \"topology_node_id\": String(\"01a12b5b-b383-74b2-a799-b6b4140984ae\")}, \"kind\": String(\"PRA\"), \"parent_id\": String(\"01a12b5b-b383-74b2-a799-b6b4140984ae\"), \"seats\": Array [Object {\"native_id\": String(\"native-hosted-seat-15\"), \"occupancy_generation\": Number(1), \"role_code\": String(\"TPM\"), \"seat_binding_id\": String(\"01a12b5b-b6df-7f13-aff1-5140200687ca\"), \"slot_id\": String(\"tpm\"), \"title\": String(\"TPM \u2022 ASMA-448126286 \u2022 asma-rs-kontor#102\")}], \"topology_node_id\": String(\"01a12b5b-b6da-7bb0-8f2f-8e2c9db22c77\")}, \"created_at\": String(\"2026-10-11T14:26:33.306142Z\"), \"desk_key\": String(\"pr-review\"), \"epic_id\": String(\"01a12b5b-b258-7aa1-a670-6ab1f3890c21\"), \"external_key\": String(\"ASMA-448126286\"), \"number\": Number(102), \"open\": Bool(true), \"repository\": String(\"Carasent-ASMA/asma-rs-kontor\"), \"room\": Object {\"container\": Object {\"cwd\": String(\"/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/.tmpxSP82X/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12b5b-b383-74b2-a799-b6a6aa91b001-room-01a12b5b-b6da-7bb0-8f2f-8e3c22cab93b\"), \"native_id\": String(\"native-container-14\"), \"observed_kind\": String(\"workspace\"), \"parent_native_id\": String(\"native-container-3\"), \"title\": String(\"RSW \u2022 ASMA-448126286 \u2022 asma-rs-kontor#102\"), \"topology_node_id\": String(\"01a12b5b-b6da-7bb0-8f2f-8e3c22cab93b\")}, \"kind\": String(\"RSW\"), \"parent_id\": String(\"01a12b5b-b383-74b2-a799-b6a6aa91b001\"), \"seats\": Array [Object {\"native_id\": String(\"native-hosted-seat-16\"), \"occupancy_generation\": Number(1), \"role_code\": String(\"AUD\"), \"seat_binding_id\": String(\"01a12b5b-b6e6-72c2-abc9-18828d995a42\"), \"slot_id\": String(\"rev-a\"), \"title\": String(\"REV A\")}, Object {\"native_id\": String(\"native-hosted-seat-17\"), \"occupancy_generation\": Number(1), \"role_code\": String(\"AUD\"), \"seat_binding_id\": String(\"01a12b5b-b6ed-7d10-88ea-51e238675861\"), \"slot_id\": String(\"rev-b\"), \"title\": String(\"REV B\")}, Object {\"native_id\": String(\"native-hosted-seat-18\"), \"occupancy_generation\": Number(1), \"role_code\": String(\"AUD\"), \"seat_binding_id\": String(\"01a12b5b-b6f4-7be2-9779-307687b87b3f\"), \"slot_id\": String(\"judge\"), \"title\": String(\"JUDGE\")}], \"topology_node_id\": String(\"01a12b5b-b6da-7bb0-8f2f-8e3c22cab93b\")}, \"team_definition\": Object {\"id\": String(\"01936f5a-2000-7000-8000-000000000001\"), \"version\": Number(8)}}\n\n\n"
+    ]
+  },
+  {
+    "id": "MUT-005",
+    "file": "crates/kontor-store/src/repository.rs",
+    "before": "    fn get_mini_project_team_definition(\n        &self,\n        project_id: ProjectId,\n        mini_project_id: MiniProjectId,\n    ) -> RepositoryResult<Option<MiniProjectTeamDefinitionSnapshot>> {\n        let found: Option<(String, i64, String, String)> = self\n            .connection\n            .query_row(\n                \"SELECT definition_id, version, canonical_hash, pinned_at\n                 FROM mini_project_team_definition_snapshots\n                 WHERE project_id = ?1 AND mini_project_id = ?2\",\n                params![project_id.to_string(), mini_project_id.to_string()],\n                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),\n            )\n            .optional()\n            .map_err(backend)?;\n        found\n            .map(|(definition_id, version, hash, pinned_at)| {\n                Ok(MiniProjectTeamDefinitionSnapshot {\n                    project_id,\n                    mini_project_id,\n                    definition: TeamDefinitionSnapshot {\n                        definition_id: TeamDefinitionId::parse(&definition_id)?,\n                        version: read_version(version)?,\n                        canonical_hash: ContentHash::parse(&hash)?,\n                    },\n                    pinned_at: read_timestamp(&pinned_at)?,\n                })\n            })\n            .transpose()\n    }\n",
+    "after": "    fn get_mini_project_team_definition(\n        &self,\n        project_id: ProjectId,\n        mini_project_id: MiniProjectId,\n    ) -> RepositoryResult<Option<MiniProjectTeamDefinitionSnapshot>> {\n        let found: Option<(String, i64, String, String)> = self\n            .connection\n            .query_row(\n                \"SELECT definition_id, version, canonical_hash, pinned_at\n                 FROM mini_project_team_definition_snapshots\n                 WHERE project_id = ?1 AND mini_project_id = ?2\",\n                params![project_id.to_string(), mini_project_id.to_string()],\n                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),\n            )\n            .optional()\n            .map_err(backend)?;\n        found\n            .map(|(definition_id, version, hash, pinned_at)| {\n                Ok(MiniProjectTeamDefinitionSnapshot {\n                    project_id,\n                    mini_project_id,\n                    definition: self.get_project_team_definition_default(project_id)?\n                        .map(|selected| selected.definition).unwrap_or(TeamDefinitionSnapshot {\n                        definition_id: TeamDefinitionId::parse(&definition_id)?,\n                        version: read_version(version)?,\n                        canonical_hash: ContentHash::parse(&hash)?,\n                    }),\n                    pinned_at: read_timestamp(&pinned_at)?,\n                })\n            })\n            .transpose()\n    }\n",
+    "suite": "pr_reviews::qualification::four_structures_restore_replay_and_selection_rollback_keep_old_pins_and_natives",
+    "claim": "An existing epic reads the project successor instead of its own frozen pin",
+    "name": "MUT-005",
+    "head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+    "started_head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+    "started_at": "2026-10-11T14:27:18.323541+00:00",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "pr_reviews::qualification::four_structures_restore_replay_and_selection_rollback_keep_old_pins_and_natives",
+      "--",
+      "--test-threads=2"
+    ],
+    "exit_code": 101,
+    "log": ".qualification/MUT-005.log",
+    "log_sha256": "c86c7c8ebf1f5bfbfc058c6fcdad1a1bd9015f9d9ed909d61252ca475b974248",
+    "line": 23903,
+    "source_sha256": "93054e8a62994d6139646951332cd0f9911f38db21e50d012a4e644047d66556",
+    "seeded_sha256": "9b2ef54fbe0b6f9eaedf1d4471ace00a5671676940afeed7f343a4632cbb4e8d",
+    "result": "KILLED",
+    "failed_tests": [
+      "pr_reviews::qualification::four_structures_restore_replay_and_selection_rollback_keep_old_pins_and_natives"
+    ],
+    "failure_excerpts": [
+      "thread 'pr_reviews::qualification::four_structures_restore_replay_and_selection_rollback_keep_old_pins_and_natives' (102243739) panicked at crates/kontor-daemon/tests/loopback/qualification.rs:248:5:\nassertion `left == right` failed: selection must never migrate an existing epic\n  left: TeamDefinitionSnapshot { definition_id: TeamDefinitionId(01936f5a-2000-7000-8000-000000000001), version: SpecVersion(8), canonical_hash: ContentHash(\"79def4231c04072de862998f9743eee5e02e79ff4297609f0bfed98faf72f074\") }\n right: TeamDefinitionSnapshot { definition_id: TeamDefinitionId(01936f5a-2000-7000-8000-000000000001), version: SpecVersion(2), canonical_hash: ContentHash(\"093b0d852d2be02fd08e442446e860b43fa6506bd973e2b627afec357fcd4dc4\") }\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n"
+    ]
+  },
+  {
+    "id": "MUT-Q-CLI",
+    "file": "crates/kontor-cli/src/output.rs",
+    "before": "\"unauthenticated\" | \"forbidden\" | \"placement_blocked\"",
+    "after": "\"unauthenticated\" | \"forbidden\"",
+    "suite": "desk_ensure_and_undeclared_refusal_match_http_mcp_and_cli",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kontor-cli",
+      "--test",
+      "durable_desk_parity",
+      "--",
+      "--nocapture"
+    ],
+    "claim": "placement_blocked falls through to protocol exit 1 while the refusal body remains identical",
+    "name": "MUT-Q-CLI",
+    "head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+    "started_head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+    "started_at": "2026-10-11T14:28:59.376912+00:00",
+    "exit_code": 101,
+    "log": ".qualification/MUT-Q-CLI.log",
+    "log_sha256": "f213073898144d37f4b495d303f5a491d9208bbdb0b7ba11432f1869ebd03608",
+    "line": 81,
+    "source_sha256": "e2f67dc81bd9b9bf70c3632a4c51b5577971b98aad0074203a5bdb1a653d0cab",
+    "seeded_sha256": "40ba68381a1a98a0363325022d6c16361356a56cf2e2e6c5074092ba44baf47f",
+    "result": "KILLED",
+    "failed_tests": [
+      "desk_ensure_and_undeclared_refusal_match_http_mcp_and_cli"
+    ],
+    "failure_excerpts": [
+      "thread 'desk_ensure_and_undeclared_refusal_match_http_mcp_and_cli' (102269150) panicked at crates/kontor-cli/tests/durable_desk_parity.rs:222:13:\nassertion `left == right` failed: placement requires an explicit operator decision\n  left: 1\n right: 3\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\ntest desk_ensure_and_undeclared_refusal_match_http_mcp_and_cli ... FAILED\n"
+    ]
+  },
+  {
+    "id": "MUT-Q-ATOMIC",
+    "file": "crates/kontor-store/src/repository/desks.rs",
+    "before": "        let transaction = self.begin()?;\n        create_desk_in(&transaction, desk)?;\n        let definition = self",
+    "after": "        self.create_desk(desk)?;\n        let transaction = self.begin()?;\n        let definition = self",
+    "suite": "pr_reviews::qualification::a_new_desk_under_a_parent_that_already_knows_an_older_desk_kind_refuses_without_effects",
+    "claim": "Commit the successor reservation before node validation, leaving a desk row after revision_conflict",
+    "name": "MUT-Q-ATOMIC",
+    "head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+    "started_head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+    "started_at": "2026-10-11T14:30:02.192152+00:00",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kontor-daemon",
+      "--test",
+      "loopback_api",
+      "pr_reviews::qualification::a_new_desk_under_a_parent_that_already_knows_an_older_desk_kind_refuses_without_effects",
+      "--",
+      "--test-threads=2"
+    ],
+    "exit_code": 101,
+    "log": ".qualification/MUT-Q-ATOMIC.log",
+    "log_sha256": "e947d6c42fe6781d19b1d2ae82e69908e1326d1abef102ca7dfd75e9e519f011",
+    "line": 48,
+    "source_sha256": "ddfb5ecc4f5fa40311795fb90bf68f4d22715c4200a7f80749e4a61ffad66fe8",
+    "seeded_sha256": "4053d04d07ec3f8bc451da021472759e96d2ddf25a4793a7bffe38257b9f09da",
+    "result": "KILLED",
+    "failed_tests": [
+      "pr_reviews::qualification::a_new_desk_under_a_parent_that_already_knows_an_older_desk_kind_refuses_without_effects"
+    ],
+    "failure_excerpts": [
+      "thread 'pr_reviews::qualification::a_new_desk_under_a_parent_that_already_knows_an_older_desk_kind_refuses_without_effects' (102279022) panicked at crates/kontor-daemon/tests/loopback/qualification.rs:156:5:\nassertion `left == right` failed\n  left: Object {\"bindings\": Array [Object {\"container\": Null, \"hosted\": Array [], \"node\": Object {\"created_at\": String(\"2026-10-11T14:31:00.054052Z\"), \"id\": String(\"01a12b5f-c8d6-7fa2-82d3-7a698dd99c95\"), \"kind\": String(\"PSW\"), \"lifecycle\": String(\"active\"), \"placement\": String(\"unbound\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"revision\": Number(1), \"topology\": Object {\"canonical_hash\": String(\"9ad73b1fd31daa3e723ffe444b7a1064f72a252e230d3c4973a7b0295d939970\"), \"spec_id\": String(\"01936f5a-1000-7000-8000-000000000001\"), \"version\": Number(5)}, \"updated_at\": String(\"2026-10-11T14:31:00.054052Z\")}, \"seats\": Array []}, Object {\"container\": Null, \"hosted\": Array [], \"node\": Object {\"created_at\": String(\"2026-10-11T14:31:00.054052Z\"), \"id\": String(\"01a12b5f-c8ee-7991-b79b-17c793f16b46\"), \"kind\": String(\"ESW\"), \"lifecycle\": String(\"active\"), \"mini_project_id\": String(\"01a12b5f-c8b9-7823-9268-041c41d975d2\"), \"parent_id\": String(\"01a12b5f-c8d6-7fa2-82d3-7a698dd99c95\"), \"placement\": String(\"unbound\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"revision\": Number(1), \"topology\": Object {\"canonical_hash\": String(\"9ad73b1fd31daa3e723ffe444b7a1064f72a252e230d3c4973a7b0295d939970\"), \"spec_id\": String(\"01936f5a-1000-7000-8000-000000000001\"), \"version\": Number(5)}, \"updated_at\": String(\"2026-10-11T14:31:00.054052Z\")}, \"seats\": Array []}, Object {\"container\": Null, \"hosted\": Array [Null, Null], \"node\": Object {\"created_at\": String(\"2026-10-11T14:31:00.054052Z\"), \"id\": String(\"01a12b5f-c8f4-7be3-820a-326f8fbf38e6\"), \"kind\": String(\"ECP\"), \"lifecycle\": String(\"active\"), \"mini_project_id\": String(\"01a12b5f-c8b9-7823-9268-041c41d975d2\"), \"parent_id\": String(\"01a12b5f-c8ee-7991-b79b-17c793f16b46\"), \"placement\": String(\"unbound\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"revision\": Number(1), \"topology\": Object {\"canonical_hash\": String(\"9ad73b1fd31daa3e723ffe444b7a1064f72a252e230d3c4973a7b0295d939970\"), \"spec_id\": String(\"01936f5a-1000-7000-8000-000000000001\"), \"version\": Number(5)}, \"updated_at\": String(\"2026-10-11T14:31:00.054052Z\")}, \"seats\": Array [Object {\"attach_deadline\": String(\"2026-10-11T14:41:00.027949Z\"), \"created_at\": String(\"2026-10-11T14:31:00.027949Z\"), \"id\": String(\"01a12b5f-c8f7-7e02-aceb-061a45304ba2\"), \"lifecycle\": String(\"active\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"revision\": Number(1), \"role\": Object {\"catalog_id\": String(\"01936f5a-1000-7000-8000-000000000002\"), \"catalog_revision\": Number(1), \"role_code\": String(\"LSA\"), \"standard_title\": String(\"Lead Software Architect\")}, \"role_slot_id\": String(\"lsa\"), \"topology_node_id\": String(\"01a12b5f-c8f4-7be3-820a-326f8fbf38e6\"), \"updated_at\": String(\"2026-10-11T14:31:00.027949Z\")}, Object {\"attach_deadline\": String(\"2026-10-11T14:41:00.027949Z\"), \"created_at\": String(\"2026-10-11T14:31:00.027949Z\"), \"id\": String(\"01a12b5f-c8fd-7b42-8d67-e57acaf8e00a\"), \"lifecycle\": String(\"active\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"revision\": Number(1), \"role\": Object {\"catalog_id\": String(\"01936f5a-1000-7000-8000-000000000002\"), \"catalog_revision\": Number(1), \"role_code\": String(\"TPM\"), \"standard_title\": String(\"Technical Program Manager\")}, \"role_slot_id\": String(\"tpm\"), \"topology_node_id\": String(\"01a12b5f-c8f4-7be3-820a-326f8fbf38e6\"), \"updated_at\": String(\"2026-10-11T14:31:00.027949Z\")}]}, Object {\"container\": Object {\"cwd\": String(\"/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/.tmpIsCLUJ/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12b5f-c917-7b32-8e69-3c8f4c1cfaf3\"), \"id\": String(\"01a12b5f-c938-7323-9abf-b3d29b013663\"), \"identity\": Object {\"generation\": Number(1), \"host\": String(\"fake-host\"), \"native_id\": String(\"native-container-1\"), \"runtime_kind\": String(\"fake.runtime\")}, \"kind\": String(\"project\"), \"parent\": Null, \"title\": String(\"DESK \u2022 ADAM\")}, \"hosted\": Array [], \"node\": Object {\"created_at\": String(\"2026-10-11T14:31:00.119639Z\"), \"id\": String(\"01a12b5f-c917-7b32-8e69-3c8f4c1cfaf3\"), \"kind\": String(\"DESK\"), \"lifecycle\": String(\"active\"), \"parent_id\": String(\"01a12b5f-c8d6-7fa2-82d3-7a698dd99c95\"), \"placement\": String(\"bound\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"revision\": Number(2), \"topology\": Object {\"canonical_hash\": String(\"9ad73b1fd31daa3e723ffe444b7a1064f72a252e230d3c4973a7b0295d939970\"), \"spec_id\": String(\"01936f5a-1000-7000-8000-000000000001\"), \"version\": Number(5)}, \"updated_at\": String(\"2026-10-11T14:31:00.152573Z\")}, \"seats\": Array []}, Object {\"container\": Object {\"cwd\": String(\"/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/.tmpIsCLUJ/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12b5f-c917-7b32-8e69-3c8f4c1cfaf3\"), \"id\": String(\"01a12b5f-c93b-78e3-b104-575f3ef6de50\"), \"identity\": Object {\"generation\": Number(1), \"host\": String(\"fake-host\"), \"native_id\": String(\"native-container-2\"), \"runtime_kind\": String(\"fake.runtime\")}, \"kind\": String(\"workspace\"), \"parent\": Object {\"generation\": Number(1), \"host\": String(\"fake-host\"), \"native_id\": String(\"native-container-1\"), \"runtime_kind\": String(\"fake.runtime\")}, \"title\": String(\"ADAM\")}, \"hosted\": Array [], \"node\": Object {\"created_at\": String(\"2026-10-11T14:31:00.119639Z\"), \"id\": String(\"01a12b5f-c917-7b32-8e69-3c90e7bb2ca1\"), \"kind\": String(\"DWS\"), \"lifecycle\": String(\"active\"), \"parent_id\": String(\"01a12b5f-c917-7b32-8e69-3c8f4c1cfaf3\"), \"placement\": String(\"bound\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"revision\": Number(2), \"topology\": Object {\"canonical_hash\": String(\"9ad73b1fd31daa3e723ffe444b7a1064f72a252e230d3c4973a7b0295d939970\"), \"spec_id\": String(\"01936f5a-1000-7000-8000-000000000001\"), \"version\": Number(5)}, \"updated_at\": String(\"2026-10-11T14:31:00.155299Z\")}, \"seats\": Array []}], \"desks\": Array [Object {\"created_at\": String(\"2026-10-11T14:31:00.119639Z\"), \"desk_key\": String(\"adam\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"team_definition\": Object {\"canonical_hash\": String(\"0af3f9314db6d7dd63f8160e4b491cf5b9afb4b5531e68e747a9c0ef98284033\"), \"definition_id\": String(\"01936f5a-2000-7000-8000-000000000001\"), \"version\": Number(3)}, \"topology_node_id\": String(\"01a12b5f-c917-7b32-8e69-3c8f4c1cfaf3\"), \"workspace_node_id\": String(\"01a12b5f-c917-7b32-8e69-3c90e7bb2ca1\")}, Object {\"created_at\": String(\"2026-10-11T14:31:00.46886Z\"), \"desk_key\": String(\"pr-review\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"team_definition\": Object {\"canonical_hash\": String(\"f737ad911dd378aab30aace942b372be46513355f5ebc0c8aea46b77f6fb3991\"), \"definition_id\": String(\"01936f5a-2000-7000-8000-000000000001\"), \"version\": Number(8)}, \"topology_node_id\": String(\"01a12b5f-ca74-75e0-b13a-354c6afb8825\"), \"workspace_node_id\": String(\"01a12b5f-ca74-75e0-b13a-355fa0d4041c\")}], \"old_pin\": Object {\"canonical_hash\": String(\"0af3f9314db6d7dd63f8160e4b491cf5b9afb4b5531e68e747a9c0ef98284033\"), \"definition_id\": String(\"01936f5a-2000-7000-8000-000000000001\"), \"version\": Number(3)}, \"reviews\": Array []}\n right: Object {\"bindings\": Array [Object {\"container\": Null, \"hosted\": Array [], \"node\": Object {\"created_at\": String(\"2026-10-11T14:31:00.054052Z\"), \"id\": String(\"01a12b5f-c8d6-7fa2-82d3-7a698dd99c95\"), \"kind\": String(\"PSW\"), \"lifecycle\": String(\"active\"), \"placement\": String(\"unbound\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"revision\": Number(1), \"topology\": Object {\"canonical_hash\": String(\"9ad73b1fd31daa3e723ffe444b7a1064f72a252e230d3c4973a7b0295d939970\"), \"spec_id\": String(\"01936f5a-1000-7000-8000-000000000001\"), \"version\": Number(5)}, \"updated_at\": String(\"2026-10-11T14:31:00.054052Z\")}, \"seats\": Array []}, Object {\"container\": Null, \"hosted\": Array [], \"node\": Object {\"created_at\": String(\"2026-10-11T14:31:00.054052Z\"), \"id\": String(\"01a12b5f-c8ee-7991-b79b-17c793f16b46\"), \"kind\": String(\"ESW\"), \"lifecycle\": String(\"active\"), \"mini_project_id\": String(\"01a12b5f-c8b9-7823-9268-041c41d975d2\"), \"parent_id\": String(\"01a12b5f-c8d6-7fa2-82d3-7a698dd99c95\"), \"placement\": String(\"unbound\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"revision\": Number(1), \"topology\": Object {\"canonical_hash\": String(\"9ad73b1fd31daa3e723ffe444b7a1064f72a252e230d3c4973a7b0295d939970\"), \"spec_id\": String(\"01936f5a-1000-7000-8000-000000000001\"), \"version\": Number(5)}, \"updated_at\": String(\"2026-10-11T14:31:00.054052Z\")}, \"seats\": Array []}, Object {\"container\": Null, \"hosted\": Array [Null, Null], \"node\": Object {\"created_at\": String(\"2026-10-11T14:31:00.054052Z\"), \"id\": String(\"01a12b5f-c8f4-7be3-820a-326f8fbf38e6\"), \"kind\": String(\"ECP\"), \"lifecycle\": String(\"active\"), \"mini_project_id\": String(\"01a12b5f-c8b9-7823-9268-041c41d975d2\"), \"parent_id\": String(\"01a12b5f-c8ee-7991-b79b-17c793f16b46\"), \"placement\": String(\"unbound\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"revision\": Number(1), \"topology\": Object {\"canonical_hash\": String(\"9ad73b1fd31daa3e723ffe444b7a1064f72a252e230d3c4973a7b0295d939970\"), \"spec_id\": String(\"01936f5a-1000-7000-8000-000000000001\"), \"version\": Number(5)}, \"updated_at\": String(\"2026-10-11T14:31:00.054052Z\")}, \"seats\": Array [Object {\"attach_deadline\": String(\"2026-10-11T14:41:00.027949Z\"), \"created_at\": String(\"2026-10-11T14:31:00.027949Z\"), \"id\": String(\"01a12b5f-c8f7-7e02-aceb-061a45304ba2\"), \"lifecycle\": String(\"active\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"revision\": Number(1), \"role\": Object {\"catalog_id\": String(\"01936f5a-1000-7000-8000-000000000002\"), \"catalog_revision\": Number(1), \"role_code\": String(\"LSA\"), \"standard_title\": String(\"Lead Software Architect\")}, \"role_slot_id\": String(\"lsa\"), \"topology_node_id\": String(\"01a12b5f-c8f4-7be3-820a-326f8fbf38e6\"), \"updated_at\": String(\"2026-10-11T14:31:00.027949Z\")}, Object {\"attach_deadline\": String(\"2026-10-11T14:41:00.027949Z\"), \"created_at\": String(\"2026-10-11T14:31:00.027949Z\"), \"id\": String(\"01a12b5f-c8fd-7b42-8d67-e57acaf8e00a\"), \"lifecycle\": String(\"active\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"revision\": Number(1), \"role\": Object {\"catalog_id\": String(\"01936f5a-1000-7000-8000-000000000002\"), \"catalog_revision\": Number(1), \"role_code\": String(\"TPM\"), \"standard_title\": String(\"Technical Program Manager\")}, \"role_slot_id\": String(\"tpm\"), \"topology_node_id\": String(\"01a12b5f-c8f4-7be3-820a-326f8fbf38e6\"), \"updated_at\": String(\"2026-10-11T14:31:00.027949Z\")}]}, Object {\"container\": Object {\"cwd\": String(\"/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/.tmpIsCLUJ/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12b5f-c917-7b32-8e69-3c8f4c1cfaf3\"), \"id\": String(\"01a12b5f-c938-7323-9abf-b3d29b013663\"), \"identity\": Object {\"generation\": Number(1), \"host\": String(\"fake-host\"), \"native_id\": String(\"native-container-1\"), \"runtime_kind\": String(\"fake.runtime\")}, \"kind\": String(\"project\"), \"parent\": Null, \"title\": String(\"DESK \u2022 ADAM\")}, \"hosted\": Array [], \"node\": Object {\"created_at\": String(\"2026-10-11T14:31:00.119639Z\"), \"id\": String(\"01a12b5f-c917-7b32-8e69-3c8f4c1cfaf3\"), \"kind\": String(\"DESK\"), \"lifecycle\": String(\"active\"), \"parent_id\": String(\"01a12b5f-c8d6-7fa2-82d3-7a698dd99c95\"), \"placement\": String(\"bound\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"revision\": Number(2), \"topology\": Object {\"canonical_hash\": String(\"9ad73b1fd31daa3e723ffe444b7a1064f72a252e230d3c4973a7b0295d939970\"), \"spec_id\": String(\"01936f5a-1000-7000-8000-000000000001\"), \"version\": Number(5)}, \"updated_at\": String(\"2026-10-11T14:31:00.152573Z\")}, \"seats\": Array []}, Object {\"container\": Object {\"cwd\": String(\"/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/.tmpIsCLUJ/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12b5f-c917-7b32-8e69-3c8f4c1cfaf3\"), \"id\": String(\"01a12b5f-c93b-78e3-b104-575f3ef6de50\"), \"identity\": Object {\"generation\": Number(1), \"host\": String(\"fake-host\"), \"native_id\": String(\"native-container-2\"), \"runtime_kind\": String(\"fake.runtime\")}, \"kind\": String(\"workspace\"), \"parent\": Object {\"generation\": Number(1), \"host\": String(\"fake-host\"), \"native_id\": String(\"native-container-1\"), \"runtime_kind\": String(\"fake.runtime\")}, \"title\": String(\"ADAM\")}, \"hosted\": Array [], \"node\": Object {\"created_at\": String(\"2026-10-11T14:31:00.119639Z\"), \"id\": String(\"01a12b5f-c917-7b32-8e69-3c90e7bb2ca1\"), \"kind\": String(\"DWS\"), \"lifecycle\": String(\"active\"), \"parent_id\": String(\"01a12b5f-c917-7b32-8e69-3c8f4c1cfaf3\"), \"placement\": String(\"bound\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"revision\": Number(2), \"topology\": Object {\"canonical_hash\": String(\"9ad73b1fd31daa3e723ffe444b7a1064f72a252e230d3c4973a7b0295d939970\"), \"spec_id\": String(\"01936f5a-1000-7000-8000-000000000001\"), \"version\": Number(5)}, \"updated_at\": String(\"2026-10-11T14:31:00.155299Z\")}, \"seats\": Array []}], \"desks\": Array [Object {\"created_at\": String(\"2026-10-11T14:31:00.119639Z\"), \"desk_key\": String(\"adam\"), \"project_id\": String(\"01a0064a-e056-7603-9968-ef64fdaacb75\"), \"team_definition\": Object {\"canonical_hash\": String(\"0af3f9314db6d7dd63f8160e4b491cf5b9afb4b5531e68e747a9c0ef98284033\"), \"definition_id\": String(\"01936f5a-2000-7000-8000-000000000001\"), \"version\": Number(3)}, \"topology_node_id\": String(\"01a12b5f-c917-7b32-8e69-3c8f4c1cfaf3\"), \"workspace_node_id\": String(\"01a12b5f-c917-7b32-8e69-3c90e7bb2ca1\")}], \"old_pin\": Object {\"canonical_hash\": String(\"0af3f9314db6d7dd63f8160e4b491cf5b9afb4b5531e68e747a9c0ef98284033\"), \"definition_id\": String(\"01936f5a-2000-7000-8000-000000000001\"), \"version\": Number(3)}, \"reviews\": Array []}\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n"
+    ]
+  }
+]

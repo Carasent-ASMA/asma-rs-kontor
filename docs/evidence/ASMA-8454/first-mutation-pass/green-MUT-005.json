@@ -1,0 +1,22 @@
+{
+  "name": "green-MUT-005",
+  "head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+  "started_head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+  "started_at": "2026-10-11T14:26:34.588875+00:00",
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "pr_reviews::qualification::four_structures_restore_replay_and_selection_rollback_keep_old_pins_and_natives",
+    "--",
+    "--test-threads=2"
+  ],
+  "exit_code": 0,
+  "log": ".qualification/green-MUT-005.log",
+  "log_sha256": "cc853dc1e5e369429a73966a3038cbfd60df23c483590d2450535a82b94f0915"
+}

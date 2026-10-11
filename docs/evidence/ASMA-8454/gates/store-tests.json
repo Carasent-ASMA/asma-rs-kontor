@@ -1,0 +1,16 @@
+{
+  "name": "store-tests",
+  "head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+  "started_at": "2026-10-11T13:50:56.157335+00:00",
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kontor-store"
+  ],
+  "exit_code": 0,
+  "log": ".qualification/store-tests.log",
+  "log_sha256": "de9afc97e966cb5d16c80d6b1d78baee9bcd2da3869edbf5c13096cac06a465e"
+}

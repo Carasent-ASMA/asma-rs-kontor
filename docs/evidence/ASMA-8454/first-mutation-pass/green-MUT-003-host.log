@@ -1,0 +1,9 @@
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 35.72s
+     Running tests/loopback_api.rs (target/debug/deps/loopback_api-6520399e83adc025)
+
+running 1 test
+test desk_adams::two_epic_adams_in_one_workspace_never_share_ownership_credentials_or_evidence ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 616 filtered out; finished in 2.78s
+

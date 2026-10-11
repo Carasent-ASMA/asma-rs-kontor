@@ -1,0 +1,61 @@
+{
+  "started_at": "2026-10-11T15:20:56.388046+00:00",
+  "ended_at": "2026-10-11T15:23:51.338657+00:00",
+  "full_target_runs": 2,
+  "max_full_target_runs": 3,
+  "max_minutes": 45,
+  "results": [
+    {
+      "name": "base-full-observed",
+      "source_commit": "e376f4059e47de8fb40956d4dbfbf6920dabc4ec",
+      "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/reproduction/base-probe",
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-p",
+        "kontor-daemon",
+        "--test",
+        "loopback_api",
+        "--",
+        "--nocapture",
+        "--test-threads=2"
+      ],
+      "target_dir": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/reproduction/target-base",
+      "started_at": "2026-10-11T15:20:56.418025+00:00",
+      "exit_code": 101,
+      "log": ".qualification/reproduction/base-full-observed.log",
+      "log_sha256": "f2477f465d26eb0a7c6ddf481c37298b1dba3e61a095eac4db2732330d143b2a",
+      "diagnostic_only": true,
+      "production_source_unmodified": true,
+      "probe_provenance": "base-probe-provenance.json"
+    },
+    {
+      "name": "current-full-observed",
+      "source_commit": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
+      "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/reproduction/current-probe",
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-p",
+        "kontor-daemon",
+        "--test",
+        "loopback_api",
+        "--",
+        "--nocapture",
+        "--test-threads=2"
+      ],
+      "target_dir": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target",
+      "started_at": "2026-10-11T15:20:56.417982+00:00",
+      "exit_code": 0,
+      "log": ".qualification/reproduction/current-full-observed.log",
+      "log_sha256": "e948ee3d490c7658f656ba8832a400738a16810907e6522b4579321859886184",
+      "diagnostic_only": true,
+      "production_source_unmodified": true,
+      "probe_provenance": "current-probe-provenance.json"
+    }
+  ]
+}
