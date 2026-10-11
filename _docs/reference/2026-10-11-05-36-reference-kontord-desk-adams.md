@@ -34,7 +34,10 @@ Every desk Adam session, epic and ad-hoc alike, is launched on ASMA-8451's
 epic-free hosted-seat launcher, in the desk's own native project
 (`HostedSeatScope::Desk`). The project, the workspace and the working
 directory are the desk workspace's, read from its binding by exact persisted
-id. The legacy ECP keeps its epic placement unchanged.
+id. A claim of an already-running session into a desk Adam's seat
+(`core-team/seat-claims`) is resolved the same way: the runtime looks for the
+claimant in the desk project and workspace, never through the epic's project.
+The legacy ECP keeps its epic placement, for launches and claims alike.
 
 The placement is only where the native runs. The epic is carried by the
 logical subject: each seat's authority is derived from seat to subject to
@@ -155,6 +158,15 @@ An epic adopts an ad-hoc topic declaratively, on `epics:apply`:
   must be configured (`unavailable` otherwise). Any other case is refused, and
   nothing is written. `epics:preview` makes the same judgement and fences
   nothing.
+- A launch of the ad-hoc LSA whose answer was lost may have created its
+  native without recording it, so the binding first censuses any seat whose
+  launch is prepared but unrecorded. No live carrier proves the launch never
+  took effect. One live carrier is recovered under the prepared intent, which
+  binds that native rather than creating another, and is then fenced like
+  any other. A census that does not answer, or several live carriers, refuse
+  before anything is released, and a retry with the same key resumes. An open
+  and a binding of the same topic never run their native work at once: a
+  binding that arrives while a launch is in flight waits for it.
 - Each live ad-hoc session is retired in the desk workspace and moved into
   its seat's history, and then the ad-hoc seats are retired, before the epic
   subject row is written. The store refuses the row while any origin seat is
@@ -187,11 +199,12 @@ An epic adopts an ad-hoc topic declaratively, on `epics:apply`:
 - **An ad-hoc native is not relaunched or re-routed.** If it dies, or needs
   another route, the topic is bound to an epic, whose LSA launches fresh, or
   another topic is opened.
-- **Native evidence.** The daemon's native effects (desk placement, retire,
-  relaunch, restart resolution) are proved against the scripted fake. The
-  Paseo contract tests prove the desk launch itself against recorded Paseo:
-  the desk project read by exact id, the seat's own labels with no epic, and
-  nothing in the epic-keyed project ledger.
+- **Native evidence.** The daemon's native effects (desk placement, claim,
+  retire, relaunch, restart resolution, lost-launch recovery) are proved
+  against the scripted fake. The Paseo contract tests prove the desk launch
+  and the desk claim themselves against recorded Paseo: the desk project read
+  by exact id, the seat's own labels with no epic, and nothing in the
+  epic-keyed project ledger.
 - **Backlog import.** `desk_adam_origin` is accepted only on `epics:apply`;
   a backlog import that carries it is refused (`invalid_request`).
 - **Titles never retitle.** A later rename of the epic leaves every subject
