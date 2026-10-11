@@ -9,8 +9,8 @@
 //! contract growing.
 //!
 //! On top of it sits a **snapshot canary**: at this base the contract has exactly
-//! 224 mapped operations and exactly two allowlisted ones. The canary is not a
-//! claim that 224 is forever — it is what makes a later change to the daemon's
+//! 226 mapped operations and exactly two allowlisted ones. The canary is not a
+//! claim that 226 is forever — it is what makes a later change to the daemon's
 //! surface *fail here* rather than pass silently, so somebody has to decide
 //! whether the new operation gets a tool or a recorded deferral.
 //!
@@ -544,12 +544,12 @@ fn the_permission_decisions_match_the_runtimes_own_spelling() {
 
 #[test]
 fn the_snapshot_canary_holds_at_this_base() {
-    // Not "224 forever": this is what makes a later contract change fail here, so a
+    // Not "226 forever": this is what makes a later contract change fail here, so a
     // new operation gets a deliberate tool or a recorded deferral instead of
     // slipping past unreviewed.
     assert_eq!(
         http().count(),
-        224,
+        226,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     // ASMA-8280 B-1: the registry's local operations — in-process handlers
@@ -565,7 +565,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // context is actually charged for — and it has to move deliberately too.
     assert_eq!(
         http().count() - CLI_ONLY.len(),
-        223,
+        225,
         "the advertised tool count changed; a tool held off the listing is a budget decision"
     );
     assert_eq!(
@@ -577,7 +577,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // route serves the document itself and is not self-documented.
     assert_eq!(
         documented().len(),
-        225,
+        227,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -851,6 +851,10 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_core_team_materialize", CallerTier::Operator),
         ("kontor_core_team_route_preview", CallerTier::Admin),
         ("kontor_core_team_route_apply", CallerTier::Admin),
+        // Handing a desk Adam off or opening an ad-hoc one decides which
+        // session owns a leadership subject, as a route correction does.
+        ("kontor_desk_adam_handoff", CallerTier::Admin),
+        ("kontor_desk_adam_ad_hoc_open", CallerTier::Admin),
         // Superseding an inert launch intent is admin for the same reason the
         // route correction is: it decides which approved route a governed seat
         // will launch on, and therefore whose capacity is spent. That the seat

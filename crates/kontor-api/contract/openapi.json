@@ -3750,6 +3750,75 @@
         }
       }
     },
+    "/v1/projects/{project_id}/desk-adams/ad-hoc:open": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Open one ad-hoc desk Adam on the desk the project's selected Team\nDefinition leads from, or return the one its topic already opened.",
+        "operationId": "open_ad_hoc_desk_adam",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdHocDeskAdamOpenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdHocDeskAdamDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/desks/{desk_key}/seats": {
       "get": {
         "tags": [
@@ -4568,6 +4637,87 @@
           },
           "503": {
             "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/epics/{epic_id}/core-team/desk-adam:handoff": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Hand a desk-led epic's Adam subject from its planning LSA to its\ncoordinating TPM, fencing the LSA's native first. Cross-vendor only.",
+        "operationId": "hand_off_desk_adam",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeskAdamHandoffRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeskAdamHandoffDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
+          },
+          "503": {
+            "description": "The runtime could not be reached"
           }
         }
       }
@@ -13378,6 +13528,66 @@
           }
         }
       },
+      "AdHocDeskAdamDto": {
+        "type": "object",
+        "description": "What opening an ad-hoc desk Adam produced.",
+        "required": [
+          "subject",
+          "lsa_seat_binding_id",
+          "lsa_title",
+          "receipt"
+        ],
+        "properties": {
+          "lsa_native_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The LSA's native session, once one was launched for it."
+          },
+          "lsa_seat_binding_id": {
+            "type": "string",
+            "description": "Its LSA seat."
+          },
+          "lsa_title": {
+            "type": "string",
+            "description": "The title the LSA's session renders."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "The receipt it was committed under."
+          },
+          "subject": {
+            "$ref": "#/components/schemas/DeskAdamSubjectDto",
+            "description": "The subject."
+          }
+        }
+      },
+      "AdHocDeskAdamOpenRequest": {
+        "type": "object",
+        "description": "Open one ad-hoc desk Adam on the desk the project's selected Team\nDefinition leads from, or return the one that topic already opened.",
+        "required": [
+          "topic"
+        ],
+        "properties": {
+          "model_route": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+                "description": "A route for the ad-hoc LSA's native session, launched in the desk\nworkspace with no epic label. Absent, only the subject and its seat\nare recorded."
+              }
+            ]
+          },
+          "topic": {
+            "type": "string",
+            "description": "What the subject is about. Frozen with the subject and rendered into\nits seat titles; it may not carry a title separator glyph."
+          }
+        },
+        "additionalProperties": false
+      },
       "AdaptiveWindowDto": {
         "type": "object",
         "description": "The adaptive admission window's configured shape.",
@@ -14242,6 +14452,17 @@
               "null"
             ],
             "description": "The provider-account profile to pin, if any."
+          },
+          "desk_adam_origin": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/DeskAdamOriginRequest",
+                "description": "The ad-hoc desk Adam a desk-led epic's leadership is bound from.\nOmission keeps the request, its intent and its effects unchanged."
+              }
+            ]
           },
           "epic_backlog_code": {
             "type": [
@@ -18922,6 +19143,148 @@
           "runtime_kind": {
             "type": "string",
             "description": "The runtime family this node's container must come from."
+          }
+        }
+      },
+      "DeskAdamHandoffDto": {
+        "type": "object",
+        "description": "What a desk Adam handoff produced.",
+        "required": [
+          "from_seat_binding_id",
+          "fenced_native_id",
+          "to_seat_binding_id",
+          "core_team",
+          "receipt"
+        ],
+        "properties": {
+          "core_team": {
+            "$ref": "#/components/schemas/CoreTeamDto",
+            "description": "The Core Team as it now stands."
+          },
+          "fenced_native_id": {
+            "type": "string",
+            "description": "The LSA native that was fenced."
+          },
+          "from_seat_binding_id": {
+            "type": "string",
+            "description": "The LSA seat that handed off."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "The receipt the handoff was committed under."
+          },
+          "to_seat_binding_id": {
+            "type": "string",
+            "description": "The TPM seat that took over."
+          }
+        }
+      },
+      "DeskAdamHandoffRequest": {
+        "type": "object",
+        "description": "Hand a desk-led epic's Adam subject from its planning LSA to its\ncoordinating TPM.\n\nThe LSA's native is fenced before the TPM launches as a fresh native with\nits own credential. Only a handoff across vendors is supported.",
+        "required": [
+          "expected_revision",
+          "from_seat_binding_id",
+          "expected_native_id",
+          "expected_generation",
+          "to_seat_binding_id",
+          "model_route"
+        ],
+        "properties": {
+          "expected_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "That native's exact runtime generation.",
+            "minimum": 0
+          },
+          "expected_native_id": {
+            "type": "string",
+            "description": "Its exact live native the caller observed."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Epic revision the caller read.",
+            "minimum": 0
+          },
+          "from_seat_binding_id": {
+            "type": "string",
+            "description": "The LSA seat handing off."
+          },
+          "model_route": {
+            "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+            "description": "The TPM's provider/model/effort route."
+          },
+          "to_seat_binding_id": {
+            "type": "string",
+            "description": "The TPM seat taking over."
+          }
+        },
+        "additionalProperties": false
+      },
+      "DeskAdamOriginRequest": {
+        "type": "object",
+        "description": "The ad-hoc desk Adam subject an epic's leadership is bound from.\n\nNamed on the `epics:apply` that first places a desk-led epic. The ad-hoc\nsubject is fenced first, and the epic's LSA is always a fresh native with\nits own credential; its history stays on the ad-hoc subject.",
+        "required": [
+          "subject"
+        ],
+        "properties": {
+          "keep_native": {
+            "type": "boolean",
+            "description": "Keep the ad-hoc LSA's native session for the epic instead.\n\nRefused: whether a seat credential may follow its session across that\nboundary is an open decision, so a binding never claims to preserve one."
+          },
+          "subject": {
+            "type": "string",
+            "description": "The ad-hoc subject's topology node."
+          }
+        },
+        "additionalProperties": false
+      },
+      "DeskAdamSubjectDto": {
+        "type": "object",
+        "description": "One desk Adam subject: the work a leadership session on a durable desk does.",
+        "required": [
+          "topology_node_id",
+          "desk_key",
+          "topic",
+          "team_definition",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the subject was recorded."
+          },
+          "desk_key": {
+            "type": "string",
+            "description": "The desk whose workspace hosts its sessions."
+          },
+          "epic_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The epic it leads; absent for an ad-hoc subject."
+          },
+          "origin_topology_node_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The ad-hoc subject an epic subject was bound from, if any."
+          },
+          "team_definition": {
+            "$ref": "#/components/schemas/TeamDefinitionRefDto",
+            "description": "The exact definition revision that placed it and renders its titles."
+          },
+          "topic": {
+            "type": "string",
+            "description": "The short name or topic its seat titles render, frozen at creation."
+          },
+          "topology_node_id": {
+            "type": "string",
+            "description": "The subject's topology node."
           }
         }
       },

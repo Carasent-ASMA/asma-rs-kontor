@@ -756,12 +756,14 @@ pub struct HostedSeatClaimRequest {
     pub role_slot_id: RoleSlotId,
     /// Canonical runtime-facing title derived by the daemon.
     pub display_name: ExternalName,
-    /// Exact native ECP container already persisted for the seat's node.
+    /// Exact native container already persisted for the seat's node: its
+    /// ECP, or a desk Adam's desk workspace.
     pub container_native_id: ExternalId,
-    /// Canonical ECP working directory.
+    /// That container's canonical working directory.
     pub cwd: WorkspaceRoot,
-    /// Durable epic execution scope.
-    pub scope: ExecutionScope,
+    /// Where the seat is placed natively: in its epic's project, or, for a
+    /// desk Adam (ASMA-8452), in its desk's own project, as at launch.
+    pub scope: HostedSeatScope,
     /// Exact already-running native session the operator selected.
     pub claimant_native_id: ExternalId,
     /// Provider-native conversation frozen by preview, when this is an apply.

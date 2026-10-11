@@ -208,6 +208,7 @@ impl ContainerProjection {
         let root = capabilities.contains(&NodeProjectionCapability::NativeRoot);
         let child = capabilities.contains(&NodeProjectionCapability::NativeChild);
         let host = capabilities.contains(&NodeProjectionCapability::SessionHost);
+        let parent_host = capabilities.contains(&NodeProjectionCapability::ParentSessionHost);
 
         if capabilities.is_empty() {
             return Err(RuntimeError::WorkspaceMismatch {
@@ -218,6 +219,16 @@ impl ContainerProjection {
             return Err(RuntimeError::WorkspaceMismatch {
                 rule: "logical_only is exclusive of every other projection capability",
             });
+        }
+        if parent_host && capabilities.len() != 1 {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "parent_session_host is exclusive of every other projection capability",
+            });
+        }
+        // Its seats sit in the parent's container; the node itself is never
+        // materialized, persisted or reconciled as one.
+        if parent_host {
+            return Ok(Self::LogicalOnly);
         }
         if root && child {
             return Err(RuntimeError::WorkspaceMismatch {
@@ -1098,6 +1109,12 @@ mod tests {
                 .expect("a child"),
             ContainerProjection::NativeChild
         );
+        // Its seats borrow the parent's container, so it never owns one.
+        assert_eq!(
+            ContainerProjection::resolve(&[NodeProjectionCapability::ParentSessionHost])
+                .expect("a subject hosted in its parent"),
+            ContainerProjection::LogicalOnly
+        );
     }
 
     #[test]
@@ -1113,6 +1130,18 @@ mod tests {
                 NodeProjectionCapability::NativeChild,
             ],
             vec![NodeProjectionCapability::SessionHost],
+            vec![
+                NodeProjectionCapability::ParentSessionHost,
+                NodeProjectionCapability::NativeChild,
+            ],
+            vec![
+                NodeProjectionCapability::ParentSessionHost,
+                NodeProjectionCapability::SessionHost,
+            ],
+            vec![
+                NodeProjectionCapability::ParentSessionHost,
+                NodeProjectionCapability::LogicalOnly,
+            ],
         ] {
             assert!(
                 ContainerProjection::resolve(&capabilities).is_err(),

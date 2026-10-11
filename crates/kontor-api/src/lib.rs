@@ -679,6 +679,14 @@ pub fn router(state: ApiState) -> Router {
                 post(applications::supersede_core_team_launch_intent),
             )
             .route(
+                "/v1/projects/{project_id}/epics/{epic_id}/core-team/desk-adam:handoff",
+                post(applications::hand_off_desk_adam),
+            )
+            .route(
+                "/v1/projects/{project_id}/desk-adams/ad-hoc:open",
+                post(applications::open_ad_hoc_desk_adam),
+            )
+            .route(
                 "/v1/projects/{project_id}/epics/{epic_id}/core-team/seat-claims:preview",
                 post(applications::preview_core_team_seat_claim),
             )

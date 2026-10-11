@@ -117,6 +117,7 @@ fn remove_v98_shape(connection: &Connection) {
 /// that leaked a row into a table the test did not think about would still be
 /// caught.
 const CENSUS_TABLES: &[&str] = &[
+    "desk_adam_subjects",
     "desks",
     "durable_seat_declarations",
     "attestation_authority_heads",
@@ -2853,6 +2854,10 @@ fn apply_v115_to_legacy_fixture(fixture: &Fixture) {
          DROP TABLE attestation_token_heads;
          DROP TABLE attestation_authority_keys;
          DROP TABLE attestation_authority_heads;
+         DROP TRIGGER desk_adam_subjects_host_one_session;
+         DROP TRIGGER desk_adam_subjects_bound_ad_hoc_seats_no_one;
+         DROP TRIGGER desk_adam_subjects_bound_ad_hoc_hosts_no_one;
+         DROP TABLE desk_adam_subjects;
          DROP TABLE durable_seat_declarations;
          DROP TABLE desks;
          PRAGMA user_version = 114;",

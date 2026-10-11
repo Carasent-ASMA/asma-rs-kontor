@@ -17,6 +17,7 @@ This documentation covers implementation-local knowledge for the `asma-rs-kontor
 | [Recommended teams and seats](reference/2026-09-04-23-35-reference-recommended-teams-and-seats.md) | Role responsibilities, fleet-design recommendations and explicit implementation limits | Recommendation | Designing teams or evaluating models for roles |
 | [Durable desks in kontord](reference/2026-10-10-23-55-reference-kontord-durable-desks.md) | ASMA-8450: epic-independent `DESK • ADAM` / `DESK • PR REVIEW` projects, their supported operations and limits, explicit successor selection and rollback | Candidate | Ensuring, materializing or reading back a desk; selecting or rolling back a desk-capable Team Definition |
 | [Durable desk seats in kontord](reference/2026-10-11-02-20-reference-kontord-durable-desk-seats.md) | ASMA-8451: dated `paseo_direct` / `daemon` seat declarations (`LSA • GENERAL`), the seat report, missing-only reconciliation with its replay fence, support limits and the operator runbook | Candidate | Declaring a desk seat; reading or reconciling a desk's seats; deciding whether Kontor may restart one |
+| [Desk Adams in kontord](reference/2026-10-11-05-36-reference-kontord-desk-adams.md) | ASMA-8452: epic and ad-hoc Adam subjects in the `ADAM` desk workspace, role-led titles, cross-vendor LSA→TPM handoff, ad-hoc origin binding on `epics:apply`, desk-project placement with no epic label, no-ECP delivery and the support limits | Draft candidate | Placing, handing off or binding a desk Adam; declaring `desk_leadership` |
 
 ### Plans (`plans/`)
 

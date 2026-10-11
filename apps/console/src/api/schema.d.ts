@@ -1255,6 +1255,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/desk-adams/ad-hoc:open": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Open one ad-hoc desk Adam on the desk the project's selected Team
+         *     Definition leads from, or return the one its topic already opened.
+         */
+        post: operations["open_ad_hoc_desk_adam"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/desks/{desk_key}/seats": {
         parameters: {
             query?: never;
@@ -1475,6 +1495,26 @@ export interface paths {
         get: operations["epic_core_team"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/epics/{epic_id}/core-team/desk-adam:handoff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Hand a desk-led epic's Adam subject from its planning LSA to its
+         *     coordinating TPM, fencing the LSA's native first. Cross-vendor only.
+         */
+        post: operations["hand_off_desk_adam"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4098,6 +4138,31 @@ export interface components {
              */
             revision: number;
         };
+        /** @description What opening an ad-hoc desk Adam produced. */
+        AdHocDeskAdamDto: {
+            /** @description The LSA's native session, once one was launched for it. */
+            lsa_native_id?: string | null;
+            /** @description Its LSA seat. */
+            lsa_seat_binding_id: string;
+            /** @description The title the LSA's session renders. */
+            lsa_title: string;
+            /** @description The receipt it was committed under. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description The subject. */
+            subject: components["schemas"]["DeskAdamSubjectDto"];
+        };
+        /**
+         * @description Open one ad-hoc desk Adam on the desk the project's selected Team
+         *     Definition leads from, or return the one that topic already opened.
+         */
+        AdHocDeskAdamOpenRequest: {
+            model_route?: null | components["schemas"]["RuntimeModelRouteRequest"];
+            /**
+             * @description What the subject is about. Frozen with the subject and rendered into
+             *     its seat titles; it may not carry a title separator glyph.
+             */
+            topic: string;
+        };
         /** @description The adaptive admission window's configured shape. */
         AdaptiveWindowDto: {
             /**
@@ -4517,6 +4582,7 @@ export interface components {
         ApplyEpicRequest: {
             /** @description The provider-account profile to pin, if any. */
             account_profile_id?: string | null;
+            desk_adam_origin?: null | components["schemas"]["DeskAdamOriginRequest"];
             /**
              * @description Optional legacy Kontor namespace. Omission creates no new namespace and
              *     preserves one already recorded for compatibility.
@@ -6721,6 +6787,84 @@ export interface components {
             projection_capabilities: string[];
             /** @description The runtime family this node's container must come from. */
             runtime_kind: string;
+        };
+        /** @description What a desk Adam handoff produced. */
+        DeskAdamHandoffDto: {
+            /** @description The Core Team as it now stands. */
+            core_team: components["schemas"]["CoreTeamDto"];
+            /** @description The LSA native that was fenced. */
+            fenced_native_id: string;
+            /** @description The LSA seat that handed off. */
+            from_seat_binding_id: string;
+            /** @description The receipt the handoff was committed under. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description The TPM seat that took over. */
+            to_seat_binding_id: string;
+        };
+        /**
+         * @description Hand a desk-led epic's Adam subject from its planning LSA to its
+         *     coordinating TPM.
+         *
+         *     The LSA's native is fenced before the TPM launches as a fresh native with
+         *     its own credential. Only a handoff across vendors is supported.
+         */
+        DeskAdamHandoffRequest: {
+            /**
+             * Format: int64
+             * @description That native's exact runtime generation.
+             */
+            expected_generation: number;
+            /** @description Its exact live native the caller observed. */
+            expected_native_id: string;
+            /**
+             * Format: int64
+             * @description Epic revision the caller read.
+             */
+            expected_revision: number;
+            /** @description The LSA seat handing off. */
+            from_seat_binding_id: string;
+            /** @description The TPM's provider/model/effort route. */
+            model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /** @description The TPM seat taking over. */
+            to_seat_binding_id: string;
+        };
+        /**
+         * @description The ad-hoc desk Adam subject an epic's leadership is bound from.
+         *
+         *     Named on the `epics:apply` that first places a desk-led epic. The ad-hoc
+         *     subject is fenced first, and the epic's LSA is always a fresh native with
+         *     its own credential; its history stays on the ad-hoc subject.
+         */
+        DeskAdamOriginRequest: {
+            /**
+             * @description Keep the ad-hoc LSA's native session for the epic instead.
+             *
+             *     Refused: whether a seat credential may follow its session across that
+             *     boundary is an open decision, so a binding never claims to preserve one.
+             */
+            keep_native?: boolean;
+            /** @description The ad-hoc subject's topology node. */
+            subject: string;
+        };
+        /** @description One desk Adam subject: the work a leadership session on a durable desk does. */
+        DeskAdamSubjectDto: {
+            /**
+             * Format: date-time
+             * @description When the subject was recorded.
+             */
+            created_at: string;
+            /** @description The desk whose workspace hosts its sessions. */
+            desk_key: string;
+            /** @description The epic it leads; absent for an ad-hoc subject. */
+            epic_id?: string | null;
+            /** @description The ad-hoc subject an epic subject was bound from, if any. */
+            origin_topology_node_id?: string | null;
+            /** @description The exact definition revision that placed it and renders its titles. */
+            team_definition: components["schemas"]["TeamDefinitionRefDto"];
+            /** @description The short name or topic its seat titles render, frozen at creation. */
+            topic: string;
+            /** @description The subject's topology node. */
+            topology_node_id: string;
         };
         /** @description What `execution:disarm` is asked for. */
         DisarmRequest: {
@@ -15863,6 +16007,71 @@ export interface operations {
             };
         };
     };
+    open_ad_hoc_desk_adam: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdHocDeskAdamOpenRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdHocDeskAdamDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     list_durable_seats: {
         parameters: {
             query?: never;
@@ -16524,6 +16733,80 @@ export interface operations {
                 content?: never;
             };
             /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    hand_off_desk_adam: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeskAdamHandoffRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeskAdamHandoffDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The runtime could not be reached */
             503: {
                 headers: {
                     [name: string]: unknown;

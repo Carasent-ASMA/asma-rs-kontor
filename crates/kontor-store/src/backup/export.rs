@@ -49,7 +49,7 @@ use crate::backup::BackupError;
 use crate::events::types::ensure_control_metadata;
 
 /// The export generation this build writes.
-pub const EXPORT_SCHEMA_VERSION: u32 = 15;
+pub const EXPORT_SCHEMA_VERSION: u32 = 16;
 
 /// The database generation that introduced the launch-intent supersession ledger.
 const LAUNCH_INTENT_SUPERSESSION_SCHEMA_VERSION: i64 = 109;
@@ -102,6 +102,21 @@ const DURABLE_SEAT_EXPORT_VERSION: u32 = 15;
 
 /// The record array introduced in generation 15.
 const DURABLE_SEAT_RECORD_FIELDS: [&str; 1] = ["durable_seat_declarations"];
+
+/// The database generation that introduced desk Adam subjects.
+const DESK_ADAM_SUBJECT_SCHEMA_VERSION: i64 = 133;
+
+/// The export generation that first carried them.
+///
+/// A subject row is the only durable record of which epic or ad-hoc topic a
+/// desk's leadership node works for and which ad-hoc subject an epic was bound
+/// from. A round trip that dropped it would leave the subject nodes behind
+/// without the key that finds them, and a later open would place a second
+/// subject for the same epic (ASMA-8452).
+const DESK_ADAM_SUBJECT_EXPORT_VERSION: u32 = 16;
+
+/// The record array introduced in generation 16.
+const DESK_ADAM_SUBJECT_RECORD_FIELDS: [&str; 1] = ["desk_adam_subjects"];
 
 /// The record array introduced in generation 11.
 const LAUNCH_INTENT_SUPERSESSION_RECORD_FIELDS: [&str; 1] =
@@ -383,6 +398,12 @@ impl KontorExportV1 {
             })?;
             remove_durable_seat_record_fields(records)?;
         }
+        if self.schema_version < DESK_ADAM_SUBJECT_EXPORT_VERSION {
+            let records = value.get_mut("records").ok_or(BackupError::Verification {
+                detail: "the export has no records object",
+            })?;
+            remove_desk_adam_subject_record_fields(records)?;
+        }
         canonical_bytes(&value)
     }
 
@@ -420,6 +441,9 @@ impl KontorExportV1 {
         }
         if self.schema_version < DURABLE_SEAT_EXPORT_VERSION {
             remove_durable_seat_record_fields(&mut value)?;
+        }
+        if self.schema_version < DESK_ADAM_SUBJECT_EXPORT_VERSION {
+            remove_desk_adam_subject_record_fields(&mut value)?;
         }
         canonical_bytes(&value)
     }
@@ -609,6 +633,20 @@ impl KontorExportV1 {
         {
             return Err(BackupError::Verification {
                 detail: "the legacy export generation cannot prove durable seat declaration completeness",
+            });
+        }
+        if self.schema_version < DESK_ADAM_SUBJECT_EXPORT_VERSION
+            && !self.records.desk_adam_subjects.is_empty()
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries desk Adam subjects it did not define",
+            });
+        }
+        if self.schema_version < DESK_ADAM_SUBJECT_EXPORT_VERSION
+            && self.database_schema_version >= DESK_ADAM_SUBJECT_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove desk Adam subject completeness",
             });
         }
         if self.schema_version < RETIRED_EVALUATOR_ATTESTATION_EXPORT_VERSION
@@ -1189,6 +1227,20 @@ impl KontorExportV1 {
                     .or_insert_with(|| serde_json::Value::Array(Vec::new()));
             }
         }
+        // And for generation 16's desk Adam subjects.
+        if found < DESK_ADAM_SUBJECT_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in DESK_ADAM_SUBJECT_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
         let export: Self =
             serde_json::from_value(value).map_err(|_| BackupError::Verification {
                 detail: "the export is not a document of this generation",
@@ -1287,6 +1339,20 @@ fn remove_core_team_route_succession_record_fields(
         detail: "the export records are not an object",
     })?;
     for field in CORE_TEAM_ROUTE_SUCCESSION_RECORD_FIELDS {
+        records.remove(field);
+    }
+    Ok(())
+}
+
+/// Remove the generation-16 desk Adam subject field, as for generation 15's
+/// durable seat declarations.
+fn remove_desk_adam_subject_record_fields(
+    records: &mut serde_json::Value,
+) -> Result<(), BackupError> {
+    let records = records.as_object_mut().ok_or(BackupError::Verification {
+        detail: "the export records are not an object",
+    })?;
+    for field in DESK_ADAM_SUBJECT_RECORD_FIELDS {
         records.remove(field);
     }
     Ok(())
@@ -1899,6 +1965,19 @@ exported_tables! {
         decided_on: String,
         seat_binding_id: Option<String>,
         declared_at: String,
+    }
+    desk_adam_subjects: DeskAdamSubjectsRow from "desk_adam_subjects" key(project_id, topology_node_id) {
+        project_id: String,
+        topology_node_id: String,
+        desk_key: String,
+        subject_kind: String,
+        mini_project_id: Option<String>,
+        topic: String,
+        origin_topology_node_id: Option<String>,
+        team_definition_id: String,
+        team_definition_version: i64,
+        team_definition_hash: String,
+        created_at: String,
     }
     team_definition_migration_intents: TeamDefinitionMigrationIntentsRow from "team_definition_migration_intents" key(id) {
         id: String,
@@ -3193,6 +3272,11 @@ impl ExportedRecords {
         }
         if schema_version < DURABLE_SEAT_EXPORT_VERSION {
             for field in DURABLE_SEAT_RECORD_FIELDS {
+                continuity.record_counts.remove(field);
+            }
+        }
+        if schema_version < DESK_ADAM_SUBJECT_EXPORT_VERSION {
+            for field in DESK_ADAM_SUBJECT_RECORD_FIELDS {
                 continuity.record_counts.remove(field);
             }
         }

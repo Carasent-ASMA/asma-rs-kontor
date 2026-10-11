@@ -1492,6 +1492,131 @@ pub struct CoreTeamOutcomeDto {
     pub source_bundle_hash: Option<ContentHash>,
 }
 
+/// The ad-hoc desk Adam subject an epic's leadership is bound from.
+///
+/// Named on the `epics:apply` that first places a desk-led epic. The ad-hoc
+/// subject is fenced first, and the epic's LSA is always a fresh native with
+/// its own credential; its history stays on the ad-hoc subject.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeskAdamOriginRequest {
+    /// The ad-hoc subject's topology node.
+    #[schema(value_type = String)]
+    pub subject: TopologyNodeId,
+    /// Keep the ad-hoc LSA's native session for the epic instead.
+    ///
+    /// Refused: whether a seat credential may follow its session across that
+    /// boundary is an open decision, so a binding never claims to preserve one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub keep_native: bool,
+}
+
+/// Open one ad-hoc desk Adam on the desk the project's selected Team
+/// Definition leads from, or return the one that topic already opened.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AdHocDeskAdamOpenRequest {
+    /// What the subject is about. Frozen with the subject and rendered into
+    /// its seat titles; it may not carry a title separator glyph.
+    #[schema(value_type = String)]
+    pub topic: ExternalName,
+    /// A route for the ad-hoc LSA's native session, launched in the desk
+    /// workspace with no epic label. Absent, only the subject and its seat
+    /// are recorded.
+    #[serde(default)]
+    pub model_route: Option<RuntimeModelRouteRequest>,
+}
+
+/// One desk Adam subject: the work a leadership session on a durable desk does.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct DeskAdamSubjectDto {
+    /// The subject's topology node.
+    #[schema(value_type = String)]
+    pub topology_node_id: TopologyNodeId,
+    /// The desk whose workspace hosts its sessions.
+    #[schema(value_type = String)]
+    pub desk_key: DeskKey,
+    /// The epic it leads; absent for an ad-hoc subject.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub epic_id: Option<MiniProjectId>,
+    /// The short name or topic its seat titles render, frozen at creation.
+    #[schema(value_type = String)]
+    pub topic: ExternalName,
+    /// The ad-hoc subject an epic subject was bound from, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub origin_topology_node_id: Option<TopologyNodeId>,
+    /// The exact definition revision that placed it and renders its titles.
+    pub team_definition: TeamDefinitionRefDto,
+    /// When the subject was recorded.
+    #[schema(value_type = String, format = DateTime)]
+    pub created_at: Timestamp,
+}
+
+/// What opening an ad-hoc desk Adam produced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct AdHocDeskAdamDto {
+    /// The subject.
+    pub subject: DeskAdamSubjectDto,
+    /// Its LSA seat.
+    #[schema(value_type = String)]
+    pub lsa_seat_binding_id: SeatBindingId,
+    /// The title the LSA's session renders.
+    #[schema(value_type = String)]
+    pub lsa_title: ExternalName,
+    /// The LSA's native session, once one was launched for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub lsa_native_id: Option<ExternalId>,
+    /// The receipt it was committed under.
+    pub receipt: MutationReceiptDto,
+}
+
+/// Hand a desk-led epic's Adam subject from its planning LSA to its
+/// coordinating TPM.
+///
+/// The LSA's native is fenced before the TPM launches as a fresh native with
+/// its own credential. Only a handoff across vendors is supported.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeskAdamHandoffRequest {
+    /// Epic revision the caller read.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// The LSA seat handing off.
+    #[schema(value_type = String)]
+    pub from_seat_binding_id: SeatBindingId,
+    /// Its exact live native the caller observed.
+    #[schema(value_type = String)]
+    pub expected_native_id: ExternalId,
+    /// That native's exact runtime generation.
+    pub expected_generation: u64,
+    /// The TPM seat taking over.
+    #[schema(value_type = String)]
+    pub to_seat_binding_id: SeatBindingId,
+    /// The TPM's provider/model/effort route.
+    pub model_route: RuntimeModelRouteRequest,
+}
+
+/// What a desk Adam handoff produced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct DeskAdamHandoffDto {
+    /// The LSA seat that handed off.
+    #[schema(value_type = String)]
+    pub from_seat_binding_id: SeatBindingId,
+    /// The LSA native that was fenced.
+    #[schema(value_type = String)]
+    pub fenced_native_id: ExternalId,
+    /// The TPM seat that took over.
+    #[schema(value_type = String)]
+    pub to_seat_binding_id: SeatBindingId,
+    /// The Core Team as it now stands.
+    pub core_team: CoreTeamDto,
+    /// The receipt the handoff was committed under.
+    pub receipt: MutationReceiptDto,
+}
+
 /// The roles a Quick session may be opened against.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct QuickRolesDto {
@@ -4922,6 +5047,10 @@ pub struct ApplyEpicRequest {
     /// governable. Omission preserves default-allow admission.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial_hold: Option<InitialExecutionHoldRequest>,
+    /// The ad-hoc desk Adam a desk-led epic's leadership is bound from.
+    /// Omission keeps the request, its intent and its effects unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desk_adam_origin: Option<DeskAdamOriginRequest>,
     /// The tasks, in the order they should be created.
     pub tasks: Vec<EpicTaskRequest>,
 }
@@ -8114,6 +8243,21 @@ pub trait ApplicationOperations: Send + Sync {
         epic_id: MiniProjectId,
         request: &CoreTeamLaunchIntentSupersedeRequest,
     ) -> Result<CoreTeamLaunchIntentSupersessionDto, ApiError>;
+    /// Hand a desk-led epic's Adam subject from its LSA to its TPM (ASMA-8452).
+    async fn hand_off_desk_adam(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &DeskAdamHandoffRequest,
+    ) -> Result<DeskAdamHandoffDto, ApiError>;
+    /// Open one ad-hoc desk Adam on the project's leadership desk (ASMA-8452).
+    async fn open_ad_hoc_desk_adam(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &AdHocDeskAdamOpenRequest,
+    ) -> Result<AdHocDeskAdamDto, ApiError>;
     /// Preview attachment of an already-running session to a persistent seat.
     async fn preview_core_team_seat_claim(
         &self,
@@ -11178,6 +11322,73 @@ pub async fn apply_core_team_route(
         state
             .applications()
             .apply_core_team_route(&key, project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// Hand a desk-led epic's Adam subject from its planning LSA to its
+/// coordinating TPM, fencing the LSA's native first. Cross-vendor only.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/core-team/desk-adam:handoff", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = DeskAdamHandoffRequest,
+    responses(
+        (status = 200, body = DeskAdamHandoffDto),
+        (status = 400), (status = 401), (status = 403), (status = 404), (status = 409), (status = 422),
+        (status = 503, description = "The runtime could not be reached")
+    )
+)]
+pub async fn hand_off_desk_adam(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<DeskAdamHandoffRequest>,
+) -> Result<Json<DeskAdamHandoffDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .hand_off_desk_adam(&key, project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// Open one ad-hoc desk Adam on the desk the project's selected Team
+/// Definition leads from, or return the one its topic already opened.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/desk-adams/ad-hoc:open", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = AdHocDeskAdamOpenRequest,
+    responses(
+        (status = 200, body = AdHocDeskAdamDto),
+        (status = 400), (status = 401), (status = 403), (status = 404), (status = 409), (status = 422)
+    )
+)]
+pub async fn open_ad_hoc_desk_adam(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<AdHocDeskAdamOpenRequest>,
+) -> Result<Json<AdHocDeskAdamDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .open_ad_hoc_desk_adam(&key, project_id, &request)
             .await?,
     ))
 }
