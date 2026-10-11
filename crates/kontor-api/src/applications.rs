@@ -8414,6 +8414,30 @@ pub trait ApplicationOperations: Send + Sync {
         actor: crate::open_questions::QuestionActor,
         request: &crate::open_questions::RecordQuestionRequest,
     ) -> Result<serde_json::Value, ApiError>;
+    /// One desk's declared durable seats, as the runtime holds them now
+    /// (ASMA-8451). Read-only; a Paseo-direct seat is never asked about.
+    async fn durable_seats(
+        &self,
+        project_id: ProjectId,
+        desk_key: &DeskKey,
+    ) -> Result<crate::durable_seats::DurableSeatReportDto, ApiError>;
+    /// Record one dated durable seat declaration under its retry receipt.
+    fn declare_durable_seat(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        desk_key: &DeskKey,
+        request: &crate::durable_seats::DeclareDurableSeatRequest,
+    ) -> Result<crate::durable_seats::DurableSeatDeclarationOutcomeDto, ApiError>;
+    /// Reconcile selected durable seats, restarting only a selected,
+    /// daemon-owned seat that an authoritative census proved missing.
+    async fn reconcile_durable_seats(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        desk_key: &DeskKey,
+        request: &crate::durable_seats::ReconcileDurableSeatsRequest,
+    ) -> Result<crate::durable_seats::DurableSeatReconcileOutcomeDto, ApiError>;
     /// One epic's completion state.
     fn completion(
         &self,

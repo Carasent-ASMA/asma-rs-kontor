@@ -40,7 +40,7 @@ const DESKS: &str = r#"[
 ]"#;
 
 /// A project with a runtime plane and no epic at all.
-async fn desk_world(slug: &str) -> (World, String) {
+pub(super) async fn desk_world(slug: &str) -> (World, String) {
     let world = World::open_empty_with_a_plane().await;
     assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
     let created = ensure_project(&world, slug, "Desks", &format!("/tmp/kontor-{slug}")).await;
@@ -74,7 +74,7 @@ fn selected_definition(world: &World, project: &str) -> TeamDefinitionSpec {
 /// Publish a desk-capable successor of the project's topology and Team
 /// Definition through the Admin surfaces, and select the definition for the
 /// project. Selection is the explicit, previewed act a desk requires.
-async fn select_desk_definition(world: &World, project: &str) -> TeamDefinitionSpec {
+pub(super) async fn select_desk_definition(world: &World, project: &str) -> TeamDefinitionSpec {
     let selected = selected_definition(world, project);
     // The newest published revision of the lineage, whichever version that
     // is: a build may already have seeded a successor of its own.
@@ -233,7 +233,13 @@ async fn select_desk_definition(world: &World, project: &str) -> TeamDefinitionS
 }
 
 /// One semantic topology write against one desk.
-async fn desk_call(world: &World, project: &str, operation: &str, desk: &str, key: &str) -> Answer {
+pub(super) async fn desk_call(
+    world: &World,
+    project: &str,
+    operation: &str,
+    desk: &str,
+    key: &str,
+) -> Answer {
     Call::post(
         format!("/v1/projects/{project}/topology:{operation}"),
         &serde_json::json!({
@@ -248,7 +254,7 @@ async fn desk_call(world: &World, project: &str, operation: &str, desk: &str, ke
 }
 
 /// The nodes of one projection that realize `desk`, desk first.
-fn desk_nodes(projection: &serde_json::Value, desk: &str) -> Vec<serde_json::Value> {
+pub(super) fn desk_nodes(projection: &serde_json::Value, desk: &str) -> Vec<serde_json::Value> {
     let mut nodes: Vec<serde_json::Value> = projection["nodes"]
         .as_array()
         .expect("nodes")
@@ -260,7 +266,7 @@ fn desk_nodes(projection: &serde_json::Value, desk: &str) -> Vec<serde_json::Val
     nodes
 }
 
-fn node_id(node: &serde_json::Value) -> TopologyNodeId {
+pub(super) fn node_id(node: &serde_json::Value) -> TopologyNodeId {
     TopologyNodeId::parse(node["topology_node_id"].as_str().expect("a node id")).expect("an id")
 }
 

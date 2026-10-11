@@ -42,6 +42,7 @@ pub mod body;
 pub mod committee_evidence;
 pub mod control;
 pub mod dto;
+pub mod durable_seats;
 pub mod error;
 pub mod memory;
 mod memory_schema;
@@ -298,6 +299,9 @@ pub fn router(state: ApiState) -> Router {
     Router::new()
         .route("/v1/projects/{project_id}/epics/{epic_id}/open-questions", get(open_questions::list_open_questions))
         .route("/v1/projects/{project_id}/epics/{epic_id}/open-questions:record", post(open_questions::record_open_question))
+        .route("/v1/projects/{project_id}/desks/{desk_key}/seats", get(durable_seats::list_durable_seats))
+        .route("/v1/projects/{project_id}/desks/{desk_key}/seats:declare", post(durable_seats::declare_durable_seat))
+        .route("/v1/projects/{project_id}/desks/{desk_key}/seats:reconcile", post(durable_seats::reconcile_durable_seats))
         .route("/v1/health", get(control::health))
         .route("/v1/realm", get(control::realm))
         .route("/v1/projects/{project_id}/memory", get(memory::list))

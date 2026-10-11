@@ -1112,6 +1112,152 @@ pub static REGISTRY: &[ToolSpec] = &[
         ],
         about: "Raise, correct, disposition or reopen one question with an atomic idempotent receipt.",
     },
+    ToolSpec {
+        name: "kontor_desk_seats_list",
+        tier: CallerTier::Observer,
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/desks/{desk_key}/seats",
+        },
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "desk_key",
+                Place::Path,
+                ArgType::OpenKey,
+                "The durable desk by its declared key.",
+            ),
+        ],
+        about: "Report a desk's declared durable seats and what the runtime holds for each. Read-only; a Paseo-direct seat is never asked about.",
+    },
+    ToolSpec {
+        name: "kontor_desk_seat_declare",
+        tier: CallerTier::Operator,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/desks/{desk_key}/seats:declare",
+        },
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "desk_key",
+                Place::Path,
+                ArgType::OpenKey,
+                "The durable desk by its declared key.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The project revision the caller read.",
+            ),
+            req(
+                "seat_key",
+                Place::Body,
+                ArgType::OpenKey,
+                "The seat's stable key inside its desk.",
+            ),
+            req(
+                "role_code",
+                Place::Body,
+                ArgType::Text,
+                "The catalog role code; the title's first segment.",
+            ),
+            req(
+                "seat_label",
+                Place::Body,
+                ArgType::ExternalName,
+                "The seat label; the rest of the title.",
+            ),
+            opt(
+                "model_route",
+                Place::Body,
+                ArgType::Json,
+                "Exact route {provider, model, effort?}; required for a daemon-owned seat. Named chains are refused.",
+            ),
+            opt(
+                "procedure",
+                Place::Body,
+                ArgType::ExternalName,
+                "Repository-relative procedure the seat follows, recorded as evidence.",
+            ),
+            req(
+                "recovery_owner",
+                Place::Body,
+                ArgType::Text,
+                "daemon (Kontor may restart it when proved missing) or paseo_direct (run and recovered outside Kontor).",
+            ),
+            req(
+                "decided_by",
+                Place::Body,
+                ArgType::ExternalName,
+                "Who made the decision.",
+            ),
+            req(
+                "decided_on",
+                Place::Body,
+                ArgType::Text,
+                "The decision date, YYYY-MM-DD.",
+            ),
+        ],
+        about: "Record one immutable, dated durable seat declaration. The same decision replays; a different one under the key or title is refused.",
+    },
+    ToolSpec {
+        name: "kontor_desk_seats_reconcile",
+        tier: CallerTier::Operator,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/desks/{desk_key}/seats:reconcile",
+        },
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "desk_key",
+                Place::Path,
+                ArgType::OpenKey,
+                "The durable desk by its declared key.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The project revision the caller read.",
+            ),
+            req(
+                "seat_keys",
+                Place::Body,
+                ArgType::Json,
+                "The declared seats to reconcile, each once. Nothing unselected is touched.",
+            ),
+            req(
+                "restart_missing",
+                Place::Body,
+                ArgType::Bool,
+                "Restart a selected daemon-owned seat an authoritative census proved missing. False reports only. Selecting a Paseo-direct seat with true is refused.",
+            ),
+        ],
+        about: "Reconcile selected durable seats: only a selected, daemon-owned, proved-missing seat is launched; busy, archived, duplicate, mismatched and unchecked seats are reported, never restarted.",
+    },
     // ---- Observer: projections, catalogs and session content -----------------
     ToolSpec {
         name: "kontor_realm_get",

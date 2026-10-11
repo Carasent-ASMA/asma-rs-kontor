@@ -55,6 +55,8 @@ mod experience_launch;
 
 #[path = "loopback/durable_desks.rs"]
 mod durable_desks;
+#[path = "loopback/durable_seats.rs"]
+mod durable_seats;
 
 #[tokio::test]
 async fn open_question_commands_preserve_authority_history_and_completion_blockers() {

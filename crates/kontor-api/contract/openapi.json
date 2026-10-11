@@ -3750,6 +3750,183 @@
         }
       }
     },
+    "/v1/projects/{project_id}/desks/{desk_key}/seats": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Report one desk's declared seats.",
+        "operationId": "list_durable_seats",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "desk_key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DurableSeatReportDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/desks/{desk_key}/seats:declare": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Declare one durable seat.",
+        "operationId": "declare_durable_seat",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "desk_key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeclareDurableSeatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DurableSeatDeclarationOutcomeDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/desks/{desk_key}/seats:reconcile": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Reconcile selected durable seats.",
+        "operationId": "reconcile_durable_seats",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "desk_key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReconcileDurableSeatsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DurableSeatReconcileOutcomeDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/epics/{epic_id}": {
       "get": {
         "tags": [
@@ -18465,6 +18642,70 @@
         },
         "additionalProperties": false
       },
+      "DeclareDurableSeatRequest": {
+        "type": "object",
+        "description": "Declare one long-lived seat a desk holds.",
+        "required": [
+          "expected_revision",
+          "seat_key",
+          "role_code",
+          "seat_label",
+          "recovery_owner",
+          "decided_by",
+          "decided_on"
+        ],
+        "properties": {
+          "decided_by": {
+            "type": "string",
+            "description": "Who made the decision."
+          },
+          "decided_on": {
+            "type": "string",
+            "description": "The day the decision was made, `YYYY-MM-DD`."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The project revision the caller believes is current.",
+            "minimum": 0
+          },
+          "model_route": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+                "description": "The exact route a daemon-owned seat is launched on. Required for one,\noptional evidence for a Paseo-direct seat. Named chains are not\naccepted: a declaration freezes one route."
+              }
+            ]
+          },
+          "procedure": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The repository-relative procedure the seat follows."
+          },
+          "recovery_owner": {
+            "type": "string",
+            "description": "`daemon` when Kontor may restart a missing seat, `paseo_direct` when\nthe seat is run and recovered outside Kontor."
+          },
+          "role_code": {
+            "type": "string",
+            "description": "The catalog role the seat holds; the first segment of its title."
+          },
+          "seat_key": {
+            "type": "string",
+            "description": "The seat's stable key inside its desk."
+          },
+          "seat_label": {
+            "type": "string",
+            "description": "The seat's label; the rest of its title."
+          }
+        },
+        "additionalProperties": false
+      },
       "DegradedReason": {
         "type": "string",
         "enum": [
@@ -18748,6 +18989,181 @@
           "root_kind": {
             "type": "string",
             "description": "The unique logical root kind."
+          }
+        }
+      },
+      "DurableSeatDeclarationOutcomeDto": {
+        "type": "object",
+        "description": "The answer to a declaration.",
+        "required": [
+          "seat",
+          "receipt"
+        ],
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "The receipt the declaration was recorded under."
+          },
+          "seat": {
+            "$ref": "#/components/schemas/DurableSeatDto",
+            "description": "The declared seat, exactly as stored."
+          }
+        }
+      },
+      "DurableSeatDto": {
+        "type": "object",
+        "description": "One declared seat, what reconciliation observed about it, and what it did.",
+        "required": [
+          "seat_key",
+          "title",
+          "role_code",
+          "seat_label",
+          "recovery_owner",
+          "decided_by",
+          "decided_on",
+          "declared_at"
+        ],
+        "properties": {
+          "decided_by": {
+            "type": "string",
+            "description": "Who decided it."
+          },
+          "decided_on": {
+            "type": "string",
+            "description": "When they decided it."
+          },
+          "decision": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What reconciliation decided: `none`, `launch` or `recover`. Always\n`none` on a read and on a replayed reconciliation."
+          },
+          "declared_at": {
+            "type": "string",
+            "description": "When Kontor recorded the decision."
+          },
+          "model_route": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+                "description": "The exact route it is launched on, when declared."
+              }
+            ]
+          },
+          "native_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The native Kontor records as the current occupant, read after any\neffect this call had."
+          },
+          "occupancy_generation": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The current occupancy generation, read after any effect.",
+            "minimum": 0
+          },
+          "procedure": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The procedure it follows, when declared."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why."
+          },
+          "recovery_owner": {
+            "type": "string",
+            "description": "Who may restart it."
+          },
+          "role_code": {
+            "type": "string",
+            "description": "Its catalog role."
+          },
+          "seat_binding_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The SeatBinding a daemon-owned seat is correlated by."
+          },
+          "seat_key": {
+            "type": "string",
+            "description": "The seat's key inside its desk."
+          },
+          "seat_label": {
+            "type": "string",
+            "description": "Its label."
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What was observed, before any effect. Absent from a declaration's\nanswer, which observes nothing."
+          },
+          "title": {
+            "type": "string",
+            "description": "Its exact title."
+          }
+        }
+      },
+      "DurableSeatReconcileOutcomeDto": {
+        "type": "object",
+        "description": "The answer to a reconciliation.",
+        "required": [
+          "desk_key",
+          "seats",
+          "receipt"
+        ],
+        "properties": {
+          "desk_key": {
+            "type": "string",
+            "description": "The desk."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "The receipt the reconciliation was recorded under."
+          },
+          "seats": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DurableSeatDto"
+            },
+            "description": "Each selected seat, by key."
+          }
+        }
+      },
+      "DurableSeatReportDto": {
+        "type": "object",
+        "description": "One desk's declared seats, as observed now.",
+        "required": [
+          "desk_key",
+          "seats"
+        ],
+        "properties": {
+          "desk_key": {
+            "type": "string",
+            "description": "The desk."
+          },
+          "seats": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DurableSeatDto"
+            },
+            "description": "Every declared seat, by key."
           }
         }
       },
@@ -25711,6 +26127,35 @@
             "description": "When the receipt last changed."
           }
         }
+      },
+      "ReconcileDurableSeatsRequest": {
+        "type": "object",
+        "description": "Reconcile selected seats of one desk.",
+        "required": [
+          "expected_revision",
+          "seat_keys",
+          "restart_missing"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The project revision the caller believes is current.",
+            "minimum": 0
+          },
+          "restart_missing": {
+            "type": "boolean",
+            "description": "Whether a selected, daemon-owned, proved-missing seat is restarted.\n`false` reports and records the reconciliation without any effect."
+          },
+          "seat_keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The declared seats to reconcile. At least one; nothing unselected is\ntouched."
+          }
+        },
+        "additionalProperties": false
       },
       "RecordArtifactRequest": {
         "type": "object",
