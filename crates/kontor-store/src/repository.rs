@@ -146,6 +146,7 @@ mod attestation_authority;
 mod desk_adams;
 mod desks;
 mod durable_seats;
+mod pr_reviews;
 use crate::events::append::stored_payload;
 use crate::events::replay::{EVENT_COLUMNS, read_event};
 use crate::graph::{Applied, IdempotencyBinding};
@@ -2648,6 +2649,71 @@ fn desk_subject_bridge(
         || host.read_only != current_host.read_only
         || !NodeProjectionCapability::hosts_sessions(&host.projection_capabilities)
         || NodeProjectionCapability::hosts_in_parent(&host.projection_capabilities)
+    {
+        return Ok(false);
+    }
+    Ok(match parent_spec.node_kind(&request.kind) {
+        Some(known) => {
+            known.allowed_parents.contains(&parent.kind)
+                && known.projection_capabilities == declared.projection_capabilities
+        }
+        None => request.topology.version > parent.topology.version,
+    })
+}
+
+/// Whether a PR review subject's Adam or room may hang off its desk although
+/// the two cite different topology revisions.
+///
+/// As for a desk Adam subject: a desk keeps the revision it was ensured under,
+/// and the Team Definition whose PR review places a pull request may pin a
+/// later revision of the same lineage that introduces the Adam and room kinds.
+/// This admits exactly the two edges the subject row names, the Adam below the
+/// desk's workspace and the room below the desk itself, and only where both
+/// published revisions declare that parent identically. Where the parent's
+/// revision knows the child kind, it must permit the same edge with the same
+/// hosting; otherwise only a newer revision may introduce it.
+fn pr_review_bridge(
+    transaction: &Transaction<'_>,
+    request: &NewSessionTopologyNode,
+    spec: &ProjectSessionTopologySpec,
+    declared: &kontor_core::spec::TopologyNodeKindSpec,
+    parent: &SessionTopologyNode,
+) -> RepositoryResult<bool> {
+    if parent.lifecycle != TopologyLifecycle::Active
+        || parent.topology.spec_id != request.topology.spec_id
+        || parent.mini_project_id.is_some()
+        || request.mini_project_id.is_some()
+        || request.task_id.is_some()
+    {
+        return Ok(false);
+    }
+    let registered_parent: Option<String> = transaction
+        .query_row(
+            "SELECT CASE WHEN subject.adam_node_id = ?2
+                         THEN desk.workspace_node_id ELSE desk.topology_node_id END
+             FROM pr_review_subjects AS subject
+             JOIN desks AS desk
+               ON desk.project_id = subject.project_id AND desk.desk_key = subject.desk_key
+             WHERE subject.project_id = ?1
+               AND (subject.adam_node_id = ?2 OR subject.room_node_id = ?2)",
+            params![request.project_id.to_string(), request.id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?;
+    if registered_parent != Some(parent.id.to_string()) {
+        return Ok(false);
+    }
+    let parent_spec = topology_spec_in(transaction, request.project_id, &parent.topology)?;
+    let (Some(host), Some(current_host)) = (
+        parent_spec.node_kind(&parent.kind),
+        spec.node_kind(&parent.kind),
+    ) else {
+        return Ok(false);
+    };
+    if host.projection_capabilities != current_host.projection_capabilities
+        || host.allowed_parents != current_host.allowed_parents
+        || host.read_only != current_host.read_only
     {
         return Ok(false);
     }
@@ -11032,13 +11098,17 @@ impl TopologyRepository for SqliteStore {
                 };
                 let desk_subject = parent.topology != request.topology
                     && desk_subject_bridge(&transaction, request, &spec, declared, &parent)?;
+                let pr_review = parent.topology != request.topology
+                    && !desk_subject
+                    && pr_review_bridge(&transaction, request, &spec, declared, &parent)?;
                 if parent.lifecycle.is_terminal()
                     || parent
                         .mini_project_id
                         .is_some_and(|scope| Some(scope) != request.mini_project_id)
                     || (parent.topology != request.topology
                         && !historical_project_root
-                        && !desk_subject)
+                        && !desk_subject
+                        && !pr_review)
                     || !declared.allowed_parents.contains(&parent.kind)
                 {
                     return Err(conflict(
