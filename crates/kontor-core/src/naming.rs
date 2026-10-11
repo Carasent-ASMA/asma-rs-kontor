@@ -12,6 +12,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
 use crate::backlog_identity::ConfirmedJiraKey;
 use crate::id::{ExternalName, MAX_EXTERNAL_NAME_LEN};
+use crate::pull_request::PullRequestRef;
 use crate::{DomainError, DomainResult};
 
 /// The exact byte sequence joining adjacent name-template segments.
@@ -169,6 +170,9 @@ crate::closed_enum! {
         AiShortName => "AI_SHORT_NAME",
         /// Exact display name a Team Definition declares for one durable desk.
         DeskName => "DESK_NAME",
+        /// Repository name and number of one reviewed pull request, as
+        /// `<repo>#<n>`, rendered from its typed identity.
+        PullRequest => "PULL_REQUEST",
     }
 }
 
@@ -468,6 +472,15 @@ impl NativeNameValues {
         self.with(NativeNameToken::DeskName, value)
     }
 
+    /// Add one reviewed pull request's `PULL_REQUEST`, as `<repo>#<n>`.
+    ///
+    /// The value is a typed pull-request identity, never text a caller took
+    /// from a pull-request title.
+    #[must_use]
+    pub fn with_pull_request(self, value: &PullRequestRef) -> Self {
+        self.with(NativeNameToken::PullRequest, value.title_value())
+    }
+
     fn with(mut self, token: NativeNameToken, value: impl Into<String>) -> Self {
         self.0.insert(token, value.into());
         self
@@ -525,6 +538,9 @@ impl NativeNameValues {
                 }
                 NativeNameToken::DeskName => {
                     DomainError::invalid("NativeNameTemplate", "missing DESK_NAME")
+                }
+                NativeNameToken::PullRequest => {
+                    DomainError::invalid("NativeNameTemplate", "missing PULL_REQUEST")
                 }
             })
     }

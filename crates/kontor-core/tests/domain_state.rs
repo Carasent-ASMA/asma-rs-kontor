@@ -1793,6 +1793,10 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     // seats and reconciling them are authority over the project.
     ("declare_durable_seat", "project", "witness", None),
     ("reconcile_durable_seats", "project", "witness", None),
+    // A PR desk belongs to no epic either, and a pull request is not an
+    // aggregate (ASMA-8453): opening and closing a review name the project.
+    ("open_pr_review", "project", "witness", None),
+    ("close_pr_review", "project", "witness", None),
     // The two completion writes are about one epic's own frozen run.
     ("advance_completion", "mini_project", "witness", None),
     ("remediate_completion", "mini_project", "witness", None),

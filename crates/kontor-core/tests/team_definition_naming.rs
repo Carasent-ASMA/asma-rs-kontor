@@ -149,6 +149,7 @@ fn definition() -> TeamDefinitionSpec {
         ],
         desks: Vec::new(),
         desk_leadership: None,
+        pr_review: None,
     }
 }
 

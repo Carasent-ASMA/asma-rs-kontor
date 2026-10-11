@@ -196,6 +196,7 @@ fn every_token_keeps_its_exact_serialized_spelling() {
         (NativeNameToken::ItemCode, "ITEM_CODE"),
         (NativeNameToken::AiShortName, "AI_SHORT_NAME"),
         (NativeNameToken::DeskName, "DESK_NAME"),
+        (NativeNameToken::PullRequest, "PULL_REQUEST"),
     ];
     assert_eq!(
         expected.len(),
