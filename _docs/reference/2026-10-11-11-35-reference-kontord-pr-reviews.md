@@ -39,9 +39,23 @@ repository and number:
 - It records the exact confirmed Jira key, its epic, its task when the key is
   a task's, and the Team Definition revision that placed it.
 - It is immutable and permanent: database triggers refuse UPDATE and DELETE.
-  Each node serves one review, and the store refuses a row whose Adam is not
-  directly below the desk's workspace or whose room is not directly below the
-  desk.
+  Each node serves one review, and a task key's task must belong to the
+  row's epic.
+
+The row itself does not inspect parent nodes when it is inserted. Ancestry is
+enforced where the nodes are placed and used:
+
+- The daemon creates the Adam directly below the desk's workspace and the room
+  directly below the desk. If a node the row names already exists with another
+  kind, parent, scope or topology revision, the open is refused
+  (`placement_blocked`).
+- Topology validation admits each kind only below the parents its revision
+  allows. When the review's revision is newer than the desk's, the store's
+  bridge admits only the two edges the row registers: the Adam below the
+  desk's workspace and the room below the desk.
+- Before rendering a title or placing a session, the daemon checks again that
+  the Adam is below the desk's registered workspace and the room is below the
+  desk (`placement_blocked` otherwise).
 
 The Adam and room nodes are not scoped to the epic. The epic, and the task
 when there is one, are facts on the row, so nothing is written into the
@@ -186,6 +200,12 @@ seats, and launches nothing. With routes, it also:
 
 A seat whose session is already live is reused; nothing is relaunched.
 
+If the room or the desk workspace no longer matches its binding (another
+directory, another native, or no longer below the desk project), the open is
+refused before any launch, and the stored binding is not rewritten. The code
+is the runtime's: `stale_binding` for another native, `unsupported_capability`
+for another directory or parent.
+
 A replay with the same key returns the original receipt and the review as it
 stands, with no effects. The same key with another body is
 `idempotency_conflict`. A fresh key for a review that is already open
@@ -210,10 +230,14 @@ or session.
 1. Only this review's two nodes are read. If any seat's launch is prepared but
    unrecorded, the close is refused (`placement_blocked`) before anything is
    fenced. Retry the open with its own key first.
-2. Each live session of the Adam and room is retired in the desk project and
+2. Every workspace a live session runs in is proved against the runtime: the
+   desk workspace for the Adam, the room for the reviewers. If one no longer
+   matches its binding, the close is refused whole before any session is
+   fenced, so the Adam's session is never retired while the room's survive.
+3. Each live session of the Adam and room is retired in the desk project and
    moved into its seat's history. A session the runtime proves already gone
    counts as fenced.
-3. Each seat is released.
+4. Each seat is released.
 
 Nothing else is touched: not the desk, its workspace, its durable seats, or
 any other review. The row, both nodes and the room's native workspace stay.
