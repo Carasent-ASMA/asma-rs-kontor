@@ -18676,7 +18676,7 @@
               },
               {
                 "$ref": "#/components/schemas/RuntimeModelRouteRequest",
-                "description": "The exact route a daemon-owned seat is launched on. Required for one,\noptional evidence for a Paseo-direct seat. Named chains are not\naccepted: a declaration freezes one route."
+                "description": "The exact route a daemon-owned seat is launched on. Required for one,\noptional evidence for a seat recovered outside Kontor. Named chains\nare not accepted: a declaration freezes one route."
               }
             ]
           },
@@ -18689,7 +18689,7 @@
           },
           "recovery_owner": {
             "type": "string",
-            "description": "`daemon` when Kontor may restart a missing seat, `paseo_direct` when\nthe seat is run and recovered outside Kontor."
+            "description": "Who may restart the seat. `daemon` lets Kontor restart it when it is\nproved missing; the other owner means the seat is run and recovered\noutside Kontor, which never touches it."
           },
           "role_code": {
             "type": "string",

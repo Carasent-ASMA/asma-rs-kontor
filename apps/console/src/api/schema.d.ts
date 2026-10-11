@@ -6588,8 +6588,9 @@ export interface components {
             /** @description The repository-relative procedure the seat follows. */
             procedure?: string | null;
             /**
-             * @description `daemon` when Kontor may restart a missing seat, `paseo_direct` when
-             *     the seat is run and recovered outside Kontor.
+             * @description Who may restart the seat. `daemon` lets Kontor restart it when it is
+             *     proved missing; the other owner means the seat is run and recovered
+             *     outside Kontor, which never touches it.
              */
             recovery_owner: string;
             /** @description The catalog role the seat holds; the first segment of its title. */

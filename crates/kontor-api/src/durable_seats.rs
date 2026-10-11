@@ -41,16 +41,17 @@ pub struct DeclareDurableSeatRequest {
     #[schema(value_type = String)]
     pub seat_label: ExternalName,
     /// The exact route a daemon-owned seat is launched on. Required for one,
-    /// optional evidence for a Paseo-direct seat. Named chains are not
-    /// accepted: a declaration freezes one route.
+    /// optional evidence for a seat recovered outside Kontor. Named chains
+    /// are not accepted: a declaration freezes one route.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_route: Option<RuntimeModelRouteRequest>,
     /// The repository-relative procedure the seat follows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<String>)]
     pub procedure: Option<ExternalName>,
-    /// `daemon` when Kontor may restart a missing seat, `paseo_direct` when
-    /// the seat is run and recovered outside Kontor.
+    /// Who may restart the seat. `daemon` lets Kontor restart it when it is
+    /// proved missing; the other owner means the seat is run and recovered
+    /// outside Kontor, which never touches it.
     #[schema(value_type = String)]
     pub recovery_owner: DurableSeatRecoveryOwner,
     /// Who made the decision.
