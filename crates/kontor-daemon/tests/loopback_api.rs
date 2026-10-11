@@ -61,6 +61,9 @@ mod durable_seats;
 #[path = "loopback/desk_adams.rs"]
 mod desk_adams;
 
+#[path = "loopback/pr_reviews.rs"]
+mod pr_reviews;
+
 #[tokio::test]
 async fn open_question_commands_preserve_authority_history_and_completion_blockers() {
     use kontor_core::id::OpenQuestionId;

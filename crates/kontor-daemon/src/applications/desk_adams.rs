@@ -237,7 +237,8 @@ impl Services {
             .with_store(|store| store.get_desk_adam_subject(project_id, node.id))
             .map_err(|error| self.refuse(&error))?
         else {
-            return Ok(None);
+            // A PR review Adam borrows its desk's workspace the same way.
+            return self.pr_review_adam_host(node);
         };
         let desk = state
             .with_store(|store| store.get_desk(project_id, &subject.desk_key))
@@ -333,7 +334,9 @@ impl Services {
             .with_store(|store| store.get_desk_adam_subject(node.project_id, node.id))
             .map_err(|error| self.refuse(&error))?
         else {
-            return Ok(None);
+            // A PR review's Adam and room render from the revision that
+            // placed the review.
+            return self.pr_review_definition_of(node);
         };
         self.published_definition(node.project_id, &subject.team_definition)
             .map(Some)
@@ -751,9 +754,8 @@ impl Services {
         predecessor: &StoredHostedTopologySeat,
         (retired_reason, absent_reason): (&'static str, &'static str),
     ) -> Result<(), ApiError> {
-        let _native_activity = self.native_activity()?;
-        let state = self.state()?;
-        let node = state
+        let node = self
+            .state()?
             .with_store(|store| store.get_topology_node(project_id, subject.topology_node_id))
             .map_err(|error| self.refuse(&error))?
             .ok_or_else(|| {
@@ -762,6 +764,30 @@ impl Services {
                     "the desk Adam subject node no longer exists",
                 )
             })?;
+        self.fence_node_session(
+            project_id,
+            &node,
+            predecessor,
+            (retired_reason, absent_reason),
+        )
+        .await
+    }
+
+    /// Retire one hosted session of `node` in the native container its
+    /// sessions run in, and move it into its seat's route history.
+    ///
+    /// The container's readback is the fence: one the runtime no longer holds
+    /// refuses before anything is retired, and only a session the runtime
+    /// proves absent is treated as gone.
+    pub(super) async fn fence_node_session(
+        &self,
+        project_id: ProjectId,
+        node: &SessionTopologyNode,
+        predecessor: &StoredHostedTopologySeat,
+        (retired_reason, absent_reason): (&'static str, &'static str),
+    ) -> Result<(), ApiError> {
+        let _native_activity = self.native_activity()?;
+        let state = self.state()?;
         let adapter = state
             .runtimes()
             .get(&predecessor.native_identity.runtime_kind)
@@ -772,7 +798,7 @@ impl Services {
                 )
             })?;
         let proved = self
-            .prove_existing_bound_container(project_id, &node)
+            .prove_existing_bound_container(project_id, node)
             .await?
             .ok_or_else(|| {
                 self.deny(
@@ -1648,7 +1674,7 @@ impl Services {
 
     /// One published Team Definition revision, refused unless its bytes still
     /// hash to the snapshot that names it.
-    fn published_definition(
+    pub(super) fn published_definition(
         &self,
         project_id: ProjectId,
         snapshot: &TeamDefinitionSnapshot,

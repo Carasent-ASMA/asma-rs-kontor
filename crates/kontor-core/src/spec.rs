@@ -880,6 +880,12 @@ pub struct TeamDefinitionSpec {
     /// historical control plane.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub desk_leadership: Option<TeamDeskLeadership>,
+    /// Where a PR desk places each pull request it reviews (ASMA-8453).
+    ///
+    /// Absent from every revision that does not declare it, so their
+    /// canonical bytes and pins are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_review: Option<TeamPrReview>,
 }
 
 /// The desk an epic's leadership session is placed in, and the subject kinds
@@ -898,6 +904,41 @@ pub struct TeamDeskLeadership {
     pub epic_kind: TopologyKindKey,
     /// Container kind of one leadership subject opened before any epic exists.
     pub ad_hoc_kind: TopologyKindKey,
+}
+
+/// Where a PR desk places each pull request it reviews (ASMA-8453).
+///
+/// Every reviewed pull request is one subject with two nodes of its own. Its
+/// Adam is a node directly below the declared desk's workspace: it owns no
+/// native container and hosts the pull request's one coordinating seat in the
+/// workspace's. Its review room is a node directly below the desk: a native
+/// workspace of the desk's project that hosts the declared reviewer seats.
+/// Both render the pull request's confirmed Jira key and `<repo>#<n>`, so two
+/// pull requests never share a title, a node or a seat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TeamPrReview {
+    /// The declared desk every reviewed pull request is placed on.
+    pub desk_key: crate::id::DeskKey,
+    /// Container kind of one pull request's Adam subject.
+    pub adam_kind: TopologyKindKey,
+    /// Container kind of one pull request's review room.
+    pub room_kind: TopologyKindKey,
+    /// The registered role each review-room seat is opened under, by slot.
+    ///
+    /// A room seat is named by its label (`REV A`), which says nothing about
+    /// its role, so the role is declared here, one entry per room slot.
+    pub room_roles: Vec<TeamPrReviewRole>,
+}
+
+/// The registered role one review-room slot is opened under.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TeamPrReviewRole {
+    /// The room slot.
+    pub slot_id: crate::id::RoleSlotId,
+    /// Its registered professional role code.
+    pub role_code: crate::id::RoleCode,
 }
 
 /// One durable desk a Team Definition declares.
@@ -1014,7 +1055,10 @@ impl TeamDefinitionSpec {
                                 segment,
                                 crate::naming::NativeNameSegment::Literal(_)
                                     | crate::naming::NativeNameSegment::Token(
-                                        NativeNameToken::EpicJiraKey | NativeNameToken::Topic
+                                        NativeNameToken::EpicJiraKey
+                                            | NativeNameToken::Topic
+                                            | NativeNameToken::ScopeJiraKey
+                                            | NativeNameToken::PullRequest
                                     )
                             )
                         });
@@ -1164,6 +1208,7 @@ impl TeamDefinitionSpec {
 
         let desk_kinds = self.validate_desks(&kinds)?;
         self.validate_desk_leadership(&kinds)?;
+        self.validate_pr_review(&kinds)?;
         // Desks are additional project-level roots. Every other container
         // still descends from the one delivery root, exactly as before.
         let roots: Vec<_> = self
@@ -1357,6 +1402,209 @@ impl TeamDefinitionSpec {
         Ok(())
     }
 
+    /// Validate where this revision places the pull requests its PR desk
+    /// reviews, when it places any.
+    ///
+    /// The Adam kind sits directly below the declared desk's workspace, owns
+    /// no container and has one role-named seat whose title follows its role
+    /// with the pull request's key and `<repo>#<n>`. The room kind is a
+    /// native session host directly below the desk, named by the same two
+    /// values, whose seats are its declared labels, each with a declared
+    /// role. Only these two kinds may render `PULL_REQUEST`, and only the
+    /// Adam's seat may render `SCOPE_JIRA_KEY`: no other node has a pull
+    /// request to name.
+    fn validate_pr_review(
+        &self,
+        kinds: &BTreeMap<&TopologyKindKey, &TeamContainerDefinition>,
+    ) -> DomainResult<()> {
+        let uses = |template: Option<&NativeNameTemplate>, token: NativeNameToken| {
+            template
+                .and_then(NativeNameTemplate::segments)
+                .is_some_and(|segments| {
+                    segments.iter().any(|segment| {
+                        matches!(segment, crate::naming::NativeNameSegment::Token(used) if *used == token)
+                    })
+                })
+        };
+        let review = self.pr_review.as_ref();
+        if let Some(review) = review {
+            self.validate_pr_review_placement(review, kinds)?;
+        }
+        for container in &self.containers {
+            let is_adam = review.is_some_and(|review| review.adam_kind == container.kind);
+            let is_room = review.is_some_and(|review| review.room_kind == container.kind);
+            if ((uses(Some(&container.name_template), NativeNameToken::PullRequest)
+                || uses(
+                    container.seat_name_template.as_ref(),
+                    NativeNameToken::PullRequest,
+                ))
+                && !is_adam
+                && !is_room)
+                || (uses(
+                    container.seat_name_template.as_ref(),
+                    NativeNameToken::ScopeJiraKey,
+                ) && !is_adam)
+            {
+                return Err(DomainError::invalid(
+                    "TeamDefinitionSpec",
+                    "only a PR review Adam or room may render PULL_REQUEST, and only its Adam's seat SCOPE_JIRA_KEY",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The structure of one declared PR review: its desk, its two kinds and
+    /// their titles and seats.
+    fn validate_pr_review_placement(
+        &self,
+        review: &TeamPrReview,
+        kinds: &BTreeMap<&TopologyKindKey, &TeamContainerDefinition>,
+    ) -> DomainResult<()> {
+        let desk = self.desk(&review.desk_key).ok_or_else(|| {
+            DomainError::invalid(
+                "TeamDefinitionSpec",
+                "PR review names a desk this revision does not declare",
+            )
+        })?;
+        let leadership_kinds = self
+            .desk_leadership
+            .as_ref()
+            .map(|leadership| [&leadership.epic_kind, &leadership.ad_hoc_kind]);
+        if review.adam_kind == review.room_kind
+            || [&review.adam_kind, &review.room_kind].iter().any(|kind| {
+                **kind == desk.kind
+                    || **kind == desk.workspace_kind
+                    || leadership_kinds.is_some_and(|leadership| leadership.contains(kind))
+            })
+        {
+            return Err(DomainError::invalid(
+                "TeamDefinitionSpec",
+                "the PR review Adam and room must be two kinds of their own",
+            ));
+        }
+        let names_pull_request = |segments: &[crate::naming::NativeNameSegment]| {
+            let has = |token: NativeNameToken| {
+                segments.iter().any(|segment| {
+                    matches!(segment, crate::naming::NativeNameSegment::Token(used) if *used == token)
+                })
+            };
+            has(NativeNameToken::ScopeJiraKey) && has(NativeNameToken::PullRequest)
+        };
+
+        let adam = kinds
+            .get(&review.adam_kind)
+            .filter(|adam| {
+                adam.parent.as_ref() == Some(&desk.workspace_kind)
+                    && adam.projection_capabilities == [NodeProjectionCapability::ParentSessionHost]
+            })
+            .ok_or_else(|| {
+                DomainError::invalid(
+                    "TeamDefinitionSpec",
+                    "a PR review Adam must be a parent_session_host directly below the desk's workspace",
+                )
+            })?;
+        let adam_title = adam
+            .seat_name_template
+            .as_ref()
+            .and_then(NativeNameTemplate::segments)
+            .filter(|segments| {
+                matches!(
+                    segments.first(),
+                    Some(crate::naming::NativeNameSegment::Token(
+                        NativeNameToken::RoleCode
+                    ))
+                ) && names_pull_request(segments)
+            });
+        if adam_title.is_none()
+            || !adam.team_slots.is_empty()
+            || !matches!(adam.slots.as_slice(), [slot] if slot.role_code.is_some())
+        {
+            return Err(DomainError::invalid(
+                "TeamDefinitionSpec",
+                "a PR review Adam declares one role-named seat titled by its role, Jira key and pull request",
+            ));
+        }
+
+        let room = kinds
+            .get(&review.room_kind)
+            .filter(|room| {
+                room.parent.as_ref() == Some(&desk.kind)
+                    && room.projection_capabilities.len() == 2
+                    && room
+                        .projection_capabilities
+                        .contains(&NodeProjectionCapability::NativeChild)
+                    && room
+                        .projection_capabilities
+                        .contains(&NodeProjectionCapability::SessionHost)
+            })
+            .ok_or_else(|| {
+                DomainError::invalid(
+                    "TeamDefinitionSpec",
+                    "a PR review room must be a native_child session_host directly below the desk",
+                )
+            })?;
+        let room_name = room
+            .name_template
+            .segments()
+            .expect("container templates were validated as typed");
+        let room_name_scoped = room_name.iter().all(|segment| {
+            matches!(
+                segment,
+                crate::naming::NativeNameSegment::Literal(_)
+                    | crate::naming::NativeNameSegment::Token(
+                        NativeNameToken::Prefix
+                            | NativeNameToken::ScopeJiraKey
+                            | NativeNameToken::PullRequest
+                    )
+            )
+        });
+        let room_seats_labelled = room
+            .seat_name_template
+            .as_ref()
+            .and_then(NativeNameTemplate::segments)
+            .is_some_and(|segments| {
+                matches!(
+                    segments,
+                    [crate::naming::NativeNameSegment::Token(
+                        NativeNameToken::SlotDisplayName
+                    )]
+                )
+            });
+        if !room_name_scoped
+            || !names_pull_request(room_name)
+            || !room_seats_labelled
+            || room.slots.is_empty()
+            || !room.team_slots.is_empty()
+        {
+            return Err(DomainError::invalid(
+                "TeamDefinitionSpec",
+                "a PR review room is named by PREFIX, its Jira key and pull request, and seats only its declared labels",
+            ));
+        }
+        let declared: BTreeSet<_> = room.slots.iter().map(|slot| &slot.slot_id).collect();
+        let roled: BTreeSet<_> = review.room_roles.iter().map(|role| &role.slot_id).collect();
+        if roled.len() != review.room_roles.len() || roled != declared {
+            return Err(DomainError::invalid(
+                "TeamDefinitionSpec",
+                "PR review room roles must name every room slot exactly once",
+            ));
+        }
+        // A review's routes are keyed by slot, so the Adam's slot and the
+        // room's must never share one.
+        if adam
+            .slots
+            .iter()
+            .any(|slot| declared.contains(&slot.slot_id))
+        {
+            return Err(DomainError::invalid(
+                "TeamDefinitionSpec",
+                "a PR review Adam's slot must differ from every room slot",
+            ));
+        }
+        Ok(())
+    }
+
     /// Validate this definition against its exact pinned topology document.
     ///
     /// # Errors
@@ -1459,6 +1707,17 @@ impl TeamDefinitionSpec {
             .find(|slot| &slot.slot_id == slot_id)
     }
 
+    /// The registered role one review-room slot is opened under.
+    #[must_use]
+    pub fn pr_review_role(&self, slot_id: &crate::id::RoleSlotId) -> Option<&crate::id::RoleCode> {
+        self.pr_review
+            .as_ref()?
+            .room_roles
+            .iter()
+            .find(|role| &role.slot_id == slot_id)
+            .map(|role| &role.role_code)
+    }
+
     /// Find one declared durable desk.
     #[must_use]
     pub fn desk(&self, desk_key: &crate::id::DeskKey) -> Option<&TeamDeskDeclaration> {
@@ -1501,12 +1760,13 @@ fn validate_team_definition_template(template: &NativeNameTemplate) -> DomainRes
                         | NativeNameToken::RoleCode
                         | NativeNameToken::SlotDisplayName
                         | NativeNameToken::DeskName
+                        | NativeNameToken::PullRequest
                 )
         )
     }) {
         return Err(DomainError::invalid(
             "TeamDefinitionSpec",
-            "Team Definition templates may use only PREFIX, EPIC_ITEM_CODE, TASK_ITEM_CODE, SCOPE_ITEM_CODE, EPIC_JIRA_KEY, TASK_JIRA_KEY, SCOPE_JIRA_KEY, TOPIC, ROLE_CODE, SLOT_DISPLAY_NAME and DESK_NAME",
+            "Team Definition templates may use only PREFIX, EPIC_ITEM_CODE, TASK_ITEM_CODE, SCOPE_ITEM_CODE, EPIC_JIRA_KEY, TASK_JIRA_KEY, SCOPE_JIRA_KEY, TOPIC, ROLE_CODE, SLOT_DISPLAY_NAME, DESK_NAME and PULL_REQUEST",
         ));
     }
     Ok(())

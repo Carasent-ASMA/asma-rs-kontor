@@ -2332,6 +2332,17 @@ fn an_authentic_schema_twelve_document_verifies_and_imports_with_an_empty_backfi
         .expect("a counts object")
         .remove("desk_adam_subjects")
         .expect("the current generation counts desk Adam subjects");
+    // And generation seventeen's PR review subjects (ASMA-8453).
+    document["records"]
+        .as_object_mut()
+        .expect("a records object")
+        .remove("pr_review_subjects")
+        .expect("the current generation carries PR review subjects");
+    document["continuity_summary"]["record_counts"]
+        .as_object_mut()
+        .expect("a counts object")
+        .remove("pr_review_subjects")
+        .expect("the current generation counts PR review subjects");
     let authentic_records_bytes = {
         let mut bytes = serde_json::to_vec(&document["records"]).expect("the records serialize");
         bytes.push(b'\n');
@@ -2859,6 +2870,7 @@ fn rewind_to_schema_121(path: &std::path::Path) {
         )
         .expect("the later triggers are removed");
     for table in [
+        "pr_review_subjects",
         "desk_adam_subjects",
         "durable_seat_declarations",
         "desks",

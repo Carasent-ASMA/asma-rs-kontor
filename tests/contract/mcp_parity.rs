@@ -9,8 +9,8 @@
 //! contract growing.
 //!
 //! On top of it sits a **snapshot canary**: at this base the contract has exactly
-//! 226 mapped operations and exactly two allowlisted ones. The canary is not a
-//! claim that 226 is forever — it is what makes a later change to the daemon's
+//! 229 mapped operations and exactly two allowlisted ones. The canary is not a
+//! claim that 229 is forever — it is what makes a later change to the daemon's
 //! surface *fail here* rather than pass silently, so somebody has to decide
 //! whether the new operation gets a tool or a recorded deferral.
 //!
@@ -544,12 +544,12 @@ fn the_permission_decisions_match_the_runtimes_own_spelling() {
 
 #[test]
 fn the_snapshot_canary_holds_at_this_base() {
-    // Not "226 forever": this is what makes a later contract change fail here, so a
+    // Not "229 forever": this is what makes a later contract change fail here, so a
     // new operation gets a deliberate tool or a recorded deferral instead of
     // slipping past unreviewed.
     assert_eq!(
         http().count(),
-        226,
+        229,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     // ASMA-8280 B-1: the registry's local operations — in-process handlers
@@ -565,7 +565,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // context is actually charged for — and it has to move deliberately too.
     assert_eq!(
         http().count() - CLI_ONLY.len(),
-        225,
+        228,
         "the advertised tool count changed; a tool held off the listing is a budget decision"
     );
     assert_eq!(
@@ -577,7 +577,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // route serves the document itself and is not self-documented.
     assert_eq!(
         documented().len(),
-        227,
+        230,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -617,6 +617,11 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_desk_seats_list", CallerTier::Observer),
         ("kontor_desk_seat_declare", CallerTier::Operator),
         ("kontor_desk_seats_reconcile", CallerTier::Operator),
+        // PR reviews (ASMA-8453): opening and closing one pull request's
+        // review are operator work, as the desk's seat writes are.
+        ("kontor_desk_pr_reviews_list", CallerTier::Observer),
+        ("kontor_desk_pr_review_open", CallerTier::Operator),
+        ("kontor_desk_pr_review_close", CallerTier::Operator),
         ("kontor_artifact_record", CallerTier::Operator),
         ("kontor_committee_artifact_get", CallerTier::Observer),
         ("kontor_events_list", CallerTier::Observer),

@@ -3299,13 +3299,15 @@ fn without_quota(document: &mut serde_json::Value) {
     // vocabulary: the canonical byte path strips it below 13, so a fixture that
     // carries it hashes as something no generation-7 emitter ever wrote
     // (ASMA-8187). Generation fourteen's desks likewise (ASMA-8450), and
-    // generation fifteen's durable seat declarations (ASMA-8451) and
-    // generation sixteen's desk Adam subjects (ASMA-8452).
+    // generation fifteen's durable seat declarations (ASMA-8451),
+    // generation sixteen's desk Adam subjects (ASMA-8452) and generation
+    // seventeen's PR review subjects (ASMA-8453).
     for key in [
         "core_team_route_successions",
         "desks",
         "durable_seat_declarations",
         "desk_adam_subjects",
+        "pr_review_subjects",
     ] {
         document["records"]
             .as_object_mut()
@@ -3319,6 +3321,7 @@ fn without_quota(document: &mut serde_json::Value) {
         "desks",
         "durable_seat_declarations",
         "desk_adam_subjects",
+        "pr_review_subjects",
     ] {
         document["continuity_summary"]["record_counts"]
             .as_object_mut()

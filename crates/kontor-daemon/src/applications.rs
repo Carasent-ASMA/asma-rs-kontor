@@ -32,6 +32,7 @@ mod durable_seats;
 mod memory_projection;
 mod open_questions;
 mod planning_pair;
+mod pr_reviews;
 pub use memory_projection::ProjectionQualifier;
 #[doc(hidden)]
 pub use planning_pair::PlanningPairReceiptHold;
@@ -1086,6 +1087,9 @@ pub struct Services {
     /// to an epic (ASMA-8452), so a binding never censuses an origin seat
     /// while a launch on it is still on its way to the runtime.
     desk_adam_guard: tokio::sync::Mutex<()>,
+    /// Serializes opening and closing PR reviews (ASMA-8453), so a close
+    /// never fences a review while an open is launching into it.
+    pr_review_guard: tokio::sync::Mutex<()>,
     /// Native cleanup excludes placement, migration and hosted work until exact
     /// readback and logical release finish. The realm's exclusive state-root
     /// lock supplies the single-process boundary; native identities and durable
@@ -1177,6 +1181,7 @@ impl Services {
             succession_guard: tokio::sync::Mutex::new(()),
             durable_seat_guard: tokio::sync::Mutex::new(()),
             desk_adam_guard: tokio::sync::Mutex::new(()),
+            pr_review_guard: tokio::sync::Mutex::new(()),
             native_lifecycle_guard: tokio::sync::RwLock::new(()),
             quota_signals,
             fleet,
@@ -21586,6 +21591,36 @@ impl ApplicationOperations for Services {
         request: &kontor_api::durable_seats::ReconcileDurableSeatsRequest,
     ) -> Result<kontor_api::durable_seats::DurableSeatReconcileOutcomeDto, ApiError> {
         self.run_durable_seat_reconciliation(key, project_id, desk_key, request)
+            .await
+    }
+
+    fn pr_reviews(
+        &self,
+        project_id: ProjectId,
+        desk_key: &DeskKey,
+    ) -> Result<kontor_api::pr_reviews::PrReviewReportDto, ApiError> {
+        self.read_pr_reviews(project_id, desk_key)
+    }
+
+    async fn open_pr_review(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        desk_key: &DeskKey,
+        request: &kontor_api::pr_reviews::OpenPrReviewRequest,
+    ) -> Result<kontor_api::pr_reviews::PrReviewOutcomeDto, ApiError> {
+        self.open_pr_review_subject(key, project_id, desk_key, request)
+            .await
+    }
+
+    async fn close_pr_review(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        desk_key: &DeskKey,
+        request: &kontor_api::pr_reviews::ClosePrReviewRequest,
+    ) -> Result<kontor_api::pr_reviews::PrReviewOutcomeDto, ApiError> {
+        self.close_pr_review_subject(key, project_id, desk_key, request)
             .await
     }
 
@@ -44120,9 +44155,13 @@ impl Services {
                             WorkspaceRoot::parse(root.as_str())
                                 .map_err(|error| self.refuse_domain(&error))?,
                         )
-                    } else if let ContainerSubject::Desk { desk, .. } = &subject {
+                    } else if let ContainerSubject::Desk { desk, .. } = &subject
+                        && (level.id == desk.topology_node_id || level.id == desk.workspace_node_id)
+                    {
                         // The desk project and its workspace share the desk's
                         // own directory, as an epic's ESW and ECP share theirs.
+                        // Anything else below a desk (a PR review room) takes
+                        // the directory its caller names, as a leaf does.
                         Some(self.desk_root(desk)?)
                     } else if level.task_id.is_some() {
                         let worktree = level_scope
@@ -44239,6 +44278,9 @@ impl Services {
     fn container_subject(&self, node: &SessionTopologyNode) -> Result<ContainerSubject, ApiError> {
         if let Some(epic_id) = node.mini_project_id {
             return Ok(ContainerSubject::Epic(epic_id));
+        }
+        if let Some(room) = self.pr_review_room_subject(node)? {
+            return Ok(room);
         }
         let desk = self.desk_of_node(node)?.ok_or_else(|| {
             self.deny(
@@ -44971,9 +45013,12 @@ impl Services {
                 "the Team Definition does not configure this container kind",
             )
         })?;
-        let values = NativeNameValues::new()
+        let mut values = NativeNameValues::new()
             .with_prefix(container.prefix.as_str())
             .with_desk_name(declaration.display_name.as_str());
+        if template_uses_token(&container.name_template, NativeNameToken::PullRequest) {
+            values = self.pr_review_title_values(node, &container.name_template, values)?;
+        }
         container
             .name_template
             .render(&definition.separator, &values)
@@ -45170,6 +45215,9 @@ impl Services {
             || template_uses_token(template, NativeNameToken::EpicJiraKey)
         {
             values = self.desk_adam_title_values(node, template, values)?;
+        }
+        if template_uses_token(template, NativeNameToken::PullRequest) {
+            values = self.pr_review_title_values(node, template, values)?;
         }
         template
             .render(&definition.separator, &values)

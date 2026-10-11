@@ -3819,6 +3819,189 @@
         }
       }
     },
+    "/v1/projects/{project_id}/desks/{desk_key}/pr-reviews": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Report every review one desk holds.",
+        "operationId": "list_pr_reviews",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "desk_key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrReviewReportDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/desks/{desk_key}/pr-reviews:close": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Close one pull request's review.",
+        "operationId": "close_pr_review",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "desk_key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClosePrReviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrReviewOutcomeDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/desks/{desk_key}/pr-reviews:open": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Open one pull request's review.",
+        "operationId": "open_pr_review",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "desk_key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenPrReviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrReviewOutcomeDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/desks/{desk_key}/seats": {
       "get": {
         "tags": [
@@ -15503,6 +15686,27 @@
         },
         "additionalProperties": false
       },
+      "ClosePrReviewRequest": {
+        "type": "object",
+        "description": "Close one pull request's review.",
+        "required": [
+          "expected_revision",
+          "pull_request"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The project revision the caller believes is current.",
+            "minimum": 0
+          },
+          "pull_request": {
+            "$ref": "#/components/schemas/PullRequestRequest",
+            "description": "The pull request whose review closes."
+          }
+        },
+        "additionalProperties": false
+      },
       "CloseoutEvidenceDto": {
         "type": "object",
         "description": "The closeout receipts recorded so far.\n\nReceipt ids and inventoried revisions, never caller booleans: `done` is a\nconjunction over authoritative records, and a boolean would let a caller\nassert one it does not hold.",
@@ -23365,6 +23569,45 @@
           }
         }
       },
+      "OpenPrReviewRequest": {
+        "type": "object",
+        "description": "Open one pull request's review on a PR desk.",
+        "required": [
+          "expected_revision",
+          "external_key",
+          "pull_request"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The project revision the caller believes is current.",
+            "minimum": 0
+          },
+          "external_key": {
+            "type": "string",
+            "description": "The exact confirmed external tracker key the review is opened under,\ne.g. `ASMA-8449`: an epic's, or one of its tasks'. It must authorize\nthe pull request's repository."
+          },
+          "model_routes": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The exact route each seat launches on, keyed by slot id: the Adam's\nslot and every room slot, each exactly once. Absent, the review is\nplaced and seated with nothing launched.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/RuntimeModelRouteRequest"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "pull_request": {
+            "$ref": "#/components/schemas/PullRequestRequest",
+            "description": "The pull request."
+          }
+        },
+        "additionalProperties": false
+      },
       "OutcomeKind": {
         "type": "string",
         "enum": [
@@ -24063,6 +24306,254 @@
           "member",
           "observer"
         ]
+      },
+      "PrReviewContainerDto": {
+        "type": "object",
+        "description": "The native container a review node's sessions run in, as last read back.",
+        "required": [
+          "topology_node_id",
+          "native_id",
+          "observed_kind"
+        ],
+        "properties": {
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its canonical working directory."
+          },
+          "native_id": {
+            "type": "string",
+            "description": "The native container id."
+          },
+          "observed_kind": {
+            "type": "string",
+            "description": "What the runtime said it is: `project` or `workspace`."
+          },
+          "parent_native_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its native parent's id."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its exact runtime-visible title."
+          },
+          "topology_node_id": {
+            "type": "string",
+            "description": "The node that owns the container: the desk workspace for the Adam, the\nroom itself for the room."
+          }
+        }
+      },
+      "PrReviewDto": {
+        "type": "object",
+        "description": "One pull request's review.",
+        "required": [
+          "desk_key",
+          "repository",
+          "number",
+          "external_key",
+          "epic_id",
+          "team_definition",
+          "open",
+          "created_at"
+        ],
+        "properties": {
+          "adam": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PrReviewNodeDto",
+                "description": "The Adam tab, in the desk's workspace."
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "description": "When the review was first opened."
+          },
+          "desk_key": {
+            "type": "string",
+            "description": "The desk it is reviewed on."
+          },
+          "epic_id": {
+            "type": "string",
+            "description": "The epic that key belongs to."
+          },
+          "external_key": {
+            "type": "string",
+            "description": "The confirmed external tracker key it was opened under."
+          },
+          "number": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The pull request's number in that repository.",
+            "minimum": 0
+          },
+          "open": {
+            "type": "boolean",
+            "description": "Whether any of its seats is current."
+          },
+          "repository": {
+            "type": "string",
+            "description": "The forge repository, as exact `owner/name`."
+          },
+          "room": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PrReviewNodeDto",
+                "description": "The review room, below the desk."
+              }
+            ]
+          },
+          "task_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The task, when the key is a task's."
+          },
+          "team_definition": {
+            "$ref": "#/components/schemas/TeamDefinitionRefDto",
+            "description": "The Team Definition revision that placed it."
+          }
+        }
+      },
+      "PrReviewNodeDto": {
+        "type": "object",
+        "description": "One node of a review: the Adam or the room.",
+        "required": [
+          "topology_node_id",
+          "kind",
+          "parent_id",
+          "seats"
+        ],
+        "properties": {
+          "container": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PrReviewContainerDto",
+                "description": "Where its sessions run, once materialized."
+              }
+            ]
+          },
+          "kind": {
+            "type": "string",
+            "description": "Its kind, from the definition that placed the review."
+          },
+          "parent_id": {
+            "type": "string",
+            "description": "Its parent: the desk workspace for the Adam, the desk for the room."
+          },
+          "seats": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PrReviewSeatDto"
+            },
+            "description": "Its current seats; empty once the review is closed."
+          },
+          "topology_node_id": {
+            "type": "string",
+            "description": "The node."
+          }
+        }
+      },
+      "PrReviewOutcomeDto": {
+        "type": "object",
+        "description": "The answer to an open or a close.",
+        "required": [
+          "review",
+          "receipt"
+        ],
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "The receipt the command was recorded under."
+          },
+          "review": {
+            "$ref": "#/components/schemas/PrReviewDto",
+            "description": "The review, read after any effect this call had."
+          }
+        }
+      },
+      "PrReviewReportDto": {
+        "type": "object",
+        "description": "Every review one desk holds.",
+        "required": [
+          "desk_key",
+          "reviews"
+        ],
+        "properties": {
+          "desk_key": {
+            "type": "string",
+            "description": "The desk."
+          },
+          "reviews": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PrReviewDto"
+            },
+            "description": "Each pull request's review, oldest first."
+          }
+        }
+      },
+      "PrReviewSeatDto": {
+        "type": "object",
+        "description": "One seat of a review, as Kontor records it now.",
+        "required": [
+          "slot_id",
+          "role_code",
+          "title",
+          "seat_binding_id"
+        ],
+        "properties": {
+          "native_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The native Kontor records as its current occupant."
+          },
+          "occupancy_generation": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The current occupancy generation.",
+            "minimum": 0
+          },
+          "role_code": {
+            "type": "string",
+            "description": "The catalog role it holds."
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "The SeatBinding it is correlated by."
+          },
+          "slot_id": {
+            "type": "string",
+            "description": "The seat's slot in its container."
+          },
+          "title": {
+            "type": "string",
+            "description": "Its exact title."
+          }
+        }
       },
       "PreviewEpicDto": {
         "type": "object",
@@ -25783,6 +26274,27 @@
             "description": "Its identity, revision and canonical hash."
           }
         }
+      },
+      "PullRequestRequest": {
+        "type": "object",
+        "description": "One pull request: its forge repository and its number. Both are its\nidentity; nothing about it is read from a title.",
+        "required": [
+          "repository",
+          "number"
+        ],
+        "properties": {
+          "number": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The pull request's number in that repository; positive.",
+            "minimum": 0
+          },
+          "repository": {
+            "type": "string",
+            "description": "The forge repository, as exact `owner/name`."
+          }
+        },
+        "additionalProperties": false
       },
       "Purge": {
         "type": "object",

@@ -104,6 +104,7 @@ pub mod naming;
 pub mod open_question;
 pub mod planning_pair;
 pub mod publication;
+pub mod pull_request;
 pub mod quota;
 pub mod realm;
 pub mod receipt;

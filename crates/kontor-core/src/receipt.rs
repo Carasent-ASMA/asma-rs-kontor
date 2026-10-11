@@ -307,6 +307,18 @@ closed_enum! {
         /// phase ownership to another SeatBinding, and a route-correction
         /// receipt must never be citable as that authority.
         HandOffDeskAdam => "hand_off_desk_adam",
+        /// Open one pull request's review on a PR desk: its Adam subject and
+        /// review room, their declared seats, and any routed sessions.
+        ///
+        /// The project is the aggregate: a pull request is not one, and the
+        /// desk it is reviewed on belongs to no epic.
+        OpenPrReview => "open_pr_review",
+        /// Close one pull request's review: fence its sessions and release its
+        /// seats, and nothing else on the desk.
+        ///
+        /// Distinct from [`CommandKind::OpenPrReview`], so a receipt for one
+        /// is never citable as authority for the other.
+        ClosePrReview => "close_pr_review",
         /// Bring a provider-account profile into existence, or prove the one
         /// with that label matches.
         ///
@@ -692,6 +704,10 @@ impl CommandKind {
             Self::DeclareDurableSeat | Self::ReconcileDurableSeats => {
                 witness(matches!(target, A::Project))
             }
+            // A PR desk belongs to no epic, and a pull request is not an
+            // aggregate: the project is what opening or closing a review is
+            // authority over (ASMA-8453).
+            Self::OpenPrReview | Self::ClosePrReview => witness(matches!(target, A::Project)),
         }
     }
 

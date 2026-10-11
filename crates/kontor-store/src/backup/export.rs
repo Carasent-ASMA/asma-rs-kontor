@@ -49,7 +49,7 @@ use crate::backup::BackupError;
 use crate::events::types::ensure_control_metadata;
 
 /// The export generation this build writes.
-pub const EXPORT_SCHEMA_VERSION: u32 = 16;
+pub const EXPORT_SCHEMA_VERSION: u32 = 17;
 
 /// The database generation that introduced the launch-intent supersession ledger.
 const LAUNCH_INTENT_SUPERSESSION_SCHEMA_VERSION: i64 = 109;
@@ -117,6 +117,21 @@ const DESK_ADAM_SUBJECT_EXPORT_VERSION: u32 = 16;
 
 /// The record array introduced in generation 16.
 const DESK_ADAM_SUBJECT_RECORD_FIELDS: [&str; 1] = ["desk_adam_subjects"];
+
+/// The database generation that introduced PR review subjects.
+const PR_REVIEW_SUBJECT_SCHEMA_VERSION: i64 = 134;
+
+/// The export generation that first carried them.
+///
+/// A subject row is the only durable record of which pull request a PR desk's
+/// Adam node and review room work for. A round trip that dropped it would
+/// leave both nodes behind without the repository and number that find them,
+/// and a later open of the same pull request would place a second Adam and
+/// room (ASMA-8453).
+const PR_REVIEW_SUBJECT_EXPORT_VERSION: u32 = 17;
+
+/// The record array introduced in generation 17.
+const PR_REVIEW_SUBJECT_RECORD_FIELDS: [&str; 1] = ["pr_review_subjects"];
 
 /// The record array introduced in generation 11.
 const LAUNCH_INTENT_SUPERSESSION_RECORD_FIELDS: [&str; 1] =
@@ -404,6 +419,12 @@ impl KontorExportV1 {
             })?;
             remove_desk_adam_subject_record_fields(records)?;
         }
+        if self.schema_version < PR_REVIEW_SUBJECT_EXPORT_VERSION {
+            let records = value.get_mut("records").ok_or(BackupError::Verification {
+                detail: "the export has no records object",
+            })?;
+            remove_pr_review_subject_record_fields(records)?;
+        }
         canonical_bytes(&value)
     }
 
@@ -444,6 +465,9 @@ impl KontorExportV1 {
         }
         if self.schema_version < DESK_ADAM_SUBJECT_EXPORT_VERSION {
             remove_desk_adam_subject_record_fields(&mut value)?;
+        }
+        if self.schema_version < PR_REVIEW_SUBJECT_EXPORT_VERSION {
+            remove_pr_review_subject_record_fields(&mut value)?;
         }
         canonical_bytes(&value)
     }
@@ -647,6 +671,20 @@ impl KontorExportV1 {
         {
             return Err(BackupError::Verification {
                 detail: "the legacy export generation cannot prove desk Adam subject completeness",
+            });
+        }
+        if self.schema_version < PR_REVIEW_SUBJECT_EXPORT_VERSION
+            && !self.records.pr_review_subjects.is_empty()
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries PR review subjects it did not define",
+            });
+        }
+        if self.schema_version < PR_REVIEW_SUBJECT_EXPORT_VERSION
+            && self.database_schema_version >= PR_REVIEW_SUBJECT_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove PR review subject completeness",
             });
         }
         if self.schema_version < RETIRED_EVALUATOR_ATTESTATION_EXPORT_VERSION
@@ -1241,6 +1279,20 @@ impl KontorExportV1 {
                     .or_insert_with(|| serde_json::Value::Array(Vec::new()));
             }
         }
+        // And for generation 17's PR review subjects.
+        if found < PR_REVIEW_SUBJECT_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in PR_REVIEW_SUBJECT_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
         let export: Self =
             serde_json::from_value(value).map_err(|_| BackupError::Verification {
                 detail: "the export is not a document of this generation",
@@ -1353,6 +1405,20 @@ fn remove_desk_adam_subject_record_fields(
         detail: "the export records are not an object",
     })?;
     for field in DESK_ADAM_SUBJECT_RECORD_FIELDS {
+        records.remove(field);
+    }
+    Ok(())
+}
+
+/// Remove the generation-17 PR review subject field, as for generation 16's
+/// desk Adam subjects.
+fn remove_pr_review_subject_record_fields(
+    records: &mut serde_json::Value,
+) -> Result<(), BackupError> {
+    let records = records.as_object_mut().ok_or(BackupError::Verification {
+        detail: "the export records are not an object",
+    })?;
+    for field in PR_REVIEW_SUBJECT_RECORD_FIELDS {
         records.remove(field);
     }
     Ok(())
@@ -1974,6 +2040,21 @@ exported_tables! {
         mini_project_id: Option<String>,
         topic: String,
         origin_topology_node_id: Option<String>,
+        team_definition_id: String,
+        team_definition_version: i64,
+        team_definition_hash: String,
+        created_at: String,
+    }
+    pr_review_subjects: PrReviewSubjectsRow from "pr_review_subjects" key(project_id, desk_key, repository, pull_request_number) {
+        project_id: String,
+        desk_key: String,
+        repository: String,
+        pull_request_number: i64,
+        jira_key: String,
+        mini_project_id: String,
+        task_id: Option<String>,
+        adam_node_id: String,
+        room_node_id: String,
         team_definition_id: String,
         team_definition_version: i64,
         team_definition_hash: String,
@@ -3277,6 +3358,11 @@ impl ExportedRecords {
         }
         if schema_version < DESK_ADAM_SUBJECT_EXPORT_VERSION {
             for field in DESK_ADAM_SUBJECT_RECORD_FIELDS {
+                continuity.record_counts.remove(field);
+            }
+        }
+        if schema_version < PR_REVIEW_SUBJECT_EXPORT_VERSION {
+            for field in PR_REVIEW_SUBJECT_RECORD_FIELDS {
                 continuity.record_counts.remove(field);
             }
         }

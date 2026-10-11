@@ -1303,6 +1303,39 @@ pub struct StoredDeskAdamSubject {
     pub created_at: Timestamp,
 }
 
+/// One pull request a PR desk reviews, as it is stored (ASMA-8453).
+///
+/// The pull request is the identity: its repository and its number, unique on
+/// its desk. The confirmed Jira key it was opened under is a fact about it,
+/// checked against the project's confirmed bindings when the row was written,
+/// and never a second identity: two pull requests of one key are two rows.
+/// The row carries the two node ids its placement uses, planned before either
+/// exists. Immutable and permanent once written; closing a review releases
+/// its seats and never this row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredPrReviewSubject {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The desk the pull request is reviewed on.
+    pub desk_key: DeskKey,
+    /// The pull request: repository and number.
+    pub pull_request: crate::pull_request::PullRequestRef,
+    /// The exact confirmed Jira key the review was opened under.
+    pub jira_key: ExternalId,
+    /// The epic that key's confirmed binding belongs to.
+    pub mini_project_id: MiniProjectId,
+    /// The task, when the key is a task's rather than the epic's.
+    pub task_id: Option<TaskId>,
+    /// The Adam subject node, directly below the desk's workspace.
+    pub adam_node_id: TopologyNodeId,
+    /// The review room node, directly below the desk.
+    pub room_node_id: TopologyNodeId,
+    /// The exact Team Definition revision whose PR review placed it.
+    pub team_definition: TeamDefinitionSnapshot,
+    /// Creation instant.
+    pub created_at: Timestamp,
+}
+
 /// What promotion does with the Quick session it came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

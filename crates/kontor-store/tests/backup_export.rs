@@ -1090,6 +1090,8 @@ fn generation_two_without_profile_selection_outcomes_remains_importable() {
         "durable_seat_declarations",
         // Generation sixteen's desk Adam subjects likewise (ASMA-8452).
         "desk_adam_subjects",
+        // Generation seventeen's PR review subjects likewise (ASMA-8453).
+        "pr_review_subjects",
     ] {
         legacy
             .pointer_mut("/records")

@@ -8582,6 +8582,31 @@ pub trait ApplicationOperations: Send + Sync {
         desk_key: &DeskKey,
         request: &crate::durable_seats::ReconcileDurableSeatsRequest,
     ) -> Result<crate::durable_seats::DurableSeatReconcileOutcomeDto, ApiError>;
+    /// Every pull request's review on one desk (ASMA-8453). Read-only: the
+    /// runtime is not asked about anything.
+    fn pr_reviews(
+        &self,
+        project_id: ProjectId,
+        desk_key: &DeskKey,
+    ) -> Result<crate::pr_reviews::PrReviewReportDto, ApiError>;
+    /// Open one pull request's review under its confirmed Jira key, and with
+    /// routes launch its Adam and room seats.
+    async fn open_pr_review(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        desk_key: &DeskKey,
+        request: &crate::pr_reviews::OpenPrReviewRequest,
+    ) -> Result<crate::pr_reviews::PrReviewOutcomeDto, ApiError>;
+    /// Close one pull request's review: fence its live sessions and release
+    /// its seats, and touch nothing else on the desk.
+    async fn close_pr_review(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        desk_key: &DeskKey,
+        request: &crate::pr_reviews::ClosePrReviewRequest,
+    ) -> Result<crate::pr_reviews::PrReviewOutcomeDto, ApiError>;
     /// One epic's completion state.
     fn completion(
         &self,

@@ -431,6 +431,42 @@ container (`parent_session_host` only), so they name seats, not natives:
 The operations, handoff and support limits are in
 [Desk Adams in kontord](../_docs/reference/2026-10-11-05-36-reference-kontord-desk-adams.md).
 
+## PR reviews (ASMA-8453)
+
+A Team Definition that declares `pr_review` gives each pull request on its PR
+desk an Adam tab in the desk's workspace and a review room below the desk. Two
+tokens name them:
+
+- `PULL_REQUEST` renders `<repo>#<n>`: the repository's name without its
+  owner, `#`, and the number.
+- `SCOPE_JIRA_KEY` renders the exact confirmed Jira key the review was opened
+  under, an epic's or a task's.
+
+| Native | Template | Example |
+| --- | --- | --- |
+| Adam seat | `ROLE_CODE`, `SCOPE_JIRA_KEY`, `PULL_REQUEST` | `TPM • ASMA-8449 • asma-rs-kontor#101` |
+| room workspace | `PREFIX`, `SCOPE_JIRA_KEY`, `PULL_REQUEST` | `RSW • ASMA-8449 • asma-rs-kontor#101` |
+| room seats | `SLOT_DISPLAY_NAME` | `REV A`, `REV B`, `JUDGE` |
+
+- Only the declared Adam and room kinds may render `PULL_REQUEST`, and only
+  the Adam's seat template may render `SCOPE_JIRA_KEY`. Validation refuses any
+  other container that tries.
+- Before rendering `SCOPE_JIRA_KEY`, the daemon re-reads the confirmed key of
+  the review's epic or task. If it no longer equals the recorded key, the
+  render is refused (`placement_blocked`).
+- The title is derived from the stored repository and number, never the other
+  way round. A review is identified by `(desk, repository, number)` and no
+  title is ever parsed for it.
+- Because `PULL_REQUEST` drops the owner, two repositories of one name could
+  render one title. An open whose title would equal another review's on the
+  same desk is refused (`placement_blocked`).
+- Room seats are titled by their declared labels alone. The room's own title
+  carries the key and the pull request.
+- Review natives carry their seat labels and no epic or mini-project label.
+
+The operations, readback and support limits are in
+[PR reviews in kontord](../_docs/reference/2026-10-11-11-35-reference-kontord-pr-reviews.md).
+
 ## Publication and migration
 
 - Validate and publish immutable revisions with

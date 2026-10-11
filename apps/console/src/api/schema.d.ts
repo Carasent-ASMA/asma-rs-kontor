@@ -1275,6 +1275,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/desks/{desk_key}/pr-reviews": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Report every review one desk holds. */
+        get: operations["list_pr_reviews"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/desks/{desk_key}/pr-reviews:close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Close one pull request's review. */
+        post: operations["close_pr_review"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/desks/{desk_key}/pr-reviews:open": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Open one pull request's review. */
+        post: operations["open_pr_review"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/desks/{desk_key}/seats": {
         parameters: {
             query?: never;
@@ -5082,6 +5133,16 @@ export interface components {
              */
             account_profile_ids?: string[];
         };
+        /** @description Close one pull request's review. */
+        ClosePrReviewRequest: {
+            /**
+             * Format: int64
+             * @description The project revision the caller believes is current.
+             */
+            expected_revision: number;
+            /** @description The pull request whose review closes. */
+            pull_request: components["schemas"]["PullRequestRequest"];
+        };
         /**
          * @description The closeout receipts recorded so far.
          *
@@ -8725,6 +8786,30 @@ export interface components {
             /** @description The immutable approved revision of it. */
             revision_id: string;
         };
+        /** @description Open one pull request's review on a PR desk. */
+        OpenPrReviewRequest: {
+            /**
+             * Format: int64
+             * @description The project revision the caller believes is current.
+             */
+            expected_revision: number;
+            /**
+             * @description The exact confirmed external tracker key the review is opened under,
+             *     e.g. `ASMA-8449`: an epic's, or one of its tasks'. It must authorize
+             *     the pull request's repository.
+             */
+            external_key: string;
+            /**
+             * @description The exact route each seat launches on, keyed by slot id: the Adam's
+             *     slot and every room slot, each exactly once. Absent, the review is
+             *     placed and seated with nothing launched.
+             */
+            model_routes?: {
+                [key: string]: components["schemas"]["RuntimeModelRouteRequest"];
+            } | null;
+            /** @description The pull request. */
+            pull_request: components["schemas"]["PullRequestRequest"];
+        };
         /** @enum {string} */
         OutcomeKind: "success" | "failure" | "mixed";
         /** @description Exact queued downstream run and already-created native a partial recovery adopts. */
@@ -9024,6 +9109,94 @@ export interface components {
          * @enum {string}
          */
         PlanningPairViewerDto: "caller" | "member" | "observer";
+        /** @description The native container a review node's sessions run in, as last read back. */
+        PrReviewContainerDto: {
+            /** @description Its canonical working directory. */
+            cwd?: string | null;
+            /** @description The native container id. */
+            native_id: string;
+            /** @description What the runtime said it is: `project` or `workspace`. */
+            observed_kind: string;
+            /** @description Its native parent's id. */
+            parent_native_id?: string | null;
+            /** @description Its exact runtime-visible title. */
+            title?: string | null;
+            /**
+             * @description The node that owns the container: the desk workspace for the Adam, the
+             *     room itself for the room.
+             */
+            topology_node_id: string;
+        };
+        /** @description One pull request's review. */
+        PrReviewDto: {
+            adam?: null | components["schemas"]["PrReviewNodeDto"];
+            /** @description When the review was first opened. */
+            created_at: string;
+            /** @description The desk it is reviewed on. */
+            desk_key: string;
+            /** @description The epic that key belongs to. */
+            epic_id: string;
+            /** @description The confirmed external tracker key it was opened under. */
+            external_key: string;
+            /**
+             * Format: int64
+             * @description The pull request's number in that repository.
+             */
+            number: number;
+            /** @description Whether any of its seats is current. */
+            open: boolean;
+            /** @description The forge repository, as exact `owner/name`. */
+            repository: string;
+            room?: null | components["schemas"]["PrReviewNodeDto"];
+            /** @description The task, when the key is a task's. */
+            task_id?: string | null;
+            /** @description The Team Definition revision that placed it. */
+            team_definition: components["schemas"]["TeamDefinitionRefDto"];
+        };
+        /** @description One node of a review: the Adam or the room. */
+        PrReviewNodeDto: {
+            container?: null | components["schemas"]["PrReviewContainerDto"];
+            /** @description Its kind, from the definition that placed the review. */
+            kind: string;
+            /** @description Its parent: the desk workspace for the Adam, the desk for the room. */
+            parent_id: string;
+            /** @description Its current seats; empty once the review is closed. */
+            seats: components["schemas"]["PrReviewSeatDto"][];
+            /** @description The node. */
+            topology_node_id: string;
+        };
+        /** @description The answer to an open or a close. */
+        PrReviewOutcomeDto: {
+            /** @description The receipt the command was recorded under. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description The review, read after any effect this call had. */
+            review: components["schemas"]["PrReviewDto"];
+        };
+        /** @description Every review one desk holds. */
+        PrReviewReportDto: {
+            /** @description The desk. */
+            desk_key: string;
+            /** @description Each pull request's review, oldest first. */
+            reviews: components["schemas"]["PrReviewDto"][];
+        };
+        /** @description One seat of a review, as Kontor records it now. */
+        PrReviewSeatDto: {
+            /** @description The native Kontor records as its current occupant. */
+            native_id?: string | null;
+            /**
+             * Format: int64
+             * @description The current occupancy generation.
+             */
+            occupancy_generation?: number | null;
+            /** @description The catalog role it holds. */
+            role_code: string;
+            /** @description The SeatBinding it is correlated by. */
+            seat_binding_id: string;
+            /** @description The seat's slot in its container. */
+            slot_id: string;
+            /** @description Its exact title. */
+            title: string;
+        };
         /** @description The result of judging an epic with the exact apply rules and no writes. */
         PreviewEpicDto: {
             /** @description Whether apply would create the epic or find it unchanged. */
@@ -9748,6 +9921,19 @@ export interface components {
             shareability: components["schemas"]["ShareabilityDto"];
             /** @description Its identity, revision and canonical hash. */
             spec: components["schemas"]["PinnedSpecDto"];
+        };
+        /**
+         * @description One pull request: its forge repository and its number. Both are its
+         *     identity; nothing about it is read from a title.
+         */
+        PullRequestRequest: {
+            /**
+             * Format: int64
+             * @description The pull request's number in that repository; positive.
+             */
+            number: number;
+            /** @description The forge repository, as exact `owner/name`. */
+            repository: string;
         };
         Purge: {
             by: string;
@@ -16065,6 +16251,144 @@ export interface operations {
                 content?: never;
             };
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_pr_reviews: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                desk_key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrReviewReportDto"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    close_pr_review: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                project_id: string;
+                desk_key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ClosePrReviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrReviewOutcomeDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    open_pr_review: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                project_id: string;
+                desk_key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpenPrReviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrReviewOutcomeDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
