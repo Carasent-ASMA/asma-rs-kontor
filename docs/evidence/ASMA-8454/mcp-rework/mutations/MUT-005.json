@@ -1,0 +1,22 @@
+{
+  "name": "MUT-005",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "pr_reviews::qualification::four_structures_restore_replay_and_selection_rollback_keep_old_pins_and_natives",
+    "--",
+    "--test-threads=2"
+  ],
+  "started_at": "2026-10-11T20:14:24.660831+00:00",
+  "exit": 101,
+  "log_sha256": "7dd69d6b896cf30287ff15d8537323160d69b15ad082e29c5585d5202bb23d57",
+  "test_summaries": [
+    "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 616 filtered out; finished in 2.32s"
+  ],
+  "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee"
+}

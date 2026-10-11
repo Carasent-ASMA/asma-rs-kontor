@@ -1,0 +1,31 @@
+475: fn owned_parent(path: &Path) -> io::Result<std::fs::File> {
+476:     use rustix::fs::{Mode, OFlags};
+477:     let parent = path
+478:         .parent()
+479:         .ok_or_else(|| io::Error::other("hosted file has no parent"))?;
+480:     let fd = rustix::fs::open(
+481:         parent,
+482:         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+483:         Mode::empty(),
+484:     )?;
+485:     Ok(std::fs::File::from(fd))
+486: }
+487: 
+488: fn replace_directory_file(temporary: &Path, destination: &Path) -> io::Result<()> {
+489:     #[cfg(unix)]
+490:     {
+491:         let source_parent = owned_parent(temporary)?;
+492:         let target_parent = owned_parent(destination)?;
+493:         rustix::fs::renameat(
+494:             &source_parent,
+495:             temporary.file_name().unwrap(),
+496:             &target_parent,
+497:             destination.file_name().unwrap(),
+498:         )?;
+499:         target_parent.sync_all()
+500:     }
+501:     #[cfg(not(unix))]
+502:     {
+503:         std::fs::rename(temporary, destination)
+504:     }
+505: }

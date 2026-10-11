@@ -1,0 +1,22 @@
+{
+  "name": "MUT-004-repository",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "pr_reviews::the_same_number_in_two_repositories_is_two_reviews_and_a_task_key_names_its_task",
+    "--",
+    "--test-threads=2"
+  ],
+  "started_at": "2026-10-11T20:10:49.409208+00:00",
+  "exit": 101,
+  "log_sha256": "2b1a47fc75f32025a1cd506d06f0257d8cc43d3182a4b1aee83113a25d109356",
+  "test_summaries": [
+    "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 616 filtered out; finished in 2.39s"
+  ],
+  "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee"
+}

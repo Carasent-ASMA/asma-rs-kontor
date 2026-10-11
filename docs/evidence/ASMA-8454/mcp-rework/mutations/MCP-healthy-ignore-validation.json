@@ -1,0 +1,20 @@
+{
+  "name": "MCP-healthy-ignore-validation",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "kontor-runtime-paseo",
+    "--test",
+    "contract",
+    "hosted_directory::"
+  ],
+  "started_at": "2026-10-11T20:20:20.809517+00:00",
+  "exit": 101,
+  "log_sha256": "65dd70baa64651fe44666ba44d8cadde13f01a0a7e4eb8c781692dff07092bb8",
+  "test_summaries": [
+    "test result: FAILED. 8 passed; 2 failed; 0 ignored; 0 measured; 306 filtered out; finished in 0.75s"
+  ],
+  "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee"
+}

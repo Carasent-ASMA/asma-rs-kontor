@@ -1,0 +1,22 @@
+{
+  "name": "MUT-004-close",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "pr_reviews::",
+    "--",
+    "--test-threads=2"
+  ],
+  "started_at": "2026-10-11T20:12:51.711434+00:00",
+  "exit": 101,
+  "log_sha256": "22f92b78d5b5c4b0f81f32d114b059a59ef9541451f576139dcb769cacff25fd",
+  "test_summaries": [
+    "test result: FAILED. 9 passed; 2 failed; 0 ignored; 0 measured; 606 filtered out; finished in 7.75s"
+  ],
+  "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee"
+}

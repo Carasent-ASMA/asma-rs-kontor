@@ -1,0 +1,7 @@
+{
+  "previous_carrier": "255d8c936759d1969427842d3919994d7b9dafee",
+  "manifest_sha256": "de0aa0346038c36cce171026bea3c7830ad6aa1371afa395c89933cd5b7851ab",
+  "all_members_byte_exact": true,
+  "member_count": 203,
+  "older_report_wording_correction": "authorized in this carrier; previous committed version retained in git; original TASK-005 report/runbook unchanged"
+}

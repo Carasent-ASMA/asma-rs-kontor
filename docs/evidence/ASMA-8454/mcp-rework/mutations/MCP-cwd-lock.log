@@ -1,0 +1,49 @@
+   Compiling kontor-runtime-paseo v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-runtime-paseo)
+warning: unused variable: `lock`
+    --> crates/kontor-runtime-paseo/src/seat_mcp.rs:1044:9
+     |
+1044 |     let lock = directory_lock(&cwd);
+     |         ^^^^ help: if this is intentional, prefix it with an underscore: `_lock`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `kontor-runtime-paseo` (lib test) generated 1 warning (run `cargo fix --lib -p kontor-runtime-paseo --tests` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.91s
+     Running unittests src/lib.rs (.qualification/target-carrier-archive/debug/deps/kontor_runtime_paseo-9a7a79f0433c9b08)
+
+running 15 tests
+test seat_mcp::directory_tests::a_parent_substituted_during_staging_cannot_redirect_publication_or_cleanup ... ok
+test seat_mcp::directory_tests::directory_relative_stage_and_replace_refuse_a_symlink_parent ... ok
+test seat_mcp::directory_tests::disabled_and_foreign_providers_do_not_publish_files ... ok
+test seat_mcp::directory_tests::ancestry_substitution_between_parent_validation_and_replace_is_refused ... ok
+test seat_mcp::directory_tests::hosted_directory_preserves_foreign_content_and_skips_identical_bytes ... ok
+test seat_mcp::directory_tests::hosted_directory_refuses_escaping_settings_mcp_and_journal_paths ... ok
+test seat_mcp::directory_tests::interruption_after_complete_pair_retains_it_and_requires_cleanup_before_use ... ok
+test seat_mcp::directory_tests::interruption_between_publications_restores_originals_before_next_subject ... ok
+test seat_mcp::directory_tests::invalid_second_json_is_refused_before_any_file_or_directory_change ... ok
+test seat_mcp::directory_tests::malformed_git_is_a_refusal_and_real_git_keeps_the_existing_exclude_behavior ... ok
+test seat_mcp::directory_tests::publication_child_process ... ok
+
+running 1 test
+test seat_mcp::directory_tests::real_process_exit_between_publications_recovers_originals_from_the_daemon_record ... ok
+test seat_mcp::directory_tests::rollback_failure_blocks_launch_with_precise_pending_recovery_then_converges ... ok
+test seat_mcp::directory_tests::two_subjects_serialize_on_canonical_cwd_and_keep_one_shared_nonsecret_surface ... FAILED
+test seat_mcp::directory_tests::handled_stage_publish_and_readback_failures_restore_exact_bytes_and_absence ... ok
+
+failures:
+
+---- seat_mcp::directory_tests::two_subjects_serialize_on_canonical_cwd_and_keep_one_shared_nonsecret_surface stdout ----
+
+thread '<unnamed>' (107081490) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:316:17:
+assertion failed: matches!(shared.try_lock(), Err(std::sync::TryLockError::WouldBlock))
+
+thread 'seat_mcp::directory_tests::two_subjects_serialize_on_canonical_cwd_and_keep_one_shared_nonsecret_surface' (107081489) panicked at crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs:326:23:
+called `Result::unwrap()` on an `Err` value: RecvError
+
+
+failures:
+    seat_mcp::directory_tests::two_subjects_serialize_on_canonical_cwd_and_keep_one_shared_nonsecret_surface
+
+test result: FAILED. 14 passed; 1 failed; 0 ignored; 0 measured; 131 filtered out; finished in 1.90s
+
+error: test failed, to rerun pass `-p kontor-runtime-paseo --lib`

@@ -1,0 +1,19 @@
+{
+  "name": "MCP-json-guard",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "kontor-runtime-paseo",
+    "--lib",
+    "seat_mcp::directory_tests::"
+  ],
+  "started_at": "2026-10-11T20:19:55.809221+00:00",
+  "exit": 101,
+  "log_sha256": "c47214885930f9b57cbc5430e6abb6ee36277c79e0a047086072f5dcfb5bd8f0",
+  "test_summaries": [
+    "test result: FAILED. 14 passed; 1 failed; 0 ignored; 0 measured; 131 filtered out; finished in 2.18s"
+  ],
+  "runtime_checkout_HEAD": "255d8c936759d1969427842d3919994d7b9dafee"
+}

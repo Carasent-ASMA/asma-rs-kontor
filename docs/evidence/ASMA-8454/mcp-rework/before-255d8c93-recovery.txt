@@ -1,0 +1,29 @@
+6165:         )?;
+6166: 
+6167:         // An exact native recovered after a lost acknowledgement still has to
+6168:         // reconcile the shared directory's pending publication before reload.
+6169:         if recovered_id.is_none()
+6170:             || matches!(
+6171:                 composition_mode,
+6172:                 crate::seat_mcp::HostedCompositionMode::OwnedDirectory
+6173:             )
+6174:         {
+6175:             crate::seat_mcp::compose_for_hosted_seat(
+6176:                 self.config.seat_mcp.as_ref(),
+6177:                 request.model_rung.provider.0.as_str(),
+6178:                 std::path::Path::new(request.cwd.as_str()),
+6179:                 composition_mode,
+6180:             )
+6181:             .map_err(|error| {
+6182:                 tracing::warn!(%error, "hosted seat MCP composition failed");
+6183:                 RuntimeError::LaunchNotAdmitted {
+6184:                     rule: crate::seat_mcp::hosted_composition_refusal(&error),
+6185:                 }
+6186:             })?;
+6187:         }
+6188:         let (native_id, created) = match recovered_id {
+6189:             Some(native_id) => (native_id, false),
+6190:             None => {
+6191:                 let mut creation = PaseoRpc::hosted_seat_agent_create(
+6192:                     self.next_request_id(),
+6193:                     &workspace_id,

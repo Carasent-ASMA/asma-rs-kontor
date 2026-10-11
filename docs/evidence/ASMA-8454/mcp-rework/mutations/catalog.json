@@ -1,0 +1,291 @@
+[
+  {
+    "id": "MUT-001",
+    "file": "crates/kontor-daemon/src/applications.rs",
+    "before": "    fn ensure_desk(\n        &self,\n        project_id: ProjectId,\n        desk_key: &DeskKey,\n    ) -> Result<SessionTopologyNode, ApiError> {\n        let _native_activity = self.native_activity()?;\n        let state = self.state()?;\n",
+    "after": "    fn ensure_desk(\n        &self,\n        project_id: ProjectId,\n        desk_key: &DeskKey,\n    ) -> Result<SessionTopologyNode, ApiError> {\n        let _native_activity = self.native_activity()?;\n        let state = self.state()?;\n        if state.with_store(|store| store.list_mini_projects(project_id))\n            .map_err(|error| self.refuse(&error))?.is_empty() {\n            return Err(self.deny(ApiErrorCode::PlacementBlocked, \"mutant requires an epic for a desk\"));\n        }\n",
+    "suite": "durable_desks::",
+    "claim": "An epic prerequisite prevents independent desk materialization"
+  },
+  {
+    "id": "MUT-002-busy",
+    "file": "crates/kontor-core/src/durable_seat.rs",
+    "before": "        (DurableSeatStatus::Missing, _) => DurableSeatDecision::Launch,",
+    "after": "        (DurableSeatStatus::Missing, _) => DurableSeatDecision::Launch,\n        (DurableSeatStatus::Busy, _) => DurableSeatDecision::Launch,",
+    "suite": "durable_seats::a_seat_that_is_not_proved_missing_is_never_restarted",
+    "claim": "Busy becomes authority to launch"
+  },
+  {
+    "id": "MUT-002-unchecked",
+    "file": "crates/kontor-core/src/durable_seat.rs",
+    "before": "        (DurableSeatStatus::Missing, _) => DurableSeatDecision::Launch,",
+    "after": "        (DurableSeatStatus::Missing, _) => DurableSeatDecision::Launch,\n        (DurableSeatStatus::Unchecked, _) => DurableSeatDecision::Launch,",
+    "suite": "durable_seats::a_seat_that_is_not_proved_missing_is_never_restarted",
+    "claim": "Unchecked becomes authority to launch"
+  },
+  {
+    "id": "MUT-002-replay",
+    "file": "crates/kontor-daemon/src/applications/durable_seats.rs",
+    "before": "            let decision = if replayed {",
+    "after": "            let decision = if false && replayed {",
+    "suite": "durable_seats::a_missing_daemon_seat_launches_once_and_a_replay_never_launches_again",
+    "claim": "A recorded launch is re-executed after its native vanishes"
+  },
+  {
+    "id": "MUT-003-host",
+    "file": "crates/kontor-daemon/src/applications.rs",
+    "before": "            (Some(epic_id), _) => nodes\n                .into_iter()\n                .filter(|node| node.mini_project_id == Some(epic_id))\n                .collect(),",
+    "after": "            (Some(epic_id), _) => nodes\n                .into_iter()\n                .filter(|node| node.mini_project_id == Some(epic_id) || node.kind.as_str() == \"ADE\")\n                .collect(),",
+    "suite": "desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk",
+    "claim": "All Adam subjects on the shared host answer an epic-control lookup"
+  },
+  {
+    "id": "MUT-003-authority",
+    "file": "crates/kontor-daemon/src/applications.rs",
+    "before": "        Ok(self\n            .state()?\n            .with_store(|store| store.list_seat_bindings(project_id, control.id))\n            .map_err(|error| self.refuse(&error))?\n            .into_iter()\n            .filter(|seat| {\n                seat.role.role_code.as_str() == role_code\n                    && seat.lifecycle != TopologyLifecycle::Retired\n            })\n            .map(|seat| seat.id)\n            .collect())",
+    "after": "        let host = control.parent_id.unwrap_or(control.id);\n        Ok(self.state()?.with_store(|store| {\n            let nodes = store.list_project_topology_nodes(project_id)?;\n            let mut seats = Vec::new();\n            for node in nodes.into_iter().filter(|node| node.id == host || node.parent_id == Some(host)) {\n                seats.extend(store.list_seat_bindings(project_id, node.id)?);\n            }\n            Ok::<_, RepositoryError>(seats)\n        }).map_err(|error| self.refuse(&error))?.into_iter()\n            .filter(|seat| seat.lifecycle != TopologyLifecycle::Retired)\n            .map(|seat| seat.id).collect())",
+    "suite": "desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk",
+    "claim": "Completion control authority accepts any active seat in the shared desk, including its durable seat and sibling subjects, regardless of role"
+  },
+  {
+    "id": "MUT-003-ecp",
+    "file": "crates/kontor-daemon/src/applications/desk_adams.rs",
+    "before": "            Some(led) => led.leadership.epic_kind,",
+    "after": "            Some(_led) => self.domain.delivery.control_kind.clone(),",
+    "suite": "desk_adams::a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk",
+    "claim": "The control resolver always requires historical ECP"
+  },
+  {
+    "id": "MUT-004-repository",
+    "file": "crates/kontor-store/src/repository/pr_reviews.rs",
+    "before": "                       AND repository = ?3 AND pull_request_number = ?4",
+    "after": "                       AND pull_request_number = ?4",
+    "suite": "pr_reviews::the_same_number_in_two_repositories_is_two_reviews_and_a_task_key_names_its_task",
+    "claim": "Repository is dropped from PR lookup identity"
+  },
+  {
+    "id": "MUT-004-close",
+    "file": "crates/kontor-daemon/src/applications/pr_reviews.rs",
+    "before": "    pub(super) async fn close_pr_review_subject(\n        &self,\n        key: &IdempotencyKey,\n        project_id: ProjectId,\n        desk_key: &DeskKey,\n        request: &ClosePrReviewRequest,\n    ) -> Result<PrReviewOutcomeDto, ApiError> {\n        let state = self.state()?;\n        let pull_request = self.pull_request(&request.pull_request)?;\n        let project = self.project_at(project_id, request.expected_revision)?;\n        let intent = self.intent(&serde_json::json!({\n            \"schema_version\": 1,\n            \"operation\": \"close_pr_review\",\n            \"project\": project_id.to_string(),\n            \"desk\": desk_key.as_str(),\n            \"repository\": pull_request.repository().as_str(),\n            \"number\": pull_request.number(),\n        }))?;\n        let target = AggregateRef::Project { project_id };\n        let _held = self.pr_review_guard.lock().await;\n        let replayed = self.replayed(key, &intent, Some(&target))?.is_some();\n        let subject = self.stored_pr_review(project_id, desk_key, &pull_request)?;\n        if !replayed {\n            let mut seats = Vec::new();\n            for node_id in [subject.adam_node_id, subject.room_node_id] {",
+    "after": "    pub(super) async fn close_pr_review_subject(\n        &self,\n        key: &IdempotencyKey,\n        project_id: ProjectId,\n        desk_key: &DeskKey,\n        request: &ClosePrReviewRequest,\n    ) -> Result<PrReviewOutcomeDto, ApiError> {\n        let state = self.state()?;\n        let pull_request = self.pull_request(&request.pull_request)?;\n        let project = self.project_at(project_id, request.expected_revision)?;\n        let intent = self.intent(&serde_json::json!({\n            \"schema_version\": 1,\n            \"operation\": \"close_pr_review\",\n            \"project\": project_id.to_string(),\n            \"desk\": desk_key.as_str(),\n            \"repository\": pull_request.repository().as_str(),\n            \"number\": pull_request.number(),\n        }))?;\n        let target = AggregateRef::Project { project_id };\n        let _held = self.pr_review_guard.lock().await;\n        let replayed = self.replayed(key, &intent, Some(&target))?.is_some();\n        let subject = self.stored_pr_review(project_id, desk_key, &pull_request)?;\n        if !replayed {\n            let mut seats = Vec::new();\n            for node_id in state.with_store(|store| store.list_project_topology_nodes(project_id))\n                .map_err(|error| self.refuse(&error))?.into_iter().map(|node| node.id) {",
+    "suite": "pr_reviews::",
+    "claim": "Closing one PR enumerates every desk and sibling subject seat"
+  },
+  {
+    "id": "MUT-005",
+    "file": "crates/kontor-store/src/repository.rs",
+    "before": "    fn get_mini_project_team_definition(\n        &self,\n        project_id: ProjectId,\n        mini_project_id: MiniProjectId,\n    ) -> RepositoryResult<Option<MiniProjectTeamDefinitionSnapshot>> {\n        let found: Option<(String, i64, String, String)> = self\n            .connection\n            .query_row(\n                \"SELECT definition_id, version, canonical_hash, pinned_at\n                 FROM mini_project_team_definition_snapshots\n                 WHERE project_id = ?1 AND mini_project_id = ?2\",\n                params![project_id.to_string(), mini_project_id.to_string()],\n                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),\n            )\n            .optional()\n            .map_err(backend)?;\n        found\n            .map(|(definition_id, version, hash, pinned_at)| {\n                Ok(MiniProjectTeamDefinitionSnapshot {\n                    project_id,\n                    mini_project_id,\n                    definition: TeamDefinitionSnapshot {\n                        definition_id: TeamDefinitionId::parse(&definition_id)?,\n                        version: read_version(version)?,\n                        canonical_hash: ContentHash::parse(&hash)?,\n                    },\n                    pinned_at: read_timestamp(&pinned_at)?,\n                })\n            })\n            .transpose()\n    }\n",
+    "after": "    fn get_mini_project_team_definition(\n        &self,\n        project_id: ProjectId,\n        mini_project_id: MiniProjectId,\n    ) -> RepositoryResult<Option<MiniProjectTeamDefinitionSnapshot>> {\n        let found: Option<(String, i64, String, String)> = self\n            .connection\n            .query_row(\n                \"SELECT definition_id, version, canonical_hash, pinned_at\n                 FROM mini_project_team_definition_snapshots\n                 WHERE project_id = ?1 AND mini_project_id = ?2\",\n                params![project_id.to_string(), mini_project_id.to_string()],\n                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),\n            )\n            .optional()\n            .map_err(backend)?;\n        found\n            .map(|(definition_id, version, hash, pinned_at)| {\n                Ok(MiniProjectTeamDefinitionSnapshot {\n                    project_id,\n                    mini_project_id,\n                    definition: self.get_project_team_definition_default(project_id)?\n                        .map(|selected| selected.definition).unwrap_or(TeamDefinitionSnapshot {\n                        definition_id: TeamDefinitionId::parse(&definition_id)?,\n                        version: read_version(version)?,\n                        canonical_hash: ContentHash::parse(&hash)?,\n                    }),\n                    pinned_at: read_timestamp(&pinned_at)?,\n                })\n            })\n            .transpose()\n    }\n",
+    "suite": "pr_reviews::qualification::four_structures_restore_replay_and_selection_rollback_keep_old_pins_and_natives",
+    "claim": "An existing epic reads the project successor instead of its own frozen pin"
+  },
+  {
+    "id": "MUT-Q-CLI",
+    "file": "crates/kontor-cli/src/output.rs",
+    "before": "\"unauthenticated\" | \"forbidden\" | \"placement_blocked\"",
+    "after": "\"unauthenticated\" | \"forbidden\"",
+    "suite": "desk_ensure_and_undeclared_refusal_match_http_mcp_and_cli",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kontor-cli",
+      "--test",
+      "durable_desk_parity",
+      "--",
+      "--nocapture"
+    ],
+    "claim": "placement_blocked falls through to protocol exit 1 while the refusal body remains identical"
+  },
+  {
+    "id": "MUT-Q-ATOMIC",
+    "file": "crates/kontor-store/src/repository/desks.rs",
+    "before": "        let transaction = self.begin()?;\n        create_desk_in(&transaction, desk)?;\n        let definition = self",
+    "after": "        self.create_desk(desk)?;\n        let transaction = self.begin()?;\n        let definition = self",
+    "suite": "pr_reviews::qualification::a_new_desk_under_a_parent_that_already_knows_an_older_desk_kind_refuses_without_effects",
+    "claim": "Commit the successor reservation before node validation, leaving a desk row after revision_conflict"
+  },
+  {
+    "id": "MCP-eligible",
+    "file": "crates/kontor-runtime-paseo/src/adapter.rs",
+    "before": "=> crate::seat_mcp::HostedCompositionMode::OwnedDirectory,",
+    "after": "=> crate::seat_mcp::HostedCompositionMode::Worktree,",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-runtime-paseo",
+      "--test",
+      "contract",
+      "hosted_directory::"
+    ],
+    "claim": "Recreate the escaped non-Git Claude refusal"
+  },
+  {
+    "id": "MCP-recovered",
+    "file": "crates/kontor-runtime-paseo/src/adapter.rs",
+    "before": "            || (pre_thread_reload\n                && matches!(\n                    composition_mode,\n                    crate::seat_mcp::HostedCompositionMode::OwnedDirectory\n                ))",
+    "after": "",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-runtime-paseo",
+      "--test",
+      "contract",
+      "hosted_directory::"
+    ],
+    "claim": "Bypass pending publication before exact-native reload"
+  },
+  {
+    "id": "MCP-ignore-refusal",
+    "file": "crates/kontor-runtime-paseo/src/adapter.rs",
+    "before": "        composition.map_err(|error| {\n            tracing::warn!(%error, \"hosted seat MCP composition failed\");\n            RuntimeError::LaunchNotAdmitted {\n                rule: crate::seat_mcp::hosted_composition_refusal(&error),\n            }\n        })?;\n",
+    "after": "        let _ = composition.map_err(|error| {\n            tracing::warn!(%error, \"hosted seat MCP composition failed\");\n            RuntimeError::LaunchNotAdmitted {\n                rule: crate::seat_mcp::hosted_composition_refusal(&error),\n            }\n        });\n",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-runtime-paseo",
+      "--test",
+      "contract",
+      "hosted_directory::"
+    ],
+    "claim": "Ignore incomplete composition and create a native"
+  },
+  {
+    "id": "MCP-write",
+    "file": "crates/kontor-runtime-paseo/src/seat_mcp.rs",
+    "before": "fn compose_hosted_directory(\n    seat: &SeatMcp,\n    provider: &str,\n    cwd: &Path,\n    fault: &mut impl FnMut(PublicationStep) -> io::Result<()>,\n) -> io::Result<()> {\n    let cwd = std::fs::canonicalize(cwd)?;\n",
+    "after": "fn compose_hosted_directory(\n    seat: &SeatMcp,\n    provider: &str,\n    cwd: &Path,\n    fault: &mut impl FnMut(PublicationStep) -> io::Result<()>,\n) -> io::Result<()> {\n    if !cwd.as_os_str().is_empty() { return Ok(()); }\n    let cwd = std::fs::canonicalize(cwd)?;\n",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-runtime-paseo",
+      "--lib",
+      "seat_mcp::directory_tests::"
+    ],
+    "claim": "Skip the directory publication"
+  },
+  {
+    "id": "MCP-journal",
+    "file": "crates/kontor-runtime-paseo/src/seat_mcp.rs",
+    "before": "    recover_directory_publication(&mut fs, &record, &cwd, fault)?;\n    if crate::client::built_in_provider(provider) != \"claude\"",
+    "after": "    if crate::client::built_in_provider(provider) != \"claude\"",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-runtime-paseo",
+      "--lib",
+      "seat_mcp::directory_tests::"
+    ],
+    "claim": "Ignore interrupted pair originals on next route/subject"
+  },
+  {
+    "id": "MCP-rollback",
+    "file": "crates/kontor-runtime-paseo/src/seat_mcp.rs",
+    "before": "publication\n            .rollback(&mut fs, fault)\n            .and_then",
+    "after": "publication\n            .verify_current(&mut fs)\n            .and_then",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-runtime-paseo",
+      "--lib",
+      "seat_mcp::directory_tests::"
+    ],
+    "claim": "Delete journal/temps without restoring the prior bytes"
+  },
+  {
+    "id": "MCP-cwd-lock",
+    "file": "crates/kontor-runtime-paseo/src/seat_mcp.rs",
+    "before": "    // A caught interruption may poison this process's lock; the persisted\n    // record, rather than in-memory state, decides whether publication is safe.\n    let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());",
+    "after": "    let _guard = ();",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-runtime-paseo",
+      "--lib",
+      "seat_mcp::directory_tests::"
+    ],
+    "claim": "Allow two subjects to publish concurrently in the same canonical cwd"
+  },
+  {
+    "id": "MCP-json-guard",
+    "file": "crates/kontor-runtime-paseo/src/seat_mcp.rs",
+    "before": "                return Err(io::Error::new(\n                    io::ErrorKind::InvalidData,\n                    \"hosted configuration must be a JSON object\",\n                ));",
+    "after": "                return Ok(b\"{}\\n\".to_vec());",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-runtime-paseo",
+      "--lib",
+      "seat_mcp::directory_tests::"
+    ],
+    "claim": "Accept malformed second JSON and publish an empty object"
+  },
+  {
+    "id": "MCP-B1-path-reopen",
+    "file": "crates/kontor-runtime-paseo/src/seat_mcp.rs",
+    "before": "        let parent = self.directory(destination.parent().unwrap())?;\n        // Deterministic seam at the old source-open/target-open interval.\n        fault(PublicationStep::ReplaceValidated)?;\n        parent.verify()?;\n        #[cfg(unix)]\n        rustix::fs::renameat(\n            parent.fd(),\n            temporary.file_name().unwrap(),\n            parent.fd(),\n            destination.file_name().unwrap(),\n        )?;\n        #[cfg(not(unix))]\n        std::fs::rename(temporary, destination)?;\n",
+    "after": "        let parent = self.directory(destination.parent().unwrap())?;\n        let source = std::fs::File::from(rustix::fs::open(temporary.parent().unwrap(), rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::NOFOLLOW, rustix::fs::Mode::empty())?);\n        fault(PublicationStep::ReplaceValidated)?;\n        let target = std::fs::File::from(rustix::fs::open(destination.parent().unwrap(), rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::NOFOLLOW, rustix::fs::Mode::empty())?);\n        rustix::fs::renameat(&source, temporary.file_name().unwrap(), &target, destination.file_name().unwrap())?;\n",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-runtime-paseo",
+      "--lib",
+      "seat_mcp::directory_tests::ancestry_substitution_between_parent_validation_and_replace_is_refused"
+    ],
+    "claim": "Recreate AUD B1: reopen separate parents by pathname across deterministic ancestry substitution; foreign destination changes"
+  },
+  {
+    "id": "MCP-healthy-publish",
+    "file": "crates/kontor-runtime-paseo/src/adapter.rs",
+    "before": "            crate::seat_mcp::validate_recovered_hosted_directory(\n                self.config.seat_mcp.as_ref(),\n                request.model_rung.provider.0.as_str(),\n                std::path::Path::new(request.cwd.as_str()),\n            )\n",
+    "after": "            crate::seat_mcp::compose_for_hosted_seat(\n                self.config.seat_mcp.as_ref(),\n                request.model_rung.provider.0.as_str(),\n                std::path::Path::new(request.cwd.as_str()),\n                composition_mode,\n            )\n",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-runtime-paseo",
+      "--test",
+      "contract",
+      "hosted_directory::"
+    ],
+    "claim": "Republish missing/different files on healthy exact-native replay"
+  },
+  {
+    "id": "MCP-healthy-ignore-validation",
+    "file": "crates/kontor-runtime-paseo/src/seat_mcp.rs",
+    "before": "pub(crate) fn validate_recovered_hosted_directory(\n    seat: Option<&SeatMcp>,\n    provider: &str,\n    cwd: &Path,\n) -> io::Result<()> {",
+    "after": "pub(crate) fn validate_recovered_hosted_directory(\n    seat: Option<&SeatMcp>,\n    provider: &str,\n    cwd: &Path,\n) -> io::Result<()> {\n    if !cwd.as_os_str().is_empty() { return Ok(()); }",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "kontor-runtime-paseo",
+      "--test",
+      "contract",
+      "hosted_directory::"
+    ],
+    "claim": "Skip pending recovery and read-only validation for healthy exact natives"
+  }
+]

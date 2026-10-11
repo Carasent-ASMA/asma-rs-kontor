@@ -1,11 +1,13 @@
 # ASMA-8454 hosted desk MCP composition repair candidate
 
 > **Date:** 2026-10-11 21:25 +0200
-> **Status:** 🟡 Frozen repair candidate — coordinator review and released re-proof pending
+> **Status:** Historical carrier — AUD B1 rejected at 255d8c93; newer rework and released re-proof pending
 > **Author:** Codex — ASMA-8454 qualification owner and authorized repair implementer
 > **Category:** report
 > **Scope:** ASMA-8449 TASK-005; verified hosted-directory composition; Paseo-direct
 > **Summary:** Repairs enabled Claude leadership MCP composition in a proved non-Git desk directory. This dated report records the source, filesystem publication/recovery tests and whole-change mutations supplied to QA, AUD and the completion committee; it does not resolve released acceptance.
+
+See the [new rework record](2026-10-11-22-03-report-asma-8454-desk-mcp-rework.md) for AUD B1, healthy-native narrowing and the newer source. This record retains the original source and test history; its credential wording is corrected below.
 
 ## When to Load
 
@@ -37,7 +39,7 @@ At `adapter.rs:6099`, the existing container correlation, generation, root and h
 
 The explicit mode and dispatch are at `seat_mcp.rs:343` / `:348`. The directory path canonicalizes cwd and holds one shared lock across adapter instances and subjects (`:426`, `:839`). A genuine Git worktree delegates to the original composer. A fallback is allowed only for a genuine non-repository; a broken repository, Git operational failure or wrong placement refuses (`:585`). Delivery, consultation and planning-pair callers retain the existing Git requirement. The shared JSON entry content is reused, and global `merge_json` remains unchanged.
 
-Both settings and MCP objects are read, validated and rendered before creating `.claude` or modifying destination files (`:562`, `:839`). Unrelated JSON survives. The daemon-owned `hosted-directory-publications/<canonical-cwd-hash>.json` record contains version, canonical cwd, attempt id, exact originals/absence and rendered bytes (`:396`, `:785`). It is synced before destination changes. No SeatBinding token or scoped secret is an input to this renderer or record; shared files contain the common leadership endpoint/profile and authority remains in each binding and creation secret channel.
+Both settings and MCP objects are read, validated and rendered before creating `.claude` or modifying destination files (`:562`, `:839`). Unrelated JSON survives. The daemon-owned `hosted-directory-publications/<canonical-cwd-hash>.json` record contains version, canonical cwd, attempt id, exact originals/absence and rendered bytes (`:396`, `:785`). It is synced before destination changes. No new seat credential is written. Unrelated pre-existing JSON bytes, including any secrets already present there, are preserved and may be copied into the private publication journal. The new SeatBinding credential remains in the creation secret channel; authority remains in each binding.
 
 Changed bytes are staged beside each destination, synced, then atomically replaced per file: settings first, `.mcp.json` last. Identical bytes are skipped. Complete file readback precedes native create/reload. Unix opens and mutations use directory-relative operations with `NOFOLLOW` and owner-only new files; symlink/nonregular configuration paths refuse (`:436`, `:475`, `:488`, `:631`). This phase qualifies that path on macOS; it does not claim Windows qualification.
 
@@ -88,8 +90,8 @@ cargo test --locked -p kontor-daemon --test loopback_api pr_reviews:: -- --test-
 | Complete pair, pending cleanup | Fail record cleanup after complete readback | Pair retained, launch refused until record cleanup; retry keeps identical bytes | `interruption_after_complete_pair_retains_it_and_requires_cleanup_before_use` |
 | Adapter launch barrier | Invalid JSON or externally edited pending pair | Zero native create; preserve foreign bytes and pending journal | `enabled_claude_directory_refuses_invalid_configuration_and_incomplete_publication_without_create` |
 | Lost acknowledgement/reload | Create response lost; recovered native lacks initialized session; pending pair plus external edit | One create total; zero reload while incomplete; same-native retry reconciles then reloads once | `enabled_claude_directory_lost_ack_recovers_same_native_and_reconciles_before_reload` |
-| Cross-subject serialization | Two subjects, canonical cwd alias, controlled blocking | Second cannot compose until first finishes; one shared nonsecret surface | `two_subjects_serialize_on_canonical_cwd_and_keep_one_shared_nonsecret_surface` |
-| Isolation and lifecycle | Two bindings/credentials/subjects in one workspace; missing predecessor; fenced cross-vendor replacement; account-qualified route | Separate native/binding authority, common files, no epic ledger/secret on disk | `enabled_claude_directory_launch_replacement_and_subjects_keep_distinct_authority`; `enabled_directory_cross_vendor_replacement_and_route_correction_keep_shared_files` |
+| Cross-subject serialization | Two subjects, canonical cwd alias, controlled blocking | Second cannot compose until first finishes; one shared configuration without a new seat credential | `two_subjects_serialize_on_canonical_cwd_and_keep_one_shared_nonsecret_surface` |
+| Isolation and lifecycle | Two bindings/credentials/subjects in one workspace; missing predecessor; fenced cross-vendor replacement; account-qualified route | Separate native/binding authority, common files, no new seat credential written | `enabled_claude_directory_launch_replacement_and_subjects_keep_distinct_authority`; `enabled_directory_cross_vendor_replacement_and_route_correction_keep_shared_files` |
 | Containment | Symlink config/journal, substituted parent during staging, directory-relative write | Foreign directory unchanged; incomplete journal retained when necessary | Three Unix containment tests |
 | Metadata-only operations | Malformed shared files during retitle/claim/restore | Exact retained identity/scope and files untouched | Three adapter metadata regression tests |
 | Existing Git/provider behavior | Broken Git marker, real Git repeat, disabled/foreign provider | Git errors refuse; exclude idempotence/clean status; no foreign provider publication | Existing composer tests plus two directory regression tests |
