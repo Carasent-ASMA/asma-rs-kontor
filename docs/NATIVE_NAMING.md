@@ -400,6 +400,35 @@ the separator of the Team Definition revision the desk pinned:
 Declaring, reporting and reconciling these seats is described in
 [Durable desk seats in kontord](../_docs/reference/2026-10-11-02-20-reference-kontord-durable-desk-seats.md).
 
+## Desk Adams (ASMA-8452)
+
+A Team Definition that declares `desk_leadership` leads its epics from a desk:
+each epic, and each ad-hoc topic, gets a subject node directly below the
+desk's workspace, and its leadership sessions run in that workspace's native
+container. The subject kinds own no container (`parent_session_host` only), so
+they name seats, not natives:
+
+| Seat | Template | Example |
+| --- | --- | --- |
+| planning | `ROLE_CODE`, `EPIC_JIRA_KEY`, `TOPIC` | `LSA • ASMA-8449 • kontord durable desks` |
+| coordinating | `ROLE_CODE`, `EPIC_JIRA_KEY`, `TOPIC` | `TPM • ASMA-8449 • kontord durable desks` |
+| ad-hoc | `ROLE_CODE`, literal `ADHOC`, `TOPIC` | `LSA • ADHOC • Release triage` |
+
+- `TOPIC` renders the subject's frozen topic. For an epic it is the epic's
+  Kontor `name` at the moment the subject was created. A later rename never
+  retitles a running or future Adam of that subject.
+- A topic containing `•` or `·` is refused (`invalid_request`) before
+  anything is written, so a name cannot forge a title segment. An empty or
+  over-long name is refused by the name contract itself.
+- An ad-hoc subject's template cannot render `EPIC_JIRA_KEY`; validation
+  refuses one that tries.
+- The epic and ad-hoc subjects are distinct kinds whose parent is the declared
+  desk's workspace kind. A definition without `desk_leadership` keeps its exact
+  bytes and hash.
+
+The operations, handoff and support limits are in
+[Desk Adams in kontord](../_docs/reference/2026-10-11-05-36-reference-kontord-desk-adams.md).
+
 ## Publication and migration
 
 - Validate and publish immutable revisions with
