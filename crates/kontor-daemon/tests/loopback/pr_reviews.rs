@@ -1271,6 +1271,278 @@ async fn a_definition_without_pr_review_places_nothing() {
     assert_eq!(calls_since(&realm, before), Vec::new());
 }
 
+/// One way a review's proved native placement is later found wrong.
+#[derive(Clone, Copy, Debug)]
+enum Misplaced {
+    /// The room's native workspace now works in another directory.
+    RoomCwd,
+    /// Another native workspace now occupies the room's node.
+    RoomNative,
+    /// The room's native workspace no longer sits below the desk's project.
+    RoomParent,
+    /// The desk workspace the Adam runs in now works in another directory.
+    DeskWorkspaceCwd,
+}
+
+/// Misplace one review's native placement in the runtime, and return the
+/// drift that puts it back. A lost parent cannot be put back.
+fn misplace(
+    realm: &Review,
+    desk: &StoredDesk,
+    room: TopologyNodeId,
+    how: Misplaced,
+) -> Option<(TopologyNodeId, kontor_runtime::fake::FakeContainerDrift)> {
+    use kontor_runtime::container::{ContainerBindingId, ContainerWorkspaceKind};
+    use kontor_runtime::fake::FakeContainerDrift;
+    use kontor_runtime::workspace::WorkspaceRoot;
+    let fake = &realm.world.fake;
+    let root = |node| {
+        let bound = container(realm, node);
+        WorkspaceRoot::parse(bound.canonical_cwd.expect("a cwd").as_str()).expect("a root")
+    };
+    match how {
+        Misplaced::RoomCwd => {
+            let restore = FakeContainerDrift::Root(root(room));
+            fake.drift_container(
+                room,
+                FakeContainerDrift::Root(
+                    WorkspaceRoot::parse("/tmp/prr-drifted-room").expect("a root"),
+                ),
+            );
+            Some((room, restore))
+        }
+        Misplaced::RoomNative => {
+            let restore = FakeContainerDrift::NativeId(container(realm, room).identity.native_id);
+            fake.drift_container(
+                room,
+                FakeContainerDrift::NativeId(
+                    ExternalId::parse("native-replaced-room").expect("an id"),
+                ),
+            );
+            Some((room, restore))
+        }
+        Misplaced::RoomParent => {
+            // The same native, directory, title and shape, with no parent: the
+            // runtime's room is no longer below the desk's project.
+            let bound = container(realm, room);
+            let title = fake.container_title(room).expect("the room has a title");
+            fake.forget_container(room);
+            fake.seed_container(
+                room,
+                ContainerBindingId::parse(bound.container_binding_id.as_str()).expect("an id"),
+                bound.identity.native_id.clone(),
+                root(room),
+                &title,
+                bound.bound_at,
+            );
+            fake.seed_container_kind(room, ContainerWorkspaceKind::Directory);
+            None
+        }
+        Misplaced::DeskWorkspaceCwd => {
+            let restore = FakeContainerDrift::Root(root(desk.workspace_node_id));
+            fake.drift_container(
+                desk.workspace_node_id,
+                FakeContainerDrift::Root(
+                    WorkspaceRoot::parse("/tmp/prr-drifted-desk-workspace").expect("a root"),
+                ),
+            );
+            Some((desk.workspace_node_id, restore))
+        }
+    }
+}
+
+/// A review whose room or desk workspace no longer proves is refused whole:
+/// an open launches nothing and rebinds nothing, and a close fences nothing,
+/// not even the Adam's session in a workspace that still proves.
+#[tokio::test]
+async fn a_misplaced_room_or_desk_workspace_refuses_open_and_close_before_any_effect() {
+    const STALE: &str = "the binding no longer names a session this runtime will act on";
+    const MOVED: &str = "this topology node already has a native container at another root";
+    const ORPHANED: &str = "the inspected container does not have its exact persisted parent";
+    for (case, how, reopen, close_refusal) in [
+        (
+            "room-cwd",
+            Misplaced::RoomCwd,
+            (422, "unsupported_capability", MOVED),
+            (409, "stale_binding", STALE),
+        ),
+        (
+            "room-native",
+            Misplaced::RoomNative,
+            (409, "stale_binding", STALE),
+            (409, "stale_binding", STALE),
+        ),
+        (
+            "room-parent",
+            Misplaced::RoomParent,
+            (422, "unsupported_capability", ORPHANED),
+            (422, "unsupported_capability", ORPHANED),
+        ),
+        (
+            "desk-cwd",
+            Misplaced::DeskWorkspaceCwd,
+            (422, "unsupported_capability", MOVED),
+            (409, "stale_binding", STALE),
+        ),
+    ] {
+        let realm = review_realm(&format!("prr-{case}"), Some(PR_REVIEW)).await;
+        let body = open_body(&realm.epic_key, MODULE_REPOSITORY, 101, Some(routes()));
+        let first = opened(&realm, &body, &format!("prr-{case}-open")).await;
+        let desk = pr_desk(&realm).expect("the PR desk exists");
+        let room = node_id(&first["room"]["topology_node_id"]);
+        let seats: Vec<SeatBindingId> = review_seats(&first)
+            .iter()
+            .map(|seat| seat_id(&seat["seat_binding_id"]))
+            .collect();
+        let held = |realm: &Review| {
+            (
+                // What a binding places, not when it was last read back: a
+                // healthy container proved on the way refreshes only that.
+                [desk.topology_node_id, desk.workspace_node_id, room].map(|node| {
+                    let bound = container(realm, node);
+                    (
+                        bound.container_binding_id,
+                        bound.identity,
+                        bound.canonical_cwd,
+                        bound.readback,
+                        bound.bound_at,
+                    )
+                }),
+                seats
+                    .iter()
+                    .map(|seat| (seat_row(realm, *seat), hosted(realm, *seat)))
+                    .collect::<Vec<_>>(),
+                subjects(realm),
+            )
+        };
+        let snapshot = held(&realm);
+        let restore = misplace(&realm, &desk, room, how);
+
+        let before = realm.world.fake.calls().len();
+        let reopen_key = format!("prr-{case}-reopen");
+        let refused = open(&realm, &body, &reopen_key).await;
+        let (status, code, rule) = reopen;
+        assert_eq!(refused.status, status, "{case}: {}", refused.body);
+        assert_eq!(refused.json()["code"], code, "{case}: {}", refused.body);
+        assert_eq!(refused.json()["rule"], rule, "{case}: {}", refused.body);
+        let close_key = format!("prr-{case}-close");
+        let refused = close(&realm, MODULE_REPOSITORY, 101, &close_key).await;
+        let (status, code, rule) = close_refusal;
+        assert_eq!(refused.status, status, "{case}: {}", refused.body);
+        assert_eq!(refused.json()["code"], code, "{case}: {}", refused.body);
+        assert_eq!(refused.json()["rule"], rule, "{case}: {}", refused.body);
+        let calls = calls_since(&realm, before);
+        assert_eq!(launches(&calls), Vec::new(), "{case}: {calls:?}");
+        assert_eq!(retirements(&calls), Vec::new(), "{case}: {calls:?}");
+        assert_eq!(held(&realm), snapshot, "{case}");
+
+        // Put back, the refused keys recorded nothing: the reopen finds the
+        // same sessions, and the close fences exactly this review's four.
+        let Some((node, drift)) = restore else {
+            continue;
+        };
+        realm.world.fake.drift_container(node, drift);
+        let before = realm.world.fake.calls().len();
+        let reopened = opened(&realm, &body, &reopen_key).await;
+        assert_eq!(seat_natives(&reopened), seat_natives(&first), "{case}");
+        assert_eq!(launches(&calls_since(&realm, before)), Vec::new(), "{case}");
+        let closed = close(&realm, MODULE_REPOSITORY, 101, &close_key).await;
+        assert_eq!(closed.status, 200, "{case}: {}", closed.body);
+        let mut retired = retirements(&calls_since(&realm, before));
+        retired.sort();
+        let mut expected = seats.clone();
+        expected.sort();
+        assert_eq!(retired, expected, "{case}");
+    }
+}
+
+/// A seat whose launch may have created its session and lost the answer
+/// refuses a close before any session is fenced, including the review's
+/// other, confirmed one; retrying the open recovers it, and the same close
+/// then fences them all.
+#[tokio::test]
+async fn a_launch_that_lost_its_answer_refuses_close_before_anything_is_fenced() {
+    let realm = review_realm("prr-lost-ack", Some(PR_REVIEW)).await;
+    let body = open_body(&realm.epic_key, MODULE_REPOSITORY, 101, Some(routes()));
+    // The first launch is confirmed; the second creates its session and its
+    // answer is lost, so the open stops there.
+    let first_launch = realm.world.fake.pause_next_hosted_launch();
+    let lost = open(&realm, &body, "prr-lost-ack-open");
+    let arrange = async {
+        first_launch.entered().await;
+        let second_launch = realm.world.fake.pause_next_hosted_launch();
+        first_launch.release();
+        second_launch.entered().await;
+        realm.world.fake.lose_next_hosted_launch_ack();
+        second_launch.release();
+    };
+    let (lost, ()) = tokio::join!(lost, arrange);
+    assert_eq!(lost.status, 503, "{}", lost.body);
+    assert_eq!(lost.json()["code"], "unavailable", "{}", lost.body);
+    let subject = subjects(&realm).pop().expect("the subject was written");
+    let seats: Vec<kontor_core::state::SeatBinding> = [subject.adam_node_id, subject.room_node_id]
+        .iter()
+        .flat_map(|node| {
+            realm
+                .world
+                .daemon
+                .state()
+                .with_store(|store| store.list_seat_bindings(realm.project_id, *node))
+                .expect("the seats read")
+        })
+        .collect();
+    assert_eq!(seats.len(), 1 + ROOM_SLOTS.len());
+    let confirmed: Vec<_> = seats
+        .iter()
+        .filter_map(|seat| hosted(&realm, seat.id))
+        .collect();
+    assert_eq!(confirmed.len(), 1, "exactly one session was confirmed");
+
+    let before = realm.world.fake.calls().len();
+    let refused = close(&realm, MODULE_REPOSITORY, 101, "prr-lost-ack-close").await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.json()["code"], "placement_blocked");
+    assert_eq!(
+        refused.json()["rule"],
+        "a launch of this review's seat may have created its session and lost the answer"
+    );
+    assert_eq!(
+        refused.json()["action"],
+        "retry the open that launched it with the same idempotency key, then close; nothing was released"
+    );
+    assert_eq!(calls_since(&realm, before), Vec::new());
+    for seat in &seats {
+        assert_eq!(&seat_row(&realm, seat.id), seat);
+    }
+    assert_eq!(
+        seats
+            .iter()
+            .filter_map(|seat| hosted(&realm, seat.id))
+            .collect::<Vec<_>>(),
+        confirmed
+    );
+
+    let retried = open(&realm, &body, "prr-lost-ack-open").await;
+    assert_eq!(retried.status, 200, "{}", retried.body);
+    assert_review_placed(
+        &realm,
+        &retried.json()["review"],
+        &realm.epic_key,
+        "asma-rs-kontor#101",
+    );
+    let before = realm.world.fake.calls().len();
+    let closed = close(&realm, MODULE_REPOSITORY, 101, "prr-lost-ack-close").await;
+    assert_eq!(closed.status, 200, "{}", closed.body);
+    let mut retired = retirements(&calls_since(&realm, before));
+    retired.sort();
+    let mut expected: Vec<_> = seats.iter().map(|seat| seat.id).collect();
+    expected.sort();
+    assert_eq!(retired, expected);
+    for seat in &seats {
+        assert!(!seat_row(&realm, seat.id).is_non_terminal());
+    }
+}
+
 /// The same realm after a daemon restart on the same state root.
 async fn restarted(realm: Review) -> Review {
     let Review {

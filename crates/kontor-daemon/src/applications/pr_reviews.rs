@@ -1035,8 +1035,8 @@ impl Services {
     /// be touched: not the desk, not its workspace or durable seats, not
     /// another pull request's review. The subject row, its nodes and the
     /// room's native workspace stay, so the same pull request reopens onto
-    /// them. A seat whose launch may have lost its answer refuses before
-    /// anything is fenced.
+    /// them. A seat whose launch may have lost its answer, or a workspace that
+    /// no longer proves, refuses before anything is fenced.
     pub(super) async fn close_pr_review_subject(
         &self,
         key: &IdempotencyKey,
@@ -1088,22 +1088,45 @@ impl Services {
                         ));
                 }
             }
+            let mut live = Vec::new();
             for (node, seat) in &seats {
                 if let Some(hosted) = state
                     .with_store(|store| store.get_hosted_topology_seat(project_id, seat.id))
                     .map_err(|error| self.refuse(&error))?
                 {
-                    self.fence_node_session(
-                        project_id,
-                        node,
-                        &hosted,
-                        (
-                            "PR review closed",
-                            "PR review closed; the session was already gone",
-                        ),
-                    )
-                    .await?;
+                    live.push((node, hosted));
                 }
+            }
+            // Every workspace a session is fenced in is proved before the
+            // first is fenced, so a misplaced room refuses the whole close
+            // rather than after the Adam's session was already retired.
+            {
+                let _native_activity = self.native_activity()?;
+                let mut proved = BTreeSet::new();
+                for (node, _) in &live {
+                    if proved.insert(node.id) {
+                        self.prove_existing_bound_container(project_id, node)
+                            .await?
+                            .ok_or_else(|| {
+                                self.deny(
+                                    ApiErrorCode::StaleBinding,
+                                    "a PR review session's workspace has no proved native container",
+                                )
+                            })?;
+                    }
+                }
+            }
+            for (node, hosted) in &live {
+                self.fence_node_session(
+                    project_id,
+                    node,
+                    hosted,
+                    (
+                        "PR review closed",
+                        "PR review closed; the session was already gone",
+                    ),
+                )
+                .await?;
             }
             let now = kontor_api::now();
             for (_, seat) in &seats {
