@@ -1,0 +1,26 @@
+{
+  "name": "base-probe",
+  "source_commit": "e376f4059e47de8fb40956d4dbfbf6920dabc4ec",
+  "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/reproduction/base-probe",
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "message_delivery_proofs::qualification_readonly_repeat_probe",
+    "--",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "target_dir": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/reproduction/target-base",
+  "started_at": "2026-10-11T15:18:37.955560+00:00",
+  "exit_code": 0,
+  "log": ".qualification/reproduction/base-probe.log",
+  "log_sha256": "cff2172cc721bfda9f5c61cbefba5fc96f7e1e4a1471361d7d164ed6d3d72feb",
+  "diagnostic_only": true,
+  "production_source_unmodified": true
+}

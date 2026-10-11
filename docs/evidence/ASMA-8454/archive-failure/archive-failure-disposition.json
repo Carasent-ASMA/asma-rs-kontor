@@ -1,0 +1,22 @@
+{
+  "scope": "ASMA-8454 qualification only",
+  "disposition": "Accepted by coordinator/user as pre-existing unrelated defect; out of epic scope; do not repair in this branch. Resume archive gates; only the exact known signature is accounted. Other failures retain the hold.",
+  "accepted_signature": {
+    "test": "legacy_message_proof_duplicate_split_across_pages_is_terminal_without_delivery",
+    "status": 409,
+    "code": "timeline_refetch_required",
+    "rule": "this binding has no earlier durable message or turn epoch anchor",
+    "prior_issued_at": "2026-10-11T15:23:05.724Z",
+    "current_issued_at": "2026-10-11T15:23:05.724434Z",
+    "anchor_lookup": "Ok(None)"
+  },
+  "finding_path": ".qualification/reproduction/concrete-finding.json",
+  "committed_finding_path": "docs/evidence/ASMA-8454/archive-failure/concrete-finding.json",
+  "finding_sha256": "8339f1f52b8287dfd6026acc9dbd3b1db7f978ff03be6ceba5615a6445a5858d",
+  "initial_archive_failed_log_sha256": "c0b596e9a7a31c2ac9057cefe88e7c3d10b6fa4369973962a7533359d5bdf7d2",
+  "clean_base_recurrence_log_sha256": "f2477f465d26eb0a7c6ddf481c37298b1dba3e61a095eac4db2732330d143b2a",
+  "original_failure_caveat": "Initial assertion recorded 409/200 but no body; matching this root cause to that initial failure is an inference.",
+  "repair_expansion": false,
+  "followup_owner": "Coordinator surfaces the unrelated message-proof defect separately.",
+  "recorded_at": "2026-10-11T15:26:47.753161+00:00"
+}

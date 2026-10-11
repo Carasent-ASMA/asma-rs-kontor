@@ -1,0 +1,22 @@
+{
+  "name": "green-MUT-003-host",
+  "head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+  "started_head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+  "started_at": "2026-10-11T14:19:35.742915+00:00",
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "desk_adams::two_epic_adams_in_one_workspace_never_share_ownership_credentials_or_evidence",
+    "--",
+    "--test-threads=2"
+  ],
+  "exit_code": 0,
+  "log": ".qualification/green-MUT-003-host.log",
+  "log_sha256": "7cb61390887eea3b48bcf4a198746ea9ebb5ba39c469614c85f4ac72be60ba68"
+}

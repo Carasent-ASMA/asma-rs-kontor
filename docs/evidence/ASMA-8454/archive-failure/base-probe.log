@@ -1,0 +1,111 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/reproduction/base-probe/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 26.15s
+     Running tests/loopback_api.rs (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/reproduction/target-base/debug/deps/loopback_api-6520399e83adc025)
+
+running 1 test
+test message_delivery_proofs::qualification_readonly_repeat_probe ... READONLY_PROBE round=1
+READONLY_PROBE round=2
+READONLY_PROBE round=3
+READONLY_PROBE round=4
+READONLY_PROBE round=5
+READONLY_PROBE round=6
+READONLY_PROBE round=7
+READONLY_PROBE round=8
+READONLY_PROBE round=9
+READONLY_PROBE round=10
+READONLY_PROBE round=11
+READONLY_PROBE round=12
+READONLY_PROBE round=13
+READONLY_PROBE round=14
+READONLY_PROBE round=15
+READONLY_PROBE round=16
+READONLY_PROBE round=17
+READONLY_PROBE round=18
+READONLY_PROBE round=19
+READONLY_PROBE round=20
+READONLY_PROBE round=21
+READONLY_PROBE round=22
+READONLY_PROBE round=23
+READONLY_PROBE round=24
+READONLY_PROBE round=25
+READONLY_PROBE round=26
+READONLY_PROBE round=27
+READONLY_PROBE round=28
+READONLY_PROBE round=29
+READONLY_PROBE round=30
+READONLY_PROBE round=31
+READONLY_PROBE round=32
+READONLY_PROBE round=33
+READONLY_PROBE round=34
+READONLY_PROBE round=35
+READONLY_PROBE round=36
+READONLY_PROBE round=37
+READONLY_PROBE round=38
+READONLY_PROBE round=39
+READONLY_PROBE round=40
+READONLY_PROBE round=41
+READONLY_PROBE round=42
+READONLY_PROBE round=43
+READONLY_PROBE round=44
+READONLY_PROBE round=45
+READONLY_PROBE round=46
+READONLY_PROBE round=47
+READONLY_PROBE round=48
+READONLY_PROBE round=49
+READONLY_PROBE round=50
+READONLY_PROBE round=51
+READONLY_PROBE round=52
+READONLY_PROBE round=53
+READONLY_PROBE round=54
+READONLY_PROBE round=55
+READONLY_PROBE round=56
+READONLY_PROBE round=57
+READONLY_PROBE round=58
+READONLY_PROBE round=59
+READONLY_PROBE round=60
+READONLY_PROBE round=61
+READONLY_PROBE round=62
+READONLY_PROBE round=63
+READONLY_PROBE round=64
+READONLY_PROBE round=65
+READONLY_PROBE round=66
+READONLY_PROBE round=67
+READONLY_PROBE round=68
+READONLY_PROBE round=69
+READONLY_PROBE round=70
+READONLY_PROBE round=71
+READONLY_PROBE round=72
+READONLY_PROBE round=73
+READONLY_PROBE round=74
+READONLY_PROBE round=75
+READONLY_PROBE round=76
+READONLY_PROBE round=77
+READONLY_PROBE round=78
+READONLY_PROBE round=79
+READONLY_PROBE round=80
+READONLY_PROBE round=81
+READONLY_PROBE round=82
+READONLY_PROBE round=83
+READONLY_PROBE round=84
+READONLY_PROBE round=85
+READONLY_PROBE round=86
+READONLY_PROBE round=87
+READONLY_PROBE round=88
+READONLY_PROBE round=89
+READONLY_PROBE round=90
+READONLY_PROBE round=91
+READONLY_PROBE round=92
+READONLY_PROBE round=93
+READONLY_PROBE round=94
+READONLY_PROBE round=95
+READONLY_PROBE round=96
+READONLY_PROBE round=97
+READONLY_PROBE round=98
+READONLY_PROBE round=99
+READONLY_PROBE round=100
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 613 filtered out; finished in 16.02s
+

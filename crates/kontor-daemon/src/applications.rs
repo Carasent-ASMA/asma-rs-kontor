@@ -10774,11 +10774,25 @@ impl Services {
                     team_definition: snapshot,
                     created_at: kontor_api::now(),
                 };
-                match state.with_store(|store| store.create_desk(&planned)) {
-                    Ok(()) => planned,
+                self.desk_definition(&planned)?;
+                let root = self.ensure_scope_chain(
+                    project_id,
+                    &TopologyScope {
+                        node_id: None,
+                        kind: None,
+                        epic_id: None,
+                        task_id: None,
+                        desk_key: None,
+                        key: "project_root".to_owned(),
+                    },
+                )?;
+                match state.with_store(|store| store.create_desk_topology(&planned, &root)) {
+                    Ok(workspace) => return Ok(workspace),
                     // Another ensure of the same desk won the race and this one
                     // has written nothing, so reconcile against the winner's ids.
-                    Err(RepositoryError::Conflict { .. }) => state
+                    Err(RepositoryError::Conflict {
+                        subject: "desk", ..
+                    }) => state
                         .with_store(|store| store.get_desk(project_id, desk_key))
                         .map_err(|error| self.refuse(&error))?
                         .ok_or_else(|| {

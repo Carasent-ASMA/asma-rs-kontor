@@ -1,0 +1,12 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.84s
+     Running tests/loopback_api.rs (target/debug/deps/loopback_api-6520399e83adc025)
+
+running 5 tests
+test durable_desks::a_desk_refused_at_native_preparation_keeps_only_its_ensured_nodes ... ok
+test durable_desks::a_restarted_daemon_reads_back_and_reconciles_the_same_desks ... ok
+test durable_desks::an_undeclared_desk_is_refused_before_any_desk_state_or_native_effect ... ok
+test durable_desks::both_desks_materialize_read_back_and_replay_without_an_epic ... ok
+test durable_desks::no_epic_operation_can_retire_or_archive_a_desk ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 612 filtered out; finished in 3.05s
+

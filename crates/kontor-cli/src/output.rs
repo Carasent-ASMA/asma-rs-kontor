@@ -22,8 +22,8 @@
 //! a second contract with its own drift, and the revision the caller is owed lives
 //! in that body.
 //!
-//! An unrecognised code exits 1. That is deliberate and not a catch-all: the twelve
-//! codes plus `invalid_request` are a *closed* vocabulary, so a code outside it
+//! An unrecognised code exits 1. That is deliberate and not a catch-all: the
+//! supported machine codes form a closed vocabulary, so a code outside it
 //! means the thing answering is not a Realm of this contract generation — a
 //! protocol problem, not a refusal to interpret.
 
@@ -40,7 +40,7 @@ pub(crate) enum ExitClass {
     Unexpected,
     /// The command line itself, or this machine's configuration.
     Local,
-    /// The Realm would not authenticate or would not authorize.
+    /// The Realm refused authority or requires an explicit placement decision.
     Refused,
     /// The caller's state is stale: read it again and retry.
     Conflict,
@@ -78,21 +78,25 @@ impl ExitClass {
     #[must_use]
     pub(crate) fn of(code: &str) -> Self {
         match code {
-            "unauthenticated" | "forbidden" => Self::Refused,
+            "unauthenticated" | "forbidden" | "placement_blocked" | "ensure_mismatch"
+            | "handoff_unsettled" => Self::Refused,
             "realm_mismatch"
             | "revision_conflict"
             | "idempotency_conflict"
             | "stale_binding"
+            | "delivery_unconfirmed"
             | "resnapshot_required"
             | "timeline_refetch_required" => Self::Conflict,
             "reconciliation_pending"
             | "unavailable"
             | "capacity_exhausted"
             | "provider_unreachable" => Self::Unavailable,
+            "proof_scan_incomplete" | "provider_usage_throttled" => Self::Unavailable,
             "not_found"
             | "unsupported_capability"
             | "role_slot_unbound"
             | "provider_unsupported" => Self::Absent,
+            "rename_pending" => Self::Absent,
             "provider_unauthorized" => Self::Refused,
             "invalid_request" => Self::Local,
             // Outside the closed vocabulary: whatever answered is not a realm of
@@ -194,6 +198,13 @@ mod tests {
             "provider_unsupported",
             "not_found",
             "invalid_request",
+            "placement_blocked",
+            "ensure_mismatch",
+            "handoff_unsettled",
+            "delivery_unconfirmed",
+            "proof_scan_incomplete",
+            "provider_usage_throttled",
+            "rename_pending",
         ] {
             let class = ExitClass::of(code);
             assert_ne!(
@@ -249,6 +260,26 @@ mod tests {
             "a runtime that never declared an operation will not declare it on a retry"
         );
         assert_eq!(ExitClass::of("invalid_request"), ExitClass::Local);
+    }
+
+    #[test]
+    fn desk_operator_refusals_pin_corrective_actions_and_exact_exit_codes() {
+        for (code, class, exit) in [
+            ("placement_blocked", ExitClass::Refused, 3),
+            ("ensure_mismatch", ExitClass::Refused, 3),
+            ("handoff_unsettled", ExitClass::Refused, 3),
+            ("stale_binding", ExitClass::Conflict, 4),
+            ("idempotency_conflict", ExitClass::Conflict, 4),
+            ("revision_conflict", ExitClass::Conflict, 4),
+            ("delivery_unconfirmed", ExitClass::Conflict, 4),
+            ("proof_scan_incomplete", ExitClass::Unavailable, 5),
+            ("provider_usage_throttled", ExitClass::Unavailable, 5),
+            ("unsupported_capability", ExitClass::Absent, 6),
+            ("rename_pending", ExitClass::Absent, 6),
+        ] {
+            assert_eq!(ExitClass::of(code), class, "{code}");
+            assert_eq!(ExitClass::of(code).code(), exit, "{code}");
+        }
     }
 
     #[test]

@@ -1,0 +1,69 @@
+{
+  "status": "held \u2014 recurrence in clean-base production source with scratch-only diagnostics",
+  "classification": "pre-existing intermittent failure, unrelated to ASMA-8454 source changes",
+  "base_commit": "e376f4059e47de8fb40956d4dbfbf6920dabc4ec",
+  "candidate_source_commit": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
+  "source_identity": {
+    "crates/kontor-daemon/tests/loopback/message_delivery_proofs.rs": {
+      "base_sha256": "8b9d509966cc4b194633402c92b472f0d31f59eddcd9f9761d4b021588f58095",
+      "candidate_sha256": "8b9d509966cc4b194633402c92b472f0d31f59eddcd9f9761d4b021588f58095",
+      "identical": true
+    },
+    "crates/kontor-daemon/tests/loopback_api.rs": {
+      "base_sha256": "0e3d6ce2a2f64665ad59dbaebc7e57537710c044a229050866b1ddd972716226",
+      "candidate_sha256": "0e3d6ce2a2f64665ad59dbaebc7e57537710c044a229050866b1ddd972716226",
+      "identical": true
+    },
+    "crates/kontor-api/src/state.rs": {
+      "base_sha256": "c74cc51c01f76e029daf773e50eab1fb1ddc1b99b98eda8e1827ebd8eb3e34ea",
+      "candidate_sha256": "c74cc51c01f76e029daf773e50eab1fb1ddc1b99b98eda8e1827ebd8eb3e34ea",
+      "identical": true
+    },
+    "crates/kontor-api/src/sessions.rs": {
+      "base_sha256": "eef8f5709a4557a643c3ad3fa479f4ad125b54868f9c38bc1c437695a74b2927",
+      "candidate_sha256": "eef8f5709a4557a643c3ad3fa479f4ad125b54868f9c38bc1c437695a74b2927",
+      "identical": true
+    },
+    "crates/kontor-store/src/message_delivery_proofs.rs": {
+      "base_sha256": "06dcd41cce325869b35c2e4e6e30c1cfe06e1fc9b36ae0463cb145b256c654b9",
+      "candidate_sha256": "06dcd41cce325869b35c2e4e6e30c1cfe06e1fc9b36ae0463cb145b256c654b9",
+      "identical": true
+    }
+  },
+  "observed_failure": {
+    "round": 62,
+    "status": 409,
+    "body": {
+      "realm_id": "01a12b8d-83fa-7740-a654-0ff9e20270fb",
+      "code": "timeline_refetch_required",
+      "rule": "this binding has no earlier durable message or turn epoch anchor",
+      "current_revision": null,
+      "oldest_retained_cursor": null,
+      "newest_cursor": null,
+      "action": "retain the unknown acknowledgement; do not resend or replace its historical proof"
+    },
+    "anchor_lookup": "Ok(None)",
+    "prior_issued_at": "2026-10-11T15:23:05.724Z",
+    "prior_delivered_position": [
+      1,
+      1
+    ],
+    "current_issued_at": "2026-10-11T15:23:05.724434Z",
+    "observed_diagnostic_line": "READONLY_PROBE status=409 Conflict body={\"realm_id\":\"01a12b8d-83fa-7740-a654-0ff9e20270fb\",\"code\":\"timeline_refetch_required\",\"rule\":\"this binding has no earlier durable message or turn epoch anchor\",\"current_revision\":null,\"oldest_retained_cursor\":null,\"newest_cursor\":null,\"action\":\"retain the unknown acknowledgement; do not resend or replace its historical proof\"} issued=MessageIssuance { message_id: \"01a12b8f-7a7c-7cf3-b542-f57559872a2a\", runtime_kind: \"fake.runtime\", host: \"fake-host\", runtime_binding_id: \"01a12b8f-7a7a-7f73-90c3-89d27add6793\", native_session_id: \"native-session-2\", idempotency_key: \"01a12b8f-7a7c-7cf3-b542-f57559872a2a\", provenance: \"session_message_send\", issued_at: 2026-10-11T15:23:05.724434Z, boundary_at: None, delivered_at: None } anchor=Ok(None) prior=[Ok(Some(MessageIssuance { message_id: \"01a12b8f-7a7b-7d80-8bf9-e1df35e9eb66\", runtime_kind: \"fake.runtime\", host: \"fake-host\", runtime_binding_id: \"01a12b8f-7a7a-7f73-90c3-89d27add6793\", native_session_id: \"native-session-2\", idempotency_key: \"01a12b8f-7a7b-7d80-8bf9-e1df35e9eb66\", provenance: \"session_message_send\", issued_at: 2026-10-11T15:23:05.724Z, boundary_at: None, delivered_at: Some((1, 1)) }))]"
+  },
+  "readonly_sql_probe": {
+    "command": "SELECT ?1 <= ?2",
+    "parameters": [
+      "2026-10-11T15:23:05.724Z",
+      "2026-10-11T15:23:05.724434Z"
+    ],
+    "sqlite_text_result": 0,
+    "chronological_prior_is_earlier": true
+  },
+  "finding": "The unchanged earlier-anchor query uses issued_at <= ?2 on canonical timestamp text. Variable fractional precision can exclude an earlier delivered issuance, matching the observed None anchor.",
+  "original_archive_body": "Not recorded by the original assertion; the matching root cause for that first failure is an inference.",
+  "main_worktree_message_proof_changes": 0,
+  "repair_expansion": false,
+  "next_owner": "Coordinator dispositions the concrete pre-existing finding; candidate remains held.",
+  "recorded_at": "2026-10-11T15:24:41.747745+00:00"
+}

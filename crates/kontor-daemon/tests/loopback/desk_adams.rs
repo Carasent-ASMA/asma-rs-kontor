@@ -15,7 +15,7 @@ use kontor_core::spec::TeamDefinitionSpec;
 use kontor_runtime::durable_seat::HostedSeatScope;
 
 /// The desk and leadership-subject kinds a desk-led topology adds.
-const DESK_LED_KINDS: &str = r#"[
+pub(super) const DESK_LED_KINDS: &str = r#"[
   {"kind": "DESK", "allowed_parents": ["PSW"], "cardinality": {"minimum": 0},
    "projection_capabilities": ["native_root"], "read_only": false,
    "name_template": {"segments": [{"kind": "token", "value": "AREA_CODE"}]},
@@ -42,7 +42,7 @@ const DESK_LED_KINDS: &str = r#"[
 ]"#;
 
 /// The containers a desk-led definition adds, with the role-led seat titles.
-const DESK_LED_CONTAINERS: &str = r#"[
+pub(super) const DESK_LED_CONTAINERS: &str = r#"[
   {"kind": "DESK", "parent": null, "prefix": "DESK", "projection_capabilities": ["native_root"],
    "read_only": false,
    "name_template": {"segments": [{"kind": "token", "value": "PREFIX"},
@@ -72,7 +72,11 @@ const DESKS: &str = r#"[
   {"desk_key": "pr-review", "display_name": "PR REVIEW", "kind": "DESK", "workspace_kind": "DWS"}
 ]"#;
 
-const LEADERSHIP: &str = r#"{"desk_key": "adam", "epic_kind": "ADE", "ad_hoc_kind": "ADH"}"#;
+pub(super) const LEADERSHIP: &str =
+    r#"{"desk_key": "adam", "epic_kind": "ADE", "ad_hoc_kind": "ADH"}"#;
+
+#[path = "qualification_adam.rs"]
+mod qualification_adam;
 
 /// A Claude route: the LSA plans on Anthropic.
 fn claude_route() -> serde_json::Value {
@@ -1189,7 +1193,9 @@ async fn two_epic_adams_in_one_workspace_never_share_ownership_credentials_or_ev
         assert!(!listed.contains(&durable.to_string()));
     }
 
-    // Completion: each run answers to its own epic's TPM.
+    // An open ticket blocks completion before its owner is persisted.
+    // Actual persisted-owner and completion-authority isolation is proved by
+    // the end-to-end delivery/close test below.
     for (epic, key) in [
         (&alpha, "desk-adam-isolation-a-done"),
         (&beta, "desk-adam-isolation-b-done"),
@@ -1205,14 +1211,19 @@ async fn two_epic_adams_in_one_workspace_never_share_ownership_credentials_or_ev
         .with_key(key)
         .send(&realm.world)
         .await;
-        // The owner resolves from the epic's own subject before the run waits
-        // on its open ticket; the stored owner is proved where the ticket closes.
+        // This is a ticket-gate assertion, not completion-owner evidence.
         assert_eq!(
             started.json()["subject"],
             "completion ticket gate",
             "{}",
             started.body
         );
+        assert!(realm.world.daemon.state().with_store(|store| {
+            store
+                .get_epic_completion(realm.project_id, epic_id(epic))
+                .expect("completion reads")
+                .is_none()
+        }));
     }
     assert_ne!(tpm_of(&realm, &alpha), tpm_of(&realm, &beta));
 
@@ -2571,6 +2582,11 @@ fn container(realm: &DeskLed, id: TopologyNodeId) -> kontor_core::state::NativeC
 #[tokio::test]
 async fn a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk() {
     let realm = desk_led_realm("desk-adam-delivery").await;
+    // This isolated fixture runs two coordinators, both delivery teams and
+    // a permanent seat together; its scripted capacity must cover that census.
+    let mut capabilities = realm.world.fake.capabilities();
+    capabilities.limits.max_concurrent_sessions = 32;
+    realm.world.fake.set_capabilities(capabilities);
     realm.world.script(HISTORY_LIVE);
     let account = Call::post(
         format!(
@@ -2588,13 +2604,29 @@ async fn a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk
     .await;
     assert_eq!(account.status, 200, "{}", account.body);
 
-    // A neighbour whose planning LSA stays live in the same desk workspace.
+    // A neighbour whose coordinator stays live in the same desk workspace.
     let beta = applied_epic(&realm, "Neighbour epic", "desk-adam-delivery-beta").await;
-    let (beta_lsa, beta_native, _) =
+    let (beta_lsa, beta_lsa_native, beta_generation) =
         planning_lsa(&realm, &beta, "desk-adam-delivery-beta-lsa").await;
     assert_desk_placed(&realm, beta_lsa);
+    let beta_tpm = tpm_of(&realm, &beta);
+    let handed = hand_off(
+        &realm,
+        &beta,
+        (beta_lsa, &beta_lsa_native, beta_generation),
+        beta_tpm,
+        codex_route(),
+        "qualification-beta-handoff",
+    )
+    .await;
+    assert_eq!(handed.status, 200, "{}", handed.body);
+    let beta_native = hosted(&realm, beta_tpm)
+        .expect("beta coordinator")
+        .native_identity
+        .native_id;
     let beta_subject = subject_of(&realm, &beta).topology_node_id;
-    let beta_seats = seats_on(&realm, beta_subject);
+    let (durable, durable_native) = durable_desk_lsa(&realm, "completion-watch").await;
+    let durable_row = seat_row(&realm, durable);
 
     let applied = apply_epic(&realm, "Delivered epic", "desk-adam-delivery-alpha", None).await;
     assert_eq!(applied.status, 200, "{}", applied.body);
@@ -2607,6 +2639,19 @@ async fn a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk
         .expect("a task")
         .to_owned();
     confirm_test_epic_identity(&realm.world, &realm.project, &alpha);
+    let (alpha_lsa, alpha_native, alpha_generation) =
+        planning_lsa(&realm, &alpha, "qualification-alpha-lsa").await;
+    let alpha_tpm = tpm_of(&realm, &alpha);
+    let handed = hand_off(
+        &realm,
+        &alpha,
+        (alpha_lsa, &alpha_native, alpha_generation),
+        alpha_tpm,
+        codex_route(),
+        "qualification-alpha-handoff",
+    )
+    .await;
+    assert_eq!(handed.status, 200, "{}", handed.body);
     let alpha_subject = subject_of(&realm, &alpha).topology_node_id;
     let workspace = node(&realm, alpha_subject).parent_id.expect("a parent");
     assert_eq!(node(&realm, beta_subject).parent_id, Some(workspace));
@@ -2692,6 +2737,17 @@ async fn a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk
     assert_eq!(started.status, 200, "{}", started.body);
     assert_eq!(started.json()["state"]["phase"]["phase"], "integration");
     assert_eq!(completion_tpm(&realm, &alpha), owner.to_string());
+    qualification_adam::prove_completion_authority(
+        &realm,
+        &alpha,
+        &beta,
+        owner,
+        beta_tpm,
+        durable,
+        &seed.account,
+    )
+    .await;
+    let beta_seats = seats_on(&realm, beta_subject);
     assert_ne!(
         owner,
         tpm_of(&realm, &beta),
@@ -2720,13 +2776,13 @@ async fn a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk
         "the neighbour's seats"
     );
     assert_eq!(
-        hosted(&realm, beta_lsa)
-            .expect("the neighbour's LSA")
+        hosted(&realm, beta_tpm)
+            .expect("the neighbour's TPM")
             .native_identity
             .native_id,
         beta_native
     );
-    let beta_acts = act_as_seat(&realm, &beta, beta_lsa, 1).await;
+    let beta_acts = act_as_seat(&realm, &beta, beta_tpm, 1).await;
     assert_eq!(beta_acts.status, 200, "{}", beta_acts.body);
     assert_eq!(
         (container(&realm, desk), container(&realm, workspace)),
@@ -2739,6 +2795,18 @@ async fn a_desk_led_epic_delivers_and_closes_without_an_ecp_or_touching_the_desk
             "{id} stays active"
         );
     }
+    assert_eq!(
+        seat_row(&realm, durable),
+        durable_row,
+        "the durable same-role seat is untouched"
+    );
+    assert_eq!(
+        hosted(&realm, durable)
+            .expect("durable seat")
+            .native_identity
+            .native_id,
+        durable_native
+    );
     assert!(epic_node(&realm, &alpha, "ECP").is_none());
 }
 

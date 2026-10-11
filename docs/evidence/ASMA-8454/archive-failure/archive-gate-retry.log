@@ -1,0 +1,262 @@
+archive HEAD extracted to /Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree
+Cargo.lock satisfies every manifest under --locked
+note: Updating cc v1.4.6 -> v1.4.7 (refresh the lock in its own change)
+note: Updating find-msvc-tools v0.1.12 -> v0.1.13 (refresh the lock in its own change)
+note: Updating jiff-tzdb v0.1.8 -> v0.1.9 (refresh the lock in its own change)
+note: Updating libc v0.2.189 -> v0.2.190 (refresh the lock in its own change)
+$ cargo fmt --all -- --check
+$ cargo clippy --workspace --all-targets -- -D warnings
+    Checking kontor-core v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-core)
+   Compiling kontor-desktop v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/apps/desktop/src-tauri)
+    Checking kontor-runtime v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-runtime)
+    Checking kontor-policy v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-policy)
+    Checking kontor-context v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-context)
+    Checking kontor-mcp v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-mcp)
+    Checking kontor-fleet v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-fleet)
+    Checking kontor-intake v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-intake)
+    Checking kontor-tests-e2e v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/tests/e2e)
+    Checking kontor-fleet-activation v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-fleet-activation)
+    Checking kontor-cli v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-cli)
+    Checking kontor-scheduler v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-scheduler)
+    Checking kontor-teams v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-teams)
+    Checking kontor-runtime-paseo v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-runtime-paseo)
+    Checking kontor-tests-contract v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/tests/contract)
+    Checking kontor-runtime-ao v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-runtime-ao)
+    Checking kontor-profiles v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-profiles)
+    Checking kontor-calendar v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-calendar)
+    Checking kontor-accounts v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-accounts)
+    Checking kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-store)
+    Checking kontor-jira v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-jira)
+    Checking kontor-runtime-codex v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-runtime-codex)
+    Checking kontor-api v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-api)
+    Checking kontor-memory-cognee v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-memory-cognee)
+    Checking kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-daemon)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 55.04s
+$ cargo test --workspace --locked
+   Compiling kontor-desktop v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/apps/desktop/src-tauri)
+   Compiling kontor-tests-e2e v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/tests/e2e)
+   Compiling kontor-runtime-ao v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-runtime-ao)
+   Compiling kontor-cli v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-cli)
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-daemon)
+   Compiling kontor-memory-cognee v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-memory-cognee)
+   Compiling kontor-api v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-api)
+   Compiling kontor-fleet v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-fleet)
+   Compiling kontor-accounts v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-accounts)
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 27.20s
+     Running unittests src/lib.rs (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/kontor_accounts-e3fdaa3da9b6b718)
+
+running 78 tests
+test admission::tests::a_fresh_position_starts_at_the_configured_width_with_no_trend ... ok
+test admission::tests::a_narrowed_ceiling_takes_effect_on_the_next_pass_rather_than_failing_it ... ok
+test admission::tests::one_clean_observation_remembers_the_trend_and_does_not_grow ... ok
+test admission::tests::pressure_narrows_to_the_floor_and_forgets_the_trend ... ok
+test admission::tests::replaying_one_observation_changes_nothing_at_all ... ok
+test admission::tests::growth_stops_at_the_ceiling_however_many_clean_pairs_arrive ... ok
+test admission::tests::the_second_distinct_clean_observation_grows_by_exactly_one_step ... ok
+test capacity::tests::a_declared_limit_cools_the_account_and_is_the_only_pressure ... ok
+test capacity::tests::a_disabled_profile_is_unavailable_without_narrowing_anything ... ok
+test capacity::tests::a_family_that_can_prove_the_account_is_clean_and_available ... ok
+test capacity::tests::an_absent_or_account_blind_runtime_is_unusable_but_not_pressure ... ok
+test capacity::tests::a_reading_round_trips_and_carries_no_free_text ... ok
+test pin::tests::a_declared_pin_is_normalized_and_a_blank_alias_is_refused ... ok
+test pin::tests::a_declared_pin_is_walked_only_under_its_own_aliases ... ok
+test pin::tests::a_disabled_profile_is_not_a_candidate_at_all ... ok
+test pin::tests::a_disabled_profile_may_share_an_alias_because_it_is_never_walked ... ok
+test pin::tests::a_profile_declaring_nothing_is_simply_not_routable_per_provider ... ok
+test pin::tests::a_malformed_pin_is_refused_rather_than_read_as_absent ... ok
+test pin::tests::one_alias_naming_two_enabled_accounts_is_refused_not_ordered_away ... ok
+test pin::tests::one_alias_per_login_is_what_makes_two_codex_accounts_addressable ... ok
+test resolver::security_transport_tests::multiline_or_truncated_commands_are_refused_before_launch ... ok
+test resolver::security_transport_tests::a_stalled_security_process_is_killed_and_reaped ... ok
+test resolver::security_transport_tests::the_writer_transports_quoted_secret_only_on_stdin ... ok
+test signals::tests::a_blank_reset_prefix_is_refused_rather_than_capturing_from_zero ... ok
+test resolver::security_transport_tests::stdin_delivery_is_also_bounded_and_the_child_is_reaped ... ok
+test signals::tests::a_credit_balance_declaring_reset_fields_is_refused_as_contradictory ... ok
+test signals::tests::a_future_schema_version_is_refused ... ok
+test signals::tests::a_credit_basis_round_trips_through_the_document ... ok
+test signals::tests::a_non_ascii_marker_is_refused_because_the_matcher_is_ascii_exact ... ok
+test signals::tests::a_present_but_invalid_document_fails_loudly_rather_than_going_inert ... ok
+test signals::tests::a_present_but_unparsable_document_fails_loudly_rather_than_going_inert ... ok
+test signals::tests::a_signal_without_markers_is_refused ... ok
+test signals::tests::a_zero_version_is_refused_while_parsing ... ok
+test signals::tests::a_present_but_unreadable_document_fails_loudly_rather_than_going_inert ... ok
+test signals::tests::an_absent_document_leaves_classification_inert ... ok
+test signals::tests::a_zone_without_a_prefix_is_refused_as_intent_that_never_applies ... ok
+test signals::tests::an_empty_signal_list_is_refused ... ok
+test signals::tests::an_id_that_is_not_a_valid_external_name_is_refused ... ok
+test signals::tests::an_ordinary_error_is_not_a_quota_refusal ... ok
+test signals::tests::an_assistant_discussing_usage_limits_is_not_a_refusal ... ok
+test signals::tests::an_unknown_field_is_refused ... ok
+test signals::tests::an_unparsable_document_is_refused_rather_than_ignored ... ok
+test signals::tests::an_unknown_iana_zone_is_refused_rather_than_degrading_every_reset ... ok
+test signals::tests::one_provider_may_hold_several_fingerprints_under_distinct_ids ... ok
+test signals::tests::reordering_markers_changes_the_definition_hash ... ok
+test signals::tests::every_active_alias_classifies_its_own_vendor_wording ... ok
+test signals::tests::the_recorded_codex_reset_is_read_in_its_captured_zone ... ok
+test signals::tests::the_same_id_and_version_with_changed_content_hashes_differently ... ok
+test signals::tests::the_shipped_claude_logins_are_distinct_signals ... ok
+test signals::tests::the_shipped_example_names_exact_catalog_aliases_not_vendor_families ... ok
+test signals::tests::two_signals_may_not_share_one_id ... ok
+test usage::tests::a_body_that_is_not_json_is_refused_without_quoting_it ... ok
+test usage::tests::a_claude_window_with_no_reset_instant_is_dropped ... ok
+test usage::tests::a_placeholder_reset_instant_yields_no_window_at_all ... ok
+test usage::tests::a_quoted_utilization_reads_and_a_fractional_one_floors ... ok
+test usage::tests::a_refusal_naming_no_spent_window_still_uses_an_instant_it_did_name ... ok
+test usage::tests::a_refusal_with_neither_a_window_nor_a_balance_is_unknown ... ok
+test usage::tests::a_span_the_vendor_omits_is_classified_as_the_shortest_not_the_longest ... ok
+test usage::tests::a_spent_balance_with_no_window_at_all_is_drained ... ok
+test usage::tests::a_spent_model_scoped_week_does_not_take_the_whole_provider_out ... ok
+test usage::tests::a_stated_reset_instant_outranks_a_spent_balance ... ok
+test usage::tests::an_account_that_is_not_being_turned_away_is_available ... ok
+test usage::tests::an_empty_claude_document_reads_as_available_rather_than_failing ... ok
+test signals::tests::the_shipped_example_still_classifies_the_recorded_codex_refusal ... ok
+test usage::tests::an_unfamiliar_document_still_reads_rather_than_refusing ... ok
+test usage::tests::an_unlimited_account_is_never_read_as_having_spent_a_balance ... ok
+test usage::tests::an_unspent_window_does_not_extend_the_wait ... ok
+test usage::tests::claude_being_turned_away_is_derived_because_the_document_never_says_so ... ok
+test usage::tests::claude_below_the_line_is_available_with_both_windows_recorded ... ok
+test usage::tests::claude_never_claims_a_spent_balance_because_the_endpoint_reports_none ... ok
+test usage::tests::strict_chatgpt_accepts_a_complete_available_control ... ok
+test usage::tests::strict_chatgpt_refuses_empty_or_incomplete_documents_but_keeps_a_resetless_refusal_blocking ... ok
+test usage::tests::strict_claude_accepts_a_complete_available_control ... ok
+test usage::tests::strict_claude_keeps_a_spent_resetless_window_blocking ... ok
+test usage::tests::strict_claude_refuses_empty_model_only_and_incomplete_documents ... ok
+test usage::tests::the_instant_is_the_latest_among_the_spent_windows_not_the_earliest ... ok
+test usage::tests::the_live_work_account_document_reads_as_exhausted ... ok
+test usage::tests::two_identical_readings_digest_identically_and_a_changed_one_does_not ... ok
+
+test result: ok. 78 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running tests/account_security.rs (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/account_security-a14261bbdc1d0304)
+
+running 22 tests
+test a_failover_intent_records_only_ids_and_a_closed_reason_code ... FAILED
+test a_runtime_that_cannot_prove_an_account_refuses_before_resolution ... FAILED
+test an_unapproved_config_home_is_not_silently_defaulted ... FAILED
+test account_pin_bypass_is_refused_before_resolution ... FAILED
+test concurrent_disable_invalidates_pending_authorization ... FAILED
+test cooling_or_unconfirmed_profile_refuses_before_resolution_or_runtime_call ... FAILED
+test credential_identity_change_requires_a_new_profile_id ... ok
+test database_logs_export_and_argv_contain_ids_not_secrets ... FAILED
+test disabled_profile_refuses_before_resolution_or_runtime_call ... FAILED
+test failover_creates_a_new_linked_run_and_preserves_old_binding ... FAILED
+test failover_retry_returns_the_same_successor ... FAILED
+test foreign_realm_or_project_profile_is_refused_atomically ... ok
+test invalid_failover_has_no_partial_run_or_receipt ... FAILED
+test keychain_canary_is_absent_from_debug_errors_and_serialization ... FAILED
+test launch_receipt_contains_identity_but_no_resolution_material ... FAILED
+test profile_crud_round_trips_without_credential_material ... ok
+test profile_updates_use_compare_and_swap ... ok
+test referenced_profile_must_be_disabled_not_deleted ... ok
+test resolution_never_mutates_process_environment ... FAILED
+test system_keychain_reports_a_missing_entry_as_not_found ... ok
+test resolver_rejects_unapproved_reference_before_backend_access ... FAILED
+test two_profiles_resolve_concurrently_without_cross_talk ... FAILED
+
+failures:
+
+---- a_failover_intent_records_only_ids_and_a_closed_reason_code stdout ----
+
+thread 'a_failover_intent_records_only_ids_and_a_closed_reason_code' (103089416) panicked at crates/kontor-accounts/tests/account_security.rs:244:10:
+the alpha fixture home is approved: UnusableConfigHome { alias: CredentialAlias("alpha-home") }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- a_runtime_that_cannot_prove_an_account_refuses_before_resolution stdout ----
+
+thread 'a_runtime_that_cannot_prove_an_account_refuses_before_resolution' (103089417) panicked at crates/kontor-accounts/tests/account_security.rs:244:10:
+the alpha fixture home is approved: UnusableConfigHome { alias: CredentialAlias("alpha-home") }
+
+---- an_unapproved_config_home_is_not_silently_defaulted stdout ----
+
+thread 'an_unapproved_config_home_is_not_silently_defaulted' (103094402) panicked at crates/kontor-accounts/tests/account_security.rs:848:10:
+the first approval succeeds: UnusableConfigHome { alias: CredentialAlias("alpha-home") }
+
+---- account_pin_bypass_is_refused_before_resolution stdout ----
+
+thread 'account_pin_bypass_is_refused_before_resolution' (103094271) panicked at crates/kontor-accounts/tests/account_security.rs:244:10:
+the alpha fixture home is approved: UnusableConfigHome { alias: CredentialAlias("alpha-home") }
+
+---- concurrent_disable_invalidates_pending_authorization stdout ----
+
+thread 'concurrent_disable_invalidates_pending_authorization' (103094403) panicked at crates/kontor-accounts/tests/account_security.rs:244:10:
+the alpha fixture home is approved: UnusableConfigHome { alias: CredentialAlias("alpha-home") }
+
+---- cooling_or_unconfirmed_profile_refuses_before_resolution_or_runtime_call stdout ----
+
+thread 'cooling_or_unconfirmed_profile_refuses_before_resolution_or_runtime_call' (103098170) panicked at crates/kontor-accounts/tests/account_security.rs:244:10:
+the alpha fixture home is approved: UnusableConfigHome { alias: CredentialAlias("alpha-home") }
+
+---- database_logs_export_and_argv_contain_ids_not_secrets stdout ----
+
+thread 'database_logs_export_and_argv_contain_ids_not_secrets' (103103318) panicked at crates/kontor-accounts/tests/account_security.rs:244:10:
+the alpha fixture home is approved: UnusableConfigHome { alias: CredentialAlias("alpha-home") }
+
+---- disabled_profile_refuses_before_resolution_or_runtime_call stdout ----
+
+thread 'disabled_profile_refuses_before_resolution_or_runtime_call' (103103658) panicked at crates/kontor-accounts/tests/account_security.rs:244:10:
+the alpha fixture home is approved: UnusableConfigHome { alias: CredentialAlias("alpha-home") }
+
+---- failover_creates_a_new_linked_run_and_preserves_old_binding stdout ----
+
+thread 'failover_creates_a_new_linked_run_and_preserves_old_binding' (103109230) panicked at crates/kontor-accounts/tests/account_security.rs:244:10:
+the alpha fixture home is approved: UnusableConfigHome { alias: CredentialAlias("alpha-home") }
+
+---- failover_retry_returns_the_same_successor stdout ----
+
+thread 'failover_retry_returns_the_same_successor' (103109449) panicked at crates/kontor-accounts/tests/account_security.rs:244:10:
+the alpha fixture home is approved: UnusableConfigHome { alias: CredentialAlias("alpha-home") }
+
+---- invalid_failover_has_no_partial_run_or_receipt stdout ----
+
+thread 'invalid_failover_has_no_partial_run_or_receipt' (103113985) panicked at crates/kontor-accounts/tests/account_security.rs:244:10:
+the alpha fixture home is approved: UnusableConfigHome { alias: CredentialAlias("alpha-home") }
+
+---- keychain_canary_is_absent_from_debug_errors_and_serialization stdout ----
+
+thread 'keychain_canary_is_absent_from_debug_errors_and_serialization' (103114174) panicked at crates/kontor-accounts/tests/account_security.rs:244:10:
+the alpha fixture home is approved: UnusableConfigHome { alias: CredentialAlias("alpha-home") }
+
+---- launch_receipt_contains_identity_but_no_resolution_material stdout ----
+
+thread 'launch_receipt_contains_identity_but_no_resolution_material' (103114184) panicked at crates/kontor-accounts/tests/account_security.rs:244:10:
+the alpha fixture home is approved: UnusableConfigHome { alias: CredentialAlias("alpha-home") }
+
+---- resolution_never_mutates_process_environment stdout ----
+
+thread 'resolution_never_mutates_process_environment' (103114579) panicked at crates/kontor-accounts/tests/account_security.rs:244:10:
+the alpha fixture home is approved: UnusableConfigHome { alias: CredentialAlias("alpha-home") }
+
+---- resolver_rejects_unapproved_reference_before_backend_access stdout ----
+
+thread 'resolver_rejects_unapproved_reference_before_backend_access' (103114689) panicked at crates/kontor-accounts/tests/account_security.rs:244:10:
+the alpha fixture home is approved: UnusableConfigHome { alias: CredentialAlias("alpha-home") }
+
+---- two_profiles_resolve_concurrently_without_cross_talk stdout ----
+
+thread 'two_profiles_resolve_concurrently_without_cross_talk' (103114709) panicked at crates/kontor-accounts/tests/account_security.rs:244:10:
+the alpha fixture home is approved: UnusableConfigHome { alias: CredentialAlias("alpha-home") }
+
+
+failures:
+    a_failover_intent_records_only_ids_and_a_closed_reason_code
+    a_runtime_that_cannot_prove_an_account_refuses_before_resolution
+    account_pin_bypass_is_refused_before_resolution
+    an_unapproved_config_home_is_not_silently_defaulted
+    concurrent_disable_invalidates_pending_authorization
+    cooling_or_unconfirmed_profile_refuses_before_resolution_or_runtime_call
+    database_logs_export_and_argv_contain_ids_not_secrets
+    disabled_profile_refuses_before_resolution_or_runtime_call
+    failover_creates_a_new_linked_run_and_preserves_old_binding
+    failover_retry_returns_the_same_successor
+    invalid_failover_has_no_partial_run_or_receipt
+    keychain_canary_is_absent_from_debug_errors_and_serialization
+    launch_receipt_contains_identity_but_no_resolution_material
+    resolution_never_mutates_process_environment
+    resolver_rejects_unapproved_reference_before_backend_access
+    two_profiles_resolve_concurrently_without_cross_talk
+
+test result: FAILED. 6 passed; 16 failed; 0 ignored; 0 measured; 0 filtered out; finished in 54.41s
+
+error: test failed, to rerun pass `-p kontor-accounts --test account_security`
+gate failed (exit 101): cargo test --workspace --locked

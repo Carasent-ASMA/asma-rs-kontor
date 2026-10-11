@@ -1,0 +1,18 @@
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-daemon)
+warning: unused variable: `role_code`
+     --> crates/kontor-daemon/src/applications.rs:18753:9
+      |
+18753 |         role_code: &str,
+      |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_role_code`
+      |
+      = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `kontor-daemon` (lib) generated 1 warning (run `cargo fix --lib -p kontor-daemon` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 36.04s
+     Running tests/loopback_api.rs (target/debug/deps/loopback_api-6520399e83adc025)
+
+running 1 test
+test desk_adams::two_epic_adams_in_one_workspace_never_share_ownership_credentials_or_evidence ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 616 filtered out; finished in 2.78s
+

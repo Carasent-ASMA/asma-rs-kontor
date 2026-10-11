@@ -188,7 +188,7 @@ fn an_aligned_bundle_resolves_every_seat_class_without_a_daemon() {
         &realm.leadership("lsa"),
         &["--excluded-vendors", r#"["openai", "anthropic"]"#],
     );
-    assert_eq!(exit, 1, "{envelope}");
+    assert_eq!(exit, 3, "{envelope}");
     assert_eq!(envelope["status"], 409);
     assert_eq!(envelope["body"]["code"], "placement_blocked");
     assert!(envelope["body"]["selection"]["selected"].is_null());
@@ -423,7 +423,7 @@ fn a_joint_allocation_is_one_snapshot_through_the_shared_allocator() {
         ],
     });
     let (exit, envelope) = allocate(realm.path(), &request, &[]);
-    assert_eq!(exit, 1, "{envelope}");
+    assert_eq!(exit, 3, "{envelope}");
     assert_eq!(envelope["status"], 409);
     assert_eq!(envelope["body"]["code"], "placement_blocked");
     assert_eq!(
@@ -668,7 +668,7 @@ fn a_planning_pair_on_one_actual_vendor_is_blocked_whole() {
         ]}),
     ] {
         let (exit, envelope) = place(realm.path(), &request, &[]);
-        assert_eq!(exit, 1, "{envelope}");
+        assert_eq!(exit, 3, "{envelope}");
         assert_eq!(envelope["status"], 409);
         assert_eq!(envelope["body"]["code"], "placement_blocked");
         let placement = &envelope["body"]["placement"];

@@ -1,0 +1,2264 @@
+{
+  "cleanup_owner": "ASMA-8454 TempDir drop",
+  "durable_seats_readback": {
+    "desk_key": "pr-review",
+    "seats": [
+      {
+        "decided_by": "Igor",
+        "decided_on": "2026-10-08",
+        "decision": "none",
+        "declared_at": "2026-10-11T14:57:55.981854Z",
+        "procedure": ".github/skills/pr-draft-status-checker/SKILL.md",
+        "reason": "paseo_direct_owner",
+        "recovery_owner": "paseo_direct",
+        "role_code": "LSA",
+        "seat_key": "checker",
+        "seat_label": "PR DRAFTS STATUS CHECKER",
+        "status": "unchecked",
+        "title": "LSA \u2022 PR DRAFTS STATUS CHECKER"
+      },
+      {
+        "decided_by": "Igor",
+        "decided_on": "2026-10-08",
+        "decision": "none",
+        "declared_at": "2026-10-11T14:57:55.988166Z",
+        "model_route": {
+          "effort": "xhigh",
+          "model": "gpt-5.6-sol",
+          "provider": "codex"
+        },
+        "native_id": "native-hosted-seat-5",
+        "occupancy_generation": 1,
+        "reason": "idle",
+        "recovery_owner": "daemon",
+        "role_code": "LSA",
+        "seat_binding_id": "01a12b78-7114-7271-8264-e20c8ed5e8c7",
+        "seat_key": "fixture",
+        "seat_label": "QUALIFICATION FIXTURE",
+        "status": "healthy",
+        "title": "LSA \u2022 QUALIFICATION FIXTURE"
+      },
+      {
+        "decided_by": "Igor",
+        "decided_on": "2026-10-08",
+        "decision": "none",
+        "declared_at": "2026-10-11T14:57:55.975176Z",
+        "procedure": ".github/skills/asma-pr-review/SKILL.md",
+        "reason": "paseo_direct_owner",
+        "recovery_owner": "paseo_direct",
+        "role_code": "LSA",
+        "seat_key": "general",
+        "seat_label": "GENERAL",
+        "status": "unchecked",
+        "title": "LSA \u2022 GENERAL"
+      }
+    ]
+  },
+  "export_hash": "b2c0a65cc8b100f4cdffc1a96ce2fe5730621bcaa761f06a36ebb86a232aec28",
+  "old_definition_hash": "093b0d852d2be02fd08e442446e860b43fa6506bd973e2b627afec357fcd4dc4",
+  "old_pin": {
+    "canonical_hash": "093b0d852d2be02fd08e442446e860b43fa6506bd973e2b627afec357fcd4dc4",
+    "definition_id": "01936f5a-2000-7000-8000-000000000001",
+    "version": 2
+  },
+  "pr_readback": {
+    "desk_key": "pr-review",
+    "reviews": [
+      {
+        "adam": {
+          "container": {
+            "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/.tmpddg4wu/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12b78-70ca-7ec2-bc9a-de0b9e2768b3",
+            "native_id": "native-container-4",
+            "observed_kind": "workspace",
+            "parent_native_id": "native-container-3",
+            "title": "ADAM",
+            "topology_node_id": "01a12b78-70ca-7ec2-bc9a-de1798af5b3c"
+          },
+          "kind": "PRA",
+          "parent_id": "01a12b78-70ca-7ec2-bc9a-de1798af5b3c",
+          "seats": [
+            {
+              "native_id": "native-hosted-seat-10",
+              "occupancy_generation": 1,
+              "role_code": "TPM",
+              "seat_binding_id": "01a12b78-73ad-79a2-9e51-cefe1290ada4",
+              "slot_id": "tpm",
+              "title": "TPM \u2022 ASMA-448126286 \u2022 asma-rs-kontor#101"
+            }
+          ],
+          "topology_node_id": "01a12b78-73a7-7630-b5ac-d8351b64ab5f"
+        },
+        "created_at": "2026-10-11T14:57:56.647894Z",
+        "desk_key": "pr-review",
+        "epic_id": "01a12b78-6fa0-7090-bfe7-4ca4143d4173",
+        "external_key": "ASMA-448126286",
+        "number": 101,
+        "open": true,
+        "repository": "Carasent-ASMA/asma-rs-kontor",
+        "room": {
+          "container": {
+            "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/.tmpddg4wu/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12b78-70ca-7ec2-bc9a-de0b9e2768b3-room-01a12b78-73a7-7630-b5ac-d848bc40c50b",
+            "native_id": "native-container-9",
+            "observed_kind": "workspace",
+            "parent_native_id": "native-container-3",
+            "title": "RSW \u2022 ASMA-448126286 \u2022 asma-rs-kontor#101",
+            "topology_node_id": "01a12b78-73a7-7630-b5ac-d848bc40c50b"
+          },
+          "kind": "RSW",
+          "parent_id": "01a12b78-70ca-7ec2-bc9a-de0b9e2768b3",
+          "seats": [
+            {
+              "native_id": "native-hosted-seat-11",
+              "occupancy_generation": 1,
+              "role_code": "AUD",
+              "seat_binding_id": "01a12b78-73b4-7ac1-be75-453bd2ef8820",
+              "slot_id": "rev-a",
+              "title": "REV A"
+            },
+            {
+              "native_id": "native-hosted-seat-12",
+              "occupancy_generation": 1,
+              "role_code": "AUD",
+              "seat_binding_id": "01a12b78-73bb-7731-b5a3-67c86819937e",
+              "slot_id": "rev-b",
+              "title": "REV B"
+            },
+            {
+              "native_id": "native-hosted-seat-13",
+              "occupancy_generation": 1,
+              "role_code": "AUD",
+              "seat_binding_id": "01a12b78-73c2-7053-b4ab-05fe917d5dd8",
+              "slot_id": "judge",
+              "title": "JUDGE"
+            }
+          ],
+          "topology_node_id": "01a12b78-73a7-7630-b5ac-d848bc40c50b"
+        },
+        "team_definition": {
+          "id": "01936f5a-2000-7000-8000-000000000001",
+          "version": 8
+        }
+      },
+      {
+        "adam": {
+          "container": {
+            "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/.tmpddg4wu/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12b78-70ca-7ec2-bc9a-de0b9e2768b3",
+            "native_id": "native-container-4",
+            "observed_kind": "workspace",
+            "parent_native_id": "native-container-3",
+            "title": "ADAM",
+            "topology_node_id": "01a12b78-70ca-7ec2-bc9a-de1798af5b3c"
+          },
+          "kind": "PRA",
+          "parent_id": "01a12b78-70ca-7ec2-bc9a-de1798af5b3c",
+          "seats": [
+            {
+              "native_id": "native-hosted-seat-15",
+              "occupancy_generation": 1,
+              "role_code": "TPM",
+              "seat_binding_id": "01a12b78-7424-7a30-a26a-a4a76aa69c0a",
+              "slot_id": "tpm",
+              "title": "TPM \u2022 ASMA-448126286 \u2022 asma-rs-kontor#102"
+            }
+          ],
+          "topology_node_id": "01a12b78-741e-7d23-b748-ee99d60f43af"
+        },
+        "created_at": "2026-10-11T14:57:56.766412Z",
+        "desk_key": "pr-review",
+        "epic_id": "01a12b78-6fa0-7090-bfe7-4ca4143d4173",
+        "external_key": "ASMA-448126286",
+        "number": 102,
+        "open": true,
+        "repository": "Carasent-ASMA/asma-rs-kontor",
+        "room": {
+          "container": {
+            "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/.tmpddg4wu/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12b78-70ca-7ec2-bc9a-de0b9e2768b3-room-01a12b78-741e-7d23-b748-eeae776be0f1",
+            "native_id": "native-container-14",
+            "observed_kind": "workspace",
+            "parent_native_id": "native-container-3",
+            "title": "RSW \u2022 ASMA-448126286 \u2022 asma-rs-kontor#102",
+            "topology_node_id": "01a12b78-741e-7d23-b748-eeae776be0f1"
+          },
+          "kind": "RSW",
+          "parent_id": "01a12b78-70ca-7ec2-bc9a-de0b9e2768b3",
+          "seats": [
+            {
+              "native_id": "native-hosted-seat-16",
+              "occupancy_generation": 1,
+              "role_code": "AUD",
+              "seat_binding_id": "01a12b78-742b-77b3-8a5c-11853b08d5e8",
+              "slot_id": "rev-a",
+              "title": "REV A"
+            },
+            {
+              "native_id": "native-hosted-seat-17",
+              "occupancy_generation": 1,
+              "role_code": "AUD",
+              "seat_binding_id": "01a12b78-7431-76a1-9b12-861d698995bb",
+              "slot_id": "rev-b",
+              "title": "REV B"
+            },
+            {
+              "native_id": "native-hosted-seat-18",
+              "occupancy_generation": 1,
+              "role_code": "AUD",
+              "seat_binding_id": "01a12b78-7438-7cb3-8874-accca63d70d1",
+              "slot_id": "judge",
+              "title": "JUDGE"
+            }
+          ],
+          "topology_node_id": "01a12b78-741e-7d23-b748-eeae776be0f1"
+        },
+        "team_definition": {
+          "id": "01936f5a-2000-7000-8000-000000000001",
+          "version": 8
+        }
+      }
+    ]
+  },
+  "qualification_definition": {
+    "containers": [
+      {
+        "kind": "ESW",
+        "name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "PREFIX"
+            },
+            {
+              "kind": "token",
+              "value": "EPIC_ITEM_CODE"
+            }
+          ]
+        },
+        "parent": null,
+        "prefix": "ESW",
+        "projection_capabilities": [
+          "native_root"
+        ],
+        "read_only": false
+      },
+      {
+        "kind": "ECP",
+        "name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "PREFIX"
+            },
+            {
+              "kind": "token",
+              "value": "EPIC_ITEM_CODE"
+            }
+          ]
+        },
+        "parent": "ESW",
+        "prefix": "ECP",
+        "projection_capabilities": [
+          "native_child",
+          "session_host"
+        ],
+        "read_only": false,
+        "seat_name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "ROLE_CODE"
+            }
+          ]
+        },
+        "slots": [
+          {
+            "capability_profile": "epic-leadership",
+            "role_code": "LSA",
+            "slot_id": "lsa"
+          },
+          {
+            "capability_profile": "epic-coordination",
+            "role_code": "TPM",
+            "slot_id": "tpm"
+          }
+        ]
+      },
+      {
+        "kind": "TSW",
+        "name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "PREFIX"
+            },
+            {
+              "kind": "token",
+              "value": "TASK_ITEM_CODE"
+            }
+          ]
+        },
+        "parent": "ESW",
+        "prefix": "TSW",
+        "projection_capabilities": [
+          "native_child",
+          "session_host"
+        ],
+        "read_only": false,
+        "seat_name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "ROLE_CODE"
+            }
+          ]
+        },
+        "team_slots": [
+          {
+            "capability_profile": "delivery-standard",
+            "role_code": "SA",
+            "slot_id": "scope"
+          },
+          {
+            "capability_profile": "delivery-standard",
+            "role_code": "SWE",
+            "slot_id": "implement"
+          },
+          {
+            "capability_profile": "delivery-standard",
+            "role_code": "QA",
+            "slot_id": "verify"
+          },
+          {
+            "capability_profile": "delivery-high",
+            "role_code": "AUD",
+            "slot_id": "audit"
+          },
+          {
+            "capability_profile": "delivery-standard",
+            "role_code": "SA",
+            "slot_id": "architect"
+          },
+          {
+            "capability_profile": "delivery-standard",
+            "role_code": "SWE",
+            "slot_id": "builder"
+          },
+          {
+            "capability_profile": "delivery-standard",
+            "role_code": "QA",
+            "slot_id": "tester"
+          },
+          {
+            "capability_profile": "delivery-standard",
+            "role_code": "AUD",
+            "slot_id": "inspector"
+          },
+          {
+            "capability_profile": "delivery-standard",
+            "role_code": "UAT",
+            "slot_id": "verifier"
+          }
+        ]
+      },
+      {
+        "kind": "ASW",
+        "name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "PREFIX"
+            },
+            {
+              "kind": "token",
+              "value": "SCOPE_ITEM_CODE"
+            },
+            {
+              "kind": "token",
+              "value": "TOPIC"
+            }
+          ]
+        },
+        "parent": "ESW",
+        "prefix": "ASW",
+        "projection_capabilities": [
+          "native_child",
+          "session_host"
+        ],
+        "read_only": true,
+        "seat_name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "ROLE_CODE"
+            }
+          ]
+        },
+        "slots": [
+          {
+            "capability_profile": "independent-advisor",
+            "role_code": "SA",
+            "slot_id": "software-architect"
+          },
+          {
+            "capability_profile": "independent-advisor",
+            "role_code": "AUD",
+            "slot_id": "auditor"
+          }
+        ]
+      },
+      {
+        "kind": "CSW",
+        "name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "PREFIX"
+            },
+            {
+              "kind": "token",
+              "value": "SCOPE_ITEM_CODE"
+            },
+            {
+              "kind": "token",
+              "value": "TOPIC"
+            }
+          ]
+        },
+        "parent": "ESW",
+        "prefix": "CSW",
+        "projection_capabilities": [
+          "native_child",
+          "session_host"
+        ],
+        "read_only": true,
+        "seat_name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "SLOT_DISPLAY_NAME"
+            }
+          ]
+        },
+        "slots": [
+          {
+            "capability_profile": "independent-reviewer",
+            "display_name": "SEAT A",
+            "slot_id": "reviewer-a"
+          },
+          {
+            "capability_profile": "independent-reviewer",
+            "display_name": "SEAT B",
+            "slot_id": "reviewer-b"
+          },
+          {
+            "capability_profile": "committee-judge",
+            "display_name": "JUDGE",
+            "slot_id": "judge"
+          }
+        ]
+      },
+      {
+        "kind": "DESK",
+        "name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "PREFIX"
+            },
+            {
+              "kind": "token",
+              "value": "DESK_NAME"
+            }
+          ]
+        },
+        "parent": null,
+        "prefix": "DESK",
+        "projection_capabilities": [
+          "native_root"
+        ],
+        "read_only": false
+      },
+      {
+        "kind": "DWS",
+        "name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "PREFIX"
+            }
+          ]
+        },
+        "parent": "DESK",
+        "prefix": "ADAM",
+        "projection_capabilities": [
+          "native_child",
+          "session_host"
+        ],
+        "read_only": false
+      },
+      {
+        "kind": "PRA",
+        "name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "PREFIX"
+            }
+          ]
+        },
+        "parent": "DWS",
+        "prefix": "PRA",
+        "projection_capabilities": [
+          "parent_session_host"
+        ],
+        "read_only": false,
+        "seat_name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "ROLE_CODE"
+            },
+            {
+              "kind": "token",
+              "value": "SCOPE_JIRA_KEY"
+            },
+            {
+              "kind": "token",
+              "value": "PULL_REQUEST"
+            }
+          ]
+        },
+        "slots": [
+          {
+            "capability_profile": "epic-coordination",
+            "role_code": "TPM",
+            "slot_id": "tpm"
+          }
+        ]
+      },
+      {
+        "kind": "RSW",
+        "name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "PREFIX"
+            },
+            {
+              "kind": "token",
+              "value": "SCOPE_JIRA_KEY"
+            },
+            {
+              "kind": "token",
+              "value": "PULL_REQUEST"
+            }
+          ]
+        },
+        "parent": "DESK",
+        "prefix": "RSW",
+        "projection_capabilities": [
+          "native_child",
+          "session_host"
+        ],
+        "read_only": false,
+        "seat_name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "SLOT_DISPLAY_NAME"
+            }
+          ]
+        },
+        "slots": [
+          {
+            "capability_profile": "independent-reviewer",
+            "display_name": "REV A",
+            "slot_id": "rev-a"
+          },
+          {
+            "capability_profile": "independent-reviewer",
+            "display_name": "REV B",
+            "slot_id": "rev-b"
+          },
+          {
+            "capability_profile": "committee-judge",
+            "display_name": "JUDGE",
+            "slot_id": "judge"
+          }
+        ]
+      },
+      {
+        "kind": "ADE",
+        "name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "PREFIX"
+            }
+          ]
+        },
+        "parent": "DWS",
+        "prefix": "ADE",
+        "projection_capabilities": [
+          "parent_session_host"
+        ],
+        "read_only": false,
+        "seat_name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "ROLE_CODE"
+            },
+            {
+              "kind": "token",
+              "value": "EPIC_JIRA_KEY"
+            },
+            {
+              "kind": "token",
+              "value": "TOPIC"
+            }
+          ]
+        },
+        "slots": [
+          {
+            "capability_profile": "epic-leadership",
+            "role_code": "LSA",
+            "slot_id": "lsa"
+          },
+          {
+            "capability_profile": "epic-leadership",
+            "role_code": "TPM",
+            "slot_id": "tpm"
+          }
+        ]
+      },
+      {
+        "kind": "ADH",
+        "name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "PREFIX"
+            }
+          ]
+        },
+        "parent": "DWS",
+        "prefix": "ADH",
+        "projection_capabilities": [
+          "parent_session_host"
+        ],
+        "read_only": false,
+        "seat_name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "ROLE_CODE"
+            },
+            {
+              "kind": "literal",
+              "value": "ADHOC"
+            },
+            {
+              "kind": "token",
+              "value": "TOPIC"
+            }
+          ]
+        },
+        "slots": [
+          {
+            "capability_profile": "epic-leadership",
+            "role_code": "LSA",
+            "slot_id": "lsa"
+          }
+        ]
+      }
+    ],
+    "definition_id": "01936f5a-2000-7000-8000-000000000001",
+    "desk_leadership": {
+      "ad_hoc_kind": "ADH",
+      "desk_key": "adam",
+      "epic_kind": "ADE"
+    },
+    "desks": [
+      {
+        "desk_key": "adam",
+        "display_name": "ADAM",
+        "kind": "DESK",
+        "workspace_kind": "DWS"
+      },
+      {
+        "desk_key": "pr-review",
+        "display_name": "PR REVIEW",
+        "kind": "DESK",
+        "workspace_kind": "DWS"
+      }
+    ],
+    "name": "ASMA Operational Team Definition",
+    "pr_review": {
+      "adam_kind": "PRA",
+      "desk_key": "pr-review",
+      "room_kind": "RSW",
+      "room_roles": [
+        {
+          "role_code": "AUD",
+          "slot_id": "rev-a"
+        },
+        {
+          "role_code": "AUD",
+          "slot_id": "rev-b"
+        },
+        {
+          "role_code": "AUD",
+          "slot_id": "judge"
+        }
+      ]
+    },
+    "schema_version": 1,
+    "separator": " \u2022 ",
+    "topology": {
+      "canonical_hash": "5c8d6d480fbf997a1217dec51574b842e4eb2d9a53cbbb00e56367252a81d54b",
+      "spec_id": "01936f5a-1000-7000-8000-000000000001",
+      "version": 5
+    },
+    "version": 8
+  },
+  "qualification_topology": {
+    "historical_codes": [
+      {
+        "help": {
+          "category": "session_topology",
+          "full_name": "Ticket Session Committee",
+          "lifecycle": "compatibility",
+          "meaning": "Historical name accepted only at read or import boundaries and normalized to CSW."
+        },
+        "kind": "TSC"
+      },
+      {
+        "help": {
+          "category": "session_topology",
+          "full_name": "Removed historical topology term",
+          "lifecycle": "retired",
+          "meaning": "Obsolete term that must not be emitted or seeded by new state."
+        },
+        "kind": "PASE"
+      }
+    ],
+    "name": "PR review vocabulary",
+    "name_separator": " \u2022 ",
+    "node_kinds": [
+      {
+        "allowed_parents": [],
+        "cardinality": {
+          "maximum": 1,
+          "minimum": 1
+        },
+        "code_help": {
+          "category": "session_topology",
+          "full_name": "Project Session Workspace",
+          "lifecycle": "current",
+          "meaning": "Logical root grouping the Quick and Epic session scopes of one Kontor Project."
+        },
+        "kind": "PSW",
+        "name_template": {
+          "segments": [
+            {
+              "kind": "literal",
+              "value": "Project Session Workspace"
+            }
+          ]
+        },
+        "projection_capabilities": [
+          "native_root"
+        ],
+        "read_only": false
+      },
+      {
+        "allowed_parents": [
+          "PSW"
+        ],
+        "cardinality": {
+          "minimum": 0
+        },
+        "code_help": {
+          "category": "session_topology",
+          "full_name": "Quick Session Workspace",
+          "lifecycle": "current",
+          "meaning": "Ad-hoc single-role session scope that may later provide an epic promotion handoff."
+        },
+        "kind": "QSW",
+        "name_template": {
+          "segments": [
+            {
+              "kind": "literal",
+              "value": "Quick Session Workspace"
+            }
+          ]
+        },
+        "projection_capabilities": [
+          "native_child",
+          "session_host"
+        ],
+        "read_only": false,
+        "seat_name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "AREA_CODE"
+            }
+          ]
+        }
+      },
+      {
+        "allowed_parents": [
+          "PSW"
+        ],
+        "cardinality": {
+          "minimum": 0
+        },
+        "code_help": {
+          "category": "session_topology",
+          "full_name": "Epic Session Workspace",
+          "lifecycle": "current",
+          "meaning": "Complete logical boundary for one concrete epic; Paseo projects it as one epic project."
+        },
+        "kind": "ESW",
+        "name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "AREA_CODE"
+            },
+            {
+              "kind": "token",
+              "value": "ITEM_CODE"
+            }
+          ]
+        },
+        "projection_capabilities": [
+          "native_root"
+        ],
+        "read_only": false
+      },
+      {
+        "allowed_parents": [
+          "ESW"
+        ],
+        "cardinality": {
+          "maximum": 1,
+          "minimum": 1
+        },
+        "code_help": {
+          "category": "session_topology",
+          "full_name": "Epic Control Plane",
+          "lifecycle": "current",
+          "meaning": "Specification-defined ESW child grouping persistent epic leadership, coordination and authorized ad-hoc seats in one runtime session host."
+        },
+        "kind": "ECP",
+        "name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "AREA_CODE"
+            },
+            {
+              "kind": "token",
+              "value": "ITEM_CODE"
+            }
+          ]
+        },
+        "projection_capabilities": [
+          "native_child",
+          "session_host"
+        ],
+        "read_only": false,
+        "seat_name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "AREA_CODE"
+            },
+            {
+              "kind": "token",
+              "value": "ITEM_CODE"
+            }
+          ]
+        }
+      },
+      {
+        "allowed_parents": [
+          "ESW"
+        ],
+        "cardinality": {
+          "minimum": 0
+        },
+        "code_help": {
+          "category": "session_topology",
+          "full_name": "Ticket Session Workspace",
+          "lifecycle": "current",
+          "meaning": "Delivery workspace for one ticket and all persistent seats in that ticket's TeamRun."
+        },
+        "kind": "TSW",
+        "name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "AREA_CODE"
+            },
+            {
+              "kind": "token",
+              "value": "ITEM_CODE"
+            }
+          ]
+        },
+        "projection_capabilities": [
+          "native_child",
+          "session_host"
+        ],
+        "read_only": false,
+        "seat_name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "AREA_CODE"
+            },
+            {
+              "kind": "token",
+              "value": "ITEM_CODE"
+            }
+          ]
+        }
+      },
+      {
+        "allowed_parents": [
+          "ESW"
+        ],
+        "cardinality": {
+          "minimum": 0
+        },
+        "code_help": {
+          "category": "session_topology",
+          "full_name": "Advisor Session Workspace",
+          "lifecycle": "current",
+          "meaning": "Read-only workspace for one Advisor consultation and one Advisor seat."
+        },
+        "kind": "ASW",
+        "name_template": {
+          "segments": [
+            {
+              "kind": "literal",
+              "value": "Advisor Session Workspace"
+            }
+          ]
+        },
+        "projection_capabilities": [
+          "native_child",
+          "session_host"
+        ],
+        "read_only": true,
+        "seat_name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "AREA_CODE"
+            }
+          ]
+        }
+      },
+      {
+        "allowed_parents": [
+          "ESW"
+        ],
+        "cardinality": {
+          "minimum": 0
+        },
+        "code_help": {
+          "category": "session_topology",
+          "full_name": "Committee Session Workspace",
+          "lifecycle": "current",
+          "meaning": "Read-only workspace for one Committee run or topic and its template-declared seats."
+        },
+        "kind": "CSW",
+        "name_template": {
+          "segments": [
+            {
+              "kind": "literal",
+              "value": "Committee Session Workspace"
+            }
+          ]
+        },
+        "projection_capabilities": [
+          "native_child",
+          "session_host"
+        ],
+        "read_only": true,
+        "seat_name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "AREA_CODE"
+            }
+          ]
+        }
+      },
+      {
+        "allowed_parents": [
+          "PSW"
+        ],
+        "cardinality": {
+          "minimum": 0
+        },
+        "code_help": {
+          "category": "session_topology",
+          "full_name": "Durable Desk",
+          "lifecycle": "current",
+          "meaning": "A desk."
+        },
+        "kind": "DESK",
+        "name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "AREA_CODE"
+            }
+          ]
+        },
+        "projection_capabilities": [
+          "native_root"
+        ],
+        "read_only": false
+      },
+      {
+        "allowed_parents": [
+          "DESK"
+        ],
+        "cardinality": {
+          "maximum": 1,
+          "minimum": 1
+        },
+        "code_help": {
+          "category": "session_topology",
+          "full_name": "Desk Workspace",
+          "lifecycle": "current",
+          "meaning": "A desk's workspace."
+        },
+        "kind": "DWS",
+        "name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "AREA_CODE"
+            }
+          ]
+        },
+        "projection_capabilities": [
+          "native_child",
+          "session_host"
+        ],
+        "read_only": false,
+        "seat_name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "AREA_CODE"
+            }
+          ]
+        }
+      },
+      {
+        "allowed_parents": [
+          "DWS"
+        ],
+        "cardinality": {
+          "minimum": 0
+        },
+        "code_help": {
+          "category": "session_topology",
+          "full_name": "PR Adam",
+          "lifecycle": "current",
+          "meaning": "One pull request's Adam."
+        },
+        "kind": "PRA",
+        "name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "AREA_CODE"
+            }
+          ]
+        },
+        "projection_capabilities": [
+          "parent_session_host"
+        ],
+        "read_only": false,
+        "seat_name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "AREA_CODE"
+            }
+          ]
+        }
+      },
+      {
+        "allowed_parents": [
+          "DESK"
+        ],
+        "cardinality": {
+          "minimum": 0
+        },
+        "code_help": {
+          "category": "session_topology",
+          "full_name": "Review Room",
+          "lifecycle": "current",
+          "meaning": "One pull request's room."
+        },
+        "kind": "RSW",
+        "name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "AREA_CODE"
+            }
+          ]
+        },
+        "projection_capabilities": [
+          "native_child",
+          "session_host"
+        ],
+        "read_only": false,
+        "seat_name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "AREA_CODE"
+            }
+          ]
+        }
+      },
+      {
+        "allowed_parents": [
+          "DWS"
+        ],
+        "cardinality": {
+          "minimum": 0
+        },
+        "code_help": {
+          "category": "session_topology",
+          "full_name": "Epic Adam",
+          "lifecycle": "current",
+          "meaning": "An epic's desk leadership."
+        },
+        "kind": "ADE",
+        "name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "AREA_CODE"
+            }
+          ]
+        },
+        "projection_capabilities": [
+          "parent_session_host"
+        ],
+        "read_only": false,
+        "seat_name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "AREA_CODE"
+            }
+          ]
+        }
+      },
+      {
+        "allowed_parents": [
+          "DWS"
+        ],
+        "cardinality": {
+          "minimum": 0
+        },
+        "code_help": {
+          "category": "session_topology",
+          "full_name": "Ad-hoc Adam",
+          "lifecycle": "current",
+          "meaning": "Ad-hoc desk leadership."
+        },
+        "kind": "ADH",
+        "name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "AREA_CODE"
+            }
+          ]
+        },
+        "projection_capabilities": [
+          "parent_session_host"
+        ],
+        "read_only": false,
+        "seat_name_template": {
+          "segments": [
+            {
+              "kind": "token",
+              "value": "AREA_CODE"
+            }
+          ]
+        }
+      }
+    ],
+    "root_kind": "PSW",
+    "schema_version": 1,
+    "spec_id": "01936f5a-1000-7000-8000-000000000001",
+    "version": 5
+  },
+  "restored_census": {
+    "bindings": [
+      {
+        "container": null,
+        "hosted": [],
+        "node": {
+          "created_at": "2026-10-11T14:57:55.645919Z",
+          "id": "01a12b78-6fbd-72d1-ab64-d1b5a9396b3d",
+          "kind": "PSW",
+          "lifecycle": "active",
+          "placement": "unbound",
+          "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+          "revision": 1,
+          "topology": {
+            "canonical_hash": "8002119bf101864ce4f8b34c6b9308b08a422210c9baf4f1d5d118e2a6b9b3cf",
+            "spec_id": "01936f5a-1000-7000-8000-000000000001",
+            "version": 4
+          },
+          "updated_at": "2026-10-11T14:57:55.645919Z"
+        },
+        "seats": []
+      },
+      {
+        "container": null,
+        "hosted": [],
+        "node": {
+          "created_at": "2026-10-11T14:57:55.645919Z",
+          "id": "01a12b78-6fd3-7cd2-a089-4430b360a516",
+          "kind": "ESW",
+          "lifecycle": "active",
+          "mini_project_id": "01a12b78-6fa0-7090-bfe7-4ca4143d4173",
+          "parent_id": "01a12b78-6fbd-72d1-ab64-d1b5a9396b3d",
+          "placement": "unbound",
+          "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+          "revision": 1,
+          "topology": {
+            "canonical_hash": "8002119bf101864ce4f8b34c6b9308b08a422210c9baf4f1d5d118e2a6b9b3cf",
+            "spec_id": "01936f5a-1000-7000-8000-000000000001",
+            "version": 4
+          },
+          "updated_at": "2026-10-11T14:57:55.645919Z"
+        },
+        "seats": []
+      },
+      {
+        "container": null,
+        "hosted": [
+          null,
+          null
+        ],
+        "node": {
+          "created_at": "2026-10-11T14:57:55.645919Z",
+          "id": "01a12b78-6fd7-7b90-8f19-d2a0d9eb692d",
+          "kind": "ECP",
+          "lifecycle": "active",
+          "mini_project_id": "01a12b78-6fa0-7090-bfe7-4ca4143d4173",
+          "parent_id": "01a12b78-6fd3-7cd2-a089-4430b360a516",
+          "placement": "unbound",
+          "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+          "revision": 1,
+          "topology": {
+            "canonical_hash": "8002119bf101864ce4f8b34c6b9308b08a422210c9baf4f1d5d118e2a6b9b3cf",
+            "spec_id": "01936f5a-1000-7000-8000-000000000001",
+            "version": 4
+          },
+          "updated_at": "2026-10-11T14:57:55.645919Z"
+        },
+        "seats": [
+          {
+            "attach_deadline": "2026-10-11T15:07:55.618648Z",
+            "created_at": "2026-10-11T14:57:55.618648Z",
+            "id": "01a12b78-6fd9-7b23-8419-f954de3a15a6",
+            "lifecycle": "active",
+            "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+            "revision": 1,
+            "role": {
+              "catalog_id": "01936f5a-1000-7000-8000-000000000002",
+              "catalog_revision": 1,
+              "role_code": "LSA",
+              "standard_title": "Lead Software Architect"
+            },
+            "role_slot_id": "lsa",
+            "topology_node_id": "01a12b78-6fd7-7b90-8f19-d2a0d9eb692d",
+            "updated_at": "2026-10-11T14:57:55.618648Z"
+          },
+          {
+            "attach_deadline": "2026-10-11T15:07:55.618648Z",
+            "created_at": "2026-10-11T14:57:55.618648Z",
+            "id": "01a12b78-6fdf-77f0-915f-8a94e54ff58a",
+            "lifecycle": "active",
+            "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+            "revision": 1,
+            "role": {
+              "catalog_id": "01936f5a-1000-7000-8000-000000000002",
+              "catalog_revision": 1,
+              "role_code": "TPM",
+              "standard_title": "Technical Program Manager"
+            },
+            "role_slot_id": "tpm",
+            "topology_node_id": "01a12b78-6fd7-7b90-8f19-d2a0d9eb692d",
+            "updated_at": "2026-10-11T14:57:55.618648Z"
+          }
+        ]
+      },
+      {
+        "container": {
+          "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/.tmpddg4wu/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12b78-7086-7553-a620-8f81b3000328",
+          "id": "01a12b78-70ad-7b60-ad57-6ce9a6a62250",
+          "identity": {
+            "generation": 1,
+            "host": "fake-host",
+            "native_id": "native-container-1",
+            "runtime_kind": "fake.runtime"
+          },
+          "kind": "project",
+          "parent": null,
+          "title": "DESK \u2022 ADAM"
+        },
+        "hosted": [],
+        "node": {
+          "created_at": "2026-10-11T14:57:55.846012Z",
+          "id": "01a12b78-7086-7553-a620-8f81b3000328",
+          "kind": "DESK",
+          "lifecycle": "active",
+          "parent_id": "01a12b78-6fbd-72d1-ab64-d1b5a9396b3d",
+          "placement": "bound",
+          "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+          "revision": 2,
+          "topology": {
+            "canonical_hash": "5c8d6d480fbf997a1217dec51574b842e4eb2d9a53cbbb00e56367252a81d54b",
+            "spec_id": "01936f5a-1000-7000-8000-000000000001",
+            "version": 5
+          },
+          "updated_at": "2026-10-11T14:57:55.885701Z"
+        },
+        "seats": []
+      },
+      {
+        "container": {
+          "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/.tmpddg4wu/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12b78-7086-7553-a620-8f81b3000328",
+          "id": "01a12b78-70b0-73b2-997c-f4fbeebbe2f1",
+          "identity": {
+            "generation": 1,
+            "host": "fake-host",
+            "native_id": "native-container-2",
+            "runtime_kind": "fake.runtime"
+          },
+          "kind": "workspace",
+          "parent": {
+            "generation": 1,
+            "host": "fake-host",
+            "native_id": "native-container-1",
+            "runtime_kind": "fake.runtime"
+          },
+          "title": "ADAM"
+        },
+        "hosted": [],
+        "node": {
+          "created_at": "2026-10-11T14:57:55.846012Z",
+          "id": "01a12b78-7086-7553-a620-8f90d6467aef",
+          "kind": "DWS",
+          "lifecycle": "active",
+          "parent_id": "01a12b78-7086-7553-a620-8f81b3000328",
+          "placement": "bound",
+          "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+          "revision": 2,
+          "topology": {
+            "canonical_hash": "5c8d6d480fbf997a1217dec51574b842e4eb2d9a53cbbb00e56367252a81d54b",
+            "spec_id": "01936f5a-1000-7000-8000-000000000001",
+            "version": 5
+          },
+          "updated_at": "2026-10-11T14:57:55.888922Z"
+        },
+        "seats": []
+      },
+      {
+        "container": {
+          "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/.tmpddg4wu/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12b78-70ca-7ec2-bc9a-de0b9e2768b3",
+          "id": "01a12b78-70f1-7513-98dd-46382e5120a3",
+          "identity": {
+            "generation": 1,
+            "host": "fake-host",
+            "native_id": "native-container-3",
+            "runtime_kind": "fake.runtime"
+          },
+          "kind": "project",
+          "parent": null,
+          "title": "DESK \u2022 PR REVIEW"
+        },
+        "hosted": [],
+        "node": {
+          "created_at": "2026-10-11T14:57:55.914433Z",
+          "id": "01a12b78-70ca-7ec2-bc9a-de0b9e2768b3",
+          "kind": "DESK",
+          "lifecycle": "active",
+          "parent_id": "01a12b78-6fbd-72d1-ab64-d1b5a9396b3d",
+          "placement": "bound",
+          "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+          "revision": 2,
+          "topology": {
+            "canonical_hash": "5c8d6d480fbf997a1217dec51574b842e4eb2d9a53cbbb00e56367252a81d54b",
+            "spec_id": "01936f5a-1000-7000-8000-000000000001",
+            "version": 5
+          },
+          "updated_at": "2026-10-11T14:57:55.95351Z"
+        },
+        "seats": []
+      },
+      {
+        "container": {
+          "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/.tmpddg4wu/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12b78-70ca-7ec2-bc9a-de0b9e2768b3",
+          "id": "01a12b78-70f4-7151-8acf-63621b2ac09a",
+          "identity": {
+            "generation": 1,
+            "host": "fake-host",
+            "native_id": "native-container-4",
+            "runtime_kind": "fake.runtime"
+          },
+          "kind": "workspace",
+          "parent": {
+            "generation": 1,
+            "host": "fake-host",
+            "native_id": "native-container-3",
+            "runtime_kind": "fake.runtime"
+          },
+          "title": "ADAM"
+        },
+        "hosted": [
+          {
+            "autonomy": "supervised",
+            "model_rung": {
+              "effort": "xhigh",
+              "model": "gpt-5.6-sol",
+              "provider": "codex"
+            },
+            "native_identity": {
+              "generation": 1,
+              "host": "fake-host",
+              "native_id": "native-hosted-seat-5",
+              "runtime_kind": "fake.runtime"
+            },
+            "observed_at": "2026-10-11T14:57:55.997959Z",
+            "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+            "provider_session_id": "provider-hosted-seat-5",
+            "seat_binding_id": "01a12b78-7114-7271-8264-e20c8ed5e8c7"
+          }
+        ],
+        "node": {
+          "created_at": "2026-10-11T14:57:55.914433Z",
+          "id": "01a12b78-70ca-7ec2-bc9a-de1798af5b3c",
+          "kind": "DWS",
+          "lifecycle": "active",
+          "parent_id": "01a12b78-70ca-7ec2-bc9a-de0b9e2768b3",
+          "placement": "bound",
+          "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+          "revision": 2,
+          "topology": {
+            "canonical_hash": "5c8d6d480fbf997a1217dec51574b842e4eb2d9a53cbbb00e56367252a81d54b",
+            "spec_id": "01936f5a-1000-7000-8000-000000000001",
+            "version": 5
+          },
+          "updated_at": "2026-10-11T14:57:55.956583Z"
+        },
+        "seats": [
+          {
+            "attach_deadline": "2026-10-11T15:07:55.997959Z",
+            "created_at": "2026-10-11T14:57:55.997959Z",
+            "id": "01a12b78-7114-7271-8264-e20c8ed5e8c7",
+            "last_attached_at": "2026-10-11T14:57:55.997959Z",
+            "lifecycle": "active",
+            "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+            "revision": 2,
+            "role": {
+              "catalog_id": "01936f5a-1000-7000-8000-000000000002",
+              "catalog_revision": 1,
+              "role_code": "LSA",
+              "standard_title": "Lead Software Architect"
+            },
+            "role_slot_id": "fixture",
+            "runtime_reported": "running",
+            "topology_node_id": "01a12b78-70ca-7ec2-bc9a-de1798af5b3c",
+            "updated_at": "2026-10-11T14:57:55.997959Z"
+          }
+        ]
+      },
+      {
+        "container": null,
+        "hosted": [],
+        "node": {
+          "created_at": "2026-10-11T14:57:56.14586Z",
+          "id": "01a12b78-71c3-7613-a2d2-c86689deb989",
+          "kind": "ESW",
+          "lifecycle": "active",
+          "mini_project_id": "01a12b78-7199-7451-85e2-b717e9e0f898",
+          "parent_id": "01a12b78-6fbd-72d1-ab64-d1b5a9396b3d",
+          "placement": "unbound",
+          "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+          "revision": 1,
+          "topology": {
+            "canonical_hash": "5c8d6d480fbf997a1217dec51574b842e4eb2d9a53cbbb00e56367252a81d54b",
+            "spec_id": "01936f5a-1000-7000-8000-000000000001",
+            "version": 5
+          },
+          "updated_at": "2026-10-11T14:57:56.14586Z"
+        },
+        "seats": []
+      },
+      {
+        "container": null,
+        "hosted": [
+          {
+            "autonomy": "supervised",
+            "model_rung": {
+              "effort": "high",
+              "model": "claude-opus-5",
+              "provider": "claude"
+            },
+            "native_identity": {
+              "generation": 1,
+              "host": "fake-host",
+              "native_id": "native-hosted-seat-6",
+              "runtime_kind": "fake.runtime"
+            },
+            "observed_at": "2026-10-11T14:57:56.304054Z",
+            "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+            "provider_session_id": "provider-hosted-seat-6",
+            "seat_binding_id": "01a12b78-71f3-7343-8f1e-83e2145ea401"
+          },
+          null
+        ],
+        "node": {
+          "created_at": "2026-10-11T14:57:56.208365Z",
+          "id": "01a12b78-71de-75b1-979f-a56075a0c72a",
+          "kind": "ADE",
+          "lifecycle": "active",
+          "mini_project_id": "01a12b78-7199-7451-85e2-b717e9e0f898",
+          "parent_id": "01a12b78-7086-7553-a620-8f90d6467aef",
+          "placement": "unbound",
+          "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+          "revision": 1,
+          "topology": {
+            "canonical_hash": "5c8d6d480fbf997a1217dec51574b842e4eb2d9a53cbbb00e56367252a81d54b",
+            "spec_id": "01936f5a-1000-7000-8000-000000000001",
+            "version": 5
+          },
+          "updated_at": "2026-10-11T14:57:56.208365Z"
+        },
+        "seats": [
+          {
+            "attach_deadline": "2026-10-11T15:07:56.123766Z",
+            "created_at": "2026-10-11T14:57:56.123766Z",
+            "id": "01a12b78-71f3-7343-8f1e-83e2145ea401",
+            "last_attached_at": "2026-10-11T14:57:56.304054Z",
+            "lifecycle": "active",
+            "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+            "revision": 2,
+            "role": {
+              "catalog_id": "01936f5a-1000-7000-8000-000000000002",
+              "catalog_revision": 1,
+              "role_code": "LSA",
+              "standard_title": "Lead Software Architect"
+            },
+            "role_slot_id": "lsa",
+            "runtime_reported": "running",
+            "topology_node_id": "01a12b78-71de-75b1-979f-a56075a0c72a",
+            "updated_at": "2026-10-11T14:57:56.304054Z"
+          },
+          {
+            "attach_deadline": "2026-10-11T15:07:56.123766Z",
+            "created_at": "2026-10-11T14:57:56.123766Z",
+            "id": "01a12b78-71fa-7bf3-becd-d3da932355bc",
+            "lifecycle": "active",
+            "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+            "revision": 1,
+            "role": {
+              "catalog_id": "01936f5a-1000-7000-8000-000000000002",
+              "catalog_revision": 1,
+              "role_code": "TPM",
+              "standard_title": "Technical Program Manager"
+            },
+            "role_slot_id": "tpm",
+            "topology_node_id": "01a12b78-71de-75b1-979f-a56075a0c72a",
+            "updated_at": "2026-10-11T14:57:56.123766Z"
+          }
+        ]
+      },
+      {
+        "container": null,
+        "hosted": [],
+        "node": {
+          "created_at": "2026-10-11T14:57:56.361802Z",
+          "id": "01a12b78-729b-7a00-996e-7707ab9009a2",
+          "kind": "ESW",
+          "lifecycle": "active",
+          "mini_project_id": "01a12b78-7271-7fd0-974c-63bfd917fd34",
+          "parent_id": "01a12b78-6fbd-72d1-ab64-d1b5a9396b3d",
+          "placement": "unbound",
+          "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+          "revision": 1,
+          "topology": {
+            "canonical_hash": "5c8d6d480fbf997a1217dec51574b842e4eb2d9a53cbbb00e56367252a81d54b",
+            "spec_id": "01936f5a-1000-7000-8000-000000000001",
+            "version": 5
+          },
+          "updated_at": "2026-10-11T14:57:56.361802Z"
+        },
+        "seats": []
+      },
+      {
+        "container": null,
+        "hosted": [
+          {
+            "autonomy": "supervised",
+            "model_rung": {
+              "effort": "high",
+              "model": "claude-opus-5",
+              "provider": "claude"
+            },
+            "native_identity": {
+              "generation": 1,
+              "host": "fake-host",
+              "native_id": "native-hosted-seat-7",
+              "runtime_kind": "fake.runtime"
+            },
+            "observed_at": "2026-10-11T14:57:56.516267Z",
+            "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+            "provider_session_id": "provider-hosted-seat-7",
+            "seat_binding_id": "01a12b78-72ca-7102-9581-8533bfecac97"
+          },
+          null
+        ],
+        "node": {
+          "created_at": "2026-10-11T14:57:56.424006Z",
+          "id": "01a12b78-72b6-7e10-9cbf-8b6b1f0c5d97",
+          "kind": "ADE",
+          "lifecycle": "active",
+          "mini_project_id": "01a12b78-7271-7fd0-974c-63bfd917fd34",
+          "parent_id": "01a12b78-7086-7553-a620-8f90d6467aef",
+          "placement": "unbound",
+          "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+          "revision": 1,
+          "topology": {
+            "canonical_hash": "5c8d6d480fbf997a1217dec51574b842e4eb2d9a53cbbb00e56367252a81d54b",
+            "spec_id": "01936f5a-1000-7000-8000-000000000001",
+            "version": 5
+          },
+          "updated_at": "2026-10-11T14:57:56.424006Z"
+        },
+        "seats": [
+          {
+            "attach_deadline": "2026-10-11T15:07:56.339642Z",
+            "created_at": "2026-10-11T14:57:56.339642Z",
+            "id": "01a12b78-72ca-7102-9581-8533bfecac97",
+            "last_attached_at": "2026-10-11T14:57:56.516267Z",
+            "lifecycle": "active",
+            "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+            "revision": 2,
+            "role": {
+              "catalog_id": "01936f5a-1000-7000-8000-000000000002",
+              "catalog_revision": 1,
+              "role_code": "LSA",
+              "standard_title": "Lead Software Architect"
+            },
+            "role_slot_id": "lsa",
+            "runtime_reported": "running",
+            "topology_node_id": "01a12b78-72b6-7e10-9cbf-8b6b1f0c5d97",
+            "updated_at": "2026-10-11T14:57:56.516267Z"
+          },
+          {
+            "attach_deadline": "2026-10-11T15:07:56.339642Z",
+            "created_at": "2026-10-11T14:57:56.339642Z",
+            "id": "01a12b78-72d1-7ce2-a363-d7a736905a7b",
+            "lifecycle": "active",
+            "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+            "revision": 1,
+            "role": {
+              "catalog_id": "01936f5a-1000-7000-8000-000000000002",
+              "catalog_revision": 1,
+              "role_code": "TPM",
+              "standard_title": "Technical Program Manager"
+            },
+            "role_slot_id": "tpm",
+            "topology_node_id": "01a12b78-72b6-7e10-9cbf-8b6b1f0c5d97",
+            "updated_at": "2026-10-11T14:57:56.339642Z"
+          }
+        ]
+      },
+      {
+        "container": null,
+        "hosted": [
+          {
+            "autonomy": "supervised",
+            "model_rung": {
+              "effort": "high",
+              "model": "claude-opus-5",
+              "provider": "claude"
+            },
+            "native_identity": {
+              "generation": 1,
+              "host": "fake-host",
+              "native_id": "native-hosted-seat-8",
+              "runtime_kind": "fake.runtime"
+            },
+            "observed_at": "2026-10-11T14:57:56.605275Z",
+            "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+            "provider_session_id": "provider-hosted-seat-8",
+            "seat_binding_id": "01a12b78-7367-7c23-b8ad-217e5cae85c0"
+          }
+        ],
+        "node": {
+          "created_at": "2026-10-11T14:57:56.580784Z",
+          "id": "01a12b78-734e-7e91-99b5-abefde2cdc6b",
+          "kind": "ADH",
+          "lifecycle": "active",
+          "parent_id": "01a12b78-7086-7553-a620-8f90d6467aef",
+          "placement": "unbound",
+          "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+          "revision": 1,
+          "topology": {
+            "canonical_hash": "5c8d6d480fbf997a1217dec51574b842e4eb2d9a53cbbb00e56367252a81d54b",
+            "spec_id": "01936f5a-1000-7000-8000-000000000001",
+            "version": 5
+          },
+          "updated_at": "2026-10-11T14:57:56.580784Z"
+        },
+        "seats": [
+          {
+            "attach_deadline": "2026-10-11T15:07:56.583645Z",
+            "created_at": "2026-10-11T14:57:56.583645Z",
+            "id": "01a12b78-7367-7c23-b8ad-217e5cae85c0",
+            "last_attached_at": "2026-10-11T14:57:56.605275Z",
+            "lifecycle": "active",
+            "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+            "revision": 2,
+            "role": {
+              "catalog_id": "01936f5a-1000-7000-8000-000000000002",
+              "catalog_revision": 1,
+              "role_code": "LSA",
+              "standard_title": "Lead Software Architect"
+            },
+            "role_slot_id": "lsa",
+            "runtime_reported": "running",
+            "topology_node_id": "01a12b78-734e-7e91-99b5-abefde2cdc6b",
+            "updated_at": "2026-10-11T14:57:56.605275Z"
+          }
+        ]
+      },
+      {
+        "container": null,
+        "hosted": [
+          {
+            "autonomy": "supervised",
+            "model_rung": {
+              "effort": "xhigh",
+              "model": "gpt-5.6-sol",
+              "provider": "codex"
+            },
+            "native_identity": {
+              "generation": 1,
+              "host": "fake-host",
+              "native_id": "native-hosted-seat-10",
+              "runtime_kind": "fake.runtime"
+            },
+            "observed_at": "2026-10-11T14:57:56.716019Z",
+            "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+            "provider_session_id": "provider-hosted-seat-10",
+            "seat_binding_id": "01a12b78-73ad-79a2-9e51-cefe1290ada4"
+          }
+        ],
+        "node": {
+          "created_at": "2026-10-11T14:57:56.648111Z",
+          "id": "01a12b78-73a7-7630-b5ac-d8351b64ab5f",
+          "kind": "PRA",
+          "lifecycle": "active",
+          "parent_id": "01a12b78-70ca-7ec2-bc9a-de1798af5b3c",
+          "placement": "unbound",
+          "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+          "revision": 1,
+          "topology": {
+            "canonical_hash": "5c8d6d480fbf997a1217dec51574b842e4eb2d9a53cbbb00e56367252a81d54b",
+            "spec_id": "01936f5a-1000-7000-8000-000000000001",
+            "version": 5
+          },
+          "updated_at": "2026-10-11T14:57:56.648111Z"
+        },
+        "seats": [
+          {
+            "attach_deadline": "2026-10-11T15:07:56.653494Z",
+            "created_at": "2026-10-11T14:57:56.653494Z",
+            "id": "01a12b78-73ad-79a2-9e51-cefe1290ada4",
+            "last_attached_at": "2026-10-11T14:57:56.716019Z",
+            "lifecycle": "active",
+            "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+            "revision": 2,
+            "role": {
+              "catalog_id": "01936f5a-1000-7000-8000-000000000002",
+              "catalog_revision": 1,
+              "role_code": "TPM",
+              "standard_title": "Technical Program Manager"
+            },
+            "role_slot_id": "tpm",
+            "runtime_reported": "running",
+            "topology_node_id": "01a12b78-73a7-7630-b5ac-d8351b64ab5f",
+            "updated_at": "2026-10-11T14:57:56.716019Z"
+          }
+        ]
+      },
+      {
+        "container": {
+          "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/.tmpddg4wu/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12b78-70ca-7ec2-bc9a-de0b9e2768b3-room-01a12b78-73a7-7630-b5ac-d848bc40c50b",
+          "id": "01a12b78-73da-7b72-8a0b-b2232d8bc4a5",
+          "identity": {
+            "generation": 1,
+            "host": "fake-host",
+            "native_id": "native-container-9",
+            "runtime_kind": "fake.runtime"
+          },
+          "kind": "workspace",
+          "parent": {
+            "generation": 1,
+            "host": "fake-host",
+            "native_id": "native-container-3",
+            "runtime_kind": "fake.runtime"
+          },
+          "title": "RSW \u2022 ASMA-448126286 \u2022 asma-rs-kontor#101"
+        },
+        "hosted": [
+          {
+            "autonomy": "supervised",
+            "model_rung": {
+              "effort": "high",
+              "model": "claude-opus-5",
+              "provider": "claude"
+            },
+            "native_identity": {
+              "generation": 1,
+              "host": "fake-host",
+              "native_id": "native-hosted-seat-11",
+              "runtime_kind": "fake.runtime"
+            },
+            "observed_at": "2026-10-11T14:57:56.717094Z",
+            "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+            "provider_session_id": "provider-hosted-seat-11",
+            "seat_binding_id": "01a12b78-73b4-7ac1-be75-453bd2ef8820"
+          },
+          {
+            "autonomy": "supervised",
+            "model_rung": {
+              "effort": "xhigh",
+              "model": "gpt-5.6-sol",
+              "provider": "codex"
+            },
+            "native_identity": {
+              "generation": 1,
+              "host": "fake-host",
+              "native_id": "native-hosted-seat-12",
+              "runtime_kind": "fake.runtime"
+            },
+            "observed_at": "2026-10-11T14:57:56.71799Z",
+            "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+            "provider_session_id": "provider-hosted-seat-12",
+            "seat_binding_id": "01a12b78-73bb-7731-b5a3-67c86819937e"
+          },
+          {
+            "autonomy": "supervised",
+            "model_rung": {
+              "effort": "high",
+              "model": "claude-opus-5",
+              "provider": "claude"
+            },
+            "native_identity": {
+              "generation": 1,
+              "host": "fake-host",
+              "native_id": "native-hosted-seat-13",
+              "runtime_kind": "fake.runtime"
+            },
+            "observed_at": "2026-10-11T14:57:56.719073Z",
+            "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+            "provider_session_id": "provider-hosted-seat-13",
+            "seat_binding_id": "01a12b78-73c2-7053-b4ab-05fe917d5dd8"
+          }
+        ],
+        "node": {
+          "created_at": "2026-10-11T14:57:56.650774Z",
+          "id": "01a12b78-73a7-7630-b5ac-d848bc40c50b",
+          "kind": "RSW",
+          "lifecycle": "active",
+          "parent_id": "01a12b78-70ca-7ec2-bc9a-de0b9e2768b3",
+          "placement": "bound",
+          "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+          "revision": 2,
+          "topology": {
+            "canonical_hash": "5c8d6d480fbf997a1217dec51574b842e4eb2d9a53cbbb00e56367252a81d54b",
+            "spec_id": "01936f5a-1000-7000-8000-000000000001",
+            "version": 5
+          },
+          "updated_at": "2026-10-11T14:57:56.698574Z"
+        },
+        "seats": [
+          {
+            "attach_deadline": "2026-10-11T15:07:56.660331Z",
+            "created_at": "2026-10-11T14:57:56.660331Z",
+            "id": "01a12b78-73b4-7ac1-be75-453bd2ef8820",
+            "last_attached_at": "2026-10-11T14:57:56.717094Z",
+            "lifecycle": "active",
+            "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+            "revision": 2,
+            "role": {
+              "catalog_id": "01936f5a-1000-7000-8000-000000000002",
+              "catalog_revision": 1,
+              "role_code": "AUD",
+              "standard_title": "Auditor"
+            },
+            "role_slot_id": "rev-a",
+            "runtime_reported": "running",
+            "topology_node_id": "01a12b78-73a7-7630-b5ac-d848bc40c50b",
+            "updated_at": "2026-10-11T14:57:56.717094Z"
+          },
+          {
+            "attach_deadline": "2026-10-11T15:07:56.667328Z",
+            "created_at": "2026-10-11T14:57:56.667328Z",
+            "id": "01a12b78-73bb-7731-b5a3-67c86819937e",
+            "last_attached_at": "2026-10-11T14:57:56.71799Z",
+            "lifecycle": "active",
+            "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+            "revision": 2,
+            "role": {
+              "catalog_id": "01936f5a-1000-7000-8000-000000000002",
+              "catalog_revision": 1,
+              "role_code": "AUD",
+              "standard_title": "Auditor"
+            },
+            "role_slot_id": "rev-b",
+            "runtime_reported": "running",
+            "topology_node_id": "01a12b78-73a7-7630-b5ac-d848bc40c50b",
+            "updated_at": "2026-10-11T14:57:56.71799Z"
+          },
+          {
+            "attach_deadline": "2026-10-11T15:07:56.674049Z",
+            "created_at": "2026-10-11T14:57:56.674049Z",
+            "id": "01a12b78-73c2-7053-b4ab-05fe917d5dd8",
+            "last_attached_at": "2026-10-11T14:57:56.719073Z",
+            "lifecycle": "active",
+            "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+            "revision": 2,
+            "role": {
+              "catalog_id": "01936f5a-1000-7000-8000-000000000002",
+              "catalog_revision": 1,
+              "role_code": "AUD",
+              "standard_title": "Auditor"
+            },
+            "role_slot_id": "judge",
+            "runtime_reported": "running",
+            "topology_node_id": "01a12b78-73a7-7630-b5ac-d848bc40c50b",
+            "updated_at": "2026-10-11T14:57:56.719073Z"
+          }
+        ]
+      },
+      {
+        "container": null,
+        "hosted": [
+          {
+            "autonomy": "supervised",
+            "model_rung": {
+              "effort": "xhigh",
+              "model": "gpt-5.6-sol",
+              "provider": "codex"
+            },
+            "native_identity": {
+              "generation": 1,
+              "host": "fake-host",
+              "native_id": "native-hosted-seat-15",
+              "runtime_kind": "fake.runtime"
+            },
+            "observed_at": "2026-10-11T14:57:56.832783Z",
+            "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+            "provider_session_id": "provider-hosted-seat-15",
+            "seat_binding_id": "01a12b78-7424-7a30-a26a-a4a76aa69c0a"
+          }
+        ],
+        "node": {
+          "created_at": "2026-10-11T14:57:56.766742Z",
+          "id": "01a12b78-741e-7d23-b748-ee99d60f43af",
+          "kind": "PRA",
+          "lifecycle": "active",
+          "parent_id": "01a12b78-70ca-7ec2-bc9a-de1798af5b3c",
+          "placement": "unbound",
+          "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+          "revision": 1,
+          "topology": {
+            "canonical_hash": "5c8d6d480fbf997a1217dec51574b842e4eb2d9a53cbbb00e56367252a81d54b",
+            "spec_id": "01936f5a-1000-7000-8000-000000000001",
+            "version": 5
+          },
+          "updated_at": "2026-10-11T14:57:56.766742Z"
+        },
+        "seats": [
+          {
+            "attach_deadline": "2026-10-11T15:07:56.772264Z",
+            "created_at": "2026-10-11T14:57:56.772264Z",
+            "id": "01a12b78-7424-7a30-a26a-a4a76aa69c0a",
+            "last_attached_at": "2026-10-11T14:57:56.832783Z",
+            "lifecycle": "active",
+            "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+            "revision": 2,
+            "role": {
+              "catalog_id": "01936f5a-1000-7000-8000-000000000002",
+              "catalog_revision": 1,
+              "role_code": "TPM",
+              "standard_title": "Technical Program Manager"
+            },
+            "role_slot_id": "tpm",
+            "runtime_reported": "running",
+            "topology_node_id": "01a12b78-741e-7d23-b748-ee99d60f43af",
+            "updated_at": "2026-10-11T14:57:56.832783Z"
+          }
+        ]
+      },
+      {
+        "container": {
+          "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/.tmpddg4wu/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12b78-70ca-7ec2-bc9a-de0b9e2768b3-room-01a12b78-741e-7d23-b748-eeae776be0f1",
+          "id": "01a12b78-744e-7fb2-a24e-b7c3035d005b",
+          "identity": {
+            "generation": 1,
+            "host": "fake-host",
+            "native_id": "native-container-14",
+            "runtime_kind": "fake.runtime"
+          },
+          "kind": "workspace",
+          "parent": {
+            "generation": 1,
+            "host": "fake-host",
+            "native_id": "native-container-3",
+            "runtime_kind": "fake.runtime"
+          },
+          "title": "RSW \u2022 ASMA-448126286 \u2022 asma-rs-kontor#102"
+        },
+        "hosted": [
+          {
+            "autonomy": "supervised",
+            "model_rung": {
+              "effort": "high",
+              "model": "claude-opus-5",
+              "provider": "claude"
+            },
+            "native_identity": {
+              "generation": 1,
+              "host": "fake-host",
+              "native_id": "native-hosted-seat-16",
+              "runtime_kind": "fake.runtime"
+            },
+            "observed_at": "2026-10-11T14:57:56.833777Z",
+            "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+            "provider_session_id": "provider-hosted-seat-16",
+            "seat_binding_id": "01a12b78-742b-77b3-8a5c-11853b08d5e8"
+          },
+          {
+            "autonomy": "supervised",
+            "model_rung": {
+              "effort": "xhigh",
+              "model": "gpt-5.6-sol",
+              "provider": "codex"
+            },
+            "native_identity": {
+              "generation": 1,
+              "host": "fake-host",
+              "native_id": "native-hosted-seat-17",
+              "runtime_kind": "fake.runtime"
+            },
+            "observed_at": "2026-10-11T14:57:56.834699Z",
+            "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+            "provider_session_id": "provider-hosted-seat-17",
+            "seat_binding_id": "01a12b78-7431-76a1-9b12-861d698995bb"
+          },
+          {
+            "autonomy": "supervised",
+            "model_rung": {
+              "effort": "high",
+              "model": "claude-opus-5",
+              "provider": "claude"
+            },
+            "native_identity": {
+              "generation": 1,
+              "host": "fake-host",
+              "native_id": "native-hosted-seat-18",
+              "runtime_kind": "fake.runtime"
+            },
+            "observed_at": "2026-10-11T14:57:56.835585Z",
+            "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+            "provider_session_id": "provider-hosted-seat-18",
+            "seat_binding_id": "01a12b78-7438-7cb3-8874-accca63d70d1"
+          }
+        ],
+        "node": {
+          "created_at": "2026-10-11T14:57:56.769527Z",
+          "id": "01a12b78-741e-7d23-b748-eeae776be0f1",
+          "kind": "RSW",
+          "lifecycle": "active",
+          "parent_id": "01a12b78-70ca-7ec2-bc9a-de0b9e2768b3",
+          "placement": "bound",
+          "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+          "revision": 2,
+          "topology": {
+            "canonical_hash": "5c8d6d480fbf997a1217dec51574b842e4eb2d9a53cbbb00e56367252a81d54b",
+            "spec_id": "01936f5a-1000-7000-8000-000000000001",
+            "version": 5
+          },
+          "updated_at": "2026-10-11T14:57:56.815172Z"
+        },
+        "seats": [
+          {
+            "attach_deadline": "2026-10-11T15:07:56.779043Z",
+            "created_at": "2026-10-11T14:57:56.779043Z",
+            "id": "01a12b78-742b-77b3-8a5c-11853b08d5e8",
+            "last_attached_at": "2026-10-11T14:57:56.833777Z",
+            "lifecycle": "active",
+            "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+            "revision": 2,
+            "role": {
+              "catalog_id": "01936f5a-1000-7000-8000-000000000002",
+              "catalog_revision": 1,
+              "role_code": "AUD",
+              "standard_title": "Auditor"
+            },
+            "role_slot_id": "rev-a",
+            "runtime_reported": "running",
+            "topology_node_id": "01a12b78-741e-7d23-b748-eeae776be0f1",
+            "updated_at": "2026-10-11T14:57:56.833777Z"
+          },
+          {
+            "attach_deadline": "2026-10-11T15:07:56.785978Z",
+            "created_at": "2026-10-11T14:57:56.785978Z",
+            "id": "01a12b78-7431-76a1-9b12-861d698995bb",
+            "last_attached_at": "2026-10-11T14:57:56.834699Z",
+            "lifecycle": "active",
+            "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+            "revision": 2,
+            "role": {
+              "catalog_id": "01936f5a-1000-7000-8000-000000000002",
+              "catalog_revision": 1,
+              "role_code": "AUD",
+              "standard_title": "Auditor"
+            },
+            "role_slot_id": "rev-b",
+            "runtime_reported": "running",
+            "topology_node_id": "01a12b78-741e-7d23-b748-eeae776be0f1",
+            "updated_at": "2026-10-11T14:57:56.834699Z"
+          },
+          {
+            "attach_deadline": "2026-10-11T15:07:56.792772Z",
+            "created_at": "2026-10-11T14:57:56.792772Z",
+            "id": "01a12b78-7438-7cb3-8874-accca63d70d1",
+            "last_attached_at": "2026-10-11T14:57:56.835585Z",
+            "lifecycle": "active",
+            "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+            "revision": 2,
+            "role": {
+              "catalog_id": "01936f5a-1000-7000-8000-000000000002",
+              "catalog_revision": 1,
+              "role_code": "AUD",
+              "standard_title": "Auditor"
+            },
+            "role_slot_id": "judge",
+            "runtime_reported": "running",
+            "topology_node_id": "01a12b78-741e-7d23-b748-eeae776be0f1",
+            "updated_at": "2026-10-11T14:57:56.835585Z"
+          }
+        ]
+      }
+    ],
+    "desks": [
+      {
+        "created_at": "2026-10-11T14:57:55.846012Z",
+        "desk_key": "adam",
+        "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+        "team_definition": {
+          "canonical_hash": "79def4231c04072de862998f9743eee5e02e79ff4297609f0bfed98faf72f074",
+          "definition_id": "01936f5a-2000-7000-8000-000000000001",
+          "version": 8
+        },
+        "topology_node_id": "01a12b78-7086-7553-a620-8f81b3000328",
+        "workspace_node_id": "01a12b78-7086-7553-a620-8f90d6467aef"
+      },
+      {
+        "created_at": "2026-10-11T14:57:55.914433Z",
+        "desk_key": "pr-review",
+        "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+        "team_definition": {
+          "canonical_hash": "79def4231c04072de862998f9743eee5e02e79ff4297609f0bfed98faf72f074",
+          "definition_id": "01936f5a-2000-7000-8000-000000000001",
+          "version": 8
+        },
+        "topology_node_id": "01a12b78-70ca-7ec2-bc9a-de0b9e2768b3",
+        "workspace_node_id": "01a12b78-70ca-7ec2-bc9a-de1798af5b3c"
+      }
+    ],
+    "old_pin": {
+      "canonical_hash": "093b0d852d2be02fd08e442446e860b43fa6506bd973e2b627afec357fcd4dc4",
+      "definition_id": "01936f5a-2000-7000-8000-000000000001",
+      "version": 2
+    },
+    "reviews": [
+      {
+        "adam_node_id": "01a12b78-73a7-7630-b5ac-d8351b64ab5f",
+        "created_at": "2026-10-11T14:57:56.647894Z",
+        "desk_key": "pr-review",
+        "jira_key": "ASMA-448126286",
+        "mini_project_id": "01a12b78-6fa0-7090-bfe7-4ca4143d4173",
+        "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+        "pull_request": {
+          "number": 101,
+          "repository": "Carasent-ASMA/asma-rs-kontor"
+        },
+        "room_node_id": "01a12b78-73a7-7630-b5ac-d848bc40c50b",
+        "task_id": null,
+        "team_definition": {
+          "canonical_hash": "79def4231c04072de862998f9743eee5e02e79ff4297609f0bfed98faf72f074",
+          "definition_id": "01936f5a-2000-7000-8000-000000000001",
+          "version": 8
+        }
+      },
+      {
+        "adam_node_id": "01a12b78-741e-7d23-b748-ee99d60f43af",
+        "created_at": "2026-10-11T14:57:56.766412Z",
+        "desk_key": "pr-review",
+        "jira_key": "ASMA-448126286",
+        "mini_project_id": "01a12b78-6fa0-7090-bfe7-4ca4143d4173",
+        "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+        "pull_request": {
+          "number": 102,
+          "repository": "Carasent-ASMA/asma-rs-kontor"
+        },
+        "room_node_id": "01a12b78-741e-7d23-b748-eeae776be0f1",
+        "task_id": null,
+        "team_definition": {
+          "canonical_hash": "79def4231c04072de862998f9743eee5e02e79ff4297609f0bfed98faf72f074",
+          "definition_id": "01936f5a-2000-7000-8000-000000000001",
+          "version": 8
+        }
+      }
+    ]
+  },
+  "runtime": "scripted_fake",
+  "snapshot_manifest": {
+    "byte_length": 3416064,
+    "content_hash": "4f3c27d2bd05bc3cd65f0403c9bb17fbfbe06ec16f8939641283b3d1bf4046de",
+    "created_at": "2026-10-11T12:00:00Z",
+    "database_schema_version": 134,
+    "format_version": 1,
+    "realm_id": "01a12b78-5c84-7c50-85dd-56c34e622fcb"
+  },
+  "successor_hash": "79def4231c04072de862998f9743eee5e02e79ff4297609f0bfed98faf72f074"
+}

@@ -1,0 +1,22 @@
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-store)
+   Compiling kontor-memory-cognee v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-memory-cognee)
+   Compiling kontor-api v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-api)
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 53.05s
+     Running tests/loopback_api.rs (target/debug/deps/loopback_api-6520399e83adc025)
+
+running 11 tests
+test pr_reviews::a_definition_without_pr_review_places_nothing ... ok
+test pr_reviews::a_launch_that_lost_its_answer_refuses_close_before_anything_is_fenced ... ok
+test pr_reviews::a_review_session_that_died_is_recovered_by_closing_and_opening_again ... ok
+test pr_reviews::a_room_role_the_catalog_lacks_refuses_before_anything_is_written ... ok
+test pr_reviews::an_open_is_refused_whole_before_any_effect ... ok
+test pr_reviews::a_misplaced_room_or_desk_workspace_refuses_open_and_close_before_any_effect ... ok
+test pr_reviews::closing_one_review_keeps_the_desk_its_durable_seat_and_the_other_review ... ok
+test pr_reviews::qualification::a_new_desk_under_a_parent_that_already_knows_an_older_desk_kind_refuses_without_effects ... ok
+test pr_reviews::the_same_number_in_two_repositories_is_two_reviews_and_a_task_key_names_its_task ... ok
+test pr_reviews::two_pull_requests_of_one_key_get_distinct_adam_tabs_and_rooms_and_replay_reuses_them ... ok
+test pr_reviews::qualification::four_structures_restore_replay_and_selection_rollback_keep_old_pins_and_natives ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 606 filtered out; finished in 7.25s
+

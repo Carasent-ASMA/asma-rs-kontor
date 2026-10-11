@@ -1,0 +1,23 @@
+{
+  "name": "baseline-pr_reviews",
+  "head": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
+  "started_head": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
+  "started_at": "2026-10-11T14:57:50.394568+00:00",
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "pr_reviews::",
+    "--",
+    "--nocapture",
+    "--test-threads=2"
+  ],
+  "exit_code": 0,
+  "log": ".qualification/baseline-pr_reviews.log",
+  "log_sha256": "010db4677f28b0d7e3ab1a7717f719951c5000b87c7e6f3654110fee5293ec45"
+}

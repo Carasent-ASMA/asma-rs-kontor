@@ -1,0 +1,22 @@
+{
+  "name": "MUT-002-unchecked",
+  "head": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
+  "started_head": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
+  "started_at": "2026-10-11T14:43:08.285481+00:00",
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "durable_seats::a_seat_that_is_not_proved_missing_is_never_restarted",
+    "--",
+    "--test-threads=2"
+  ],
+  "exit_code": 101,
+  "log": ".qualification/MUT-002-unchecked.log",
+  "log_sha256": "b5d3549fe40d16fd48f0db9de1984f86a1347ac940099d68e000816d3dec0d7a"
+}

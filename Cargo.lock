@@ -3165,6 +3165,7 @@ dependencies = [
  "kontor-fleet-activation",
  "kontor-mcp",
  "kontor-profiles",
+ "kontor-runtime",
  "kontor-store",
  "predicates",
  "reqwest",

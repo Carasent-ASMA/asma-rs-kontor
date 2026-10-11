@@ -1,0 +1,10 @@
+   Compiling kontor-cli v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-cli)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.20s
+     Running tests/durable_desk_parity.rs (target/debug/deps/durable_desk_parity-65d679d71e766b7b)
+
+running 1 test
+ASMA-8454 undeclared desk CLI refusal exit: 3
+test desk_ensure_and_undeclared_refusal_match_http_mcp_and_cli ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.97s
+

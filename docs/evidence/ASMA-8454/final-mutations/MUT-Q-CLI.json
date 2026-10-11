@@ -1,0 +1,21 @@
+{
+  "name": "MUT-Q-CLI",
+  "head": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
+  "started_head": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
+  "started_at": "2026-10-11T14:54:41.906218+00:00",
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kontor-cli",
+    "--test",
+    "durable_desk_parity",
+    "--",
+    "--nocapture"
+  ],
+  "exit_code": 101,
+  "log": ".qualification/MUT-Q-CLI.log",
+  "log_sha256": "362a0f3429d72bab3f5eb35ec6e45512a684d4ec73614bd59cca0b142d72f029"
+}

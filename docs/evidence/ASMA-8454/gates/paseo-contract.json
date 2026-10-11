@@ -1,0 +1,18 @@
+{
+  "name": "paseo-contract",
+  "head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+  "started_at": "2026-10-11T14:11:00.916071+00:00",
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kontor-runtime-paseo",
+    "--test",
+    "contract"
+  ],
+  "exit_code": 0,
+  "log": ".qualification/paseo-contract.log",
+  "log_sha256": "a98480bd84da8f1a41b8b8ae2fa88848680e0147941a62f15c0e5e569ab262bd"
+}

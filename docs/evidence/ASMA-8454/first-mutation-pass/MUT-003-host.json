@@ -1,0 +1,22 @@
+{
+  "name": "MUT-003-host",
+  "head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+  "started_head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+  "started_at": "2026-10-11T14:20:16.420939+00:00",
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "desk_adams::two_epic_adams_in_one_workspace_never_share_ownership_credentials_or_evidence",
+    "--",
+    "--test-threads=2"
+  ],
+  "exit_code": 0,
+  "log": ".qualification/MUT-003-host.log",
+  "log_sha256": "4457285261c91299a7c2a965233d264d58b28e0cc0336170f039d1236eda1cc1"
+}

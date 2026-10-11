@@ -1,0 +1,21 @@
+{
+  "base": "e376f4059e47de8fb40956d4dbfbf6920dabc4ec",
+  "checks": [
+    {
+      "file": "crates/kontor-store/src/repository.rs",
+      "original_body_sha256": "077740dd0a7e26edb6d4541c1222a946dc9e5adbea2335d850ae05f1e64a0cf1",
+      "parameterized_token_sha256": "4d5294fcbe7a65d04c47f0619770e61e5a0b6e93c6b0f4cee9c2744e2d894761",
+      "moved_token_sha256": "4d5294fcbe7a65d04c47f0619770e61e5a0b6e93c6b0f4cee9c2744e2d894761",
+      "same_tokens_and_literals_except_transaction_reference": true,
+      "existing_wrapper": "BEGIN IMMEDIATE, helper, commit; unchanged transaction boundary"
+    },
+    {
+      "file": "crates/kontor-store/src/repository/desks.rs",
+      "original_body_sha256": "8fe8592901ba2127b395a7345291b62d288ff8b298a277b7628aa92462ee8784",
+      "parameterized_token_sha256": "001d9e3f8a45e75757914c0279b51a5af9caf4f59f977fe3359702db9dc629f4",
+      "moved_token_sha256": "001d9e3f8a45e75757914c0279b51a5af9caf4f59f977fe3359702db9dc629f4",
+      "same_tokens_and_literals_except_transaction_reference": true,
+      "existing_wrapper": "BEGIN IMMEDIATE, helper, commit; unchanged transaction boundary"
+    }
+  ]
+}

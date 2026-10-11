@@ -1,0 +1,24 @@
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 35.63s
+     Running tests/loopback_api.rs (target/debug/deps/loopback_api-6520399e83adc025)
+
+running 1 test
+test durable_seats::a_missing_daemon_seat_launches_once_and_a_replay_never_launches_again ... FAILED
+
+failures:
+
+---- durable_seats::a_missing_daemon_seat_launches_once_and_a_replay_never_launches_again stdout ----
+
+thread 'durable_seats::a_missing_daemon_seat_launches_once_and_a_replay_never_launches_again' (102442100) panicked at crates/kontor-daemon/tests/loopback/durable_seats.rs:410:5:
+assertion `left == right` failed
+  left: ("missing", "native_absent", "launch")
+ right: ("missing", "native_absent", "none")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    durable_seats::a_missing_daemon_seat_launches_once_and_a_replay_never_launches_again
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 616 filtered out; finished in 2.20s
+
+error: test failed, to rerun pass `-p kontor-daemon --test loopback_api`

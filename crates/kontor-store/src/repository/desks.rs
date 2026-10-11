@@ -7,8 +7,11 @@
 //! life, whatever the project selects later.
 
 use kontor_core::id::{ContentHash, DeskKey, ProjectId, TeamDefinitionId, TopologyNodeId};
-use kontor_core::repository::{RepositoryError, RepositoryResult, StoredDesk};
+use kontor_core::repository::{
+    RepositoryError, RepositoryResult, StoredDesk, TeamDefinitionRepository,
+};
 use kontor_core::spec::TeamDefinitionSnapshot;
+use kontor_core::state::SessionTopologyNode;
 use rusqlite::{OptionalExtension, params};
 
 use super::{SqliteStore, backend, read_timestamp, read_version, text, version_column};
@@ -27,40 +30,61 @@ impl SqliteStore {
     /// the pinned Team Definition revision is not published in the project.
     pub fn create_desk(&self, desk: &StoredDesk) -> RepositoryResult<()> {
         let transaction = self.begin()?;
-        transaction
-            .execute(
-                "INSERT INTO desks
-                     (project_id, desk_key, topology_node_id, workspace_node_id,
-                      team_definition_id, team_definition_version, team_definition_hash,
-                      created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![
-                    desk.project_id.to_string(),
-                    desk.desk_key.as_str(),
-                    desk.topology_node_id.to_string(),
-                    desk.workspace_node_id.to_string(),
-                    desk.team_definition.definition_id.to_string(),
-                    version_column(desk.team_definition.version),
-                    desk.team_definition.canonical_hash.as_str(),
-                    text(desk.created_at),
-                ],
-            )
-            .map_err(|error| match error {
-                // Two ensures of one desk racing. The loser has written nothing
-                // else yet — the row is deliberately first — so it reads the
-                // winner's desk and reconciles that one.
-                rusqlite::Error::SqliteFailure(failure, _)
-                    if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
-                {
-                    RepositoryError::Conflict {
-                        subject: "desk",
-                        rule: "one key names one desk in a project",
-                    }
-                }
-                other => backend(other),
-            })?;
+        create_desk_in(&transaction, desk)?;
         transaction.commit().map_err(backend)?;
         Ok(())
+    }
+
+    /// Record a fresh desk and both logical nodes as one atomic write.
+    ///
+    /// # Errors
+    /// Returns the existing desk/node validation errors. A refused node rolls
+    /// back the desk reservation and every node inserted by this transaction.
+    pub fn create_desk_topology(
+        &self,
+        desk: &StoredDesk,
+        root: &SessionTopologyNode,
+    ) -> RepositoryResult<SessionTopologyNode> {
+        let transaction = self.begin()?;
+        create_desk_in(&transaction, desk)?;
+        let definition = self
+            .get_team_definition(
+                desk.project_id,
+                desk.team_definition.definition_id,
+                desk.team_definition.version,
+            )?
+            .ok_or(RepositoryError::NotFound {
+                subject: "desk Team Definition",
+            })?;
+        let declaration = definition
+            .desk(&desk.desk_key)
+            .ok_or(RepositoryError::NotFound {
+                subject: "desk declaration",
+            })?;
+        let node = |id, kind, parent_id| kontor_core::repository::NewSessionTopologyNode {
+            id,
+            project_id: desk.project_id,
+            mini_project_id: None,
+            topology: definition.topology.clone(),
+            kind,
+            parent_id: Some(parent_id),
+            task_id: None,
+            created_at: desk.created_at,
+        };
+        super::create_topology_node_in(
+            &transaction,
+            &node(desk.topology_node_id, declaration.kind.clone(), root.id),
+        )?;
+        let workspace = super::create_topology_node_in(
+            &transaction,
+            &node(
+                desk.workspace_node_id,
+                declaration.workspace_kind.clone(),
+                desk.topology_node_id,
+            ),
+        )?;
+        transaction.commit().map_err(backend)?;
+        Ok(workspace)
     }
 
     /// One desk, by its declared key.
@@ -129,6 +153,45 @@ impl SqliteStore {
             .map(|row| decode(project_id, row))
             .transpose()
     }
+}
+
+fn create_desk_in(
+    transaction: &rusqlite::Transaction<'_>,
+    desk: &StoredDesk,
+) -> RepositoryResult<()> {
+    transaction
+        .execute(
+            "INSERT INTO desks
+                     (project_id, desk_key, topology_node_id, workspace_node_id,
+                      team_definition_id, team_definition_version, team_definition_hash,
+                      created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                desk.project_id.to_string(),
+                desk.desk_key.as_str(),
+                desk.topology_node_id.to_string(),
+                desk.workspace_node_id.to_string(),
+                desk.team_definition.definition_id.to_string(),
+                version_column(desk.team_definition.version),
+                desk.team_definition.canonical_hash.as_str(),
+                text(desk.created_at),
+            ],
+        )
+        .map_err(|error| match error {
+            // Two ensures of one desk racing. The loser has written nothing
+            // else yet — the row is deliberately first — so it reads the
+            // winner's desk and reconciles that one.
+            rusqlite::Error::SqliteFailure(failure, _)
+                if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                RepositoryError::Conflict {
+                    subject: "desk",
+                    rule: "one key names one desk in a project",
+                }
+            }
+            other => backend(other),
+        })?;
+    Ok(())
 }
 
 fn read_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeskRow> {

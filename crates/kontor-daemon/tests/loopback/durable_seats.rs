@@ -13,6 +13,9 @@ use kontor_core::durable_seat::{DurableSeatActivity, DurableSeatCarrier};
 use kontor_core::receipt::CommandKind;
 use kontor_runtime::adapter::RuntimeError;
 
+#[path = "qualification_seats.rs"]
+mod qualification_seats;
+
 const ROUTE: &str = r#"{"provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"}"#;
 
 /// A realm whose `pr-review` desk is materialized, with no epic anywhere.

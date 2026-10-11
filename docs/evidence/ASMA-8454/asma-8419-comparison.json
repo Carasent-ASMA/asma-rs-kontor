@@ -1,0 +1,63 @@
+{
+  "source_file": "/Users/igor/.paseo/worktrees/0vl4ss0m/asma-8419-pr-draft-status-checker/config/orchestration/pr-desk.yml",
+  "source_sha256": "2297aba99eb830c35d9a5f386635162a008056dcdcd1bc1d3c019db33ea9cb05",
+  "source_status": "uncommitted dated decision, branch feat/ASMA-8419-pr-draft-status-checker",
+  "reported_source_head": "c4f9957c",
+  "dated_owner": "Igor, 2026-10-08",
+  "authority": "coordinator Q-002 disposition supplied 2026-10-11T13:16Z",
+  "read_at": "2026-10-11T14:58:22.520949+00:00",
+  "comparison": [
+    {
+      "source_title": "LSA \u2022 PR DRAFTS STATUS CHECKER",
+      "source_fields": {
+        "workspace": "ADAM",
+        "role": "LSA",
+        "model_chain": "premium",
+        "skill": ".github/skills/pr-draft-status-checker/SKILL.md",
+        "decided_by": "Igor",
+        "date": "2026-10-08"
+      },
+      "fixture_readback": {
+        "decided_by": "Igor",
+        "decided_on": "2026-10-08",
+        "decision": "none",
+        "declared_at": "2026-10-11T14:57:55.981854Z",
+        "procedure": ".github/skills/pr-draft-status-checker/SKILL.md",
+        "reason": "paseo_direct_owner",
+        "recovery_owner": "paseo_direct",
+        "role_code": "LSA",
+        "seat_key": "checker",
+        "seat_label": "PR DRAFTS STATUS CHECKER",
+        "status": "unchecked",
+        "title": "LSA \u2022 PR DRAFTS STATUS CHECKER"
+      }
+    },
+    {
+      "source_title": "LSA \u2022 GENERAL",
+      "source_fields": {
+        "workspace": "ADAM",
+        "role": "LSA",
+        "model_chain": "premium",
+        "skill": ".github/skills/asma-pr-review/SKILL.md",
+        "decided_by": "Igor",
+        "date": "2026-10-08"
+      },
+      "fixture_readback": {
+        "decided_by": "Igor",
+        "decided_on": "2026-10-08",
+        "decision": "none",
+        "declared_at": "2026-10-11T14:57:55.975176Z",
+        "procedure": ".github/skills/asma-pr-review/SKILL.md",
+        "reason": "paseo_direct_owner",
+        "recovery_owner": "paseo_direct",
+        "role_code": "LSA",
+        "seat_key": "general",
+        "seat_label": "GENERAL",
+        "status": "unchecked",
+        "title": "LSA \u2022 GENERAL"
+      }
+    }
+  ],
+  "premium_chain": "preserved in source; not resolved, adopted or launched",
+  "real_seat_effects": 0
+}

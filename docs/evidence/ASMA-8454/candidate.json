@@ -1,0 +1,45 @@
+{
+  "scope": "ASMA-8454 / ASMA-8449 TASK-005, Paseo-direct",
+  "source_commit": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
+  "source_tree": "81db7c6d9d8561618909c57ae2044e724985df30",
+  "source_inputs_sha256": "4cd85071334b518480520dbd7fedffef41f64eb23f008d4189fff83581129511",
+  "source_input_files": 883,
+  "input_digest_encoding": "SHA-256 of UTF-8 json.dumps(inputs, sort_keys=True, separators=(comma, colon))",
+  "base": "e376f4059e47de8fb40956d4dbfbf6920dabc4ec",
+  "carrier": "Evidence-only successor commit; exact SHA is supplied in the PR/handoff and verified by Git.",
+  "exact_carrier_gate": "A further complete archive gate and API verification are recorded in the PR/handoff after committing the carrier; they must pass before handoff. Committed receipts are not relabelled.",
+  "restored_inputs_match": true,
+  "mutations": {
+    "final": {
+      "tested": 12,
+      "killed": 12,
+      "survived": 0,
+      "invalid_or_blocked": 0,
+      "equivalent": 0
+    },
+    "first_complete_pass": {
+      "tested": 12,
+      "killed": 10,
+      "survived": 2,
+      "survivors": [
+        "MUT-003-host",
+        "MUT-003-authority"
+      ]
+    }
+  },
+  "qualification_repairs": [
+    "CLI additive refusal exit classification",
+    "Atomic fresh desk/node reservation bundle"
+  ],
+  "closure": "Source qualification candidate; Independent Review/JUDGE and released-build readback/cleanup pending.",
+  "pending_igor": "Same-vendor LSA\u2192TPM and keep_native binding remain refused; no acceptance claimed.",
+  "limits": [
+    "Pre-existing message-proof timestamp TEXT-order defect; accepted unrelated signature only, unrepaired",
+    "Live Paseo lost-reply timing unproven",
+    "Same-name/same-number/other-owner PR title collision refused",
+    "PR close is non-atomic and retry converges; generic refusal wording remains a candidate",
+    "No-proved-container close branch source-verified, not directly tested"
+  ],
+  "publication_exception": "Paseo-direct draft publication uses --without-attestation to avoid a live Kontor publication ledger/epic write under CON-007; no outage is claimed.",
+  "recorded_at": "2026-10-11T15:56:59.851825+00:00"
+}

@@ -1,0 +1,22 @@
+{
+  "name": "green-MUT-002-busy",
+  "head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+  "started_head": "9d18c9190dc55cec7135f263d78170e92f66b692",
+  "started_at": "2026-10-11T14:14:33.571660+00:00",
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "durable_seats::a_seat_that_is_not_proved_missing_is_never_restarted",
+    "--",
+    "--test-threads=2"
+  ],
+  "exit_code": 0,
+  "log": ".qualification/green-MUT-002-busy.log",
+  "log_sha256": "b9ae7c1715fd21fd11beb1ec05f15a0cc500e4109797f016e15affc36c3340cf"
+}

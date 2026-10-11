@@ -1,0 +1,23 @@
+{
+  "name": "baseline-durable_desks",
+  "head": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
+  "started_head": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
+  "started_at": "2026-10-11T14:56:38.803962+00:00",
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "durable_desks::",
+    "--",
+    "--nocapture",
+    "--test-threads=2"
+  ],
+  "exit_code": 0,
+  "log": ".qualification/baseline-durable_desks.log",
+  "log_sha256": "5a51eb20b2e1de611c2bf5d41a9cf53a3828ed7f6340d20fb3bde50a4e4eb299"
+}

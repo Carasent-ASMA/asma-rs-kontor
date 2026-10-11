@@ -1,0 +1,21 @@
+{
+  "name": "green-MUT-Q-CLI",
+  "head": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
+  "started_head": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
+  "started_at": "2026-10-11T14:54:03.359826+00:00",
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "kontor-cli",
+    "--test",
+    "durable_desk_parity",
+    "--",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "log": ".qualification/green-MUT-Q-CLI.log",
+  "log_sha256": "d9610a063f0069b0404f757a906af3d84574a1521a5c143e64f149a6ea481a78"
+}

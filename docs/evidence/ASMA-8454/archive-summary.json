@@ -1,0 +1,35 @@
+{
+  "source_commit": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
+  "archive_receipt": {
+    "name": "archive-gate-isolated",
+    "head": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
+    "started_head": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
+    "started_at": "2026-10-11T15:31:49.405089+00:00",
+    "command": [
+      "python3",
+      "-u",
+      "scripts/verify-tree.py",
+      "--mode",
+      "archive"
+    ],
+    "exit_code": 0,
+    "log": ".qualification/archive-gate-isolated.log",
+    "log_sha256": "52b46583511419b3cc056e4543d646db4654bfc2ac2cf776549879a6e7676a41"
+  },
+  "rust_passed": 3564,
+  "rust_ignored": 9,
+  "rust_test_targets": 180,
+  "frontend_test_summary": [
+    "apps/console test:  Test Files  18 passed (18)",
+    "apps/console test:       Tests  307 passed (307)"
+  ],
+  "all_archive_gates_exit_zero": true,
+  "fresh_archive_environment": {
+    "source_commit": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
+    "fresh_target_dir": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/target-source-archive",
+    "reason": "Prior shared target reused an account-security binary with a deleted archive CARGO_MANIFEST_DIR; no source change.",
+    "prior_embedded_manifest_dir": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-accounts",
+    "prior_fixture_exists": false,
+    "invalidation": "Use an empty target per archive invocation, preserving every source file and gate command."
+  }
+}

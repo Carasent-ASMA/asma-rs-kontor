@@ -1,0 +1,11 @@
+{
+  "source_commit": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
+  "scratch_tree": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/reproduction/current-probe",
+  "archive_sha256": "552180876f9af4de10de5c5b4304ca4cc02d901096415b1a427f3448c0384b07",
+  "diagnostic_file": "crates/kontor-daemon/tests/loopback/message_delivery_proofs.rs",
+  "original_file_sha256": "8b9d509966cc4b194633402c92b472f0d31f59eddcd9f9761d4b021588f58095",
+  "diagnostic_file_sha256": "9ffdcd42b7b8ed32e63098d4e3aadc7d95e9631be4a98dade92a343c404e5aba",
+  "only_changes": "Capture/print refusal and read-only issuance/anchor fields; repeat original test without changing status or assertions. No production code changes.",
+  "original_test": "legacy_message_proof_duplicate_split_across_pages_is_terminal_without_delivery",
+  "maximum_repeats": 100
+}
