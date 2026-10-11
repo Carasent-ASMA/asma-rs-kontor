@@ -283,10 +283,7 @@ async fn enabled_claude_directory_lost_ack_recovers_same_native_and_reconciles_b
     f.census(&failed);
     f.plane
         .daemon
-        .queue_answer_rpc("fetch_agent_request", failed);
-    f.plane
-        .daemon
-        .set_answer_rpc("fetch_agent_request", f.agent.clone());
+        .set_answer_rpc("fetch_agent_request", failed.clone());
     f.plane
         .daemon
         .queue_answer(&PaseoCommand::agent_reload(AGENT_ID), CLI_AGENT_RELOADED);
@@ -303,6 +300,14 @@ async fn enabled_claude_directory_lost_ack_recovers_same_native_and_reconciles_b
     assert_eq!(f.plane.daemon.count("rpc create_agent_request"), 1);
     assert_eq!(f.plane.daemon.count(&format!("agent reload {AGENT_ID}")), 0);
     std::fs::remove_file(f.cwd.join(".mcp.json")).unwrap();
+    // Failed health persists through the refused recovery. Only the readback
+    // after the successful reload reports an initialized provider thread.
+    f.plane
+        .daemon
+        .queue_answer_rpc("fetch_agent_request", failed);
+    f.plane
+        .daemon
+        .set_answer_rpc("fetch_agent_request", f.agent.clone());
     let recovered = f
         .plane
         .adapter
@@ -523,4 +528,89 @@ async fn enabled_directory_cross_vendor_replacement_and_route_correction_keep_sh
     assert_eq!(f.files(), files);
     assert_eq!(f.plane.daemon.count("rpc create_agent_request"), 3);
     assert!(f.plane.adapter.project_binding().is_none());
+}
+
+#[tokio::test]
+async fn healthy_directory_replay_retains_session_and_validates_without_publication() {
+    let f = DirectoryFixture::new().await;
+    let first = f
+        .plane
+        .adapter
+        .launch_hosted_seat(&f.request)
+        .await
+        .unwrap();
+    f.census(&f.agent);
+    let paths = [
+        f.cwd.join(".claude/settings.local.json"),
+        f.cwd.join(".mcp.json"),
+    ];
+    let before = f.files();
+    let metadata = paths.each_ref().map(|p| std::fs::metadata(p).unwrap());
+    let replay = f
+        .plane
+        .adapter
+        .launch_hosted_seat(&f.request)
+        .await
+        .unwrap();
+    assert_eq!(replay.identity, first.identity);
+    assert_eq!(replay.provider_session_id, first.provider_session_id);
+    assert!(!replay.created);
+    assert_eq!(f.files(), before);
+    for (path, before) in paths.iter().zip(metadata) {
+        let after = std::fs::metadata(path).unwrap();
+        assert_eq!(after.modified().unwrap(), before.modified().unwrap());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(after.ino(), before.ino());
+        }
+    }
+    // Valid differences in unrelated content/format are retained byte-exact.
+    let mut settings: serde_json::Value = serde_json::from_slice(&before.0).unwrap();
+    settings["foreign"] = serde_json::json!("retained");
+    let changed = serde_json::to_vec(&settings).unwrap();
+    std::fs::write(&paths[0], &changed).unwrap();
+    f.plane
+        .adapter
+        .launch_hosted_seat(&f.request)
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read(&paths[0]).unwrap(), changed);
+    // Missing or different required config refuses, never repairs a healthy native.
+    std::fs::remove_file(&paths[1]).unwrap();
+    assert!(matches!(
+        f.plane.adapter.launch_hosted_seat(&f.request).await,
+        Err(RuntimeError::LaunchNotAdmitted { .. })
+    ));
+    assert!(!paths[1].exists());
+    std::fs::write(&paths[1], &before.1).unwrap();
+    settings["enableAllProjectMcpServers"] = serde_json::json!(false);
+    let invalid = serde_json::to_vec(&settings).unwrap();
+    std::fs::write(&paths[0], &invalid).unwrap();
+    assert!(matches!(
+        f.plane.adapter.launch_hosted_seat(&f.request).await,
+        Err(RuntimeError::LaunchNotAdmitted { .. })
+    ));
+    assert_eq!(std::fs::read(&paths[0]).unwrap(), invalid);
+    assert_eq!(f.plane.daemon.count("rpc create_agent_request"), 1);
+    assert_eq!(f.plane.daemon.count(&format!("agent reload {AGENT_ID}")), 0);
+    assert!(!f.record().exists());
+}
+
+#[tokio::test]
+async fn healthy_directory_replay_recovers_pending_originals_without_republishing() {
+    let f = DirectoryFixture::new().await;
+    f.census(&f.agent);
+    f.interrupted_pair();
+    assert!(matches!(
+        f.plane.adapter.launch_hosted_seat(&f.request).await,
+        Err(RuntimeError::LaunchNotAdmitted { .. })
+    ));
+    // Pending partial pair is rolled back to absence, then read-only validation
+    // refuses missing required configuration without composing a fresh pair.
+    assert!(!f.cwd.join(".claude").exists());
+    assert!(!f.cwd.join(".mcp.json").exists());
+    assert!(!f.record().exists());
+    assert_eq!(f.plane.daemon.count("rpc create_agent_request"), 0);
+    assert_eq!(f.plane.daemon.count(&format!("agent reload {AGENT_ID}")), 0);
 }

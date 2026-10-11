@@ -451,8 +451,65 @@ fn directory_relative_stage_and_replace_refuse_a_symlink_parent() {
     std::os::unix::fs::symlink(&foreign, cwd.join(".claude")).unwrap();
     let stage = cwd.join(".claude/stage.tmp");
     let target = cwd.join(".claude/settings.local.json");
-    assert!(stage_directory_file(&stage, b"{}").is_err());
+    let canonical = std::fs::canonicalize(&cwd).unwrap();
+    let mut fs = DirectoryIo::new(&canonical, &canonical).unwrap();
+    assert!(fs.stage(&stage, b"{}").is_err());
     std::fs::write(cwd.join("stage.tmp"), b"{}").unwrap();
-    assert!(replace_directory_file(&cwd.join("stage.tmp"), &target).is_err());
+    assert!(
+        fs.replace(&cwd.join("stage.tmp"), &target, &mut |_| Ok(()))
+            .is_err()
+    );
     assert_eq!(std::fs::read_dir(&foreign).unwrap().count(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn ancestry_substitution_between_parent_validation_and_replace_is_refused() {
+    for publication_number in [1, 2] {
+        let (fixture, seat, old_cwd) = fixture();
+        let host = fixture.path().join("host");
+        std::fs::create_dir(&host).unwrap();
+        let cwd = host.join("desk");
+        std::fs::rename(old_cwd, &cwd).unwrap();
+        seed(&cwd);
+        let before = originals(&cwd);
+        let foreign = fixture.path().join("foreign");
+        std::fs::create_dir(&foreign).unwrap();
+        let foreign_cwd = foreign.join("desk");
+        std::fs::create_dir(&foreign_cwd).unwrap();
+        seed(&foreign_cwd);
+        let foreign_before = originals(&foreign_cwd);
+        let saved = fixture.path().join("saved-host");
+        let mut validated = 0;
+        let error = compose_hosted_directory(&seat, "claude", &cwd, &mut |step| {
+            if step == PublicationStep::ReplaceValidated {
+                validated += 1;
+                if validated == publication_number {
+                    // The former implementation opened the source parent,
+                    // then re-resolved the target through this foreign link.
+                    std::fs::rename(&host, &saved).unwrap();
+                    std::os::unix::fs::symlink(&foreign, &host).unwrap();
+                }
+            }
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(hosted_composition_refusal(&error).contains("incomplete"));
+        assert!(error.to_string().contains("identity"));
+        assert_eq!(originals(&foreign_cwd), foreign_before);
+        assert_eq!(std::fs::read_dir(&foreign_cwd).unwrap().count(), 2);
+        assert!(publication_record(&seat, &cwd).unwrap().exists());
+        std::fs::remove_file(&host).unwrap();
+        std::fs::rename(saved, &host).unwrap();
+        // Pending rollback uses the saved originals, then a supported retry.
+        compose_for_hosted_seat(
+            Some(&seat),
+            "codex",
+            &cwd,
+            HostedCompositionMode::OwnedDirectory,
+        )
+        .unwrap();
+        assert_eq!(originals(&cwd), before);
+        compose(&seat, &cwd).unwrap();
+    }
 }

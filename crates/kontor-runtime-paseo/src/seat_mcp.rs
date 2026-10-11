@@ -419,6 +419,7 @@ enum PublicationStep {
     RollbackSettings,
     RollbackMcp,
     Cleanup,
+    ReplaceValidated,
 }
 
 // All adapter instances and all subjects sharing a cwd use this same lock.
@@ -433,105 +434,305 @@ fn directory_lock(cwd: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
     locks.entry(cwd.to_owned()).or_default().clone()
 }
 
-fn directory_file(path: &Path) -> io::Result<Option<Vec<u8>>> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_file() && !metadata.is_symlink() => {
+// Retain every directory link from / to each owned root. All reads, writes,
+// renames and cleanup use these descriptors, never a second pathname open.
+struct DirectoryAnchor {
+    path: PathBuf,
+    #[cfg(unix)]
+    lineage: Vec<(std::sync::Arc<std::fs::File>, std::ffi::OsString)>,
+}
+
+impl DirectoryAnchor {
+    fn open(path: &Path) -> io::Result<Self> {
+        #[cfg(unix)]
+        {
+            use rustix::fs::{Mode, OFlags};
+            let root = std::fs::File::from(rustix::fs::open(
+                "/",
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )?);
+            let mut anchor = Self {
+                path: PathBuf::from("/"),
+                lineage: vec![(std::sync::Arc::new(root), Default::default())],
+            };
+            for component in path.components() {
+                match component {
+                    std::path::Component::RootDir => {}
+                    std::path::Component::Normal(name) => anchor = anchor.child(name)?,
+                    _ => {
+                        return Err(io::Error::other(
+                            "hosted directory must be an absolute canonical path",
+                        ));
+                    }
+                }
+            }
+            anchor.verify()?;
+            Ok(anchor)
+        }
+        #[cfg(not(unix))]
+        {
+            if std::fs::canonicalize(path)? != path || !check_directory(path)? {
+                return Err(io::Error::other("hosted directory is not canonical"));
+            }
+            Ok(Self {
+                path: path.to_owned(),
+            })
+        }
+    }
+
+    #[cfg(unix)]
+    fn fd(&self) -> &std::fs::File {
+        &self.lineage.last().unwrap().0
+    }
+
+    fn child(&self, name: &std::ffi::OsStr) -> io::Result<Self> {
+        self.verify()?;
+        #[cfg(unix)]
+        {
+            use rustix::fs::{Mode, OFlags};
+            let file = std::fs::File::from(rustix::fs::openat(
+                self.fd(),
+                name,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )?);
+            let mut lineage = self.lineage.clone();
+            lineage.push((std::sync::Arc::new(file), name.to_owned()));
+            let child = Self {
+                path: self.path.join(name),
+                lineage,
+            };
+            child.verify()?;
+            Ok(child)
+        }
+        #[cfg(not(unix))]
+        {
+            Self::open(&self.path.join(name))
+        }
+    }
+
+    fn verify(&self) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            for pair in self.lineage.windows(2) {
+                let retained = rustix::fs::fstat(pair[1].0.as_ref())?;
+                let linked = rustix::fs::statat(
+                    pair[0].0.as_ref(),
+                    &pair[1].1,
+                    rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+                )
+                .map_err(|error| {
+                    io::Error::other(format!(
+                        "retained hosted directory identity cannot be verified: {error}"
+                    ))
+                })?;
+                if retained.st_dev != linked.st_dev || retained.st_ino != linked.st_ino {
+                    return Err(io::Error::other(
+                        "retained hosted directory identity changed",
+                    ));
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        if std::fs::canonicalize(&self.path)? != self.path || !check_directory(&self.path)? {
+            return Err(io::Error::other(
+                "retained hosted directory identity changed",
+            ));
+        }
+        Ok(())
+    }
+
+    fn sync(&self) -> io::Result<()> {
+        self.verify()?;
+        #[cfg(unix)]
+        self.fd().sync_all()?;
+        #[cfg(not(unix))]
+        std::fs::File::open(&self.path)?.sync_all()?;
+        self.verify()
+    }
+}
+
+struct DirectoryIo {
+    directories: std::collections::BTreeMap<PathBuf, DirectoryAnchor>,
+}
+
+impl DirectoryIo {
+    fn new(cwd: &Path, state_root: &Path) -> io::Result<Self> {
+        let mut directories = std::collections::BTreeMap::new();
+        for root in [cwd, state_root] {
+            directories.insert(root.to_owned(), DirectoryAnchor::open(root)?);
+        }
+        Ok(Self { directories })
+    }
+
+    fn directory(&mut self, path: &Path) -> io::Result<&DirectoryAnchor> {
+        if !self.directories.contains_key(path) {
+            let parent = path
+                .parent()
+                .ok_or_else(|| io::Error::other("path is outside owned hosted roots"))?;
+            let anchor = self.directory(parent)?.child(path.file_name().unwrap())?;
+            self.directories.insert(path.to_owned(), anchor);
+        }
+        let anchor = &self.directories[path];
+        anchor.verify()?;
+        Ok(anchor)
+    }
+
+    fn exists(&mut self, path: &Path) -> io::Result<bool> {
+        match self.directory(path) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn read(&mut self, path: &Path) -> io::Result<Option<Vec<u8>>> {
+        let result = (|| {
+            use std::io::Read as _;
+            let parent = self.directory(path.parent().unwrap())?;
             #[cfg(unix)]
-            {
+            let mut file = {
                 use rustix::fs::{Mode, OFlags};
-                use std::io::Read as _;
-                let parent = owned_parent(path)?;
-                let fd = rustix::fs::openat(
-                    &parent,
+                std::fs::File::from(rustix::fs::openat(
+                    parent.fd(),
                     path.file_name().unwrap(),
                     OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
                     Mode::empty(),
-                )?;
-                let mut file = std::fs::File::from(fd);
-                if !file.metadata()?.is_file() {
-                    return Err(io::Error::other(
-                        "hosted configuration is not a regular file",
-                    ));
-                }
-                let mut bytes = Vec::new();
-                file.read_to_end(&mut bytes)?;
-                Ok(Some(bytes))
-            }
+                )?)
+            };
             #[cfg(not(unix))]
-            {
-                std::fs::read(path).map(Some)
+            let mut file = {
+                let metadata = std::fs::symlink_metadata(path)?;
+                if metadata.is_symlink() {
+                    return Err(io::Error::other("hosted configuration is a symlink"));
+                }
+                std::fs::File::open(path)?
+            };
+            if !file.metadata()?.is_file() {
+                return Err(io::Error::other(
+                    "hosted configuration is not a regular file",
+                ));
             }
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)?;
+            parent.verify()?;
+            Ok(Some(bytes))
+        })();
+        match result {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            other => other,
         }
-        Ok(_) => Err(io::Error::other(format!(
-            "{} is not a regular owned file",
-            path.display()
-        ))),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error),
     }
-}
 
-#[cfg(unix)]
-fn owned_parent(path: &Path) -> io::Result<std::fs::File> {
-    use rustix::fs::{Mode, OFlags};
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::other("hosted file has no parent"))?;
-    let fd = rustix::fs::open(
-        parent,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )?;
-    Ok(std::fs::File::from(fd))
-}
+    fn stage(&mut self, path: &Path, bytes: &[u8]) -> io::Result<()> {
+        use std::io::Write as _;
+        let parent = self.directory(path.parent().unwrap())?;
+        #[cfg(unix)]
+        let mut file = {
+            use rustix::fs::{Mode, OFlags};
+            std::fs::File::from(rustix::fs::openat(
+                parent.fd(),
+                path.file_name().unwrap(),
+                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::RUSR | Mode::WUSR,
+            )?)
+        };
+        #[cfg(not(unix))]
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        parent.sync()
+    }
 
-fn replace_directory_file(temporary: &Path, destination: &Path) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        let source_parent = owned_parent(temporary)?;
-        let target_parent = owned_parent(destination)?;
+    fn replace(
+        &mut self,
+        temporary: &Path,
+        destination: &Path,
+        fault: &mut impl FnMut(PublicationStep) -> io::Result<()>,
+    ) -> io::Result<()> {
+        if temporary.parent() != destination.parent() {
+            return Err(io::Error::other(
+                "hosted publication must replace within one retained directory",
+            ));
+        }
+        let parent = self.directory(destination.parent().unwrap())?;
+        // Deterministic seam at the old source-open/target-open interval.
+        fault(PublicationStep::ReplaceValidated)?;
+        parent.verify()?;
+        #[cfg(unix)]
         rustix::fs::renameat(
-            &source_parent,
+            parent.fd(),
             temporary.file_name().unwrap(),
-            &target_parent,
+            parent.fd(),
             destination.file_name().unwrap(),
         )?;
-        target_parent.sync_all()
+        #[cfg(not(unix))]
+        std::fs::rename(temporary, destination)?;
+        parent.sync()
     }
-    #[cfg(not(unix))]
-    {
-        std::fs::rename(temporary, destination)
-    }
-}
 
-fn create_directory(path: &Path) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        let parent = owned_parent(path)?;
-        rustix::fs::mkdirat(&parent, path.file_name().unwrap(), rustix::fs::Mode::RWXU)?;
-        parent.sync_all()
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::create_dir(path)
-    }
-}
-
-fn remove_created_directory(path: &Path) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        let parent = owned_parent(path)?;
-        rustix::fs::unlinkat(
-            &parent,
+    fn create(&mut self, path: &Path) -> io::Result<()> {
+        let parent = self.directory(path.parent().unwrap())?;
+        #[cfg(unix)]
+        rustix::fs::mkdirat(
+            parent.fd(),
             path.file_name().unwrap(),
-            rustix::fs::AtFlags::REMOVEDIR,
+            rustix::fs::Mode::RWXU,
         )?;
-        parent.sync_all()
+        #[cfg(not(unix))]
+        std::fs::create_dir(path)?;
+        parent.sync()?;
+        self.directory(path)?;
+        Ok(())
     }
-    #[cfg(not(unix))]
-    {
-        std::fs::remove_dir(path)
+
+    fn remove(&mut self, path: &Path, directory: bool) -> io::Result<()> {
+        let result = (|| {
+            let parent = self.directory(path.parent().unwrap())?;
+            #[cfg(unix)]
+            rustix::fs::unlinkat(
+                parent.fd(),
+                path.file_name().unwrap(),
+                if directory {
+                    rustix::fs::AtFlags::REMOVEDIR
+                } else {
+                    rustix::fs::AtFlags::empty()
+                },
+            )?;
+            #[cfg(not(unix))]
+            if directory {
+                std::fs::remove_dir(path)?;
+            } else {
+                std::fs::remove_file(path)?;
+            }
+            parent.sync()
+        })();
+        if result.is_ok() && directory {
+            self.directories.remove(path);
+        }
+        match result {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        }
     }
+
+    fn verify(&mut self) -> io::Result<()> {
+        for directory in self.directories.values() {
+            directory.verify()?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+fn directory_file(path: &Path) -> io::Result<Option<Vec<u8>>> {
+    let root = std::fs::canonicalize(path.parent().unwrap_or(Path::new("/")))
+        .or_else(|_| std::fs::canonicalize(path.parent().unwrap().parent().unwrap()))?;
+    DirectoryIo::new(&root, &root)?.read(path)
 }
 
 fn check_directory(path: &Path) -> io::Result<bool> {
@@ -628,46 +829,6 @@ fn hosted_git_marker(cwd: &Path) -> io::Result<bool> {
     Ok(false)
 }
 
-fn stage_directory_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    use std::io::Write as _;
-    #[cfg(unix)]
-    let mut file = {
-        use rustix::fs::{Mode, OFlags};
-        let parent = owned_parent(path)?;
-        std::fs::File::from(rustix::fs::openat(
-            &parent,
-            path.file_name().unwrap(),
-            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::RUSR | Mode::WUSR,
-        )?)
-    };
-    #[cfg(not(unix))]
-    let mut file = {
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        options.open(path)?
-    };
-    file.write_all(bytes)?;
-    file.sync_all()
-}
-
-fn sync_directory(path: &Path) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        use rustix::fs::{Mode, OFlags};
-        std::fs::File::from(rustix::fs::open(
-            path,
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        )?)
-        .sync_all()
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::File::open(path)?.sync_all()
-    }
-}
-
 impl DirectoryPublication {
     fn temporary(&self, settings: bool, restoring: bool) -> PathBuf {
         let directory = if settings {
@@ -682,10 +843,11 @@ impl DirectoryPublication {
         ))
     }
 
-    fn verify_current(&self) -> io::Result<()> {
+    fn verify_current(&self, fs: &mut DirectoryIo) -> io::Result<()> {
+        fs.verify()?;
         let (settings, mcp) = directory_paths(&self.cwd)?;
         for (path, file) in [(settings, &self.settings), (mcp, &self.mcp)] {
-            let current = directory_file(&path)?;
+            let current = fs.read(&path)?;
             if current != file.original && current.as_deref() != Some(file.rendered.as_slice()) {
                 return Err(io::Error::other(format!(
                     "{} changed outside the pending publication",
@@ -696,19 +858,21 @@ impl DirectoryPublication {
         Ok(())
     }
 
-    fn complete(&self) -> io::Result<bool> {
+    fn complete(&self, fs: &mut DirectoryIo) -> io::Result<bool> {
+        fs.verify()?;
         let (settings, mcp) = directory_paths(&self.cwd)?;
         Ok(
-            directory_file(&settings)?.as_deref() == Some(self.settings.rendered.as_slice())
-                && directory_file(&mcp)?.as_deref() == Some(self.mcp.rendered.as_slice()),
+            fs.read(&settings)?.as_deref() == Some(self.settings.rendered.as_slice())
+                && fs.read(&mcp)?.as_deref() == Some(self.mcp.rendered.as_slice()),
         )
     }
 
     fn rollback(
         &self,
+        fs: &mut DirectoryIo,
         fault: &mut impl FnMut(PublicationStep) -> io::Result<()>,
     ) -> io::Result<()> {
-        self.verify_current()?;
+        self.verify_current(fs)?;
         let (settings, mcp) = directory_paths(&self.cwd)?;
         for (path, file, is_settings, step) in [
             (
@@ -719,66 +883,46 @@ impl DirectoryPublication {
             ),
             (mcp, &self.mcp, false, PublicationStep::RollbackMcp),
         ] {
-            if directory_file(&path)? == file.original {
+            if fs.read(&path)? == file.original {
                 continue;
             }
             fault(step)?;
             match &file.original {
                 Some(bytes) => {
                     let temporary = self.temporary(is_settings, true);
-                    remove_attempt_file(&temporary)?;
-                    stage_directory_file(&temporary, bytes)?;
+                    fs.remove(&temporary, false)?;
+                    fs.stage(&temporary, bytes)?;
                     directory_paths(&self.cwd)?;
-                    replace_directory_file(&temporary, &path)?;
+                    fs.replace(&temporary, &path, fault)?;
                 }
-                None => remove_attempt_file(&path)?,
+                None => fs.remove(&path, false)?,
             }
-            sync_directory(path.parent().expect("a hosted file has a parent"))?;
+            fs.directory(path.parent().expect("a hosted file has a parent"))?
+                .sync()?;
         }
         Ok(())
     }
 
-    fn cleanup(&self, record: &Path, rolled_back: bool) -> io::Result<()> {
+    fn cleanup(&self, fs: &mut DirectoryIo, record: &Path, rolled_back: bool) -> io::Result<()> {
+        fs.verify()?;
         directory_paths(&self.cwd)?;
         for settings in [true, false] {
             for restoring in [true, false] {
-                remove_attempt_file(&self.temporary(settings, restoring))?;
+                fs.remove(&self.temporary(settings, restoring), false)?;
             }
         }
-        if rolled_back
-            && self.created_claude_directory
-            && check_directory(&self.cwd.join(".claude"))?
-        {
+        if rolled_back && self.created_claude_directory && fs.exists(&self.cwd.join(".claude"))? {
             // Only this attempt's now-empty directory; foreign contents stay.
-            match remove_created_directory(&self.cwd.join(".claude")) {
-                Ok(()) => sync_directory(&self.cwd)?,
+            match fs.remove(&self.cwd.join(".claude"), true) {
+                Ok(()) => fs.directory(&self.cwd)?.sync()?,
                 Err(error) if error.kind() == io::ErrorKind::DirectoryNotEmpty => {}
                 Err(error) => return Err(error),
             }
         }
-        sync_directory(&self.cwd)?;
-        remove_attempt_file(record)?;
-        sync_directory(record.parent().expect("a publication record has a parent"))
-    }
-}
-
-fn remove_attempt_file(path: &Path) -> io::Result<()> {
-    #[cfg(unix)]
-    let result = (|| {
-        let parent = owned_parent(path)?;
-        rustix::fs::unlinkat(
-            &parent,
-            path.file_name().unwrap(),
-            rustix::fs::AtFlags::empty(),
-        )
-        .map_err(io::Error::from)
-    })();
-    #[cfg(not(unix))]
-    let result = std::fs::remove_file(path);
-    match result {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
+        fs.directory(&self.cwd)?.sync()?;
+        fs.remove(record, false)?;
+        fs.directory(record.parent().expect("a publication record has a parent"))?
+            .sync()
     }
 }
 
@@ -791,11 +935,12 @@ fn publication_record(seat: &SeatMcp, cwd: &Path) -> io::Result<PathBuf> {
 }
 
 fn recover_directory_publication(
+    fs: &mut DirectoryIo,
     record: &Path,
     cwd: &Path,
     fault: &mut impl FnMut(PublicationStep) -> io::Result<()>,
 ) -> io::Result<()> {
-    let Some(bytes) = directory_file(record).map_err(|error| {
+    let Some(bytes) = fs.read(record).map_err(|error| {
         io::Error::other(IncompletePublication(format!(
             "{}: {error}",
             record.display()
@@ -821,12 +966,12 @@ fn recover_directory_publication(
                 ));
             }
         }
-        publication.verify_current()?;
-        let complete = publication.complete()?;
+        publication.verify_current(fs)?;
+        let complete = publication.complete(fs)?;
         if !complete {
-            publication.rollback(fault)?;
+            publication.rollback(fs, fault)?;
         }
-        publication.cleanup(record, !complete)
+        publication.cleanup(fs, record, !complete)
     };
     recover().map_err(|error| {
         io::Error::other(IncompletePublication(format!(
@@ -834,6 +979,59 @@ fn recover_directory_publication(
             record.display()
         )))
     })
+}
+
+/// Healthy exact-native replay recovers pending writes, then only validates.
+/// Missing/different required config refuses; unrelated content is not rendered.
+pub(crate) fn validate_recovered_hosted_directory(
+    seat: Option<&SeatMcp>,
+    provider: &str,
+    cwd: &Path,
+) -> io::Result<()> {
+    let Some(seat) = seat else {
+        return Ok(());
+    };
+    let cwd = std::fs::canonicalize(cwd)?;
+    let lock = directory_lock(&cwd);
+    let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
+    let state_root = std::fs::canonicalize(&seat.state_root)?;
+    let mut fs = DirectoryIo::new(&cwd, &state_root)?;
+    let record = publication_record(seat, &cwd)?;
+    recover_directory_publication(&mut fs, &record, &cwd, &mut |_| Ok(()))?;
+    if crate::client::built_in_provider(provider) != "claude" {
+        return Ok(());
+    }
+    let mut read_object = |path: &Path| -> io::Result<serde_json::Value> {
+        let bytes = fs.read(path)?.ok_or_else(|| {
+            io::Error::other(
+                "healthy hosted seat configuration is missing; replay does not publish",
+            )
+        })?;
+        let object: serde_json::Value = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+        if !object.is_object() {
+            return Err(io::Error::other(
+                "healthy hosted configuration must be a JSON object",
+            ));
+        }
+        Ok(object)
+    };
+    let settings = read_object(&cwd.join(".claude/settings.local.json"))?;
+    let mcp = read_object(&cwd.join(".mcp.json"))?;
+    if settings.get("enableAllProjectMcpServers") != Some(&serde_json::json!(true))
+        || mcp
+            .get("mcpServers")
+            .and_then(|servers| servers.get("kontor"))
+            != Some(&mcp_file_entry(
+                &seat.command,
+                &seat.state_root,
+                "leadership",
+            ))
+    {
+        return Err(io::Error::other(
+            "healthy hosted seat configuration differs; replay does not publish",
+        ));
+    }
+    fs.verify()
 }
 
 fn compose_hosted_directory(
@@ -847,8 +1045,10 @@ fn compose_hosted_directory(
     // A caught interruption may poison this process's lock; the persisted
     // record, rather than in-memory state, decides whether publication is safe.
     let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
+    let state_root = std::fs::canonicalize(&seat.state_root)?;
+    let mut fs = DirectoryIo::new(&cwd, &state_root)?;
     let record = publication_record(seat, &cwd)?;
-    recover_directory_publication(&record, &cwd, fault)?;
+    recover_directory_publication(&mut fs, &record, &cwd, fault)?;
     if crate::client::built_in_provider(provider) != "claude" {
         return Ok(());
     }
@@ -856,8 +1056,8 @@ fn compose_hosted_directory(
         return seat.compose(&cwd, "leadership");
     }
     let (settings_path, mcp_path) = directory_paths(&cwd)?;
-    let settings_original = directory_file(&settings_path)?;
-    let mcp_original = directory_file(&mcp_path)?;
+    let settings_original = fs.read(&settings_path)?;
+    let mcp_original = fs.read(&mcp_path)?;
     // Both objects are read/validated/rendered before even creating .claude.
     let settings = DirectoryFile {
         rendered: render_directory_json(settings_original.as_deref(), |object| {
@@ -897,38 +1097,39 @@ fn compose_hosted_directory(
         version: 1,
         cwd: cwd.clone(),
         attempt: uuid::Uuid::now_v7(),
-        created_claude_directory: !check_directory(&cwd.join(".claude"))?,
+        created_claude_directory: !fs.exists(&cwd.join(".claude"))?,
         settings,
         mcp,
     };
-    if !check_directory(record.parent().unwrap())? {
-        match create_directory(record.parent().unwrap()) {
+    if !fs.exists(record.parent().unwrap())? {
+        match fs.create(record.parent().unwrap()) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                check_directory(record.parent().unwrap())?;
+                fs.exists(record.parent().unwrap())?;
             }
             Err(error) => return Err(error),
         }
-        sync_directory(record.parent().unwrap().parent().unwrap())?;
+        fs.directory(record.parent().unwrap().parent().unwrap())?
+            .sync()?;
     }
     // Write and fsync originals before any destination changes. A process
     // interruption leaves a record the prepared-intent retry must reconcile.
     let record_temp = record.with_extension(format!("{}.tmp", publication.attempt));
     let bytes = serde_json::to_vec(&publication).map_err(io::Error::other)?;
     let record_result = (|| {
-        stage_directory_file(&record_temp, &bytes)?;
-        replace_directory_file(&record_temp, &record)?;
-        sync_directory(record.parent().unwrap())
+        fs.stage(&record_temp, &bytes)?;
+        fs.replace(&record_temp, &record, &mut |_| Ok(()))?;
+        fs.directory(record.parent().unwrap())?.sync()
     })();
     if let Err(error) = record_result {
-        remove_attempt_file(&record_temp)?;
-        recover_directory_publication(&record, &cwd, fault)?;
+        fs.remove(&record_temp, false)?;
+        recover_directory_publication(&mut fs, &record, &cwd, fault)?;
         return Err(error);
     }
     let result = (|| {
         if publication.created_claude_directory {
-            create_directory(&cwd.join(".claude"))?;
-            sync_directory(&cwd)?;
+            fs.create(&cwd.join(".claude"))?;
+            fs.directory(&cwd)?.sync()?;
         }
         for (file, settings, step) in [
             (&publication.settings, true, PublicationStep::StageSettings),
@@ -939,7 +1140,7 @@ fn compose_hosted_directory(
             }
             fault(step)?;
             directory_paths(&cwd)?;
-            stage_directory_file(&publication.temporary(settings, false), &file.rendered)?;
+            fs.stage(&publication.temporary(settings, false), &file.rendered)?;
         }
         for (path, file, settings, step) in [
             (
@@ -959,12 +1160,12 @@ fn compose_hosted_directory(
                 continue;
             }
             fault(step)?;
-            publication.verify_current()?;
-            replace_directory_file(&publication.temporary(settings, false), &path)?;
-            sync_directory(path.parent().unwrap())?;
+            publication.verify_current(&mut fs)?;
+            fs.replace(&publication.temporary(settings, false), &path, fault)?;
+            fs.directory(path.parent().unwrap())?.sync()?;
         }
         fault(PublicationStep::Readback)?;
-        if !publication.complete()? {
+        if !publication.complete(&mut fs)? {
             return Err(io::Error::other(
                 "hosted MCP pair readback differs from publication",
             ));
@@ -973,8 +1174,8 @@ fn compose_hosted_directory(
     })();
     if let Err(error) = result {
         if let Err(cleanup) = publication
-            .rollback(fault)
-            .and_then(|()| publication.cleanup(&record, true))
+            .rollback(&mut fs, fault)
+            .and_then(|()| publication.cleanup(&mut fs, &record, true))
         {
             return Err(io::Error::other(IncompletePublication(format!(
                 "{error}; {}: {cleanup}",
@@ -984,7 +1185,7 @@ fn compose_hosted_directory(
         return Err(error);
     }
     fault(PublicationStep::Cleanup)
-        .and_then(|()| publication.cleanup(&record, false))
+        .and_then(|()| publication.cleanup(&mut fs, &record, false))
         .map_err(|error| {
             io::Error::other(IncompletePublication(format!(
                 "{}: {error}",
