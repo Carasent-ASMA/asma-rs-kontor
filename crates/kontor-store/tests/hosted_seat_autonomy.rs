@@ -2321,6 +2321,17 @@ fn an_authentic_schema_twelve_document_verifies_and_imports_with_an_empty_backfi
         .expect("a counts object")
         .remove("durable_seat_declarations")
         .expect("the current generation counts durable seat declarations");
+    // And generation sixteen's desk Adam subjects (ASMA-8452).
+    document["records"]
+        .as_object_mut()
+        .expect("a records object")
+        .remove("desk_adam_subjects")
+        .expect("the current generation carries desk Adam subjects");
+    document["continuity_summary"]["record_counts"]
+        .as_object_mut()
+        .expect("a counts object")
+        .remove("desk_adam_subjects")
+        .expect("the current generation counts desk Adam subjects");
     let authentic_records_bytes = {
         let mut bytes = serde_json::to_vec(&document["records"]).expect("the records serialize");
         bytes.push(b'\n');
@@ -2838,7 +2849,17 @@ fn rewind_to_schema_121(path: &std::path::Path) {
     // This stopped fixture started at today's schema. A historical stamp must
     // also remove the later additive tables, or a forward open would correctly
     // refuse to create them again. Refuse to erase any fixture evidence.
+    // The desk Adam triggers live on older tables and are removed with their
+    // own table, which they name.
+    connection
+        .execute_batch(
+            "DROP TRIGGER desk_adam_subjects_host_one_session;
+             DROP TRIGGER desk_adam_subjects_bound_ad_hoc_seats_no_one;
+             DROP TRIGGER desk_adam_subjects_bound_ad_hoc_hosts_no_one;",
+        )
+        .expect("the later triggers are removed");
     for table in [
+        "desk_adam_subjects",
         "durable_seat_declarations",
         "desks",
         "prepared_attestation_tokens",

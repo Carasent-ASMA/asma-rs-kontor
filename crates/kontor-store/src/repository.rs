@@ -143,6 +143,7 @@ use uuid::Uuid;
 
 use crate::SqliteStore;
 mod attestation_authority;
+mod desk_adams;
 mod desks;
 mod durable_seats;
 use crate::events::append::stored_payload;
@@ -2588,6 +2589,77 @@ fn stored_shareability(
     Ok(stamp)
 }
 
+/// Whether a desk Adam subject may hang off its desk's workspace although the
+/// two cite different topology revisions.
+///
+/// A desk keeps the revision it was ensured under, and an epic led from it may
+/// be pinned to a later revision of the same lineage that introduces the
+/// subject kind. The epic's own snapshot check has already run; this admits
+/// exactly that one edge and nothing wider: a parent-hosted kind below the
+/// active workspace of the desk its registered subject row names, where both
+/// published revisions declare that workspace identically as a native session
+/// host. Where the workspace's revision knows the subject kind, it must permit
+/// the same edge with the same hosting; otherwise only a newer revision may
+/// introduce it.
+fn desk_subject_bridge(
+    transaction: &Transaction<'_>,
+    request: &NewSessionTopologyNode,
+    spec: &ProjectSessionTopologySpec,
+    declared: &kontor_core::spec::TopologyNodeKindSpec,
+    parent: &SessionTopologyNode,
+) -> RepositoryResult<bool> {
+    if parent.lifecycle != TopologyLifecycle::Active
+        || parent.topology.spec_id != request.topology.spec_id
+        || parent.mini_project_id.is_some()
+        || request.task_id.is_some()
+        || !NodeProjectionCapability::hosts_in_parent(&declared.projection_capabilities)
+    {
+        return Ok(false);
+    }
+    let registered_host: Option<String> = transaction
+        .query_row(
+            "SELECT desk.workspace_node_id
+             FROM desk_adam_subjects AS subject
+             JOIN desks AS desk
+               ON desk.project_id = subject.project_id AND desk.desk_key = subject.desk_key
+             WHERE subject.project_id = ?1 AND subject.topology_node_id = ?2
+               AND subject.mini_project_id IS ?3",
+            params![
+                request.project_id.to_string(),
+                request.id.to_string(),
+                request.mini_project_id.map(|id| id.to_string()),
+            ],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?;
+    if registered_host != Some(parent.id.to_string()) {
+        return Ok(false);
+    }
+    let parent_spec = topology_spec_in(transaction, request.project_id, &parent.topology)?;
+    let (Some(host), Some(current_host)) = (
+        parent_spec.node_kind(&parent.kind),
+        spec.node_kind(&parent.kind),
+    ) else {
+        return Ok(false);
+    };
+    if host.projection_capabilities != current_host.projection_capabilities
+        || host.allowed_parents != current_host.allowed_parents
+        || host.read_only != current_host.read_only
+        || !NodeProjectionCapability::hosts_sessions(&host.projection_capabilities)
+        || NodeProjectionCapability::hosts_in_parent(&host.projection_capabilities)
+    {
+        return Ok(false);
+    }
+    Ok(match parent_spec.node_kind(&request.kind) {
+        Some(known) => {
+            known.allowed_parents.contains(&parent.kind)
+                && known.projection_capabilities == declared.projection_capabilities
+        }
+        None => request.topology.version > parent.topology.version,
+    })
+}
+
 fn topology_spec_in(
     transaction: &Transaction<'_>,
     project_id: ProjectId,
@@ -2731,14 +2803,27 @@ fn repin_mini_project_nodes_in(
                 |row| row.get(0),
             )
             .map_err(backend)?;
-        if seats > 0
-            && !declared
-                .projection_capabilities
-                .contains(&NodeProjectionCapability::SessionHost)
+        if seats > 0 && !NodeProjectionCapability::hosts_sessions(&declared.projection_capabilities)
         {
             return Err(conflict(
                 "topology upgrade",
                 "the target specification cannot host an existing seat",
+            ));
+        }
+
+        // Where a node's sessions live is not vocabulary. A node that borrows
+        // its parent's container never gains one of its own, and a node with
+        // its own never starts borrowing, whatever the target declares.
+        let current = topology_spec_in(transaction, snapshot.project_id, &node.topology)?;
+        let hosted_in_parent = current.node_kind(&node.kind).is_some_and(|kind| {
+            NodeProjectionCapability::hosts_in_parent(&kind.projection_capabilities)
+        });
+        if hosted_in_parent
+            != NodeProjectionCapability::hosts_in_parent(&declared.projection_capabilities)
+        {
+            return Err(conflict(
+                "topology upgrade",
+                "the target specification changes where an existing node hosts its sessions",
             ));
         }
     }
@@ -10916,11 +11001,15 @@ impl TopologyRepository for SqliteStore {
                 } else {
                     false
                 };
+                let desk_subject = parent.topology != request.topology
+                    && desk_subject_bridge(&transaction, request, &spec, declared, &parent)?;
                 if parent.lifecycle.is_terminal()
                     || parent
                         .mini_project_id
                         .is_some_and(|scope| Some(scope) != request.mini_project_id)
-                    || (parent.topology != request.topology && !historical_project_root)
+                    || (parent.topology != request.topology
+                        && !historical_project_root
+                        && !desk_subject)
                     || !declared.allowed_parents.contains(&parent.kind)
                 {
                     return Err(conflict(
@@ -11209,14 +11298,14 @@ impl TopologyRepository for SqliteStore {
             return Err(conflict("seat binding", "the topology node is archived"));
         }
         let spec = topology_spec_in(&transaction, request.project_id, &node.topology)?;
+        // A parent-hosted kind hosts sessions in its parent's container, so
+        // it binds seats exactly as a session host does.
         let hosts_sessions = spec
             .node_kinds
             .iter()
             .find(|declared| declared.kind == node.kind)
             .is_some_and(|declared| {
-                declared
-                    .projection_capabilities
-                    .contains(&kontor_core::spec::NodeProjectionCapability::SessionHost)
+                NodeProjectionCapability::hosts_sessions(&declared.projection_capabilities)
             });
         if !hosts_sessions {
             return Err(conflict(
@@ -11508,6 +11597,30 @@ impl TopologyRepository for SqliteStore {
             return Err(conflict(
                 "native container binding",
                 "the topology node belongs to another project",
+            ));
+        }
+        // A parent-hosted node owns no native container: its sessions live in
+        // its parent's, and a second binding would give one place two nodes.
+        let node: SessionTopologyNode = transaction
+            .query_row(
+                &format!(
+                    "SELECT {TOPOLOGY_NODE_COLUMNS} FROM topology_nodes
+                     WHERE project_id = ?1 AND id = ?2"
+                ),
+                params![
+                    request.project_id.to_string(),
+                    request.topology_node_id.to_string()
+                ],
+                |row| Ok(read_topology_node(row)),
+            )
+            .map_err(backend)??;
+        let spec = topology_spec_in(&transaction, request.project_id, &node.topology)?;
+        if spec.node_kind(&node.kind).is_some_and(|kind| {
+            NodeProjectionCapability::hosts_in_parent(&kind.projection_capabilities)
+        }) {
+            return Err(conflict(
+                "native container binding",
+                "a node hosted in its parent's container owns no native container",
             ));
         }
 

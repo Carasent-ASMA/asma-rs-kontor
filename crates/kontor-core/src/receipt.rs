@@ -294,6 +294,19 @@ closed_enum! {
         ClaimCoreTeamSeat => "claim_core_team_seat",
         /// Move one epic's roster pin to another published revision.
         UpgradeEpicRoster => "upgrade_epic_roster",
+        /// Open one ad-hoc desk Adam subject on a durable desk.
+        ///
+        /// The project is the aggregate: an ad-hoc subject leads no epic yet,
+        /// and the desk it is opened on is project configuration.
+        OpenAdHocDeskAdam => "open_ad_hoc_desk_adam",
+        /// Hand one desk-led epic's Adam subject from its planning LSA to its
+        /// coordinating TPM, fencing the predecessor before the successor acts.
+        ///
+        /// Distinct from [`CommandKind::CorrectCoreTeamRoute`], which keeps one
+        /// SeatBinding and replaces its native: a handoff moves the subject's
+        /// phase ownership to another SeatBinding, and a route-correction
+        /// receipt must never be citable as that authority.
+        HandOffDeskAdam => "hand_off_desk_adam",
         /// Bring a provider-account profile into existence, or prove the one
         /// with that label matches.
         ///
@@ -632,7 +645,9 @@ impl CommandKind {
             // configuration: allowing an epic here would let a receipt claim
             // that publishing a roster changed one running epic, which is the
             // one thing publishing a roster deliberately does not do.
-            Self::ApplyCoreTeam | Self::EnsureQuickSession => witness(matches!(target, A::Project)),
+            Self::ApplyCoreTeam | Self::EnsureQuickSession | Self::OpenAdHocDeskAdam => {
+                witness(matches!(target, A::Project))
+            }
             // The project, and only the project. A published profile or
             // template is project configuration; an epic here would let a
             // receipt claim that publishing one changed a running consultation,
@@ -647,7 +662,8 @@ impl CommandKind {
             | Self::MaterializeCoreTeam
             | Self::CorrectCoreTeamRoute
             | Self::ClaimCoreTeamSeat
-            | Self::UpgradeEpicRoster => witness(matches!(target, A::MiniProject)),
+            | Self::UpgradeEpicRoster
+            | Self::HandOffDeskAdam => witness(matches!(target, A::MiniProject)),
             // Publishing a Completion Profile is project configuration; the two
             // completion writes are about one epic's own frozen run. Splitting
             // them here is what stops a profile publication from being citable

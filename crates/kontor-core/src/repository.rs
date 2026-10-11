@@ -1275,6 +1275,34 @@ pub struct StoredDesk {
     pub created_at: Timestamp,
 }
 
+/// Which work one leadership session on a durable desk does, as it is stored.
+///
+/// The subject is a node of its own directly below the desk's workspace. Its
+/// seats borrow the workspace's native container but are bound to this node,
+/// so the epic they act for is the subject's, never the shared workspace's.
+/// Immutable and permanent once written.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredDeskAdamSubject {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The subject node, planned before it exists.
+    pub topology_node_id: TopologyNodeId,
+    /// The desk whose workspace hosts the subject's sessions.
+    pub desk_key: DeskKey,
+    /// The epic an epic subject leads; `None` for ad-hoc work. At most one
+    /// subject leads any one epic.
+    pub mini_project_id: Option<MiniProjectId>,
+    /// The short name or topic its seat titles render, frozen at creation.
+    pub topic: ExternalName,
+    /// The ad-hoc subject an epic subject was bound from. Each ad-hoc subject
+    /// binds at most once, and only to an epic subject on its own desk.
+    pub origin_topology_node_id: Option<TopologyNodeId>,
+    /// The exact Team Definition revision whose desk leadership placed it.
+    pub team_definition: TeamDefinitionSnapshot,
+    /// Creation instant.
+    pub created_at: Timestamp,
+}
+
 /// What promotion does with the Quick session it came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
