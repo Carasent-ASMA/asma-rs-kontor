@@ -376,6 +376,30 @@ projection reports `desk_key` on both of a desk's nodes; an epic-scoped
 projection never includes them. The node `retire` / `archive` routes refuse a
 desk's nodes (`placement_blocked`), so no epic closeout path can retire one.
 
+## Durable desk seats (ASMA-8451)
+
+A long-lived seat of a desk is titled from its declaration, never chosen
+freely. The template is the fixed sequence `ROLE_CODE`, `TOPIC`, joined by
+the separator of the Team Definition revision the desk pinned:
+
+| Declaration | Title |
+| --- | --- |
+| `role_code: "LSA"`, `seat_label: "GENERAL"` | `LSA • GENERAL` |
+| `role_code: "LSA"`, `seat_label: "PR DRAFTS STATUS CHECKER"` | `LSA • PR DRAFTS STATUS CHECKER` |
+
+- The role code must be in the bundled role catalog. A label containing the
+  separator glyph is refused, as it is for every native name.
+- A title names one seat per desk. A second declaration that renders the
+  same title is a conflict.
+- The title carries no epic, task, backlog code or desk name. The desk is
+  identified by where the seat is placed, not by its title.
+- A daemon-owned seat keeps its title across restarts. Each occupancy
+  generation is launched under the same title and correlated by the seat's
+  SeatBinding label, never by its title.
+
+Declaring, reporting and reconciling these seats is described in
+[Durable desk seats in kontord](../_docs/reference/2026-10-11-02-20-reference-kontord-durable-desk-seats.md).
+
 ## Publication and migration
 
 - Validate and publish immutable revisions with

@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use kontor_core::compaction::{CompactionReceipt, CompactionStatus, CompactionTelemetry};
 use kontor_core::consultation::ConsultationRunId;
+use kontor_core::durable_seat::{DurableSeatActivity, DurableSeatCarrier};
 use kontor_core::id::{
     AccountProfileId, AgentRunId, BoundedText, CanonicalDocument, CompactionReceiptId, ContentHash,
     ExternalId, ExternalName, RuntimeBindingId, RuntimeKindKey, SeatBindingId, TaskId, TeamRunId,
@@ -57,6 +58,7 @@ use crate::container::{
     ContainerRecreationRequest, ContainerRequest, ContainerWorkspaceKind, RetitleContainerOutcome,
     RetitleContainerRequest,
 };
+use crate::durable_seat::{HostedSeatCensus, HostedSeatCensusRequest};
 use crate::observation::{
     ControlPlaneObservation, CorrelationEvidence, NativeSession, ObservationSource,
     ReconciliationReport, reconcile, timestamp_control_sequence,
@@ -387,6 +389,8 @@ pub enum AdapterCall {
     RespondConsultationPermission(SeatBindingId),
     /// A persistent topology leadership seat was launched or recovered.
     LaunchHostedSeat(SeatBindingId),
+    /// The natives carrying one hosted seat's binding label were counted.
+    CensusHostedSeat(SeatBindingId),
     /// An already-running persistent topology seat claim was previewed.
     PreviewClaimHostedSeat(SeatBindingId),
     /// An already-running session claimed a persistent topology seat.
@@ -897,6 +901,18 @@ struct FakeState {
     readback_only: bool,
     pause_hosted_retire_once: Option<FakeNativePause>,
     pause_send_once: Option<FakeNativePause>,
+    /// Holds the next hosted launch before it is recorded or mints anything.
+    pause_hosted_launch_once: Option<FakeNativePause>,
+    /// What each live hosted native is doing, when a test said; idle otherwise.
+    hosted_activity: BTreeMap<ExternalId, DurableSeatActivity>,
+    /// Natives a census reports for a binding beside the one this fake holds:
+    /// the shape of a seat duplicated or relaunched outside Kontor.
+    extra_hosted_carriers: BTreeMap<SeatBindingId, Vec<DurableSeatCarrier>>,
+    /// The error every hosted-seat census answers with. Sticky, like the
+    /// inspection rule: a reconciliation reads the census more than once.
+    hosted_census_refusal: Option<RuntimeError>,
+    /// The predecessors the latest launch of each binding named as fenced.
+    hosted_launch_fences: BTreeMap<SeatBindingId, Vec<ExternalId>>,
     /// Consultation seats keyed by their durable SeatBinding identity.
     consultations: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
     consultation_runs: BTreeMap<SeatBindingId, ConsultationRunId>,
@@ -1600,6 +1616,11 @@ impl ScriptedFakeRuntime {
                 readback_only: false,
                 pause_hosted_retire_once: None,
                 pause_send_once: None,
+                pause_hosted_launch_once: None,
+                hosted_activity: BTreeMap::new(),
+                extra_hosted_carriers: BTreeMap::new(),
+                hosted_census_refusal: None,
+                hosted_launch_fences: BTreeMap::new(),
                 consultations: BTreeMap::new(),
                 consultation_runs: BTreeMap::new(),
                 consultation_permissions: BTreeMap::new(),
@@ -2471,6 +2492,53 @@ impl ScriptedFakeRuntime {
     /// create one — with the retirement that preceded it already irreversible.
     pub fn refuse_next_hosted_launch(&self, provider: &str) {
         self.lock().refuse_hosted_launch_once = Some(provider.to_owned());
+    }
+
+    /// Hold the next hosted launch before it is recorded or mints a native.
+    ///
+    /// Two reconciliations of one seat racing meet exactly here: the first is
+    /// held at the runtime boundary while the second runs, so a test can show
+    /// the second never reaches the runtime at all.
+    #[must_use]
+    pub fn pause_next_hosted_launch(&self) -> FakeNativePause {
+        let pause = FakeNativePause::default();
+        self.lock().pause_hosted_launch_once = Some(pause.clone());
+        pause
+    }
+
+    /// Report one live hosted native as doing something other than idling.
+    pub fn set_hosted_seat_activity(&self, native_id: &ExternalId, activity: DurableSeatActivity) {
+        self.lock()
+            .hosted_activity
+            .insert(native_id.clone(), activity);
+    }
+
+    /// Report one more native carrying a hosted seat's binding label, as a
+    /// seat duplicated or relaunched outside Kontor would.
+    pub fn add_hosted_seat_carrier(
+        &self,
+        seat_binding_id: SeatBindingId,
+        carrier: DurableSeatCarrier,
+    ) {
+        self.lock()
+            .extra_hosted_carriers
+            .entry(seat_binding_id)
+            .or_default()
+            .push(carrier);
+    }
+
+    /// Answer every hosted-seat census with this error.
+    pub fn refuse_hosted_census(&self, error: RuntimeError) {
+        self.lock().hosted_census_refusal = Some(error);
+    }
+
+    /// The predecessors the latest launch of this binding named as fenced.
+    #[must_use]
+    pub fn hosted_launch_fence(&self, seat_binding_id: SeatBindingId) -> Option<Vec<ExternalId>> {
+        self.lock()
+            .hosted_launch_fences
+            .get(&seat_binding_id)
+            .cloned()
     }
 
     /// Report this runtime as reachable but not drivable, the shape a seat has
@@ -4392,6 +4460,10 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         &self,
         request: &HostedSeatLaunchRequest,
     ) -> RuntimeResult<ConsultationLaunchOutcome> {
+        let pause = { self.lock().pause_hosted_launch_once.take() };
+        if let Some(pause) = pause {
+            pause.pause().await;
+        }
         let mut state = self.lock();
         state.require_plane()?;
         if state
@@ -4437,6 +4509,10 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         state
             .hosted_initial_prompts
             .insert(request.seat_binding_id, request.prompt.clone());
+        state.hosted_launch_fences.insert(
+            request.seat_binding_id,
+            request.fenced_predecessor_native_ids.clone(),
+        );
         if let Some(existing) = state.hosted_seats.get(&request.seat_binding_id) {
             return Ok(existing.clone());
         }
@@ -4485,6 +4561,50 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             });
         }
         Ok(outcome)
+    }
+
+    async fn census_hosted_seat(
+        &self,
+        request: &HostedSeatCensusRequest,
+    ) -> RuntimeResult<HostedSeatCensus> {
+        let mut state = self.lock();
+        preflight(
+            &state.capabilities,
+            &OperationContext::new(RuntimeCapability::Inspect),
+        )?;
+        state
+            .calls
+            .push(AdapterCall::CensusHostedSeat(request.seat_binding_id));
+        if let Some(error) = state.hosted_census_refusal.clone() {
+            return Err(error);
+        }
+        let mut carriers = Vec::new();
+        if let Some(seat) = state.hosted_seats.get(&request.seat_binding_id) {
+            let native_id = seat.identity.native_id.clone();
+            carriers.push(DurableSeatCarrier {
+                activity: state
+                    .hosted_activity
+                    .get(&native_id)
+                    .copied()
+                    .unwrap_or(DurableSeatActivity::Idle),
+                archived: false,
+                native_id,
+            });
+        }
+        if let Some(seat) = state.archived_hosted_seats.get(&request.seat_binding_id) {
+            carriers.push(DurableSeatCarrier {
+                native_id: seat.identity.native_id.clone(),
+                archived: true,
+                activity: DurableSeatActivity::Unknown,
+            });
+        }
+        if let Some(extra) = state.extra_hosted_carriers.get(&request.seat_binding_id) {
+            carriers.extend(extra.iter().cloned());
+        }
+        Ok(HostedSeatCensus {
+            carriers,
+            observed_at: request.requested_at,
+        })
     }
 
     async fn inspect_hosted_seat(

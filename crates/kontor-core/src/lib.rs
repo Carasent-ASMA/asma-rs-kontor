@@ -96,6 +96,7 @@ pub mod branch;
 pub mod calendar;
 pub mod compaction;
 pub mod consultation;
+pub mod durable_seat;
 pub mod epic_seat;
 pub mod id;
 pub mod memory;

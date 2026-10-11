@@ -144,6 +144,7 @@ use uuid::Uuid;
 use crate::SqliteStore;
 mod attestation_authority;
 mod desks;
+mod durable_seats;
 use crate::events::append::stored_payload;
 use crate::events::replay::{EVENT_COLUMNS, read_event};
 use crate::graph::{Applied, IdempotencyBinding};

@@ -1255,6 +1255,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/desks/{desk_key}/seats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Report one desk's declared seats. */
+        get: operations["list_durable_seats"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/desks/{desk_key}/seats:declare": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Declare one durable seat. */
+        post: operations["declare_durable_seat"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/desks/{desk_key}/seats:reconcile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reconcile selected durable seats. */
+        post: operations["reconcile_durable_seats"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/epics/{epic_id}": {
         parameters: {
             query?: never;
@@ -6522,6 +6573,33 @@ export interface components {
              */
             reserve_minor_units: number;
         };
+        /** @description Declare one long-lived seat a desk holds. */
+        DeclareDurableSeatRequest: {
+            /** @description Who made the decision. */
+            decided_by: string;
+            /** @description The day the decision was made, `YYYY-MM-DD`. */
+            decided_on: string;
+            /**
+             * Format: int64
+             * @description The project revision the caller believes is current.
+             */
+            expected_revision: number;
+            model_route?: null | components["schemas"]["RuntimeModelRouteRequest"];
+            /** @description The repository-relative procedure the seat follows. */
+            procedure?: string | null;
+            /**
+             * @description Who may restart the seat. `daemon` lets Kontor restart it when it is
+             *     proved missing; the other owner means the seat is run and recovered
+             *     outside Kontor, which never touches it.
+             */
+            recovery_owner: string;
+            /** @description The catalog role the seat holds; the first segment of its title. */
+            role_code: string;
+            /** @description The seat's stable key inside its desk. */
+            seat_key: string;
+            /** @description The seat's label; the rest of its title. */
+            seat_label: string;
+        };
         /** @enum {string} */
         DegradedReason: "absent" | "stale" | "timeout" | "unavailable" | "malformed" | "empty" | "no_eligible_candidates";
         /** @description One durable step in the deliberation path already tried. */
@@ -6670,6 +6748,75 @@ export interface components {
             node_kinds: Record<string, never>[];
             /** @description The unique logical root kind. */
             root_kind: string;
+        };
+        /** @description The answer to a declaration. */
+        DurableSeatDeclarationOutcomeDto: {
+            /** @description The receipt the declaration was recorded under. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description The declared seat, exactly as stored. */
+            seat: components["schemas"]["DurableSeatDto"];
+        };
+        /** @description One declared seat, what reconciliation observed about it, and what it did. */
+        DurableSeatDto: {
+            /** @description Who decided it. */
+            decided_by: string;
+            /** @description When they decided it. */
+            decided_on: string;
+            /**
+             * @description What reconciliation decided: `none`, `launch` or `recover`. Always
+             *     `none` on a read and on a replayed reconciliation.
+             */
+            decision?: string | null;
+            /** @description When Kontor recorded the decision. */
+            declared_at: string;
+            model_route?: null | components["schemas"]["RuntimeModelRouteRequest"];
+            /**
+             * @description The native Kontor records as the current occupant, read after any
+             *     effect this call had.
+             */
+            native_id?: string | null;
+            /**
+             * Format: int64
+             * @description The current occupancy generation, read after any effect.
+             */
+            occupancy_generation?: number | null;
+            /** @description The procedure it follows, when declared. */
+            procedure?: string | null;
+            /** @description Why. */
+            reason?: string | null;
+            /** @description Who may restart it. */
+            recovery_owner: string;
+            /** @description Its catalog role. */
+            role_code: string;
+            /** @description The SeatBinding a daemon-owned seat is correlated by. */
+            seat_binding_id?: string | null;
+            /** @description The seat's key inside its desk. */
+            seat_key: string;
+            /** @description Its label. */
+            seat_label: string;
+            /**
+             * @description What was observed, before any effect. Absent from a declaration's
+             *     answer, which observes nothing.
+             */
+            status?: string | null;
+            /** @description Its exact title. */
+            title: string;
+        };
+        /** @description The answer to a reconciliation. */
+        DurableSeatReconcileOutcomeDto: {
+            /** @description The desk. */
+            desk_key: string;
+            /** @description The receipt the reconciliation was recorded under. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description Each selected seat, by key. */
+            seats: components["schemas"]["DurableSeatDto"][];
+        };
+        /** @description One desk's declared seats, as observed now. */
+        DurableSeatReportDto: {
+            /** @description The desk. */
+            desk_key: string;
+            /** @description Every declared seat, by key. */
+            seats: components["schemas"]["DurableSeatDto"][];
         };
         /**
          * @description What `provider-account-profiles:ensure` is asked for.
@@ -9744,6 +9891,24 @@ export interface components {
              * @description When the receipt last changed.
              */
             updated_at: string;
+        };
+        /** @description Reconcile selected seats of one desk. */
+        ReconcileDurableSeatsRequest: {
+            /**
+             * Format: int64
+             * @description The project revision the caller believes is current.
+             */
+            expected_revision: number;
+            /**
+             * @description Whether a selected, daemon-owned, proved-missing seat is restarted.
+             *     `false` reports and records the reconciliation without any effect.
+             */
+            restart_missing: boolean;
+            /**
+             * @description The declared seats to reconcile. At least one; nothing unselected is
+             *     touched.
+             */
+            seat_keys: string[];
         };
         /** @description Attaches verified Git bytes to an existing claim; does not assert agent authorship. */
         RecordArtifactRequest: {
@@ -15691,6 +15856,132 @@ export interface operations {
             };
             /** @description The owning application service is not composed */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_durable_seats: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                desk_key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DurableSeatReportDto"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    declare_durable_seat: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                project_id: string;
+                desk_key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeclareDurableSeatRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DurableSeatDeclarationOutcomeDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    reconcile_durable_seats: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                project_id: string;
+                desk_key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReconcileDurableSeatsRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DurableSeatReconcileOutcomeDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

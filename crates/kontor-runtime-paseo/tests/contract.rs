@@ -55,6 +55,7 @@ use kontor_runtime::adapter::{
 };
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability, TrustGrade};
+use kontor_runtime::durable_seat::HostedSeatScope;
 use kontor_runtime::observation::{ReconciliationAction, ReconciliationFinding};
 use kontor_runtime::request::{
     AdoptRequest, CancelRequest, CorrelationChallengeCompletionRequest,
@@ -10206,7 +10207,7 @@ async fn a_hosted_core_team_seat_launches_in_the_exact_local_ecp() {
         display_name: name("LSA · ASMA-7744"),
         container,
         cwd: root(),
-        scope: epic_execution_scope(),
+        scope: HostedSeatScope::Epic(epic_execution_scope()),
         prompt: text("continue epic leadership through Kontor"),
         role_prompt: Some(text("You are the Lead Software Architect.")),
         credential: kontor_runtime::adapter::ScopedSeatCredential::new(
@@ -10316,7 +10317,7 @@ async fn hosted_leadership_injects_scoped_mcp_through_the_actual_launch() {
                 display_name: name("LSA"),
                 container,
                 cwd: root(),
-                scope: epic_execution_scope(),
+                scope: HostedSeatScope::Epic(epic_execution_scope()),
                 prompt: text("continue governed leadership"),
                 role_prompt: None,
                 credential: kontor_runtime::adapter::ScopedSeatCredential::new(
@@ -10441,7 +10442,7 @@ async fn a_leadership_seat_launches_and_reads_back_the_autonomy_it_was_given() {
                 display_name: name("LSA · ASMA-7744"),
                 container,
                 cwd: root(),
-                scope: epic_execution_scope(),
+                scope: HostedSeatScope::Epic(epic_execution_scope()),
                 prompt: text("continue epic leadership through Kontor"),
                 role_prompt: None,
                 credential: kontor_runtime::adapter::ScopedSeatCredential::new(
@@ -10533,7 +10534,7 @@ async fn an_attached_hosted_seat_with_no_provider_thread_recovers_in_place() {
             display_name: name("LSA · ASMA-7744"),
             container,
             cwd: root(),
-            scope: epic_execution_scope(),
+            scope: HostedSeatScope::Epic(epic_execution_scope()),
             prompt: text("continue epic leadership through Kontor"),
             role_prompt: None,
             credential: kontor_runtime::adapter::ScopedSeatCredential::new(
@@ -10720,7 +10721,7 @@ async fn a_fenced_historical_hosted_native_does_not_block_its_successor() {
         display_name: name("LSA · ASMA-7744"),
         container,
         cwd: root(),
-        scope: epic_execution_scope(),
+        scope: HostedSeatScope::Epic(epic_execution_scope()),
         prompt: text("continue epic leadership through Kontor"),
         role_prompt: None,
         credential: kontor_runtime::adapter::ScopedSeatCredential::new(
@@ -13617,7 +13618,7 @@ async fn an_epic_consultation_worktree_reconciles_and_inspects_after_restart() {
                 correlation: inspection.correlation,
             },
             cwd: root(),
-            scope: epic_execution_scope(),
+            scope: HostedSeatScope::Epic(epic_execution_scope()),
             prompt: text("leadership requires its own local ECP"),
             role_prompt: None,
             credential: kontor_runtime::adapter::ScopedSeatCredential::new("test".to_owned()),
@@ -14607,7 +14608,7 @@ async fn hosted_leadership_writes_and_reads_back_its_fleet_provenance() {
             display_name: name("LSA"),
             container,
             cwd: root(),
-            scope: epic_execution_scope(),
+            scope: HostedSeatScope::Epic(epic_execution_scope()),
             prompt: text("continue governed leadership"),
             role_prompt: None,
             credential: kontor_runtime::adapter::ScopedSeatCredential::new(
@@ -15521,4 +15522,307 @@ async fn a_consultation_launch_writes_and_reads_back_its_fleet_provenance() {
             requested.policy_hash.as_str()
         );
     }
+}
+
+/// The workspace of a durable desk: a local directory under the desk's own
+/// native project, as the daemon materializes it (ASMA-8450).
+fn desk_workspace_listing() -> serde_json::Value {
+    let mut listing = workspace_list_of_kind("directory");
+    listing["entries"][0]["name"] = serde_json::json!("DWS · PR REVIEW");
+    listing["entries"][0]["title"] = serde_json::json!("DWS · PR REVIEW");
+    listing
+}
+
+/// A plane restarted with nothing prepared, whose desk workspace the daemon
+/// re-proves by exact id before it launches a desk seat, as
+/// `prove_existing_bound_container` does.
+async fn desk_plane(recorded: RecordedPaseo) -> (Plane, ContainerBindingSnapshot) {
+    let plane = Plane::fresh(recorded);
+    let binding = bound_container_binding();
+    plane
+        .adapter
+        .inspect_container(&ContainerInspectRequest {
+            binding: binding.clone(),
+            native_parent: Some(bound_root(node(NODE_B)).identity),
+            scope: None,
+            epic_container: false,
+            requested_at: at("2026-08-16T09:05:00Z"),
+        })
+        .await
+        .expect("the desk workspace is proved");
+    let container = plane
+        .adapter
+        .container_binding(binding.topology_node_id)
+        .expect("a proved inspection rehydrates");
+    (plane, container)
+}
+
+fn desk_seat_launch(
+    seat_binding_id: SeatBindingId,
+    container: ContainerBindingSnapshot,
+    project: NativeRuntimeIdentity,
+) -> HostedSeatLaunchRequest {
+    HostedSeatLaunchRequest {
+        seat_binding_id,
+        role_slot_id: slot("general"),
+        display_name: name("LSA • GENERAL"),
+        container,
+        cwd: root(),
+        scope: HostedSeatScope::Desk { project },
+        prompt: text("Durable LSA • GENERAL seat of desk pr-review. It belongs to no epic."),
+        role_prompt: None,
+        credential: kontor_runtime::adapter::ScopedSeatCredential::new(
+            "kontor-seat-v2.test.1.redacted".to_owned(),
+        ),
+        fenced_predecessor_native_ids: Vec::new(),
+        model_rung: model_rung(),
+        fleet_provenance: None,
+        autonomy: SeatAutonomy::standard(),
+        context_policy: standard_context_policy(),
+        requested_at: at("2026-08-16T09:10:00Z"),
+    }
+}
+
+/// A durable desk seat belongs to no epic (ASMA-8451). Its launch is the
+/// hosted-seat launch, placed in the desk's exact persisted native project
+/// read back by id: it carries the seat's correlation labels and no epic or
+/// mini-project label, and it files nothing in the epic-keyed project ledger.
+#[tokio::test]
+async fn a_desk_seat_launches_in_its_desk_project_and_names_no_epic() {
+    let seat_binding_id = SeatBindingId::generate();
+    let desk_labels = serde_json::json!({
+        label::SEAT_BINDING: seat_binding_id.to_string(),
+        label::HOSTED_SEAT: "true",
+        label::ROLE: "general",
+        label::ROLE_SLOT: "general",
+        label::WORKSPACE_ID: WORKSPACE_ID,
+        label::WORKTREE: CWD,
+    });
+    let mut agent = v(AGENT);
+    agent["agent"]["title"] = serde_json::json!("LSA • GENERAL");
+    agent["agent"]["labels"] = desk_labels.clone();
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .answering_rpc("fetch_workspaces_request", desk_workspace_listing())
+        .answering_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY))
+        .answering_rpc(
+            "create_agent_request",
+            serde_json::json!({"status": "agent_created", "agent": {"id": AGENT_ID}}),
+        )
+        .answering_rpc("fetch_agent_request", agent);
+    let (plane, container) = desk_plane(recorded).await;
+
+    let outcome = plane
+        .adapter
+        .launch_hosted_seat(&desk_seat_launch(
+            seat_binding_id,
+            container,
+            bound_root(node(NODE_B)).identity,
+        ))
+        .await
+        .expect("the desk seat launches in its desk project");
+
+    assert!(outcome.created);
+    assert_eq!(outcome.identity.native_id.as_str(), AGENT_ID);
+    let sent = plane.daemon.sent_messages("create_agent_request");
+    let [create] = sent.as_slice() else {
+        panic!("exactly one create was sent: {sent:?}")
+    };
+    assert_eq!(create["workspaceId"], WORKSPACE_ID);
+    assert_eq!(
+        create["labels"], desk_labels,
+        "a desk seat carries exactly its seat labels and no epic"
+    );
+    // The duplicate-launch census asked for this binding alone.
+    let census = plane.daemon.sent_messages("fetch_agents_request");
+    assert_eq!(
+        census[0]["filter"]["labels"],
+        serde_json::json!({label::SEAT_BINDING: seat_binding_id.to_string()})
+    );
+    assert!(
+        plane.adapter.project_binding().is_none(),
+        "the desk project is filed under no epic"
+    );
+}
+
+/// The desk project is the exact persisted parent or nothing. A parent from
+/// another runtime, host or generation, or one Paseo no longer holds, is
+/// refused before any agent is created.
+#[tokio::test]
+async fn a_desk_seat_with_a_stale_or_unknown_parent_is_refused_before_any_effect() {
+    let current = bound_root(node(NODE_B)).identity;
+    let stale = [
+        NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse("other.agent").expect("a runtime kind"),
+            ..current.clone()
+        },
+        NativeRuntimeIdentity {
+            host: name("another-host"),
+            ..current.clone()
+        },
+        NativeRuntimeIdentity {
+            generation: 2,
+            ..current.clone()
+        },
+    ];
+    for parent in stale {
+        let (plane, container) = desk_plane(restarted_plane_recording()).await;
+        let refused = plane
+            .adapter
+            .launch_hosted_seat(&desk_seat_launch(
+                SeatBindingId::generate(),
+                container,
+                parent.clone(),
+            ))
+            .await
+            .expect_err("a stale desk parent");
+        assert!(
+            matches!(refused, RuntimeError::StaleBinding { .. }),
+            "{parent:?}: {refused:?}"
+        );
+        assert!(plane.daemon.mutations().is_empty(), "{parent:?}");
+        assert_eq!(plane.daemon.count("rpc create_agent_request"), 0);
+    }
+    let (plane, container) = desk_plane(restarted_plane_recording()).await;
+    let refused = plane
+        .adapter
+        .launch_hosted_seat(&desk_seat_launch(
+            SeatBindingId::generate(),
+            container,
+            NativeRuntimeIdentity {
+                native_id: external("prj_gone"),
+                ..current
+            },
+        ))
+        .await
+        .expect_err("a desk project Paseo does not hold");
+    assert!(
+        matches!(refused, RuntimeError::Transport { .. }),
+        "{refused:?}"
+    );
+    assert!(plane.daemon.mutations().is_empty());
+}
+
+fn restarted_plane_recording() -> RecordedPaseo {
+    RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .answering_rpc("fetch_workspaces_request", desk_workspace_listing())
+        .answering_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY))
+}
+
+fn census_entry(id: &str, binding: &str, status: &str) -> serde_json::Value {
+    let mut agent = v(AGENT)["agent"].clone();
+    agent["id"] = serde_json::json!(id);
+    agent["status"] = serde_json::json!(status);
+    agent["labels"] = serde_json::json!({label::SEAT_BINDING: binding});
+    serde_json::json!({"agent": agent})
+}
+
+/// A desk seat census is read-only and authoritative: every native whose
+/// binding label is exactly this seat's, archived ones included, each with
+/// what it is doing. A native the directory returns under another binding is
+/// not a carrier (ASMA-8451).
+#[tokio::test]
+async fn a_desk_seat_census_reports_every_exact_carrier_archived_included() {
+    let binding = SeatBindingId::generate();
+    let other = SeatBindingId::generate();
+    let ours = binding.to_string();
+    let mut waiting = census_entry("agt_waiting", &ours, "idle");
+    waiting["agent"]["pendingPermissions"] = serde_json::json!([{
+        "id": "perm_1",
+        "provider": "claude",
+        "name": "synthetic name",
+        "kind": "tool",
+        "title": "synthetic title"
+    }]);
+    let mut archived = census_entry("agt_archived", &ours, "closed");
+    archived["agent"]["archivedAt"] = serde_json::json!("2026-08-16T09:00:00.000Z");
+    let mut listing = v(AGENT_LIST_EMPTY);
+    listing["entries"] = serde_json::json!([
+        census_entry("agt_idle", &ours, "idle"),
+        census_entry("agt_running", &ours, "running"),
+        census_entry("agt_starting", &ours, "initializing"),
+        waiting,
+        census_entry("agt_closed", &ours, "closed"),
+        census_entry("agt_errored", &ours, "error"),
+        archived,
+        census_entry("agt_elsewhere", &other.to_string(), "idle"),
+    ]);
+    let plane = Plane::fresh(
+        RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("fetch_agents_request", listing),
+    );
+
+    let census = plane
+        .adapter
+        .census_hosted_seat(&kontor_runtime::durable_seat::HostedSeatCensusRequest {
+            seat_binding_id: binding,
+            requested_at: at("2026-08-16T09:10:00Z"),
+        })
+        .await
+        .expect("the census is answered");
+
+    use kontor_core::durable_seat::{DurableSeatActivity as A, DurableSeatCarrier};
+    let carrier = |id: &str, archived: bool, activity: A| DurableSeatCarrier {
+        native_id: external(id),
+        archived,
+        activity,
+    };
+    assert_eq!(
+        census.carriers,
+        vec![
+            carrier("agt_idle", false, A::Idle),
+            carrier("agt_running", false, A::Working),
+            carrier("agt_starting", false, A::Working),
+            carrier("agt_waiting", false, A::AwaitingPermission),
+            carrier("agt_closed", false, A::Errored),
+            carrier("agt_errored", false, A::Errored),
+            carrier("agt_archived", true, A::Errored),
+        ]
+    );
+    assert_eq!(census.observed_at, at("2026-08-16T09:10:00Z"));
+    let sent = plane.daemon.sent_messages("fetch_agents_request");
+    let [request] = sent.as_slice() else {
+        panic!("exactly one page was read: {sent:?}")
+    };
+    assert_eq!(
+        request["filter"],
+        serde_json::json!({"includeArchived": true, "labels": {label::SEAT_BINDING: ours}})
+    );
+    assert!(
+        plane.daemon.mutations().is_empty(),
+        "a census changes nothing"
+    );
+}
+
+/// A census that cannot be completed is refused, never answered empty: an
+/// empty census is what licenses a restart.
+#[tokio::test]
+async fn an_incomplete_desk_seat_census_is_refused_rather_than_empty() {
+    let mut truncated = v(AGENT_LIST_EMPTY);
+    truncated["pageInfo"]["hasMore"] = serde_json::json!(true);
+    let plane = Plane::fresh(
+        RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("fetch_agents_request", truncated),
+    );
+    let refused = plane
+        .adapter
+        .census_hosted_seat(&kontor_runtime::durable_seat::HostedSeatCensusRequest {
+            seat_binding_id: SeatBindingId::generate(),
+            requested_at: at("2026-08-16T09:10:00Z"),
+        })
+        .await
+        .expect_err("a page that promises more but names no cursor");
+    assert!(
+        matches!(refused, RuntimeError::Transport { .. }),
+        "{refused:?}"
+    );
 }

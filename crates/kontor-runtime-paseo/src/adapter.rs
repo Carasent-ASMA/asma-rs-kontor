@@ -48,6 +48,7 @@ use std::sync::Mutex;
 use crate::wire::parse_wire_timestamp;
 use async_trait::async_trait;
 use kontor_core::compaction::CompactionReceipt;
+use kontor_core::durable_seat::{DurableSeatActivity, DurableSeatCarrier};
 use kontor_core::id::{
     AgentRunId, BoundedText, CanonicalDocument, ContentHash, ExternalId, ExternalName, RoleSlotId,
     RuntimeBindingId, RuntimeKindKey, SeatBindingId, TaskId, TeamRunId, Timestamp, TopologyNodeId,
@@ -87,6 +88,7 @@ use kontor_runtime::container::{
     ContainerRecreationRequest, ContainerRequest, ContainerWorkspaceKind, RetitleContainerOutcome,
     RetitleContainerRequest,
 };
+use kontor_runtime::durable_seat::{HostedSeatCensus, HostedSeatCensusRequest, HostedSeatScope};
 use kontor_runtime::observation::{
     ControlPlaneObservation, CorrelationEvidence, NativeSession, ObservationSource,
     ReconciliationFinding, ReconciliationReport, reconcile,
@@ -5654,18 +5656,95 @@ impl PaseoAdapter {
         project: &PaseoProjectBinding,
         workspace_id: &str,
     ) -> RuntimeResult<BTreeMap<String, String>> {
-        let mut labels = self.hosted_labels(
-            request.seat_binding_id,
-            &request.role_slot_id,
-            &request.scope,
-            project,
-            workspace_id,
-            &request.cwd,
-        )?;
+        let mut labels = match &request.scope {
+            HostedSeatScope::Epic(scope) => self.hosted_labels(
+                request.seat_binding_id,
+                &request.role_slot_id,
+                scope,
+                project,
+                workspace_id,
+                &request.cwd,
+            )?,
+            HostedSeatScope::Desk { .. } => Self::desk_seat_labels(
+                request.seat_binding_id,
+                &request.role_slot_id,
+                workspace_id,
+                &request.cwd,
+            ),
+        };
         if let Some(provenance) = &request.fleet_provenance {
             labels.extend(crate::wire::fleet_provenance_labels(provenance)?);
         }
         Ok(labels)
+    }
+
+    /// A durable desk seat's correlation labels (ASMA-8451): an epic seat's,
+    /// less the epic and its project, which a desk does not have.
+    fn desk_seat_labels(
+        seat_binding_id: SeatBindingId,
+        role_slot_id: &RoleSlotId,
+        workspace_id: &str,
+        cwd: &WorkspaceRoot,
+    ) -> BTreeMap<String, String> {
+        [
+            (label::SEAT_BINDING, seat_binding_id.to_string()),
+            (label::HOSTED_SEAT, "true".to_owned()),
+            (label::ROLE, role_slot_id.as_str().to_owned()),
+            (label::ROLE_SLOT, role_slot_id.as_str().to_owned()),
+            (label::WORKSPACE_ID, workspace_id.to_owned()),
+            (label::WORKTREE, cwd.as_str().to_owned()),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value))
+        .collect()
+    }
+
+    /// The native project a durable desk seat is placed in: the desk
+    /// workspace's exact persisted parent, read back by id (ASMA-8451).
+    ///
+    /// It never enters the epic-keyed project ledger, for the reason a desk
+    /// workspace inspection gives: a desk belongs to no epic, and filing its
+    /// project under one would let the desk answer for that epic's launches.
+    async fn desk_seat_project(
+        &self,
+        parent: &NativeRuntimeIdentity,
+    ) -> RuntimeResult<PaseoProjectBinding> {
+        if parent.runtime_kind != self.config.runtime_kind
+            || parent.host != self.config.host_key
+            || parent.generation != self.generation()
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the desk project belongs to another runtime host or generation",
+            });
+        }
+        let project = self.read_project_by_id(parent.native_id.as_str()).await?;
+        Ok(PaseoProjectBinding {
+            // A desk has no mini-project. This binding lives for one launch:
+            // it is never filed, and no label is derived from this field.
+            mini_project_id: parent.native_id.clone(),
+            host_key: self.config.host_key.clone(),
+            project_id: ExternalId::parse(&project.id)?,
+            observed_name: project.display_name,
+        })
+    }
+
+    /// What one native carrying a desk seat's binding is doing.
+    ///
+    /// A closed native is still the seat — its process is gone, it was not
+    /// retired, and a reload restores it — so it reads as errored, never as
+    /// absent.
+    fn durable_seat_activity(agent: &PaseoAgent) -> DurableSeatActivity {
+        if !agent.pending_permissions.is_empty() {
+            return DurableSeatActivity::AwaitingPermission;
+        }
+        match agent.status {
+            PaseoAgentStatus::Idle => DurableSeatActivity::Idle,
+            PaseoAgentStatus::Initializing | PaseoAgentStatus::Running => {
+                DurableSeatActivity::Working
+            }
+            PaseoAgentStatus::Error | PaseoAgentStatus::Closed => DurableSeatActivity::Errored,
+            PaseoAgentStatus::Unknown => DurableSeatActivity::Unknown,
+        }
     }
 
     fn released_seat_title(
@@ -5978,8 +6057,12 @@ impl PaseoAdapter {
         .await?;
         self.ensure_provider_available(request.model_rung.provider.0.as_str())?;
         let declared = self.declared().await?;
-        let effective_scope = self.effective_scope(&request.scope)?;
-        let project = self.require_project_for(&effective_scope)?;
+        let project = match &request.scope {
+            HostedSeatScope::Epic(scope) => {
+                self.require_project_for(&self.effective_scope(scope)?)?
+            }
+            HostedSeatScope::Desk { project } => self.desk_seat_project(project).await?,
+        };
         let generation = self.generation();
 
         request.container.ensure_correlated()?;
@@ -6959,6 +7042,41 @@ impl RuntimeAdapter for PaseoAdapter {
                 Some(_) => HostedSeatNativeState::Live,
                 None => HostedSeatNativeState::Missing,
             },
+            observed_at: request.requested_at,
+        })
+    }
+
+    async fn census_hosted_seat(
+        &self,
+        request: &HostedSeatCensusRequest,
+    ) -> RuntimeResult<HostedSeatCensus> {
+        let declared = self.declared().await?;
+        preflight(
+            &declared,
+            &OperationContext::new(RuntimeCapability::Inspect),
+        )?;
+        let binding = request.seat_binding_id.to_string();
+        let labels = [(label::SEAT_BINDING.to_owned(), binding.clone())]
+            .into_iter()
+            .collect();
+        // The directory filters by label already. Filtering again here keeps
+        // a carrier exactly what it says: an agent whose label is this
+        // binding, whatever the directory's matching rule turns out to be.
+        let carriers = self
+            .fetch_agents(&labels, true)
+            .await?
+            .into_iter()
+            .filter(|agent| agent.label(label::SEAT_BINDING) == Some(binding.as_str()))
+            .map(|agent| {
+                Ok(DurableSeatCarrier {
+                    native_id: ExternalId::parse(&agent.id)?,
+                    archived: agent.is_archived(),
+                    activity: Self::durable_seat_activity(&agent),
+                })
+            })
+            .collect::<RuntimeResult<Vec<_>>>()?;
+        Ok(HostedSeatCensus {
+            carriers,
             observed_at: request.requested_at,
         })
     }

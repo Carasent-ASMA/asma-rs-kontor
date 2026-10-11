@@ -118,6 +118,7 @@ fn remove_v98_shape(connection: &Connection) {
 /// caught.
 const CENSUS_TABLES: &[&str] = &[
     "desks",
+    "durable_seat_declarations",
     "attestation_authority_heads",
     "attestation_authority_keys",
     "attestation_token_heads",
@@ -2852,6 +2853,7 @@ fn apply_v115_to_legacy_fixture(fixture: &Fixture) {
          DROP TABLE attestation_token_heads;
          DROP TABLE attestation_authority_keys;
          DROP TABLE attestation_authority_heads;
+         DROP TABLE durable_seat_declarations;
          DROP TABLE desks;
          PRAGMA user_version = 114;",
         )

@@ -27,6 +27,7 @@
 
 mod artifact_submission;
 mod committee_evidence;
+mod durable_seats;
 mod memory_projection;
 mod open_questions;
 mod planning_pair;
@@ -290,6 +291,7 @@ use kontor_runtime::container::{
     ContainerInspection, ContainerProjection, ContainerRecoveryRequest, ContainerRecreationRequest,
     ContainerRequest, RetitleContainerRequest,
 };
+use kontor_runtime::durable_seat::HostedSeatScope;
 use kontor_runtime::observation::ControlPlaneObservation;
 use kontor_runtime::request::{
     CorrelationChallengeCompletionRequest, CorrelationChallengeRequest, HistoryRequest,
@@ -1076,6 +1078,9 @@ pub struct Services {
     provider_probe_guard: tokio::sync::Mutex<()>,
     /// Serializes one durable succession through its effectful resume states.
     succession_guard: tokio::sync::Mutex<()>,
+    /// Serializes durable desk seat reconciliation (ASMA-8451), so two
+    /// reconciliations of one seat never both reach the runtime.
+    durable_seat_guard: tokio::sync::Mutex<()>,
     /// Native cleanup excludes placement, migration and hosted work until exact
     /// readback and logical release finish. The realm's exclusive state-root
     /// lock supplies the single-process boundary; native identities and durable
@@ -1165,6 +1170,7 @@ impl Services {
             usage_poller,
             provider_probe_guard: tokio::sync::Mutex::new(()),
             succession_guard: tokio::sync::Mutex::new(()),
+            durable_seat_guard: tokio::sync::Mutex::new(()),
             native_lifecycle_guard: tokio::sync::RwLock::new(()),
             quota_signals,
             fleet,
@@ -21472,6 +21478,35 @@ impl ApplicationOperations for Services {
         self.write_open_question(key, project_id, epic_id, actor, request)
     }
 
+    async fn durable_seats(
+        &self,
+        project_id: ProjectId,
+        desk_key: &DeskKey,
+    ) -> Result<kontor_api::durable_seats::DurableSeatReportDto, ApiError> {
+        self.read_durable_seats(project_id, desk_key).await
+    }
+
+    fn declare_durable_seat(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        desk_key: &DeskKey,
+        request: &kontor_api::durable_seats::DeclareDurableSeatRequest,
+    ) -> Result<kontor_api::durable_seats::DurableSeatDeclarationOutcomeDto, ApiError> {
+        self.write_durable_seat_declaration(key, project_id, desk_key, request)
+    }
+
+    async fn reconcile_durable_seats(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        desk_key: &DeskKey,
+        request: &kontor_api::durable_seats::ReconcileDurableSeatsRequest,
+    ) -> Result<kontor_api::durable_seats::DurableSeatReconcileOutcomeDto, ApiError> {
+        self.run_durable_seat_reconciliation(key, project_id, desk_key, request)
+            .await
+    }
+
     async fn preview_publication(
         &self,
         project_id: ProjectId,
@@ -27231,7 +27266,7 @@ impl ApplicationOperations for Services {
                         display_name,
                         container: container.clone(),
                         cwd: cwd.clone(),
-                        scope: scope.clone(),
+                        scope: HostedSeatScope::Epic(scope.clone()),
                         prompt,
                         role_prompt: role_persona.as_ref().map(|persona| persona.prompt.clone()),
                         credential: ConsultationCredential::new(
@@ -27997,7 +28032,7 @@ impl ApplicationOperations for Services {
                     display_name,
                     container,
                     cwd,
-                    scope,
+                    scope: HostedSeatScope::Epic(scope),
                     prompt,
                     role_prompt: role_persona.as_ref().map(|persona| persona.prompt.clone()),
                     credential: ConsultationCredential::new(

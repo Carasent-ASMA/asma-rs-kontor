@@ -539,6 +539,12 @@ open_keys! {
     /// The key is the desk's identity inside one project. Its rendered title
     /// is declared beside it and is never parsed back into a key.
     DeskKey,
+    /// Names one long-lived seat declared inside a durable desk, such as
+    /// `general` (ASMA-8451).
+    ///
+    /// The key is the seat's identity inside its desk. Its title is declared
+    /// beside it and is never parsed back into a key.
+    DurableSeatKey,
 }
 
 impl ModuleKey {

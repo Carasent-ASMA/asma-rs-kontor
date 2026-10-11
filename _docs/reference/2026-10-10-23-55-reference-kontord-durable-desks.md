@@ -64,10 +64,12 @@ returns the original receipt and performs no native effect.
   by ensure, materialize and drift alike, before any receipt, desk row, node,
   observation or native call. A desk that already exists keeps answering
   after a later selection stops declaring its key (see Rollback).
-- **No occupants yet.** TASK-001 places desks and their workspaces only.
-  Hosting seats in a desk workspace, and binding an occupant to an epic or a
-  pull request, are later tasks of ASMA-8449; seat launch still requires an
-  epic scope.
+- **Occupants.** TASK-001 places desks and their workspaces only. Declared
+  long-lived desk seats and their missing-only reconciliation are added by
+  ASMA-8451; see
+  [Durable desk seats in kontord](2026-10-11-02-20-reference-kontord-durable-desk-seats.md).
+  Binding an occupant to an epic or a pull request is a later task of
+  ASMA-8449.
 - **Working directory.** Both of a desk's natives use
   `<runtime root>/<project id>/desk-<desk node id>`.
 - **Backup.** Export generation 14 carries the `desks` records; older
