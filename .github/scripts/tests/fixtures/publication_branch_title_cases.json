@@ -594,6 +594,135 @@
       "headRef": "releases/v1.2.3",
       "title": "Release v01.2.3",
       "expect": {"accepted": false, "code": "release_title_mismatch"}
+    },
+    {
+      "name": "bot_dependabot_cargo_exempt",
+      "baseRef": "master",
+      "headRef": "dependabot/cargo/zip-2.4.2",
+      "title": "Bump zip from 2.1.0 to 2.4.2",
+      "prAuthor": "dependabot[bot]",
+      "expect": {"accepted": true, "code": "bot_branch_exempt", "identity": "dependabot[bot]"}
+    },
+    {
+      "name": "bot_dependabot_npm_exempt",
+      "baseRef": "master",
+      "headRef": "dependabot/npm_and_yarn/console/vite-7.1.5",
+      "title": "Bump vite from 7.1.2 to 7.1.5 in /console",
+      "prAuthor": "dependabot[bot]",
+      "expect": {"accepted": true, "code": "bot_branch_exempt", "identity": "dependabot[bot]"}
+    },
+    {
+      "name": "bot_dependabot_on_ordinary_branch_follows_grammar",
+      "baseRef": "master",
+      "headRef": "fix/ASMA-1-bump-zip",
+      "title": "ASMA-1 Bump zip",
+      "prAuthor": "dependabot[bot]",
+      "expect": {"accepted": true, "code": "ok", "identity": "ASMA-1"}
+    },
+    {
+      "name": "bot_dependabot_on_ordinary_branch_keyless_title",
+      "baseRef": "master",
+      "headRef": "fix/ASMA-1-bump-zip",
+      "title": "Bump zip from 2.1.0 to 2.4.2",
+      "prAuthor": "dependabot[bot]",
+      "expect": {"accepted": false, "code": "pr_title_key_missing"}
+    },
+    {
+      "name": "bot_branch_by_person_refused",
+      "baseRef": "master",
+      "headRef": "dependabot/cargo/zip-2.4.2",
+      "title": "Bump zip from 2.1.0 to 2.4.2",
+      "prAuthor": "octocat",
+      "expect": {"accepted": false, "code": "branch_type_unknown"}
+    },
+    {
+      "name": "bot_branch_author_empty_refused",
+      "baseRef": "master",
+      "headRef": "dependabot/cargo/zip-2.4.2",
+      "title": "Bump zip from 2.1.0 to 2.4.2",
+      "prAuthor": "",
+      "expect": {"accepted": false, "code": "branch_type_unknown"}
+    },
+    {
+      "name": "bot_author_without_bot_suffix_refused",
+      "baseRef": "master",
+      "headRef": "dependabot/cargo/zip-2.4.2",
+      "title": "Bump zip from 2.1.0 to 2.4.2",
+      "prAuthor": "dependabot",
+      "expect": {"accepted": false, "code": "branch_type_unknown"}
+    },
+    {
+      "name": "bot_author_case_differs_refused",
+      "baseRef": "master",
+      "headRef": "dependabot/cargo/zip-2.4.2",
+      "title": "Bump zip from 2.1.0 to 2.4.2",
+      "prAuthor": "Dependabot[bot]",
+      "expect": {"accepted": false, "code": "branch_type_unknown"}
+    },
+    {
+      "name": "bot_author_trailing_space_refused",
+      "baseRef": "master",
+      "headRef": "dependabot/cargo/zip-2.4.2",
+      "title": "Bump zip from 2.1.0 to 2.4.2",
+      "prAuthor": "dependabot[bot] ",
+      "expect": {"accepted": false, "code": "branch_type_unknown"}
+    },
+    {
+      "name": "bot_author_other_app_refused",
+      "baseRef": "master",
+      "headRef": "dependabot/cargo/zip-2.4.2",
+      "title": "Bump zip from 2.1.0 to 2.4.2",
+      "prAuthor": "renovate[bot]",
+      "expect": {"accepted": false, "code": "branch_type_unknown"}
+    },
+    {
+      "name": "bot_other_app_branch_refused",
+      "baseRef": "master",
+      "headRef": "renovate/zip-2.x",
+      "title": "Update rust crate zip to v2.4.2",
+      "prAuthor": "renovate[bot]",
+      "expect": {"accepted": false, "code": "branch_type_unknown"}
+    },
+    {
+      "name": "bot_prefix_lookalike_refused",
+      "baseRef": "master",
+      "headRef": "dependabotx/cargo/zip-2.4.2",
+      "title": "Bump zip from 2.1.0 to 2.4.2",
+      "prAuthor": "dependabot[bot]",
+      "expect": {"accepted": false, "code": "branch_type_unknown"}
+    },
+    {
+      "name": "bot_prefix_alone_refused",
+      "baseRef": "master",
+      "headRef": "dependabot/",
+      "title": "Bump zip from 2.1.0 to 2.4.2",
+      "prAuthor": "dependabot[bot]",
+      "expect": {"accepted": false, "code": "branch_type_unknown"}
+    },
+    {
+      "name": "bot_prefix_without_slash_refused",
+      "baseRef": "master",
+      "headRef": "dependabot",
+      "title": "Bump zip from 2.1.0 to 2.4.2",
+      "prAuthor": "dependabot[bot]",
+      "expect": {"accepted": false, "code": "branch_shape_invalid"}
+    },
+    {
+      "name": "bot_base_not_default_refused",
+      "baseRef": "develop",
+      "headRef": "dependabot/cargo/zip-2.4.2",
+      "title": "Bump zip from 2.1.0 to 2.4.2",
+      "prAuthor": "dependabot[bot]",
+      "expect": {"accepted": false, "code": "base_branch_not_default"}
+    },
+    {
+      "name": "bot_head_sha_invalid_refused",
+      "baseRef": "master",
+      "headRef": "dependabot/cargo/zip-2.4.2",
+      "title": "Bump zip from 2.1.0 to 2.4.2",
+      "prAuthor": "dependabot[bot]",
+      "headSha": "",
+      "expect": {"accepted": false, "code": "head_sha_invalid"}
     }
   ]
 }
