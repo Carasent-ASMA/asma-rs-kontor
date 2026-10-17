@@ -3820,6 +3820,174 @@ async fn the_shipped_startup_path_composes_the_configured_fleet() {
     drop(directory);
 }
 
+/// A fresh operator can configure a real plane before allocating its epic.
+/// The held graph remains inert, and no identity-free native launch is licensed.
+#[tokio::test]
+async fn a_neutral_runtime_bootstraps_a_held_epic_without_jira_or_native_identity() {
+    let directory = tempfile::TempDir::new().expect("temporary realm");
+    let mut fleet = fleet_settings();
+    let plane = fleet["runtimes"][0].as_object_mut().expect("plane");
+    for field in [
+        "mini_project_id",
+        "jira_epic_key",
+        "mini_project_short_title",
+        "plan_item_key",
+        "jira_issue_key",
+        "ticket_short_code",
+        "seat_display_roles",
+        "canonical_worktree_cwd",
+        "orchestrator_agent_id",
+    ] {
+        plane.remove(field);
+    }
+    std::fs::write(
+        kontor_daemon::runtimes::path_in(directory.path()),
+        serde_json::to_vec(&fleet).expect("fleet JSON"),
+    )
+    .expect("runtime settings");
+    let daemon = Daemon::start_configured(DaemonConfig::at(directory.path()).with_port(0))
+        .expect("the real plane starts without invented future identities");
+    daemon.reconcile().await;
+    let admin = secret_from(directory.path(), "admin");
+    let router = daemon.router();
+    let project = Call::post(
+        "/v1/projects:ensure",
+        &serde_json::json!({
+            "name":"Neutral fixture", "root_path":"/tmp/kontor-neutral-fixture",
+            "memory_origin":"kontor_native", "backlog_origin":"kontor_native"
+        }),
+    )
+    .with_token(&admin)
+    .with_key("neutral-project")
+    .send_to(&router)
+    .await;
+    assert_eq!(project.status, 200, "{}", project.body);
+    let project_id = project.json()["project_id"]
+        .as_str()
+        .expect("project")
+        .to_owned();
+    // Select the shipped Jira-key definition before the new graph freezes it.
+    let definition = jira_key_successor_definition();
+    let topology = kontor_profiles::bundled_operational_domain()
+        .expect("domain")
+        .topology_specs
+        .into_iter()
+        .find(|spec| {
+            spec.spec_id == definition.topology.spec_id
+                && spec.version == definition.topology.version
+        })
+        .expect("the definition's topology");
+    let topology_candidate = serde_json::to_value(topology).expect("topology");
+    let topology_validation = Call::post(
+        format!("/v1/projects/{project_id}/topology-specs:validate"),
+        &serde_json::json!({"candidate":topology_candidate}),
+    )
+    .with_token(&admin)
+    .send_to(&router)
+    .await;
+    assert_eq!(
+        topology_validation.status, 200,
+        "{}",
+        topology_validation.body
+    );
+    let topology_publication = Call::post(format!("/v1/projects/{project_id}/topology-specs:publish"),
+        &serde_json::json!({"candidate":topology_candidate,"validation_hash":topology_validation.json()["validation_hash"],
+            "expected_revision":project.json()["revision"]}))
+        .with_token(&admin).with_key("neutral-topology").send_to(&router).await;
+    assert_eq!(
+        topology_publication.status, 200,
+        "{}",
+        topology_publication.body
+    );
+    let candidate = serde_json::to_value(&definition).expect("definition");
+    let validated = Call::post(
+        format!("/v1/projects/{project_id}/team-definitions:validate"),
+        &serde_json::json!({"candidate":candidate}),
+    )
+    .with_token(&admin)
+    .send_to(&router)
+    .await;
+    assert_eq!(validated.status, 200, "{}", validated.body);
+    let published = Call::post(format!("/v1/projects/{project_id}/team-definitions:publish"),
+        &serde_json::json!({"candidate":candidate,"validation_hash":validated.json()["validation_hash"],
+            "expected_revision":project.json()["revision"]}))
+        .with_token(&admin).with_key("neutral-definition").send_to(&router).await;
+    assert_eq!(published.status, 200, "{}", published.body);
+    let selection = Call::post(
+        format!("/v1/projects/{project_id}/team-definition-selection:preview"),
+        &serde_json::json!({"target_definition":{"id":definition.definition_id,"version":4}}),
+    )
+    .with_token(&admin)
+    .send_to(&router)
+    .await;
+    assert_eq!(selection.status, 200, "{}", selection.body);
+    let selected = Call::post(
+        format!("/v1/projects/{project_id}/team-definition-selection:apply"),
+        &serde_json::json!({"preview_hash":selection.json()["preview_hash"],
+            "expected_revision":project.json()["revision"]}),
+    )
+    .with_token(&admin)
+    .with_key("neutral-definition-select")
+    .send_to(&router)
+    .await;
+    assert_eq!(selected.status, 200, "{}", selected.body);
+    let account = Call::post(
+        format!("/v1/projects/{project_id}/provider-account-profiles:ensure"),
+        &serde_json::json!({"label":"Fixture holder", "harness":"paseo.agent",
+            "credential_alias":"fixture-holder", "enabled":true}),
+    )
+    .with_token(&admin)
+    .with_key("neutral-account")
+    .send_to(&router)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let body = serde_json::json!({"expected_revision":project.json()["revision"],
+        "name":"Fresh held epic", "work_profile_category":"code", "runtime_family":"paseo.agent",
+        "initial_hold":{"held_by":account.json()["account_profile_id"],"reason":"Await actual confirmed Jira binding"},
+        "tasks":[{"title":"Actual fixture report"}]});
+    let preview = Call::post(format!("/v1/projects/{project_id}/epics:preview"), &body)
+        .with_token(&admin)
+        .send_to(&router)
+        .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let applied = Call::post(format!("/v1/projects/{project_id}/epics:apply"), &body)
+        .with_token(&admin)
+        .with_key("neutral-epic")
+        .send_to(&router)
+        .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert!(applied.json()["initial_hold"]["revoked_at"].is_string());
+    let epic = applied.json()["epic_id"].as_str().expect("epic").to_owned();
+    let plan = Call::post(
+        format!("/v1/projects/{project_id}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .with_token(&admin)
+    .send_to(&router)
+    .await;
+    assert_eq!(plan.status, 200, "{}", plan.body);
+    assert!(plan.json()["ready"].as_array().expect("ready").is_empty());
+    assert!(
+        plan.json()["blocked"]
+            .as_array()
+            .expect("blocked")
+            .iter()
+            .all(|task| task["code"] == "authorization_blocked")
+    );
+    let placement = Call::post(
+        format!("/v1/projects/{project_id}/topology:materialize"),
+        &serde_json::json!({"target":{"scope":"epic_control","epic_id":epic},
+            "expected_revision":project.json()["revision"]}),
+    )
+    .with_token(&admin)
+    .with_key("neutral-no-binding")
+    .send_to(&router)
+    .await;
+    assert_eq!(placement.status, 409, "{}", placement.body);
+    assert_eq!(placement.code(), "placement_blocked", "{}", placement.body);
+    daemon.shutdown();
+}
+
 #[tokio::test]
 async fn a_realm_with_no_fleet_still_starts_and_says_so() {
     let directory = tempfile::TempDir::new().expect("a temporary directory");

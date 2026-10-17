@@ -35,6 +35,43 @@ Everything in the database is published through a preview/apply pair with a
 content hash: the apply is compared against the hash the preview returned, so a
 specification cannot change between the two.
 
+### Fresh runtime before the first epic
+
+A schema-5 Paseo plane can be configured before any epic or Jira issue exists:
+
+```json
+{
+  "schema_version": 5,
+  "runtimes": [{
+    "family": "paseo",
+    "runtime_kind": "paseo.agent",
+    "host_key": "isolated-acceptance",
+    "project_root_cwd": "/absolute/registered/checkout",
+    "max_concurrent_sessions": 32,
+    "executable": "paseo",
+    "host_target": "127.0.0.1:7867",
+    "endpoint": "ws://127.0.0.1:7867/ws",
+    "client_id": "isolated-acceptance",
+    "timeout_seconds": 30
+  }]
+}
+```
+
+Register the real account routes separately, preview/apply the graph with an
+`initial_hold`, confirm its actual Jira bindings and pinned topology, then lift
+the hold. This configuration supplies no epic or task identity and cannot
+manufacture an execution scope. Native materialization and launch still require
+the caller's durable confirmed subject, exact worktree and placement proofs.
+
+Existing complete legacy rendering overrides remain readable. Their
+`mini_project_id`, `jira_epic_key`, `mini_project_short_title`, `plan_item_key`,
+`jira_issue_key`, `ticket_short_code`, `canonical_worktree_cwd` and
+`orchestrator_agent_id` must either all be present or all be absent. Legacy
+`task_scopes` and `seat_display_roles` require that explicit legacy epic; a
+partial override refuses startup. The obsolete unscoped `prepare_project`
+adapter method refuses on a neutral plane before contacting Paseo; use the
+supported scoped topology materialization path.
+
 ## Experience memory transport (ASMA-8158 source candidate)
 
 `memory-cognee.json` is optional, strict JSON, at most 8 KiB. Absence keeps

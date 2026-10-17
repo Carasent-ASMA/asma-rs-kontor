@@ -314,10 +314,12 @@ pub struct PaseoConfig {
     /// inside the transport and never appear here, in a checkpoint, or in a
     /// binding.
     pub host_key: ExternalName,
-    /// The Kontor mini-project this plane serves.
-    pub mini_project_id: ExternalId,
-    /// The validated command variables.
-    pub scope: PaseoExecutionScope,
+    /// Optional legacy epic rendering selector. Absent on a fresh plane.
+    pub mini_project_id: Option<ExternalId>,
+    /// Optional legacy rendering data, paired with `mini_project_id`.
+    pub scope: Option<PaseoExecutionScope>,
+    /// Repository root used to prepare managed task checkouts.
+    pub project_root_cwd: WorkspaceRoot,
     /// The most sessions Kontor will hold open on this plane at once.
     pub max_concurrent_sessions: u32,
     /// Temporarily ineligible providers, selected by explicit fleet
@@ -1200,12 +1202,20 @@ impl PaseoAdapter {
         // plane's legacy rendering overrides. Validate that boundary even for
         // embedders that construct an adapter without the daemon fleet loader;
         // otherwise a Jira key remains latent until the first admission.
-        kontor_core::id::MiniProjectId::parse(config.mini_project_id.as_str()).map_err(|_| {
-            RuntimeError::Domain(DomainError::invalid(
-                "PaseoConfig.mini_project_id",
-                "must be a durable Kontor MiniProjectId",
-            ))
-        })?;
+        if config.mini_project_id.is_some() != config.scope.is_some() {
+            return Err(RuntimeError::Domain(DomainError::invalid(
+                "PaseoConfig.scope",
+                "legacy epic identity and rendering scope must be supplied together",
+            )));
+        }
+        if let Some(epic) = &config.mini_project_id {
+            kontor_core::id::MiniProjectId::parse(epic.as_str()).map_err(|_| {
+                RuntimeError::Domain(DomainError::invalid(
+                    "PaseoConfig.mini_project_id",
+                    "must be a durable Kontor MiniProjectId",
+                ))
+            })?;
+        }
         if checkpoint.host_key != config.host_key {
             return Err(RuntimeError::Domain(DomainError::invalid(
                 "PaseoCheckpoint.host_key",
@@ -1379,11 +1389,16 @@ impl PaseoAdapter {
         PaseoCheckpoint {
             generation: state.generation,
             host_key: self.config.host_key.clone(),
-            project: state.projects.get(&self.config.mini_project_id).cloned(),
+            project: self
+                .config
+                .mini_project_id
+                .as_ref()
+                .and_then(|epic| state.projects.get(epic))
+                .cloned(),
             projects: state
                 .projects
                 .iter()
-                .filter(|(epic, _)| *epic != &self.config.mini_project_id)
+                .filter(|(epic, _)| Some(*epic) != self.config.mini_project_id.as_ref())
                 .map(|(_, project)| project.clone())
                 .collect(),
             workspaces: state.workspaces.values().cloned().collect(),
@@ -1435,10 +1450,8 @@ impl PaseoAdapter {
     /// The epic project binding, once preparation has established one.
     #[must_use]
     pub fn project_binding(&self) -> Option<PaseoProjectBinding> {
-        self.lock()
-            .projects
-            .get(&self.config.mini_project_id)
-            .cloned()
+        let epic = self.config.mini_project_id.as_ref()?;
+        self.lock().projects.get(epic).cloned()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, PaseoState> {
@@ -2198,8 +2211,12 @@ impl PaseoAdapter {
         ExternalId::parse(&scope.epic.mini_project_id.to_string()).map_err(Into::into)
     }
 
-    fn configured_epic_id(&self) -> RuntimeResult<kontor_core::id::MiniProjectId> {
-        kontor_core::id::MiniProjectId::parse(self.config.mini_project_id.as_str())
+    fn configured_epic_id(&self) -> RuntimeResult<Option<kontor_core::id::MiniProjectId>> {
+        self.config
+            .mini_project_id
+            .as_ref()
+            .map(|id| kontor_core::id::MiniProjectId::parse(id.as_str()))
+            .transpose()
             .map_err(Into::into)
     }
 
@@ -2210,14 +2227,17 @@ impl PaseoAdapter {
     /// preserves the existing native workspace/seat titles while the fleet
     /// moves off its historical per-task spelling.
     fn effective_scope(&self, scope: &ExecutionScope) -> RuntimeResult<ExecutionScope> {
-        if scope.epic.mini_project_id != self.configured_epic_id()? {
+        if Some(scope.epic.mini_project_id) != self.configured_epic_id()? {
             return Ok(scope.clone());
         }
+        let Some(legacy) = self.config.scope.as_ref() else {
+            return Ok(scope.clone());
+        };
         let mut effective = scope.clone();
-        effective.epic.external_epic_key = self.config.scope.jira_epic_key.clone();
-        effective.epic.short_title = self.config.scope.mini_project_short_title.clone();
+        effective.epic.external_epic_key = legacy.jira_epic_key.clone();
+        effective.epic.short_title = legacy.mini_project_short_title.clone();
         if let Some(task) = effective.task.as_mut()
-            && let Some(configured) = self.config.scope.configured_task_scope(task.task_id)
+            && let Some(configured) = legacy.configured_task_scope(task.task_id)
         {
             task.external_issue_key = configured.jira_issue_key;
             task.short_code = Some(configured.ticket_short_code);
@@ -2226,11 +2246,9 @@ impl PaseoAdapter {
     }
 
     fn scoped_plan_item_key(&self, scope: &ExecutionScope) -> RuntimeResult<ExternalId> {
-        if scope.epic.mini_project_id == self.configured_epic_id()?
-            && let Some(configured) = self
-                .config
-                .scope
-                .configured_task_scope(scope.require_task()?.task_id)
+        if Some(scope.epic.mini_project_id) == self.configured_epic_id()?
+            && let Some(legacy) = self.config.scope.as_ref()
+            && let Some(configured) = legacy.configured_task_scope(scope.require_task()?.task_id)
         {
             return Ok(configured.plan_item_key);
         }
@@ -2993,6 +3011,9 @@ impl PaseoAdapter {
         command_id: &str,
         desired: &ExternalName,
     ) -> RuntimeResult<PaseoProjectOutcome> {
+        let epic = self.config.mini_project_id.as_ref().ok_or(RuntimeError::WorkspaceMismatch {
+            rule: "legacy project preparation requires an explicit configured epic; use scoped topology materialization",
+        })?;
         self.require_session_permissions(
             &[
                 crate::wire::PASEO_PERMISSION_WORKSPACE_READ,
@@ -3004,15 +3025,11 @@ impl PaseoAdapter {
         // A persisted binding is authoritative, and it is attested by exact id
         // rather than re-derived. Re-deriving would re-open the very question
         // the binding exists to close.
-        let bound = self
-            .lock()
-            .projects
-            .get(&self.config.mini_project_id)
-            .cloned();
+        let bound = self.lock().projects.get(epic).cloned();
         if let Some(binding) = bound {
             let project = self.read_project_by_id(binding.project_id.as_str()).await?;
             return Ok(self.settle_project(
-                self.config.mini_project_id.clone(),
+                epic.clone(),
                 binding.project_id,
                 project.display_name,
                 desired.as_str().to_owned(),
@@ -3036,7 +3053,7 @@ impl PaseoAdapter {
                     command_id.to_owned(),
                     // The epic's repository root, never the task worktree: see
                     // `PaseoExecutionScope::project_root_cwd`.
-                    self.config.scope.project_root_cwd.as_str(),
+                    self.config.project_root_cwd.as_str(),
                 );
                 let frame = self.transport.request(&request).await?;
                 let added: PaseoProjectAdded = frame.resolve(&request, "PaseoProjectAdded")?;
@@ -3056,7 +3073,7 @@ impl PaseoAdapter {
 
         let project_id = ExternalId::parse(&project.id)?;
         Ok(self.settle_project(
-            self.config.mini_project_id.clone(),
+            epic.clone(),
             project_id,
             project.display_name,
             desired.as_str().to_owned(),
@@ -3373,7 +3390,7 @@ impl PaseoAdapter {
             request.scope.iter().chain(effective.iter()),
         );
         crate::checkout::prepare_managed_worktree(
-            &self.config.scope.project_root_cwd,
+            &self.config.project_root_cwd,
             cwd,
             &binding,
         )
@@ -4653,7 +4670,8 @@ impl PaseoAdapter {
             let allowances = self
                 .config
                 .scope
-                .configured_task_scope(request.task_id())
+                .as_ref()
+                .and_then(|scope| scope.configured_task_scope(request.task_id()))
                 .map(|configured| configured.permission_overrides)
                 .unwrap_or_default();
             let created = PaseoRpc::delivery_agent_create(crate::client::DeliveryCreate {
@@ -6345,18 +6363,19 @@ impl RuntimeAdapter for PaseoAdapter {
         epic_id: kontor_core::id::MiniProjectId,
         task_id: Option<TaskId>,
     ) -> Option<ExecutionScope> {
-        if self.configured_epic_id().ok()? != epic_id {
+        if self.configured_epic_id().ok()?? != epic_id {
             return None;
         }
+        let legacy = self.config.scope.as_ref()?;
         let epic = EpicScope {
             mini_project_id: epic_id,
-            external_epic_key: self.config.scope.jira_epic_key.clone(),
-            short_title: self.config.scope.mini_project_short_title.clone(),
+            external_epic_key: legacy.jira_epic_key.clone(),
+            short_title: legacy.mini_project_short_title.clone(),
         };
         let Some(task_id) = task_id else {
             return Some(ExecutionScope::for_epic(epic));
         };
-        let task = self.config.scope.configured_task_scope(task_id)?;
+        let task = legacy.configured_task_scope(task_id)?;
         Some(ExecutionScope::for_task(
             epic,
             TaskScope {
@@ -8298,7 +8317,7 @@ impl RuntimeAdapter for PaseoAdapter {
             });
         }
         crate::checkout::prepare_managed_worktree(
-            &self.config.scope.project_root_cwd,
+            &self.config.project_root_cwd,
             &request.root,
             &crate::checkout::ManagedBranchBinding::from_scopes([&request.scope, &effective_scope]),
         )
@@ -8391,7 +8410,8 @@ impl RuntimeAdapter for PaseoAdapter {
         let allowances = self
             .config
             .scope
-            .configured_task_scope(request.task_id())
+            .as_ref()
+            .and_then(|scope| scope.configured_task_scope(request.task_id()))
             .map(|configured| configured.permission_overrides)
             .unwrap_or_default();
         let posture = crate::posture::seat_posture(
@@ -10478,14 +10498,74 @@ mod epoch_registry_tests {
 mod task_scope_tests {
     use super::*;
 
+    #[tokio::test]
+    async fn a_neutral_plane_refuses_unscoped_preparation_before_runtime_contact() {
+        let mut config = adapter().config().clone();
+        config.mini_project_id = None;
+        config.scope = None;
+        let recorded = std::sync::Arc::new(crate::fixture::RecordedPaseo::new());
+        let neutral = PaseoAdapter::new(
+            config,
+            Box::new(std::sync::Arc::clone(&recorded)),
+            PaseoCheckpoint::fresh(1, ExternalName::parse("fixture-host").expect("host")),
+        )
+        .expect("a neutral plane composes");
+        assert!(
+            neutral
+                .configured_execution_scope(
+                    kontor_core::id::MiniProjectId::parse("01890000-0000-7000-8000-0000000000c1")
+                        .expect("epic"),
+                    None,
+                )
+                .is_none()
+        );
+        let refused = neutral
+            .prepare_project(
+                "must-not-create",
+                &ExternalName::parse("No subject").expect("title"),
+            )
+            .await;
+        assert!(matches!(
+            refused,
+            Err(RuntimeError::WorkspaceMismatch { .. })
+        ));
+        assert_eq!(recorded.count("rpc project.add.request"), 0);
+        assert_eq!(recorded.count("rpc project.list.request"), 0);
+        assert!(neutral.checkpoint().project.is_none());
+        assert!(neutral.checkpoint().projects.is_empty());
+    }
+
+    #[test]
+    fn a_partial_legacy_adapter_scope_is_not_a_neutral_plane() {
+        for remove_identity in [false, true] {
+            let mut config = adapter().config().clone();
+            if remove_identity {
+                config.mini_project_id = None;
+            } else {
+                config.scope = None;
+            }
+            assert!(
+                PaseoAdapter::new(
+                    config,
+                    Box::new(std::sync::Arc::new(crate::fixture::RecordedPaseo::new())),
+                    PaseoCheckpoint::fresh(1, ExternalName::parse("fixture-host").expect("host")),
+                )
+                .is_err()
+            );
+        }
+    }
+
     fn adapter() -> PaseoAdapter {
         PaseoAdapter::new(
             PaseoConfig {
                 runtime_kind: RuntimeKindKey::parse("paseo.agent").expect("runtime kind"),
                 host_key: ExternalName::parse("fixture-host").expect("host"),
-                mini_project_id: ExternalId::parse("01890000-0000-7000-8000-0000000000c1")
-                    .expect("epic selector"),
-                scope: scope(),
+                mini_project_id: Some(
+                    ExternalId::parse("01890000-0000-7000-8000-0000000000c1")
+                        .expect("epic selector"),
+                ),
+                project_root_cwd: scope().project_root_cwd.clone(),
+                scope: Some(scope()),
                 max_concurrent_sessions: 8,
                 unavailable_providers: BTreeSet::new(),
                 provider_selects_account: false,
@@ -10588,9 +10668,12 @@ mod task_scope_tests {
             PaseoConfig {
                 runtime_kind: RuntimeKindKey::parse("paseo.agent").expect("runtime kind"),
                 host_key: ExternalName::parse("fixture-host").expect("host"),
-                mini_project_id: ExternalId::parse("01890000-0000-7000-8000-0000000000c1")
-                    .expect("epic selector"),
-                scope: scope(),
+                mini_project_id: Some(
+                    ExternalId::parse("01890000-0000-7000-8000-0000000000c1")
+                        .expect("epic selector"),
+                ),
+                project_root_cwd: scope().project_root_cwd.clone(),
+                scope: Some(scope()),
                 max_concurrent_sessions: 8,
                 unavailable_providers: BTreeSet::new(),
                 provider_selects_account: false,
@@ -10674,8 +10757,9 @@ mod task_scope_tests {
             PaseoConfig {
                 runtime_kind: RuntimeKindKey::parse("paseo.agent").expect("runtime kind"),
                 host_key: ExternalName::parse("fixture-host").expect("host"),
-                mini_project_id: ExternalId::parse("ASMA-7869").expect("legacy selector"),
-                scope: scope(),
+                mini_project_id: Some(ExternalId::parse("ASMA-7869").expect("legacy selector")),
+                project_root_cwd: scope().project_root_cwd.clone(),
+                scope: Some(scope()),
                 max_concurrent_sessions: 8,
                 unavailable_providers: BTreeSet::new(),
                 provider_selects_account: false,
@@ -10750,9 +10834,11 @@ mod task_scope_tests {
             PaseoConfig {
                 runtime_kind: RuntimeKindKey::parse("paseo.agent").expect("runtime kind"),
                 host_key: ExternalName::parse("fixture-host").expect("host"),
-                mini_project_id: ExternalId::parse(&configured_epic.to_string())
-                    .expect("configured epic"),
-                scope,
+                mini_project_id: Some(
+                    ExternalId::parse(&configured_epic.to_string()).expect("configured epic"),
+                ),
+                project_root_cwd: scope.project_root_cwd.clone(),
+                scope: Some(scope),
                 max_concurrent_sessions: 8,
                 unavailable_providers: BTreeSet::new(),
                 provider_selects_account: false,
@@ -10875,9 +10961,11 @@ mod governed_pin_tests {
         PaseoConfig {
             runtime_kind: RuntimeKindKey::parse("paseo.agent").expect("runtime kind"),
             host_key: ExternalName::parse("fixture-host").expect("host"),
-            mini_project_id: ExternalId::parse("01890000-0000-7000-8000-0000000000c1")
-                .expect("epic selector"),
-            scope: PaseoExecutionScope {
+            mini_project_id: Some(
+                ExternalId::parse("01890000-0000-7000-8000-0000000000c1").expect("epic selector"),
+            ),
+            project_root_cwd: WorkspaceRoot::parse("/w/epic").expect("root"),
+            scope: Some(PaseoExecutionScope {
                 jira_epic_key: ExternalId::parse("ASMA-7882").expect("epic"),
                 mini_project_short_title: ExternalName::parse("Quota headroom").expect("title"),
                 plan_item_key: ExternalId::parse("KON-OP-13").expect("plan item"),
@@ -10888,7 +10976,7 @@ mod governed_pin_tests {
                 canonical_worktree_cwd: WorkspaceRoot::parse("/w/task").expect("worktree"),
                 task_scopes: BTreeMap::new(),
                 orchestrator_agent_id: ExternalId::parse("agent-1").expect("orchestrator"),
-            },
+            }),
             max_concurrent_sessions: 8,
             unavailable_providers: BTreeSet::new(),
             provider_selects_account,
