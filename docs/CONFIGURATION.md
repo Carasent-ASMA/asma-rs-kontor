@@ -115,15 +115,20 @@ holds the marker and the provider to remove.
   addressed setting's marker array. Every other member — including fields this
   build does not know and the sensitive `host_target` — is preserved, and the
   file keeps its permissions. A document that changed since the preview is a
-  `revision_conflict`.
+  `revision_conflict`. Apply holds `<state-root>/runtimes.json.lock` across
+  every writer's read, comparison and rename, so two corrections cannot
+  overwrite each other. A manual edit cannot take that lock: edit
+  `runtimes.json` by hand only with the daemon stopped.
 - **Idempotent replay.** The key is judged before the revision and claimed
   durably before the document is written: a retry of a completed correction
-  answers `replayed` without a second write, a retry whose first attempt never
-  wrote finishes the correction at the revision it read, a correction of an
-  already-absent marker answers `already_cleared`, and a key reused for anything
-  else is an `idempotency_conflict`. An unknown family is `not_found`; a
-  malformed document or a non-regular settings file is a typed refusal and is
-  never rewritten.
+  answers `replayed` without a second write — even when an operator restored
+  the marker after the first success — a retry whose first attempt never wrote
+  finishes the correction at the revision it read, a correction of an
+  already-absent marker answers `already_cleared`, and a key reused for
+  anything else is an `idempotency_conflict`. An unknown family is `not_found`;
+  a malformed document or a non-regular settings file is a typed refusal and is
+  never rewritten. Completion is durable state, not a guess from the current
+  bytes.
 
 The correction edits one configuration member. It retires, replaces or relaunches
 nothing, and no seat, run or topology node changes.

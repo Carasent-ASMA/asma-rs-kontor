@@ -214,6 +214,57 @@ async fn a_marker_correction_is_previewed_applied_replayed_and_moves_no_seat() {
 }
 
 #[tokio::test]
+async fn a_completed_correction_does_not_remove_a_marker_restored_for_a_later_outage() {
+    let world = World::open().await;
+    let path = fixture(&world);
+    let preview = Call::post("/v1/provider-markers:preview", &preview_body())
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let revision = preview.json()["revision"]
+        .as_str()
+        .expect("a revision")
+        .to_owned();
+    let preview_hash = preview.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+    let apply = serde_json::json!({
+        "runtime_family": fake_family().to_string(),
+        "provider": "claude",
+        "expected_revision": revision,
+        "preview_hash": preview_hash,
+    });
+    let cleared = Call::post("/v1/provider-markers:apply", &apply)
+        .signed_as(&world, "admin")
+        .with_key("provider-marker-restored")
+        .send(&world)
+        .await;
+    assert_eq!(cleared.status, 200, "{}", cleared.body);
+    assert_eq!(cleared.json()["outcome"], "cleared");
+
+    // The outage marker comes back: an operator restores the exact document the
+    // completed correction read. This is a new fact about the realm, not a
+    // retry of the correction, and it must survive the retry.
+    std::fs::write(&path, marker_document()).expect("the operator restores the marker");
+
+    let replayed = Call::post("/v1/provider-markers:apply", &apply)
+        .signed_as(&world, "admin")
+        .with_key("provider-marker-restored")
+        .send(&world)
+        .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["outcome"], "replayed");
+    assert_eq!(replayed.json()["changed"], false);
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the document reads"),
+        marker_document(),
+        "a completed key never performs its write a second time"
+    );
+}
+
+#[tokio::test]
 async fn a_marker_correction_refuses_unknown_stale_malformed_and_unauthorized_calls() {
     let world = World::open().await;
     let path = fixture(&world);
@@ -516,6 +567,95 @@ async fn a_reused_provider_marker_key_is_an_idempotency_conflict_and_writes_noth
     assert_eq!(
         std::fs::read(&path).expect("the document reads"),
         after_clear
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_claim_survives_a_failed_write_and_the_same_key_finishes_the_correction() {
+    use std::os::unix::fs::symlink;
+
+    let world = World::open().await;
+    let path = world.directory.path().join("runtimes.json");
+    let outside = tempfile::tempdir().expect("a directory outside the state root");
+    std::fs::write(outside.path().join("runtimes.json"), marker_document())
+        .expect("the symlink target");
+    symlink(outside.path().join("runtimes.json"), &path).expect("the settings path is a symlink");
+
+    let preview = Call::post("/v1/provider-markers:preview", &preview_body())
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let revision = preview.json()["revision"]
+        .as_str()
+        .expect("a revision")
+        .to_owned();
+    let preview_hash = preview.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+    let apply = serde_json::json!({
+        "runtime_family": fake_family().to_string(),
+        "provider": "claude",
+        "expected_revision": revision,
+        "preview_hash": preview_hash,
+    });
+
+    // The claim is durable before the write, and the write refuses the symlink:
+    // the caller sees the refusal while the key already names this correction.
+    let refused = Call::post("/v1/provider-markers:apply", &apply)
+        .signed_as(&world, "admin")
+        .with_key("provider-marker-write-failed")
+        .send(&world)
+        .await;
+    assert_eq!(refused.status, 503, "{}", refused.body);
+    assert_eq!(refused.code(), "unavailable");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the document reads through the link"),
+        marker_document(),
+        "the failed write left the document alone"
+    );
+    let binding = world
+        .daemon
+        .state()
+        .with_store(|store| store.realm_idempotency_binding("provider-marker-write-failed"))
+        .expect("the binding reads")
+        .expect("the key was claimed before the write was attempted");
+    assert_eq!(
+        binding.operation, "clear_provider_marker",
+        "the claim precedes the failed write"
+    );
+
+    // The operator replaces the symlink with the same bytes, and the retry
+    // finishes the correction under the key the failed attempt claimed.
+    std::fs::remove_file(&path).expect("the symlink is removed");
+    std::fs::write(&path, marker_document()).expect("the regular document is installed");
+    let finished = Call::post("/v1/provider-markers:apply", &apply)
+        .signed_as(&world, "admin")
+        .with_key("provider-marker-write-failed")
+        .send(&world)
+        .await;
+    assert_eq!(finished.status, 200, "{}", finished.body);
+    assert_eq!(finished.json()["outcome"], "cleared");
+    assert_eq!(finished.json()["changed"], true);
+    let cleared = std::fs::read_to_string(&path).expect("the document reads");
+    assert!(
+        !cleared.contains("\"claude\""),
+        "the retry removed the marker"
+    );
+
+    let replayed = Call::post("/v1/provider-markers:apply", &apply)
+        .signed_as(&world, "admin")
+        .with_key("provider-marker-write-failed")
+        .send(&world)
+        .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["outcome"], "replayed");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the document reads"),
+        cleared,
+        "a replay writes nothing"
     );
 }
 
