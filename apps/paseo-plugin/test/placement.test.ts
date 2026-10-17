@@ -6,12 +6,17 @@ const rules = {
   placementRoots: [],
 };
 
+const binding = {
+  projectId: "prj_7409d2c6aff8e21c",
+  directory: "/Users/test/carasent/asma-modules/.worktrees/asma-8507/asma-rs-kontor",
+};
+
 function create(source: WorkspaceCreateLike["source"]): WorkspaceCreateLike {
   return { source, callerAgentId: "agent-1" };
 }
 
 describe("evaluatePlacement", () => {
-  it("accepts a canonical directory registered under an explicit project", () => {
+  it("accepts a canonical directory registered under the bound project", () => {
     expect(
       evaluatePlacement(
         create({
@@ -20,6 +25,7 @@ describe("evaluatePlacement", () => {
           projectId: "prj_7409d2c6aff8e21c",
         }),
         rules,
+        binding,
       ),
     ).toEqual({ allowed: true });
   });
@@ -33,6 +39,7 @@ describe("evaluatePlacement", () => {
           projectId: "prj_7409d2c6aff8e21c",
         }),
         rules,
+        binding,
       ),
     ).toMatchObject({ allowed: false, reason: expect.stringContaining("worktree") });
   });
@@ -45,6 +52,7 @@ describe("evaluatePlacement", () => {
           path: "/Users/test/carasent/asma-modules/.worktrees/asma-8507/asma-rs-kontor",
         }),
         rules,
+        binding,
       ),
     ).toMatchObject({ allowed: false, reason: expect.stringContaining("projectId") });
   });
@@ -54,6 +62,7 @@ describe("evaluatePlacement", () => {
       evaluatePlacement(
         create({ kind: "directory", path: ".worktrees/asma-8507", projectId: "prj_1" }),
         rules,
+        binding,
       ),
     ).toMatchObject({ allowed: false, reason: expect.stringContaining("absolute") });
   });
@@ -67,8 +76,54 @@ describe("evaluatePlacement", () => {
           projectId: "prj_1",
         }),
         rules,
+        binding,
       ),
     ).toMatchObject({ allowed: false, reason: expect.stringContaining("Paseo") });
+  });
+
+  it("refuses another epic's project even under the canonical directory", () => {
+    expect(
+      evaluatePlacement(
+        create({
+          kind: "directory",
+          path: binding.directory,
+          projectId: "prj_epic_b",
+        }),
+        rules,
+        binding,
+      ),
+    ).toMatchObject({ allowed: false, reason: expect.stringContaining("project") });
+  });
+
+  it("refuses another epic's directory under the bound project", () => {
+    expect(
+      evaluatePlacement(
+        create({
+          kind: "directory",
+          path: "/Users/test/carasent/asma-modules/.worktrees/asma-other/epic-b",
+          projectId: binding.projectId,
+        }),
+        rules,
+        binding,
+      ),
+    ).toMatchObject({
+      allowed: false,
+      reason: expect.stringContaining("canonical worktree"),
+    });
+  });
+
+  it("refuses an unresolved binding", () => {
+    expect(
+      evaluatePlacement(
+        create({
+          kind: "directory",
+          path: binding.directory,
+          projectId: binding.projectId,
+        }),
+        rules,
+        { projectId: "", directory: "" },
+      ),
+    ).toMatchObject({ allowed: false, reason: expect.stringContaining("binding") });
   });
 
   it("applies configured placement roots as extra containment", () => {
@@ -80,12 +135,24 @@ describe("evaluatePlacement", () => {
       evaluatePlacement(
         create({
           kind: "directory",
-          path: "/Users/test/carasent/asma-modules/.worktrees/task",
-          projectId: "prj_1",
+          path: "/Users/test/carasent/asma-modules/.worktrees/asma-8507/asma-rs-kontor",
+          projectId: "prj_7409d2c6aff8e21c",
         }),
         contained,
+        binding,
       ),
     ).toEqual({ allowed: true });
+    expect(
+      evaluatePlacement(
+        create({
+          kind: "directory",
+          path: "/Users/test/carasent/asma-modules/.worktrees/task",
+          projectId: "prj_7409d2c6aff8e21c",
+        }),
+        contained,
+        binding,
+      ),
+    ).toMatchObject({ allowed: false, reason: expect.stringContaining("canonical worktree") });
     expect(
       evaluatePlacement(
         create({
@@ -94,6 +161,7 @@ describe("evaluatePlacement", () => {
           projectId: "prj_1",
         }),
         contained,
+        binding,
       ),
     ).toMatchObject({ allowed: false, reason: expect.stringContaining("placement roots") });
   });

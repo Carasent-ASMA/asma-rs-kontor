@@ -16,7 +16,7 @@
 | `apps/paseo-plugin/server/config.ts` | Read-only configuration; observer tier is fixed. |
 | `apps/paseo-plugin/server/labels.ts` | Kontor/Paseo-direct seat detection and seat generation. |
 | `apps/paseo-plugin/server/agent-labels.ts` | Bounded local label read; every failure returns `null`. |
-| `apps/paseo-plugin/server/placement.ts` | Kontor placement shape check. |
+| `apps/paseo-plugin/server/placement.ts` | Kontor placement check against the seat's bound project and canonical worktree. |
 | `apps/paseo-plugin/test/*.test.ts` | Unit tests, including the no-write-credential boundary. |
 | `apps/paseo-plugin/scripts/closure.mjs` | Assertions against a running daemon. |
 | `apps/paseo-plugin/scripts/closure-suite.sh` | Isolated install → guarded → uninstall → restored run. |

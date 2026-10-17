@@ -9,6 +9,7 @@ const files = [
   "../server/hooks.ts",
   "../server/labels.ts",
   "../server/placement.ts",
+  "../server/placement-binding.ts",
 ] as const;
 
 function source(relative: string): string {
