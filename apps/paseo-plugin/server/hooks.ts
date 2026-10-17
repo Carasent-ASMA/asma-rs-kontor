@@ -17,7 +17,7 @@ type AgentCreateRequest = PluginBeforeRequests["agent.create"];
 type SessionOpenRequest = PluginBeforeRequests["agent.session_open"];
 type WorkspaceCreateRequest = PluginBeforeRequests["workspace.create"];
 
-export const KONTOR_MCP_SERVER_NAME = "kontor";
+export const KONTOR_MCP_SERVER_NAME = "kontor-observer";
 export const KONTOR_SYSTEM_PROMPT_LINE =
   "This session may be a Kontor seat: resolve its mini-project from Kontor at start and after compaction.";
 
@@ -37,9 +37,10 @@ function appendPromptLine(systemPrompt: string | undefined, line: string): strin
 /**
  * Add the Kontor read surface to a new agent.
  *
- * The server is always composed at observer authority. The plugin never reads
- * or carries a `kontord` credential: it names the state root, and the MCP
- * process reads its own read-only credential there.
+ * The server is always composed at observer authority under its own name, so a
+ * `kontor` server the provider home already defines is never replaced. The
+ * plugin never reads or carries a `kontord` credential: it names the state
+ * root, and the MCP process reads its own read-only credential there.
  */
 export function addKontorAgentConfig(
   request: AgentCreateRequest,
@@ -76,6 +77,10 @@ export function addKontorAgentConfig(
  * Fails open by design: when the local labels cannot be read within the hook
  * budget, the environment carries `unresolved` and the Paseo operation
  * continues. A person opening a tab never blocks on Kontor.
+ *
+ * Both keys are written on every open: a resumed session can carry the previous
+ * seat's environment, and an old generation must never outlive the seat
+ * identity it belonged to. A generation that cannot be resolved is cleared.
  */
 export async function seatEnvironment(
   request: SessionOpenRequest,
@@ -87,32 +92,36 @@ export async function seatEnvironment(
     signal: context.signal,
   });
   if (labels === null) {
-    return { [SEAT_ENV]: UNRESOLVED };
+    return { [SEAT_ENV]: UNRESOLVED, [BINDING_GENERATION_ENV]: "" };
   }
   if (!isKontorSeat(labels)) {
-    return { [SEAT_ENV]: UNBOUND };
+    return { [SEAT_ENV]: UNBOUND, [BINDING_GENERATION_ENV]: "" };
   }
   const { seat, generation } = seatBinding(labels);
   if (seat === null) {
-    return { [SEAT_ENV]: UNRESOLVED };
+    return { [SEAT_ENV]: UNRESOLVED, [BINDING_GENERATION_ENV]: "" };
   }
   return {
     [SEAT_ENV]: seat,
-    ...(generation === null ? {} : { [BINDING_GENERATION_ENV]: generation }),
+    [BINDING_GENERATION_ENV]: generation ?? "",
   };
 }
 
 /**
  * The caller the daemon attached to this creation, when the release carries it.
  *
- * Paseo 0.11.2 strips this from `workspace.create` before the hook, so the
- * guard also reads the initial agent's labels below. The field is still read
- * at runtime because a release that restores caller identity needs no code
- * change.
+ * Paseo 0.11.2 carries the caller as `agent.callerAgentId` on the
+ * `workspace.create` request and passes it through to the hook. A top-level
+ * `callerAgentId` is read as well, so a release that moves the field needs no
+ * code change. The guard also reads the initial agent's labels below.
  */
 function callerAgentIdOf(request: WorkspaceCreateRequest): string | undefined {
-  const value = (request as { callerAgentId?: unknown }).callerAgentId;
-  return typeof value === "string" && value.length > 0 ? value : undefined;
+  const direct = (request as { callerAgentId?: unknown }).callerAgentId;
+  if (typeof direct === "string" && direct.length > 0) {
+    return direct;
+  }
+  const nested = (request as { agent?: { callerAgentId?: unknown } }).agent?.callerAgentId;
+  return typeof nested === "string" && nested.length > 0 ? nested : undefined;
 }
 
 function initialAgentLabelsOf(request: WorkspaceCreateRequest): Record<string, string> | null {

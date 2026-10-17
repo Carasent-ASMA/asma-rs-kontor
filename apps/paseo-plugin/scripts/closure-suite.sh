@@ -27,6 +27,14 @@ node -e 'const j=require(process.argv[1]);const p=j.find(x=>x.id==="kontor");if(
 echo "== guarded behaviour =="
 PASEO_CLOSURE_PORT="$PORT" node "$PLUGIN_DIR/scripts/closure.mjs" "$PORT" guarded | tee "$HOME_DIR/guarded.json"
 
+echo "== cli residual =="
+CLI_REPO="$HOME_DIR/cli-fixture"
+mkdir -p "$CLI_REPO"
+git -C "$CLI_REPO" init -q
+git -C "$CLI_REPO" -c user.name=closure -c user.email=closure@example.com commit -q --allow-empty -m init
+paseo workspace create --isolation local --path "$CLI_REPO" --json --home "$HOME_DIR" >"$HOME_DIR/cli-created.json"
+node -e 'const j=require(process.argv[1]);if(!j.workspaceId)process.exit(1);console.log(JSON.stringify({name:"cli workspace create",outcome:"created",workspaceId:j.workspaceId}))' "$HOME_DIR/cli-created.json"
+
 echo "== uninstall =="
 paseo plugin remove kontor --home "$HOME_DIR" --json >"$HOME_DIR/removed.json"
 paseo plugin ls --home "$HOME_DIR" --json >"$HOME_DIR/after-remove.json"

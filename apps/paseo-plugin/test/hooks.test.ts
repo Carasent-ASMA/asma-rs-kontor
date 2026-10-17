@@ -24,7 +24,7 @@ type WorkspaceCreateRequest = PluginBeforeRequests["workspace.create"];
 type Context = Pick<PluginHookContext, "paseo" | "signal">;
 type WorkspaceRequestWithCaller = WorkspaceCreateRequest & {
   callerAgentId?: string;
-  agent?: { labels?: Record<string, string> };
+  agent?: { labels?: Record<string, string>; callerAgentId?: string };
 };
 
 const CANONICAL = "/Users/test/carasent/asma-modules/.worktrees/asma-8507/asma-rs-kontor";
@@ -191,7 +191,7 @@ describe("agent.create hook", () => {
     });
   });
 
-  it("preserves a Kontor server already composed for the seat", () => {
+  it("does not replace a Kontor server already composed for the seat", () => {
     const request = addKontorAgentConfig(
       createRequest({
         config: {
@@ -207,6 +207,16 @@ describe("agent.create hook", () => {
     expect(request.config.mcpServers?.kontor).toEqual({
       type: "stdio",
       command: "seat-kontor-mcp",
+    });
+    expect(request.config.mcpServers?.[KONTOR_MCP_SERVER_NAME]).toEqual({
+      type: "stdio",
+      command: "kontor-mcp",
+      args: [
+        "--state-root",
+        "/tmp/kontor-state",
+        "--credential-tier",
+        "observer",
+      ],
     });
   });
 
@@ -243,6 +253,7 @@ describe("agent.session_open hook", () => {
   it("marks an unlabelled session unbound", async () => {
     expect(await seatEnvironment(openRequest(), context({}), config())).toEqual({
       [SEAT_ENV]: UNBOUND,
+      [BINDING_GENERATION_ENV]: "",
     });
   });
 
@@ -253,18 +264,40 @@ describe("agent.session_open hook", () => {
         context({ orchestration: "paseo-direct", "asma.slot": "SWE" }),
         config(),
       ),
-    ).toEqual({ [SEAT_ENV]: UNRESOLVED });
+    ).toEqual({ [SEAT_ENV]: UNRESOLVED, [BINDING_GENERATION_ENV]: "" });
   });
 
   it("fails open when the labels cannot be read", async () => {
     expect(await seatEnvironment(openRequest(), context("error"), config())).toEqual({
       [SEAT_ENV]: UNRESOLVED,
+      [BINDING_GENERATION_ENV]: "",
     });
   });
 
   it("fails open when the label read exceeds the budget", async () => {
     expect(await seatEnvironment(openRequest(), context("never"), config())).toEqual({
       [SEAT_ENV]: UNRESOLVED,
+      [BINDING_GENERATION_ENV]: "",
+    });
+  });
+
+  it("replaces an old seat and clears its stale binding generation", async () => {
+    const request = openRequest({
+      env: {
+        EXISTING: "kept",
+        [SEAT_ENV]: "old-seat",
+        [BINDING_GENERATION_ENV]: "12",
+      },
+    });
+    const env = await seatEnvironment(
+      request,
+      context({ "kontor.seat": "new-seat" }),
+      config(),
+    );
+    expect({ ...request.env, ...env }).toEqual({
+      EXISTING: "kept",
+      [SEAT_ENV]: "new-seat",
+      [BINDING_GENERATION_ENV]: "",
     });
   });
 });
@@ -401,6 +434,28 @@ describe("workspace.create hook", () => {
           },
         }),
         context("error", { wks_seat: { projectId: PROJECT, workspaceDirectory: CANONICAL } }),
+        config(),
+      ),
+    ).rejects.toThrow("Kontor workspace guard refused");
+  });
+
+  it("refuses a labelled caller carried on the initial agent", async () => {
+    await expect(
+      guardWorkspaceCreate(
+        workspaceRequest({
+          callerAgentId: undefined,
+          agent: {
+            config: { provider: "claude", cwd: "/Users/test/carasent/asma-modules" },
+            labels: {},
+            callerAgentId: "agent-1",
+          },
+          source: {
+            kind: "worktree",
+            cwd: "/Users/test/carasent/asma-modules",
+            projectId: PROJECT,
+          },
+        }),
+        seatContext(),
         config(),
       ),
     ).rejects.toThrow("Kontor workspace guard refused");
