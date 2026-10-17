@@ -4,9 +4,10 @@
 -- The provider-marker correction writes `<state-root>/runtimes.json`, a realm
 -- file with no aggregate a command receipt could name — the same class v15
 -- built `realm_idempotency_bindings` for and v28, v125 and v126 widened. Its
--- key is judged before the revision CAS and bound once the correction is
--- written, so a replay of a completed correction is answered from the binding
--- instead of writing the file a second time.
+-- key is judged before the revision CAS and claimed before the correction is
+-- written, so the write always happens under its own operation's key, a replay
+-- of a completed correction is answered from the binding instead of writing the
+-- file a second time, and an interrupted attempt can finish on retry.
 --
 -- The list is a CHECK, so widening it is a table rebuild rather than a code
 -- change: a value SQL accepts but the code cannot interpret is an unreadable

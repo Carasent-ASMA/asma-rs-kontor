@@ -116,12 +116,14 @@ holds the marker and the provider to remove.
   build does not know and the sensitive `host_target` — is preserved, and the
   file keeps its permissions. A document that changed since the preview is a
   `revision_conflict`.
-- **Idempotent replay.** The key is judged before the revision and bound once
-  the correction is written: a retry of a completed correction answers
-  `replayed` without a second write, a correction of an already-absent marker
-  answers `already_cleared`, and a key reused for anything else is an
-  `idempotency_conflict`. An unknown family is `not_found`; a malformed document
-  or a non-regular settings file is a typed refusal and is never rewritten.
+- **Idempotent replay.** The key is judged before the revision and claimed
+  durably before the document is written: a retry of a completed correction
+  answers `replayed` without a second write, a retry whose first attempt never
+  wrote finishes the correction at the revision it read, a correction of an
+  already-absent marker answers `already_cleared`, and a key reused for anything
+  else is an `idempotency_conflict`. An unknown family is `not_found`; a
+  malformed document or a non-regular settings file is a typed refusal and is
+  never rewritten.
 
 The correction edits one configuration member. It retires, replaces or relaunches
 nothing, and no seat, run or topology node changes.
