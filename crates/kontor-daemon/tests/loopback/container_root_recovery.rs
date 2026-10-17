@@ -602,3 +602,147 @@ async fn a_worktree_claim_correction_waits_for_a_container_recovery_in_flight() 
         .expect("the task claims a worktree");
     assert_eq!(stored.as_str(), corrected);
 }
+
+/// An epic re-apply cannot overtake a recovery that froze the task's claim.
+///
+/// `epics:apply` rewrites the declared worktree of an existing task. If that
+/// write could land between a recovery reading the claim and creating the
+/// native at it, the recovery would successfully bind a directory the claim no
+/// longer names. Apply now takes the same native lifecycle lock the recovery
+/// holds, so it waits here while the recovery is held at its create, and writes
+/// only after the recovery's result is durable.
+#[tokio::test]
+async fn an_epic_apply_waits_for_a_container_recovery_in_flight() {
+    let (world, project, task, node) = claim_recovery_race_fixture().await;
+    let claim = world
+        .daemon
+        .state()
+        .with_store(|store| store.task_worktree(project, task))
+        .expect("claim reads")
+        .expect("the task claims a worktree");
+    let jira_key = world
+        .daemon
+        .state()
+        .with_store(|store| store.confirmed_jira_task_key(project, task))
+        .expect("Jira binding reads")
+        .expect("the task has a confirmed Jira key");
+    let corrected = format!(
+        "/tmp/kontor-claim-recovery-race/.worktrees/{}/asma-rs-kontor",
+        jira_key.as_str().to_ascii_lowercase()
+    );
+
+    // The binding names a directory the task no longer claims, and the native
+    // is gone, so recovery is a positively vacant recreation at the claim it
+    // freezes.
+    let previous = world.directory.path().join("previous-container-root");
+    std::fs::create_dir(&previous).expect("the previous root exists");
+    let previous = std::fs::canonicalize(&previous).expect("the previous root canonicalizes");
+    let db = rusqlite::Connection::open(world.directory.path().join("kontor.db")).expect("db");
+    db.execute(
+        "UPDATE topology_node_containers SET canonical_cwd=?1, revision=revision+1 WHERE topology_node_id=?2",
+        rusqlite::params![previous.to_str().expect("utf-8"), node.to_string()],
+    )
+    .expect("the stale binding moves");
+    world.fake.forget_container(node);
+
+    let project_revision = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_project(project))
+        .expect("project reads")
+        .expect("project exists")
+        .revision;
+    let preview = Call::post(
+        format!("/v1/projects/{project}/topology/nodes/{node}/container:recovery-preview"),
+        &serde_json::json!({"expected_revision": project_revision}),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert_eq!(preview.json()["disposition"], "recreate_absent");
+    assert_eq!(
+        preview.json()["canonical_cwd"],
+        std::fs::canonicalize(claim.as_str())
+            .expect("the claim canonicalizes")
+            .to_str()
+            .expect("utf-8")
+    );
+
+    let category = first_category(&world).await;
+    let reapply_body = epic_body(
+        project_revision.get(),
+        "Claim recovery race",
+        &category,
+        serde_json::json!([{
+            "title": "Moved container",
+            "module": "_tools/asma-rs-kontor",
+            "worktree": corrected,
+        }]),
+    );
+
+    let pause = world.fake.pause_next_container_create();
+    let recovery = async {
+        Call::post(
+            format!("/v1/projects/{project}/topology/nodes/{node}/container:recovery-apply"),
+            &serde_json::json!({
+                "expected_revision": project_revision,
+                "preview_hash": preview.json()["preview_hash"],
+            }),
+        )
+        .signed_as(&world, "admin")
+        .with_key("claim-race-epic-recovery")
+        .send(&world)
+        .await
+    };
+    let reapply = async {
+        pause.entered().await;
+        Call::post(format!("/v1/projects/{project}/epics:apply"), &reapply_body)
+            .signed_as(&world, "admin")
+            .with_key("claim-race-epic-reapply")
+            .send(&world)
+            .await
+    };
+    let release = async {
+        pause.entered().await;
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        let held = world
+            .daemon
+            .state()
+            .with_store(|store| store.task_worktree(project, task))
+            .expect("claim reads")
+            .expect("the task still claims its worktree");
+        assert_eq!(
+            held, claim,
+            "the epic apply changed the claim while the recovery held the native lifecycle lock"
+        );
+        pause.release();
+    };
+    let (recovered, reapplied, ()) = tokio::join!(recovery, reapply, release);
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    assert_eq!(reapplied.status, 200, "{}", reapplied.body);
+
+    let bound = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_topology_node_container(project, node))
+        .expect("binding reads")
+        .expect("the node is bound");
+    assert_eq!(
+        bound
+            .canonical_cwd
+            .expect("the replacement names its root")
+            .as_str(),
+        std::fs::canonicalize(claim.as_str())
+            .expect("the claim canonicalizes")
+            .to_str()
+            .expect("utf-8")
+    );
+    let stored = world
+        .daemon
+        .state()
+        .with_store(|store| store.task_worktree(project, task))
+        .expect("claim reads")
+        .expect("the task claims a worktree");
+    assert_eq!(stored.as_str(), corrected);
+}
