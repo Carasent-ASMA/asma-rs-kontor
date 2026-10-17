@@ -355,6 +355,67 @@ fn repair_through_the_cli_requires_the_exact_observed_hash() {
     assert!(!text.contains("/usr/bin/other-mcp"));
 }
 
+#[cfg(unix)]
+#[test]
+fn repair_refuses_an_install_root_without_a_runnable_generation() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let world = World::new();
+    world.install();
+    std::fs::write(
+        world.home_root.join(".cursor/mcp.json"),
+        r#"{"mcpServers": {"kontor": {"command": "/usr/bin/other-mcp"}}}"#,
+    )
+    .expect("seed unrelated");
+    let observed = world.readback();
+    let report = world.client_report(&observed, "cursor");
+    let hash = report["state"]["observed"]
+        .as_str()
+        .expect("observed hash")
+        .to_owned();
+    let cursor = world.home_root.join(".cursor/mcp.json");
+    let before = std::fs::read_to_string(&cursor).expect("read");
+
+    let repair_at = |install_root: &std::path::Path| {
+        let arguments = vec![
+            "repair".to_owned(),
+            "--install-root".to_owned(),
+            install_root.to_str().expect("utf8").to_owned(),
+            "--home-root".to_owned(),
+            world.home_root.to_str().expect("utf8").to_owned(),
+            "--state-root".to_owned(),
+            world.state_root.to_str().expect("utf8").to_owned(),
+            "--client".to_owned(),
+            "cursor".to_owned(),
+            "--expected-hash".to_owned(),
+            hash.clone(),
+        ];
+        let refs: Vec<&str> = arguments.iter().map(String::as_str).collect();
+        world.run(&refs)
+    };
+
+    let missing = world._holder.path().join("missing install root");
+    let (document, success, stdout) = repair_at(&missing);
+    assert!(!success, "{stdout}");
+    assert_eq!(document["error"]["code"], "install_root_invalid");
+    assert_eq!(
+        std::fs::read_to_string(&cursor).expect("read"),
+        before,
+        "a missing install root must not change the client entry"
+    );
+
+    let mcp = world.install_root.join("current/kontor-mcp");
+    std::fs::set_permissions(&mcp, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+    let (document, success, stdout) = repair_at(&world.install_root);
+    assert!(!success, "{stdout}");
+    assert_eq!(document["error"]["code"], "install_root_invalid");
+    assert_eq!(
+        std::fs::read_to_string(&cursor).expect("read"),
+        before,
+        "an unexecutable active generation must not change the client entry"
+    );
+}
+
 #[test]
 fn recover_is_typed_when_nothing_is_pending() {
     let world = World::new();

@@ -416,6 +416,32 @@ impl Installer {
         Ok(self.read_active(&root)?.map(|active| active.generation))
     }
 
+    /// Verify that a client command naming [`Installer::active_mcp_path`] can
+    /// actually run: a verified active generation must exist and its managed
+    /// MCP executable must carry the owner execute bit.
+    ///
+    /// # Errors
+    /// [`InstallError::ActiveUnverified`] when no verified active generation is
+    /// present or its MCP executable is not owner-executable.
+    pub fn verify_active_for_execution(&self) -> Result<(), InstallError> {
+        if !crate::confinement::supported_target() {
+            return Err(InstallError::UnsupportedPlatform);
+        }
+        let Some(root) = self.open_root_if_exists()? else {
+            return Err(InstallError::ActiveUnverified);
+        };
+        let Some(active) = self.read_active(&root)? else {
+            return Err(InstallError::ActiveUnverified);
+        };
+        if !active
+            .mode(ArtifactName::Mcp)
+            .is_some_and(|mode| mode & 0o100 != 0)
+        {
+            return Err(InstallError::ActiveUnverified);
+        }
+        Ok(())
+    }
+
     /// Install, update or confirm one coherent artifact generation.
     ///
     /// # Errors

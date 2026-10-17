@@ -424,6 +424,9 @@ fn repair(
     validate_root(state_root, "state_root_invalid", RootScope::State)?;
     let installer = Installer::at(install_root.to_path_buf())
         .map_err(|error| ("install_root_invalid", error.to_string()))?;
+    installer
+        .verify_active_for_execution()
+        .map_err(|error| ("install_root_invalid", error.to_string()))?;
     let spec = server_spec(&installer, state_root);
     spec.validate().map_err(client_error)?;
     let ownership = OwnershipStore::at(state_root.to_path_buf())
