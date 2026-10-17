@@ -559,6 +559,34 @@ mod unix {
             Ok(std::fs::File::from(fd))
         }
 
+        /// Open one existing regular child file read-only without following a
+        /// symlink.
+        ///
+        /// A read-only descriptor is sufficient for `fchmod`, so a permission
+        /// repair never needs write access to the artifact's bytes.
+        ///
+        /// # Errors
+        /// [`ConfinementError`].
+        pub fn open_child_file_ro(&self, name: &str) -> Result<std::fs::File, ConfinementError> {
+            if !is_simple_name(name) {
+                return Err(ConfinementError::UnsafeName);
+            }
+            match self.kind_child(name)? {
+                Some(NodeKind::File) => {}
+                Some(NodeKind::Symlink) => return Err(ConfinementError::Symlink),
+                Some(_) => return Err(ConfinementError::NotRegularFile),
+                None => return Err(ConfinementError::Missing),
+            }
+            let fd = rustix::fs::openat(
+                &self.fd,
+                name,
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|error| map_open_at(&self.fd, name, error))?;
+            Ok(std::fs::File::from(fd))
+        }
+
         /// Replace the permissions of one open file.
         ///
         /// # Errors
@@ -971,6 +999,10 @@ mod unix {
         }
 
         pub fn open_child_file_rw(&self, name: &str) -> Result<std::fs::File, ConfinementError> {
+            Err(ConfinementError::UnsupportedPlatform)
+        }
+
+        pub fn open_child_file_ro(&self, name: &str) -> Result<std::fs::File, ConfinementError> {
             Err(ConfinementError::UnsupportedPlatform)
         }
 

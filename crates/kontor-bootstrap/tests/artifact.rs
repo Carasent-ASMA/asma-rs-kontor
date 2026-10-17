@@ -249,6 +249,48 @@ fn a_lost_owner_execute_bit_is_repaired_before_already_current() {
 }
 
 #[test]
+#[cfg(unix)]
+fn mode_repair_does_not_require_write_access_to_other_binaries() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root_holder = tempfile::tempdir().expect("root");
+    let version_one = release("1.0.0");
+    let installer = installer(root_holder.path());
+    assert_eq!(
+        install(&installer, &version_one),
+        Ok(InstallOutcome::Installed)
+    );
+    let pointer = std::fs::read_link(root_holder.path().join("current")).expect("pointer");
+    let generation = root_holder.path().join(pointer);
+    let cli = generation.join(ArtifactName::Cli.file_name());
+    let mcp = generation.join(ArtifactName::Mcp.file_name());
+    std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o555)).expect("chmod cli");
+    std::fs::set_permissions(&mcp, std::fs::Permissions::from_mode(0o644)).expect("chmod mcp");
+    assert_eq!(
+        install(&installer, &version_one),
+        Ok(InstallOutcome::AlreadyCurrent)
+    );
+    let mcp_mode = std::fs::metadata(&mcp)
+        .expect("metadata")
+        .permissions()
+        .mode();
+    assert_eq!(
+        mcp_mode & 0o777,
+        0o755,
+        "the artifact missing owner execute is repaired"
+    );
+    let cli_mode = std::fs::metadata(&cli)
+        .expect("metadata")
+        .permissions()
+        .mode();
+    assert_eq!(
+        cli_mode & 0o777,
+        0o555,
+        "an executable read-only sibling keeps its mode"
+    );
+}
+
+#[test]
 fn an_update_replaces_the_whole_active_generation() {
     let root_holder = tempfile::tempdir().expect("root");
     let version_one = release("1.0.0");

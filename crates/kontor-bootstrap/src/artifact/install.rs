@@ -1144,11 +1144,22 @@ impl Installer {
     }
 
     /// Restore the installed executable mode on a verified active generation.
+    ///
+    /// Only an artifact whose owner cannot execute it is repaired, and it is
+    /// opened read-only: `fchmod` needs no write access to the bytes, so a
+    /// read-only executable sibling or a running Linux binary does not block
+    /// the repair.
     fn repair_modes(&self, root: &Dir, generation: &str) -> Result<(), InstallError> {
         let releases = root.open_child(RELEASES_DIR)?;
         let generation_dir = releases.open_child(generation)?;
         for name in ArtifactName::ALL {
-            let file = generation_dir.open_child_file_rw(name.file_name())?;
+            let mode = generation_dir
+                .child_mode(name.file_name())?
+                .ok_or(InstallError::ActiveUnverified)?;
+            if mode & 0o100 != 0 {
+                continue;
+            }
+            let file = generation_dir.open_child_file_ro(name.file_name())?;
             Dir::set_file_mode(&file, BINARY_MODE)?;
         }
         Ok(())
