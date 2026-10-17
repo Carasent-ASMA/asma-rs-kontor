@@ -36,6 +36,9 @@ pub enum ArtifactDisposition {
     Updated,
     /// Already carried this release's digest.
     AlreadyCurrent,
+    /// Content matches, but the installed artifact cannot be executed by its
+    /// owner.
+    ModeDrift,
     /// Not installed.
     Absent,
     /// Completed by an interrupted-transaction recovery.
@@ -244,22 +247,23 @@ impl BootstrapReceipt {
             .artifacts
             .iter()
             .map(|entry| {
-                let current = statuses
-                    .iter()
-                    .find(|status| status.name == entry.name)
-                    .is_some_and(|status| {
-                        status.is_current(manifest)
-                            && status.release.as_deref() == Some(manifest.release.as_str())
-                    });
+                let status = statuses.iter().find(|status| status.name == entry.name);
+                let content_current = status.is_some_and(|status| {
+                    status.is_current(manifest)
+                        && status.release.as_deref() == Some(manifest.release.as_str())
+                });
+                let disposition = match content_current {
+                    true if status.is_some_and(ArtifactStatus::is_executable) => {
+                        ArtifactDisposition::AlreadyCurrent
+                    }
+                    true => ArtifactDisposition::ModeDrift,
+                    false => ArtifactDisposition::Absent,
+                };
                 ArtifactReceipt {
                     name: entry.name,
                     version: entry.version.clone(),
                     sha256: entry.sha256.clone(),
-                    disposition: if current {
-                        ArtifactDisposition::AlreadyCurrent
-                    } else {
-                        ArtifactDisposition::Absent
-                    },
+                    disposition,
                 }
             })
             .collect();
@@ -684,6 +688,7 @@ mod tests {
                 name,
                 sha256: Some("a".repeat(64)),
                 release: Some("1.0.0".to_owned()),
+                mode: Some(0o755),
             })
             .collect();
         let requested = ArtifactManifest {
@@ -705,6 +710,33 @@ mod tests {
                 .iter()
                 .all(|artifact| artifact.disposition == ArtifactDisposition::Absent)
         );
+    }
+
+    #[test]
+    fn from_status_reports_a_non_executable_artifact_as_mode_drift() {
+        let requested = manifest();
+        let statuses: Vec<ArtifactStatus> = ArtifactName::ALL
+            .into_iter()
+            .map(|name| ArtifactStatus {
+                name,
+                sha256: Some("a".repeat(64)),
+                release: Some("1.2.3".to_owned()),
+                mode: Some(if name == ArtifactName::Mcp {
+                    0o644
+                } else {
+                    0o755
+                }),
+            })
+            .collect();
+        let receipt = BootstrapReceipt::from_status(&requested, &statuses);
+        for artifact in &receipt.artifacts {
+            let expected = if artifact.name == ArtifactName::Mcp {
+                ArtifactDisposition::ModeDrift
+            } else {
+                ArtifactDisposition::AlreadyCurrent
+            };
+            assert_eq!(artifact.disposition, expected, "{}", artifact.name);
+        }
     }
 
     #[test]

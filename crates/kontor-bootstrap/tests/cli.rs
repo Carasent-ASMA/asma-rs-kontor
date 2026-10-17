@@ -245,6 +245,27 @@ fn install_then_readback_then_replay_and_update() {
 }
 
 #[test]
+#[cfg(unix)]
+fn readback_reports_a_lost_execute_bit_as_mode_drift() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let world = World::new();
+    world.install();
+    let mcp = world.install_root.join("current/kontor-mcp");
+    std::fs::set_permissions(&mcp, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+    let observed = world.readback();
+    let artifacts = observed["artifacts"].as_array().expect("artifacts");
+    for entry in artifacts {
+        let expected = if entry["name"] == "mcp" {
+            "mode_drift"
+        } else {
+            "already_current"
+        };
+        assert_eq!(entry["disposition"], expected, "{}", entry["name"]);
+    }
+}
+
+#[test]
 fn repair_through_the_cli_requires_the_exact_observed_hash() {
     let world = World::new();
     world.install();
