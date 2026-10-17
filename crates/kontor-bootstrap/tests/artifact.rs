@@ -211,31 +211,41 @@ fn a_clean_install_activates_one_generation_and_replay_writes_nothing() {
 
 #[test]
 #[cfg(unix)]
-fn a_lost_execute_bit_is_repaired_before_already_current() {
+fn a_lost_owner_execute_bit_is_repaired_before_already_current() {
     use std::os::unix::fs::PermissionsExt;
 
-    let root_holder = tempfile::tempdir().expect("root");
-    let version_one = release("1.0.0");
-    let installer = installer(root_holder.path());
-    assert_eq!(
-        install(&installer, &version_one),
-        Ok(InstallOutcome::Installed)
-    );
-    let pointer = std::fs::read_link(root_holder.path().join("current")).expect("pointer");
-    let mcp = root_holder
-        .path()
-        .join(pointer)
-        .join(ArtifactName::Mcp.file_name());
-    std::fs::set_permissions(&mcp, std::fs::Permissions::from_mode(0o644)).expect("chmod");
-    assert_eq!(
-        install(&installer, &version_one),
-        Ok(InstallOutcome::AlreadyCurrent)
-    );
-    let mode = std::fs::metadata(&mcp)
-        .expect("metadata")
-        .permissions()
-        .mode();
-    assert_eq!(mode & 0o111, 0o111, "execute permission restored");
+    // 0645 and 0655 keep an execute bit for another class, so a check that
+    // accepts any execute bit reports a binary the owner cannot run as current.
+    for lost in [0o644, 0o645, 0o655] {
+        let root_holder = tempfile::tempdir().expect("root");
+        let version_one = release("1.0.0");
+        let installer = installer(root_holder.path());
+        assert_eq!(
+            install(&installer, &version_one),
+            Ok(InstallOutcome::Installed)
+        );
+        let pointer = std::fs::read_link(root_holder.path().join("current")).expect("pointer");
+        let mcp = root_holder
+            .path()
+            .join(pointer)
+            .join(ArtifactName::Mcp.file_name());
+        std::fs::set_permissions(&mcp, std::fs::Permissions::from_mode(lost)).expect("chmod");
+        assert_eq!(
+            install(&installer, &version_one),
+            Ok(InstallOutcome::AlreadyCurrent),
+            "mode {lost:o}"
+        );
+        let mode = std::fs::metadata(&mcp)
+            .expect("metadata")
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o100,
+            0o100,
+            "owner execute permission restored from {lost:o}"
+        );
+        assert_eq!(mode & 0o777, 0o755, "the repaired mode from {lost:o}");
+    }
 }
 
 #[test]

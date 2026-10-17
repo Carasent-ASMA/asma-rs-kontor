@@ -1130,7 +1130,9 @@ impl Installer {
             let mode = generation_dir
                 .child_mode(name.file_name())?
                 .ok_or(InstallError::ActiveUnverified)?;
-            executable &= mode & 0o111 != 0;
+            // Bootstrap-owned binaries are executed by their owner, so a bit
+            // that only some other class may execute is not usable.
+            executable &= mode & 0o100 != 0;
             hashes.push((name, digest));
         }
         Ok(Some(ActiveGeneration {
