@@ -35,6 +35,8 @@ mod harness;
 
 #[path = "loopback/committee_evidence.rs"]
 mod committee_evidence;
+#[path = "loopback/container_root_recovery.rs"]
+mod container_root_recovery;
 #[path = "loopback/provider_refresh.rs"]
 mod provider_refresh;
 
@@ -67621,6 +67623,149 @@ async fn route_apply_threads_the_proved_placement_into_the_retirement() {
         call, AdapterCall::RetireHostedSeat(seat) if *seat == binding_id
     )));
     assert_ne!(world.fake.hosted_seat_native_id(binding_id), Some(native));
+}
+
+/// The seat's own topology node, read from its durable binding.
+fn seat_topology_node(
+    world: &World,
+    project_id: ProjectId,
+    binding_id: SeatBindingId,
+) -> TopologyNodeId {
+    world
+        .daemon
+        .state()
+        .with_store(|store| store.get_seat_binding(project_id, binding_id))
+        .expect("the SeatBinding reads")
+        .expect("the SeatBinding exists")
+        .topology_node_id
+}
+
+/// Preview proves the bound ECP, and proving it writes nothing.
+///
+/// Operation 4 used to plan a retirement having proved no placement at all. A
+/// preview that cannot prove the container the seat hangs off is a preview of a
+/// retirement against a place that may not be there, so it refuses — and
+/// because the proof is an exact-id readback, refusing costs no native effect,
+/// no seat movement and no receipt.
+#[tokio::test]
+async fn route_preview_proves_the_bound_ecp_and_refuses_without_writing() {
+    let (composed, binding, native, generation) = hosted_tpm_seat(
+        "/tmp/kontor-8234-op4-preview",
+        "asma-8234-op4-preview-seats",
+    )
+    .await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+
+    // The runtime stops holding the container the seat's node records.
+    world
+        .fake
+        .forget_container(seat_topology_node(world, project_id, binding_id));
+
+    let shape_before = succession_shape(world, project_id, binding_id);
+    let calls_before = world.fake.calls().len();
+    let refused = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+        &serde_json::json!({
+            "expected_revision": 1,
+            "seat_binding_id": binding,
+            "expected_native_id": native,
+            "expected_generation": generation,
+            "desired_model_route": {
+                "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+            },
+        }),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_ne!(
+        refused.status, 200,
+        "a preview proved nothing and answered anyway: {}",
+        refused.body
+    );
+    assert!(
+        !world.fake.calls()[calls_before..]
+            .iter()
+            .any(|call| matches!(
+                call,
+                AdapterCall::RetireHostedSeat(_) | AdapterCall::LaunchHostedSeat(_)
+            )),
+        "a preview produced a native effect"
+    );
+    assert_eq!(
+        world.fake.last_hosted_retire_placement(binding_id),
+        None,
+        "a preview retired something"
+    );
+    assert_eq!(
+        succession_shape(world, project_id, binding_id),
+        shape_before,
+        "a preview moved durable seat state"
+    );
+}
+
+/// Apply re-proves the ECP before the retirement, and drift stops it there.
+///
+/// The preview proved a container; by apply the runtime no longer holds it.
+/// The retirement is irreversible, so the proof is taken again on the apply
+/// path before any predecessor effect. Predecessor, session and SeatBinding all
+/// stay live, no successor is created, and nothing is archived, launched or
+/// written to history.
+#[tokio::test]
+async fn route_apply_reproves_the_ecp_before_retiring_and_drift_retires_nothing() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8234-op4-drift", "asma-8234-op4-drift-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+
+    // Previewed while the container is still proved, so the refusal under test
+    // is the drift and not a preview that never proved anything.
+    let body = previewed_succession(world, project, epic, &binding, &native, generation).await;
+
+    let shape_before = succession_shape(world, project_id, binding_id);
+    world
+        .fake
+        .forget_container(seat_topology_node(world, project_id, binding_id));
+    let calls_before = world.fake.calls().len();
+    let refused = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &body,
+    )
+    .signed_as(world, "admin")
+    .with_key("asma-8234-op4-drift")
+    .send(world)
+    .await;
+    assert_ne!(
+        refused.status, 200,
+        "apply retired against a container it could not re-prove: {}",
+        refused.body
+    );
+    assert!(
+        !world.fake.calls()[calls_before..]
+            .iter()
+            .any(|call| matches!(
+                call,
+                AdapterCall::RetireHostedSeat(_) | AdapterCall::LaunchHostedSeat(_)
+            )),
+        "drift still produced a native effect"
+    );
+    assert_eq!(
+        world.fake.last_hosted_retire_placement(binding_id),
+        None,
+        "drift still retired the predecessor"
+    );
+    assert_eq!(
+        succession_shape(world, project_id, binding_id),
+        shape_before,
+        "drift moved durable seat state"
+    );
 }
 
 /// ASMA-8204: an epic closes leaves-first, and only once it is durably done.
