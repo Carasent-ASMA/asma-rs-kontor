@@ -22,7 +22,7 @@ export interface LabelReadOptions {
   readonly signal?: AbortSignal;
 }
 
-function bounded<T>(
+export function bounded<T>(
   promise: Promise<T>,
   ms: number,
   signal?: AbortSignal,

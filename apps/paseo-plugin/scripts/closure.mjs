@@ -65,18 +65,23 @@ try {
   const projectId = baseHandle.projectId;
   assert.ok(projectId, "the base workspace must carry a project id");
   const base = baseHandle.id;
-  await baseHandle.archive();
   report.checks.push({ name: "interactive directory create", outcome: "created", workspaceId: base });
+
+  const bindingLabels = {
+    "kontor.seat": "seat-closure",
+    "kontor.workspace_id": base,
+    "kontor.worktree": repo,
+  };
 
   const labelledWorktree = () =>
     client.workspaces.create({
-      agent: labelledAgent({ "kontor.seat": "seat-closure" }),
+      agent: labelledAgent(bindingLabels),
       source: { kind: "worktree", cwd: repo, projectId },
     });
 
   const labelledNoProject = () =>
     client.workspaces.create({
-      agent: labelledAgent({ "kontor.seat": "seat-closure" }),
+      agent: labelledAgent(bindingLabels),
       source: { kind: "directory", path: repo },
     });
 
@@ -111,6 +116,8 @@ try {
     outcome: "created",
     workspaceId: plainWorktree,
   });
+
+  await baseHandle.archive();
 } finally {
   await client.close();
   rmSync(repo, { recursive: true, force: true });

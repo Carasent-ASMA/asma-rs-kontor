@@ -10,23 +10,29 @@ relaunch plan (ASMA-8507): the decided binding hooks plus the
 | --- | --- |
 | `before("agent.create")` | Adds one stable system-prompt line and the `kontor` MCP server at **observer** authority. A server already named `kontor` is preserved, so Kontor-composed seats are untouched. |
 | `before("agent.session_open")` | Reads the session's own labels from the local daemon and sets `KONTOR_SEAT` and `KONTOR_BINDING_GENERATION`, or `KONTOR_SEAT=unbound`. A failed or slow read sets `KONTOR_SEAT=unresolved`; it never blocks the open. |
-| `before("workspace.create")` | Refuses a labelled Kontor seat's explicit workspace creation outside Kontor placement. Interactive and unlabelled creation is unchanged, and an unreadable label lookup fails open. |
+| `before("workspace.create")` | Refuses a labelled Kontor seat's explicit workspace creation outside that seat's own placement: its bound project and canonical worktree. Interactive and unlabelled creation is unchanged, and an unreadable label lookup fails open. |
 
 The plugin adds no UI, no menu and no agent-creation path.
 
 ## Kontor placement
 
-A labelled seat may register an existing directory under an explicit Paseo
-project. Everything else is refused as outside Kontor placement:
+A labelled seat may register an existing directory only inside its own binding:
+the native project its own workspace belongs to and the canonical worktree
+named by its `kontor.worktree` label. The binding is read from the seat's
+`kontor.workspace_id` and `kontor.worktree` labels plus a read-only Paseo
+workspace read. Everything else is refused as outside Kontor placement:
 
 - a Paseo-owned worktree source (`kind: "worktree"`);
 - a directory without an explicit `projectId` (Paseo would infer a project);
 - a relative directory path;
 - a directory inside Paseo's own `~/.paseo/worktrees` root;
-- a directory outside `KONTOR_PLUGIN_PLACEMENT_ROOTS`, when configured.
+- a project other than the seat binding's native project;
+- a directory other than the seat binding's canonical worktree;
+- a directory outside `KONTOR_PLUGIN_PLACEMENT_ROOTS`, when configured;
+- an unresolved binding for a labelled seat.
 
-This is the shape check only. Exact project, canonical cwd and native readback
-stay with `kontord`; the plugin holds no Kontor write credential.
+The plugin resolves the binding read-only and holds no Kontor write credential;
+`kontord` still owns the native binding and readback.
 
 ## Authority
 

@@ -27,6 +27,9 @@ type WorkspaceRequestWithCaller = WorkspaceCreateRequest & {
   agent?: { labels?: Record<string, string> };
 };
 
+const CANONICAL = "/Users/test/carasent/asma-modules/.worktrees/asma-8507/asma-rs-kontor";
+const PROJECT = "prj_7409d2c6aff8e21c";
+
 function config(overrides: Partial<KontorPluginConfig> = {}): KontorPluginConfig {
   return {
     stateRoot: "/tmp/kontor-state",
@@ -41,8 +44,16 @@ function config(overrides: Partial<KontorPluginConfig> = {}): KontorPluginConfig
 }
 
 type LabelResult = Record<string, string> | "error" | "never";
+type WorkspaceSnapshot = {
+  projectId: string | null;
+  workspaceDirectory: string | null;
+};
+type WorkspaceResult = WorkspaceSnapshot | "error" | "never" | null;
 
-function context(labels: LabelResult): Context {
+function context(
+  labels: LabelResult,
+  workspaces: Record<string, WorkspaceResult> = {},
+): Context {
   const paseo = {
     agents: {
       ref: () => ({
@@ -58,11 +69,44 @@ function context(labels: LabelResult): Context {
         },
       }),
     },
+    workspaces: {
+      ref: (workspaceId: string) => ({
+        current: () => null,
+        refresh: () => {
+          const workspace = workspaces[workspaceId];
+          if (workspace === "error") {
+            return Promise.reject(new Error("daemon unavailable"));
+          }
+          if (workspace === "never") {
+            return new Promise(() => {});
+          }
+          return Promise.resolve(workspace ?? null);
+        },
+      }),
+    },
   };
   return {
     paseo,
     signal: new AbortController().signal,
   } as unknown as Context;
+}
+
+function seatLabels(overrides: Record<string, string> = {}): Record<string, string> {
+  return {
+    "kontor.seat": "seat-1",
+    "kontor.workspace_id": "wks_seat",
+    "kontor.worktree": CANONICAL,
+    ...overrides,
+  };
+}
+
+function seatContext(
+  labels: LabelResult = seatLabels(),
+  workspaces: Record<string, WorkspaceResult> = {
+    wks_seat: { projectId: PROJECT, workspaceDirectory: CANONICAL },
+  },
+): Context {
+  return context(labels, workspaces);
 }
 
 function createRequest(overrides: Partial<AgentCreateRequest> = {}): AgentCreateRequest {
@@ -99,8 +143,8 @@ function workspaceRequest(
     callerAgentId: "agent-1",
     source: {
       kind: "directory",
-      path: "/Users/test/carasent/asma-modules/.worktrees/asma-8507/asma-rs-kontor",
-      projectId: "prj_7409d2c6aff8e21c",
+      path: CANONICAL,
+      projectId: PROJECT,
     },
     ...overrides,
   };
@@ -233,10 +277,10 @@ describe("workspace.create hook", () => {
           source: {
             kind: "worktree",
             cwd: "/Users/test/carasent/asma-modules",
-            projectId: "prj_7409d2c6aff8e21c",
+            projectId: PROJECT,
           },
         }),
-        context({ "kontor.seat": "seat-1" }),
+        seatContext(),
         config(),
       ),
     ).rejects.toThrow("Kontor workspace guard refused");
@@ -248,10 +292,10 @@ describe("workspace.create hook", () => {
         workspaceRequest({
           source: {
             kind: "directory",
-            path: "/Users/test/carasent/asma-modules/.worktrees/asma-8507/asma-rs-kontor",
+            path: CANONICAL,
           },
         }),
-        context({ "kontor.agent-run": "run-1" }),
+        seatContext(),
         config(),
       ),
     ).rejects.toThrow("explicit projectId");
@@ -267,10 +311,36 @@ describe("workspace.create hook", () => {
             projectId: "prj_1",
           },
         }),
-        context({ "kontor.seat": "seat-1" }),
+        seatContext(),
         config(),
       ),
     ).rejects.toThrow("Paseo's own worktree root");
+  });
+
+  it("refuses a labelled seat bound to one epic requesting another epic's placement", async () => {
+    await expect(
+      guardWorkspaceCreate(
+        workspaceRequest({
+          source: {
+            kind: "directory",
+            path: "/Users/test/carasent/asma-modules/.worktrees/asma-other/epic-b",
+            projectId: "prj_epic_b",
+          },
+        }),
+        seatContext(),
+        config(),
+      ),
+    ).rejects.toThrow("project outside the seat's binding");
+  });
+
+  it("refuses when the seat's placement binding cannot be resolved", async () => {
+    await expect(
+      guardWorkspaceCreate(
+        workspaceRequest(),
+        seatContext(seatLabels(), {}),
+        config(),
+      ),
+    ).rejects.toThrow("placement binding could not be resolved");
   });
 
   it("refuses a request whose initial agent carries Kontor labels", async () => {
@@ -280,15 +350,15 @@ describe("workspace.create hook", () => {
           callerAgentId: undefined,
           agent: {
             config: { provider: "claude", cwd: "/Users/test/carasent/asma-modules" },
-            labels: { "kontor.seat": "seat-1" },
+            labels: seatLabels(),
           },
           source: {
             kind: "worktree",
             cwd: "/Users/test/carasent/asma-modules",
-            projectId: "prj_7409d2c6aff8e21c",
+            projectId: PROJECT,
           },
         }),
-        context({}),
+        context({}, { wks_seat: { projectId: PROJECT, workspaceDirectory: CANONICAL } }),
         config(),
       ),
     ).rejects.toThrow("Kontor workspace guard refused");
@@ -296,11 +366,7 @@ describe("workspace.create hook", () => {
 
   it("allows a labelled seat creating a canonical Kontor placement", async () => {
     await expect(
-      guardWorkspaceCreate(
-        workspaceRequest(),
-        context({ "kontor.seat": "seat-1" }),
-        config(),
-      ),
+      guardWorkspaceCreate(workspaceRequest(), seatContext(), config()),
     ).resolves.toBeUndefined();
   });
 
@@ -308,7 +374,7 @@ describe("workspace.create hook", () => {
     await expect(
       guardWorkspaceCreate(
         workspaceRequest({ callerAgentId: undefined }),
-        context({ "kontor.seat": "seat-1" }),
+        seatContext(),
         config(),
       ),
     ).resolves.toBeUndefined();

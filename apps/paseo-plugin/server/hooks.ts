@@ -11,6 +11,7 @@ import {
 } from "./config";
 import { isKontorSeat, seatBinding, type AgentLabels } from "./labels";
 import { evaluatePlacement } from "./placement";
+import { readPlacementBinding } from "./placement-binding";
 
 type AgentCreateRequest = PluginBeforeRequests["agent.create"];
 type SessionOpenRequest = PluginBeforeRequests["agent.session_open"];
@@ -124,12 +125,13 @@ function initialAgentLabelsOf(request: WorkspaceCreateRequest): Record<string, s
 }
 
 /**
- * Refuse a labelled Kontor seat's workspace creation outside Kontor placement.
+ * Refuse a labelled Kontor seat's workspace creation outside its placement.
  *
  * A human's request carries no labelled caller, an unlabelled caller is
  * interactive, and an unreadable label lookup fails open; in those cases the
- * request is unchanged. The guard applies when either the caller (on releases
- * that pass it) or the request's initial agent is a labelled Kontor seat.
+ * request is unchanged. A labelled seat must match its binding: the native
+ * project its own workspace belongs to and the canonical worktree its labels
+ * name.
  */
 export async function guardWorkspaceCreate(
   request: WorkspaceCreateRequest,
@@ -147,7 +149,16 @@ export async function guardWorkspaceCreate(
   if (!labels || !isKontorSeat(labels)) {
     return;
   }
-  const decision = evaluatePlacement(request, config);
+  const binding = await readPlacementBinding(context.paseo, labels, {
+    timeoutMs: config.labelReadTimeoutMs,
+    signal: context.signal,
+  });
+  if (binding === null) {
+    throw new Error(
+      "Kontor workspace guard refused: the seat's placement binding could not be resolved",
+    );
+  }
+  const decision = evaluatePlacement(request, config, binding);
   if (!decision.allowed) {
     throw new Error(`Kontor workspace guard refused: ${decision.reason}`);
   }
