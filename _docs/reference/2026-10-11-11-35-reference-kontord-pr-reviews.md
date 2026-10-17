@@ -1,7 +1,8 @@
 # PR reviews in kontord
 
-> Status: ASMA-8453 (ASMA-8449) draft candidate. It describes what the PR
-> review contract supports at this revision and what it refuses. Naming rules
+> Status: ASMA-8453 (ASMA-8449), merged in PR #298 (`e376f405`, 2026-10-11);
+> merged is not deployed, see the [router](../index.md). It describes what the
+> PR review contract supports at `0971674d` and what it refuses. Naming rules
 > are in [`docs/NATIVE_NAMING.md`](../../docs/NATIVE_NAMING.md#pr-reviews-asma-8453).
 > The desk itself is described in
 > [Durable desks in kontord](2026-10-10-23-55-reference-kontord-durable-desks.md),

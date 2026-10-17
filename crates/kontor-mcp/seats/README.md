@@ -11,7 +11,7 @@ admin-scoped.
 | Seat | File | Tier | Reaches |
 | --- | --- | :---: | --- |
 | Paseo Lead Architect | [`paseo-lead.json`](paseo-lead.json) | `admin` | The whole tool vocabulary |
-| Worker | [`worker.json`](worker.json) | `operator` | The registry's `worker` serve profile: reads of its own work, claiming, turn settlement, gates, session follow-up, intake, memory proposals and context |
+| Worker | [`worker.json`](worker.json) | `operator` | The registry's `worker` serve profile (25 tools): reads of its own work, claiming, turn settlement and observation, artifacts, gates, session follow-up, intake, memory and experience proposals and recall, context, open questions |
 | Reviewer | [`reviewer.json`](reviewer.json) | `observer` | Reads only |
 
 ## Filling in the two values
@@ -40,8 +40,15 @@ startup, before a client exists.
   A profile narrows presentation **and the callable set**, always within the
   credential tier: a tool the profile excludes is refused even when the tier
   would allow it, so the list and the callable set remain identical. A profile
-  can never widen a tier, and an unknown profile name refuses to start.
-  Free-form lists remain banned.
+  can never widen a tier, and an unknown profile name refuses to start and lists
+  the valid ones. Free-form lists remain banned.
+
+The registry declares four more profiles — `consultation`, `planning_pair_member`,
+`planning_pair_caller` and `leadership` (`../src/registry.rs`, `SERVE_PROFILES`).
+No seat file here selects them. The daemon composes the other three at
+`operator` tier for its own consultation, planning-pair member and hosted
+leadership seats; nothing composes `planning_pair_caller`. See
+[Seat MCP surface](../../../docs/CONFIGURATION.md#seat-mcp-surface).
 
 ## Why the worker is not the Lead
 
@@ -50,7 +57,9 @@ verdict, settle a run and reconcile a ticket. None of those is a credential,
 account or policy-authority decision, so none of them needs admin. What admin adds
 is exactly the set a worker must not have: creating projects and account profiles,
 applying an epic graph, arming and disarming execution, correcting a selection, and
-waiving a gate.
+waiving a gate. The shipped `worker.json` narrows further: its profile leaves
+out `kontor_session_permission_respond`, which the unnarrowed operator tier
+serves.
 
 Admin is not a domain bypass either. The daemon still enforces revisions,
 idempotency, admission, runtime capabilities, evaluator roles, evidence and closure

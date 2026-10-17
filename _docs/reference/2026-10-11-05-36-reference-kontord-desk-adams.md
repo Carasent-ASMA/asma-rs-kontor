@@ -1,7 +1,8 @@
 # Desk Adams in kontord
 
-> Status: ASMA-8452 (ASMA-8449) draft candidate. It describes what the desk Adam
-> contract supports at this revision and what it refuses. Naming rules are in
+> Status: ASMA-8452 (ASMA-8449), merged in PR #297 (`b3db4adf`, 2026-10-11);
+> merged is not deployed, see the [router](../index.md). It describes what the
+> desk Adam contract supports at `0971674d` and what it refuses. Naming rules are in
 > [`docs/NATIVE_NAMING.md`](../../docs/NATIVE_NAMING.md#desk-adams-asma-8452).
 > Desks themselves are described in
 > [Durable desks in kontord](2026-10-10-23-55-reference-kontord-durable-desks.md).
@@ -204,7 +205,10 @@ An epic adopts an ad-hoc topic declaratively, on `epics:apply`:
   against the scripted fake. The Paseo contract tests prove the desk launch
   and the desk claim themselves against recorded Paseo: the desk project read
   by exact id, the seat's own labels with no epic, and nothing in the
-  epic-keyed project ledger.
+  epic-keyed project ledger. Since PR #300 they also cover a Claude leadership
+  seat's MCP composition in the plain desk directory: launch, lost
+  acknowledgement, retitle, claim, cross-vendor replacement and route
+  correction (see the desk reference's working-directory limit).
 - **Backlog import.** `desk_adam_origin` is accepted only on `epics:apply`;
   a backlog import that carries it is refused (`invalid_request`).
 - **Titles never retitle.** A later rename of the epic leaves every subject

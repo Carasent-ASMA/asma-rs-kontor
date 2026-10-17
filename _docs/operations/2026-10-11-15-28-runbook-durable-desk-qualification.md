@@ -1,7 +1,7 @@
 # Qualify and release durable desk support
 
 > **Date:** 2026-10-11 15:28
-> **Status:** 🟡 In Review
+> **Status:** 🟡 Merged in PR #299 (`813135fd`, 2026-10-11); the hosted desk MCP repair followed in PR #300 (`0971674d`). Merged is not deployed (see the [router](../index.md)), and no record of release steps 3–8 below exists in this repository.
 > **Author:** Codex — ASMA-8454 qualification owner
 > **Category:** runbook
 > **Scope:** ASMA-8454 / ASMA-8449; disposable qualification realms only
