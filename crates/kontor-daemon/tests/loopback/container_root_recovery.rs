@@ -858,3 +858,103 @@ async fn an_unchanged_epic_apply_does_not_wait_for_a_container_recovery_in_fligh
         .expect("the task claims a worktree");
     assert_eq!(stored, claim);
 }
+
+/// A brand-new epic apply does not queue behind a container recovery either.
+///
+/// A new epic writes no task claim, so it has no claim a recovery could have
+/// frozen and must not become the queued native lifecycle writer. While the
+/// recovery is held at its create, the apply reaches governance and is refused
+/// there; an apply that always took the lock would wait for the recovery and
+/// answer `200` once it finished instead.
+#[tokio::test]
+async fn a_new_epic_apply_does_not_wait_for_a_container_recovery_in_flight() {
+    let (world, project, _task, node) = claim_recovery_race_fixture().await;
+
+    // The binding names a directory the task no longer claims, and the native
+    // is gone, so recovery is a positively vacant recreation at the claim it
+    // freezes.
+    let previous = world.directory.path().join("previous-container-root");
+    std::fs::create_dir(&previous).expect("the previous root exists");
+    let previous = std::fs::canonicalize(&previous).expect("the previous root canonicalizes");
+    let db = rusqlite::Connection::open(world.directory.path().join("kontor.db")).expect("db");
+    db.execute(
+        "UPDATE topology_node_containers SET canonical_cwd=?1, revision=revision+1 WHERE topology_node_id=?2",
+        rusqlite::params![previous.to_str().expect("utf-8"), node.to_string()],
+    )
+    .expect("the stale binding moves");
+    world.fake.forget_container(node);
+
+    let project_revision = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_project(project))
+        .expect("project reads")
+        .expect("project exists")
+        .revision;
+    let preview = Call::post(
+        format!("/v1/projects/{project}/topology/nodes/{node}/container:recovery-preview"),
+        &serde_json::json!({"expected_revision": project_revision}),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert_eq!(preview.json()["disposition"], "recreate_absent");
+
+    let category = first_category(&world).await;
+    let fresh = epic_body(
+        project_revision.get(),
+        "Fresh epic apply race",
+        &category,
+        serde_json::json!([{
+            "title": "Fresh task",
+            "module": "_tools/asma-rs-kontor",
+        }]),
+    );
+
+    let pause = world.fake.pause_next_container_create();
+    let recovery = async {
+        Call::post(
+            format!("/v1/projects/{project}/topology/nodes/{node}/container:recovery-apply"),
+            &serde_json::json!({
+                "expected_revision": project_revision,
+                "preview_hash": preview.json()["preview_hash"],
+            }),
+        )
+        .signed_as(&world, "admin")
+        .with_key("fresh-epic-recovery")
+        .send(&world)
+        .await
+    };
+    let apply = async {
+        pause.entered().await;
+        Call::post(format!("/v1/projects/{project}/epics:apply"), &fresh)
+            .signed_as(&world, "admin")
+            .with_key("fresh-epic-apply")
+            .send(&world)
+            .await
+    };
+    let release = async {
+        pause.entered().await;
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        pause.release();
+    };
+    let (recovered, applied, ()) = tokio::join!(recovery, apply, release);
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    assert_eq!(
+        applied.status, 409,
+        "the fresh apply waited for the recovery instead of reaching governance: {}",
+        applied.body
+    );
+    assert_eq!(applied.code(), "placement_blocked");
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.list_mini_projects(project))
+            .expect("epics read")
+            .iter()
+            .any(|epic| epic.name.as_str() == "Fresh epic apply race"),
+        "the fresh apply wrote no epic before governance refused it"
+    );
+}
