@@ -1605,6 +1605,27 @@ mod tests {
         );
     }
 
+    /// The executable's start reads the summarizer selection from the state
+    /// root, so a document that names a runtime the fleet does not compose
+    /// refuses the start instead of silently degrading every handoff.
+    #[test]
+    fn configured_startup_reads_the_summarizer_selection_from_the_state_root() {
+        let directory = tempfile::TempDir::new().expect("a temporary directory");
+        std::fs::write(
+            directory.path().join(succession_summarizer::CONFIG_FILE),
+            r#"{"schema_version":1,"runtime_family":"paseo.agent"}"#,
+        )
+        .expect("the selection document is written");
+        let error = Daemon::start_configured(DaemonConfig::at(directory.path()).with_port(0))
+            .expect_err("an uncomposed summarizer runtime must refuse the start");
+        assert!(matches!(
+            error,
+            StartupError::SuccessionSummarizer {
+                source: succession_summarizer::ConfigError::UnknownRuntime
+            }
+        ));
+    }
+
     /// Without a stored policy the seed must be valid. Opening the store is
     /// necessary to decide precedence, but refusal still precedes credentials
     /// and service composition and must release the root for a corrected start.
