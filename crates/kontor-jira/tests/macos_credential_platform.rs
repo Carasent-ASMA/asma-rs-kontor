@@ -915,29 +915,14 @@ fn redact_diagnostic(raw: &mut Vec<u8>, email: &SecretString, token: &SecretStri
     cleaned.chars().take(DIAGNOSTIC_EXCERPT_CHARS).collect()
 }
 
-/// What the harness can prove about a child it had to terminate before any
-/// credential delivery. Only a successful `wait` establishes reaping; a failed
-/// `wait` leaves the OS process state unknown and must not be overstated.
-#[derive(Clone, Copy)]
-enum ReapState {
-    /// `wait` returned, so the child is no longer running and is reaped.
-    Reaped,
-    /// `wait` failed; the process status could not be established.
-    Unknown,
-}
-
-/// The child's outcome is either a proven exit or an explicit unknown: spawn,
-/// stdin-handle and wait failures must never become panics, because unwinding
-/// would drop the disposable root without the retained reconciliation block.
-/// The `StdinUnavailable` state carries the non-secret child PID and the
-/// proven-or-unknown reap state, so the caller never claims cleanup it did not
-/// establish.
+/// The child's outcome is either a proven exit or an explicit unknown: spawn
+/// and wait failures must never become panics, because unwinding would drop the
+/// disposable root without the retained reconciliation block.
 #[derive(Clone, Copy)]
 enum InstallOutcome {
     Exited(ExitStatus),
     WaitFailed,
     SpawnFailed,
-    StdinUnavailable { pid: u32, reap: ReapState },
 }
 
 struct InstallAttempt {
@@ -954,9 +939,9 @@ struct InstallAttempt {
 /// Nothing before or after delivery unwinds: spawning, taking the stdin handle,
 /// taking the stderr pipe and waiting are explicit `Option`/`Result` handling,
 /// never `expect`. A child spawned without a usable stdin handle is terminated
-/// before returning; a successful `wait` proves it is reaped, while a failed
-/// `wait` is reported as process status UNKNOWN with the child PID rather than
-/// claimed as cleanup. Zero credential bytes were delivered on that path.
+/// and reaped before returning and reported as a spawn failure, so the caller
+/// never claims cleanup it did not establish. Zero credential bytes were
+/// delivered on that path.
 fn run_daemon_install(
     daemon: &Path,
     root: &Path,
@@ -993,18 +978,11 @@ fn run_daemon_install(
         }
     };
     let Some(mut stdin) = child.stdin.take() else {
-        let pid = child.id();
-        // The kill request is best-effort evidence only: the `wait` below is
-        // what establishes that the child is no longer running and is reaped.
-        let kill_request = child.kill();
-        let reap = match child.wait() {
-            Ok(_) => ReapState::Reaped,
-            Err(_) => ReapState::Unknown,
-        };
-        drop(kill_request);
+        let _ = child.kill();
+        let _ = child.wait();
         payload.zeroize();
         return InstallAttempt {
-            outcome: InstallOutcome::StdinUnavailable { pid, reap },
+            outcome: InstallOutcome::SpawnFailed,
             delivered: false,
             diagnostic: String::new(),
         };
@@ -1288,17 +1266,6 @@ async fn the_built_daemon_installs_and_the_shared_production_readers_present_the
             InstallOutcome::SpawnFailed => (
                 "daemon_install_spawn_failed",
                 "zero credential delivery; no delete or cleanup attempt; state UNKNOWN".to_owned(),
-            ),
-            InstallOutcome::StdinUnavailable { pid, reap } => (
-                "daemon_install_stdin_unavailable",
-                match reap {
-                    ReapState::Reaped => format!(
-                        "child pid {pid} reaped (wait succeeded); zero credential delivery; no delete or cleanup attempt; state UNKNOWN"
-                    ),
-                    ReapState::Unknown => format!(
-                        "child pid {pid} process status UNKNOWN (wait failed); zero credential delivery; no delete or cleanup attempt; operator reconciliation required; state UNKNOWN"
-                    ),
-                },
             ),
             InstallOutcome::WaitFailed => {
                 ("daemon_install_wait_uncertain", attempt.diagnostic.clone())
