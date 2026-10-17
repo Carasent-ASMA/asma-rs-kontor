@@ -176,6 +176,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "project_subject_authority",
     "project_team_definition_defaults",
     "project_topology_defaults",
+    "provider_marker_completions",
     "provider_quota_states",
     "provider_quota_windows",
     "provider_quota_observation_provenance",
@@ -812,8 +813,10 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // (ASMA-8453).
     // v135 widens the realm-scoped idempotency operations by exactly one for
     // the provider-marker correction, preserving every existing binding and
-    // both permanence triggers across the table rebuild (ASMA-7968).
-    assert_eq!(SCHEMA_VERSION, 135);
+    // both permanence triggers across the table rebuild (ASMA-7968). v136
+    // records durable completion for that correction so a replay never writes
+    // a marker the operator restored for a later outage.
+    assert_eq!(SCHEMA_VERSION, 136);
 }
 
 #[test]
@@ -6920,7 +6923,7 @@ fn v123_upgrade_preserves_generic_ledger_and_enforces_immutable_memory_receipts(
     connection.execute_batch("DROP TABLE memory_projection_rebuild_results; DROP TABLE memory_projection_rebuild_keys; DROP TABLE memory_recall_keys; DROP TABLE memory_recall_metadata; DROP TABLE memory_experience_proposals; DROP TABLE memory_projection_active; DROP TABLE memory_projection_snapshots; DROP TABLE memory_experience_eligibility; DROP TABLE imported_record_evidence; DROP TABLE core_team_route_successions; PRAGMA user_version=119;").unwrap();
     // The ASMA-8278 feature generations are additive too: a fixture that replays
     // the chain from 119 must not leave their tables behind either.
-    connection.execute_batch("DROP TABLE planning_pair_contributions; DROP TABLE planning_pair_record_revisions; DROP TABLE planning_pair_placements; DROP TABLE planning_pair_member_natives; DROP TABLE attestation_authority_keys; DROP TABLE attestation_authority_heads; DROP TABLE prepared_attestation_tokens; DROP TABLE attestation_token_heads; DROP TABLE pr_review_subjects; DROP TRIGGER desk_adam_subjects_host_one_session; DROP TRIGGER desk_adam_subjects_bound_ad_hoc_seats_no_one; DROP TRIGGER desk_adam_subjects_bound_ad_hoc_hosts_no_one; DROP TABLE desk_adam_subjects; DROP TABLE durable_seat_declarations; DROP TABLE desks;").unwrap();
+    connection.execute_batch("DROP TABLE planning_pair_contributions; DROP TABLE planning_pair_record_revisions; DROP TABLE planning_pair_placements; DROP TABLE planning_pair_member_natives; DROP TABLE attestation_authority_keys; DROP TABLE attestation_authority_heads; DROP TABLE prepared_attestation_tokens; DROP TABLE attestation_token_heads; DROP TABLE pr_review_subjects; DROP TRIGGER desk_adam_subjects_host_one_session; DROP TRIGGER desk_adam_subjects_bound_ad_hoc_seats_no_one; DROP TRIGGER desk_adam_subjects_bound_ad_hoc_hosts_no_one; DROP TABLE desk_adam_subjects; DROP TABLE durable_seat_declarations; DROP TABLE desks; DROP TABLE provider_marker_completions;").unwrap();
     drop(connection);
     let store = SqliteStore::open(&database).unwrap();
     assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);

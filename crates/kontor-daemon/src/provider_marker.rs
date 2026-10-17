@@ -23,15 +23,20 @@
 //!
 //! [`plan`] is effect-free: it answers the exact before/after sets, the host
 //! key the marker belongs to, and — only when the marker is present — the
-//! rewritten bytes. [`write`] commits those bytes atomically, refusing if the
-//! file changed since the plan was computed, so two writers cannot silently
-//! overwrite each other. Neither function touches a runtime, a seat or the
-//! store: the whole correction is one member of one configuration file.
+//! rewritten bytes. [`write`] commits those bytes atomically under one lock
+//! every settings writer shares, refusing if the file changed since the plan
+//! was computed, so two writers cannot silently overwrite each other. A manual
+//! editor cannot take that lock: hand edits must happen with the daemon
+//! stopped, as `docs/CONFIGURATION.md` states. Neither function touches a
+//! runtime, a seat or the store: the whole correction is one member of one
+//! configuration file.
 
 use std::collections::BTreeSet;
+use std::ffi::OsStr;
 use std::io::Write as _;
 use std::path::Path;
 
+use fs4::{FileExt, TryLockError};
 use kontor_core::id::ExternalName;
 
 /// Why one provider-marker correction could not be computed or committed.
@@ -45,6 +50,9 @@ pub(crate) enum MarkerError {
     /// The settings file is a symlink or not a regular file, so rewriting it in
     /// place would replace something this realm does not own.
     NotRewritable,
+    /// Another settings writer holds the lock, so this correction did not
+    /// start.
+    Busy,
     /// More than one setting declares the addressed runtime family.
     DuplicateFamily,
     /// No configured setting declares the addressed runtime family.
@@ -118,11 +126,55 @@ pub(crate) fn plan(
     })
 }
 
+/// The one lock every writer of the settings document takes.
+///
+/// The commit is a rename over the document's path, so a lock on the document
+/// itself would be left behind by the very write it protects. The lock
+/// therefore lives on a sibling file, and every read, comparison and rename of
+/// the correction happens while it is held. An editor that cannot take it must
+/// run with the daemon stopped, because only then is there no in-flight
+/// correction whose read it could invalidate.
+struct SettingsLock {
+    handle: std::fs::File,
+}
+
+impl SettingsLock {
+    /// Take the settings lock, or report the writer that holds it.
+    fn acquire(path: &Path) -> Result<Self, MarkerError> {
+        let mut name = path
+            .file_name()
+            .unwrap_or_else(|| OsStr::new("runtimes.json"))
+            .to_os_string();
+        name.push(".lock");
+        let handle = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path.with_file_name(name))
+            .map_err(|_| MarkerError::Unreadable)?;
+        match FileExt::try_lock(&handle) {
+            Ok(()) => Ok(Self { handle }),
+            Err(TryLockError::WouldBlock) => Err(MarkerError::Busy),
+            Err(TryLockError::Error(_)) => Err(MarkerError::Unreadable),
+        }
+    }
+}
+
+impl Drop for SettingsLock {
+    fn drop(&mut self) {
+        // Closing the descriptor releases the advisory lock even if this fails.
+        let _ = FileExt::unlock(&self.handle);
+    }
+}
+
 /// Commit rewritten bytes, refusing a file that changed after the read.
 ///
 /// The temporary file takes the original's permissions, so a `0600` settings
 /// file stays `0600`; the rename is the commit, and it only lands if the file
-/// still holds the exact bytes the plan was computed from.
+/// still holds the exact bytes the plan was computed from. All of that happens
+/// while [`SettingsLock`] is held, so another writer that takes the lock cannot
+/// slip a replacement between the comparison and the rename.
 pub(crate) fn write(path: &Path, expected: &[u8], updated: &[u8]) -> Result<(), MarkerError> {
     /// Keep "the file moved" distinct from "the write failed": they are a
     /// caller's conflict and an operator's disk, respectively.
@@ -130,6 +182,7 @@ pub(crate) fn write(path: &Path, expected: &[u8], updated: &[u8]) -> Result<(), 
         Changed,
         Io(std::io::Error),
     }
+    let _lock = SettingsLock::acquire(path)?;
     let metadata = std::fs::symlink_metadata(path).map_err(|_| MarkerError::Unreadable)?;
     if !metadata.is_file() || metadata.file_type().is_symlink() {
         return Err(MarkerError::NotRewritable);
@@ -681,6 +734,24 @@ mod tests {
             std::fs::read(&path).expect("the competing write stands"),
             b"{}"
         );
+    }
+
+    #[test]
+    fn a_held_settings_lock_stops_the_correction_before_it_reads_or_writes() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let path = directory.path().join("runtimes.json");
+        std::fs::write(&path, document()).expect("the fixture is installed");
+        let first = plan(document(), "paseo.agent", "claude").expect("removable");
+        let updated = first.updated.expect("a marker to remove");
+        let held = SettingsLock::acquire(&path).expect("the test takes the shared lock");
+        assert_eq!(
+            write(&path, document(), &updated),
+            Err(MarkerError::Busy),
+            "a writer that cannot take the lock never reaches the document"
+        );
+        assert_eq!(std::fs::read(&path).expect("the document"), document());
+        drop(held);
+        write(&path, document(), &updated).expect("the correction commits once the lock is free");
     }
 
     #[test]
