@@ -31808,8 +31808,8 @@ impl ApplicationOperations for Services {
         reader: Option<kontor_api::auth::ScopedSeatSubject>,
     ) -> Result<CompletionStateDto, ApiError> {
         if let Some(reader) = reader {
-            let seat = self
-                .state()?
+            let state = self.state()?;
+            let seat = state
                 .with_store(|store| store.get_seat_binding(project_id, reader.seat_binding_id))
                 .map_err(|error| self.refuse(&error))?
                 .ok_or_else(|| {
@@ -31826,29 +31826,33 @@ impl ApplicationOperations for Services {
                 return Err(self.deny(ApiErrorCode::Forbidden,
                     "only active epic LSA and TPM seats may read completion through a scoped credential"));
             }
-            // Use the same epic membership and occupancy fences as remediation
-            // writes. A scoped read grants no general Observer authority.
-            //
-            // This reader already passed the role and Active checks, so it
-            // really sits on some epic's control plane. Being told this epic
-            // has no control plane or no live seat for the role would therefore
-            // describe the *other* epic's staffing to a seat that must not read
-            // it, and would offer a next step only that epic's operator can
-            // take. Here both always mean "not this epic's current leadership".
+            // Membership before staffing: a seat of another epic must never
+            // reach that epic's control-plane lookup, while a reader of this
+            // epic keeps the true refusal when its own staffing is unreadable.
+            let node = state
+                .with_store(|store| store.get_topology_node(project_id, seat.topology_node_id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Forbidden,
+                        "the completion reader has no owning topology",
+                    )
+                })?;
+            if node.mini_project_id != Some(epic_id) {
+                return Err(self.deny(
+                    ApiErrorCode::Forbidden,
+                    "the completion reader must be an active seat of this exact epic",
+                ));
+            }
+            // Use the same occupancy fence as remediation writes. A scoped read
+            // grants no general Observer authority.
             self.require_completion_authority(
                 project_id,
                 epic_id,
                 seat.role.role_code.as_str(),
                 reader.seat_binding_id,
                 reader.occupancy_generation,
-            )
-            .map_err(|error| match error.code {
-                ApiErrorCode::PlacementBlocked | ApiErrorCode::RoleSlotUnbound => self.deny(
-                    ApiErrorCode::Forbidden,
-                    "the scoped reader is not this epic's current leadership",
-                ),
-                _ => error,
-            })?;
+            )?;
         }
         self.epic_row(project_id, epic_id)?;
         let stored = self.require_completion(project_id, epic_id)?;

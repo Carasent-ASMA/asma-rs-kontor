@@ -51801,7 +51801,7 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
         .unwrap();
     let role_drift = scoped_completion(tpm, 1, project, &epic).send(world).await;
     assert_eq!(role_drift.status, 403, "{}", role_drift.body);
-    assert!(role_drift.json().get("state").is_none());
+    assert!(role_drift.json().get("phase").is_none());
     completion_reads_db
         .execute(
             "UPDATE seat_bindings SET role_code='TPM', standard_title=?2 WHERE id=?1",
@@ -51904,7 +51904,7 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
             cross_epic.body
         );
         assert_eq!(cross_epic.code(), "forbidden");
-        assert!(cross_epic.json().get("state").is_none());
+        assert!(cross_epic.json().get("phase").is_none());
     }
     // The other epic's TPM seat retires. Its completion now holds no live TPM,
     // so the membership fence fails while resolving that role. A seat that is
@@ -51934,7 +51934,7 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
         unbound_role.body
     );
     assert_eq!(unbound_role.code(), "forbidden");
-    assert!(unbound_role.json().get("state").is_none());
+    assert!(unbound_role.json().get("phase").is_none());
     let foreign_project = ensure_project(
         world,
         "completion-read-foreign-project",
@@ -51952,7 +51952,7 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
             .send(world)
             .await;
         assert_eq!(cross_project.status, 403, "{}", cross_project.body);
-        assert!(cross_project.json().get("state").is_none());
+        assert!(cross_project.json().get("phase").is_none());
     }
     // A real epic that was never materialized has no control plane at all. The
     // fence must refuse its readers as non-authority too, rather than report
@@ -51992,7 +51992,7 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
             unmaterialized_read.body
         );
         assert_eq!(unmaterialized_read.code(), "forbidden");
-        assert!(unmaterialized_read.json().get("state").is_none());
+        assert!(unmaterialized_read.json().get("phase").is_none());
     }
 
     let calls_before_advance_replay = world.fake.calls().len();
@@ -52227,7 +52227,7 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
     let stale_read = scoped_completion(lsa, 1, project, &epic).send(world).await;
     assert_eq!(stale_read.status, 409, "{}", stale_read.body);
     assert_eq!(stale_read.code(), "stale_binding");
-    assert!(stale_read.json().get("state").is_none());
+    assert!(stale_read.json().get("phase").is_none());
     let successor_read = scoped_completion(lsa, 2, project, &epic).send(world).await;
     assert_eq!(successor_read.status, 200, "{}", successor_read.body);
 
@@ -52662,7 +52662,7 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
     assert_eq!(retired.status, 200, "{}", retired.body);
     let retired_read = scoped_completion(tpm, 1, project, &epic).send(world).await;
     assert_eq!(retired_read.status, 403, "{}", retired_read.body);
-    assert!(retired_read.json().get("state").is_none());
+    assert!(retired_read.json().get("phase").is_none());
     // A legacy archived row without a release timestamp is still historical.
     completion_reads_db
         .execute(
@@ -52672,7 +52672,7 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
         .unwrap();
     let archived_read = scoped_completion(tpm, 1, project, &epic).send(world).await;
     assert_eq!(archived_read.status, 403, "{}", archived_read.body);
-    assert!(archived_read.json().get("state").is_none());
+    assert!(archived_read.json().get("phase").is_none());
 }
 
 /// Integration advances on a typed operator receipt, and only the right one.
