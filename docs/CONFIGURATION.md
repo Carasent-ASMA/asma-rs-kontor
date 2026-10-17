@@ -1100,8 +1100,10 @@ into that directory, with the exact originals kept in a private journal at
 under a canonical-cwd lock before any create or reload; a healthy replay only
 validates, and refuses when the files differ (PR #300, `0971674d`). Delivery and
 consultation seats never use this path. `KONTOR_SEAT_MCP=off` in the daemon's
-environment withdraws every composed MCP file daemon-wide; declared permission
-posture is composed either way.
+environment, read once at daemon start, disables further seat MCP composition
+for every plane; files already composed into a worktree or hosted directory and
+sessions already running need separate cleanup. Declared permission posture is
+composed either way.
 
 Quota succession is exposed separately. `kontor_seat_quota_states_list` is an
 Observer read joining each live delivery seat to its exact account and provider
