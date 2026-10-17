@@ -105,14 +105,18 @@ export async function seatEnvironment(
 /**
  * The caller the daemon attached to this creation, when the release carries it.
  *
- * Paseo 0.11.2 strips this from `workspace.create` before the hook, so the
- * guard also reads the initial agent's labels below. The field is still read
- * at runtime because a release that restores caller identity needs no code
- * change.
+ * Paseo 0.11.2 carries the caller as `agent.callerAgentId` on the
+ * `workspace.create` request and passes it through to the hook. A top-level
+ * `callerAgentId` is read as well, so a release that moves the field needs no
+ * code change. The guard also reads the initial agent's labels below.
  */
 function callerAgentIdOf(request: WorkspaceCreateRequest): string | undefined {
-  const value = (request as { callerAgentId?: unknown }).callerAgentId;
-  return typeof value === "string" && value.length > 0 ? value : undefined;
+  const direct = (request as { callerAgentId?: unknown }).callerAgentId;
+  if (typeof direct === "string" && direct.length > 0) {
+    return direct;
+  }
+  const nested = (request as { agent?: { callerAgentId?: unknown } }).agent?.callerAgentId;
+  return typeof nested === "string" && nested.length > 0 ? nested : undefined;
 }
 
 function initialAgentLabelsOf(request: WorkspaceCreateRequest): Record<string, string> | null {

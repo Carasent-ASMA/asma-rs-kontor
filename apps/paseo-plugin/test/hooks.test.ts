@@ -24,7 +24,7 @@ type WorkspaceCreateRequest = PluginBeforeRequests["workspace.create"];
 type Context = Pick<PluginHookContext, "paseo" | "signal">;
 type WorkspaceRequestWithCaller = WorkspaceCreateRequest & {
   callerAgentId?: string;
-  agent?: { labels?: Record<string, string> };
+  agent?: { labels?: Record<string, string>; callerAgentId?: string };
 };
 
 const CANONICAL = "/Users/test/carasent/asma-modules/.worktrees/asma-8507/asma-rs-kontor";
@@ -401,6 +401,28 @@ describe("workspace.create hook", () => {
           },
         }),
         context("error", { wks_seat: { projectId: PROJECT, workspaceDirectory: CANONICAL } }),
+        config(),
+      ),
+    ).rejects.toThrow("Kontor workspace guard refused");
+  });
+
+  it("refuses a labelled caller carried on the initial agent", async () => {
+    await expect(
+      guardWorkspaceCreate(
+        workspaceRequest({
+          callerAgentId: undefined,
+          agent: {
+            config: { provider: "claude", cwd: "/Users/test/carasent/asma-modules" },
+            labels: {},
+            callerAgentId: "agent-1",
+          },
+          source: {
+            kind: "worktree",
+            cwd: "/Users/test/carasent/asma-modules",
+            projectId: PROJECT,
+          },
+        }),
+        seatContext(),
         config(),
       ),
     ).rejects.toThrow("Kontor workspace guard refused");
