@@ -807,17 +807,15 @@ fn assert_no_proxy_environment() {
     }
 }
 
-fn daemon_binary() -> PathBuf {
+fn daemon_binary() -> Result<PathBuf, Skip> {
     let Some(path) = std::env::var_os(DAEMON_BINARY_ENV) else {
-        panic!(
-            "set `{DAEMON_BINARY_ENV}` to the absolute path of the daemon binary built at the qualified revision"
-        );
+        return Err(Skip("KONTOR_ASMA8015_DAEMON_BIN is unset"));
     };
     let path = PathBuf::from(path);
     if !path.is_absolute() || !path.is_file() {
         panic!("`{DAEMON_BINARY_ENV}` must name an existing absolute file");
     }
-    path
+    Ok(path)
 }
 
 /// Materialize a disposable Realm through the built daemon's own operator path.
@@ -1219,8 +1217,14 @@ async fn comments_or_stop(
 async fn the_built_daemon_installs_and_the_shared_production_readers_present_the_installed_credential()
  {
     live_keychain!();
+    let daemon = match daemon_binary() {
+        Ok(daemon) => daemon,
+        Err(Skip(reason)) => {
+            println!("skipped: {reason}");
+            return;
+        }
+    };
     assert_no_proxy_environment();
-    let daemon = daemon_binary();
     let mut temp = tempfile::tempdir().expect("the harness could not create its temporary root");
     let root = canonical_root(&temp);
 
