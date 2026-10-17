@@ -188,9 +188,13 @@ impl ClaudeAdapter {
         spec: &ServerSpec,
         faults: &mut dyn FaultInjector,
     ) -> Result<AdapterResult, AdapterError> {
-        let json = serde_json::to_string(&desired_entry(ClientId::ClaudeCode, spec))
-            .map_err(|_| AdapterError::CommandFailed)?;
+        let desired_value = desired_entry(ClientId::ClaudeCode, spec);
+        let desired_hash = ObservedHash::of_value(&desired_value);
+        let json =
+            serde_json::to_string(&desired_value).map_err(|_| AdapterError::CommandFailed)?;
         let _ = faults;
+        self.ownership
+            .begin(ClientId::ClaudeCode, &desired_hash, &desired_hash)?;
         match self.boundary.add_json(ENTRY_NAME, &json) {
             Ok(()) => {}
             Err(ClaudeBoundaryError::AlreadyExists) => {
@@ -225,8 +229,10 @@ impl ClaudeAdapter {
                 observed: Some(observed),
             });
         }
-        let desired = serde_json::to_string(&desired_entry(ClientId::ClaudeCode, spec))
-            .map_err(|_| AdapterError::CommandFailed)?;
+        let desired_value = desired_entry(ClientId::ClaudeCode, spec);
+        let desired_hash = ObservedHash::of_value(&desired_value);
+        let desired =
+            serde_json::to_string(&desired_value).map_err(|_| AdapterError::CommandFailed)?;
         match self.boundary.remove_if(ENTRY_NAME, &current) {
             Ok(Removal::Removed) => {}
             Ok(Removal::Mismatch) => {
@@ -255,6 +261,15 @@ impl ClaudeAdapter {
             }
             Err(_) => return self.restore_original(&current),
         }
+        if let Err(error) = self
+            .ownership
+            .begin(ClientId::ClaudeCode, &desired_hash, &desired_hash)
+        {
+            return match self.restore_original(&current) {
+                Err(AdapterError::CommandFailed) => Err(error),
+                other => other,
+            };
+        }
         match self.boundary.add_json(ENTRY_NAME, &desired) {
             Ok(()) => {}
             Err(ClaudeBoundaryError::AlreadyExists) => {
@@ -266,6 +281,30 @@ impl ClaudeAdapter {
             Err(_) => return self.restore_original(&current),
         }
         self.readback(spec)
+    }
+
+    /// Complete the ownership record for a write a replay verified.
+    ///
+    /// The pending record is durable before the entry is written. When the
+    /// observed entry is exactly that pending snapshot, the write did land and
+    /// only the post-write ledger update was lost, so complete it now.
+    fn adopt_pending(
+        &self,
+        spec: &ServerSpec,
+        observed: &ObservedHash,
+    ) -> Result<(), AdapterError> {
+        let ledger = self.ownership.load()?;
+        if ledger.owns(ClientId::ClaudeCode, observed)
+            || !ledger.pending_owns(ClientId::ClaudeCode, observed)
+        {
+            return Ok(());
+        }
+        let desired = desired_entry(ClientId::ClaudeCode, spec);
+        self.ownership.record(
+            ClientId::ClaudeCode,
+            observed,
+            &ObservedHash::of_value(&desired),
+        )
     }
 
     /// Put a removed original back through the no-overwrite add boundary.
@@ -306,7 +345,10 @@ impl ClientAdapter for ClaudeAdapter {
                 AdapterResult::Updated => AdapterResult::Installed,
                 other => other,
             }),
-            EntryState::Current { .. } => Ok(AdapterResult::AlreadyCurrent),
+            EntryState::Current { observed } => {
+                self.adopt_pending(spec, &observed)?;
+                Ok(AdapterResult::AlreadyCurrent)
+            }
             EntryState::ManagedStale { observed } => self.replace(spec, &observed),
             EntryState::Unrelated { observed } => Ok(AdapterResult::Conflict {
                 reason: ConflictReason::SameNameUnrelated,
@@ -328,7 +370,10 @@ impl ClientAdapter for ClaudeAdapter {
         match self.observe(spec)? {
             EntryState::ClientAbsent | EntryState::EntryAbsent => Ok(AdapterResult::Absent),
             EntryState::Unsupported => Ok(AdapterResult::Unsupported),
-            EntryState::Current { .. } => Ok(AdapterResult::AlreadyCurrent),
+            EntryState::Current { observed } => {
+                self.adopt_pending(spec, &observed)?;
+                Ok(AdapterResult::AlreadyCurrent)
+            }
             EntryState::ManagedStale { observed } | EntryState::Unrelated { observed } => {
                 if &observed != expected {
                     return Ok(AdapterResult::Conflict {

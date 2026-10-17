@@ -614,6 +614,79 @@ fn a_write_that_does_not_read_back_is_failed_readback_without_ownership() {
 }
 
 #[test]
+fn a_lost_readback_after_add_completes_ownership_on_replay() {
+    struct LostReadback {
+        inner: FakeClaudeBoundary,
+        gets: usize,
+    }
+
+    impl ClaudeBoundary for LostReadback {
+        fn get(&mut self, name: &str) -> Result<Option<Value>, ClaudeBoundaryError> {
+            self.gets += 1;
+            if self.gets == 2 {
+                return Err(ClaudeBoundaryError::Failed);
+            }
+            self.inner.get(name)
+        }
+
+        fn add_json(&mut self, name: &str, json: &str) -> Result<(), ClaudeBoundaryError> {
+            self.inner.add_json(name, json)
+        }
+
+        fn remove(&mut self, name: &str) -> Result<(), ClaudeBoundaryError> {
+            self.inner.remove(name)
+        }
+
+        fn remove_if(
+            &mut self,
+            name: &str,
+            expected: &Value,
+        ) -> Result<Removal, ClaudeBoundaryError> {
+            self.inner.remove_if(name, expected)
+        }
+    }
+
+    let mut harness = harness(LostReadback {
+        inner: FakeClaudeBoundary::new(),
+        gets: 0,
+    });
+    let first = spec("/synthetic/one");
+    let desired = ObservedHash::of_value(&desired_entry(ClientId::ClaudeCode, &first));
+    assert_eq!(
+        harness.adapter.install(&first, &mut NoFaults),
+        Err(AdapterError::CommandFailed)
+    );
+    let ledger = harness.ownership.load().expect("ledger");
+    assert!(!ledger.owns(ClientId::ClaudeCode, &desired));
+    assert!(
+        ledger.pending_owns(ClientId::ClaudeCode, &desired),
+        "the pending write is durable before the entry is written"
+    );
+    assert_eq!(
+        harness.adapter.inspect(&first).expect("inspect"),
+        EntryState::Current {
+            observed: desired.clone()
+        }
+    );
+    assert_eq!(
+        harness
+            .adapter
+            .install(&first, &mut NoFaults)
+            .expect("replay"),
+        AdapterResult::AlreadyCurrent
+    );
+    let ledger = harness.ownership.load().expect("ledger");
+    assert!(ledger.owns(ClientId::ClaudeCode, &desired));
+    assert_eq!(
+        harness
+            .adapter
+            .install(&spec("/synthetic/two"), &mut NoFaults)
+            .expect("update"),
+        AdapterResult::Updated
+    );
+}
+
+#[test]
 fn a_wrong_transport_is_never_current() {
     let mut boundary = FakeClaudeBoundary::new();
     boundary.seed(
