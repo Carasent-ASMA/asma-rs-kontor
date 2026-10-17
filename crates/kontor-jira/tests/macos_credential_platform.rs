@@ -525,13 +525,13 @@ impl KeychainWriter for ReadFailureAfterSet {
         target: &KeychainTarget,
         secret: &SecretString,
     ) -> Result<(), KeychainFailure> {
-        self.sets.fetch_add(1, Ordering::SeqCst);
+        let first = self.sets.fetch_add(1, Ordering::SeqCst) == 0;
         self.set_targets
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push(target.clone());
         let result = SystemKeychain.set_secret(target, secret);
-        if result.is_ok() {
+        if first && result.is_ok() {
             self.set_completed.store(true, Ordering::SeqCst);
         }
         result
@@ -573,18 +573,26 @@ fn classify(error: &CredentialInstallError) -> ProductionOutcome {
 fn assert_rolled_back(
     error: &CredentialInstallError,
     owned: &mut OwnedScopedTarget,
+    wrapper: &ReadFailureAfterSet,
+    expected_sets: usize,
+    expected_deletes: usize,
     reconciliation: &Reconciliation,
     temp: &mut tempfile::TempDir,
 ) {
     match classify(error) {
         ProductionOutcome::RolledBack => {}
         ProductionOutcome::RollbackUnproven => {
+            let detail =
+                match wrapper.fault_fidelity(&owned.target, expected_sets, expected_deletes) {
+                    Ok(()) => "the wrapper's recorded path matches its declared fault",
+                    Err(reason) => reason,
+                };
             hard_stop(
                 "rollback_unproven",
                 reconciliation,
                 Ownership::Fenced,
                 temp,
-                "",
+                detail,
             );
         }
         ProductionOutcome::PreviousUnavailable | ProductionOutcome::Invalid => {
@@ -653,7 +661,15 @@ fn an_owned_previous_scoped_entry_is_restored_byte_for_byte() {
 
     let wrapper = ReadFailureAfterSet::default();
     let error = run_injected_install(&scope, &alias, &wrapper, &reconciliation, &mut temp);
-    assert_rolled_back(&error, &mut owned, &reconciliation, &mut temp);
+    assert_rolled_back(
+        &error,
+        &mut owned,
+        &wrapper,
+        2,
+        0,
+        &reconciliation,
+        &mut temp,
+    );
     if let Err(reason) = wrapper.fault_fidelity(&target, 2, 0) {
         owned.cleanup(reason, &reconciliation, &mut temp);
         panic!("{reason}");
@@ -694,7 +710,15 @@ fn a_fresh_scoped_entry_is_deleted_after_rollback() {
 
     let wrapper = ReadFailureAfterSet::default();
     let error = run_injected_install(&scope, &alias, &wrapper, &reconciliation, &mut temp);
-    assert_rolled_back(&error, &mut owned, &reconciliation, &mut temp);
+    assert_rolled_back(
+        &error,
+        &mut owned,
+        &wrapper,
+        1,
+        1,
+        &reconciliation,
+        &mut temp,
+    );
     if let Err(reason) = wrapper.fault_fidelity(&target, 1, 1) {
         owned.cleanup(reason, &reconciliation, &mut temp);
         panic!("{reason}");
