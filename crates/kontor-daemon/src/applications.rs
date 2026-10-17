@@ -21517,7 +21517,11 @@ impl Services {
     /// Answer a replay of a key already bound to this exact correction.
     ///
     /// A marker that is already gone is the durable effect this key names, so
-    /// nothing is written. A completed key is answered the same way even when
+    /// nothing is written. That state is also completed here: a first attempt
+    /// whose write landed but whose completion insert failed leaves a claimed
+    /// key with the marker gone, and without this row a later operator restore
+    /// of the marker would make the key look unfinished and remove the marker a
+    /// new outage left. A completed key is answered the same way even when
     /// the operator has restored the marker for a later outage: completion is
     /// durable state, not a guess from the current bytes, so the restored
     /// marker survives its replay. A marker that still stands at the revision
@@ -21569,6 +21573,15 @@ impl Services {
             });
         }
         if !plan.before.contains(&request.provider) {
+            state
+                .with_store(|store| {
+                    store.record_provider_marker_completion(
+                        key.as_str(),
+                        &revision,
+                        kontor_api::now(),
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
             return Ok(ProviderMarkerDto {
                 realm_id: state.realm_id(),
                 runtime_family: family.to_string(),
@@ -21679,6 +21692,12 @@ impl Services {
                 .advising(
                     "read the marker again with the preview and apply the revision it reports",
                 ),
+            MarkerError::WriteFailed => self
+                .deny(
+                    ApiErrorCode::Unavailable,
+                    "the runtime settings document could not be written",
+                )
+                .advising("check the state root's free disk space and permissions, then retry"),
             MarkerError::Malformed | MarkerError::Unreadable => self
                 .deny(
                     ApiErrorCode::Unavailable,
