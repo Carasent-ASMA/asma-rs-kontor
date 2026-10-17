@@ -36,6 +36,7 @@ use kontor_core::repository::{
 use kontor_core::repository::{TeamDefinitionRepository, TopologyRepository};
 use kontor_core::spec::{TeamRunSnapshot, TopologySnapshot};
 use kontor_core::state::{NativeRuntimeIdentity, ObservedContainerKind, TaskState};
+use kontor_daemon::succession::SuccessionSummarizerTransport;
 use kontor_daemon::usage::{ExactProviderUsageReporter, UsagePoller};
 use kontor_daemon::{DATABASE_FILE, DEFAULT_CAPACITY, Daemon, DaemonConfig};
 use kontor_profiles::pack::{PackAvailability, resolve_profile};
@@ -216,6 +217,8 @@ struct WorldComposition {
     jira_connectors: Option<kontor_jira::JiraConnectors>,
     quota_signals: Option<String>,
     memory_cognee: Option<kontor_memory_cognee::Client>,
+    /// An exactly composed governed summarizer transport for succession.
+    succession_summarizer: Option<Arc<dyn SuccessionSummarizerTransport>>,
     /// Start from an empty state root and let the daemon create the Realm.
     created_realm: bool,
 }
@@ -341,6 +344,39 @@ impl World {
             DEFAULT_CAPACITY,
             WorldComposition {
                 usage_reporter: Some(reporter),
+                ..WorldComposition::default()
+            },
+        )
+        .await
+    }
+
+    /// Start an empty Realm whose succession handoffs dispatch through an
+    /// exactly configured governed summarizer transport.
+    ///
+    /// The shipped refusal signals are installed for the same reason the
+    /// quota-signal world installs them: a quota succession needs the runtime
+    /// refusal classified into a blocking row before any walk can run. The
+    /// declared-chain headroom walk still decides whether a dispatch is
+    /// admitted; this only composes the transport that executes an admitted
+    /// route, which is the exact production path minus the still-unavailable
+    /// runtime-backed implementation.
+    pub(crate) async fn open_empty_with_succession_summarizer(
+        summarizer: Arc<dyn SuccessionSummarizerTransport>,
+    ) -> Self {
+        Self::compose_with_connector(
+            // The production handoff reads one bounded page of 256 events, and
+            // a runtime that declares less would refuse the read rather than
+            // shorten it. The fake declares a page that admits the read.
+            capabilities_with_history_page(512),
+            true,
+            false,
+            false,
+            DEFAULT_CAPACITY,
+            WorldComposition {
+                quota_signals: Some(
+                    include_str!("../../../../config/examples/quota-signals.yml").to_owned(),
+                ),
+                succession_summarizer: Some(summarizer),
                 ..WorldComposition::default()
             },
         )
@@ -488,12 +524,13 @@ impl World {
         if let Some(client) = composition.memory_cognee {
             config = config.with_memory_cognee(client);
         }
-        let daemon = match composition.usage_reporter {
-            Some(reporter) => {
-                let poller = UsagePoller::with_exact_reporter(directory.path(), reporter);
-                Daemon::start_with_usage_poller(config, registry, poller)
-            }
-            None => Daemon::start(config, registry),
+        let daemon = if let Some(summarizer) = composition.succession_summarizer {
+            Daemon::start_with_succession_summarizer(config, registry, summarizer)
+        } else if let Some(reporter) = composition.usage_reporter {
+            let poller = UsagePoller::with_exact_reporter(directory.path(), reporter);
+            Daemon::start_with_usage_poller(config, registry, poller)
+        } else {
+            Daemon::start(config, registry)
         }
         .expect("the realm starts");
         let router = daemon.router();
