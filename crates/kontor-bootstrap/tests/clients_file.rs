@@ -712,10 +712,7 @@ fn an_existing_entry_raced_at_the_final_boundary_is_never_replaced() {
     ]);
     let mut adapter = fixture.adapter.clone();
     match adapter.install(&second, &mut hooks) {
-        Ok(AdapterResult::Conflict {
-            reason: ConflictReason::ConcurrentChange,
-            ..
-        }) => {}
+        Err(AdapterError::PreserveBoth) => {}
         other => panic!("a final-boundary race must be refused, got {other:?}"),
     }
     // Exact evidence, no bytes-anywhere scan: the target carries the exact
@@ -835,10 +832,7 @@ fn a_post_exchange_displaced_mutation_preserves_both_names_exactly() {
     )]);
     let mut adapter = fixture.adapter.clone();
     match adapter.install(&spec("/synthetic/two"), &mut hooks) {
-        Ok(AdapterResult::Conflict {
-            reason: ConflictReason::ConcurrentChange,
-            ..
-        }) => {}
+        Err(AdapterError::PreserveBoth) => {}
         other => panic!("a post-exchange mutation must PreserveBoth, got {other:?}"),
     }
     // Exact target operands: the swapped-in rendered inode and its complete
@@ -1086,10 +1080,7 @@ fn a_rollback_observation_error_preserves_both_names() {
     )]);
     let mut adapter = fixture.adapter.clone();
     match adapter.install(&spec("/synthetic/two"), &mut hooks) {
-        Ok(AdapterResult::Conflict {
-            reason: ConflictReason::ConcurrentChange,
-            ..
-        }) => {}
+        Err(AdapterError::PreserveBoth) => {}
         other => panic!("an observed rollback error preserves both names, got {other:?}"),
     }
     // Neither name is unlinked or exchanged back: the exact injected directory
@@ -1272,10 +1263,7 @@ fn a_changed_displaced_side_preserves_both_names() {
     )]);
     let mut adapter = fixture.adapter.clone();
     match adapter.install(&spec("/synthetic/two"), &mut hooks) {
-        Ok(AdapterResult::Conflict {
-            reason: ConflictReason::ConcurrentChange,
-            ..
-        }) => {}
+        Err(AdapterError::PreserveBoth) => {}
         other => panic!("a changed displaced side must be refused, got {other:?}"),
     }
     // Both names are preserved: no blind exchange-back, no cleanup.
