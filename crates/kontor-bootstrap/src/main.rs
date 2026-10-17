@@ -14,9 +14,9 @@ use clap::{Parser, Subcommand};
 use kontor_bootstrap::client::claude::UnavailableClaudeBoundary;
 use kontor_bootstrap::confinement::Dir;
 use kontor_bootstrap::{
-    AdapterResult, ArtifactManifest, BootstrapReceipt, ClaudeAdapter, ClientAdapter, ClientHome,
-    ClientId, ClientReport, FileClientAdapter, Installer, NoFaults, ObservedHash, OwnershipStore,
-    ServerSpec,
+    AdapterResult, ArtifactManifest, BootstrapReceipt, ClaudeAdapter, ClientAdapter, ClientFailure,
+    ClientHome, ClientId, ClientReport, FileClientAdapter, Installer, NoFaults, ObservedHash,
+    OwnershipStore, ServerSpec,
 };
 
 type Failure = (&'static str, String);
@@ -264,21 +264,35 @@ fn install(
         .map_err(|error| ("artifact_install_failed", error.to_string()))?;
 
     let mut receipt = BootstrapReceipt::from_install(&manifest, outcome);
+    let mut first_failure = None;
     for (client, adapter) in &mut adapters {
-        let result = adapter
-            .install(&spec, &mut NoFaults)
-            .map_err(client_error)?;
-        receipt.push_client(ClientReport::Applied {
-            client: *client,
-            result,
-        });
+        match adapter.install(&spec, &mut NoFaults) {
+            Ok(result) => receipt.push_client(ClientReport::Applied {
+                client: *client,
+                result,
+            }),
+            Err(error) => {
+                let reason = ClientFailure::from(error);
+                if first_failure.is_none() {
+                    first_failure = Some(reason);
+                }
+                receipt.push_client(ClientReport::Failed {
+                    client: *client,
+                    reason,
+                });
+            }
+        }
     }
     receipt
         .write_to(state_root)
         .map_err(|error| ("receipt_failed", error.to_string()))?;
-    receipt
+    let document = receipt
         .to_json()
-        .map_err(|error| ("receipt_failed", error.to_string()))
+        .map_err(|error| ("receipt_failed", error.to_string()))?;
+    if let Some(reason) = first_failure {
+        return Err(("client_adapter_failed", reason.as_str().to_owned()));
+    }
+    Ok(document)
 }
 
 fn readback(

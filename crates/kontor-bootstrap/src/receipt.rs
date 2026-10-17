@@ -55,6 +55,72 @@ pub struct ArtifactReceipt {
     pub disposition: ArtifactDisposition,
 }
 
+/// Why one client adapter could not complete, as a stable typed token.
+///
+/// This mirrors [`crate::client::AdapterError`] without carrying text, so a
+/// failure report stays redacted by construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientFailure {
+    /// The injected client or state root is relative.
+    RelativeRoot,
+    /// The server specification is not installable.
+    InvalidSpec,
+    /// A filesystem operation failed.
+    Io,
+    /// Confined filesystem access refused an operation.
+    Confinement,
+    /// The client's command surface failed.
+    CommandFailed,
+    /// The target changed between reading and writing it.
+    ConcurrentChange,
+    /// A fault injector interrupted the client write.
+    Injected,
+    /// The ownership ledger could not be read.
+    OwnershipUnreadable,
+    /// A replacement failed and the original entry could not be restored.
+    RestoreFailed,
+    /// Bootstrap-owned and foreign material could not be separated.
+    PreserveBoth,
+}
+
+impl ClientFailure {
+    /// The stable lowercase name used in receipts.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ClientFailure::RelativeRoot => "relative_root",
+            ClientFailure::InvalidSpec => "invalid_spec",
+            ClientFailure::Io => "io",
+            ClientFailure::Confinement => "confinement",
+            ClientFailure::CommandFailed => "command_failed",
+            ClientFailure::ConcurrentChange => "concurrent_change",
+            ClientFailure::Injected => "injected",
+            ClientFailure::OwnershipUnreadable => "ownership_unreadable",
+            ClientFailure::RestoreFailed => "restore_failed",
+            ClientFailure::PreserveBoth => "preserve_both",
+        }
+    }
+}
+
+impl From<crate::client::AdapterError> for ClientFailure {
+    fn from(error: crate::client::AdapterError) -> Self {
+        use crate::client::AdapterError;
+        match error {
+            AdapterError::RelativeRoot => ClientFailure::RelativeRoot,
+            AdapterError::InvalidSpec => ClientFailure::InvalidSpec,
+            AdapterError::Io => ClientFailure::Io,
+            AdapterError::Confinement(_) => ClientFailure::Confinement,
+            AdapterError::CommandFailed => ClientFailure::CommandFailed,
+            AdapterError::ConcurrentChange => ClientFailure::ConcurrentChange,
+            AdapterError::Injected => ClientFailure::Injected,
+            AdapterError::OwnershipUnreadable => ClientFailure::OwnershipUnreadable,
+            AdapterError::RestoreFailed => ClientFailure::RestoreFailed,
+            AdapterError::PreserveBoth => ClientFailure::PreserveBoth,
+        }
+    }
+}
+
 /// One client's outcome for an install or repair run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
@@ -72,6 +138,13 @@ pub enum ClientReport {
         client: ClientId,
         /// The typed state.
         state: EntryState,
+    },
+    /// The client adapter failed, and the run continued with the others.
+    Failed {
+        /// Which client.
+        client: ClientId,
+        /// The typed failure.
+        reason: ClientFailure,
     },
 }
 
@@ -248,6 +321,7 @@ impl BootstrapReceipt {
                     _ => None,
                 },
                 ClientReport::Observed { state, .. } => state.observed(),
+                ClientReport::Failed { .. } => None,
             };
             if let Some(observed) = observed
                 && ObservedHash::parse(observed.as_str()).is_none()
@@ -648,6 +722,10 @@ mod tests {
                 reason: ConflictReason::ConcurrentChange,
                 observed: Some(ObservedHash::of_bytes(b"observed")),
             },
+        });
+        receipt.push_client(ClientReport::Failed {
+            client: ClientId::Copilot,
+            reason: ClientFailure::Confinement,
         });
         let document = receipt.to_json().expect("serialize");
         let parsed: BootstrapReceipt = serde_json::from_str(&document).expect("parse");
