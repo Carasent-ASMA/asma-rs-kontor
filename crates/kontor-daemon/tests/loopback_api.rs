@@ -69626,3 +69626,6 @@ async fn a_claim_superseding_a_launched_occupancy_reports_a_null_roster_persona(
         "the retired launched occupancy must retain its frozen persona"
     );
 }
+
+#[path = "harness/completion_history.rs"]
+mod historical_completion_tests;

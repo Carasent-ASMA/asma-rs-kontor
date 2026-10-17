@@ -8594,7 +8594,9 @@ impl SqliteStore {
         &self,
         completion: &StoredEpicCompletion,
     ) -> RepositoryResult<()> {
-        self.connection
+        let transaction = self.begin()?;
+        self.guard_completion_history(&transaction, completion, CompletionWrite::Create)?;
+        transaction
             .execute(
                 "INSERT INTO epic_completion
                      (project_id, mini_project_id, profile_id, profile_version, definition_hash,
@@ -8622,6 +8624,7 @@ impl SqliteStore {
                 }
                 other => backend(other),
             })?;
+        transaction.commit().map_err(backend)?;
         Ok(())
     }
 
@@ -8641,8 +8644,13 @@ impl SqliteStore {
         completion: &StoredEpicCompletion,
         expected_revision: AggregateRevision,
     ) -> RepositoryResult<()> {
-        let changed = self
-            .connection
+        let transaction = self.begin()?;
+        self.guard_completion_history(
+            &transaction,
+            completion,
+            CompletionWrite::Advance(expected_revision),
+        )?;
+        let changed = transaction
             .execute(
                 "UPDATE epic_completion
                     SET state = ?3, revision = ?4, updated_at = ?5
@@ -8658,6 +8666,7 @@ impl SqliteStore {
             )
             .map_err(backend)?;
         if changed == 1 {
+            transaction.commit().map_err(backend)?;
             return Ok(());
         }
         // Nothing changed: either the run is gone or it moved. Which one it is
@@ -9336,6 +9345,130 @@ impl SqliteStore {
         Ok(inserted == 1)
     }
 
+    /// Check append-only dispositions and their mutable task/workflow fences in
+    /// the same transaction that writes the completion and receipt. Filesystem
+    /// packet verification happens earlier and cannot fence a concurrent reopen.
+    fn guard_completion_history(
+        &self,
+        transaction: &Transaction<'_>,
+        completion: &StoredEpicCompletion,
+        write: CompletionWrite,
+    ) -> RepositoryResult<()> {
+        let prior = epic_completion_in(
+            transaction,
+            completion.project_id,
+            completion.mini_project_id,
+        )?;
+        let old = prior
+            .as_ref()
+            .and_then(|value| value.state["historical_evidence"].as_array());
+        let new = completion.state["historical_evidence"].as_array();
+        let old = old.map_or(&[][..], Vec::as_slice);
+        let new = new.map_or(&[][..], Vec::as_slice);
+        if !new.starts_with(old) {
+            return Err(conflict(
+                "completion historical evidence",
+                "historical dispositions are append-only and cannot be changed or removed",
+            ));
+        }
+        if new.is_empty() || write == CompletionWrite::Unchanged {
+            return Ok(());
+        }
+        let next: kontor_scheduler::CompletionState =
+            serde_json::from_value(completion.state.clone()).map_err(|error| {
+                RepositoryError::Backend {
+                    detail: format!("completion history is unreadable: {error}"),
+                }
+            })?;
+        for (index, record) in next
+            .historical_evidence
+            .iter()
+            .enumerate()
+            .filter(|(_, record)| record.generation == next.generation)
+        {
+            if record.recorded_by != "admin"
+                || record.tasks.is_empty()
+                || ContentHash::of(record.packet.as_bytes()) != record.sha256
+            {
+                return Err(conflict(
+                    "completion historical evidence",
+                    "a disposition requires authenticated admin provenance and its exact verified packet",
+                ));
+            }
+            for pin in &record.tasks {
+                let task = self.get_task(completion.project_id, pin.task_id)?.ok_or(
+                    RepositoryError::NotFound {
+                        subject: "historical task",
+                    },
+                )?;
+                let (workflow, _) =
+                    load_workflow(transaction, completion.project_id, pin.workflow_id)?;
+                let gates =
+                    reduce_gate_states(transaction, completion.project_id, pin.workflow_id)?;
+                if task.mini_project_id != Some(completion.mini_project_id)
+                    || task.state != TaskState::Done
+                    || task.imported_state.is_some()
+                    || task.revision != pin.expected_task_revision
+                    || !workflow.active
+                    || workflow.task_id != pin.task_id
+                    || workflow.revision != pin.expected_workflow_revision
+                    || workflow.snapshot.definition_hash != pin.workflow_hash
+                    || workflow
+                        .snapshot
+                        .definition
+                        .gates
+                        .iter()
+                        .any(|gate| gates.get(&gate.id) != Some(&GateState::Passed))
+                {
+                    return Err(conflict(
+                        "completion historical evidence",
+                        "the exact native Done task, workflow or passed gates changed before completion committed",
+                    ));
+                }
+                if index >= old.len() {
+                    let requirement = next
+                        .ticket_requirements
+                        .iter()
+                        .find(|item| item.task_id == pin.task_id)
+                        .ok_or_else(|| {
+                            conflict(
+                                "completion historical evidence",
+                                "the task is outside this completion contract",
+                            )
+                        })?;
+                    let mut present =
+                        self.list_task_artifact_keys(completion.project_id, pin.task_id)?;
+                    present.extend(self.list_current_task_closure_artifact_keys(
+                        completion.project_id,
+                        pin.task_id,
+                    )?);
+                    for previous in next.historical_evidence[..index]
+                        .iter()
+                        .filter(|record| record.generation == next.generation)
+                    {
+                        for previous_task in previous
+                            .tasks
+                            .iter()
+                            .filter(|task| task.task_id == pin.task_id)
+                        {
+                            present.extend(previous_task.artifact_keys.iter().cloned());
+                        }
+                    }
+                    if pin.artifact_keys.is_empty()
+                        || !pin.artifact_keys.is_subset(&requirement.evidence)
+                        || !pin.artifact_keys.is_disjoint(&present)
+                    {
+                        return Err(conflict(
+                            "completion historical evidence",
+                            "a new disposition must name only declared keys that are still missing",
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Commit one completion transition, every derived wake, and its command.
     ///
     /// These are one effect: a completion revision without its wake is stranded
@@ -9361,6 +9494,7 @@ impl SqliteStore {
         command: &NewLocalCommand,
     ) -> RepositoryResult<CommandReceiptId> {
         let transaction = self.begin()?;
+        self.guard_completion_history(&transaction, completion, write)?;
         let target = AggregateRef::MiniProject {
             mini_project_id: completion.mini_project_id,
         };

@@ -63,10 +63,12 @@ pub use completion::{
     CompletionEdgeCondition, CompletionNode, CompletionNodeKey, CompletionNodeKind,
     CompletionObservation, CompletionPhase, CompletionProfile, CompletionProfileRef,
     CompletionRound, CompletionSignal, CompletionState, CompletionTransition, EraStamp,
+    HistoricalCompletionEvidence, HistoricalEvidenceDisposition, HistoricalTaskEvidence,
     IntegrationRecord, PollingFallback, RecordedCloseout, RemediationApproval,
     RemediationAuthority, RemediationAuthorization, RemediationRecord, RepositoryOutcome,
-    SignalDelivery, advance, blockers, compile, initial_completion_generation,
-    needs_human_recovery_round, operational_default, outstanding, recorded_era, start,
+    SignalDelivery, advance, blockers, compile, completion_ticket_evidence,
+    initial_completion_generation, needs_human_recovery_round, operational_default, outstanding,
+    recorded_era, start,
 };
 pub use headroom::{
     EligibleAccount, HeadroomConfig, Placement, RungEvidence, SeatClass, WaitReason, placement,
