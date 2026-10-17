@@ -28,8 +28,3 @@ zeroize = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 wiremock = { workspace = true }
-
-[target.'cfg(target_os = "macos")'.dev-dependencies]
-rustix = { workspace = true }
-core-foundation = { workspace = true }
-security-framework-sys = { workspace = true }

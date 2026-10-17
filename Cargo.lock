@@ -3297,14 +3297,11 @@ name = "kontor-jira"
 version = "0.2.1"
 dependencies = [
  "async-trait",
- "core-foundation",
  "futures",
  "kontor-accounts",
  "kontor-core",
  "reqwest",
- "rustix",
  "secrecy",
- "security-framework-sys",
  "serde",
  "serde_json",
  "tempfile",

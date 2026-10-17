@@ -525,13 +525,13 @@ impl KeychainWriter for ReadFailureAfterSet {
         target: &KeychainTarget,
         secret: &SecretString,
     ) -> Result<(), KeychainFailure> {
-        self.sets.fetch_add(1, Ordering::SeqCst);
+        let first = self.sets.fetch_add(1, Ordering::SeqCst) == 0;
         self.set_targets
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push(target.clone());
         let result = SystemKeychain.set_secret(target, secret);
-        if result.is_ok() {
+        if first && result.is_ok() {
             self.set_completed.store(true, Ordering::SeqCst);
         }
         result
@@ -573,18 +573,26 @@ fn classify(error: &CredentialInstallError) -> ProductionOutcome {
 fn assert_rolled_back(
     error: &CredentialInstallError,
     owned: &mut OwnedScopedTarget,
+    wrapper: &ReadFailureAfterSet,
+    expected_sets: usize,
+    expected_deletes: usize,
     reconciliation: &Reconciliation,
     temp: &mut tempfile::TempDir,
 ) {
     match classify(error) {
         ProductionOutcome::RolledBack => {}
         ProductionOutcome::RollbackUnproven => {
+            let detail =
+                match wrapper.fault_fidelity(&owned.target, expected_sets, expected_deletes) {
+                    Ok(()) => "the wrapper's recorded path matches its declared fault",
+                    Err(reason) => reason,
+                };
             hard_stop(
                 "rollback_unproven",
                 reconciliation,
                 Ownership::Fenced,
                 temp,
-                "",
+                detail,
             );
         }
         ProductionOutcome::PreviousUnavailable | ProductionOutcome::Invalid => {
@@ -653,7 +661,15 @@ fn an_owned_previous_scoped_entry_is_restored_byte_for_byte() {
 
     let wrapper = ReadFailureAfterSet::default();
     let error = run_injected_install(&scope, &alias, &wrapper, &reconciliation, &mut temp);
-    assert_rolled_back(&error, &mut owned, &reconciliation, &mut temp);
+    assert_rolled_back(
+        &error,
+        &mut owned,
+        &wrapper,
+        2,
+        0,
+        &reconciliation,
+        &mut temp,
+    );
     if let Err(reason) = wrapper.fault_fidelity(&target, 2, 0) {
         owned.cleanup(reason, &reconciliation, &mut temp);
         panic!("{reason}");
@@ -694,7 +710,15 @@ fn a_fresh_scoped_entry_is_deleted_after_rollback() {
 
     let wrapper = ReadFailureAfterSet::default();
     let error = run_injected_install(&scope, &alias, &wrapper, &reconciliation, &mut temp);
-    assert_rolled_back(&error, &mut owned, &reconciliation, &mut temp);
+    assert_rolled_back(
+        &error,
+        &mut owned,
+        &wrapper,
+        1,
+        1,
+        &reconciliation,
+        &mut temp,
+    );
     if let Err(reason) = wrapper.fault_fidelity(&target, 1, 1) {
         owned.cleanup(reason, &reconciliation, &mut temp);
         panic!("{reason}");
@@ -712,97 +736,6 @@ fn a_fresh_scoped_entry_is_deleted_after_rollback() {
     }
 
     owned.cleanup("the fresh-entry case", &reconciliation, &mut temp);
-}
-
-/// Case 3: the genuine production outcome is exactly `RolledBack` for both
-/// directions, and the final real-backend state is restored or `NotFound`.
-#[test]
-#[ignore = "macOS platform harness: writes the real login keychain through SystemKeychain; run deliberately with --ignored"]
-fn the_production_outcome_is_rolled_back_and_the_backend_state_is_final() {
-    {
-        let mut temp =
-            tempfile::tempdir().expect("the harness could not create its temporary root");
-        let root = canonical_root(&temp);
-        let realm = RealmId::generate();
-        let alias = fresh_alias();
-        let scope = JiraCredentialScope::at(&root, realm)
-            .expect("a fresh absolute root must form a valid credential scope");
-        let target = scoped_target(&root, realm, &alias);
-        let reconciliation = Reconciliation::new(&root, realm, &target);
-        let mut owned = OwnedScopedTarget::new(target.clone());
-        owned.ensure_absent(&reconciliation, &mut temp);
-
-        let previous = synthetic_previous_document();
-        delegated(
-            SystemKeychain.set_secret(&target, &previous),
-            "the harness could not seed its owned synthetic entry",
-            &reconciliation,
-            &mut temp,
-        );
-        let wrapper = ReadFailureAfterSet::default();
-        let error = run_injected_install(&scope, &alias, &wrapper, &reconciliation, &mut temp);
-        assert_rolled_back(&error, &mut owned, &reconciliation, &mut temp);
-        if let Err(reason) = wrapper.fault_fidelity(&target, 2, 0) {
-            owned.cleanup(reason, &reconciliation, &mut temp);
-            panic!("{reason}");
-        }
-        let final_state = delegated(
-            SystemKeychain.secret(&target),
-            "the production backend could not be read after rollback",
-            &reconciliation,
-            &mut temp,
-        );
-        confirm_secret(
-            &final_state,
-            &previous,
-            "the real backend did not end restored to the previous entry",
-            &reconciliation,
-            &mut temp,
-        );
-        drop(final_state);
-        owned.cleanup(
-            "the production-outcome previous-entry case",
-            &reconciliation,
-            &mut temp,
-        );
-    }
-
-    {
-        let mut temp =
-            tempfile::tempdir().expect("the harness could not create its temporary root");
-        let root = canonical_root(&temp);
-        let realm = RealmId::generate();
-        let alias = fresh_alias();
-        let scope = JiraCredentialScope::at(&root, realm)
-            .expect("a fresh absolute root must form a valid credential scope");
-        let target = scoped_target(&root, realm, &alias);
-        let reconciliation = Reconciliation::new(&root, realm, &target);
-        let mut owned = OwnedScopedTarget::new(target.clone());
-        owned.ensure_absent(&reconciliation, &mut temp);
-
-        let wrapper = ReadFailureAfterSet::default();
-        let error = run_injected_install(&scope, &alias, &wrapper, &reconciliation, &mut temp);
-        assert_rolled_back(&error, &mut owned, &reconciliation, &mut temp);
-        if let Err(reason) = wrapper.fault_fidelity(&target, 1, 1) {
-            owned.cleanup(reason, &reconciliation, &mut temp);
-            panic!("{reason}");
-        }
-        match SystemKeychain.secret(&target) {
-            Err(KeychainFailure::NotFound) => {}
-            _ => hard_stop(
-                "final_state_still_present",
-                &reconciliation,
-                Ownership::Fenced,
-                &mut temp,
-                "",
-            ),
-        }
-        owned.cleanup(
-            "the production-outcome fresh-entry case",
-            &reconciliation,
-            &mut temp,
-        );
-    }
 }
 
 /// Presence-only check of every proxy key the production HTTP stack can read.
