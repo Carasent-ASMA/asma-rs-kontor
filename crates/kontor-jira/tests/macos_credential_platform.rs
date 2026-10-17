@@ -8,17 +8,20 @@
 //! production `JiraConnectors` reader present the installed credential to a
 //! loopback-only responder.
 //!
-//! # Why every case is `#[ignore]`
+//! # Why every case is `#[ignore]` and needs an opt-in
 //!
 //! Every case below performs real OS effects (login keychain writes, a
 //! disposable Realm under a temporary root, a loopback HTTP responder, and a
 //! subprocess of the built daemon binary). None may run as part of an ordinary
 //! `cargo test`/CI invocation, and none is reachable through test discovery or
 //! compilation: the file defines no initializer, no lazy static and no setup
-//! hook, and every test body is guarded by `#[ignore]`. A deliberate run is:
+//! hook, and every test body is guarded by `#[ignore]`. Each case also requires
+//! `KONTOR_ASMA8015_KEYCHAIN_LIVE=1` and, without it, prints the reason and
+//! returns before any effect. A deliberate run is:
 //!
 //! ```text
-//! cargo test -p kontor-jira --test macos_credential_platform -- --ignored
+//! KONTOR_ASMA8015_KEYCHAIN_LIVE=1 \
+//!   cargo test -p kontor-jira --test macos_credential_platform -- --ignored
 //! ```
 //!
 //! The binary case additionally needs the exact daemon binary built at the
@@ -26,6 +29,7 @@
 //! refuses to run if any recognized proxy variable is present:
 //!
 //! ```text
+//! KONTOR_ASMA8015_KEYCHAIN_LIVE=1 \
 //! KONTOR_ASMA8015_DAEMON_BIN=/abs/path/to/kontor-daemon \
 //!   cargo test -p kontor-jira --test macos_credential_platform -- --ignored --exact \
 //!   the_built_daemon_installs_and_the_shared_production_readers_present_the_installed_credential
@@ -112,6 +116,8 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::Serialize;
 use zeroize::{Zeroize, Zeroizing};
 
+/// The explicit opt-in every effectful case requires.
+const LIVE_KEYCHAIN_ENV: &str = "KONTOR_ASMA8015_KEYCHAIN_LIVE";
 /// Non-secret path input naming the daemon binary built at the qualified source.
 const DAEMON_BINARY_ENV: &str = "KONTOR_ASMA8015_DAEMON_BIN";
 /// The disposable Realm export the harness reads its fresh realm id from.
@@ -159,6 +165,30 @@ const PROXY_ENVIRONMENT_KEYS: [&str; 8] = [
     "NO_PROXY",
     "no_proxy",
 ];
+
+/// Why a deliberate live-keychain run could not start, stated precisely rather
+/// than as a silent pass.
+struct Skip(&'static str);
+
+fn live_keychain_opt_in() -> Result<(), Skip> {
+    if std::env::var(LIVE_KEYCHAIN_ENV).as_deref() != Ok("1") {
+        return Err(Skip("KONTOR_ASMA8015_KEYCHAIN_LIVE is not 1"));
+    }
+    Ok(())
+}
+
+/// Skip before any effect unless the human explicitly opted in.
+macro_rules! live_keychain {
+    () => {
+        match live_keychain_opt_in() {
+            Ok(()) => {}
+            Err(Skip(reason)) => {
+                println!("skipped: {reason}");
+                return;
+            }
+        }
+    };
+}
 
 fn canonical_root(temp: &tempfile::TempDir) -> PathBuf {
     temp.path()
@@ -425,13 +455,15 @@ impl OwnedScopedTarget {
 }
 
 /// The deterministic one-shot wrapper: it delegates the initial read and the
-/// first successful set to the real `SystemKeychain`, injects exactly one typed
-/// read failure immediately after that set, then delegates rollback
-/// restore/delete and verification normally. It records counts and addresses
-/// (never values) so the tests can prove the fault fired on the production path.
+/// first successful set to the real `SystemKeychain`, proves the replacement
+/// credential persisted by reading it back directly, injects exactly one typed
+/// read failure only after that proof, then delegates rollback restore/delete
+/// and verification normally. It records counts and addresses (never values) so
+/// the tests can prove the fault fired on the production path.
 #[derive(Default)]
 struct ReadFailureAfterSet {
     set_completed: AtomicBool,
+    write_unproven: AtomicBool,
     failure_spent: AtomicBool,
     injected: AtomicBool,
     delegated_reads: AtomicUsize,
@@ -458,17 +490,31 @@ impl ReadFailureAfterSet {
         self.deletes.load(Ordering::SeqCst)
     }
 
+    /// The reconciliation detail for a first write that did not read back
+    /// exactly, or an empty detail when the write was proven.
+    fn write_unproven_detail(&self) -> &'static str {
+        if self.write_unproven.load(Ordering::SeqCst) {
+            "the replacement credential did not read back byte-for-byte after the first delegated write"
+        } else {
+            ""
+        }
+    }
+
     /// The production installer must have taken exactly this path: the initial
-    /// delegated read, one successful delegated set, the injected read, then
-    /// the rollback restore-or-delete and one verification read. Counts are
-    /// asserted, not the values that crossed them. Failure is returned, never
-    /// panicked: the caller decides the effectful disposition first.
+    /// delegated read, one successful delegated set proven by a direct readback,
+    /// the injected read, then the rollback restore-or-delete and one
+    /// verification read. Counts are asserted, not the values that crossed
+    /// them. Failure is returned, never panicked: the caller decides the
+    /// effectful disposition first.
     fn fault_fidelity(
         &self,
         target: &KeychainTarget,
         expected_sets: usize,
         expected_deletes: usize,
     ) -> Result<(), &'static str> {
+        if self.write_unproven.load(Ordering::SeqCst) {
+            return Err(self.write_unproven_detail());
+        }
         if !self.injected() {
             return Err("the deterministic wrapper did not inject its typed read failure");
         }
@@ -532,7 +578,15 @@ impl KeychainWriter for ReadFailureAfterSet {
             .push(target.clone());
         let result = SystemKeychain.set_secret(target, secret);
         if first && result.is_ok() {
-            self.set_completed.store(true, Ordering::SeqCst);
+            // The injected read failure may only follow a replacement
+            // credential that demonstrably persisted, so prove it through the
+            // real backend before arming the fault.
+            match SystemKeychain.secret(target) {
+                Ok(observed) if observed.expose_secret() == secret.expose_secret() => {
+                    self.set_completed.store(true, Ordering::SeqCst);
+                }
+                _ => self.write_unproven.store(true, Ordering::SeqCst),
+            }
         }
         result
     }
@@ -615,7 +669,7 @@ fn run_injected_install(
             reconciliation,
             Ownership::Fenced,
             temp,
-            "",
+            wrapper.write_unproven_detail(),
         ),
         Err(error) => error,
     }
@@ -626,6 +680,7 @@ fn run_injected_install(
 #[test]
 #[ignore = "macOS platform harness: writes the real login keychain through SystemKeychain; run deliberately with --ignored"]
 fn an_owned_previous_scoped_entry_is_restored_byte_for_byte() {
+    live_keychain!();
     let mut temp = tempfile::tempdir().expect("the harness could not create its temporary root");
     let root = canonical_root(&temp);
     let realm = RealmId::generate();
@@ -697,6 +752,7 @@ fn an_owned_previous_scoped_entry_is_restored_byte_for_byte() {
 #[test]
 #[ignore = "macOS platform harness: writes the real login keychain through SystemKeychain; run deliberately with --ignored"]
 fn a_fresh_scoped_entry_is_deleted_after_rollback() {
+    live_keychain!();
     let mut temp = tempfile::tempdir().expect("the harness could not create its temporary root");
     let root = canonical_root(&temp);
     let realm = RealmId::generate();
@@ -859,29 +915,14 @@ fn redact_diagnostic(raw: &mut Vec<u8>, email: &SecretString, token: &SecretStri
     cleaned.chars().take(DIAGNOSTIC_EXCERPT_CHARS).collect()
 }
 
-/// What the harness can prove about a child it had to terminate before any
-/// credential delivery. Only a successful `wait` establishes reaping; a failed
-/// `wait` leaves the OS process state unknown and must not be overstated.
-#[derive(Clone, Copy)]
-enum ReapState {
-    /// `wait` returned, so the child is no longer running and is reaped.
-    Reaped,
-    /// `wait` failed; the process status could not be established.
-    Unknown,
-}
-
-/// The child's outcome is either a proven exit or an explicit unknown: spawn,
-/// stdin-handle and wait failures must never become panics, because unwinding
-/// would drop the disposable root without the retained reconciliation block.
-/// The `StdinUnavailable` state carries the non-secret child PID and the
-/// proven-or-unknown reap state, so the caller never claims cleanup it did not
-/// establish.
+/// The child's outcome is either a proven exit or an explicit unknown: spawn
+/// and wait failures must never become panics, because unwinding would drop the
+/// disposable root without the retained reconciliation block.
 #[derive(Clone, Copy)]
 enum InstallOutcome {
     Exited(ExitStatus),
     WaitFailed,
     SpawnFailed,
-    StdinUnavailable { pid: u32, reap: ReapState },
 }
 
 struct InstallAttempt {
@@ -898,9 +939,9 @@ struct InstallAttempt {
 /// Nothing before or after delivery unwinds: spawning, taking the stdin handle,
 /// taking the stderr pipe and waiting are explicit `Option`/`Result` handling,
 /// never `expect`. A child spawned without a usable stdin handle is terminated
-/// before returning; a successful `wait` proves it is reaped, while a failed
-/// `wait` is reported as process status UNKNOWN with the child PID rather than
-/// claimed as cleanup. Zero credential bytes were delivered on that path.
+/// and reaped before returning and reported as a spawn failure, so the caller
+/// never claims cleanup it did not establish. Zero credential bytes were
+/// delivered on that path.
 fn run_daemon_install(
     daemon: &Path,
     root: &Path,
@@ -937,18 +978,11 @@ fn run_daemon_install(
         }
     };
     let Some(mut stdin) = child.stdin.take() else {
-        let pid = child.id();
-        // The kill request is best-effort evidence only: the `wait` below is
-        // what establishes that the child is no longer running and is reaped.
-        let kill_request = child.kill();
-        let reap = match child.wait() {
-            Ok(_) => ReapState::Reaped,
-            Err(_) => ReapState::Unknown,
-        };
-        drop(kill_request);
+        let _ = child.kill();
+        let _ = child.wait();
         payload.zeroize();
         return InstallAttempt {
-            outcome: InstallOutcome::StdinUnavailable { pid, reap },
+            outcome: InstallOutcome::SpawnFailed,
             delivered: false,
             diagnostic: String::new(),
         };
@@ -1184,6 +1218,7 @@ async fn comments_or_stop(
 #[ignore = "macOS platform harness: writes the real login keychain and runs the built daemon; set KONTOR_ASMA8015_DAEMON_BIN, unset proxy variables, and run deliberately with --ignored"]
 async fn the_built_daemon_installs_and_the_shared_production_readers_present_the_installed_credential()
  {
+    live_keychain!();
     assert_no_proxy_environment();
     let daemon = daemon_binary();
     let mut temp = tempfile::tempdir().expect("the harness could not create its temporary root");
@@ -1231,17 +1266,6 @@ async fn the_built_daemon_installs_and_the_shared_production_readers_present_the
             InstallOutcome::SpawnFailed => (
                 "daemon_install_spawn_failed",
                 "zero credential delivery; no delete or cleanup attempt; state UNKNOWN".to_owned(),
-            ),
-            InstallOutcome::StdinUnavailable { pid, reap } => (
-                "daemon_install_stdin_unavailable",
-                match reap {
-                    ReapState::Reaped => format!(
-                        "child pid {pid} reaped (wait succeeded); zero credential delivery; no delete or cleanup attempt; state UNKNOWN"
-                    ),
-                    ReapState::Unknown => format!(
-                        "child pid {pid} process status UNKNOWN (wait failed); zero credential delivery; no delete or cleanup attempt; operator reconciliation required; state UNKNOWN"
-                    ),
-                },
             ),
             InstallOutcome::WaitFailed => {
                 ("daemon_install_wait_uncertain", attempt.diagnostic.clone())
