@@ -640,8 +640,7 @@ impl FileClientAdapter {
                     observed: None,
                 });
             }
-            Err(AdapterError::Confinement(ConfinementError::Exists))
-            | Err(AdapterError::PreserveBoth) => {
+            Err(AdapterError::Confinement(ConfinementError::Exists)) => {
                 return Ok(AdapterResult::Conflict {
                     reason: ConflictReason::ConcurrentChange,
                     observed: observed.state.observed().cloned(),
