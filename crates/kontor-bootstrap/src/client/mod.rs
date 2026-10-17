@@ -221,6 +221,9 @@ pub enum ConflictReason {
     TooLarge,
     /// A document nested deeper than the supported bound.
     TooDeep,
+    /// An earlier reconciliation left a bootstrap temporary beside the
+    /// configuration file; the operator must resolve it first.
+    UnreconciledTemporary,
 }
 
 impl ConflictReason {
@@ -239,6 +242,7 @@ impl ConflictReason {
             ConflictReason::OwnershipUnreadable => "ownership_unreadable",
             ConflictReason::TooLarge => "too_large",
             ConflictReason::TooDeep => "too_deep",
+            ConflictReason::UnreconciledTemporary => "unreconciled_temporary",
         }
     }
 }
