@@ -247,12 +247,13 @@ impl ClaudeAdapter {
         }
         match self.boundary.get(ENTRY_NAME) {
             Ok(None) => {}
-            _ => {
+            Ok(Some(_)) => {
                 return Ok(AdapterResult::Conflict {
                     reason: ConflictReason::ConcurrentChange,
                     observed: None,
                 });
             }
+            Err(_) => return self.restore_original(&current),
         }
         match self.boundary.add_json(ENTRY_NAME, &desired) {
             Ok(()) => {}
@@ -262,21 +263,25 @@ impl ClaudeAdapter {
                     observed: None,
                 });
             }
-            Err(_) => {
-                // The original entry was removed and the replacement did not
-                // land. Put the exact saved original back through the
-                // no-overwrite add boundary: a concurrent re-add is never
-                // clobbered, and an unrestorable original is reported as
-                // such rather than as an ordinary command failure.
-                let original =
-                    serde_json::to_string(&current).map_err(|_| AdapterError::RestoreFailed)?;
-                return match self.boundary.add_json(ENTRY_NAME, &original) {
-                    Ok(()) => Err(AdapterError::CommandFailed),
-                    Err(_) => Err(AdapterError::RestoreFailed),
-                };
-            }
+            Err(_) => return self.restore_original(&current),
         }
         self.readback(spec)
+    }
+
+    /// Put a removed original back through the no-overwrite add boundary.
+    ///
+    /// A concurrent re-add is never clobbered, and an unrestorable original is
+    /// reported as such rather than as an ordinary command failure.
+    fn restore_original(&mut self, current: &Value) -> Result<AdapterResult, AdapterError> {
+        let original = serde_json::to_string(current).map_err(|_| AdapterError::RestoreFailed)?;
+        match self.boundary.add_json(ENTRY_NAME, &original) {
+            Ok(()) => Err(AdapterError::CommandFailed),
+            Err(ClaudeBoundaryError::AlreadyExists) => Ok(AdapterResult::Conflict {
+                reason: ConflictReason::ConcurrentChange,
+                observed: None,
+            }),
+            Err(_) => Err(AdapterError::RestoreFailed),
+        }
     }
 }
 

@@ -507,6 +507,73 @@ fn an_unrestorable_failed_replacement_is_reported_as_restore_failed() {
 }
 
 #[test]
+fn a_get_failure_after_removal_restores_the_original_entry() {
+    /// Fails the first `get` after a successful conditional removal.
+    struct GetFailsAfterRemoval {
+        inner: FakeClaudeBoundary,
+        fail_next_get: bool,
+    }
+
+    impl ClaudeBoundary for GetFailsAfterRemoval {
+        fn get(&mut self, name: &str) -> Result<Option<Value>, ClaudeBoundaryError> {
+            if self.fail_next_get {
+                self.fail_next_get = false;
+                return Err(ClaudeBoundaryError::Failed);
+            }
+            self.inner.get(name)
+        }
+
+        fn add_json(&mut self, name: &str, json: &str) -> Result<(), ClaudeBoundaryError> {
+            self.inner.add_json(name, json)
+        }
+
+        fn remove(&mut self, name: &str) -> Result<(), ClaudeBoundaryError> {
+            self.inner.remove(name)
+        }
+
+        fn remove_if(
+            &mut self,
+            name: &str,
+            expected: &Value,
+        ) -> Result<Removal, ClaudeBoundaryError> {
+            let result = self.inner.remove_if(name, expected);
+            if result == Ok(Removal::Removed) {
+                self.fail_next_get = true;
+            }
+            result
+        }
+    }
+
+    let mut harness = harness(GetFailsAfterRemoval {
+        inner: FakeClaudeBoundary::new(),
+        fail_next_get: false,
+    });
+    let first = spec("/synthetic/one");
+    let second = spec("/synthetic/two");
+    assert_eq!(
+        harness
+            .adapter
+            .install(&first, &mut NoFaults)
+            .expect("install"),
+        AdapterResult::Installed
+    );
+    assert_eq!(
+        harness
+            .adapter
+            .install(&second, &mut NoFaults)
+            .expect_err("the confirmation get fails"),
+        AdapterError::CommandFailed
+    );
+    assert!(
+        matches!(
+            harness.adapter.inspect(&first).expect("inspect"),
+            EntryState::Current { .. }
+        ),
+        "the original entry is restored, not lost"
+    );
+}
+
+#[test]
 fn a_write_that_does_not_read_back_is_failed_readback_without_ownership() {
     struct Vanish;
 
