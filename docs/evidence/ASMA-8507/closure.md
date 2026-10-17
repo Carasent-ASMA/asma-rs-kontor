@@ -1,7 +1,7 @@
 # ASMA-8507 — Kontor Paseo plugin floor and workspace guard
 
-> **Date:** 2026-10-17
-> **Base:** `0971674d` (`origin/master`)
+> **Date:** 2026-10-18
+> **Base:** `0971674d` (`origin/master`), rerun at `4d91d258` plus the round-2 fixes
 > **Paseo:** 0.11.2
 > **Scope:** KR-11 of the Kontor relaunch plan. Plugin source in
 > `apps/paseo-plugin`.
@@ -35,7 +35,7 @@ typecheck exit=0
 
 $ pnpm --filter @carasent/kontor-paseo-plugin test
 Test Files  5 passed (5)
-     Tests  38 passed (38)
+     Tests  47 passed (47)
 ```
 
 ## Isolated closure run
@@ -57,12 +57,21 @@ Guarded behaviour:
 
 ```json
 {"expected":"guarded","checks":[
- {"name":"interactive directory create","outcome":"created"},
+ {"name":"interactive directory create","outcome":"created",
+  "workspaceId":"wks_4c3a86558c3c35d2"},
  {"name":"labelled worktree create","outcome":"refused",
   "message":"Plugin kontor before workspace.create failed: Kontor workspace guard refused: Kontor placement registers an existing directory; worktree creation is outside it"},
  {"name":"labelled directory without projectId","outcome":"refused",
   "message":"Plugin kontor before workspace.create failed: Kontor workspace guard refused: Kontor placement requires an explicit projectId"},
- {"name":"interactive worktree create","outcome":"created"}]}
+ {"name":"interactive worktree create","outcome":"created",
+  "workspaceId":"wks_38b6bced692f1c1c"}]}
+```
+
+CLI residual with the same installed plugin — `paseo workspace create` carries
+no agent and no caller, so the guard cannot see a seat:
+
+```json
+{"name":"cli workspace create","outcome":"created","workspaceId":"wks_dfbf84b672dcefb0"}
 ```
 
 Uninstall readback and restored behaviour:
@@ -70,14 +79,21 @@ Uninstall readback and restored behaviour:
 ```json
 {"plugins":0}
 {"expected":"unguarded","checks":[
- {"name":"interactive directory create","outcome":"created"},
- {"name":"labelled worktree create","outcome":"created"},
- {"name":"interactive worktree create","outcome":"created"}]}
+ {"name":"interactive directory create","outcome":"created",
+  "workspaceId":"wks_6556b4c15ee3d275"},
+ {"name":"labelled worktree create","outcome":"created",
+  "workspaceId":"wks_85af55ac9f25ce21"},
+ {"name":"interactive worktree create","outcome":"created",
+  "workspaceId":"wks_16598d78f9a816cb"}]}
 ```
 
 The same labelled worktree create that the installed plugin refused succeeds
 after `paseo plugin remove kontor`; the uninstall restores the previous
 behaviour.
+
+The suite was run from this fix checkout with `GIT_CONFIG_COUNT=0` so the
+desk's global `core.hooksPath` does not reach the disposable fixture repo; the
+daemon, the plugin install and the assertions are unchanged.
 
 ## No write credential
 
