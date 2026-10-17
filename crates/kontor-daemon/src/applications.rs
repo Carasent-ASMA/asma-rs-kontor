@@ -32839,11 +32839,18 @@ impl ApplicationOperations for Services {
         //
         // A re-apply may declare a new worktree for an existing task. A
         // container recovery freezes every claim it plans against and builds a
-        // native at that directory, so this claim write must not land between
+        // native at that directory, so that claim write must not land between
         // the freeze and the binding: take the same native lifecycle lock the
-        // recovery holds. It is released before governance, which takes its own
-        // native-activity read.
-        let native_lifecycle = self.native_lifecycle_change().await?;
+        // recovery holds. Only a write that actually moves a claim takes it — a
+        // queued writer refuses all new native work until its turn, and a fresh
+        // or unchanged apply has no claim a recovery could freeze. The lock is
+        // released before governance, which takes its own native-activity read.
+        let native_lifecycle =
+            if self.apply_epic_moves_worktree_claim(project_id, &request.name, &tasks)? {
+                Some(self.native_lifecycle_change().await?)
+            } else {
+                None
+            };
         let seed = AdaptivePosition::initial(self.capacity.adaptive);
         let applied = state
             .with_store(|store| {
@@ -44588,6 +44595,54 @@ impl Services {
             .map_err(|error| self.refuse(&error))?
             .map_or(existing.name, |scope| scope.short_title);
         Ok((self.epic_tracker_key(project_id, existing.id)?, title))
+    }
+
+    /// Whether this apply would move an existing task's worktree claim.
+    ///
+    /// A container recovery freezes the claims it plans against, builds a
+    /// native at those directories, and only then binds it. The one epic write
+    /// that can land inside that window is a claim write, so only it has to
+    /// hold the native lifecycle lock. A new epic, a task this apply creates,
+    /// and an identical re-apply write no claim and must not wait behind native
+    /// work: a queued writer refuses every new native operation in the realm
+    /// until it gets its turn.
+    fn apply_epic_moves_worktree_claim(
+        &self,
+        project_id: ProjectId,
+        name: &ExternalName,
+        tasks: &[EpicTask],
+    ) -> Result<bool, ApiError> {
+        let state = self.state()?;
+        let Some(epic) = state
+            .with_store(|store| store.list_mini_projects(project_id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .find(|epic| &epic.name == name)
+        else {
+            return Ok(false);
+        };
+        let stored = state
+            .with_store(|store| store.list_epic_tasks(project_id, epic.id))
+            .map_err(|error| self.refuse(&error))?;
+        for plan in tasks {
+            let Some(task) = stored.iter().find(|task| task.title == plan.title) else {
+                continue;
+            };
+            let current = state
+                .with_store(|store| store.task_worktree(project_id, task.id))
+                .map_err(|error| self.refuse(&error))?;
+            // The same fallback `apply_epic` writes: a declared claim always,
+            // else the derived one only where nothing was ever declared.
+            let writes_claim = match (&plan.worktree, &plan.derived_worktree) {
+                (Some(declared), _) => current.as_ref() != Some(declared),
+                (None, Some(_)) => current.is_none(),
+                (None, None) => false,
+            };
+            if writes_claim {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Validate a declared managed worktree against the shared branch grammar
