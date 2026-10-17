@@ -364,6 +364,48 @@ describe("workspace.create hook", () => {
     ).rejects.toThrow("Kontor workspace guard refused");
   });
 
+  it("refuses a labelled initial agent when the caller is unlabelled", async () => {
+    await expect(
+      guardWorkspaceCreate(
+        workspaceRequest({
+          callerAgentId: "agent-2",
+          agent: {
+            config: { provider: "claude", cwd: "/Users/test/carasent/asma-modules" },
+            labels: seatLabels(),
+          },
+          source: {
+            kind: "worktree",
+            cwd: "/Users/test/carasent/asma-modules",
+            projectId: PROJECT,
+          },
+        }),
+        context({}, { wks_seat: { projectId: PROJECT, workspaceDirectory: CANONICAL } }),
+        config(),
+      ),
+    ).rejects.toThrow("Kontor workspace guard refused");
+  });
+
+  it("refuses a labelled initial agent when the caller label read fails", async () => {
+    await expect(
+      guardWorkspaceCreate(
+        workspaceRequest({
+          callerAgentId: "agent-2",
+          agent: {
+            config: { provider: "claude", cwd: "/Users/test/carasent/asma-modules" },
+            labels: seatLabels(),
+          },
+          source: {
+            kind: "worktree",
+            cwd: "/Users/test/carasent/asma-modules",
+            projectId: PROJECT,
+          },
+        }),
+        context("error", { wks_seat: { projectId: PROJECT, workspaceDirectory: CANONICAL } }),
+        config(),
+      ),
+    ).rejects.toThrow("Kontor workspace guard refused");
+  });
+
   it("allows a labelled seat creating a canonical Kontor placement", async () => {
     await expect(
       guardWorkspaceCreate(workspaceRequest(), seatContext(), config()),
@@ -392,7 +434,7 @@ describe("workspace.create hook", () => {
     ).resolves.toBeUndefined();
   });
 
-  it("fails open when the caller labels cannot be read", async () => {
+  it("fails open when the caller labels cannot be read and the request has no seat labels", async () => {
     await expect(
       guardWorkspaceCreate(
         workspaceRequest({

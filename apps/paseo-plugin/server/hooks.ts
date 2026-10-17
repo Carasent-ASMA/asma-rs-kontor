@@ -125,42 +125,49 @@ function initialAgentLabelsOf(request: WorkspaceCreateRequest): Record<string, s
 }
 
 /**
- * Refuse a labelled Kontor seat's workspace creation outside its placement.
+ * Refuse a labelled Kontor seat's workspace creation outside its own placement.
  *
- * A human's request carries no labelled caller, an unlabelled caller is
- * interactive, and an unreadable label lookup fails open; in those cases the
- * request is unchanged. A labelled seat must match its binding: the native
- * project its own workspace belongs to and the canonical worktree its labels
- * name.
+ * A human's request carries no labelled initial agent, an unlabelled caller is
+ * interactive, and an unreadable caller lookup with no seat labels on the
+ * request fails open; in those cases the request is unchanged. Both label sets
+ * are checked: the request's initial agent and, when the release passes it, the
+ * caller. When either marks a Kontor seat, the request must match that seat's
+ * binding — the native project its own workspace belongs to and the canonical
+ * worktree its labels name.
  */
 export async function guardWorkspaceCreate(
   request: WorkspaceCreateRequest,
   context: Pick<PluginHookContext, "paseo" | "signal">,
   config: KontorPluginConfig,
 ): Promise<void> {
+  const initialLabels = initialAgentLabelsOf(request);
   const callerAgentId = callerAgentIdOf(request);
-  let labels: AgentLabels = initialAgentLabelsOf(request);
-  if (callerAgentId) {
-    labels = await readAgentLabels(context.paseo, callerAgentId, {
+  const callerLabels = callerAgentId
+    ? await readAgentLabels(context.paseo, callerAgentId, {
+        timeoutMs: config.labelReadTimeoutMs,
+        signal: context.signal,
+      })
+    : null;
+  const seatLabels: AgentLabels[] = [initialLabels, callerLabels].filter((labels) =>
+    isKontorSeat(labels),
+  );
+  if (seatLabels.length === 0) {
+    return;
+  }
+  for (const labels of seatLabels) {
+    const binding = await readPlacementBinding(context.paseo, labels, {
       timeoutMs: config.labelReadTimeoutMs,
       signal: context.signal,
     });
-  }
-  if (!labels || !isKontorSeat(labels)) {
-    return;
-  }
-  const binding = await readPlacementBinding(context.paseo, labels, {
-    timeoutMs: config.labelReadTimeoutMs,
-    signal: context.signal,
-  });
-  if (binding === null) {
-    throw new Error(
-      "Kontor workspace guard refused: the seat's placement binding could not be resolved",
-    );
-  }
-  const decision = evaluatePlacement(request, config, binding);
-  if (!decision.allowed) {
-    throw new Error(`Kontor workspace guard refused: ${decision.reason}`);
+    if (binding === null) {
+      throw new Error(
+        "Kontor workspace guard refused: the seat's placement binding could not be resolved",
+      );
+    }
+    const decision = evaluatePlacement(request, config, binding);
+    if (!decision.allowed) {
+      throw new Error(`Kontor workspace guard refused: ${decision.reason}`);
+    }
   }
 }
 
