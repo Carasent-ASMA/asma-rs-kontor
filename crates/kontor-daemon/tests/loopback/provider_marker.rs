@@ -660,6 +660,111 @@ async fn a_claim_survives_a_failed_write_and_the_same_key_finishes_the_correctio
 }
 
 #[tokio::test]
+async fn a_replay_that_finds_the_marker_gone_completes_the_key_and_never_reopens_it() {
+    let world = World::open().await;
+    let path = fixture(&world);
+    let family = fake_family().to_string();
+    let preview = Call::post("/v1/provider-markers:preview", &preview_body())
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let revision = preview.json()["revision"]
+        .as_str()
+        .expect("a revision")
+        .to_owned();
+    let preview_hash = preview.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+    let apply = serde_json::json!({
+        "runtime_family": family,
+        "provider": "claude",
+        "expected_revision": revision,
+        "preview_hash": preview_hash,
+    });
+
+    // The first attempt claimed the key and its write landed, but its
+    // completion insert failed: the binding stands, the marker is gone and no
+    // completion row names the key.
+    let fingerprint = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "operation": "provider_marker_apply",
+        "runtime_family": fake_family().as_str(),
+        "provider": "claude",
+        "expected_revision": revision,
+        "preview_hash": preview_hash,
+    }))
+    .expect("the intent canonicalizes")
+    .hash()
+    .clone();
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.bind_realm_operation(&IdempotencyBinding {
+                key: "marker-completion-lost".to_owned(),
+                operation: "clear_provider_marker",
+                fingerprint,
+                bound_at: at("2026-10-02T09:00:00Z"),
+            })
+        })
+        .expect("the first attempt's claim is durable");
+    let corrected = marker_document().replace("[\"claude\",\"codex\"]", "[\"codex\"]");
+    std::fs::write(&path, &corrected).expect("the first attempt's write landed");
+    assert_eq!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.provider_marker_completion("marker-completion-lost"))
+            .expect("the completion reads"),
+        None,
+        "the completion insert never landed"
+    );
+
+    // The replay answers the effect that already stands and records the
+    // completion the first attempt lost.
+    let recovered = Call::post("/v1/provider-markers:apply", &apply)
+        .signed_as(&world, "admin")
+        .with_key("marker-completion-lost")
+        .send(&world)
+        .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    assert_eq!(recovered.json()["outcome"], "replayed");
+    assert_eq!(recovered.json()["changed"], false);
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the document reads"),
+        corrected
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.provider_marker_completion("marker-completion-lost"))
+            .expect("the completion reads")
+            .is_some(),
+        "the recovery replay records the completion the first attempt lost"
+    );
+
+    // A later outage restores the exact bytes the first attempt read. The key
+    // is complete now, so the restored marker survives the replay.
+    std::fs::write(&path, marker_document()).expect("the operator restores the marker");
+    let during_new_outage = Call::post("/v1/provider-markers:apply", &apply)
+        .signed_as(&world, "admin")
+        .with_key("marker-completion-lost")
+        .send(&world)
+        .await;
+    assert_eq!(during_new_outage.status, 200, "{}", during_new_outage.body);
+    assert_eq!(during_new_outage.json()["outcome"], "replayed");
+    assert_eq!(during_new_outage.json()["changed"], false);
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the document reads"),
+        marker_document(),
+        "a key completed by its recovery replay never removes a marker restored for a new outage"
+    );
+}
+
+#[tokio::test]
 async fn a_provider_marker_key_bound_by_another_realm_operation_is_a_conflict() {
     let world = World::open().await;
     let path = fixture(&world);
