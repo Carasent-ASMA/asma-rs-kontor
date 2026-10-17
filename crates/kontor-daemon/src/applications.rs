@@ -32836,6 +32836,14 @@ impl ApplicationOperations for Services {
         // scheduled against a window started fresh on every pass, which is the
         // very state this ticket is removing — so the position is part of
         // applying an epic, not something a later call remembers to add.
+        //
+        // A re-apply may declare a new worktree for an existing task. A
+        // container recovery freezes every claim it plans against and builds a
+        // native at that directory, so this claim write must not land between
+        // the freeze and the binding: take the same native lifecycle lock the
+        // recovery holds. It is released before governance, which takes its own
+        // native-activity read.
+        let native_lifecycle = self.native_lifecycle_change().await?;
         let seed = AdaptivePosition::initial(self.capacity.adaptive);
         let applied = state
             .with_store(|store| {
@@ -32870,6 +32878,7 @@ impl ApplicationOperations for Services {
                 Ok::<_, RepositoryError>(applied)
             })
             .map_err(|error| self.refuse(&error))?;
+        drop(native_lifecycle);
 
         // Before governance can remove the scheduler's ungoverned barrier,
         // persist the optional covering authorization already revoked.
