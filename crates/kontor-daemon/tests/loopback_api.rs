@@ -51906,10 +51906,9 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
         assert_eq!(cross_epic.code(), "forbidden");
         assert!(cross_epic.json().get("phase").is_none());
     }
-    // The other epic's TPM seat retires. Its completion now holds no live TPM,
-    // so the membership fence fails while resolving that role. A seat that is
-    // not this epic's leadership must still be refused as non-authority rather
-    // than be told the role is unbound and asked to bind it.
+    // The other epic's TPM seat retires. The membership check refuses this
+    // reader before any of that epic's staffing is read, so its unbound role
+    // is never reported.
     let other_tpm = SeatBindingId::parse(
         other_seats
             .iter()
@@ -52230,6 +52229,44 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
     assert!(stale_read.json().get("phase").is_none());
     let successor_read = scoped_completion(lsa, 2, project, &epic).send(world).await;
     assert_eq!(successor_read.status, 200, "{}", successor_read.body);
+
+    // A reader of its own epic keeps the true refusal when that epic's staffing
+    // cannot be read. Break the pinned Team Definition hash so the control
+    // plane lookup fails, and check the failure is reported as a placement
+    // error rather than as "not this epic's leadership".
+    let pinned_definition_hash: String = completion_reads_db
+        .query_row(
+            "SELECT canonical_hash FROM mini_project_team_definition_snapshots \
+             WHERE project_id=?1 AND mini_project_id=?2",
+            [&project_id.to_string(), &epic],
+            |row| row.get(0),
+        )
+        .expect("the epic's leadership definition is pinned");
+    let mut broken_hash = pinned_definition_hash.clone().into_bytes();
+    broken_hash[0] = if broken_hash[0] == b'a' { b'b' } else { b'a' };
+    let broken_hash = String::from_utf8(broken_hash).expect("the hash stays ASCII");
+    completion_reads_db
+        .execute(
+            "UPDATE mini_project_team_definition_snapshots SET canonical_hash=?1 \
+             WHERE project_id=?2 AND mini_project_id=?3",
+            [&broken_hash, &project_id.to_string(), &epic],
+        )
+        .unwrap();
+    let unreadable_staffing = scoped_completion(lsa, 2, project, &epic).send(world).await;
+    assert_eq!(
+        unreadable_staffing.status, 409,
+        "a broken leadership definition is this epic's placement failure: {}",
+        unreadable_staffing.body
+    );
+    assert_eq!(unreadable_staffing.code(), "placement_blocked");
+    assert!(unreadable_staffing.json().get("phase").is_none());
+    completion_reads_db
+        .execute(
+            "UPDATE mini_project_team_definition_snapshots SET canonical_hash=?1 \
+             WHERE project_id=?2 AND mini_project_id=?3",
+            [&pinned_definition_hash, &project_id.to_string(), &epic],
+        )
+        .unwrap();
 
     let stale_predecessor = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/completion:remediate"),
