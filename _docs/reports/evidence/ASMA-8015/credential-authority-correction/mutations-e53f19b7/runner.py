@@ -1,5 +1,5 @@
 import pathlib, subprocess, os, datetime, json, hashlib, difflib, sys
-OWNER=pathlib.Path('/Users/igor/carasent/asma-modules/.worktrees/asma-8015/asma-rs-kontor')
+OWNER=pathlib.Path('$HOME/carasent/asma-modules/.worktrees/asma-8015/asma-rs-kontor')
 PIN='e53f19b744b80862b166b613dcb8992bcf371215'
 ROOT=pathlib.Path('/private/tmp/ASMA-8015-mutations-e53f19b7');ROOT.mkdir(exist_ok=False)
 SRC=ROOT/'source';SRC.mkdir()

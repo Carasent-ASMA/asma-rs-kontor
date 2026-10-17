@@ -18,7 +18,7 @@
     "the_committed_contract_document_is_the_one_this_crate_serves",
     "--exact"
   ],
-  "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+  "cwd": "$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
   "started_at_utc": "2026-10-04T01:26:11.313861+00:00",
   "status": "PASS",
   "exit_code": 0,
@@ -43,12 +43,12 @@
       "argv": [
         "du",
         "-sk",
-        "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
+        "$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
       ],
       "started_at_utc": "2026-10-04T01:26:31.328051+00:00",
       "completed_at_utc": "2026-10-04T01:26:31.345228+00:00",
       "exit_code": 0,
-      "stdout": "100704\t/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
+      "stdout": "100704\t$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
       "stderr": "",
       "bytes": 103120896
     },
@@ -56,12 +56,12 @@
       "argv": [
         "du",
         "-sk",
-        "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
+        "$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
       ],
       "started_at_utc": "2026-10-04T01:26:51.350840+00:00",
       "completed_at_utc": "2026-10-04T01:26:51.367171+00:00",
       "exit_code": 0,
-      "stdout": "166856\t/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
+      "stdout": "166856\t$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
       "stderr": "",
       "bytes": 170860544
     },
@@ -69,12 +69,12 @@
       "argv": [
         "du",
         "-sk",
-        "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
+        "$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
       ],
       "started_at_utc": "2026-10-04T01:27:11.372966+00:00",
       "completed_at_utc": "2026-10-04T01:27:11.390796+00:00",
       "exit_code": 0,
-      "stdout": "170164\t/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
+      "stdout": "170164\t$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
       "stderr": "",
       "bytes": 174247936
     },
@@ -82,12 +82,12 @@
       "argv": [
         "du",
         "-sk",
-        "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
+        "$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
       ],
       "started_at_utc": "2026-10-04T01:27:31.399704+00:00",
       "completed_at_utc": "2026-10-04T01:27:31.420870+00:00",
       "exit_code": 0,
-      "stdout": "207556\t/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
+      "stdout": "207556\t$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
       "stderr": "",
       "bytes": 212537344
     },
@@ -95,12 +95,12 @@
       "argv": [
         "du",
         "-sk",
-        "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
+        "$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
       ],
       "started_at_utc": "2026-10-04T01:27:51.427659+00:00",
       "completed_at_utc": "2026-10-04T01:27:51.450846+00:00",
       "exit_code": 0,
-      "stdout": "308264\t/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
+      "stdout": "308264\t$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
       "stderr": "",
       "bytes": 315662336
     },
@@ -108,12 +108,12 @@
       "argv": [
         "du",
         "-sk",
-        "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
+        "$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
       ],
       "started_at_utc": "2026-10-04T01:28:11.453295+00:00",
       "completed_at_utc": "2026-10-04T01:28:11.474411+00:00",
       "exit_code": 0,
-      "stdout": "409296\t/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
+      "stdout": "409296\t$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
       "stderr": "",
       "bytes": 419119104
     },
@@ -121,12 +121,12 @@
       "argv": [
         "du",
         "-sk",
-        "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
+        "$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
       ],
       "started_at_utc": "2026-10-04T01:28:31.477251+00:00",
       "completed_at_utc": "2026-10-04T01:28:31.500766+00:00",
       "exit_code": 0,
-      "stdout": "527744\t/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
+      "stdout": "527744\t$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
       "stderr": "",
       "bytes": 540409856
     },
@@ -134,12 +134,12 @@
       "argv": [
         "du",
         "-sk",
-        "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
+        "$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
       ],
       "started_at_utc": "2026-10-04T01:28:51.509126+00:00",
       "completed_at_utc": "2026-10-04T01:28:51.530965+00:00",
       "exit_code": 0,
-      "stdout": "644740\t/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
+      "stdout": "644740\t$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
       "stderr": "",
       "bytes": 660213760
     },
@@ -147,12 +147,12 @@
       "argv": [
         "du",
         "-sk",
-        "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
+        "$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
       ],
       "started_at_utc": "2026-10-04T01:29:11.537761+00:00",
       "completed_at_utc": "2026-10-04T01:29:11.564272+00:00",
       "exit_code": 0,
-      "stdout": "743508\t/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
+      "stdout": "743508\t$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
       "stderr": "",
       "bytes": 761352192
     }

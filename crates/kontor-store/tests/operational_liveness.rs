@@ -250,7 +250,7 @@ fn a_native_container_binding_survives_restart_and_export() {
                 .expect("a container binding id"),
             identity: identity("prj_da432f9269aa936f", 7),
             observed_kind: ObservedContainerKind::Project,
-            canonical_cwd: Some(name("/Users/igor/carasent/asma-modules")),
+            canonical_cwd: Some(name("/Users/operator/carasent/asma-modules")),
             readback: Some(NativeContainerReadback {
                 projection: ObservedContainerProjection::NativeRoot,
                 visible_title: name("01890000-0000-7000-8000-0000000000ff"),
@@ -288,7 +288,7 @@ fn a_native_container_binding_survives_restart_and_export() {
     assert_eq!(readback.native_parent, None);
     assert_eq!(
         after.canonical_cwd.as_ref().map(ExternalName::as_str),
-        Some("/Users/igor/carasent/asma-modules")
+        Some("/Users/operator/carasent/asma-modules")
     );
     assert_eq!(after.bound_at, bound_at);
     assert_eq!(after.last_readback_at, bound_at);
@@ -312,7 +312,7 @@ fn a_native_container_binding_survives_restart_and_export() {
     assert!(row.parent_native_id.is_none());
     assert_eq!(
         row.canonical_cwd.as_deref(),
-        Some("/Users/igor/carasent/asma-modules")
+        Some("/Users/operator/carasent/asma-modules")
     );
 }
 

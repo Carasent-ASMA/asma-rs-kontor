@@ -95,7 +95,7 @@
    Compiling rustls v0.23.45
    Compiling bitflags v2.13.2
    Compiling rustls-webpki v0.103.15
-   Compiling kontor-core v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/crates/kontor-core)
+   Compiling kontor-core v0.2.1 ($HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/crates/kontor-core)
    Compiling want v0.3.1
    Compiling form_urlencoded v1.2.2
    Compiling icu_normalizer v2.3.0
@@ -137,7 +137,7 @@
    Compiling walkdir v2.5.0
    Compiling zopfli v0.8.3
    Compiling libsqlite3-sys v0.38.2
-   Compiling kontor-runtime v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/crates/kontor-runtime)
+   Compiling kontor-runtime v0.2.1 ($HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/crates/kontor-runtime)
    Compiling security-framework v3.7.0
    Compiling url v2.5.8
    Compiling tokio-rustls v0.26.5
@@ -151,15 +151,15 @@
    Compiling regex v1.13.1
    Compiling iso8601 v0.6.6
    Compiling nom-language v0.1.0
-   Compiling kontor-policy v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/crates/kontor-policy)
+   Compiling kontor-policy v0.2.1 ($HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/crates/kontor-policy)
    Compiling tokio-util v0.7.19
    Compiling reqwest v0.13.4
-   Compiling kontor-scheduler v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/crates/kontor-scheduler)
+   Compiling kontor-scheduler v0.2.1 ($HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/crates/kontor-scheduler)
    Compiling icalendar v0.17.13
    Compiling utoipa-swagger-ui v9.0.2
    Compiling rust-embed-impl v8.12.0
    Compiling hashlink v0.12.2
-   Compiling kontor-context v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/crates/kontor-context)
+   Compiling kontor-context v0.2.1 ($HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/crates/kontor-context)
    Compiling utoipa-gen v5.5.0
    Compiling fallible-streaming-iterator v0.1.9
    Compiling ryu v1.0.23
@@ -167,19 +167,19 @@
    Compiling rusqlite v0.40.2
    Compiling serde_urlencoded v0.7.1
    Compiling utoipa v5.5.0
-   Compiling kontor-teams v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/crates/kontor-teams)
+   Compiling kontor-teams v0.2.1 ($HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/crates/kontor-teams)
    Compiling rust-embed v8.12.0
-   Compiling kontor-calendar v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/crates/kontor-calendar)
+   Compiling kontor-calendar v0.2.1 ($HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/crates/kontor-calendar)
    Compiling axum-core v0.5.6
    Compiling futures-executor v0.3.34
    Compiling serde_path_to_error v0.1.20
    Compiling matchit v0.8.4
    Compiling axum v0.8.9
    Compiling futures v0.3.33
-   Compiling kontor-store v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/crates/kontor-store)
+   Compiling kontor-store v0.2.1 ($HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/crates/kontor-store)
    Compiling tower-http v0.7.0
    Compiling secrecy v0.10.3
    Compiling tokio-stream v0.1.19
-   Compiling kontor-api v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/crates/kontor-api)
+   Compiling kontor-api v0.2.1 ($HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/crates/kontor-api)
     Finished `test` profile [unoptimized] target(s) in 2m 54s
      Running tests/openapi_contract.rs (target/debug/deps/openapi_contract-02c129964b0f7653)

@@ -1,24 +1,24 @@
    Compiling hashbrown v0.17.1
    Compiling uuid v1.24.0
-   Compiling kontor-core v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-core)
+   Compiling kontor-core v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-core)
    Compiling indexmap v2.14.2
    Compiling h2 v0.4.19
    Compiling hyper v1.11.1
    Compiling hyper-util v0.1.20
    Compiling tower v0.5.3
    Compiling regex-automata v0.4.18
-   Compiling kontor-policy v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-policy)
-   Compiling kontor-runtime v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-runtime)
+   Compiling kontor-policy v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-policy)
+   Compiling kontor-runtime v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-runtime)
    Compiling serde_yaml_ng v0.10.0
-   Compiling kontor-scheduler v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-scheduler)
+   Compiling kontor-scheduler v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-scheduler)
    Compiling hyper-rustls v0.27.9
    Compiling tower-http v0.6.11
-   Compiling kontor-accounts v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-accounts)
+   Compiling kontor-accounts v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-accounts)
    Compiling reqwest v0.13.4
    Compiling regex v1.13.1
    Compiling assert-json-diff v2.0.2
    Compiling wiremock v0.6.5
-   Compiling kontor-jira v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-jira)
+   Compiling kontor-jira v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-jira)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 22.52s
      Running unittests src/lib.rs (target/qualification/debug/deps/kontor_jira-8121cc4d942db097)
 

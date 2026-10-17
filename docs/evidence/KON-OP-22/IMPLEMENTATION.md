@@ -97,7 +97,7 @@ direct-SQL constraint, restart, export and preservation tests.
 - The exact merge daemon hash
   `248e7a385a5cafcaa990087b9d7f1e42fb914348a5506b34d35caf0f180b8744`
   runs as PID `43055`. Its rollback unit is
-  `/Users/igor/.local/state/kontor/asma/deploy-backups/20260903T232131Z-kon-op-22-d224b15/`.
+  `$HOME/.local/state/kontor/asma/deploy-backups/20260903T232131Z-kon-op-22-d224b15/`.
 - The recovered materialization created `ASMA-8088`, `ASMA-8089` and
   `ASMA-8090` once. Exact replay returned receipt
   `01a0683f-7579-7d82-90b7-00781902f8b3` and activation
@@ -166,7 +166,7 @@ detached release build (`fbecb4715218169ce1377ecfb5a9cc72fd9453552d1dc3b2072c8af
 runs as PID `5040`, serves realm `01a00649-9ee6-73e0-ba1b-6a6c35cfd065`,
 and read back schema v88, `integrity_check = ok`, zero foreign-key violations,
 and preserved project revision 6. The coherent deployment receipt is
-`/Users/igor/.local/state/kontor/asma/deploy-backups/20260905T221625Z-asma-8090-8100-9894060/deployment.json`.
+`$HOME/.local/state/kontor/asma/deploy-backups/20260905T221625Z-asma-8090-8100-9894060/deployment.json`.
 
 From that exact safe-resume checkpoint, Kontor replayed retirement key
 `asma-8090-retire-archived-advisor-after-c4b92f4` for SeatBinding

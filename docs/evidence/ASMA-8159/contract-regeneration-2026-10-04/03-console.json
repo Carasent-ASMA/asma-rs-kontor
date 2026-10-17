@@ -1,12 +1,12 @@
 {
   "argv": [
     "node",
-    "/Users/igor/.npm/_npx/f1e70922fc87e24a/node_modules/openapi-typescript/bin/cli.js",
+    "$HOME/.npm/_npx/f1e70922fc87e24a/node_modules/openapi-typescript/bin/cli.js",
     "crates/kontor-api/contract/openapi.json",
     "-o",
     "apps/console/src/api/schema.d.ts"
   ],
-  "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+  "cwd": "$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
   "started_at_utc": "2026-10-04T01:30:48.342840+00:00",
   "status": "PASS",
   "exit_code": 0,
@@ -31,12 +31,12 @@
       "argv": [
         "du",
         "-sk",
-        "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
+        "$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
       ],
       "started_at_utc": "2026-10-04T01:30:48.347272+00:00",
       "completed_at_utc": "2026-10-04T01:30:48.369711+00:00",
       "exit_code": 0,
-      "stdout": "743508\t/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
+      "stdout": "743508\t$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
       "stderr": "",
       "bytes": 761352192
     },
@@ -44,12 +44,12 @@
       "argv": [
         "du",
         "-sk",
-        "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
+        "$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target"
       ],
       "started_at_utc": "2026-10-04T01:31:08.375887+00:00",
       "completed_at_utc": "2026-10-04T01:31:08.400864+00:00",
       "exit_code": 0,
-      "stdout": "743508\t/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
+      "stdout": "743508\t$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/target\n",
       "stderr": "",
       "bytes": 761352192
     }

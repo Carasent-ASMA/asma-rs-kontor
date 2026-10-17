@@ -7,6 +7,8 @@
 > **Scope:** Carasent-ASMA/asma-rs-kontor; MEM-01 of ASMA-8155, Paseo-direct
 > **Summary:** Records the additive typed experience/recall contract, bounded decisions, source/fake verification and three behavioral mutation receipts. This is delivery evidence for the owning TPM, not epic acceptance or a deployed-service claim.
 
+> **Public tree, 2026-10-17 (ASMA-8511):** the run receipts and deployment records this document linked were removed from the public tree. Their links are now plain text. Each removed file is listed with its SHA-256 in the [removed-evidence manifest](../removed-run-evidence-2026-10-17.tsv), and stays in git history at `0971674d`.
+
 ## When to load
 
 Load for review of ASMA-8156, the ASMA-8157 example contract, or the ASMA-8158/8159 adapter and integration handoff. The synthetic document is [experience-v1.json](../../../crates/kontor-core/tests/fixtures/experience-v1.json); runtime validation remains authoritative.
@@ -15,7 +17,7 @@ Load for review of ASMA-8156, the ASMA-8157 example contract, or the ASMA-8158/8
 
 The execution contract is `/private/tmp/ASMA-8155-full-lsa-readiness-original-20261002.txt`, SHA-256 `7ee35150e2e90cdc4fab83bac999ecd2cef6286d236df128b0ad5b8c211d828b`. Sections 2–4 and 7 govern this source-only/fake candidate. The canonical plan is `asma-modules/_docs/ai-orchestration/plans/2026-09-12-10-10-plan-kontor-experience-memory.md`; its Goal and requirements were not changed.
 
-Branch: `feat/ASMA-8156-typed-experience-contract-and-recall-core`. Base: `8acdbd17e83d9d7ec545221c4b957e0325916997`, schema 119. The frozen commit and Git tree are reported with the writer's final handoff; [source-manifest.json](receipts/source-manifest.json) pins every changed source, fixture and generated artifact independently of this report. No root/catalog or other owner's source was changed.
+Branch: `feat/ASMA-8156-typed-experience-contract-and-recall-core`. Base: `8acdbd17e83d9d7ec545221c4b957e0325916997`, schema 119. The frozen commit and Git tree are reported with the writer's final handoff; source-manifest.json pins every changed source, fixture and generated artifact independently of this report. No root/catalog or other owner's source was changed.
 
 ## Delivered behavior
 
@@ -46,7 +48,7 @@ Unmerged 0120–0122 on the succession candidate are not reservations. This loca
 
 ## Verification
 
-[verification.json](receipts/verification.json) records exact commands, results and log hashes; [source-manifest.json](receipts/source-manifest.json) records source/artifact hashes. The suites use synthetic documents, disposable stores and the existing fake/loopback harness.
+verification.json records exact commands, results and log hashes; source-manifest.json records source/artifact hashes. The suites use synthetic documents, disposable stores and the existing fake/loopback harness.
 
 | Check | Result |
 | --- | --- |
@@ -65,7 +67,7 @@ The console suites' earlier full run is distinguished from final generated-decla
 
 ## Mutation receipts
 
-[mutants.json](receipts/mutants.json) and the individual JSON/log files preserve original, seeded and restored SHA-256 hashes, exact commands and exit codes. All three seeded builds completed compilation and failed at runtime; baseline and restored runs passed. No mutant survived. [mutants.py](receipts/mutants.py) reproduces the sequential snapshot/seed/test/restore procedure.
+mutants.json and the individual JSON/log files preserve original, seeded and restored SHA-256 hashes, exact commands and exit codes. All three seeded builds completed compilation and failed at runtime; baseline and restored runs passed. No mutant survived. mutants.py reproduces the sequential snapshot/seed/test/restore procedure.
 
 | Mutant | Seed and witness | Result |
 | --- | --- | --- |

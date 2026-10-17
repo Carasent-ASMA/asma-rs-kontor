@@ -2,7 +2,7 @@
 """Render the recheck report from the raw receipts. Nothing here is retyped."""
 import pathlib, re, subprocess
 
-K = pathlib.Path("/Users/igor/carasent/asma-modules/.worktrees/feat/"
+K = pathlib.Path("$HOME/carasent/asma-modules/.worktrees/feat/"
                  "ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/"
                  "_tools/asma-rs-kontor")
 R = pathlib.Path("/tmp/asma8187-rc")

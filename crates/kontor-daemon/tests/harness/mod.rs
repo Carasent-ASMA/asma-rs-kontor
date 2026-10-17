@@ -279,11 +279,24 @@ impl World {
     }
 
     /// Start an empty Realm with the shipped runtime-refusal quota signals.
+    ///
+    /// The shipped example names neutral account aliases, while the compiled
+    /// route catalog the test packs route through still names the Codex logins
+    /// `codex-work` and `codex-personal` (an open ASMA-8511 gap). Only the two
+    /// Codex `provider:` lines are mapped back; every marker, reset prefix and
+    /// zone stays the shipped bytes.
     pub(crate) async fn open_empty_with_quota_signals() -> Self {
-        Self::open_empty_with_quota_signal_document(include_str!(
-            "../../../../config/examples/quota-signals.yml"
-        ))
-        .await
+        let mut document = include_str!("../../../../config/examples/quota-signals.yml").to_owned();
+        for (shipped, catalogued) in [("codex-b", "codex-work"), ("codex-a", "codex-personal")] {
+            let line = format!("    provider: {shipped}\n");
+            assert_eq!(
+                document.matches(&line).count(),
+                1,
+                "the shipped example declares {shipped} once"
+            );
+            document = document.replace(&line, &format!("    provider: {catalogued}\n"));
+        }
+        Self::open_empty_with_quota_signal_document(&document).await
     }
 
     /// Start an empty Realm with an exact test-owned signal document.

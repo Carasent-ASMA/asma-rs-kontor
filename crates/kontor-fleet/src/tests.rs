@@ -749,8 +749,8 @@ fn a_published_policy_carries_no_credential_path_or_email() {
         ("codex-igor@carasent.com", "", "gpt-5.6-sol"),
         (
             "codex",
-            ", model_prefix: \"/Users/igor/provider-homes/\"",
-            "/Users/igor/provider-homes/sol",
+            ", model_prefix: \"/Users/operator/provider-homes/\"",
+            "/Users/operator/provider-homes/sol",
         ),
         ("codex", "", "~/.codex/sol"),
         ("codex", "", "ghp_abcdefghijklmnopqrstuvwxyz0123"),

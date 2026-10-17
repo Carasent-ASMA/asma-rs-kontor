@@ -1,4 +1,4 @@
-   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-store)
+   Compiling kontor-store v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-store)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 13.35s
      Running tests/hosted_seat_autonomy.rs (target/debug/deps/hosted_seat_autonomy-37350dd3fcfb6d32)
 

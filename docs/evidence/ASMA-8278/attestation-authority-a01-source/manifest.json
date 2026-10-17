@@ -414,7 +414,7 @@
     "no_original_evidence_file_written": true
   },
   "review_receipt": {
-    "path": "/Users/igor/.local/state/codex-takeovers/d70d8a8f-b219-4ada-b1a9-40f99d79fd4c/deepseek-ledger-67dc-source-findings.md",
+    "path": "$HOME/.local/state/codex-takeovers/d70d8a8f-b219-4ada-b1a9-40f99d79fd4c/deepseek-ledger-67dc-source-findings.md",
     "sha256": "231cd1857f374ffedcdf22c6ebc4aa76aba564cf40a5055b76c2ce39e197919f"
   },
   "fixture_provenance": {

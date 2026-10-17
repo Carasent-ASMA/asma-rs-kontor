@@ -6,6 +6,8 @@
 > Scope: ASMA-8159 source/fake preparation only; Paseo-direct
 > Summary: A proposed trusted supplier boundary for an already supplied HTTP credential. No real lookup, registration, account-resolver change or runtime activation is implemented or authorized by this document.
 
+> **Public tree, 2026-10-17 (ASMA-8511):** the run receipts and deployment records this document linked were removed from the public tree. Their links are now plain text. Each removed file is listed with its SHA-256 in the [removed-evidence manifest](../../removed-run-evidence-2026-10-17.tsv), and stays in git history at `0971674d`.
+
 ## When to load
 
 Load when TPM/LSA routes the concrete real-supplier proposal to Igor and the account/security owner. The packet is documentation only; synthetic composition continues within the existing disposition.
@@ -16,7 +18,7 @@ The LSA disposition at `/private/tmp/ASMA-8155-ASMA-8159-lsa-production-prep-dis
 
 The implemented async rebuild caller stages and binds an exact preview in a local transaction, releases the store lock, awaits `Client::qualify`, then uses the existing authoritative activation guard and late freshness/CAS in a second transaction. Its original result receipt commits atomically with activation. Completed same-key/same-canonical-request replay precedes client availability and survives restart; different bytes or project under the same key refuse with `binding_conflict`. Concurrent qualification can duplicate provider calls; there is no claim of exactly-once provider effects. A failed qualification or failed result write cannot advance the pointer.
 
-Source/fake proof: `crates/kontor-daemon/tests/projection_rebuild.rs`. The transport uses a synthetic bearer and loopback WireMock only. Success, local-only exclusion, HTTP/timeout/malformed/canary failure, stale previews, an in-flight ledger change, concurrent same/distinct keys, immutable result failure/retry, replay after restart, absent/disabled composition and operator/observer parity are exercised. The adverse-certificate MUT-007 witness calls the same composed application helper, never direct store activation. Exact run/source/patch receipts are in [receipts](receipts/). These are writer verification, not independent acceptance.
+Source/fake proof: `crates/kontor-daemon/tests/projection_rebuild.rs`. The transport uses a synthetic bearer and loopback WireMock only. Success, local-only exclusion, HTTP/timeout/malformed/canary failure, stale previews, an in-flight ledger change, concurrent same/distinct keys, immutable result failure/retry, replay after restart, absent/disabled composition and operator/observer parity are exercised. The adverse-certificate MUT-007 witness calls the same composed application helper, never direct store activation. Exact run/source/patch receipts are in receipts. These are writer verification, not independent acceptance.
 
 ## Decision requested from Igor, with owner routing
 

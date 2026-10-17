@@ -9,7 +9,7 @@ platform        : Darwin 25.6.0 arm64
 --- mutated sha256 ---
 4d4681bb0d5c3803c88fe9695cc671423d758d3f55ec17d31fb3f9e2aeccd36b  crates/kontor-store/migrations/0122_core_team_route_succession_receipt_identity.sql
 --- raw output ---
-   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-store)
+   Compiling kontor-store v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-store)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 1.80s
      Running tests/hosted_seat_autonomy.rs (target/debug/deps/hosted_seat_autonomy-37350dd3fcfb6d32)
 

@@ -1,6 +1,6 @@
-   Compiling kontor-runtime v0.2.1 (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/mutation-source/crates/kontor-runtime)
+   Compiling kontor-runtime v0.2.1 ($HOME/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/mutation-source/crates/kontor-runtime)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 5.71s
-     Running unittests src/lib.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/mutation-target/debug/deps/kontor_runtime-38fd6bad31f23716)
+     Running unittests src/lib.rs ($HOME/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/mutation-target/debug/deps/kontor_runtime-38fd6bad31f23716)
 
 running 1 test
 

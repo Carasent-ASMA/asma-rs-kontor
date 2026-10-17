@@ -40,7 +40,7 @@
    Compiling hex v0.4.3
    Compiling untrusted v0.7.1
    Compiling zeroize v1.9.0
-   Compiling kontor-core v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-restart-20261004/crates/kontor-core)
+   Compiling kontor-core v0.2.1 ($HOME/.paseo/worktrees/0n8yzbno/asma-8278-module-restart-20261004/crates/kontor-core)
    Compiling signal-hook-registry v1.4.8
    Compiling async-trait v0.1.92
    Compiling tokio-macros v2.7.2
@@ -49,9 +49,9 @@
    Compiling pin-project-lite v0.2.17
    Compiling bytes v1.12.1
    Compiling tokio v1.53.1
-   Compiling kontor-runtime v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-restart-20261004/crates/kontor-runtime)
+   Compiling kontor-runtime v0.2.1 ($HOME/.paseo/worktrees/0n8yzbno/asma-8278-module-restart-20261004/crates/kontor-runtime)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 53.34s
-     Running unittests src/lib.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/kontor_runtime-38fd6bad31f23716)
+     Running unittests src/lib.rs ($HOME/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/kontor_runtime-38fd6bad31f23716)
 
 running 16 tests
 test planning_pair::attestation::prepared_diagnostic::tests::selected_key_identity_and_immutable_registration_must_match_preparation ... ok
@@ -73,19 +73,19 @@ test planning_pair::attestation::prepared_diagnostic::tests::signature_and_stric
 
 test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 141 filtered out; finished in 0.17s
 
-     Running tests/binding_timeline.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/binding_timeline-d7b96736b3bc4249)
+     Running tests/binding_timeline.rs ($HOME/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/binding_timeline-d7b96736b3bc4249)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
 
-     Running tests/bound_container_contract.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/bound_container_contract-d72f8b82b3673799)
+     Running tests/bound_container_contract.rs ($HOME/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/bound_container_contract-d72f8b82b3673799)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
 
-     Running tests/retitle_container.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/retitle_container-b7a3276cdb775a3a)
+     Running tests/retitle_container.rs ($HOME/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/retitle_container-b7a3276cdb775a3a)
 
 running 0 tests
 

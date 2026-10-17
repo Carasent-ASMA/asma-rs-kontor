@@ -11,7 +11,7 @@
     {
       "pid": 12101,
       "ppid": 80520,
-      "command": "/Users/igor/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo test --workspace --locked"
+      "command": "$HOME/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo test --workspace --locked"
     }
   ],
   "signals": [

@@ -70,7 +70,7 @@ $ cargo test --workspace --locked
    Compiling kontor-api v0.2.1 (/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/kontor-verify-poeebk_x/tree/crates/kontor-api)
    Compiling kontor-daemon v0.2.1 (/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/kontor-verify-poeebk_x/tree/crates/kontor-daemon)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 20s
-     Running unittests src/lib.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_accounts-be0c28d59e25fb92)
+     Running unittests src/lib.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_accounts-be0c28d59e25fb92)
 
 running 74 tests
 test admission::tests::a_narrowed_ceiling_takes_effect_on_the_next_pass_rather_than_failing_it ... ok
@@ -150,7 +150,7 @@ test signals::tests::every_active_alias_classifies_its_own_vendor_wording ... ok
 
 test result: ok. 74 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running tests/account_security.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/account_security-8bcdebc6495b2529)
+     Running tests/account_security.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/account_security-8bcdebc6495b2529)
 
 running 22 tests
 test an_unapproved_config_home_is_not_silently_defaulted ... ok
@@ -178,7 +178,7 @@ test resolver_rejects_unapproved_reference_before_backend_access ... ok
 
 test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 72.27s
 
-     Running tests/quota_classification.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/quota_classification-67837970e88300be)
+     Running tests/quota_classification.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/quota_classification-67837970e88300be)
 
 running 21 tests
 test a_signal_with_no_markers_never_matches ... ok
@@ -205,7 +205,7 @@ test the_trailing_parenthesised_zone_does_not_change_the_instant ... ok
 
 test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests src/lib.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_api-540a6ae5d90cc47c)
+     Running unittests src/lib.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_api-540a6ae5d90cc47c)
 
 running 27 tests
 test auth::tests::tiers_are_ordered_by_policy_and_not_by_declaration ... ok
@@ -238,7 +238,7 @@ test dto::compact_surface_tests::a_receipt_projection_leaks_nothing_a_runtime_ho
 
 test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/error_envelope.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/error_envelope-52f2fca823efac07)
+     Running tests/error_envelope.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/error_envelope-52f2fca823efac07)
 
 running 5 tests
 test every_code_tells_an_operator_something_to_try ... ok
@@ -249,7 +249,7 @@ test the_stable_codes_are_unchanged_by_the_richer_envelope ... ok
 
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/openapi_contract.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/openapi_contract-1a5e5e4453c8bbb2)
+     Running tests/openapi_contract.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/openapi_contract-1a5e5e4453c8bbb2)
 
 running 3 tests
 test the_committed_session_vocabulary_is_the_one_this_crate_subscribes_to ... ok
@@ -258,13 +258,13 @@ test the_committed_contract_document_is_the_one_this_crate_serves ... ok
 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
 
-     Running unittests src/lib.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_calendar-e2f95826149e3350)
+     Running unittests src/lib.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_calendar-e2f95826149e3350)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/imports.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/imports-398ddf068f1ecab1)
+     Running tests/imports.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/imports-398ddf068f1ecab1)
 
 running 19 tests
 test an_unbounded_or_inverted_request_is_refused_before_a_document_is_read ... ok
@@ -289,7 +289,7 @@ test normalization_is_deterministic_and_independent_of_source_order ... ok
 
 test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running tests/resolution.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/resolution-cc50e1500f2f746d)
+     Running tests/resolution.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/resolution-cc50e1500f2f746d)
 
 running 28 tests
 test a_dst_gap_opening_resolves_forward_past_the_hour_that_never_happens ... ok
@@ -323,7 +323,7 @@ test the_resolution_agrees_with_the_domain_reducer_everywhere ... ok
 
 test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests src/main.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor-03d25b54426d358e)
+     Running unittests src/main.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor-03d25b54426d358e)
 
 running 20 tests
 test commands::tests::every_tool_has_exactly_one_subcommand_and_no_command_is_invented ... ok
@@ -349,27 +349,27 @@ test commands::tests::the_tree_is_valid_and_every_flag_matches_its_declared_argu
 
 test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
 
-     Running tests/memory_parity.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/memory_parity-00e442f5350823cf)
+     Running tests/memory_parity.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/memory_parity-00e442f5350823cf)
 
 running 1 test
 test native_memory_http_and_cli_share_realm_revision_and_cursor ... ok
 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.51s
 
-     Running tests/version.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/version-40b360b7efc70c87)
+     Running tests/version.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/version-40b360b7efc70c87)
 
 running 1 test
 test version_is_one_line_and_exits_immediately ... ok
 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running unittests src/lib.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_context-a23a7bfa678f9ab7)
+     Running unittests src/lib.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_context-a23a7bfa678f9ab7)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/handoff.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/handoff-3095939b5cef14f2)
+     Running tests/handoff.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/handoff-3095939b5cef14f2)
 
 running 10 tests
 test same_engine_continuation_requires_matching_engine_and_original_pack_hash ... ok
@@ -385,7 +385,7 @@ test unknown_fields_in_a_portable_capsule_are_rejected_on_import ... ok
 
 test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/redaction.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/redaction-4f3f06697b54c654)
+     Running tests/redaction.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/redaction-4f3f06697b54c654)
 
 running 8 tests
 test source_metadata_cannot_become_a_secret_side_channel ... ok
@@ -399,7 +399,7 @@ test denied_or_foreign_restricted_reference_is_rejected_without_value ... ok
 
 test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/resolution.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/resolution-14284c1556fa0a7b)
+     Running tests/resolution.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/resolution-14284c1556fa0a7b)
 
 running 15 tests
 test malformed_source_key_and_non_object_content_are_rejected ... ok
@@ -420,7 +420,7 @@ test source_permutations_preserve_resolution_and_hash ... ok
 
 test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.54s
 
-     Running unittests src/lib.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_core-a3f05ec3865140fb)
+     Running unittests src/lib.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_core-a3f05ec3865140fb)
 
 running 43 tests
 test authority::tests::pending_origins_start_legacy_and_permit_cutover ... ok
@@ -469,7 +469,7 @@ test retired_evaluator::tests::each_fence_refuses_on_its_own ... ok
 
 test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/backlog_identity.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/backlog_identity-3b809adae78b82e7)
+     Running tests/backlog_identity.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/backlog_identity-3b809adae78b82e7)
 
 running 8 tests
 test automatic_allocation_refuses_titles_with_fewer_than_two_usable_characters ... ok
@@ -483,7 +483,7 @@ test exhausted_title_characters_use_the_smallest_free_numeric_ordinal ... ok
 
 test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/branch_identity.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/branch_identity-20bcde517a1cad38)
+     Running tests/branch_identity.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/branch_identity-20bcde517a1cad38)
 
 running 10 tests
 test every_refusal_reports_its_stable_code_first ... ok
@@ -499,7 +499,7 @@ test derivation_matches_the_asma_cli_examples ... ok
 
 test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/consultation_specs.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/consultation_specs-e5086fbfd53dbb48)
+     Running tests/consultation_specs.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/consultation_specs-e5086fbfd53dbb48)
 
 running 26 tests
 test a_missing_finding_blocks_settlement_rather_than_passing ... ok
@@ -531,7 +531,7 @@ test canonical_hash_is_stable_across_equal_revisions ... ok
 
 test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/domain_state.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/domain_state-3b96052b3e8e5aee)
+     Running tests/domain_state.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/domain_state-3b96052b3e8e5aee)
 
 running 37 tests
 test a_queued_run_is_accepted_but_not_dispatched ... ok
@@ -574,7 +574,7 @@ test the_team_child_digest_is_order_independent_and_matches_an_independent_hash 
 
 test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running tests/native_naming.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/native_naming-a5defc2e1fa88bce)
+     Running tests/native_naming.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/native_naming-a5defc2e1fa88bce)
 
 running 9 tests
 test every_token_keeps_its_exact_serialized_spelling ... ok
@@ -589,7 +589,7 @@ test the_v1_matrix_renders_exact_bullet_separated_bytes ... ok
 
 test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/open_question.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/open_question-da1d005896a1fa35)
+     Running tests/open_question.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/open_question-da1d005896a1fa35)
 
 running 27 tests
 test a_correction_must_name_a_predecessor_that_exists ... ok
@@ -622,7 +622,7 @@ test the_configured_closer_split_governs_disposition ... ok
 
 test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/publication_identity.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/publication_identity-b7e3183c4a6aac54)
+     Running tests/publication_identity.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/publication_identity-b7e3183c4a6aac54)
 
 running 13 tests
 test a_title_leads_with_exactly_one_key_and_one_space ... ok
@@ -641,7 +641,7 @@ test every_failing_rule_is_reported_at_once ... ok
 
 test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/quota_headroom.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/quota_headroom-94703d5b6698b49b)
+     Running tests/quota_headroom.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/quota_headroom-94703d5b6698b49b)
 
 running 9 tests
 test credit_clears_only_above_its_floor_and_only_in_one_currency ... ok
@@ -656,7 +656,7 @@ test adding_a_window_never_relieves_a_blocked_set ... ok
 
 test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
 
-     Running tests/spec_validation.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/spec_validation-819fc5149e961cbe)
+     Running tests/spec_validation.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/spec_validation-819fc5149e961cbe)
 
 running 61 tests
 test a_declared_ceiling_clamps_the_trigger_and_records_why ... ok
@@ -723,7 +723,7 @@ test arbitrary_linear_profiles_validate ... ok
 
 test result: ok. 61 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
 
-     Running tests/succession.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/succession-71d0597f6e802628)
+     Running tests/succession.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/succession-71d0597f6e802628)
 
 running 4 tests
 test the_succession_state_machine_is_forward_only ... ok
@@ -733,7 +733,7 @@ test a_degraded_handoff_is_durable_evidence_not_a_release_refusal ... ok
 
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/team_definition_naming.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/team_definition_naming-dc90e09adb2589c6)
+     Running tests/team_definition_naming.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/team_definition_naming-dc90e09adb2589c6)
 
 running 9 tests
 test alternative_templates_may_register_one_role_code_under_different_slot_ids ... ok
@@ -748,7 +748,7 @@ test the_snapshot_binds_the_exact_definition_bytes ... ok
 
 test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/team_definition_render_contract.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/team_definition_render_contract-3f67cc53dd70ecb6)
+     Running tests/team_definition_render_contract.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/team_definition_render_contract-3f67cc53dd70ecb6)
 
 running 11 tests
 test a_topic_containing_the_separator_is_refused_as_ambiguous ... ok
@@ -765,7 +765,7 @@ test the_separator_is_exact_bullet_bytes_and_never_a_normalized_lookalike ... ok
 
 test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/team_definition_successors.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/team_definition_successors-1be8daac8cbff6d3)
+     Running tests/team_definition_successors.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/team_definition_successors-1be8daac8cbff6d3)
 
 running 5 tests
 test every_candidate_targets_an_unused_version_of_its_own_source_lineage ... ok
@@ -776,7 +776,7 @@ test every_recorded_source_document_still_hashes_to_its_published_identity ... o
 
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running tests/ticket_content.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/ticket_content-48c094d8be6b04f5)
+     Running tests/ticket_content.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/ticket_content-48c094d8be6b04f5)
 
 running 14 tests
 test every_conflict_kind_round_trips_its_stable_spelling ... ok
@@ -796,7 +796,7 @@ test the_task_creation_marker_is_recognized_too ... ok
 
 test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/ticket_policy.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/ticket_policy-996dc3ab3ccc92bd)
+     Running tests/ticket_policy.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/ticket_policy-996dc3ab3ccc92bd)
 
 running 37 tests
 test a_required_field_may_not_be_omitted ... ok
@@ -839,7 +839,7 @@ test both_workflow_fixtures_validate_and_use_different_spellings ... ok
 
 test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running unittests src/lib.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_daemon-5f40d591eb3c876f)
+     Running unittests src/lib.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_daemon-5f40d591eb3c876f)
 
 running 123 tests
 test applications::tests::a_same_issue_rename_selects_the_current_key_for_every_write ... ok
@@ -968,7 +968,7 @@ test tests::a_stored_capacity_the_composition_root_cannot_honour_refuses_the_sta
 
 test result: ok. 123 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 43.59s
 
-     Running unittests src/main.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_daemon-412c724aa21ebe23)
+     Running unittests src/main.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_daemon-412c724aa21ebe23)
 
 running 2 tests
 test tests::failed_reconciliation_leaves_the_server_running ... ok
@@ -976,7 +976,7 @@ test tests::the_server_is_polled_while_startup_reconciliation_is_pending ... ok
 
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/account_pinning.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/account_pinning-5c7f82ffae2bb5f1)
+     Running tests/account_pinning.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/account_pinning-5c7f82ffae2bb5f1)
 
 running 5 tests
 test an_unknown_run_is_not_created_by_pinning_it ... ok
@@ -987,7 +987,7 @@ test a_second_different_account_is_refused_rather_than_repointed ... ok
 
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.89s
 
-     Running tests/container_recreation.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/container_recreation-a1cc838c128c6709)
+     Running tests/container_recreation.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/container_recreation-a1cc838c128c6709)
 
 running 12 tests
 test a_non_admin_caller_cannot_reach_a_create ... ok
@@ -1005,7 +1005,7 @@ test recreate_absent_previews_then_applies_with_exactly_one_create ... ok
 
 test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.07s
 
-     Running tests/loopback_api.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/loopback_api-611a57425c854aa4)
+     Running tests/loopback_api.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/loopback_api-611a57425c854aa4)
 
 running 478 tests
 test a_bundled_preset_change_does_not_block_an_immutable_published_revision ... ok
@@ -1489,7 +1489,7 @@ test the_shipped_startup_path_composes_the_configured_fleet ... ok
 
 test result: ok. 477 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 58.08s
 
-     Running tests/mcp_journey.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/mcp_journey-8b9065f0c47de947)
+     Running tests/mcp_journey.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/mcp_journey-8b9065f0c47de947)
 
 running 2 tests
 test an_observer_seat_reads_the_realm_and_cannot_change_it ... ok
@@ -1497,7 +1497,7 @@ test an_empty_realm_is_bootstrapped_through_mcp_tools_alone ... ok
 
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.59s
 
-     Running tests/quota_observation.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/quota_observation-99e750be6571d08c)
+     Running tests/quota_observation.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/quota_observation-99e750be6571d08c)
 
 running 21 tests
 test a_credential_shaped_refusal_is_refused_before_it_is_ever_classified ... ok
@@ -1524,7 +1524,7 @@ test the_refusal_sentence_never_reaches_the_store ... ok
 
 test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.37s
 
-     Running tests/recovery_security.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/recovery_security-a2957bc4cac829f5)
+     Running tests/recovery_security.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/recovery_security-a2957bc4cac829f5)
 
 running 6 tests
 test a_failed_recovery_command_says_what_failed_without_saying_where_it_looked ... ok
@@ -1536,7 +1536,7 @@ test a_restored_realm_starts_with_scheduling_shut_until_it_reconciles ... ok
 
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.06s
 
-     Running tests/succession_handoff.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/succession_handoff-09f9dbedca763e03)
+     Running tests/succession_handoff.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/succession_handoff-09f9dbedca763e03)
 
 running 3 tests
 test unavailable_production_transport_never_invents_a_summarizer_session ... ok
@@ -1545,25 +1545,25 @@ test unavailable_timeline_or_route_and_rejected_summary_are_explicitly_degraded 
 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests src/lib.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_desktop_lib-557d7fe8e397bc66)
+     Running unittests src/lib.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_desktop_lib-557d7fe8e397bc66)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests src/main.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_desktop-3c52bf14d21c09b2)
+     Running unittests src/main.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_desktop-3c52bf14d21c09b2)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests src/lib.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_intake-d8cc58781763b0e0)
+     Running unittests src/lib.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_intake-d8cc58781763b0e0)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/auto_arm.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/auto_arm-518750e65df2e8fd)
+     Running tests/auto_arm.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/auto_arm-518750e65df2e8fd)
 
 running 9 tests
 test a_proposal_that_creates_nothing_arms_nothing ... ok
@@ -1578,7 +1578,7 @@ test the_narrowest_of_the_three_concurrency_bounds_wins ... ok
 
 test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/envelope.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/envelope-62ff4c66a12872d0)
+     Running tests/envelope.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/envelope-62ff4c66a12872d0)
 
 running 6 tests
 test attribute_names_and_counts_are_bounded ... ok
@@ -1590,13 +1590,13 @@ test five_source_kinds_produce_one_shape ... ok
 
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/fixture.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/fixture-9744583ef3b4b4ec)
+     Running tests/fixture.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/fixture-9744583ef3b4b4ec)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/matching.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/matching-608424d3b7e5c0b2)
+     Running tests/matching.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/matching-608424d3b7e5c0b2)
 
 running 8 tests
 test the_pinned_event_schema_revision_is_part_of_the_match ... ok
@@ -1610,7 +1610,7 @@ test the_dedup_key_is_a_function_of_the_named_pointers_only ... ok
 
 test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
 
-     Running tests/no_source_branching.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/no_source_branching-b5683be3d744c11d)
+     Running tests/no_source_branching.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/no_source_branching-b5683be3d744c11d)
 
 running 3 tests
 test deciding_compares_against_no_string_literal ... ok
@@ -1619,7 +1619,7 @@ test deciding_names_no_source_system ... ok
 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests src/lib.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_jira-da27200c87c8ae04)
+     Running unittests src/lib.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_jira-da27200c87c8ae04)
 
 running 9 tests
 test connector::tests::a_missing_description_field_is_missing_evidence ... ok
@@ -1634,7 +1634,7 @@ test connector::tests::an_adf_body_is_rendered_and_hashed ... ok
 
 test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/native_connector.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/native_connector-03b57d6fc51d6246)
+     Running tests/native_connector.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/native_connector-03b57d6fc51d6246)
 
 running 20 tests
 test create_field_configuration_cannot_override_kontor_owned_fields ... ok
@@ -1660,7 +1660,7 @@ test native_requests_time_out_without_holding_the_daemon_open ... ok
 
 test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 30.02s
 
-     Running unittests src/lib.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_mcp-d4d73098422ab5ec)
+     Running unittests src/lib.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_mcp-d4d73098422ab5ec)
 
 running 66 tests
 test client::tests::both_legacy_and_generation_fenced_consultation_credentials_are_recognized ... ok
@@ -1732,7 +1732,7 @@ test server::tests::every_declared_schema_is_closed ... ok
 
 test result: ok. 66 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running unittests src/main.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_mcp-c1ffc91c37c66e94)
+     Running unittests src/main.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_mcp-c1ffc91c37c66e94)
 
 running 3 tests
 test tests::a_declared_profile_resolves ... ok
@@ -1741,7 +1741,7 @@ test consultation_guard::tests::findings_are_allowed_but_writes_delegation_and_p
 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/seats.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/seats-2e652f26b894fcfb)
+     Running tests/seats.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/seats-2e652f26b894fcfb)
 
 running 5 tests
 test the_worker_seat_serves_the_worker_profile_and_the_others_serve_none ... ok
@@ -1752,13 +1752,13 @@ test only_the_lead_seat_is_admin_scoped ... ok
 
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests src/lib.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_policy-0dbe744819da5d52)
+     Running unittests src/lib.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_policy-0dbe744819da5d52)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/completion_policy.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/completion_policy-0fb26974ff59d367)
+     Running tests/completion_policy.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/completion_policy-0fb26974ff59d367)
 
 running 3 tests
 test done_requires_every_closeout_receipt_and_a_version_inventory ... ok
@@ -1767,7 +1767,7 @@ test needs_human_cannot_be_constructed_or_restored_without_a_tried_path ... ok
 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/guardrail_rules.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/guardrail_rules-d5bc5859fa9795a7)
+     Running tests/guardrail_rules.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/guardrail_rules-d5bc5859fa9795a7)
 
 running 22 tests
 test a_tampered_pinned_snapshot_is_refused_before_any_rule_reads_it ... ok
@@ -1795,7 +1795,7 @@ test every_rule_is_deterministic_for_identical_canonical_inputs ... ok
 
 test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
 
-     Running tests/recovery_machine.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/recovery_machine-cf30b87174c79d21)
+     Running tests/recovery_machine.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/recovery_machine-cf30b87174c79d21)
 
 running 15 tests
 test a_replayed_step_is_refused_rather_than_spent_twice ... ok
@@ -1816,13 +1816,13 @@ test the_deliberation_path_reports_what_the_episode_actually_spent ... ok
 
 test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests src/lib.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_profiles-913015a520f58e61)
+     Running unittests src/lib.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_profiles-913015a520f58e61)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/consultation_presets.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/consultation_presets-cf9b1b91b6074b6a)
+     Running tests/consultation_presets.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/consultation_presets-cf9b1b91b6074b6a)
 
 running 6 tests
 test the_presets_reviewers_reach_contrasting_providers ... ok
@@ -1834,7 +1834,7 @@ test every_claude_consultation_slot_tries_work_then_personal ... ok
 
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/operational_domain.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/operational_domain-1c82dee56fd2eb44)
+     Running tests/operational_domain.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/operational_domain-1c82dee56fd2eb44)
 
 running 15 tests
 test historical_codes_are_explained_but_never_usable ... ok
@@ -1855,7 +1855,7 @@ test operational_v4_renders_only_area_and_confirmed_jira_derived_item_code ... o
 
 test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
 
-     Running tests/profile_contract.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/profile_contract-2d6c9ba14ea0f083)
+     Running tests/profile_contract.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/profile_contract-2d6c9ba14ea0f083)
 
 running 23 tests
 test a_persona_revision_publishes_n_plus_one_and_leaves_n_untouched ... ok
@@ -1884,7 +1884,7 @@ test no_shipped_source_file_compares_an_identifier_to_a_seed_name ... ok
 
 test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
 
-     Running unittests src/lib.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_runtime-6efce5e9f7d4d907)
+     Running unittests src/lib.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_runtime-6efce5e9f7d4d907)
 
 running 59 tests
 test capability::tests::limits_refuse_an_oversized_request ... ok
@@ -1949,7 +1949,7 @@ test workspace::tests::a_workspace_root_is_absolute_and_normalized ... ok
 
 test result: ok. 59 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running tests/binding_timeline.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/binding_timeline-29b0c08446a0a09a)
+     Running tests/binding_timeline.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/binding_timeline-29b0c08446a0a09a)
 
 running 5 tests
 test projection_refuses_contradictory_content_at_one_position ... ok
@@ -1960,7 +1960,7 @@ test projection_refuses_foreign_bindings_generations_and_mixed_epochs ... ok
 
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/bound_container_contract.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/bound_container_contract-a590f138f3229621)
+     Running tests/bound_container_contract.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/bound_container_contract-a590f138f3229621)
 
 running 7 tests
 test the_shared_predicate_preserves_ticket_isolation_and_epic_consultation_worktrees ... ok
@@ -1973,7 +1973,7 @@ test the_fake_accepts_epic_directories_and_consultation_worktrees ... ok
 
 test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/retitle_container.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/retitle_container-c7c96068c2618922)
+     Running tests/retitle_container.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/retitle_container-c7c96068c2618922)
 
 running 8 tests
 test retitling_is_a_change_and_is_declared_as_one ... ok
@@ -1987,7 +1987,7 @@ test a_preview_refuses_what_an_apply_would_refuse ... ok
 
 test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests src/lib.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_runtime_ao-c892da53f6077e87)
+     Running unittests src/lib.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_runtime_ao-c892da53f6077e87)
 
 running 15 tests
 test client::tests::a_post_is_the_only_verb_that_changes_the_runtime ... ok
@@ -2008,7 +2008,7 @@ test client::tests::an_endpoint_must_be_an_absolute_http_base ... ok
 
 test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/contract.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/contract-2942f5c18a62e7fa)
+     Running tests/contract.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/contract-2942f5c18a62e7fa)
 
 running 60 tests
 test a_blocked_session_never_accepts_an_automated_message ... ok
@@ -2074,7 +2074,7 @@ test no_uncertain_observation_can_close_a_run ... ok
 
 test result: ok. 60 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
 
-     Running tests/live.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/live-0ef1bd82c6f7064c)
+     Running tests/live.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/live-0ef1bd82c6f7064c)
 
 running 4 tests
 test live_smoke_launches_two_clients_concurrently ... ignored, requires a disposable AO daemon; see the module docs
@@ -2084,7 +2084,7 @@ test a_sequential_driver_is_rejected_by_the_same_check ... ok
 
 test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.08s
 
-     Running unittests src/lib.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_runtime_codex-31b577feafdfd33a)
+     Running unittests src/lib.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_runtime_codex-31b577feafdfd33a)
 
 running 28 tests
 test client::tests::the_ledger_route_never_quotes_the_operators_work ... ok
@@ -2118,7 +2118,7 @@ test usage::tests::a_relative_home_and_a_malformed_credential_file_are_both_refu
 
 test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/contract.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/contract-b5d8ff16d06492c3)
+     Running tests/contract.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/contract-b5d8ff16d06492c3)
 
 running 22 tests
 test a_production_adapter_advertises_context_policy_but_not_compact ... ok
@@ -2146,14 +2146,14 @@ test no_process_ending_becomes_terminal_evidence ... ok
 
 test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
 
-     Running tests/live.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/live-a6d7ff7004291243)
+     Running tests/live.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/live-a6d7ff7004291243)
 
 running 1 test
 test two_pinned_accounts_run_concurrently_and_neither_ending_closes_a_run ... ignored, requires two authenticated Codex accounts and a disposable worktree
 
 test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/usage_probe.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/usage_probe-3b8431ddf56c5a58)
+     Running tests/usage_probe.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/usage_probe-3b8431ddf56c5a58)
 
 running 5 tests
 test the_default_endpoint_is_the_vendors_own ... ok
@@ -2164,7 +2164,7 @@ test two_homes_are_probed_as_two_accounts ... ok
 
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running unittests src/lib.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_runtime_paseo-9c8005eb5871e03c)
+     Running unittests src/lib.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_runtime_paseo-9c8005eb5871e03c)
 
 running 126 tests
 test adapter::refusal_probe_tests::a_newer_tool_result_means_the_provider_item_is_not_terminal ... ok
@@ -2296,7 +2296,7 @@ test client::tests::an_oversized_canonical_socket_answer_fails_without_waiting_f
 
 test result: ok. 126 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
 
-     Running tests/contract.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/contract-500ddf2ae4da5332)
+     Running tests/contract.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/contract-500ddf2ae4da5332)
 
 running 285 tests
 test a_child_without_its_parent_binding_never_falls_back_to_a_new_project ... ok
@@ -2587,7 +2587,7 @@ test security_an_oversized_frame_is_refused_at_every_acceptance_point ... ok
 
 test result: ok. 285 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.50s
 
-     Running tests/live.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/live-766e44756b1acd7c)
+     Running tests/live.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/live-766e44756b1acd7c)
 
 running 6 tests
 test live_a_correlated_session_read_round_trips ... ignored, requires a live Paseo daemon; see the module docs
@@ -2599,7 +2599,7 @@ test live_the_status_readback_agrees_with_the_pushed_identity ... ignored, requi
 
 test result: ok. 0 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests src/lib.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_scheduler-bd4384fc200de737)
+     Running unittests src/lib.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_scheduler-bd4384fc200de737)
 
 running 28 tests
 test headroom::tests::a_short_horizon_outlasting_the_escalation_horizon_is_refused ... ok
@@ -2633,7 +2633,7 @@ test headroom::tests::total_exhaustion_parks_until_the_earliest_reset ... ok
 
 test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/completion.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/completion-172138891e8a38c1)
+     Running tests/completion.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/completion-172138891e8a38c1)
 
 running 14 tests
 test operational_default_compiles_the_bounded_conditional_dag ... ok
@@ -2653,7 +2653,7 @@ test fail_remediate_pass_survives_restart_at_every_stage_and_closes_only_with_ev
 
 test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running tests/no_seed_branching.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/no_seed_branching-d7561d06c194fbe3)
+     Running tests/no_seed_branching.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/no_seed_branching-d7561d06c194fbe3)
 
 running 6 tests
 test the_scheduler_compiles_in_no_ceiling_of_its_own ... ok
@@ -2665,7 +2665,7 @@ test the_scheduler_reads_no_source_envelope ... ok
 
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running tests/ready_batch.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/ready_batch-cd2a910a39af6ab6)
+     Running tests/ready_batch.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/ready_batch-cd2a910a39af6ab6)
 
 running 41 tests
 test a_revoked_covering_grant_blocks_until_a_new_arm ... ok
@@ -2712,7 +2712,7 @@ test every_decision_shape_canonicalizes_for_storage ... ok
 
 test result: ok. 41 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running unittests src/lib.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_store-b232053ad395f93c)
+     Running unittests src/lib.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_store-b232053ad395f93c)
 
 running 16 tests
 test backup::restore::tests::a_taken_superseded_name_is_refused_and_nothing_moves ... ok
@@ -2734,7 +2734,7 @@ test query::tests::a_fresh_realm_has_no_projects_and_no_calendar_assignment ... 
 
 test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 44.83s
 
-     Running tests/advisor_multi_seat_advice.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/advisor_multi_seat_advice-9ffb42169f0cf38d)
+     Running tests/advisor_multi_seat_advice.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/advisor_multi_seat_advice-9ffb42169f0cf38d)
 
 running 3 tests
 test advice_is_idempotent_per_exact_seat_and_immutable_per_seat ... ok
@@ -2743,7 +2743,7 @@ test settled_sessions_are_released_durably_without_changing_advice_or_bindings .
 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.77s
 
-     Running tests/backlog_identity.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/backlog_identity-e6e5a911666bf4fc)
+     Running tests/backlog_identity.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/backlog_identity-e6e5a911666bf4fc)
 
 running 7 tests
 test migration_preserves_valid_legacy_codes_and_quarantines_duplicates_and_invalid_values ... ok
@@ -2756,7 +2756,7 @@ test a_quarantined_legacy_value_does_not_block_a_new_active_assignment ... ok
 
 test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.95s
 
-     Running tests/backup_export.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/backup_export-68425bfa7267dc7e)
+     Running tests/backup_export.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/backup_export-68425bfa7267dc7e)
 
 running 21 tests
 test a_generation_three_export_from_a_quota_capable_database_is_refused_as_incomplete ... ok
@@ -2792,7 +2792,7 @@ test profile_selection_import_rejects_every_incomplete_or_swapped_frozen_binding
 
 test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 147.69s
 
-     Running tests/backup_snapshot.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/backup_snapshot-d9191a322cad7aa5)
+     Running tests/backup_snapshot.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/backup_snapshot-d9191a322cad7aa5)
 
 running 12 tests
 test a_manifest_that_does_not_describe_its_snapshot_is_refused ... ok
@@ -2810,7 +2810,7 @@ test a_damaged_database_is_never_copied_and_replaces_nothing ... ok
 
 test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 57.12s
 
-     Running tests/calendar_imports.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/calendar_imports-24f81f94c9588894)
+     Running tests/calendar_imports.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/calendar_imports-24f81f94c9588894)
 
 running 10 tests
 test the_categories_a_request_selected_are_recorded_with_the_apply ... ok
@@ -2826,7 +2826,7 @@ test a_preview_alone_changes_no_row ... ok
 
 test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.34s
 
-     Running tests/child_calendar_windows.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/child_calendar_windows-5ccdb2f29668981d)
+     Running tests/child_calendar_windows.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/child_calendar_windows-5ccdb2f29668981d)
 
 running 2 tests
 test a_persisted_task_widening_is_refused_without_a_scoped_override ... ok
@@ -2834,7 +2834,7 @@ test a_persisted_task_narrowing_changes_production_calendar_admission ... ok
 
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.73s
 
-     Running tests/command_recovery.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/command_recovery-4a6718d7779c16f9)
+     Running tests/command_recovery.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/command_recovery-4a6718d7779c16f9)
 
 running 20 tests
 test confirmed_receipt_is_restart_terminal ... ok
@@ -2860,7 +2860,7 @@ test every_command_crash_point_recovers_without_second_native_launch ... ok
 
 test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.81s
 
-     Running tests/consultation_profiles.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/consultation_profiles-f37feb8340d7e8bd)
+     Running tests/consultation_profiles.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/consultation_profiles-f37feb8340d7e8bd)
 
 running 9 tests
 test a_published_definition_reads_back_byte_for_byte ... ok
@@ -2875,7 +2875,7 @@ test the_two_families_are_separate_catalogs ... ok
 
 test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.88s
 
-     Running tests/consultation_subject.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/consultation_subject-e002fa3b16efcf62)
+     Running tests/consultation_subject.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/consultation_subject-e002fa3b16efcf62)
 
 running 13 tests
 test an_impossible_stored_pairing_is_refused_rather_than_guessed ... ok
@@ -2894,7 +2894,7 @@ test every_subject_state_survives_a_backup_and_restore_under_its_own_identity ..
 
 test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.26s
 
-     Running tests/crash_reopen.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/crash_reopen-1388a134be59ba34)
+     Running tests/crash_reopen.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/crash_reopen-1388a134be59ba34)
 
 running 5 tests
 test crash_child_worker ... ok
@@ -2909,7 +2909,7 @@ test two_connections_may_share_one_file ... ok
 
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.50s
 
-     Running tests/epic_jira_reconciliation.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/epic_jira_reconciliation-9df3d25f77f4893f)
+     Running tests/epic_jira_reconciliation.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/epic_jira_reconciliation-9df3d25f77f4893f)
 
 running 4 tests
 test epic_transition_key_cannot_authorize_different_intent ... ok
@@ -2919,7 +2919,7 @@ test epic_conflict_schema_refuses_unknown_kinds_bad_timestamps_and_second_resolu
 
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.80s
 
-     Running tests/event_replay.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/event_replay-f95c5b4b78593503)
+     Running tests/event_replay.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/event_replay-f95c5b4b78593503)
 
 running 47 tests
 test a_late_runtime_refusal_cannot_overwrite_a_newer_provider_report ... ok
@@ -2972,7 +2972,7 @@ test the_exported_quota_chain_is_exact_and_carries_no_refusal_text ... ok
 
 test result: ok. 47 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.06s
 
-     Running tests/hosted_seat_autonomy.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/hosted_seat_autonomy-5cd42d38f32521bd)
+     Running tests/hosted_seat_autonomy.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/hosted_seat_autonomy-5cd42d38f32521bd)
 
 running 16 tests
 test a_changed_default_applies_to_the_successor_and_not_the_predecessor ... ok
@@ -2994,7 +2994,7 @@ test the_schema_refuses_to_rewrite_a_recorded_decision ... ok
 
 test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.12s
 
-     Running tests/intake_lineage.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/intake_lineage-1da25ba86f8cba89)
+     Running tests/intake_lineage.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/intake_lineage-1da25ba86f8cba89)
 
 running 14 tests
 test a_bounded_auto_arm_creates_work_with_its_authorization_in_the_lineage ... ok
@@ -3014,7 +3014,7 @@ test the_store_refuses_every_auto_arm_the_policy_refuses ... ok
 
 test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.64s
 
-     Running tests/jira_link_ledger.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/jira_link_ledger-6ecd960039111208)
+     Running tests/jira_link_ledger.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/jira_link_ledger-6ecd960039111208)
 
 running 5 tests
 test jira_task_and_issue_identity_are_both_exclusive ... ok
@@ -3025,7 +3025,7 @@ test v81_fails_closed_for_each_irreconcilable_historical_identity ... ok
 
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.97s
 
-     Running tests/jira_materialization.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/jira_materialization-bce3426d09a6f82f)
+     Running tests/jira_materialization.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/jira_materialization-bce3426d09a6f82f)
 
 running 30 tests
 test a_confirmed_epic_binding_cannot_be_replaced_by_a_later_batch ... ok
@@ -3061,7 +3061,7 @@ test recovery_adopts_exact_non_overlapping_legacy_batch_fragments_without_rewrit
 
 test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.65s
 
-     Running tests/legacy_naming_recovery.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/legacy_naming_recovery-f6ac2c19050b746b)
+     Running tests/legacy_naming_recovery.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/legacy_naming_recovery-f6ac2c19050b746b)
 
 running 2 tests
 test a_stale_container_recovery_cas_preserves_logical_identity_and_history ... ok
@@ -3069,7 +3069,7 @@ test a_legacy_epic_code_correction_is_atomic_append_only_and_replay_safe ... ok
 
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.74s
 
-     Running tests/native_capacity.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/native_capacity-68598015a6c25149)
+     Running tests/native_capacity.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/native_capacity-68598015a6c25149)
 
 running 16 tests
 test a_lapsed_override_is_still_a_record_that_someone_made_it ... ok
@@ -3091,7 +3091,7 @@ test every_window_balance_and_reserve_survives_a_restart ... ok
 
 test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.08s
 
-     Running tests/open_questions.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/open_questions-d50d81c654cd517e)
+     Running tests/open_questions.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/open_questions-d50d81c654cd517e)
 
 running 12 tests
 test only_the_current_deferral_reopens_and_it_reopens_once ... ok
@@ -3109,7 +3109,7 @@ test an_import_records_every_ledger_row_as_lineage ... ok
 
 test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.00s
 
-     Running tests/operational_liveness.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/operational_liveness-743a31a11b2781f7)
+     Running tests/operational_liveness.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/operational_liveness-743a31a11b2781f7)
 
 running 11 tests
 test a_disagreeing_identity_is_reported_rather_than_silently_repaired ... ok
@@ -3126,7 +3126,7 @@ test the_attach_deadline_is_the_one_fixed_at_creation ... ok
 
 test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.00s
 
-     Running tests/operational_promotion.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/operational_promotion-863478a43885e26d)
+     Running tests/operational_promotion.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/operational_promotion-863478a43885e26d)
 
 running 3 tests
 test authorizing_a_promotion_records_the_epic_and_its_roster_together ... ok
@@ -3135,7 +3135,7 @@ test a_promotion_that_cannot_freeze_its_roster_leaves_the_source_promotable ... 
 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.77s
 
-     Running tests/operational_topology.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/operational_topology-bd2d0090f86e397b)
+     Running tests/operational_topology.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/operational_topology-bd2d0090f86e397b)
 
 running 9 tests
 test a_published_topology_revision_cannot_be_replaced_even_with_the_same_bytes ... ok
@@ -3150,7 +3150,7 @@ test a_new_epic_can_share_its_lineages_historical_project_root ... ok
 
 test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.23s
 
-     Running tests/policy_evidence.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/policy_evidence-ee402fd3464951ca)
+     Running tests/policy_evidence.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/policy_evidence-ee402fd3464951ca)
 
 running 22 tests
 test a_waiver_receipt_must_name_a_real_waiver ... ok
@@ -3178,14 +3178,14 @@ test an_unauthorized_role_cannot_reject_and_leaves_nothing_behind ... ok
 
 test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.04s
 
-     Running tests/publication_attestations_immutable.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/publication_attestations_immutable-40918c0411fa40d9)
+     Running tests/publication_attestations_immutable.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/publication_attestations_immutable-40918c0411fa40d9)
 
 running 1 test
 test recorded_publication_attestations_are_immutable_at_the_database_boundary ... ok
 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.70s
 
-     Running tests/reconciliation.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/reconciliation-6689922c4b75f6a4)
+     Running tests/reconciliation.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/reconciliation-6689922c4b75f6a4)
 
 running 16 tests
 test failed_census_does_not_mark_missing ... ok
@@ -3207,7 +3207,7 @@ test repeating_same_epoch_duplicates_no_facts_or_effects ... ok
 
 test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.03s
 
-     Running tests/repository_roundtrip.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/repository_roundtrip-215812d146c71435)
+     Running tests/repository_roundtrip.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/repository_roundtrip-215812d146c71435)
 
 running 89 tests
 test a_completion_commit_refuses_command_scope_and_unchanged_state_mismatches ... ok
@@ -3302,7 +3302,7 @@ test the_arbitrary_profile_and_persona_fixtures_persist_reopen_and_hash_identica
 
 test result: ok. 89 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 26.85s
 
-     Running tests/scheduler_admission.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/scheduler_admission-3be71fd0d3936055)
+     Running tests/scheduler_admission.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/scheduler_admission-3be71fd0d3936055)
 
 running 34 tests
 test a_ceiling_is_recounted_from_the_rows_rather_than_trusted ... ok
@@ -3342,7 +3342,7 @@ test unconfirmed_admissions_are_unknown_unbound_queued_roots_only ... ok
 
 test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.12s
 
-     Running tests/schema_v1.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/schema_v1-ddb3f49607134b15)
+     Running tests/schema_v1.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/schema_v1-ddb3f49607134b15)
 
 running 64 tests
 test a_failing_migration_leaves_version_zero_and_no_partial_schema ... ok
@@ -3414,7 +3414,7 @@ test v99_records_a_hold_lift_condition_that_can_neither_be_edited_nor_withdrawn 
 
 test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 196.13s
 
-     Running tests/succession_attempts.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/succession_attempts-0302c2a074ec6edc)
+     Running tests/succession_attempts.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/succession_attempts-0302c2a074ec6edc)
 
 running 8 tests
 test identical_runtime_refusal_refreshes_the_current_cursor_once_and_replay_is_inert ... ok
@@ -3428,7 +3428,7 @@ test succession_attempts_round_trip_only_as_non_executable_lineage ... ok
 
 test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.37s
 
-     Running tests/team_definition_backup_contract.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/team_definition_backup_contract-861271a3a2ff34f3)
+     Running tests/team_definition_backup_contract.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/team_definition_backup_contract-861271a3a2ff34f3)
 
 running 2 tests
 test typed_export_carries_every_team_definition_surface ... ok
@@ -3436,7 +3436,7 @@ test a_verified_snapshot_restore_preserves_the_team_definition_surfaces ... ok
 
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.62s
 
-     Running tests/team_definition_migration_completeness.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/team_definition_migration_completeness-1cac77cd1bd89d52)
+     Running tests/team_definition_migration_completeness.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/team_definition_migration_completeness-1cac77cd1bd89d52)
 
 running 20 tests
 test a_crash_between_the_pin_commit_and_the_receipt_recovers_from_the_same_key ... ok
@@ -3462,7 +3462,7 @@ test an_ordinary_multi_seat_team_run_censuses_each_seat_exactly_once ... ok
 
 test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 73.34s
 
-     Running tests/team_definition_persistence.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/team_definition_persistence-2166299f37465ceb)
+     Running tests/team_definition_persistence.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/team_definition_persistence-2166299f37465ceb)
 
 running 31 tests
 test a_definition_naming_an_unpublished_topology_revision_is_refused ... ok
@@ -3499,7 +3499,7 @@ test the_settled_topic_correction_may_not_also_move_the_subject ... ok
 
 test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.63s
 
-     Running tests/team_run_admission_adoption.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/team_run_admission_adoption-b12b3d9fd12a44e9)
+     Running tests/team_run_admission_adoption.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/team_run_admission_adoption-b12b3d9fd12a44e9)
 
 running 18 tests
 test a_slot_the_frozen_snapshot_does_not_declare_is_refused ... ok
@@ -3523,13 +3523,13 @@ test local_adoption_replay_after_reopen_preserves_original_evidence_and_refuses_
 
 test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.38s
 
-     Running unittests src/lib.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_teams-a803959777181bda)
+     Running unittests src/lib.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_teams-a803959777181bda)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/operational_workflow.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/operational_workflow-f9ce96fa931f4d79)
+     Running tests/operational_workflow.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/operational_workflow-f9ce96fa931f4d79)
 
 running 3 tests
 test core_team_forces_distinct_control_roles_and_derives_quick_and_initial_seats ... ok
@@ -3538,7 +3538,7 @@ test qsw_to_esw_promotion_is_idempotent_and_hands_off_to_the_lsa ... ok
 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running tests/team_contract.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/team_contract-71d3bbc0a22efe80)
+     Running tests/team_contract.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/team_contract-71d3bbc0a22efe80)
 
 running 47 tests
 test a_duplicate_slot_id_is_refused_by_the_rule_that_names_it ... ok
@@ -3591,13 +3591,13 @@ test structurally_invalid_templates_are_refused ... ok
 
 test result: ok. 47 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
 
-     Running unittests src/lib.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_tests_contract-054fd2dac316e95e)
+     Running unittests src/lib.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_tests_contract-054fd2dac316e95e)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running guardrails.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/guardrails-cbcd0d798bc586fc)
+     Running guardrails.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/guardrails-cbcd0d798bc586fc)
 
 running 5 tests
 test the_exact_recorded_worktree_is_admitted_and_reaches_the_runtime ... ok
@@ -3608,7 +3608,7 @@ test two_rejections_park_before_another_builder_can_launch ... ok
 
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 21.89s
 
-     Running mcp_cardinality.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/mcp_cardinality-b44e129309c1d9dd)
+     Running mcp_cardinality.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/mcp_cardinality-b44e129309c1d9dd)
 
 running 11 tests
 test an_operator_cannot_reach_an_admin_tool ... ok
@@ -3625,7 +3625,7 @@ test every_tool_makes_exactly_one_authenticated_request_with_its_declared_shape 
 
 test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
 
-     Running mcp_mutants.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/mcp_mutants-19241e7e4e398213)
+     Running mcp_mutants.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/mcp_mutants-19241e7e4e398213)
 
 running 11 tests
 test a_non_loopback_endpoint_is_refused_before_a_client_exists ... ok
@@ -3642,7 +3642,7 @@ test kontor_mcp_has_no_dependency_path_to_a_forbidden_crate ... ok
 
 test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.43s
 
-     Running mcp_parity.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/mcp_parity-31253e63a4b88ee2)
+     Running mcp_parity.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/mcp_parity-31253e63a4b88ee2)
 
 running 12 tests
 test the_local_documents_and_default_port_match_the_daemons ... ok
@@ -3660,7 +3660,7 @@ test every_tool_declares_the_same_parameters_the_contract_does ... ok
 
 test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
 
-     Running profiles_teams.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/profiles_teams-8f27c4193174ebd4)
+     Running profiles_teams.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/profiles_teams-8f27c4193174ebd4)
 
 running 11 tests
 test a_task_cannot_close_while_a_declared_role_slot_is_still_open ... ok
@@ -3677,7 +3677,7 @@ test two_declared_slots_of_one_role_run_concurrently_in_one_workspace ... ok
 
 test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 38.04s
 
-     Running runtime_adapter.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/runtime_adapter-c0a6b0999ba43020)
+     Running runtime_adapter.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/runtime_adapter-c0a6b0999ba43020)
 
 running 52 tests
 test a_best_effort_policy_launches_and_stays_visibly_not_enforced ... ok
@@ -3735,7 +3735,7 @@ test unknown_compaction_telemetry_is_absent_and_never_zero ... ok
 
 test result: ok. 52 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running scheduling.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/scheduling-f069f74e45c325b6)
+     Running scheduling.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/scheduling-f069f74e45c325b6)
 
 running 2 tests
 test the_scheduler_admits_a_bundled_profile_and_its_lease_stops_the_next_contender ... ok
@@ -3743,20 +3743,20 @@ test a_lost_launch_and_a_restart_still_leave_exactly_one_durable_admission ... o
 
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.69s
 
-     Running unittests src/lib.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_tests_e2e-fede4ff6acf4be66)
+     Running unittests src/lib.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/kontor_tests_e2e-fede4ff6acf4be66)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running pilot.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/pilot-3da00aced7747541)
+     Running pilot.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/pilot-3da00aced7747541)
 
 running 1 test
 test pilot ... ok
 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 22.36s
 
-     Running pilot_live.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/pilot_live-6e4517fb1aacc640)
+     Running pilot_live.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/pilot_live-6e4517fb1aacc640)
 
 running 1 test
 test pilot_live ... ok
@@ -3891,7 +3891,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 $ cargo audit
     Fetching advisory database from `https://github.com/RustSec/advisory-db.git`
-      Loaded 1271 security advisories (from /Users/igor/.cargo/advisory-db)
+      Loaded 1271 security advisories (from $HOME/.cargo/advisory-db)
     Updating crates.io index
     Scanning Cargo.lock for vulnerabilities (756 crate dependencies)
 Crate:     bincode

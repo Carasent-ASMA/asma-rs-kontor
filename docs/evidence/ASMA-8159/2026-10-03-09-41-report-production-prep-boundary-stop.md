@@ -6,6 +6,8 @@
 > **Scope:** ASMA-8159 / MEM-04 / TASK-004 of ASMA-8155; Paseo-direct
 > **Summary:** Source inspection found no supported production Cognee alias registration/resolution path. Item 6 of the resumption brief requires a stop before inventing a credential boundary. This additive evidence checkpoint preserves every accepted source byte and records remote/default divergence and outstanding obligations.
 
+> **Public tree, 2026-10-17 (ASMA-8511):** the run receipts and deployment records this document linked were removed from the public tree. Their links are now plain text. Each removed file is listed with its SHA-256 in the [removed-evidence manifest](../removed-run-evidence-2026-10-17.tsv), and stays in git history at `0971674d`.
+
 ## When to load
 
 Load when routing the credential decision, resuming this same writer, or admitting
@@ -17,7 +19,7 @@ production-prep implementation or an independent verdict.
 Operational authorization:
 `44d5d916-d778-46b8-b00d-2cca01cc6553/8155-production-prep`.
 The standing-authority record was read at
-`/Users/igor/.local/state/asma/watchdogs/kontor-closeout-20261003/standing-authority.json`;
+`$HOME/.local/state/asma/watchdogs/kontor-closeout-20261003/standing-authority.json`;
 it delegates task-scoped technical decisions through the existing LSA and keeps
 subsequent narrower user constraints in force.
 The current user brief and the TPM's production-prep resumption record authorize
@@ -25,7 +27,7 @@ source/fake work and preparation; they prohibit real credentials, production
 corpus access, runtime activation, deployment, push/PR and Jira actions.
 
 Branch: `feat/ASMA-8155-kontor-experience-memory-and-analogue-recall`.
-Checkout: `/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and`.
+Checkout: `$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and`.
 Starting HEAD: `fe5373f2d2a2c147a6e2b6398c07b5091eaa1ca0`, tree
 `c95275e6ecb307a24d0fb0d2accd63fa127099e1`.
 
@@ -40,7 +42,7 @@ LSA contract:
 `/private/tmp/ASMA-8155-full-lsa-readiness-original-20261002.txt`, SHA-256
 `7ee35150e2e90cdc4fab83bac999ecd2cef6286d236df128b0ad5b8c211d828b`.
 TPM record:
-`/Users/igor/.local/share/paseo/epic-projects/ASMA-8155/2026-10-02-22-06-readiness-ASMA-8155-delivery-admission-prep.md`,
+`$HOME/.local/share/paseo/epic-projects/ASMA-8155/2026-10-02-22-06-readiness-ASMA-8155-delivery-admission-prep.md`,
 production-prep resumption, lines 121–128. Its owner/status observations are
 consumed by reference; no owner was contacted and no external lane was modified.
 
@@ -85,7 +87,7 @@ stays disabled by default. No real secret is needed for this disposition.
 ## Commands and results
 
 [verify-boundary-stop.py](verify-boundary-stop.py) reproduces the read-only
-capture. [production-prep-boundary-stop.json](receipts/production-prep-boundary-stop.json)
+capture. production-prep-boundary-stop.json
 records its exact argv, source digest, command argv/cwd/start/end/exit/stdout/stderr,
 source excerpts with whole-file hashes, ancestry and integrity results.
 

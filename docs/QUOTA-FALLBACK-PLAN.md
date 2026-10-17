@@ -478,7 +478,7 @@ the rationale, not as current gap status:
 * **Account before rung.** "A second account on the same rung costs nothing while
   descending costs quality, so `codex:team` is tried before dropping off
   `codex:prolite`'s rung." Those were the historical aliases; a declared Paseo
-  provider alias per account (`codex-work`, `codex-personal`) is the shipped
+  provider alias per account (`codex-b`, `codex-a`) is the shipped
   selector.
 * **Wait rather than descend when the reset is near.** "Step 4's descent is
   skipped entirely when the blocking window resets inside the declared short
@@ -487,7 +487,7 @@ the rationale, not as current gap status:
   open* so it can hold the seat instead of merely preserving a refusal.
 
 The policy also records the one provider fact KON-OP-13 still has to establish:
-whether `codex-work` exposes its own rate-limit readings from its own effective
-home or shares `codex-personal`'s. The practical value of account-before-rung
+whether `codex-b` exposes its own rate-limit readings from its own effective
+home or shares `codex-a`'s. The practical value of account-before-rung
 resolution depends on the answer, though its correctness does not; the
 per-account grain of `provider_quota_states` is built to hold either.

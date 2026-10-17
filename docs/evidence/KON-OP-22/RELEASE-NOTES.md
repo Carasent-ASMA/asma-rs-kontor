@@ -44,7 +44,7 @@ only along this validated route:
 2. The complete clean-archive verifier passed, and all three release binaries
    were built from that exact merge.
 3. The coherent rollback unit is
-   `/Users/igor/.local/state/kontor/asma/deploy-backups/20260903T143337Z-kon-op-22-7c27f4d/`.
+   `$HOME/.local/state/kontor/asma/deploy-backups/20260903T143337Z-kon-op-22-7c27f4d/`.
    It includes the previous fleet, LaunchAgent, runtime configuration, and
    verified snapshot
    `kontor-01a00649-9ee6-73e0-ba1b-6a6c35cfd065-20260903T143417410639Z.db`.
@@ -128,7 +128,7 @@ to the head that passed the complete local release verifier.
 The exact merge daemon was deployed with hash
 `248e7a385a5cafcaa990087b9d7f1e42fb914348a5506b34d35caf0f180b8744`
 and restarted as PID `43055`. Rollback is the coherent unit at
-`/Users/igor/.local/state/kontor/asma/deploy-backups/20260903T232131Z-kon-op-22-d224b15/`,
+`$HOME/.local/state/kontor/asma/deploy-backups/20260903T232131Z-kon-op-22-d224b15/`,
 including a schema-v83 snapshot that passed quick and foreign-key checks.
 
 The original Kontor materialization replay then created exactly three children:
@@ -154,7 +154,7 @@ deployed that exact master with daemon SHA-256
 returned a healthy PID `5040`, schema v88, clean integrity and foreign-key
 readback, preserved realm/project identity and project revision 6. The coherent
 deployment receipt is
-`/Users/igor/.local/state/kontor/asma/deploy-backups/20260905T221625Z-asma-8090-8100-9894060/deployment.json`.
+`$HOME/.local/state/kontor/asma/deploy-backups/20260905T221625Z-asma-8090-8100-9894060/deployment.json`.
 
 The ASMA-8090 owner then resumed through Kontor only:
 

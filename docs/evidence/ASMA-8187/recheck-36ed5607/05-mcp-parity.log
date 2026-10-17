@@ -27,8 +27,8 @@ disk free   : 15Gi
    Compiling reqwest v0.13.4
    Compiling schemars v1.2.2
    Compiling rmcp v3.1.2
-   Compiling kontor-core v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-core)
-   Compiling kontor-mcp v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-mcp)
+   Compiling kontor-core v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-core)
+   Compiling kontor-mcp v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-mcp)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 14.50s
      Running unittests src/lib.rs (target/debug/deps/kontor_mcp-8d7c27cc8b23cccd)
 

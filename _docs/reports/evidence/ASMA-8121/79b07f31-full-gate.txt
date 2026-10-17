@@ -4778,7 +4778,7 @@ running 0 tests
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
     Fetching advisory database from `https://github.com/RustSec/advisory-db.git`
-      Loaded 1271 security advisories (from /Users/igor/.cargo/advisory-db)
+      Loaded 1271 security advisories (from $HOME/.cargo/advisory-db)
     Updating crates.io index
     Scanning Cargo.lock for vulnerabilities (756 crate dependencies)
 Crate:     bincode

@@ -90,7 +90,7 @@ identical at `7d9a7ce0537677726636955008a6c256b30795ea`.
 The exact merge was built in a detached checkout and deployed to the complete
 local runtime fleet. The atomic backup and deployment receipt is:
 
-`/Users/igor/.local/state/kontor/asma/deploy-backups/20260906T161929Z-asma-8116-c4a0e6b/deployment.json`
+`$HOME/.local/state/kontor/asma/deploy-backups/20260906T161929Z-asma-8116-c4a0e6b/deployment.json`
 
 Post-restart readback preserved realm, schema 92, the project and epic IDs,
 the ESW/ECP identities, both TSW node IDs, all pinned Team Definition data,
@@ -111,8 +111,8 @@ The originally declared paths encoded a feature branch directly under
 `.worktrees/<jira-key-lowercase>/asma-rs-kontor`. Identity-preserving Git
 worktree moves established:
 
-- `/Users/igor/carasent/asma-modules/.worktrees/asma-8116/asma-rs-kontor`;
-- `/Users/igor/carasent/asma-modules/.worktrees/asma-8117/asma-rs-kontor`.
+- `$HOME/carasent/asma-modules/.worktrees/asma-8116/asma-rs-kontor`;
+- `$HOME/carasent/asma-modules/.worktrees/asma-8117/asma-rs-kontor`.
 
 The ASMA-8116 branch, HEAD and tree stayed unchanged and clean after the move;
 the ASMA-8117 branch stayed at its original clean `508a514` source state.

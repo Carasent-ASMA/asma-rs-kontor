@@ -1,6 +1,6 @@
-   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-store)
+   Compiling kontor-store v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-store)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 13.18s
-     Running tests/team_definition_migration_completeness.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/team_definition_migration_completeness-f7b8bbf4d0c6389a)
+     Running tests/team_definition_migration_completeness.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/team_definition_migration_completeness-f7b8bbf4d0c6389a)
 
 running 23 tests
 test a_live_delivery_session_with_no_seat_at_its_slot_fails_closed ... ok

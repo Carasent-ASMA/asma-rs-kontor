@@ -94,7 +94,7 @@ This is sufficient mutation evidence for the changed workspace diagnostic: resto
 
 ## Fresh audit checks
 
-All commands ran from `/Users/igor/carasent/asma-modules/.worktrees/asma-8234/asma-rs-kontor` with `CARGO_TARGET_DIR=/private/tmp/asma-8234-audit-target` for the tests.
+All commands ran from `$HOME/carasent/asma-modules/.worktrees/asma-8234/asma-rs-kontor` with `CARGO_TARGET_DIR=/private/tmp/asma-8234-audit-target` for the tests.
 
 | Exact check | Result |
 | --- | --- |
