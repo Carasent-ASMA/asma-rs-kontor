@@ -27,6 +27,7 @@
 
 mod artifact_submission;
 mod committee_evidence;
+mod completion_history;
 mod desk_adams;
 mod durable_seats;
 mod memory_projection;
@@ -15423,7 +15424,7 @@ impl Services {
                  Governed re-review evidence reconstructed by Kontor: {} \
                  Submit this seat's own finding through the scoped Kontor MCP tools, which inherit authentication automatically. \
                  Context: project_id {}, committee_run_id {}, round {}, expected_revision {}, seat_binding_id {}. \
-                 Read this run with kontor_committee_run_get: subject_evidence contains the pinned task contracts, gate evaluations, artifact locators and completion integration bodies. Cite its content_hash and refresh the run revision before submission. Never disclose credentials.",
+                 Read this run with kontor_committee_run_get: subject_evidence contains the pinned task contracts, gate evaluations, artifact locators, completion integration bodies, and any explicit unavailable-provenance disposition with its current-source verification packet. Independently assess the actual obligations; an operator disposition is not an acceptance pass. Cite its content_hash and refresh the run revision before submission. Never disclose credentials.",
                 authority,
                 template.charter.as_str(),
                 slot.behavior.as_str(),
@@ -15609,7 +15610,7 @@ impl Services {
              Question: {} Durable reviewer findings available to this seat: {} \
              Submit this seat's own finding through the scoped Kontor MCP tools, which inherit authentication automatically. \
              Context: project_id {}, committee_run_id {}, round {}, expected_revision {}, seat_binding_id {}. \
-             Read this run with kontor_committee_run_get: subject_evidence contains the pinned task contracts, gate evaluations, artifact locators and completion integration bodies. Cite its content_hash and refresh the run revision before submission. Never disclose credentials.",
+             Read this run with kontor_committee_run_get: subject_evidence contains the pinned task contracts, gate evaluations, artifact locators, completion integration bodies, and any explicit unavailable-provenance disposition with its current-source verification packet. Independently assess the actual obligations; an operator disposition is not an acceptance pass. Cite its content_hash and refresh the run revision before submission. Never disclose credentials.",
             authority,
             template.charter.as_str(),
             slot.behavior.as_str(),
@@ -18997,6 +18998,8 @@ impl Services {
         compiled: &CompiledCompletion,
     ) -> Result<CompletionStateDto, ApiError> {
         let state = self.completion_state(stored)?;
+        let judged =
+            self.validated_history_state(stored.project_id, stored.mini_project_id, &state);
         let wakes = self
             .state()?
             .with_store(|store| {
@@ -19008,7 +19011,7 @@ impl Services {
             epic_id: stored.mini_project_id,
             profile: Self::completion_profile_dto(compiled),
             phase: completion_phase_dto(state.phase),
-            blockers: kontor_scheduler::blockers(&state)
+            blockers: kontor_scheduler::blockers(&judged)
                 .map_err(|error| self.refuse_domain(&error))?
                 .iter()
                 .map(completion_blocker_dto)
@@ -19066,6 +19069,12 @@ impl Services {
                     evidence: closeout_dto(&record.evidence),
                 })
                 .collect(),
+            historical_evidence: state.historical_evidence.iter().map(|record| {
+                let mut projected = serde_json::json!(record);
+                projected["currently_applicable"] = serde_json::json!(judged.historical_evidence.iter().any(|valid| valid.evidence_hash == record.evidence_hash));
+                projected["review_instruction"] = serde_json::json!("Historical producer evidence remains missing. Independently verify the actual current-source obligations; use the existing subject evidence references and discuss the explicit unavailable-provenance disposition. The disposition does not attest acceptance.");
+                projected
+            }).collect(),
             generation: state.generation,
             revision: state.revision,
             snapshot_cursor: self.cursor()?,
@@ -19680,7 +19689,23 @@ impl Services {
         stored: &StoredEpicCompletion,
     ) -> Result<bool, ApiError> {
         let current = self.completion_state(stored)?;
-        if current.phase == CompletionPhase::Tickets {
+        let historical_pins_changed = match self.require_current_historical_evidence(
+            stored.project_id,
+            stored.mini_project_id,
+            &current,
+        ) {
+            Ok(()) => false,
+            Err(error)
+                if matches!(
+                    error.code,
+                    ApiErrorCode::RevisionConflict | ApiErrorCode::NotFound
+                ) =>
+            {
+                true
+            }
+            Err(error) => return Err(error),
+        };
+        if current.phase == CompletionPhase::Tickets && !historical_pins_changed {
             return Ok(false);
         }
         let requirements =
@@ -19689,12 +19714,15 @@ impl Services {
             return Ok(false);
         }
         let evidence = self.epic_ticket_evidence(stored.project_id, &requirements)?;
-        let mut probe = current.clone();
+        let mut probe =
+            self.validated_history_state(stored.project_id, stored.mini_project_id, &current);
         probe.ticket_requirements.clone_from(&requirements);
         probe.ticket_evidence = evidence;
         let outstanding =
             kontor_scheduler::blockers(&probe).map_err(|error| self.refuse_domain(&error))?;
-        if !matches!(outstanding.first(), Some(CompletionBlocker::Ticket(_))) {
+        if !historical_pins_changed
+            && !matches!(outstanding.first(), Some(CompletionBlocker::Ticket(_)))
+        {
             return Ok(false);
         }
 
@@ -31927,7 +31955,26 @@ impl ApplicationOperations for Services {
             None => self.start_completion(project_id, epic_id, now)?,
         };
         let current = self.completion_state(&stored)?;
-        let observation = self.observe_completion(&stored, &current, request.evidence.as_ref())?;
+        self.require_current_historical_evidence(project_id, epic_id, &current)?;
+        let observation = if let Some(CompletionEvidenceDto::HistoricalEvidence {
+            reason,
+            packet,
+            tasks,
+            ..
+        }) = request.evidence.as_ref()
+        {
+            self.historical_completion_observation(
+                &stored,
+                &current,
+                intent.hash(),
+                reason,
+                packet,
+                tasks,
+            )
+            .await?
+        } else {
+            self.observe_completion(&stored, &current, request.evidence.as_ref())?
+        };
         // The signal id is the canonical intent's digest, so the same observation
         // presented twice is the same signal and the pure machine answers
         // `replayed` rather than transitioning again.
