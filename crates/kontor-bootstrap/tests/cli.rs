@@ -452,6 +452,78 @@ fn a_symlinked_state_root_produces_zero_mutations() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn a_group_or_world_writable_install_root_is_refused_without_writes() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let world = World::new();
+    std::fs::create_dir_all(&world.install_root).expect("install root");
+    std::fs::set_permissions(&world.install_root, std::fs::Permissions::from_mode(0o777))
+        .expect("chmod");
+    let mut arguments = vec!["install".to_owned()];
+    arguments.extend(world.common());
+    arguments.push("--source-dir".to_owned());
+    arguments.push(world.source_dir.to_str().expect("utf8").to_owned());
+    let refs: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    let (document, success, stdout) = world.run(&refs);
+    assert!(!success, "{stdout}");
+    assert_eq!(document["error"]["code"], "install_root_invalid");
+    assert_eq!(
+        std::fs::read_dir(&world.install_root)
+            .expect("install root")
+            .count(),
+        0,
+        "validation refuses the root before any effect"
+    );
+    assert!(!world.state_root.exists(), "no state may be created");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_group_or_world_writable_state_root_is_refused_without_writes() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let world = World::new();
+    std::fs::create_dir_all(&world.state_root).expect("state root");
+    std::fs::set_permissions(&world.state_root, std::fs::Permissions::from_mode(0o777))
+        .expect("chmod");
+    let mut arguments = vec!["install".to_owned()];
+    arguments.extend(world.common());
+    arguments.push("--source-dir".to_owned());
+    arguments.push(world.source_dir.to_str().expect("utf8").to_owned());
+    let refs: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    let (document, success, stdout) = world.run(&refs);
+    assert!(!success, "{stdout}");
+    assert_eq!(document["error"]["code"], "state_root_invalid");
+    world.assert_no_mutations();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_group_or_world_writable_releases_directory_is_refused_before_any_effect() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let world = World::new();
+    world.install();
+    let pointer = std::fs::read_link(world.install_root.join("current")).expect("pointer");
+    let releases = world.install_root.join("releases");
+    std::fs::set_permissions(&releases, std::fs::Permissions::from_mode(0o777)).expect("chmod");
+    let mut arguments = vec!["install".to_owned()];
+    arguments.extend(world.common());
+    arguments.push("--source-dir".to_owned());
+    arguments.push(world.source_dir.to_str().expect("utf8").to_owned());
+    let refs: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    let (document, success, stdout) = world.run(&refs);
+    assert!(!success, "{stdout}");
+    assert_eq!(document["error"]["code"], "install_root_invalid");
+    assert_eq!(
+        std::fs::read_link(world.install_root.join("current")).expect("pointer"),
+        pointer,
+        "the active pointer was not changed"
+    );
+}
+
 #[test]
 fn an_unknown_client_is_refused_without_reflection() {
     let world = World::new();

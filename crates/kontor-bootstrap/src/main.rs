@@ -12,7 +12,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use kontor_bootstrap::client::claude::UnavailableClaudeBoundary;
-use kontor_bootstrap::confinement::Dir;
+use kontor_bootstrap::confinement::{ConfinementError, Dir, effective_user};
 use kontor_bootstrap::{
     AdapterResult, ArtifactManifest, BootstrapReceipt, ClaudeAdapter, ClientAdapter, ClientFailure,
     ClientHome, ClientId, ClientReport, FileClientAdapter, Installer, NoFaults, ObservedHash,
@@ -161,8 +161,19 @@ fn run(arguments: Arguments) -> Result<String, Failure> {
     }
 }
 
+/// Which injected root is being validated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RootScope {
+    /// The install root, which holds the executables every client entry names.
+    Install,
+    /// The state root, which holds the ownership ledger and credentials.
+    State,
+    /// The client home root.
+    Home,
+}
+
 /// Validate one injected root before any effect.
-fn validate_root(path: &Path, code: &'static str) -> Result<(), Failure> {
+fn validate_root(path: &Path, code: &'static str, scope: RootScope) -> Result<(), Failure> {
     if !path.is_absolute() {
         return Err((code, "the root must be an absolute path".to_owned()));
     }
@@ -171,10 +182,60 @@ fn validate_root(path: &Path, code: &'static str) -> Result<(), Failure> {
             Err((code, "the root may not be a symlink".to_owned()))
         }
         Ok(metadata) if !metadata.is_dir() => Err((code, "the root is not a directory".to_owned())),
-        Ok(_) => Ok(()),
+        Ok(_) => match scope {
+            RootScope::Install | RootScope::State => {
+                validate_private_root(path, code, scope == RootScope::Install)
+            }
+            RootScope::Home => Ok(()),
+        },
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(_) => Err((code, "the root cannot be inspected".to_owned())),
     }
+}
+
+/// Refuse a root this process does not own or that another local user can
+/// write. The check runs on the held descriptor, so a path swap cannot change
+/// what was inspected.
+fn validate_private_root(
+    path: &Path,
+    code: &'static str,
+    with_releases: bool,
+) -> Result<(), Failure> {
+    let dir =
+        Dir::open_root(path).map_err(|_| (code, "the root cannot be inspected".to_owned()))?;
+    require_private_directory(&dir, code)?;
+    if with_releases {
+        match dir.open_child("releases") {
+            Ok(releases) => require_private_directory(&releases, code)?,
+            Err(ConfinementError::Missing) => {}
+            Err(_) => {
+                return Err((
+                    code,
+                    "the releases directory cannot be inspected".to_owned(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn require_private_directory(dir: &Dir, code: &'static str) -> Result<(), Failure> {
+    let (owner, mode) = dir
+        .owner_and_mode()
+        .map_err(|_| (code, "the root cannot be inspected".to_owned()))?;
+    if owner != effective_user() {
+        return Err((
+            code,
+            "the root must be owned by the effective user".to_owned(),
+        ));
+    }
+    if mode & 0o022 != 0 {
+        return Err((
+            code,
+            "the root must not be writable by group or other users".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn client_list(requested: &[String]) -> Result<Vec<ClientId>, Failure> {
@@ -239,9 +300,9 @@ fn install(
     let clients = client_list(requested)?;
     let manifest = ArtifactManifest::read(manifest_path)
         .map_err(|error| ("manifest_invalid", error.to_string()))?;
-    validate_root(install_root, "install_root_invalid")?;
-    validate_root(home_root, "home_root_invalid")?;
-    validate_root(state_root, "state_root_invalid")?;
+    validate_root(install_root, "install_root_invalid", RootScope::Install)?;
+    validate_root(home_root, "home_root_invalid", RootScope::Home)?;
+    validate_root(state_root, "state_root_invalid", RootScope::State)?;
     let source =
         Dir::open_root(source_dir).map_err(|error| ("source_invalid", error.to_string()))?;
     let sources = manifest
@@ -305,9 +366,9 @@ fn readback(
     let clients = client_list(requested)?;
     let manifest = ArtifactManifest::read(manifest_path)
         .map_err(|error| ("manifest_invalid", error.to_string()))?;
-    validate_root(install_root, "install_root_invalid")?;
-    validate_root(home_root, "home_root_invalid")?;
-    validate_root(state_root, "state_root_invalid")?;
+    validate_root(install_root, "install_root_invalid", RootScope::Install)?;
+    validate_root(home_root, "home_root_invalid", RootScope::Home)?;
+    validate_root(state_root, "state_root_invalid", RootScope::State)?;
     let installer = Installer::at(install_root.to_path_buf())
         .map_err(|error| ("install_root_invalid", error.to_string()))?;
     let spec = server_spec(&installer, state_root);
@@ -352,9 +413,9 @@ fn repair(
             "the expected hash must be 64 lowercase hex".to_owned(),
         )
     })?;
-    validate_root(install_root, "install_root_invalid")?;
-    validate_root(home_root, "home_root_invalid")?;
-    validate_root(state_root, "state_root_invalid")?;
+    validate_root(install_root, "install_root_invalid", RootScope::Install)?;
+    validate_root(home_root, "home_root_invalid", RootScope::Home)?;
+    validate_root(state_root, "state_root_invalid", RootScope::State)?;
     let installer = Installer::at(install_root.to_path_buf())
         .map_err(|error| ("install_root_invalid", error.to_string()))?;
     let spec = server_spec(&installer, state_root);
@@ -376,7 +437,7 @@ fn repair(
 fn recover(install_root: &Path, manifest_path: &Path) -> Result<String, Failure> {
     let manifest = ArtifactManifest::read(manifest_path)
         .map_err(|error| ("manifest_invalid", error.to_string()))?;
-    validate_root(install_root, "install_root_invalid")?;
+    validate_root(install_root, "install_root_invalid", RootScope::Install)?;
     let installer = Installer::at(install_root.to_path_buf())
         .map_err(|error| ("install_root_invalid", error.to_string()))?;
     let outcome = installer

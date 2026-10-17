@@ -390,7 +390,8 @@ impl BootstrapReceipt {
         let dir = match Dir::open_root(state_root) {
             Ok(dir) => dir,
             Err(ConfinementError::Missing) => {
-                std::fs::create_dir_all(state_root).map_err(|_| ReceiptError::Io)?;
+                crate::confinement::create_private_dir_all(state_root)
+                    .map_err(|_| ReceiptError::Io)?;
                 Dir::open_root(state_root).map_err(map_root)?
             }
             Err(error) => return Err(map_root(error)),

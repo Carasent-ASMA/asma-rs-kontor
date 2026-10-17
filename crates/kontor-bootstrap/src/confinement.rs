@@ -108,6 +108,45 @@ pub fn is_simple_name(name: &str) -> bool {
         && !name.contains('\0')
 }
 
+/// Create a missing directory and its parents with owner-only access.
+///
+/// An existing directory is accepted unchanged; the caller's root validation
+/// decides whether its current owner and mode are acceptable.
+///
+/// # Errors
+/// [`ConfinementError::UnsupportedPlatform`] on a target without the Unix
+/// permission model, and [`ConfinementError::Io`] when creation fails.
+pub fn create_private_dir_all(path: &std::path::Path) -> Result<(), ConfinementError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)
+            .map_err(|_| ConfinementError::Io)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Err(ConfinementError::UnsupportedPlatform)
+    }
+}
+
+/// The effective user id of this process.
+#[must_use]
+pub fn effective_user() -> u32 {
+    #[cfg(unix)]
+    {
+        rustix::process::geteuid().as_raw()
+    }
+    #[cfg(not(unix))]
+    {
+        0
+    }
+}
+
 #[cfg(unix)]
 mod unix {
     use std::io::Write;
@@ -354,6 +393,16 @@ mod unix {
         pub fn dir_identity(&self) -> Result<(u64, u64), ConfinementError> {
             let stat = rustix::fs::fstat(&self.fd).map_err(|_| ConfinementError::Io)?;
             Ok((stat.st_dev as u64, stat.st_ino as u64))
+        }
+
+        /// The owner and permission bits of this held directory.
+        ///
+        /// # Errors
+        /// [`ConfinementError::Io`].
+        pub fn owner_and_mode(&self) -> Result<(u32, u32), ConfinementError> {
+            let stat = rustix::fs::fstat(&self.fd).map_err(|_| ConfinementError::Io)?;
+            let raw: u32 = stat.st_mode.into();
+            Ok((stat.st_uid, raw & 0o7777))
         }
 
         /// The `(device, inode)` of one open file.
@@ -954,6 +1003,10 @@ mod unix {
         }
 
         pub fn dir_identity(&self) -> Result<(u64, u64), ConfinementError> {
+            Err(ConfinementError::UnsupportedPlatform)
+        }
+
+        pub fn owner_and_mode(&self) -> Result<(u32, u32), ConfinementError> {
             Err(ConfinementError::UnsupportedPlatform)
         }
 

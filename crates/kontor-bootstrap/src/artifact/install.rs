@@ -1231,7 +1231,7 @@ impl Installer {
         if let Some(root) = self.open_root_if_exists()? {
             return Ok(root);
         }
-        std::fs::create_dir_all(&self.root).map_err(|_| InstallError::Io)?;
+        crate::confinement::create_private_dir_all(&self.root)?;
         self.open_root_if_exists()?.ok_or(InstallError::Io)
     }
 
