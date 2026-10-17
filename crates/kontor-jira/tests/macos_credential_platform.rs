@@ -8,17 +8,20 @@
 //! production `JiraConnectors` reader present the installed credential to a
 //! loopback-only responder.
 //!
-//! # Why every case is `#[ignore]`
+//! # Why every case is `#[ignore]` and needs an opt-in
 //!
 //! Every case below performs real OS effects (login keychain writes, a
 //! disposable Realm under a temporary root, a loopback HTTP responder, and a
 //! subprocess of the built daemon binary). None may run as part of an ordinary
 //! `cargo test`/CI invocation, and none is reachable through test discovery or
 //! compilation: the file defines no initializer, no lazy static and no setup
-//! hook, and every test body is guarded by `#[ignore]`. A deliberate run is:
+//! hook, and every test body is guarded by `#[ignore]`. Each case also requires
+//! `KONTOR_ASMA8015_KEYCHAIN_LIVE=1` and, without it, prints the reason and
+//! returns before any effect. A deliberate run is:
 //!
 //! ```text
-//! cargo test -p kontor-jira --test macos_credential_platform -- --ignored
+//! KONTOR_ASMA8015_KEYCHAIN_LIVE=1 \
+//!   cargo test -p kontor-jira --test macos_credential_platform -- --ignored
 //! ```
 //!
 //! The binary case additionally needs the exact daemon binary built at the
@@ -26,6 +29,7 @@
 //! refuses to run if any recognized proxy variable is present:
 //!
 //! ```text
+//! KONTOR_ASMA8015_KEYCHAIN_LIVE=1 \
 //! KONTOR_ASMA8015_DAEMON_BIN=/abs/path/to/kontor-daemon \
 //!   cargo test -p kontor-jira --test macos_credential_platform -- --ignored --exact \
 //!   the_built_daemon_installs_and_the_shared_production_readers_present_the_installed_credential
@@ -112,6 +116,8 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::Serialize;
 use zeroize::{Zeroize, Zeroizing};
 
+/// The explicit opt-in every effectful case requires.
+const LIVE_KEYCHAIN_ENV: &str = "KONTOR_ASMA8015_KEYCHAIN_LIVE";
 /// Non-secret path input naming the daemon binary built at the qualified source.
 const DAEMON_BINARY_ENV: &str = "KONTOR_ASMA8015_DAEMON_BIN";
 /// The disposable Realm export the harness reads its fresh realm id from.
@@ -159,6 +165,30 @@ const PROXY_ENVIRONMENT_KEYS: [&str; 8] = [
     "NO_PROXY",
     "no_proxy",
 ];
+
+/// Why a deliberate live-keychain run could not start, stated precisely rather
+/// than as a silent pass.
+struct Skip(&'static str);
+
+fn live_keychain_opt_in() -> Result<(), Skip> {
+    if std::env::var(LIVE_KEYCHAIN_ENV).as_deref() != Ok("1") {
+        return Err(Skip("KONTOR_ASMA8015_KEYCHAIN_LIVE is not 1"));
+    }
+    Ok(())
+}
+
+/// Skip before any effect unless the human explicitly opted in.
+macro_rules! live_keychain {
+    () => {
+        match live_keychain_opt_in() {
+            Ok(()) => {}
+            Err(Skip(reason)) => {
+                println!("skipped: {reason}");
+                return;
+            }
+        }
+    };
+}
 
 fn canonical_root(temp: &tempfile::TempDir) -> PathBuf {
     temp.path()
@@ -650,6 +680,7 @@ fn run_injected_install(
 #[test]
 #[ignore = "macOS platform harness: writes the real login keychain through SystemKeychain; run deliberately with --ignored"]
 fn an_owned_previous_scoped_entry_is_restored_byte_for_byte() {
+    live_keychain!();
     let mut temp = tempfile::tempdir().expect("the harness could not create its temporary root");
     let root = canonical_root(&temp);
     let realm = RealmId::generate();
@@ -721,6 +752,7 @@ fn an_owned_previous_scoped_entry_is_restored_byte_for_byte() {
 #[test]
 #[ignore = "macOS platform harness: writes the real login keychain through SystemKeychain; run deliberately with --ignored"]
 fn a_fresh_scoped_entry_is_deleted_after_rollback() {
+    live_keychain!();
     let mut temp = tempfile::tempdir().expect("the harness could not create its temporary root");
     let root = canonical_root(&temp);
     let realm = RealmId::generate();
@@ -1208,6 +1240,7 @@ async fn comments_or_stop(
 #[ignore = "macOS platform harness: writes the real login keychain and runs the built daemon; set KONTOR_ASMA8015_DAEMON_BIN, unset proxy variables, and run deliberately with --ignored"]
 async fn the_built_daemon_installs_and_the_shared_production_readers_present_the_installed_credential()
  {
+    live_keychain!();
     assert_no_proxy_environment();
     let daemon = daemon_binary();
     let mut temp = tempfile::tempdir().expect("the harness could not create its temporary root");
