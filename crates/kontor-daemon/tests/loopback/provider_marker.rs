@@ -400,3 +400,268 @@ async fn a_marker_correction_refuses_unknown_stale_malformed_and_unauthorized_ca
     assert_eq!(replayed.json()["outcome"], "replayed");
     assert_eq!(replayed.json()["changed"], false);
 }
+
+#[tokio::test]
+async fn a_reused_provider_marker_key_is_an_idempotency_conflict_and_writes_nothing() {
+    let world = World::open().await;
+    let path = fixture(&world);
+    let family = fake_family().to_string();
+    let preview = |provider: &str| {
+        serde_json::json!({
+            "runtime_family": family.clone(),
+            "provider": provider,
+        })
+    };
+    let apply = |provider: &str, revision: &str, hash: &str| {
+        serde_json::json!({
+            "runtime_family": family.clone(),
+            "provider": provider,
+            "expected_revision": revision,
+            "preview_hash": hash,
+        })
+    };
+
+    let first = Call::post("/v1/provider-markers:preview", &preview("claude"))
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let revision = first.json()["revision"]
+        .as_str()
+        .expect("a revision")
+        .to_owned();
+    let preview_hash = first.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+    let cleared = Call::post(
+        "/v1/provider-markers:apply",
+        &apply("claude", &revision, &preview_hash),
+    )
+    .signed_as(&world, "admin")
+    .with_key("marker-conflict")
+    .send(&world)
+    .await;
+    assert_eq!(cleared.status, 200, "{}", cleared.body);
+    assert_eq!(cleared.json()["outcome"], "cleared");
+    let after_clear = std::fs::read(&path).expect("the document reads");
+
+    // The same key names a different provider, freshly previewed. The key is
+    // already bound to the Claude correction, so this is a conflict rather
+    // than a second correction under one act.
+    let codex = Call::post("/v1/provider-markers:preview", &preview("codex"))
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+    assert_eq!(codex.status, 200, "{}", codex.body);
+    let codex_revision = codex.json()["revision"]
+        .as_str()
+        .expect("a revision")
+        .to_owned();
+    let codex_hash = codex.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+    let different_provider = Call::post(
+        "/v1/provider-markers:apply",
+        &apply("codex", &codex_revision, &codex_hash),
+    )
+    .signed_as(&world, "admin")
+    .with_key("marker-conflict")
+    .send(&world)
+    .await;
+    assert_eq!(
+        different_provider.status, 409,
+        "{}",
+        different_provider.body
+    );
+    assert_eq!(different_provider.code(), "idempotency_conflict");
+    assert_eq!(
+        std::fs::read(&path).expect("the document reads"),
+        after_clear,
+        "a conflicting key rewrites nothing"
+    );
+
+    // The same key and provider, but a fresh revision and hash after the
+    // correction moved the document: the fingerprint differs, so this too is a
+    // conflict rather than a replay.
+    let fresh = Call::post("/v1/provider-markers:preview", &preview("claude"))
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+    assert_eq!(fresh.status, 200, "{}", fresh.body);
+    assert_eq!(fresh.json()["changed"], false);
+    let fresh_revision = fresh.json()["revision"]
+        .as_str()
+        .expect("a revision")
+        .to_owned();
+    let fresh_hash = fresh.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+    assert_ne!(
+        fresh_revision, revision,
+        "the correction moved the document"
+    );
+    let fresh_use = Call::post(
+        "/v1/provider-markers:apply",
+        &apply("claude", &fresh_revision, &fresh_hash),
+    )
+    .signed_as(&world, "admin")
+    .with_key("marker-conflict")
+    .send(&world)
+    .await;
+    assert_eq!(fresh_use.status, 409, "{}", fresh_use.body);
+    assert_eq!(fresh_use.code(), "idempotency_conflict");
+    assert_eq!(
+        std::fs::read(&path).expect("the document reads"),
+        after_clear
+    );
+}
+
+#[tokio::test]
+async fn a_provider_marker_key_bound_by_another_realm_operation_is_a_conflict() {
+    let world = World::open().await;
+    let path = fixture(&world);
+    let family = fake_family().to_string();
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.bind_realm_operation(&IdempotencyBinding {
+                key: "marker-foreign".to_owned(),
+                operation: "publish_fleet_policy",
+                fingerprint: ContentHash::of(b"the other operation"),
+                bound_at: at("2026-10-02T09:00:00Z"),
+            })
+        })
+        .expect("the other operation's key is bound");
+
+    let preview = Call::post(
+        "/v1/provider-markers:preview",
+        &serde_json::json!({
+            "runtime_family": family,
+            "provider": "claude",
+        }),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let revision = preview.json()["revision"]
+        .as_str()
+        .expect("a revision")
+        .to_owned();
+    let preview_hash = preview.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+    let apply = Call::post(
+        "/v1/provider-markers:apply",
+        &serde_json::json!({
+            "runtime_family": family,
+            "provider": "claude",
+            "expected_revision": revision,
+            "preview_hash": preview_hash,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("marker-foreign")
+    .send(&world)
+    .await;
+    assert_eq!(apply.status, 409, "{}", apply.body);
+    assert_eq!(apply.code(), "idempotency_conflict");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the document reads"),
+        marker_document(),
+        "another operation's key never rewrites the settings document"
+    );
+}
+
+#[tokio::test]
+async fn a_retry_finishes_a_provider_marker_correction_claimed_before_the_write() {
+    let world = World::open().await;
+    let path = fixture(&world);
+    let family = fake_family().to_string();
+    let preview = Call::post(
+        "/v1/provider-markers:preview",
+        &serde_json::json!({
+            "runtime_family": family,
+            "provider": "claude",
+        }),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let revision = preview.json()["revision"]
+        .as_str()
+        .expect("a revision")
+        .to_owned();
+    let preview_hash = preview.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+    let apply = serde_json::json!({
+        "runtime_family": family,
+        "provider": "claude",
+        "expected_revision": revision,
+        "preview_hash": preview_hash,
+    });
+    // The first attempt claimed the key durably and then died before writing:
+    // the binding is the exact intent the request presents, and the document
+    // still holds the marker at the revision the request names.
+    let fingerprint = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "operation": "provider_marker_apply",
+        "runtime_family": fake_family().as_str(),
+        "provider": "claude",
+        "expected_revision": revision,
+        "preview_hash": preview_hash,
+    }))
+    .expect("the intent canonicalizes")
+    .hash()
+    .clone();
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.bind_realm_operation(&IdempotencyBinding {
+                key: "marker-interrupted".to_owned(),
+                operation: "clear_provider_marker",
+                fingerprint,
+                bound_at: at("2026-10-02T09:00:00Z"),
+            })
+        })
+        .expect("the first attempt's claim is durable");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the document reads"),
+        marker_document(),
+        "an interrupted attempt leaves the marker standing"
+    );
+
+    // The retry does not refuse over the stale revision its own first attempt
+    // presented: it finishes the correction under the same key.
+    let finished = Call::post("/v1/provider-markers:apply", &apply)
+        .signed_as(&world, "admin")
+        .with_key("marker-interrupted")
+        .send(&world)
+        .await;
+    assert_eq!(finished.status, 200, "{}", finished.body);
+    assert_eq!(finished.json()["outcome"], "cleared");
+    assert_eq!(finished.json()["changed"], true);
+    let cleared = std::fs::read(&path).expect("the document reads");
+    assert!(
+        !String::from_utf8_lossy(&cleared).contains("\"claude\""),
+        "the finished correction removed the marker"
+    );
+
+    let replayed = Call::post("/v1/provider-markers:apply", &apply)
+        .signed_as(&world, "admin")
+        .with_key("marker-interrupted")
+        .send(&world)
+        .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["outcome"], "replayed");
+    assert_eq!(std::fs::read(&path).expect("the document reads"), cleared);
+}

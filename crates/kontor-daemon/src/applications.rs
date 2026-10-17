@@ -21516,9 +21516,13 @@ impl Services {
 
     /// Answer a replay of a key already bound to this exact correction.
     ///
-    /// Nothing is written, whatever the document now says: the key's effect is
-    /// durable, and a document that no longer reflects it is a conflict for the
-    /// caller to read rather than a second write to perform.
+    /// A marker that is already gone is the durable effect this key names, so
+    /// nothing is written. A marker that still stands at the revision the first
+    /// attempt read means the process died or the write failed before the
+    /// document moved: the same request carries enough state to finish that
+    /// correction now, and the retry must not be refused over the revision its
+    /// own first attempt read. Anything else is a conflict for the caller to
+    /// read rather than a second write to perform.
     fn replayed_provider_marker(
         &self,
         state: &ApiState,
@@ -21538,22 +21542,40 @@ impl Services {
             .ok_or_else(changed_since)?;
         let plan = crate::provider_marker::plan(&bytes, family.as_str(), &request.provider)
             .map_err(|_| changed_since())?;
-        if plan.before.contains(&request.provider) {
-            return Err(changed_since());
-        }
+        let revision = ContentHash::of(&bytes);
         let restart_required =
             !self.running_daemon_answers_available(state, family, &request.provider);
+        if !plan.before.contains(&request.provider) {
+            return Ok(ProviderMarkerDto {
+                realm_id: state.realm_id(),
+                runtime_family: family.to_string(),
+                host_key: plan.host_key,
+                provider: request.provider.clone(),
+                outcome: ProviderMarkerOutcomeDto::Replayed,
+                before: plan.before.iter().cloned().collect(),
+                after: plan.after.iter().cloned().collect(),
+                changed: false,
+                effects: provider_marker_effects(false, restart_required),
+                revision,
+            });
+        }
+        if revision != request.expected_revision {
+            return Err(changed_since());
+        }
+        let updated = plan.updated.ok_or_else(changed_since)?;
+        crate::provider_marker::write(&path, &bytes, &updated)
+            .map_err(|error| self.provider_marker_error(error))?;
         Ok(ProviderMarkerDto {
             realm_id: state.realm_id(),
             runtime_family: family.to_string(),
             host_key: plan.host_key,
             provider: request.provider.clone(),
-            outcome: ProviderMarkerOutcomeDto::Replayed,
+            outcome: ProviderMarkerOutcomeDto::Cleared,
             before: plan.before.iter().cloned().collect(),
             after: plan.after.iter().cloned().collect(),
-            changed: false,
-            effects: provider_marker_effects(false, restart_required),
-            revision: ContentHash::of(&bytes),
+            changed: true,
+            effects: provider_marker_effects(true, restart_required),
+            revision: ContentHash::of(&updated),
         })
     }
 
@@ -26769,6 +26791,25 @@ impl ApplicationOperations for Services {
         }
         let restart_required =
             !self.running_daemon_answers_available(state, &family, &request.provider);
+        // The durable claim comes before the write: the binding is the fence
+        // that makes this document change happen under this operation's key, so
+        // a different operation cannot bind the same key between the check and
+        // the correction. The request was validated first, so a refusal does not
+        // claim a key the caller would then have to replace.
+        let binding = IdempotencyBinding {
+            key: key.as_str().to_owned(),
+            operation: PROVIDER_MARKER_OPERATION,
+            fingerprint: intent.hash().clone(),
+            bound_at: kontor_api::now(),
+        };
+        let applied = state
+            .with_store(|store| store.bind_realm_operation(&binding))
+            .map_err(|error| self.refuse(&error))?;
+        if applied == Applied::Unchanged {
+            // A concurrent attempt with this exact request claimed the key
+            // between the replay check and the claim; answer from what it left.
+            return self.replayed_provider_marker(state, &family, request);
+        }
         let (outcome, changed, revision_after) = match plan.updated {
             Some(updated) => {
                 crate::provider_marker::write(&path, &bytes, &updated)
@@ -26781,28 +26822,6 @@ impl ApplicationOperations for Services {
             }
             None => (ProviderMarkerOutcomeDto::AlreadyCleared, false, revision),
         };
-        let binding = IdempotencyBinding {
-            key: key.as_str().to_owned(),
-            operation: PROVIDER_MARKER_OPERATION,
-            fingerprint: intent.hash().clone(),
-            bound_at: kontor_api::now(),
-        };
-        if let Err(error) = state.with_store(|store| store.bind_realm_operation(&binding)) {
-            // A committed write whose replay record could not be stored is
-            // exactly the case `delivery_unconfirmed` names: it may well have
-            // landed, so the caller must read before acting rather than resend.
-            if changed {
-                return Err(self
-                    .deny(
-                        ApiErrorCode::DeliveryUnconfirmed,
-                        "the marker was cleared but the idempotency binding could not be recorded",
-                    )
-                    .advising(
-                        "read the marker with the preview; a retry answers already-cleared without writing again",
-                    ));
-            }
-            return Err(self.refuse(&error));
-        }
         Ok(ProviderMarkerDto {
             realm_id: state.realm_id(),
             runtime_family: family.to_string(),

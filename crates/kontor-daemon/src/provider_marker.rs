@@ -7,16 +7,17 @@
 //! module is that edit, performed under the public preview/apply contract
 //! instead of by hand.
 //!
-//! # Why the document is not round-tripped through the settings model
+//! # Why the document is edited as bytes
 //!
 //! [`crate::runtimes`] parses the exact structure the fleet composes from, and
 //! it deliberately ignores fields a later generation adds. Serializing that
-//! model back would therefore *drop* every unknown member, and reordering the
-//! members of a file an operator wrote is an edit nobody asked for. So the
-//! correction preserves the document as an ordered tree — every member keeps
-//! its position and every unknown field survives — and rewrites only the one
-//! marker array. The typed parse still runs first, so a document this build
-//! cannot compose is refused before anything is rewritten.
+//! model back would therefore *drop* every unknown member. A general JSON
+//! round-trip is no better: it re-spells numbers — `18446744073709551617`
+//! becomes `1.8446744073709552e+19` — and reorders members an operator wrote.
+//! So the correction locates the addressed marker array in the original bytes
+//! and replaces only that array; every other value keeps its exact spelling,
+//! position and whitespace. The typed parse still runs first, so a document
+//! this build cannot compose is refused before anything is rewritten.
 //!
 //! # What the caller gets
 //!
@@ -32,8 +33,6 @@ use std::io::Write as _;
 use std::path::Path;
 
 use kontor_core::id::ExternalName;
-use serde::de::{Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
-use serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer};
 
 /// Why one provider-marker correction could not be computed or committed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,9 +107,7 @@ pub(crate) fn plan(
             updated: None,
         });
     }
-    let document: Document = serde_json::from_slice(bytes).map_err(|_| MarkerError::Malformed)?;
-    let edited = remove_marker(&document, runtime_kind, provider)?;
-    let updated = serde_json::to_vec_pretty(&edited).map_err(|_| MarkerError::Malformed)?;
+    let updated = remove_marker(bytes, runtime_kind, provider)?;
     let mut after = before.clone();
     after.remove(provider);
     Ok(MarkerPlan {
@@ -171,191 +168,241 @@ pub(crate) fn write(path: &Path, expected: &[u8], updated: &[u8]) -> Result<(), 
 
 /// Remove one provider from one runtime object's `unavailable_providers`.
 ///
-/// The object is addressed by its own `runtime_kind`, and the marker array is
-/// the only thing replaced. Every other member — known or unknown, whatever
-/// order the operator wrote them in — is carried through untouched.
-fn remove_marker(
-    document: &Document,
-    runtime_kind: &str,
-    provider: &str,
-) -> Result<Document, MarkerError> {
-    let mut edited = document.clone();
-    let Document::Object(top) = &mut edited else {
-        return Err(MarkerError::Malformed);
-    };
-    let runtimes = top
-        .iter_mut()
-        .find(|(key, _)| key == "runtimes")
-        .and_then(|(_, value)| match value {
-            Document::Array(elements) => Some(elements),
-            _ => None,
-        })
-        .ok_or(MarkerError::Malformed)?;
-    let matching = runtimes
-        .iter()
-        .filter(|element| member_str(element, "runtime_kind") == Some(runtime_kind))
-        .count();
-    if matching > 1 {
+/// The object is addressed by its own `runtime_kind`, and the exact bytes of
+/// its marker array are the only thing replaced. Every other value — known or
+/// unknown, whatever number spelling or member order the operator wrote — is
+/// carried through untouched.
+fn remove_marker(bytes: &[u8], runtime_kind: &str, provider: &str) -> Result<Vec<u8>, MarkerError> {
+    let root = value_span(bytes, skip_whitespace(bytes, 0))?;
+    let top = members_of(bytes, root)?;
+    let runtimes = member(&top, "runtimes").ok_or(MarkerError::Malformed)?;
+    let mut matching = Vec::new();
+    for setting in elements_of(bytes, runtimes)? {
+        let members = members_of(bytes, setting)?;
+        if member_str(bytes, &members, "runtime_kind").as_deref() == Some(runtime_kind) {
+            matching.push(setting);
+        }
+    }
+    if matching.len() > 1 {
         return Err(MarkerError::DuplicateFamily);
     }
-    let Some(Document::Object(members)) = runtimes
-        .iter_mut()
-        .find(|element| member_str(element, "runtime_kind") == Some(runtime_kind))
-    else {
-        return Err(MarkerError::UnknownFamily);
-    };
-    let Some((_, Document::Array(providers))) = members
-        .iter_mut()
-        .find(|(key, _)| key == "unavailable_providers")
-    else {
+    let setting = matching.pop().ok_or(MarkerError::UnknownFamily)?;
+    let members = members_of(bytes, setting)?;
+    let marker = member(&members, "unavailable_providers").ok_or(MarkerError::Malformed)?;
+    let mut kept = Vec::new();
+    let mut removed = false;
+    // The settings parser collects the marker into a set, so one provider
+    // listed twice is still one marked provider. Removing only the first copy
+    // would report the marker cleared while the document still held it.
+    for entry in elements_of(bytes, marker)? {
+        if string_at(bytes, entry).as_deref() == Some(provider) {
+            removed = true;
+        } else {
+            kept.push(entry);
+        }
+    }
+    if !removed {
         return Err(MarkerError::Malformed);
-    };
-    let position = providers
+    }
+    let mut updated = Vec::with_capacity(bytes.len());
+    updated.extend_from_slice(&bytes[..marker.start]);
+    updated.push(b'[');
+    for (position, entry) in kept.iter().enumerate() {
+        if position > 0 {
+            updated.extend_from_slice(b", ");
+        }
+        updated.extend_from_slice(&bytes[entry.start..entry.end]);
+    }
+    updated.push(b']');
+    updated.extend_from_slice(&bytes[marker.end..]);
+    Ok(updated)
+}
+
+/// One half-open byte range in the original document.
+#[derive(Debug, Clone, Copy)]
+struct Span {
+    start: usize,
+    end: usize,
+}
+
+/// The next non-whitespace byte at or after `at`.
+fn skip_whitespace(bytes: &[u8], mut at: usize) -> usize {
+    while matches!(bytes.get(at), Some(b' ' | b'\t' | b'\n' | b'\r')) {
+        at += 1;
+    }
+    at
+}
+
+fn expect(bytes: &[u8], at: usize, byte: u8) -> Result<usize, MarkerError> {
+    if bytes.get(at) == Some(&byte) {
+        Ok(at + 1)
+    } else {
+        Err(MarkerError::Malformed)
+    }
+}
+
+/// The span of the string beginning at `start`.
+fn string_span(bytes: &[u8], start: usize) -> Result<Span, MarkerError> {
+    expect(bytes, start, b'"')?;
+    let mut at = start + 1;
+    loop {
+        match bytes.get(at) {
+            Some(b'"') => return Ok(Span { start, end: at + 1 }),
+            Some(b'\\') => match bytes.get(at + 1) {
+                Some(b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't') => at += 2,
+                Some(b'u') => {
+                    for offset in 2..6 {
+                        if !bytes.get(at + offset).is_some_and(u8::is_ascii_hexdigit) {
+                            return Err(MarkerError::Malformed);
+                        }
+                    }
+                    at += 6;
+                }
+                _ => return Err(MarkerError::Malformed),
+            },
+            Some(_) => at += 1,
+            None => return Err(MarkerError::Malformed),
+        }
+    }
+}
+
+/// The span of the value beginning at `start`.
+fn value_span(bytes: &[u8], start: usize) -> Result<Span, MarkerError> {
+    match bytes.get(start) {
+        Some(b'"') => string_span(bytes, start),
+        Some(b'{') => object_span(bytes, start),
+        Some(b'[') => array_span(bytes, start),
+        Some(b't') => literal_span(bytes, start, b"true"),
+        Some(b'f') => literal_span(bytes, start, b"false"),
+        Some(b'n') => literal_span(bytes, start, b"null"),
+        Some(b'-' | b'0'..=b'9') => number_span(bytes, start),
+        _ => Err(MarkerError::Malformed),
+    }
+}
+
+fn literal_span(bytes: &[u8], start: usize, literal: &[u8]) -> Result<Span, MarkerError> {
+    if bytes[start..].starts_with(literal) {
+        Ok(Span {
+            start,
+            end: start + literal.len(),
+        })
+    } else {
+        Err(MarkerError::Malformed)
+    }
+}
+
+fn number_span(bytes: &[u8], start: usize) -> Result<Span, MarkerError> {
+    let mut at = start;
+    while matches!(
+        bytes.get(at),
+        Some(b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E')
+    ) {
+        at += 1;
+    }
+    if at == start {
+        return Err(MarkerError::Malformed);
+    }
+    Ok(Span { start, end: at })
+}
+
+fn object_span(bytes: &[u8], start: usize) -> Result<Span, MarkerError> {
+    let mut at = skip_whitespace(bytes, expect(bytes, start, b'{')?);
+    if bytes.get(at) == Some(&b'}') {
+        return Ok(Span { start, end: at + 1 });
+    }
+    loop {
+        let key = string_span(bytes, at)?;
+        at = skip_whitespace(bytes, expect(bytes, skip_whitespace(bytes, key.end), b':')?);
+        let value = value_span(bytes, at)?;
+        at = skip_whitespace(bytes, value.end);
+        match bytes.get(at) {
+            Some(b',') => at = skip_whitespace(bytes, at + 1),
+            Some(b'}') => {
+                return Ok(Span { start, end: at + 1 });
+            }
+            _ => return Err(MarkerError::Malformed),
+        }
+    }
+}
+
+fn array_span(bytes: &[u8], start: usize) -> Result<Span, MarkerError> {
+    let mut at = skip_whitespace(bytes, expect(bytes, start, b'[')?);
+    if bytes.get(at) == Some(&b']') {
+        return Ok(Span { start, end: at + 1 });
+    }
+    loop {
+        let value = value_span(bytes, at)?;
+        at = skip_whitespace(bytes, value.end);
+        match bytes.get(at) {
+            Some(b',') => at = skip_whitespace(bytes, at + 1),
+            Some(b']') => {
+                return Ok(Span { start, end: at + 1 });
+            }
+            _ => return Err(MarkerError::Malformed),
+        }
+    }
+}
+
+/// Every member of the object at `object`, decoded and with its value's span.
+fn members_of(bytes: &[u8], object: Span) -> Result<Vec<(String, Span)>, MarkerError> {
+    expect(bytes, object.start, b'{')?;
+    let mut members = Vec::new();
+    let mut at = skip_whitespace(bytes, object.start + 1);
+    if bytes.get(at) == Some(&b'}') {
+        return Ok(members);
+    }
+    loop {
+        let key = string_span(bytes, at)?;
+        let name: String = serde_json::from_slice(&bytes[key.start..key.end])
+            .map_err(|_| MarkerError::Malformed)?;
+        at = skip_whitespace(bytes, expect(bytes, skip_whitespace(bytes, key.end), b':')?);
+        let value = value_span(bytes, at)?;
+        members.push((name, value));
+        at = skip_whitespace(bytes, value.end);
+        match bytes.get(at) {
+            Some(b',') => at = skip_whitespace(bytes, at + 1),
+            Some(b'}') => return Ok(members),
+            _ => return Err(MarkerError::Malformed),
+        }
+    }
+}
+
+/// Every element of the array at `array`, in document order.
+fn elements_of(bytes: &[u8], array: Span) -> Result<Vec<Span>, MarkerError> {
+    expect(bytes, array.start, b'[')?;
+    let mut elements = Vec::new();
+    let mut at = skip_whitespace(bytes, array.start + 1);
+    if bytes.get(at) == Some(&b']') {
+        return Ok(elements);
+    }
+    loop {
+        let value = value_span(bytes, at)?;
+        elements.push(value);
+        at = skip_whitespace(bytes, value.end);
+        match bytes.get(at) {
+            Some(b',') => at = skip_whitespace(bytes, at + 1),
+            Some(b']') => return Ok(elements),
+            _ => return Err(MarkerError::Malformed),
+        }
+    }
+}
+
+/// One member's value span, by key.
+fn member(members: &[(String, Span)], name: &str) -> Option<Span> {
+    members
         .iter()
-        .position(|value| value.as_str() == Some(provider))
-        .ok_or(MarkerError::Malformed)?;
-    providers.remove(position);
-    Ok(edited)
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| *value)
 }
 
-/// One member value of an object, by key.
-fn member_str<'a>(value: &'a Document, key: &str) -> Option<&'a str> {
-    match value {
-        Document::Object(members) => members
-            .iter()
-            .find(|(name, _)| name == key)
-            .and_then(|(_, value)| value.as_str()),
-        _ => None,
-    }
+/// One member's string value, by key.
+fn member_str(bytes: &[u8], members: &[(String, Span)], name: &str) -> Option<String> {
+    string_at(bytes, member(members, name)?)
 }
 
-/// An order-preserving JSON tree.
-///
-/// `serde_json::Value` collapses objects into a `BTreeMap`, so a round-trip
-/// would silently alphabetize a file the operator wrote. This type keeps every
-/// member in document order — including duplicates, which the settings parser
-/// resolves by last-wins and this editor must not quietly drop.
-#[derive(Debug, Clone, PartialEq)]
-enum Document {
-    Null,
-    Bool(bool),
-    Number(serde_json::Number),
-    String(String),
-    Array(Vec<Document>),
-    Object(Vec<(String, Document)>),
-}
-
-impl Document {
-    fn as_str(&self) -> Option<&str> {
-        match self {
-            Self::String(text) => Some(text),
-            _ => None,
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for Document {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct DocumentVisitor;
-
-        impl<'de> Visitor<'de> for DocumentVisitor {
-            type Value = Document;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("any JSON value")
-            }
-
-            fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
-                Ok(Document::Bool(value))
-            }
-
-            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
-                Ok(Document::Number(value.into()))
-            }
-
-            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
-                Ok(Document::Number(value.into()))
-            }
-
-            fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                serde_json::Number::from_f64(value)
-                    .map(Document::Number)
-                    .ok_or_else(|| E::custom("a JSON number that cannot be represented"))
-            }
-
-            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
-                Ok(Document::String(value.to_owned()))
-            }
-
-            fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
-                Ok(Document::String(value))
-            }
-
-            fn visit_none<E>(self) -> Result<Self::Value, E> {
-                Ok(Document::Null)
-            }
-
-            fn visit_unit<E>(self) -> Result<Self::Value, E> {
-                Ok(Document::Null)
-            }
-
-            fn visit_some<D: Deserializer<'de>>(
-                self,
-                deserializer: D,
-            ) -> Result<Self::Value, D::Error> {
-                Document::deserialize(deserializer)
-            }
-
-            fn visit_seq<A: SeqAccess<'de>>(
-                self,
-                mut sequence: A,
-            ) -> Result<Self::Value, A::Error> {
-                let mut values = Vec::new();
-                while let Some(value) = sequence.next_element()? {
-                    values.push(value);
-                }
-                Ok(Document::Array(values))
-            }
-
-            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
-                let mut members = Vec::new();
-                while let Some(key) = map.next_key::<String>()? {
-                    members.push((key, map.next_value()?));
-                }
-                Ok(Document::Object(members))
-            }
-        }
-
-        deserializer.deserialize_any(DocumentVisitor)
-    }
-}
-
-impl Serialize for Document {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self {
-            Self::Null => serializer.serialize_unit(),
-            Self::Bool(value) => serializer.serialize_bool(*value),
-            Self::Number(value) => value.serialize(serializer),
-            Self::String(value) => serializer.serialize_str(value),
-            Self::Array(values) => {
-                let mut sequence = serializer.serialize_seq(Some(values.len()))?;
-                for value in values {
-                    sequence.serialize_element(value)?;
-                }
-                sequence.end()
-            }
-            Self::Object(members) => {
-                let mut map = serializer.serialize_map(Some(members.len()))?;
-                for (key, value) in members {
-                    map.serialize_entry(key, value)?;
-                }
-                map.end()
-            }
-        }
-    }
+/// A string value's decoded text, if the span holds a string.
+fn string_at(bytes: &[u8], value: Span) -> Option<String> {
+    serde_json::from_slice(&bytes[value.start..value.end]).ok()
 }
 
 #[cfg(test)]
@@ -502,6 +549,57 @@ mod tests {
         assert!(
             host < future,
             "the member order is the document's, not an alphabetized rewrite"
+        );
+    }
+
+    #[test]
+    fn every_copy_of_a_duplicated_marker_is_removed() {
+        let duplicated = String::from_utf8(document().to_vec())
+            .expect("utf-8")
+            .replace(
+                "\"unavailable_providers\": [\"claude\", \"codex\"]",
+                "\"unavailable_providers\": [\"claude\", \"codex\", \"claude\"]",
+            );
+        let plan = plan(duplicated.as_bytes(), "paseo.agent", "claude").expect("removable");
+        let updated = plan.updated.expect("the marker is present");
+        let settings = crate::runtimes::parse(&updated).expect("the rewritten document composes");
+        let crate::runtimes::RuntimeSetting::Paseo(setting) = settings
+            .runtimes
+            .iter()
+            .find(|setting| setting.family() == "paseo.agent")
+            .expect("the addressed setting survives");
+        assert!(
+            !setting.unavailable_providers.contains("claude"),
+            "a duplicate the parser merged into the set is removed from the document too"
+        );
+        assert_eq!(
+            value(&updated)["runtimes"][0]["unavailable_providers"],
+            serde_json::json!(["codex"])
+        );
+    }
+
+    #[test]
+    fn the_correction_does_not_respell_unrelated_numbers() {
+        let input = String::from_utf8(document().to_vec())
+            .expect("utf-8")
+            .replace(
+                "\"timeout_seconds\": 30",
+                "\"timeout_seconds\": 30,\n      \"future_member\": { \"counter\": 18446744073709551617, \"ratio\": 1.50 }",
+            );
+        let plan = plan(input.as_bytes(), "paseo.agent", "claude").expect("removable");
+        let updated = plan.updated.expect("the marker is present");
+        let text = String::from_utf8(updated).expect("utf-8");
+        assert!(
+            text.contains("18446744073709551617"),
+            "an integer beyond u64 keeps its exact digits"
+        );
+        assert!(
+            text.contains("\"ratio\": 1.50"),
+            "a number keeps its exact spelling"
+        );
+        assert_eq!(
+            value(text.as_bytes())["runtimes"][0]["unavailable_providers"],
+            serde_json::json!(["codex"])
         );
     }
 
