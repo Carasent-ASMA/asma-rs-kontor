@@ -287,8 +287,13 @@ use kontor_core::state::{
     Freshness, GateVerdict, NativeRuntimeIdentity, ObservedRunState, RuntimeContact,
     TerminalEvidence, TerminalEvidenceSource, TerminalOutcome, TopologyLifecycle,
 };
-use kontor_core::succession::NewSuccessionAttempt;
-use kontor_core::succession::SuccessionAttemptState;
+use kontor_core::succession::{
+    NewSuccessionAttempt, SuccessionAttemptState, SuccessionHandoffOutcome, SuccessionRedactionPass,
+};
+use kontor_daemon::succession::{
+    SuccessionSummarizerError, SuccessionSummarizerTransport, SuccessionSummaryRequest,
+    SuccessionSummaryResponse,
+};
 use kontor_daemon::succession_supervision::{
     SuccessionSupervisionCoordinator, reconcile_once as reconcile_succession_once,
 };
@@ -25915,6 +25920,186 @@ async fn bodyless_quota_recovery_is_confirmed_once_with_handoff_and_receipt_chai
         calls_before_replay,
         "a conflicting composite replay performs no runtime effect",
     );
+}
+
+/// A deterministic governed summarizer that records what crossed its boundary.
+struct GovernedSummarizerFake {
+    calls: Mutex<Vec<(ModelRung, SuccessionSummaryRequest)>>,
+    summary: String,
+}
+
+impl GovernedSummarizerFake {
+    fn new(summary: impl Into<String>) -> Self {
+        Self {
+            calls: Mutex::new(Vec::new()),
+            summary: summary.into(),
+        }
+    }
+
+    fn calls(&self) -> Vec<(ModelRung, SuccessionSummaryRequest)> {
+        self.calls.lock().expect("the summarizer lock").clone()
+    }
+}
+
+#[async_trait]
+impl SuccessionSummarizerTransport for GovernedSummarizerFake {
+    async fn summarize(
+        &self,
+        model_rung: &ModelRung,
+        request: &SuccessionSummaryRequest,
+    ) -> Result<SuccessionSummaryResponse, SuccessionSummarizerError> {
+        self.calls
+            .lock()
+            .expect("the summarizer lock")
+            .push((model_rung.clone(), request.clone()));
+        Ok(SuccessionSummaryResponse::new(self.summary.clone()))
+    }
+}
+
+/// The configured governed summarizer is selected through the production
+/// services composition: the declared-chain walk admits an exact alias rung on
+/// the account that did not refuse, only Message content crosses the summarizer
+/// boundary, and the persisted handoff binds route provenance and hash.
+#[tokio::test]
+async fn a_configured_governed_summarizer_produces_the_persisted_handoff_summary() {
+    let summary_text = "Continue from the accepted checkpoint and keep the watcher armed";
+    let summarizer = Arc::new(GovernedSummarizerFake::new(summary_text));
+    let world = World::open_empty_with_succession_summarizer(summarizer.clone()).await;
+    world.daemon.reconcile().await;
+    let CodexAliasEpic { project, seats, .. } = codex_alias_epic(&world, false, true).await;
+    let project_id = ProjectId::parse(&project).expect("project id");
+    let predecessor_id =
+        AgentRunId::parse(seats[0]["agent_run_id"].as_str().expect("predecessor id"))
+            .expect("canonical predecessor id");
+    let predecessor = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("predecessor reads")
+            .expect("predecessor exists")
+    });
+    let binding = predecessor
+        .binding
+        .as_ref()
+        .expect("predecessor binding")
+        .clone();
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(binding.id)
+        .expect("the process holds the exact predecessor binding");
+    let now = kontor_api::now();
+    world
+        .fake
+        .observe_uncorrelated_user_message(
+            &held,
+            "The accepted checkpoint is the schema v1 handoff",
+            now,
+        )
+        .expect("one predecessor message is recorded");
+    world
+        .fake
+        .observe_trailing_tool_call(&held, now)
+        .expect("one excluded tool call is recorded");
+    world
+        .fake
+        .observe_blocked_refusal(
+            &held,
+            "[System Error] You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Jan 1st, 2099 12:00 AM.",
+            now,
+        )
+        .expect("the native session reaches a quota refusal");
+
+    let route = format!("/v1/projects/{project}/agent-runs/{predecessor_id}/successors:recover");
+    let recovered = Call::post_raw(&route, "")
+        .signed_as(&world, "admin")
+        .with_key("governed-summary-recovery")
+        .send(&world)
+        .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    assert_eq!(recovered.json()["state"], "confirmed");
+
+    let key = IdempotencyKey::parse("governed-summary-recovery").expect("idempotency key");
+    let attempt = world.daemon.state().with_store(|store| {
+        store
+            .succession_attempt_by_key(&key)
+            .expect("attempt reads")
+            .expect("attempt exists")
+    });
+    let handoff = attempt.handoff.clone().expect("handoff is durable");
+
+    let calls = summarizer.calls();
+    assert_eq!(calls.len(), 1, "exactly one governed dispatch is executed");
+    let (dispatched_route, outbound) = &calls[0];
+    let SuccessionHandoffOutcome::Summary {
+        timeline,
+        summarizer_model_rung,
+        summary,
+        summary_hash,
+        input_redaction,
+        output_redaction,
+    } = &handoff.outcome
+    else {
+        panic!(
+            "a configured governed summarizer must produce a summary, got {:?}",
+            handoff.outcome
+        );
+    };
+    assert_eq!(
+        dispatched_route, summarizer_model_rung,
+        "the executed route is exactly the persisted provenance"
+    );
+    assert_eq!(
+        summarizer_model_rung.provider.0, "codex-personal",
+        "the walk leaves the alias whose allowance refused"
+    );
+    assert_eq!(outbound.timeline(), *timeline);
+    let outbound_json = serde_json::to_string(outbound).expect("serializable outbound request");
+    assert!(
+        outbound_json.contains("accepted checkpoint"),
+        "the predecessor message crosses the boundary"
+    );
+    assert!(
+        !outbound_json.contains("trailing tool call"),
+        "a ToolCall payload never crosses the summarizer boundary"
+    );
+    assert_eq!(summary.as_str(), summary_text);
+    assert_eq!(summary_hash, &ContentHash::of(summary_text.as_bytes()));
+    assert_eq!(input_redaction.pass, SuccessionRedactionPass::Input);
+    assert_eq!(output_redaction.pass, SuccessionRedactionPass::Output);
+    assert_eq!(output_redaction.redacted_hash, *summary_hash);
+    assert_eq!(
+        input_redaction.policy_hash, output_redaction.policy_hash,
+        "both redaction passes bind one policy revision"
+    );
+    let canonical = handoff
+        .canonicalize()
+        .expect("the handoff readback validates");
+    assert_eq!(
+        canonical.hash(),
+        &attempt.handoff_hash.clone().expect("stored handoff hash"),
+        "stored hash readback is the canonical handoff digest"
+    );
+    assert!(
+        !canonical.json().contains("trailing tool call"),
+        "the persisted handoff carries no tool payload"
+    );
+
+    let successor_id = AgentRunId::parse(
+        recovered.json()["successor"]["successor_agent_run_id"]
+            .as_str()
+            .expect("successor id"),
+    )
+    .expect("canonical successor id");
+    let prompt = world
+        .fake
+        .launched_prompt(successor_id)
+        .expect("the successor prompt is inspectable");
+    assert!(
+        prompt.as_str().contains(summary_text),
+        "the successor starts from the persisted summary"
+    );
+    assert!(!prompt.as_str().contains("trailing tool call"));
 }
 
 /// A transport refusal after the successor row is durably linked resumes that

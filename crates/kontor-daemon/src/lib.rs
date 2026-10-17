@@ -79,6 +79,7 @@ use tracing::{info, warn};
 use crate::credentials::CredentialError;
 use crate::lock::{LockError, StateRootLock};
 use crate::runtimes::FleetError;
+use crate::succession::{SuccessionSummarizerTransport, UnavailableSuccessionSummarizer};
 use crate::supervision::{SupervisionError, SupervisionPolicy};
 
 /// The database file's name inside a state root.
@@ -480,7 +481,7 @@ impl Daemon {
     /// selecting capacity requires opening the store but precedes credentials
     /// and service composition. A failed start releases its state-root lock.
     pub fn start(config: DaemonConfig, runtimes: RuntimeRegistry) -> Result<Self, StartupError> {
-        Self::start_with_supervision(config, runtimes, None, None)
+        Self::start_with_supervision(config, runtimes, None, None, None)
     }
 
     /// Start with a scripted exact-provider reporter for black-box contracts.
@@ -494,7 +495,23 @@ impl Daemon {
         runtimes: RuntimeRegistry,
         usage_poller: usage::UsagePoller,
     ) -> Result<Self, StartupError> {
-        Self::start_with_supervision(config, runtimes, None, Some(usage_poller))
+        Self::start_with_supervision(config, runtimes, None, Some(usage_poller), None)
+    }
+
+    /// Start with an explicitly composed governed summarizer transport.
+    ///
+    /// The declared-chain headroom walk still decides *whether* one summary is
+    /// admitted; the transport only executes an admitted route, so this is the
+    /// embedding and black-box contract seam and never a way around admission.
+    /// Production uses [`Self::start`] and composes the unavailable fallback
+    /// until a configured governed transport exists.
+    #[doc(hidden)]
+    pub fn start_with_succession_summarizer(
+        config: DaemonConfig,
+        runtimes: RuntimeRegistry,
+        succession_summarizer: Arc<dyn SuccessionSummarizerTransport>,
+    ) -> Result<Self, StartupError> {
+        Self::start_with_supervision(config, runtimes, None, None, Some(succession_summarizer))
     }
 
     fn start_with_supervision(
@@ -502,6 +519,7 @@ impl Daemon {
         runtimes: RuntimeRegistry,
         supervision: Option<SupervisionPolicy>,
         usage_poller: Option<usage::UsagePoller>,
+        succession_summarizer: Option<Arc<dyn SuccessionSummarizerTransport>>,
     ) -> Result<Self, StartupError> {
         // The address can be judged before touching the state root. Capacity
         // selection must wait for the store: a durable policy supersedes the seed.
@@ -558,6 +576,8 @@ impl Daemon {
                 .transpose()
                 .map_err(|source| StartupError::GithubApp { source })?
                 .map(Arc::new);
+        let succession_summarizer =
+            succession_summarizer.unwrap_or_else(|| Arc::new(UnavailableSuccessionSummarizer));
         let applications = applications::Services::new(
             realm_id,
             config.capacity,
@@ -567,6 +587,7 @@ impl Daemon {
             quota_signals,
             github_publication.clone(),
             Arc::new(crate::fleet::FleetSource::at(&config.state_root)),
+            succession_summarizer,
         )
         .map_err(|source| StartupError::Applications { source })?;
 
@@ -648,7 +669,7 @@ impl Daemon {
         // `KONTOR_SEAT_MCP=off` kill switch governs every plane at once.
         let seat_mcp = runtimes::seat_mcp(&config.state_root);
         let registry = runtimes::build_registry(&settings, seat_mcp.as_ref())?;
-        Self::start_with_supervision(config, registry, supervision, None)
+        Self::start_with_supervision(config, registry, supervision, None, None)
     }
 
     /// This Realm's identity.
@@ -1777,6 +1798,7 @@ mod tests {
             RuntimeRegistry::new(),
             Some(v1_policy),
             None,
+            None,
         )
         .expect("v1 daemon");
         assert!(
@@ -1792,6 +1814,7 @@ mod tests {
             DaemonConfig::at(v2_root.path()).with_port(0),
             RuntimeRegistry::new(),
             Some(v2_policy),
+            None,
             None,
         )
         .expect("v2 daemon");
