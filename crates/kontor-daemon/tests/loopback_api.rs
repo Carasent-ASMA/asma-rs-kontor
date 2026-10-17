@@ -51906,6 +51906,35 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
         assert_eq!(cross_epic.code(), "forbidden");
         assert!(cross_epic.json().get("state").is_none());
     }
+    // The other epic's TPM seat retires. Its completion now holds no live TPM,
+    // so the membership fence fails while resolving that role. A seat that is
+    // not this epic's leadership must still be refused as non-authority rather
+    // than be told the role is unbound and asked to bind it.
+    let other_tpm = SeatBindingId::parse(
+        other_seats
+            .iter()
+            .find(|entry| entry["role"]["role_code"] == "TPM")
+            .expect("the other epic's TPM seat")["seat_binding_id"]
+            .as_str()
+            .expect("a bound TPM seat"),
+    )
+    .expect("a seat binding id");
+    completion_reads_db
+        .execute(
+            "UPDATE seat_bindings SET lifecycle='retired' WHERE id=?1",
+            [other_tpm.to_string()],
+        )
+        .unwrap();
+    let unbound_role = scoped_completion(tpm, 1, project, &composed.epic)
+        .send(world)
+        .await;
+    assert_eq!(
+        unbound_role.status, 403,
+        "an unbound role in another epic is that epic's staffing: {}",
+        unbound_role.body
+    );
+    assert_eq!(unbound_role.code(), "forbidden");
+    assert!(unbound_role.json().get("state").is_none());
     let foreign_project = ensure_project(
         world,
         "completion-read-foreign-project",
@@ -51924,6 +51953,46 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
             .await;
         assert_eq!(cross_project.status, 403, "{}", cross_project.body);
         assert!(cross_project.json().get("state").is_none());
+    }
+    // A real epic that was never materialized has no control plane at all. The
+    // fence must refuse its readers as non-authority too, rather than report
+    // its placement and advise a topology change they cannot make.
+    let project_read = Call::get(format!("/v1/projects/{project}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(project_read.status, 200, "{}", project_read.body);
+    let unmaterialized = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            project_read.json()["revision"]
+                .as_u64()
+                .expect("a project revision"),
+            "Unmaterialized epic",
+            &first_category(world).await,
+            serde_json::json!([{"title": "A task with no control plane"}]),
+        ),
+    )
+    .signed_as(world, "admin")
+    .with_key("op06-unmaterialized-epic")
+    .send(world)
+    .await;
+    assert_eq!(unmaterialized.status, 200, "{}", unmaterialized.body);
+    let unmaterialized_epic = unmaterialized.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
+    for actor in [lsa, tpm] {
+        let unmaterialized_read = scoped_completion(actor, 1, project, &unmaterialized_epic)
+            .send(world)
+            .await;
+        assert_eq!(
+            unmaterialized_read.status, 403,
+            "an unmaterialized epic's placement is not this reader's to learn: {}",
+            unmaterialized_read.body
+        );
+        assert_eq!(unmaterialized_read.code(), "forbidden");
+        assert!(unmaterialized_read.json().get("state").is_none());
     }
 
     let calls_before_advance_replay = world.fake.calls().len();
