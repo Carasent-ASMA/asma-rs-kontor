@@ -39,6 +39,9 @@ pub enum ArtifactDisposition {
     /// Content matches, but the installed artifact cannot be executed by its
     /// owner.
     ModeDrift,
+    /// Content matches and the installed artifact was repaired: its lost owner
+    /// execute bit was restored.
+    Repaired,
     /// Not installed.
     Absent,
     /// Completed by an interrupted-transaction recovery.
@@ -217,10 +220,16 @@ impl BootstrapReceipt {
     /// A receipt for a completed install or update.
     #[must_use]
     pub fn from_install(manifest: &ArtifactManifest, outcome: InstallOutcome) -> Self {
+        let repaired = match &outcome {
+            InstallOutcome::ModeRepaired(names) => names.as_slice(),
+            _ => &[],
+        };
         let disposition = match outcome {
             InstallOutcome::Installed => ArtifactDisposition::Installed,
             InstallOutcome::Updated => ArtifactDisposition::Updated,
-            InstallOutcome::AlreadyCurrent => ArtifactDisposition::AlreadyCurrent,
+            InstallOutcome::AlreadyCurrent | InstallOutcome::ModeRepaired(_) => {
+                ArtifactDisposition::AlreadyCurrent
+            }
         };
         Self {
             schema_version: RECEIPT_SCHEMA_VERSION,
@@ -232,7 +241,11 @@ impl BootstrapReceipt {
                     name: entry.name,
                     version: entry.version.clone(),
                     sha256: entry.sha256.clone(),
-                    disposition,
+                    disposition: if repaired.contains(&entry.name) {
+                        ArtifactDisposition::Repaired
+                    } else {
+                        disposition
+                    },
                 })
                 .collect(),
             clients: Vec::new(),
@@ -711,6 +724,43 @@ mod tests {
                 .iter()
                 .all(|artifact| artifact.disposition == ArtifactDisposition::Absent)
         );
+    }
+
+    #[test]
+    fn from_status_reports_no_active_release_as_absent() {
+        let requested = manifest();
+        let statuses: Vec<ArtifactStatus> = ArtifactName::ALL
+            .into_iter()
+            .map(|name| ArtifactStatus {
+                name,
+                sha256: None,
+                release: None,
+                mode: None,
+            })
+            .collect();
+        let receipt = BootstrapReceipt::from_status(&requested, &statuses);
+        assert!(
+            receipt
+                .artifacts
+                .iter()
+                .all(|artifact| artifact.disposition == ArtifactDisposition::Absent)
+        );
+    }
+
+    #[test]
+    fn from_install_reports_only_the_repaired_artifacts_as_repaired() {
+        let receipt = BootstrapReceipt::from_install(
+            &manifest(),
+            InstallOutcome::ModeRepaired(vec![ArtifactName::Mcp]),
+        );
+        for artifact in &receipt.artifacts {
+            let expected = if artifact.name == ArtifactName::Mcp {
+                ArtifactDisposition::Repaired
+            } else {
+                ArtifactDisposition::AlreadyCurrent
+            };
+            assert_eq!(artifact.disposition, expected, "{}", artifact.name);
+        }
     }
 
     #[test]

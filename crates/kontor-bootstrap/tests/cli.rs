@@ -266,6 +266,38 @@ fn readback_reports_a_lost_execute_bit_as_mode_drift() {
 }
 
 #[test]
+#[cfg(unix)]
+fn a_replayed_install_reports_the_repaired_mode_in_the_receipt() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let world = World::new();
+    world.install();
+    let mcp = world.install_root.join("current/kontor-mcp");
+    std::fs::set_permissions(&mcp, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+    let replay = world.install();
+    for entry in replay["artifacts"].as_array().expect("artifacts") {
+        let expected = if entry["name"] == "mcp" {
+            "repaired"
+        } else {
+            "already_current"
+        };
+        assert_eq!(entry["disposition"], expected, "{}", entry["name"]);
+    }
+    let saved: Value = serde_json::from_str(
+        &std::fs::read_to_string(world.state_root.join("bootstrap-receipt.json"))
+            .expect("saved receipt"),
+    )
+    .expect("saved json");
+    let mcp_entry = saved["artifacts"]
+        .as_array()
+        .expect("saved artifacts")
+        .iter()
+        .find(|entry| entry["name"] == "mcp")
+        .expect("saved mcp entry");
+    assert_eq!(mcp_entry["disposition"], "repaired");
+}
+
+#[test]
 fn repair_through_the_cli_requires_the_exact_observed_hash() {
     let world = World::new();
     world.install();
