@@ -21692,6 +21692,12 @@ impl Services {
                 .advising(
                     "read the marker again with the preview and apply the revision it reports",
                 ),
+            MarkerError::WriteFailed => self
+                .deny(
+                    ApiErrorCode::Unavailable,
+                    "the runtime settings document could not be written",
+                )
+                .advising("check the state root's free disk space and permissions, then retry"),
             MarkerError::Malformed | MarkerError::Unreadable => self
                 .deny(
                     ApiErrorCode::Unavailable,

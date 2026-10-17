@@ -42,8 +42,11 @@ use kontor_core::id::ExternalName;
 /// Why one provider-marker correction could not be computed or committed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MarkerError {
-    /// The settings file could not be read, or a write failed.
+    /// The settings file could not be read.
     Unreadable,
+    /// The settings file could not be written: the lock file, the temporary
+    /// file or the rename failed. The document itself may be valid.
+    WriteFailed,
     /// The settings file is present but is not a fleet description this build
     /// writes.
     Malformed,
@@ -152,11 +155,11 @@ impl SettingsLock {
             .create(true)
             .truncate(false)
             .open(path.with_file_name(name))
-            .map_err(|_| MarkerError::Unreadable)?;
+            .map_err(|_| MarkerError::WriteFailed)?;
         match FileExt::try_lock(&handle) {
             Ok(()) => Ok(Self { handle }),
             Err(TryLockError::WouldBlock) => Err(MarkerError::Busy),
-            Err(TryLockError::Error(_)) => Err(MarkerError::Unreadable),
+            Err(TryLockError::Error(_)) => Err(MarkerError::WriteFailed),
         }
     }
 }
@@ -183,7 +186,7 @@ pub(crate) fn write(path: &Path, expected: &[u8], updated: &[u8]) -> Result<(), 
         Io(std::io::Error),
     }
     let _lock = SettingsLock::acquire(path)?;
-    let metadata = std::fs::symlink_metadata(path).map_err(|_| MarkerError::Unreadable)?;
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| MarkerError::WriteFailed)?;
     if !metadata.is_file() || metadata.file_type().is_symlink() {
         return Err(MarkerError::NotRewritable);
     }
@@ -214,7 +217,7 @@ pub(crate) fn write(path: &Path, expected: &[u8], updated: &[u8]) -> Result<(), 
                 error = %error,
                 "a runtime settings correction could not be written"
             );
-            Err(MarkerError::Unreadable)
+            Err(MarkerError::WriteFailed)
         }
     }
 }
@@ -752,6 +755,23 @@ mod tests {
         assert_eq!(std::fs::read(&path).expect("the document"), document());
         drop(held);
         write(&path, document(), &updated).expect("the correction commits once the lock is free");
+    }
+
+    #[test]
+    fn a_lock_file_that_cannot_be_opened_is_a_write_failure() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let path = directory.path().join("runtimes.json");
+        std::fs::write(&path, document()).expect("the fixture is installed");
+        std::fs::create_dir(directory.path().join("runtimes.json.lock"))
+            .expect("the lock path is occupied by a directory");
+        let first = plan(document(), "paseo.agent", "claude").expect("removable");
+        let updated = first.updated.expect("a marker to remove");
+        assert_eq!(
+            write(&path, document(), &updated),
+            Err(MarkerError::WriteFailed),
+            "a write that cannot open its lock file is not a document that cannot be read"
+        );
+        assert_eq!(std::fs::read(&path).expect("the document"), document());
     }
 
     #[test]
