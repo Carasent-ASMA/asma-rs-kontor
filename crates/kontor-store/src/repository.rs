@@ -13559,6 +13559,83 @@ impl SqliteStore {
             .optional()
             .map_err(backend)
     }
+
+    /// Record that the provider-marker correction claimed under `key` has
+    /// finished, naming the revision it left in the settings document.
+    ///
+    /// A binding alone cannot tell a retry whether the effect it names already
+    /// happened: the document is the only other witness, and an operator may
+    /// restore the marker for a later outage. This row is the durable witness,
+    /// so a completed key answers a replay instead of removing that restored
+    /// marker a second time. Completion is recorded only for a key already
+    /// bound to this operation; it is never a claim of its own.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when no provider-marker claim
+    /// exists for the key, and backend failures otherwise.
+    pub fn record_provider_marker_completion(
+        &self,
+        key: &str,
+        written_revision: &ContentHash,
+        completed_at: Timestamp,
+    ) -> RepositoryResult<Applied> {
+        let transaction = self.begin()?;
+        let owner: Option<String> = transaction
+            .query_row(
+                "SELECT operation FROM realm_idempotency_bindings
+                 WHERE idempotency_key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        if owner.as_deref() != Some("clear_provider_marker") {
+            return Err(conflict(
+                "idempotency key",
+                "no provider-marker claim exists for this key",
+            ));
+        }
+        let inserted = transaction
+            .execute(
+                "INSERT INTO provider_marker_completions
+                     (idempotency_key, written_revision, completed_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT (idempotency_key) DO NOTHING",
+                params![key, written_revision.as_str(), text(completed_at)],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(if inserted == 0 {
+            Applied::Unchanged
+        } else {
+            Applied::Created
+        })
+    }
+
+    /// The revision a completed provider-marker correction left behind, if the
+    /// key has completed.
+    ///
+    /// # Errors
+    /// Backend failures and a stored digest this build cannot parse.
+    pub fn provider_marker_completion(&self, key: &str) -> RepositoryResult<Option<ContentHash>> {
+        let stored: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT written_revision FROM provider_marker_completions
+                 WHERE idempotency_key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        stored
+            .map(|revision| {
+                ContentHash::parse(&revision).map_err(|_| RepositoryError::Backend {
+                    detail: "a provider-marker completion no longer matches its digest".to_owned(),
+                })
+            })
+            .transpose()
+    }
 }
 
 // ---------------------------------------------------------------------------

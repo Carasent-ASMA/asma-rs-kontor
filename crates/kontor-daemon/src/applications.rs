@@ -21517,15 +21517,20 @@ impl Services {
     /// Answer a replay of a key already bound to this exact correction.
     ///
     /// A marker that is already gone is the durable effect this key names, so
-    /// nothing is written. A marker that still stands at the revision the first
-    /// attempt read means the process died or the write failed before the
-    /// document moved: the same request carries enough state to finish that
-    /// correction now, and the retry must not be refused over the revision its
-    /// own first attempt read. Anything else is a conflict for the caller to
-    /// read rather than a second write to perform.
+    /// nothing is written. A completed key is answered the same way even when
+    /// the operator has restored the marker for a later outage: completion is
+    /// durable state, not a guess from the current bytes, so the restored
+    /// marker survives its replay. A marker that still stands at the revision
+    /// the first attempt read and whose key never completed means the process
+    /// died or the write failed before the document moved: the same request
+    /// carries enough state to finish that correction now, and the retry must
+    /// not be refused over the revision its own first attempt read. Anything
+    /// else is a conflict for the caller to read rather than a second write to
+    /// perform.
     fn replayed_provider_marker(
         &self,
         state: &ApiState,
+        key: &IdempotencyKey,
         family: &RuntimeKindKey,
         request: &ProviderMarkerApplyRequest,
     ) -> Result<ProviderMarkerDto, ApiError> {
@@ -21536,6 +21541,10 @@ impl Services {
             )
             .advising("read the marker again with the preview and apply with a fresh key")
         };
+        let completed = state
+            .with_store(|store| store.provider_marker_completion(key.as_str()))
+            .map_err(|error| self.refuse(&error))?
+            .is_some();
         let path = crate::runtimes::path_in(&self.state_root);
         let bytes = crate::provider_marker::read(&path)
             .map_err(|error| self.provider_marker_error(error))?
@@ -21545,6 +21554,20 @@ impl Services {
         let revision = ContentHash::of(&bytes);
         let restart_required =
             !self.running_daemon_answers_available(state, family, &request.provider);
+        if completed {
+            return Ok(ProviderMarkerDto {
+                realm_id: state.realm_id(),
+                runtime_family: family.to_string(),
+                host_key: plan.host_key,
+                provider: request.provider.clone(),
+                outcome: ProviderMarkerOutcomeDto::Replayed,
+                before: plan.before.iter().cloned().collect(),
+                after: plan.before.iter().cloned().collect(),
+                changed: false,
+                effects: provider_marker_effects(false, restart_required),
+                revision,
+            });
+        }
         if !plan.before.contains(&request.provider) {
             return Ok(ProviderMarkerDto {
                 realm_id: state.realm_id(),
@@ -21565,6 +21588,12 @@ impl Services {
         let updated = plan.updated.ok_or_else(changed_since)?;
         crate::provider_marker::write(&path, &bytes, &updated)
             .map_err(|error| self.provider_marker_error(error))?;
+        let written = ContentHash::of(&updated);
+        state
+            .with_store(|store| {
+                store.record_provider_marker_completion(key.as_str(), &written, kontor_api::now())
+            })
+            .map_err(|error| self.refuse(&error))?;
         Ok(ProviderMarkerDto {
             realm_id: state.realm_id(),
             runtime_family: family.to_string(),
@@ -21575,7 +21604,7 @@ impl Services {
             after: plan.after.iter().cloned().collect(),
             changed: true,
             effects: provider_marker_effects(true, restart_required),
-            revision: ContentHash::of(&updated),
+            revision: written,
         })
     }
 
@@ -26753,7 +26782,7 @@ impl ApplicationOperations for Services {
                     "the idempotency key was already used for a different operation",
                 ));
             }
-            return self.replayed_provider_marker(state, &family, request);
+            return self.replayed_provider_marker(state, key, &family, request);
         }
 
         let path = crate::runtimes::path_in(&self.state_root);
@@ -26808,19 +26837,36 @@ impl ApplicationOperations for Services {
         if applied == Applied::Unchanged {
             // A concurrent attempt with this exact request claimed the key
             // between the replay check and the claim; answer from what it left.
-            return self.replayed_provider_marker(state, &family, request);
+            return self.replayed_provider_marker(state, key, &family, request);
         }
         let (outcome, changed, revision_after) = match plan.updated {
             Some(updated) => {
                 crate::provider_marker::write(&path, &bytes, &updated)
                     .map_err(|error| self.provider_marker_error(error))?;
-                (
-                    ProviderMarkerOutcomeDto::Cleared,
-                    true,
-                    ContentHash::of(&updated),
-                )
+                let written = ContentHash::of(&updated);
+                state
+                    .with_store(|store| {
+                        store.record_provider_marker_completion(
+                            key.as_str(),
+                            &written,
+                            kontor_api::now(),
+                        )
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+                (ProviderMarkerOutcomeDto::Cleared, true, written)
             }
-            None => (ProviderMarkerOutcomeDto::AlreadyCleared, false, revision),
+            None => {
+                state
+                    .with_store(|store| {
+                        store.record_provider_marker_completion(
+                            key.as_str(),
+                            &revision,
+                            kontor_api::now(),
+                        )
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+                (ProviderMarkerOutcomeDto::AlreadyCleared, false, revision)
+            }
         };
         Ok(ProviderMarkerDto {
             realm_id: state.realm_id(),

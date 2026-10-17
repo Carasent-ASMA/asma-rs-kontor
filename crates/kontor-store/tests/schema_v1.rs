@@ -176,6 +176,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "project_subject_authority",
     "project_team_definition_defaults",
     "project_topology_defaults",
+    "provider_marker_completions",
     "provider_quota_states",
     "provider_quota_windows",
     "provider_quota_observation_provenance",
@@ -812,8 +813,10 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // (ASMA-8453).
     // v135 widens the realm-scoped idempotency operations by exactly one for
     // the provider-marker correction, preserving every existing binding and
-    // both permanence triggers across the table rebuild (ASMA-7968).
-    assert_eq!(SCHEMA_VERSION, 135);
+    // both permanence triggers across the table rebuild (ASMA-7968). v136
+    // records durable completion for that correction so a replay never writes
+    // a marker the operator restored for a later outage.
+    assert_eq!(SCHEMA_VERSION, 136);
 }
 
 #[test]
