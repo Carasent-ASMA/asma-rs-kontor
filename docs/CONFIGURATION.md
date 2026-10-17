@@ -41,7 +41,7 @@ system behaviour instead of instructions somebody has to remember.
 | `<state-root>/backups/` | Default directory of `kontor-daemon snapshot` / `snapshots`; see [`RECOVERY.md`](../RECOVERY.md) | Generated |
 | `crates/kontor-mcp/seats/*.json` | Which tier and serve profile one MCP server process runs at | See [the seats README](../crates/kontor-mcp/seats/README.md) |
 | Project checkout `config/orchestration/` | `orchestration.yml`, `fleet.yml` and `teams/core-team.yml`, the authoring sources of an orchestration bundle (see below) | Sent as exact bytes to the bundle operations; the daemon never reads a checkout |
-| Daemon environment `KONTOR_SEAT_MCP` | `off` disables seat MCP file composition for every plane | Absent or any other value: composition on |
+| Daemon environment `KONTOR_SEAT_MCP` | `off` disables seat MCP composition (files and creation frames) for every plane | Absent or any other value: composition on |
 
 Everything in the database is published through a preview/apply pair with a
 content hash: the apply is compared against the hash the preview returned, so a
@@ -1102,8 +1102,9 @@ validates, and refuses when the files differ (PR #300, `0971674d`). Delivery and
 consultation seats never use this path. `KONTOR_SEAT_MCP=off` in the daemon's
 environment, read once at daemon start, disables further seat MCP composition
 for every plane; files already composed into a worktree or hosted directory and
-sessions already running need separate cleanup. Declared permission posture is
-composed either way.
+sessions already running need separate cleanup. With `off`, creation frames
+carry no Kontor MCP either, and Claude Advisor, Committee and planning-pair
+member launches are refused. Declared permission posture is composed either way.
 
 Quota succession is exposed separately. `kontor_seat_quota_states_list` is an
 Observer read joining each live delivery seat to its exact account and provider

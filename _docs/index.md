@@ -46,7 +46,7 @@ This documentation covers implementation-local knowledge for the `asma-rs-kontor
 
 ### Reports (`reports/`)
 
-Reports are dated, point-in-time records; their bodies are not rewritten. The Status column gives the report's own state and then what later merged. Raw evidence the reports link lives under `reports/evidence/<Jira key>/`.
+Reports are dated, point-in-time records; their bodies are not rewritten. The Status column gives the report's own state and then what later merged. Raw evidence the reports link lives under `reports/evidence/<Jira key>/`; that tree is historical, being removed under ASMA-8511, and takes no new files.
 
 | Document | Summary | Status | When to Load |
 | --- | --- | --- | --- |
@@ -88,7 +88,7 @@ Reports are dated, point-in-time records; their bodies are not rewritten. The St
 | [`../RECOVERY.md`](../RECOVERY.md) | Offline `kontor-daemon` runbook: snapshot, restore, export, import, credential rotation and stopped-realm Jira credential install (`install-jira-credential`, PR #278); upgrade and binary rollback (snapshot and restore accept only the running build's exact schema, so a rollback stops the daemon, puts the old binary back, moves the migrated `kontor.db` and its `-wal`/`-shm` aside and restores the pre-upgrade snapshot with the old build); and pointers to live control-plane recovery, which a serving daemon exposes as tools rather than subcommands |
 | [`../SECURITY.md`](../SECURITY.md) | Reporting and supported-version policy |
 | [`../docs/QUOTA-FALLBACK-PLAN.md`](../docs/QUOTA-FALLBACK-PLAN.md) | Provider quota routing behind the rung walk; the document carries its own dated status |
-| [`../docs/evidence/`](../docs/evidence/README.md) | Per-ticket delivery evidence (`ASMA-*`, `KON-*`, `KBI-*`, `KCADR`): release notes, QA, review, mutation and closeout records |
+| [`../docs/evidence/`](../docs/evidence/README.md) | Per-ticket delivery evidence (`ASMA-*`, `KON-*`, `KBI-*`, `KCADR`): release notes, QA, review, mutation and closeout records. Historical, being removed under ASMA-8511; add no new files |
 
 ## Folder Legend
 
@@ -99,7 +99,7 @@ Reports are dated, point-in-time records; their bodies are not rewritten. The St
 | `operations/` | Living runbooks for operating or qualifying a Kontor capability |
 | `plans/` | Active implementation plans; compacted into history at closeout |
 | `reference/` | Living contracts for a merged capability: supported operations, refusals, support limits and rollback |
-| `reports/` | Dated, point-in-time delivery and qualification reports; raw evidence under `reports/evidence/<Jira key>/` |
+| `reports/` | Dated, point-in-time delivery and qualification reports; raw evidence under `reports/evidence/<Jira key>/`, historical, being removed under ASMA-8511, add no new files |
 
 ## Related authoritative documentation
 
