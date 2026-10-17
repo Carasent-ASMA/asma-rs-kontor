@@ -31,7 +31,6 @@
     "baseline-export.txt": "ff706e32aea20224fe8f77ef358cd16d561835704e9a78ab29c57573cbf6aed4",
     "deployed-dddb7287/actual-lsa-deployed-export.txt": "0ffa7b099e8d62bca1a58c438d79c7404f886e6cab63181923a6f76ccdb48bec",
     "deployed-dddb7287/build-receipt.json": "98ca90eef88f81b9ae3233c79a47f82f7c53b6a67c065ffc2de75d4059b4a038",
-    "deployed-dddb7287/deployment-apply.py": "c3a5d8ac33dcc5bc750fddcb3fc6e48a5e1aa647dd84d16dc31d3925679158f0",
     "deployed-dddb7287/deployment-plan.json": "63a21230bf5bc9865e4a373f7fbf872a4e7afbd4646d4c32706f67517a2dbd0a",
     "deployed-dddb7287/deployment-receipt.json": "b38d1d7949b86e8102b069c14fc156a44f0c9c0b3c39e7c0d004d1360ae2a812",
     "deployed-dddb7287/destination-import.txt": "a71153c27990d94746dafc5d92e169a0ef7af81a5dd00f532c4cbc3dba03cf5d",
