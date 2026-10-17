@@ -113,32 +113,37 @@ The unit test "does not replace a Kontor server already composed for the seat"
 pins the request-level half: a request `kontor` entry is preserved and the
 plugin adds `kontor-observer` beside it.
 
-## Residual blocker — Paseo 0.11.2 hook input
+## Residual blocker — Paseo 0.11.2 workspace creation paths
 
-The hook cannot identify a *caller* seat in Paseo 0.11.2, and the Paseo MCP
-`create_workspace` tool bypasses the hook:
+The guard sees a caller only when the request carries one. Paseo 0.11.2
+carries the caller as `agent.callerAgentId` on `workspace.create` and passes
+it to the hook (`WorkspaceInitialAgentSchema` keeps the field from
+`AgentCreateRequestSchema`), and the guard reads it. Three paths still create
+a workspace with no seat and no caller:
 
-- `@getpaseo/protocol` 0.11.2 `WorkspaceCreateRequestSchema` has no top-level
-  `callerAgentId`; the lifecycle request schema is `.strict()`, so a caller
-  field cannot reach the hook even if a client sends it.
 - The Paseo tool host's `create_workspace` calls
   `workspaceProvisioning.createWorkspaceForDirectory` directly
   (`packages/server/src/server/agent/tools/paseo-tools.ts` and
-  `bootstrap.ts`), without `pluginRuntime`.
+  `bootstrap.ts`), without `pluginRuntime`, so the hook never runs.
+- `paseo run --new-workspace` creates the workspace before the agent exists;
+  the `workspace.create` request has no agent and no caller.
+- `paseo workspace create` creates a workspace with no agent and no caller.
 
 The guard therefore enforces on the labels the hook does see: the initial
-agent's `agent.labels` on an explicit `workspace.create` request, plus a
-caller id if a future release supplies one. A labelled seat can still bypass
-the hook with the MCP `create_workspace` tool. G-20 is not fully closed by
-this hook until Paseo routes the MCP tool through the hook or supplies caller
-identity.
+agent's `agent.labels` and `agent.callerAgentId` on an explicit
+`workspace.create` request. A labelled seat can still bypass the hook with the
+MCP `create_workspace` tool or either CLI path. G-20 is not fully closed by
+this hook until Paseo supplies a caller on every workspace creation and routes
+the MCP tool through the hook.
 
 - **Owner:** Kontor LSA for the upstream ask; Paseo upstream for the change.
-- **Next action:** file the upstream ask to pass `callerAgentId` in the
-  `workspace.create` before-hook request (or route the MCP tool through the
-  same hook).
-- **Resumption trigger:** a Paseo release that carries caller identity in the
-  hook or routes the MCP tool through it; re-run
-  `apps/paseo-plugin/scripts/closure-suite.sh` with a caller-labelled seat.
+- **Next action:** widen the upstream ask: pass the caller on every
+  `workspace.create` request, including MCP `create_workspace` and the CLI
+  (`paseo run --new-workspace`, `paseo workspace create`), or route those
+  paths through the hook.
+- **Resumption trigger:** a Paseo release that carries caller identity on all
+  three paths, or routes them through the hook; re-run
+  `apps/paseo-plugin/scripts/closure-suite.sh` with a caller-labelled seat,
+  including the CLI case.
 - **Interim:** keep `create_workspace` out of ECP/seat tool surfaces per the
   QNR-P1-06 containment note.

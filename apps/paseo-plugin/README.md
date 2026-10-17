@@ -91,18 +91,20 @@ apps/paseo-plugin/scripts/closure-suite.sh
 ## Known limit — Paseo 0.11.2
 
 The guard covers an explicit `workspace.create` request whose initial agent
-carries Kontor labels, and any caller identity a future release passes in the
-hook request. Paseo 0.11.2 does not pass caller identity, and its Paseo MCP
-`create_workspace` tool does not run the `workspace.create` hook at all:
+carries Kontor labels, and the caller that Paseo 0.11.2 carries as
+`agent.callerAgentId` on that request. Paths that carry neither a labelled
+agent nor a caller still bypass the guard:
 
-- `WorkspaceCreateRequestSchema` in `@getpaseo/protocol` 0.11.2 has no
-  top-level `callerAgentId`; the lifecycle request schema is `.strict()`, so
-  the daemon cannot deliver one to the hook.
-- `create_workspace` in the Paseo tool host calls the provisioning service
-  directly (`packages/server/src/server/agent/tools/paseo-tools.ts` and
-  `bootstrap.ts`), so the plugin never runs for that path.
+- the Paseo MCP `create_workspace` tool does not run the `workspace.create`
+  hook at all; `create_workspace` in the tool host calls the provisioning
+  service directly (`packages/server/src/server/agent/tools/paseo-tools.ts`
+  and `bootstrap.ts`), so the plugin never runs for that path.
+- `paseo run --new-workspace` creates the workspace before it creates the
+  agent, with no agent and no caller on the `workspace.create` request.
+- `paseo workspace create` creates a workspace with no agent and no caller.
 
-Until Paseo supplies caller identity to the hook or routes the MCP tool through
-it, a labelled seat can still bypass the hook with the MCP `create_workspace`
-tool. That residual is recorded in the ASMA-8507 evidence with the upstream
-action; G-20 is not closed by the hook alone.
+Until Paseo supplies a caller on every workspace creation and routes the MCP
+tool through the hook, a labelled seat can still bypass the guard with the MCP
+`create_workspace` tool or either CLI path. That residual is recorded in the
+ASMA-8507 evidence with the widened upstream action; G-20 is not closed by the
+hook alone.
