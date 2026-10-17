@@ -263,6 +263,7 @@ struct ActiveGeneration {
     generation: String,
     release: String,
     hashes: Vec<(ArtifactName, String)>,
+    executable: bool,
 }
 
 impl ActiveGeneration {
@@ -418,10 +419,13 @@ impl Installer {
             generation: active.generation.clone(),
             release: active.release.clone(),
         });
-        if active
-            .as_ref()
-            .is_some_and(|active| active.matches(manifest))
-        {
+        if let Some(active) = active.as_ref().filter(|active| active.matches(manifest)) {
+            // A verified artifact whose content is exact but whose mode lost
+            // its execute bits would fail at execution. Repair the modes
+            // before reporting the generation as already current.
+            if !active.executable {
+                self.repair_modes(&root, &active.generation)?;
+            }
             return Ok(InstallOutcome::AlreadyCurrent);
         }
         let clean = active.is_none();
@@ -1103,6 +1107,7 @@ impl Installer {
             return Err(InstallError::ActiveUnverified);
         }
         let mut hashes = Vec::with_capacity(ArtifactName::ALL.len());
+        let mut executable = true;
         for name in ArtifactName::ALL {
             let entry = marker
                 .artifacts
@@ -1122,13 +1127,29 @@ impl Installer {
             if digest != entry.sha256 {
                 return Err(InstallError::ActiveUnverified);
             }
+            let mode = generation_dir
+                .child_mode(name.file_name())?
+                .ok_or(InstallError::ActiveUnverified)?;
+            executable &= mode & 0o111 != 0;
             hashes.push((name, digest));
         }
         Ok(Some(ActiveGeneration {
             generation: generation.to_owned(),
             release: marker.release,
             hashes,
+            executable,
         }))
+    }
+
+    /// Restore the installed executable mode on a verified active generation.
+    fn repair_modes(&self, root: &Dir, generation: &str) -> Result<(), InstallError> {
+        let releases = root.open_child(RELEASES_DIR)?;
+        let generation_dir = releases.open_child(generation)?;
+        for name in ArtifactName::ALL {
+            let file = generation_dir.open_child_file_rw(name.file_name())?;
+            Dir::set_file_mode(&file, BINARY_MODE)?;
+        }
+        Ok(())
     }
 
     fn accept_sources(

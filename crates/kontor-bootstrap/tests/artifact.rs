@@ -210,6 +210,35 @@ fn a_clean_install_activates_one_generation_and_replay_writes_nothing() {
 }
 
 #[test]
+#[cfg(unix)]
+fn a_lost_execute_bit_is_repaired_before_already_current() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root_holder = tempfile::tempdir().expect("root");
+    let version_one = release("1.0.0");
+    let installer = installer(root_holder.path());
+    assert_eq!(
+        install(&installer, &version_one),
+        Ok(InstallOutcome::Installed)
+    );
+    let pointer = std::fs::read_link(root_holder.path().join("current")).expect("pointer");
+    let mcp = root_holder
+        .path()
+        .join(pointer)
+        .join(ArtifactName::Mcp.file_name());
+    std::fs::set_permissions(&mcp, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+    assert_eq!(
+        install(&installer, &version_one),
+        Ok(InstallOutcome::AlreadyCurrent)
+    );
+    let mode = std::fs::metadata(&mcp)
+        .expect("metadata")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o111, 0o111, "execute permission restored");
+}
+
+#[test]
 fn an_update_replaces_the_whole_active_generation() {
     let root_holder = tempfile::tempdir().expect("root");
     let version_one = release("1.0.0");
