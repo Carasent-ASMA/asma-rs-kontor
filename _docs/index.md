@@ -88,7 +88,7 @@ Reports are dated, point-in-time records; their bodies are not rewritten. The St
 | [`../RECOVERY.md`](../RECOVERY.md) | Offline `kontor-daemon` runbook: snapshot, restore, export, import, credential rotation and stopped-realm Jira credential install (`install-jira-credential`, PR #278); upgrade and binary rollback (snapshot and restore accept only the running build's exact schema, so a rollback stops the daemon, puts the old binary back, moves the migrated `kontor.db` and its `-wal`/`-shm` aside and restores the pre-upgrade snapshot with the old build); and pointers to live control-plane recovery, which a serving daemon exposes as tools rather than subcommands |
 | [`../SECURITY.md`](../SECURITY.md) | Reporting and supported-version policy |
 | [`../docs/QUOTA-FALLBACK-PLAN.md`](../docs/QUOTA-FALLBACK-PLAN.md) | Provider quota routing behind the rung walk; the document carries its own dated status |
-| [`../docs/evidence/`](../docs/evidence/README.md) | Per-ticket delivery evidence (`ASMA-*`, `KON-*`, `KBI-*`, `KCADR`): release notes, QA, review, mutation and closeout records. Historical, being removed under ASMA-8511; add no new files |
+| [`../docs/evidence/`](../docs/evidence/README.md) | Per-ticket delivery evidence (`ASMA-*`, `KON-*`, `KBI-*`, `KCADR`): release notes, QA, review, mutation and closeout records. Historical, being removed under ASMA-8511; add no new files. The KON-MVP-18 e2e pilot inside `cargo test --workspace` still writes `docs/evidence/KON-MVP-18/<run-id>/` on every run; delete it and never commit it until ASMA-8511 moves that output |
 
 ## Folder Legend
 
