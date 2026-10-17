@@ -402,9 +402,112 @@ fn an_unavailable_client_is_absent_and_never_a_silent_success() {
     );
 }
 
+/// A boundary whose next `add_json` calls fail a fixed number of times.
+struct FailingAddBoundary {
+    inner: FakeClaudeBoundary,
+    failures: std::sync::Arc<AtomicUsize>,
+}
+
+impl ClaudeBoundary for FailingAddBoundary {
+    fn get(&mut self, name: &str) -> Result<Option<Value>, ClaudeBoundaryError> {
+        self.inner.get(name)
+    }
+
+    fn add_json(&mut self, name: &str, json: &str) -> Result<(), ClaudeBoundaryError> {
+        if self.failures.load(Ordering::SeqCst) > 0 {
+            self.failures.fetch_sub(1, Ordering::SeqCst);
+            return Err(ClaudeBoundaryError::Failed);
+        }
+        self.inner.add_json(name, json)
+    }
+
+    fn remove(&mut self, name: &str) -> Result<(), ClaudeBoundaryError> {
+        self.inner.remove(name)
+    }
+
+    fn remove_if(&mut self, name: &str, expected: &Value) -> Result<Removal, ClaudeBoundaryError> {
+        self.inner.remove_if(name, expected)
+    }
+}
+
+fn failing_add_harness() -> (Harness, std::sync::Arc<AtomicUsize>) {
+    let failures = std::sync::Arc::new(AtomicUsize::new(0));
+    let holder = tempfile::tempdir().expect("tempdir");
+    let ownership = OwnershipStore::at(holder.path().join("state")).expect("store");
+    let adapter = ClaudeAdapter::new(
+        Box::new(FailingAddBoundary {
+            inner: FakeClaudeBoundary::new(),
+            failures: failures.clone(),
+        }),
+        ownership.clone(),
+    );
+    (
+        Harness {
+            _holder: holder,
+            ownership,
+            adapter,
+        },
+        failures,
+    )
+}
+
 #[test]
-fn a_write_that_does_not_read_back_is_failed_readback_without_ownership() {
-    struct Vanish;
+fn a_failed_replacement_restores_the_original_entry() {
+    let (mut harness, failures) = failing_add_harness();
+    let first = spec("/synthetic/one");
+    let second = spec("/synthetic/two");
+    assert_eq!(
+        harness
+            .adapter
+            .install(&first, &mut NoFaults)
+            .expect("install"),
+        AdapterResult::Installed
+    );
+    failures.store(1, Ordering::SeqCst);
+    assert_eq!(
+        harness
+            .adapter
+            .install(&second, &mut NoFaults)
+            .expect_err("the replacement add fails"),
+        AdapterError::CommandFailed
+    );
+    assert!(
+        matches!(
+            harness.adapter.inspect(&first).expect("inspect"),
+            EntryState::Current { .. }
+        ),
+        "the original entry is restored, not deleted"
+    );
+}
+
+#[test]
+fn an_unrestorable_failed_replacement_is_reported_as_restore_failed() {
+    let (mut harness, failures) = failing_add_harness();
+    let first = spec("/synthetic/one");
+    let second = spec("/synthetic/two");
+    assert_eq!(
+        harness
+            .adapter
+            .install(&first, &mut NoFaults)
+            .expect("install"),
+        AdapterResult::Installed
+    );
+    failures.store(2, Ordering::SeqCst);
+    assert_eq!(
+        harness
+            .adapter
+            .install(&second, &mut NoFaults)
+            .expect_err("both the replacement and the restore fail"),
+        AdapterError::RestoreFailed
+    );
+    assert_eq!(
+        harness.adapter.inspect(&first).expect("inspect"),
+        EntryState::EntryAbsent
+    );
+}
+
+#[test]
+fn a_write_that_does_not_read_back_is_failed_readback_without_ownership() {    struct Vanish;
 
     impl ClaudeBoundary for Vanish {
         fn get(&mut self, _name: &str) -> Result<Option<Value>, ClaudeBoundaryError> {

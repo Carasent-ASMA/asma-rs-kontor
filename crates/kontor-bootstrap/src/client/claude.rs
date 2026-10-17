@@ -262,7 +262,19 @@ impl ClaudeAdapter {
                     observed: None,
                 });
             }
-            Err(_) => return Err(AdapterError::CommandFailed),
+            Err(_) => {
+                // The original entry was removed and the replacement did not
+                // land. Put the exact saved original back through the
+                // no-overwrite add boundary: a concurrent re-add is never
+                // clobbered, and an unrestorable original is reported as
+                // such rather than as an ordinary command failure.
+                let original = serde_json::to_string(&current)
+                    .map_err(|_| AdapterError::RestoreFailed)?;
+                return match self.boundary.add_json(ENTRY_NAME, &original) {
+                    Ok(()) => Err(AdapterError::CommandFailed),
+                    Err(_) => Err(AdapterError::RestoreFailed),
+                };
+            }
         }
         self.readback(spec)
     }
