@@ -31820,7 +31820,8 @@ impl ApplicationOperations for Services {
                 })?;
             if seat.lifecycle != TopologyLifecycle::Active
                 || seat.released_at.is_some()
-                || !matches!(seat.role.role_code.as_str(), "LSA" | "TPM")
+                || ![MANDATORY_LEAD_ROLE, MANDATORY_PROGRAM_ROLE]
+                    .contains(&seat.role.role_code.as_str())
             {
                 return Err(self.deny(ApiErrorCode::Forbidden,
                     "only active epic LSA and TPM seats may read completion through a scoped credential"));
