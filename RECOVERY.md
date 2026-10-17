@@ -172,6 +172,44 @@ body, connector payload, credential path, Zone C material, runtime frame or raw
 SQLite value reaches a log line. `RUST_LOG` selects which events are emitted; it
 cannot widen what a line may contain.
 
+## Deploy into a launchd job
+
+`scripts/kontor-deploy.py` is the one deploy script for a daemon that runs as a
+launchd job. It names the job only by explicit arguments: `--label`, `--domain`
+and `--plist` have no default. It reads the daemon path, state root and port
+from the plist's `ProgramArguments`.
+
+```sh
+python3 scripts/kontor-deploy.py --label <label> --domain gui/<uid> --plist <plist> \
+  replace --candidates <dir> --backup-dir <new dir> --realm-id <realm>
+```
+
+`replace` backs up the installed binaries and boots the job out. It snapshots
+the realm into the backup directory with the installed daemon, installs the
+candidates, bootstraps the job and waits until `realm-get` returns the named
+realm. If a step fails after the bootout, it restores the old binaries,
+bootstraps the old job and writes `rollback.json`. It does not restore the
+database; restore the snapshot as above. `bootout` and `bootstrap` run one step.
+
+Before it starts any process, the script refuses (exit 3):
+
+* the production label `com.asma.kontor.daemon`, unless the deploy is declared
+  with `--production-deploy <JIRA-KEY>`;
+* a declared production deploy outside this user's `gui/<uid>` domain, or from
+  any plist but `~/Library/LaunchAgents/com.asma.kontor.daemon.plist`;
+* `--production-deploy` with any other label;
+* a plist whose `Label` differs from `--label`. `launchctl bootstrap` registers
+  the label written in the plist, and that is how a test once replaced the
+  production job.
+
+Tests and rehearsals use a disposable label such as
+`com.asma.kontor.test.daemon`. The script's own tests inject a recording runner
+and never reach launchctl:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -v
+```
+
 ## Troubleshooting
 
 | Symptom | Meaning | What to do |
