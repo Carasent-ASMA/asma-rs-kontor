@@ -37,6 +37,7 @@ use kontor_core::repository::{TeamDefinitionRepository, TopologyRepository};
 use kontor_core::spec::{TeamRunSnapshot, TopologySnapshot};
 use kontor_core::state::{NativeRuntimeIdentity, ObservedContainerKind, TaskState};
 use kontor_daemon::succession::SuccessionSummarizerTransport;
+use kontor_daemon::succession_summarizer::CONFIG_FILE as SUCCESSION_SUMMARIZER_FILE;
 use kontor_daemon::usage::{ExactProviderUsageReporter, UsagePoller};
 use kontor_daemon::{DATABASE_FILE, DEFAULT_CAPACITY, Daemon, DaemonConfig};
 use kontor_profiles::pack::{PackAvailability, resolve_profile};
@@ -219,6 +220,10 @@ struct WorldComposition {
     memory_cognee: Option<kontor_memory_cognee::Client>,
     /// An exactly composed governed summarizer transport for succession.
     succession_summarizer: Option<Arc<dyn SuccessionSummarizerTransport>>,
+    /// The summary the configured runtime returns from the startup-composed
+    /// transport. Writing this also installs the selection document, so the
+    /// daemon reaches the transport through ordinary startup.
+    runtime_summarizer: Option<String>,
     /// Start from an empty state root and let the daemon create the Realm.
     created_realm: bool,
 }
@@ -383,6 +388,31 @@ impl World {
         .await
     }
 
+    /// Start an empty Realm whose ordinary startup composes the governed
+    /// summarizer from its configured runtime.
+    ///
+    /// The selection document and the runtime's staged answer are installed
+    /// before `Daemon::start`, so nothing here injects a transport: the daemon
+    /// reads the state root and composes the runtime-backed transport exactly as
+    /// the executable does.
+    pub(crate) async fn open_empty_with_runtime_summarizer(summary: &str) -> Self {
+        Self::compose_with_connector(
+            capabilities_with_history_page(512),
+            true,
+            false,
+            false,
+            DEFAULT_CAPACITY,
+            WorldComposition {
+                quota_signals: Some(
+                    include_str!("../../../../config/examples/quota-signals.yml").to_owned(),
+                ),
+                runtime_summarizer: Some(summary.to_owned()),
+                ..WorldComposition::default()
+            },
+        )
+        .await
+    }
+
     /// Start an empty Realm whose runtime holds a **plane-level container**.
     ///
     /// This is the shipped Paseo shape and the one no in-process fake had: every
@@ -505,6 +535,17 @@ impl World {
         } else {
             ScriptedFakeRuntime::new(capabilities)
         });
+        if let Some(summary) = composition.runtime_summarizer.as_deref() {
+            fake.answering_succession_summaries_with([summary]);
+            std::fs::write(
+                directory.path().join(SUCCESSION_SUMMARIZER_FILE),
+                format!(
+                    r#"{{"schema_version":1,"runtime_family":"{}"}}"#,
+                    fake_family()
+                ),
+            )
+            .expect("the succession summarizer selection is installed");
+        }
         let registry = if configured {
             RuntimeRegistry::new().with(fake_family(), Arc::clone(&fake) as Arc<dyn RuntimeAdapter>)
         } else {

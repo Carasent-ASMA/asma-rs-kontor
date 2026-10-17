@@ -9,8 +9,8 @@
 
 use async_trait::async_trait;
 use kontor_core::id::{
-    AgentRunId, BoundedText, CanonicalDocument, ContentHash, RuntimeBindingId, SuccessionAttemptId,
-    Timestamp, reject_sensitive_material, reject_sensitive_text,
+    AgentRunId, BoundedText, CanonicalDocument, ContentHash, RuntimeBindingId, RuntimeKindKey,
+    SuccessionAttemptId, Timestamp, reject_sensitive_material, reject_sensitive_text,
 };
 use kontor_core::repository::ProviderQuotaState;
 use kontor_core::spec::ModelRung;
@@ -152,10 +152,21 @@ pub trait SuccessionSummarizerTransport: Send + Sync {
         model_rung: &ModelRung,
         request: &SuccessionSummaryRequest,
     ) -> Result<SuccessionSummaryResponse, SuccessionSummarizerError>;
+
+    /// The configured runtime family that executes an admitted route, when this
+    /// transport is backed by one.
+    ///
+    /// Placement uses the answer to ask *that* runtime whether a provider is
+    /// enabled, exactly as a launch on it would. A transport with no runtime of
+    /// its own keeps the predecessor's family, which is the only one an
+    /// unconfigured realm could have observed.
+    fn runtime_kind(&self) -> Option<&RuntimeKindKey> {
+        None
+    }
 }
 
-/// Honest production fallback until a configured summarizer transport is
-/// composed. It launches nothing and always yields a degraded handoff.
+/// Honest fallback for a Realm that configured no summarizer runtime. It
+/// launches nothing and always yields a degraded handoff.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UnavailableSuccessionSummarizer;
 
@@ -274,6 +285,10 @@ impl SuccessionSummarizerTransport for GovernedSuccessionSummarizer<'_> {
             // Either way nothing is dispatched and no provenance is invented.
             _ => Err(SuccessionSummarizerError::Unplaceable),
         }
+    }
+
+    fn runtime_kind(&self) -> Option<&RuntimeKindKey> {
+        self.transport.runtime_kind()
     }
 }
 

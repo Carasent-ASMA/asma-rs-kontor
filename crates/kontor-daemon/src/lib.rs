@@ -56,6 +56,7 @@ pub mod quota_observation;
 pub mod recovery;
 pub mod runtimes;
 pub mod succession;
+pub mod succession_summarizer;
 pub mod succession_supervision;
 pub mod supervision;
 pub mod usage;
@@ -259,6 +260,13 @@ pub enum StartupError {
         /// Static redacted refusal.
         #[source]
         source: kontor_memory_cognee::Error,
+    },
+    /// The configured governed succession summarizer could not be composed.
+    #[error("the configured succession summarizer could not be composed: {source}")]
+    SuccessionSummarizer {
+        /// The settings document's own refusal.
+        #[source]
+        source: succession_summarizer::ConfigError,
     },
 }
 
@@ -503,8 +511,8 @@ impl Daemon {
     /// The declared-chain headroom walk still decides *whether* one summary is
     /// admitted; the transport only executes an admitted route, so this is the
     /// embedding and black-box contract seam and never a way around admission.
-    /// Production uses [`Self::start`] and composes the unavailable fallback
-    /// until a configured governed transport exists.
+    /// Ordinary startup reads the Realm's `succession-summarizer.json` and
+    /// composes its configured runtime instead.
     #[doc(hidden)]
     pub fn start_with_succession_summarizer(
         config: DaemonConfig,
@@ -576,6 +584,15 @@ impl Daemon {
                 .transpose()
                 .map_err(|source| StartupError::GithubApp { source })?
                 .map(Arc::new);
+        // An explicitly composed transport is the embedding and black-box seam
+        // and always wins. Ordinary startup reads the Realm's own selection and
+        // composes the named runtime; an absent document keeps the honest
+        // unavailable fallback, so an unconfigured Realm launches nothing.
+        let succession_summarizer = match succession_summarizer {
+            Some(transport) => Some(transport),
+            None => succession_summarizer::read(&config.state_root, &runtimes)
+                .map_err(|source| StartupError::SuccessionSummarizer { source })?,
+        };
         let succession_summarizer =
             succession_summarizer.unwrap_or_else(|| Arc::new(UnavailableSuccessionSummarizer));
         let applications = applications::Services::new(
@@ -669,7 +686,9 @@ impl Daemon {
         // `KONTOR_SEAT_MCP=off` kill switch governs every plane at once.
         let seat_mcp = runtimes::seat_mcp(&config.state_root);
         let registry = runtimes::build_registry(&settings, seat_mcp.as_ref())?;
-        Self::start_with_supervision(config, registry, supervision, None, None)
+        let succession_summarizer = succession_summarizer::read(&config.state_root, &registry)
+            .map_err(|source| StartupError::SuccessionSummarizer { source })?;
+        Self::start_with_supervision(config, registry, supervision, None, succession_summarizer)
     }
 
     /// This Realm's identity.

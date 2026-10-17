@@ -80,6 +80,14 @@ pub enum RuntimeCapability {
     /// silently do nothing. Declaring this is how a runtime says it can do
     /// neither of those things and change only the name.
     RetitleContainer,
+    /// Produce one bounded summary from an already-redacted prompt.
+    ///
+    /// Separate from [`Self::Launch`] because a governed summary is not a
+    /// delivery seat: it has no TeamRun, Task, binding or continued turn. The
+    /// daemon resolves the exact provider/model route first; this capability
+    /// only says the runtime can execute that route and hand back the model's
+    /// derived text.
+    Summarize,
 }
 
 impl RuntimeCapability {
@@ -101,6 +109,7 @@ impl RuntimeCapability {
         Self::ContextPolicy,
         Self::Compact,
         Self::RetitleContainer,
+        Self::Summarize,
     ];
 
     /// The stable spelling used in JSON, errors and logs.
@@ -123,6 +132,7 @@ impl RuntimeCapability {
             Self::ContextPolicy => "context_policy",
             Self::Compact => "compact",
             Self::RetitleContainer => "retitle_container",
+            Self::Summarize => "summarize",
         }
     }
 
@@ -146,6 +156,7 @@ impl RuntimeCapability {
                 | Self::PermissionResponse
                 | Self::Compact
                 | Self::RetitleContainer
+                | Self::Summarize
         )
     }
 }

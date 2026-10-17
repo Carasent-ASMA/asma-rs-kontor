@@ -850,6 +850,10 @@ struct FakeState {
     launched_models: BTreeMap<AgentRunId, ModelRung>,
     launched_accounts: BTreeMap<AgentRunId, AccountProfileId>,
     launched_prompts: BTreeMap<AgentRunId, BoundedText>,
+    /// Governed summary answers, in dispatch order.
+    succession_summaries: VecDeque<String>,
+    /// Every governed summary dispatch this runtime was asked to execute.
+    succession_summary_calls: Vec<(ModelRung, String)>,
     consultation_routes: BTreeMap<SeatBindingId, ModelRung>,
     consultation_route_provenances: BTreeMap<SeatBindingId, &'static str>,
     retired_consultations: BTreeMap<ExternalId, ConsultationSeatRetireRequest>,
@@ -1602,6 +1606,8 @@ impl ScriptedFakeRuntime {
                 launched_models: BTreeMap::new(),
                 launched_accounts: BTreeMap::new(),
                 launched_prompts: BTreeMap::new(),
+                succession_summaries: VecDeque::new(),
+                succession_summary_calls: Vec::new(),
                 consultation_routes: BTreeMap::new(),
                 consultation_route_provenances: BTreeMap::new(),
                 retired_consultations: BTreeMap::new(),
@@ -2088,6 +2094,29 @@ impl ScriptedFakeRuntime {
                 .provider_fallbacks
                 .insert(provider.to_owned(), fallback);
         }
+    }
+
+    /// Stage the answers a governed summarizer call receives, in order.
+    ///
+    /// A runtime asked to summarize with nothing staged answers as a transport
+    /// failure, which is the honest shape for "this test did not script the
+    /// call": it never invents a summary a test could mistake for the model's.
+    pub fn answering_succession_summaries_with<I, S>(&self, answers: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.lock()
+            .succession_summaries
+            .extend(answers.into_iter().map(Into::into));
+    }
+
+    /// Every governed summary this runtime was asked to execute.
+    ///
+    /// The prompt is the already-redacted daemon projection, recorded verbatim
+    /// so a test can prove what crossed the transport boundary.
+    pub fn succession_summary_calls(&self) -> Vec<(ModelRung, String)> {
+        self.lock().succession_summary_calls.clone()
     }
 
     /// Model a native runtime that does not deduplicate by client message id.
@@ -6081,6 +6110,28 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             (request.content_hash()?, receipt.clone()),
         );
         Ok(receipt)
+    }
+
+    async fn summarize_succession(
+        &self,
+        model_rung: &ModelRung,
+        prompt: &str,
+    ) -> RuntimeResult<String> {
+        let mut state = self.lock();
+        let declared = state.capabilities.clone();
+        preflight(
+            &declared,
+            &OperationContext::new(RuntimeCapability::Summarize),
+        )?;
+        state
+            .succession_summary_calls
+            .push((model_rung.clone(), prompt.to_owned()));
+        state
+            .succession_summaries
+            .pop_front()
+            .ok_or(RuntimeError::Transport {
+                rule: "no governed summary answer is staged for this dispatch",
+            })
     }
 }
 
