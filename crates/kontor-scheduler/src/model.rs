@@ -1387,7 +1387,7 @@ impl RejectionCode {
                 "wait until the task is ready; kontor_execution_arm does not make it ready"
             }
             Self::TaskAlreadyInFlight => {
-                "this task already has a run; inspect that seat or wait for it to settle"
+                "this task has an open TeamRun; if its runs have all ended, close the TeamRun (replay the run abandon, or waive the missing role slots)"
             }
             Self::EpicRosterUnfrozen => {
                 "this epic froze no Core Team roster; kontor_roster_upgrade_preview then kontor_roster_upgrade_apply gives it one"
