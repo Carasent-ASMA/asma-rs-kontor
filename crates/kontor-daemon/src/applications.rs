@@ -31828,13 +31828,27 @@ impl ApplicationOperations for Services {
             }
             // Use the same epic membership and occupancy fences as remediation
             // writes. A scoped read grants no general Observer authority.
+            //
+            // This reader already passed the role and Active checks, so it
+            // really sits on some epic's control plane. Being told this epic
+            // has no control plane or no live seat for the role would therefore
+            // describe the *other* epic's staffing to a seat that must not read
+            // it, and would offer a next step only that epic's operator can
+            // take. Here both always mean "not this epic's current leadership".
             self.require_completion_authority(
                 project_id,
                 epic_id,
                 seat.role.role_code.as_str(),
                 reader.seat_binding_id,
                 reader.occupancy_generation,
-            )?;
+            )
+            .map_err(|error| match error.code {
+                ApiErrorCode::PlacementBlocked | ApiErrorCode::RoleSlotUnbound => self.deny(
+                    ApiErrorCode::Forbidden,
+                    "the scoped reader is not this epic's current leadership",
+                ),
+                _ => error,
+            })?;
         }
         self.epic_row(project_id, epic_id)?;
         let stored = self.require_completion(project_id, epic_id)?;
