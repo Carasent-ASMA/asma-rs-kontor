@@ -1668,6 +1668,87 @@ fn a_non_terminal_team_run_blocks_replacement_after_its_only_child_ends() {
     );
 }
 
+/// The envelope, not its children, is what keeps a task in flight.
+///
+/// A team can close on settled turns while its seats stay live by design. If
+/// either read also counted a non-terminal child, the resumed task would be
+/// refused forever: the envelope is gone, so nothing left can ever close.
+#[test]
+fn a_closed_team_run_frees_the_task_while_its_seat_is_still_open() {
+    let harness = Harness::new();
+    let scope = harness.scope("resumed");
+    let task = harness.task(&scope, "Resumed after its team closed", TaskState::Ready);
+    let peers = BTreeSet::new();
+
+    let first_admitted = harness.admitted(&scope, task, None, None);
+    let first_parts = Parts::new("resumed-first");
+    harness
+        .store
+        .admit_candidate(&commit(
+            &scope,
+            &first_admitted,
+            &peers,
+            &first_parts,
+            &scope.template,
+            now(),
+        ))
+        .expect("the first admission commits");
+
+    // Close the TeamRun the way a settled-turn closure does, leaving its only
+    // child run non-terminal: the seat is live by design.
+    harness
+        .raw()
+        .execute(
+            "UPDATE team_runs SET lifecycle = 'succeeded', closed_at = ?2,
+                    terminal_outcome = 'succeeded', terminal_source_kind = 'settled_turns',
+                    terminal_evidence_hash = ?3
+              WHERE id = ?1",
+            rusqlite::params![
+                first_parts.team_run.to_string(),
+                "2026-08-12T09:00:00Z",
+                "6".repeat(64)
+            ],
+        )
+        .expect("the team closes on settled turns");
+    assert_eq!(
+        harness
+            .store
+            .get_agent_run(scope.project, first_parts.agent_run)
+            .expect("the run is readable")
+            .expect("the run exists")
+            .projection
+            .lifecycle,
+        RunLifecycle::Queued
+    );
+    assert!(
+        harness
+            .store
+            .tasks_with_open_runs()
+            .expect("the in-flight tasks are readable")
+            .is_empty()
+    );
+
+    // The resumed task is admissible again: no envelope is open, whatever its
+    // seats are doing.
+    let second_admitted = harness.admitted(&scope, task, None, None);
+    let second_parts = Parts::new("resumed-second");
+    harness
+        .store
+        .admit_candidate(&commit(
+            &scope,
+            &second_admitted,
+            &peers,
+            &second_parts,
+            &scope.template,
+            now(),
+        ))
+        .expect("a task whose team closed admits again");
+
+    let connection = harness.raw();
+    assert_eq!(count(&connection, "SELECT count(*) FROM team_runs"), 2);
+    assert_eq!(count(&connection, "SELECT count(*) FROM agent_runs"), 2);
+}
+
 #[test]
 fn a_serialization_peer_with_an_open_run_blocks_the_admission() {
     let harness = Harness::new();
