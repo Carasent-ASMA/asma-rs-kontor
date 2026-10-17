@@ -16,11 +16,12 @@ removes the loopback guard.
 
 ## Reporting a vulnerability
 
-Use GitHub's private vulnerability reporting flow from the repository
-**Security** tab when it is available. If it is unavailable, contact a
-Carasent-ASMA repository maintainer through an established private Carasent
-channel and ask for a secure reporting route **without including exploit or
-secret details in the initial public message**.
+Use GitHub's private vulnerability reporting, which is enabled for this
+repository: open the **Security** tab and choose **Report a vulnerability**.
+If you cannot use it, contact a Carasent-ASMA repository maintainer through an
+established private Carasent channel and ask for a secure reporting route
+**without including exploit or secret details in the initial public
+message**.
 
 Do not open a public issue for:
 
@@ -44,6 +45,12 @@ Include, when possible:
 Maintainers will acknowledge the report through the private channel, validate
 scope, coordinate a fix and agree on disclosure timing. No fixed response or
 resolution SLA is promised during pre-1.0 development.
+
+GitHub secret scanning and push protection are enabled. If you find a secret
+or credential in this repository, its history or its Actions logs, report its
+kind and location only, never the value. Maintainers handle it with the
+[leaked-secret runbook](_docs/operations/2026-10-17-18-57-runbook-leaked-secret.md):
+revoke and rotate first, everything else after.
 
 ## Security boundaries
 
