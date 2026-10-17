@@ -609,6 +609,40 @@ fn a_group_or_world_writable_internal_directory_is_refused_before_recovery() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn a_first_install_creates_private_roots_under_a_permissive_umask() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let world = World::new();
+    let binary = assert_cmd::cargo::cargo_bin("kontor-bootstrap");
+    let mut arguments = vec!["install".to_owned()];
+    arguments.extend(world.common());
+    arguments.push("--source-dir".to_owned());
+    arguments.push(world.source_dir.to_str().expect("utf8").to_owned());
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg("umask 002; exec \"$0\" \"$@\"")
+        .arg(&binary)
+        .args(&arguments)
+        .output()
+        .expect("run");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for root in [&world.install_root, &world.state_root] {
+        let mode = std::fs::metadata(root)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700, "{} was created with {mode:o}", root.display());
+    }
+    world.install();
+}
+
 #[test]
 fn an_unknown_client_is_refused_without_reflection() {
     let world = World::new();
