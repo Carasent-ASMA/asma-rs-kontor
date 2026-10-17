@@ -425,13 +425,15 @@ impl OwnedScopedTarget {
 }
 
 /// The deterministic one-shot wrapper: it delegates the initial read and the
-/// first successful set to the real `SystemKeychain`, injects exactly one typed
-/// read failure immediately after that set, then delegates rollback
-/// restore/delete and verification normally. It records counts and addresses
-/// (never values) so the tests can prove the fault fired on the production path.
+/// first successful set to the real `SystemKeychain`, proves the replacement
+/// credential persisted by reading it back directly, injects exactly one typed
+/// read failure only after that proof, then delegates rollback restore/delete
+/// and verification normally. It records counts and addresses (never values) so
+/// the tests can prove the fault fired on the production path.
 #[derive(Default)]
 struct ReadFailureAfterSet {
     set_completed: AtomicBool,
+    write_unproven: AtomicBool,
     failure_spent: AtomicBool,
     injected: AtomicBool,
     delegated_reads: AtomicUsize,
@@ -458,17 +460,31 @@ impl ReadFailureAfterSet {
         self.deletes.load(Ordering::SeqCst)
     }
 
+    /// The reconciliation detail for a first write that did not read back
+    /// exactly, or an empty detail when the write was proven.
+    fn write_unproven_detail(&self) -> &'static str {
+        if self.write_unproven.load(Ordering::SeqCst) {
+            "the replacement credential did not read back byte-for-byte after the first delegated write"
+        } else {
+            ""
+        }
+    }
+
     /// The production installer must have taken exactly this path: the initial
-    /// delegated read, one successful delegated set, the injected read, then
-    /// the rollback restore-or-delete and one verification read. Counts are
-    /// asserted, not the values that crossed them. Failure is returned, never
-    /// panicked: the caller decides the effectful disposition first.
+    /// delegated read, one successful delegated set proven by a direct readback,
+    /// the injected read, then the rollback restore-or-delete and one
+    /// verification read. Counts are asserted, not the values that crossed
+    /// them. Failure is returned, never panicked: the caller decides the
+    /// effectful disposition first.
     fn fault_fidelity(
         &self,
         target: &KeychainTarget,
         expected_sets: usize,
         expected_deletes: usize,
     ) -> Result<(), &'static str> {
+        if self.write_unproven.load(Ordering::SeqCst) {
+            return Err(self.write_unproven_detail());
+        }
         if !self.injected() {
             return Err("the deterministic wrapper did not inject its typed read failure");
         }
@@ -532,7 +548,15 @@ impl KeychainWriter for ReadFailureAfterSet {
             .push(target.clone());
         let result = SystemKeychain.set_secret(target, secret);
         if first && result.is_ok() {
-            self.set_completed.store(true, Ordering::SeqCst);
+            // The injected read failure may only follow a replacement
+            // credential that demonstrably persisted, so prove it through the
+            // real backend before arming the fault.
+            match SystemKeychain.secret(target) {
+                Ok(observed) if observed.expose_secret() == secret.expose_secret() => {
+                    self.set_completed.store(true, Ordering::SeqCst);
+                }
+                _ => self.write_unproven.store(true, Ordering::SeqCst),
+            }
         }
         result
     }
@@ -615,7 +639,7 @@ fn run_injected_install(
             reconciliation,
             Ownership::Fenced,
             temp,
-            "",
+            wrapper.write_unproven_detail(),
         ),
         Err(error) => error,
     }
