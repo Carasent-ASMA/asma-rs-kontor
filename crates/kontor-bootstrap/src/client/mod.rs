@@ -841,9 +841,7 @@ mod tests {
         loop {
             match FileExt::try_lock(&other) {
                 Ok(()) => break,
-                Err(fs4::TryLockError::WouldBlock)
-                    if std::time::Instant::now() < deadline =>
-                {
+                Err(fs4::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
                     std::thread::sleep(std::time::Duration::from_millis(5));
                 }
                 Err(error) => panic!("the lock was not released: {error:?}"),
