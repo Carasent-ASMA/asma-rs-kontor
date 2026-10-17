@@ -31805,7 +31805,36 @@ impl ApplicationOperations for Services {
         &self,
         project_id: ProjectId,
         epic_id: MiniProjectId,
+        reader: Option<kontor_api::auth::ScopedSeatSubject>,
     ) -> Result<CompletionStateDto, ApiError> {
+        if let Some(reader) = reader {
+            let seat = self
+                .state()?
+                .with_store(|store| store.get_seat_binding(project_id, reader.seat_binding_id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Forbidden,
+                        "the completion reader is not a seat in this project",
+                    )
+                })?;
+            if seat.lifecycle != TopologyLifecycle::Active
+                || seat.released_at.is_some()
+                || !matches!(seat.role.role_code.as_str(), "LSA" | "TPM")
+            {
+                return Err(self.deny(ApiErrorCode::Forbidden,
+                    "only active epic LSA and TPM seats may read completion through a scoped credential"));
+            }
+            // Use the same epic membership and occupancy fences as remediation
+            // writes. A scoped read grants no general Observer authority.
+            self.require_completion_authority(
+                project_id,
+                epic_id,
+                seat.role.role_code.as_str(),
+                reader.seat_binding_id,
+                reader.occupancy_generation,
+            )?;
+        }
         self.epic_row(project_id, epic_id)?;
         let stored = self.require_completion(project_id, epic_id)?;
         let compiled = self.pinned_completion(&stored)?;

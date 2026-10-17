@@ -51637,6 +51637,7 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
     };
     let lsa = seat_of("LSA");
     let tpm = seat_of("TPM");
+    let sa = seat_of("SA");
 
     let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
     let project_id = ProjectId::parse(project).expect("a project id");
@@ -51731,6 +51732,155 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
             .is_empty(),
         "materializing the native is not itself a completion transition"
     );
+    // The native leadership seats must be able to read the exact CAS state
+    // that their remediation writes consume, without realm-wide observer power.
+    let scoped_completion =
+        |actor: SeatBindingId, generation: u64, target_project: &str, target_epic: &str| {
+            Call::get(format!(
+                "/v1/projects/{target_project}/epics/{target_epic}/completion"
+            ))
+            .with_token(
+                world
+                    .daemon
+                    .state()
+                    .credentials()
+                    .seat_credential_for_generation(actor, generation),
+            )
+        };
+    let completion_reads_db =
+        rusqlite::Connection::open(world.directory.path().join("kontor.db")).unwrap();
+    let read_receipts = || {
+        completion_reads_db
+            .query_row("SELECT count(*) FROM command_receipts", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap()
+    };
+    let receipts_before_reads = read_receipts();
+    let calls_before_reads = world.fake.calls();
+    let shared_completion = Call::get(format!("/v1/projects/{project}/epics/{epic}/completion"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(shared_completion.status, 200, "{}", shared_completion.body);
+    for actor in [lsa, tpm] {
+        let read = scoped_completion(actor, 1, project, &epic)
+            .send(world)
+            .await;
+        assert_eq!(
+            read.status, 200,
+            "scoped leadership must read its own completion: {}",
+            read.body
+        );
+        assert_eq!(read.json(), shared_completion.json());
+    }
+    for tier in ["operator", "admin"] {
+        let read = Call::get(format!("/v1/projects/{project}/epics/{epic}/completion"))
+            .signed_as(world, tier)
+            .send(world)
+            .await;
+        assert_eq!(read.status, 200, "{}", read.body);
+        assert_eq!(read.json(), shared_completion.json());
+    }
+    let wrong_role = scoped_completion(sa, 1, project, &epic).send(world).await;
+    assert_eq!(wrong_role.status, 403, "{}", wrong_role.body);
+    let tpm_title: String = completion_reads_db
+        .query_row(
+            "SELECT standard_title FROM seat_bindings WHERE id=?1",
+            [tpm.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    // Even a materialized native loses this read authority when its persisted
+    // role ceases to be leadership; its bearer and occupancy remain unchanged.
+    completion_reads_db
+        .execute(
+            "UPDATE seat_bindings SET role_code='AUD', standard_title='AUD' WHERE id=?1",
+            [tpm.to_string()],
+        )
+        .unwrap();
+    let role_drift = scoped_completion(tpm, 1, project, &epic).send(world).await;
+    assert_eq!(role_drift.status, 403, "{}", role_drift.body);
+    assert!(role_drift.json().get("state").is_none());
+    completion_reads_db
+        .execute(
+            "UPDATE seat_bindings SET role_code='TPM', standard_title=?2 WHERE id=?1",
+            [&tpm.to_string(), &tpm_title],
+        )
+        .unwrap();
+    let no_global_observer = Call::get(format!("/v1/projects/{project}/completion-profiles"))
+        .with_token(
+            world
+                .daemon
+                .state()
+                .credentials()
+                .seat_credential_for_generation(lsa, 1),
+        )
+        .send(world)
+        .await;
+    assert_eq!(
+        no_global_observer.status, 403,
+        "scoped access cannot widen Caller::require: {}",
+        no_global_observer.body
+    );
+    assert_eq!(
+        world.fake.calls(),
+        calls_before_reads,
+        "completion reads cause no native operation"
+    );
+    assert_eq!(
+        read_receipts(),
+        receipts_before_reads,
+        "completion reads create no receipt"
+    );
+
+    // Another real epic has a durable completion to leak if scope is bypassed.
+    let mut other_completion = seed(&ticket_phase);
+    other_completion.mini_project_id = MiniProjectId::parse(&composed.epic).unwrap();
+    world
+        .daemon
+        .state()
+        .with_store(|store| store.create_epic_completion(&other_completion))
+        .unwrap();
+    let other_read = Call::get(format!(
+        "/v1/projects/{project}/epics/{}/completion",
+        composed.epic
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(other_read.status, 200, "{}", other_read.body);
+    for actor in [lsa, tpm] {
+        let cross_epic = scoped_completion(actor, 1, project, &composed.epic)
+            .send(world)
+            .await;
+        assert!(
+            matches!(cross_epic.status.as_u16(), 403 | 409),
+            "cross-epic read was not refused: {}",
+            cross_epic.body
+        );
+        assert!(cross_epic.json().get("state").is_none());
+    }
+    let foreign_project = ensure_project(
+        world,
+        "completion-read-foreign-project",
+        "Other project",
+        "/tmp/kontor-completion-read-foreign",
+    )
+    .await;
+    assert_eq!(foreign_project.status, 200, "{}", foreign_project.body);
+    let foreign_project_id = foreign_project.json()["project_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for actor in [lsa, tpm] {
+        let cross_project = scoped_completion(actor, 1, &foreign_project_id, &epic)
+            .send(world)
+            .await;
+        assert_eq!(cross_project.status, 403, "{}", cross_project.body);
+        assert!(cross_project.json().get("state").is_none());
+    }
+
     let calls_before_advance_replay = world.fake.calls().len();
 
     // The same key and the same expected revision replay to the same receipt and
@@ -51959,6 +52109,13 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
             )
         })
         .expect("the LSA occupancy is replaced");
+
+    let stale_read = scoped_completion(lsa, 1, project, &epic).send(world).await;
+    assert_eq!(stale_read.status, 409, "{}", stale_read.body);
+    assert_eq!(stale_read.code(), "stale_binding");
+    assert!(stale_read.json().get("state").is_none());
+    let successor_read = scoped_completion(lsa, 2, project, &epic).send(world).await;
+    assert_eq!(successor_read.status, 200, "{}", successor_read.body);
 
     let stale_predecessor = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/completion:remediate"),
@@ -52379,6 +52536,29 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
         recorded_recovery["authorization"]["lsa_actor"]["seat_binding_id"],
         recorded_recovery["authorization"]["tpm_actor"]["seat_binding_id"]
     );
+    let tpm_binding = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_seat_binding(project_id, tpm))
+        .unwrap()
+        .unwrap();
+    let retired=Call::post(format!("/v1/projects/{project}/seat-bindings/{tpm}/retire"),
+        &serde_json::json!({"expected_revision":tpm_binding.revision,"reason":"Complete the scoped reader retirement regression"}))
+        .signed_as(world,"operator").with_key("completion-read-retire-tpm").send(world).await;
+    assert_eq!(retired.status, 200, "{}", retired.body);
+    let retired_read = scoped_completion(tpm, 1, project, &epic).send(world).await;
+    assert_eq!(retired_read.status, 403, "{}", retired_read.body);
+    assert!(retired_read.json().get("state").is_none());
+    // A legacy archived row without a release timestamp is still historical.
+    completion_reads_db
+        .execute(
+            "UPDATE seat_bindings SET lifecycle='archived', released_at=NULL WHERE id=?1",
+            [tpm.to_string()],
+        )
+        .unwrap();
+    let archived_read = scoped_completion(tpm, 1, project, &epic).send(world).await;
+    assert_eq!(archived_read.status, 403, "{}", archived_read.body);
+    assert!(archived_read.json().get("state").is_none());
 }
 
 /// Integration advances on a typed operator receipt, and only the right one.
