@@ -190,7 +190,7 @@ fn install_then_readback_then_replay_and_update() {
     }
     assert_eq!(
         world.client_report(&document, "claude-code")["result"]["result"],
-        "absent"
+        "unsupported"
     );
     assert!(world.state_root.join("bootstrap-receipt.json").exists());
     assert!(world.state_root.join("bootstrap-ownership.json").exists());
@@ -208,6 +208,10 @@ fn install_then_readback_then_replay_and_update() {
             "{client}"
         );
     }
+    assert_eq!(
+        world.client_report(&observed, "claude-code")["state"]["state"],
+        "unsupported"
+    );
 
     let replay = world.install();
     assert!(
@@ -476,6 +480,54 @@ fn a_symlinked_client_config_is_a_typed_conflict() {
     assert_eq!(
         std::fs::read_to_string(&outside).expect("read"),
         "unrelated = true"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failed_client_still_writes_a_receipt_and_the_run_continues() {
+    use std::os::unix::fs::PermissionsExt;
+    let world = World::new();
+    let codex = world.home_root.join(".codex");
+    let mut permissions = std::fs::metadata(&codex).expect("metadata").permissions();
+    permissions.set_mode(0o500);
+    std::fs::set_permissions(&codex, permissions).expect("chmod");
+    let mut arguments = vec!["install".to_owned()];
+    arguments.extend(world.common());
+    arguments.push("--source-dir".to_owned());
+    arguments.push(world.source_dir.to_str().expect("utf8").to_owned());
+    let refs: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    let (document, success, _) = world.run(&refs);
+    let mut restore = std::fs::metadata(&codex).expect("metadata").permissions();
+    restore.set_mode(0o700);
+    std::fs::set_permissions(&codex, restore).expect("restore");
+
+    assert!(!success, "a client failure exits non-zero");
+    assert_eq!(document["error"]["code"], "client_adapter_failed");
+    let receipt_path = world.state_root.join("bootstrap-receipt.json");
+    assert!(receipt_path.exists(), "the receipt is always written");
+    let receipt: Value =
+        serde_json::from_str(&std::fs::read_to_string(&receipt_path).expect("receipt"))
+            .expect("receipt json");
+    let reports = receipt["clients"].as_array().expect("clients");
+    let codex = reports
+        .iter()
+        .find(|report| report["client"] == "codex")
+        .expect("codex report");
+    assert_eq!(codex["mode"], "failed");
+    assert_eq!(codex["reason"], "confinement");
+    for client in ["opencode", "copilot", "cursor"] {
+        let report = reports
+            .iter()
+            .find(|report| report["client"] == client)
+            .unwrap_or_else(|| panic!("no report for {client}: {receipt}"));
+        assert_eq!(report["result"]["result"], "installed", "{client}");
+    }
+    assert!(world.state_root.join("bootstrap-ownership.json").exists());
+    assert!(
+        std::fs::read_to_string(world.home_root.join(".config/opencode/opencode.json"))
+            .expect("opencode config")
+            .contains("kontor-mcp")
     );
 }
 

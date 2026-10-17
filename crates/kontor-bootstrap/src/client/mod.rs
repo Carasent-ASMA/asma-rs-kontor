@@ -248,6 +248,8 @@ impl ConflictReason {
 pub enum EntryState {
     /// The client itself is not present on this machine.
     ClientAbsent,
+    /// The client is present but this build has no boundary to drive it.
+    Unsupported,
     /// The client is present and has no `kontor` entry.
     EntryAbsent,
     /// The entry is bootstrap's own and already exact.
@@ -280,7 +282,10 @@ impl EntryState {
             EntryState::Current { observed }
             | EntryState::ManagedStale { observed }
             | EntryState::Unrelated { observed } => Some(observed),
-            EntryState::ClientAbsent | EntryState::EntryAbsent | EntryState::Refused { .. } => None,
+            EntryState::ClientAbsent
+            | EntryState::Unsupported
+            | EntryState::EntryAbsent
+            | EntryState::Refused { .. } => None,
         }
     }
 }
@@ -299,6 +304,8 @@ pub enum AdapterResult {
     Repaired,
     /// The client or entry is absent; nothing was written.
     Absent,
+    /// This build has no boundary that can drive the present client.
+    Unsupported,
     /// The entry was refused and nothing was written.
     Conflict {
         /// Why.
@@ -320,6 +327,7 @@ impl AdapterResult {
             AdapterResult::AlreadyCurrent => "already_current",
             AdapterResult::Repaired => "repaired",
             AdapterResult::Absent => "absent",
+            AdapterResult::Unsupported => "unsupported",
             AdapterResult::Conflict { .. } => "conflict",
             AdapterResult::FailedReadback => "failed_readback",
         }
@@ -397,6 +405,7 @@ struct OwnershipRecord {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OwnershipLedger {
     entries: BTreeMap<ClientId, OwnershipRecord>,
+    pending: BTreeMap<ClientId, OwnershipRecord>,
 }
 
 impl OwnershipLedger {
@@ -404,6 +413,15 @@ impl OwnershipLedger {
     #[must_use]
     pub fn owns(&self, client: ClientId, observed: &ObservedHash) -> bool {
         self.entries
+            .get(&client)
+            .is_some_and(|record| record.entry_sha256 == observed.as_str())
+    }
+
+    /// Whether a write of exactly this snapshot was in progress and is not yet
+    /// completed in the committed entries.
+    #[must_use]
+    pub fn pending_owns(&self, client: ClientId, observed: &ObservedHash) -> bool {
+        self.pending
             .get(&client)
             .is_some_and(|record| record.entry_sha256 == observed.as_str())
     }
@@ -423,6 +441,8 @@ const LEDGER_SCHEMA_VERSION: u32 = 1;
 struct LedgerDocument {
     schema_version: u32,
     entries: BTreeMap<ClientId, OwnershipRecord>,
+    #[serde(default)]
+    pending: BTreeMap<ClientId, OwnershipRecord>,
 }
 
 impl OwnershipStore {
@@ -463,7 +483,7 @@ impl OwnershipStore {
         if document.schema_version != LEDGER_SCHEMA_VERSION {
             return Err(AdapterError::OwnershipUnreadable);
         }
-        for record in document.entries.values() {
+        for record in document.entries.values().chain(document.pending.values()) {
             if ObservedHash::parse(&record.entry_sha256).is_none()
                 || ObservedHash::parse(&record.spec_sha256).is_none()
             {
@@ -472,7 +492,30 @@ impl OwnershipStore {
         }
         Ok(OwnershipLedger {
             entries: document.entries,
+            pending: document.pending,
         })
+    }
+
+    /// Persist that a write of exactly this snapshot is about to commit.
+    ///
+    /// The record is durable before the configuration changes, so a replay can
+    /// complete ownership after an interruption between the write and the
+    /// ledger update.
+    fn begin(
+        &self,
+        client: ClientId,
+        entry: &ObservedHash,
+        spec: &ObservedHash,
+    ) -> Result<(), AdapterError> {
+        let mut ledger = self.load()?;
+        ledger.pending.insert(
+            client,
+            OwnershipRecord {
+                entry_sha256: entry.as_str().to_owned(),
+                spec_sha256: spec.as_str().to_owned(),
+            },
+        );
+        self.write(&ledger)
     }
 
     fn record(
@@ -489,9 +532,15 @@ impl OwnershipStore {
                 spec_sha256: spec.as_str().to_owned(),
             },
         );
+        ledger.pending.remove(&client);
+        self.write(&ledger)
+    }
+
+    fn write(&self, ledger: &OwnershipLedger) -> Result<(), AdapterError> {
         let document = LedgerDocument {
             schema_version: LEDGER_SCHEMA_VERSION,
-            entries: ledger.entries,
+            entries: ledger.entries.clone(),
+            pending: ledger.pending.clone(),
         };
         let bytes = serde_json::to_vec_pretty(&document).map_err(|_| AdapterError::Io)?;
         let dir = self.open_or_create_root()?;

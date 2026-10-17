@@ -249,9 +249,7 @@ fn seed_entry(fixture: &Fixture, value: &Value) {
                 toml_args(&value["args"])
             ));
         }
-        ClientId::OpenCode => {
-            fixture.write(&json!({"mcp": {"servers": {"kontor": value}}}).to_string())
-        }
+        ClientId::OpenCode => fixture.write(&json!({"mcp": {"kontor": value}}).to_string()),
         ClientId::Copilot => fixture.write(&json!({"servers": {"kontor": value}}).to_string()),
         ClientId::Cursor => fixture.write(&json!({"mcpServers": {"kontor": value}}).to_string()),
         ClientId::ClaudeCode => unreachable!(),
@@ -298,10 +296,7 @@ fn assert_shape(fixture: &Fixture, spec: &ServerSpec) {
         }
         ClientId::OpenCode => {
             let document = JsonDocument::parse(text, Dialect::Jsonc).expect("jsonc");
-            assert_eq!(
-                document.value(&["mcp", "servers", "kontor"]),
-                Some(expected)
-            );
+            assert_eq!(document.value(&["mcp", "kontor"]), Some(expected));
         }
         ClientId::Copilot => {
             let document: Value = serde_json::from_str(&text).expect("json");
@@ -500,7 +495,7 @@ fn an_env_or_extra_field_change_makes_an_owned_entry_unowned() {
 fn a_commented_jsonc_managed_entry_is_never_absent_or_overwritten() {
     let fixture = Fixture::new(ClientId::OpenCode);
     fixture.present();
-    let original = "{\n  // outer note survives\n  \"mcp\": {\n    \"servers\": {\n      \"kontor\": {\n        /* transport */ \"type\": \"local\",\n        \"command\": [/* binary */ \"/usr/bin/other-mcp\"]\n      }\n    }\n  }\n}\n";
+    let original = "{\n  // outer note survives\n  \"mcp\": {\n    \"kontor\": {\n      /* transport */ \"type\": \"local\",\n      \"command\": [/* binary */ \"/usr/bin/other-mcp\"]\n    }\n  }\n}\n";
     std::fs::write(fixture.directory().join("opencode.jsonc"), original).expect("seed");
     let desired = spec("/synthetic/realm");
     let observed = match fixture.inspect(&desired) {
@@ -522,6 +517,39 @@ fn a_commented_jsonc_managed_entry_is_never_absent_or_overwritten() {
     let repaired =
         std::fs::read_to_string(fixture.directory().join("opencode.jsonc")).expect("read");
     assert!(repaired.contains("// outer note survives"));
+}
+
+#[test]
+fn an_opencode_flat_same_name_entry_is_a_conflict_and_never_overwritten() {
+    let fixture = Fixture::new(ClientId::OpenCode);
+    fixture.present();
+    let user_entry = json!({
+        "type": "local",
+        "command": [
+            "/user/own/kontor-mcp",
+            "--state-root",
+            "/user-realm",
+            "--credential-tier",
+            "operator"
+        ],
+        "enabled": true
+    });
+    let original = json!({"mcp": {"kontor": user_entry}}).to_string();
+    fixture.write(&original);
+    let desired = spec("/synthetic/realm");
+    let observed = match fixture.inspect(&desired) {
+        EntryState::Unrelated { observed } => observed,
+        state => panic!("a flat user entry must be unrelated, got {state:?}"),
+    };
+    assert_eq!(observed, ObservedHash::of_value(&user_entry));
+    assert_eq!(
+        fixture.install(&desired),
+        AdapterResult::Conflict {
+            reason: ConflictReason::SameNameUnrelated,
+            observed: Some(observed),
+        }
+    );
+    assert_eq!(fixture.read(), original, "the user entry is untouched");
 }
 
 #[test]
@@ -1731,6 +1759,44 @@ fn a_failed_readback_does_not_record_ownership() {
             ),
             "{client}: a failed readback must not claim ownership"
         );
+    }
+}
+
+#[test]
+fn a_replay_after_an_interrupted_write_completes_ownership() {
+    for client in FileClientAdapter::FILE_CLIENTS {
+        let fixture = Fixture::new(client);
+        fixture.present();
+        let first = spec("/synthetic/one");
+        let second = spec("/synthetic/two");
+        assert_eq!(
+            fixture.install(&first),
+            AdapterResult::Installed,
+            "{client}"
+        );
+        let mut faults = ScriptedFaults::failing_at(FailPoint::AfterClientWrite(client));
+        let mut adapter = fixture.adapter.clone();
+        assert_eq!(
+            adapter.install(&second, &mut faults),
+            Err(AdapterError::Injected),
+            "{client}: the interruption lands after the configuration write"
+        );
+        assert!(
+            !fixture.owns(&desired_value(client, &second)),
+            "{client}: the ledger update was lost"
+        );
+        // Replay verifies the landed snapshot and completes ownership.
+        assert_eq!(
+            fixture.install(&second),
+            AdapterResult::AlreadyCurrent,
+            "{client}"
+        );
+        assert!(
+            fixture.owns(&desired_value(client, &second)),
+            "{client}: the replay completes ownership"
+        );
+        // A later update proceeds instead of reporting SameNameUnrelated.
+        assert_eq!(fixture.install(&first), AdapterResult::Updated, "{client}");
     }
 }
 
