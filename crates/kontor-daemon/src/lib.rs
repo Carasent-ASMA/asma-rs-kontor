@@ -52,6 +52,7 @@ pub mod lock;
 pub mod logging;
 pub mod orchestration;
 pub mod provider_config;
+pub mod provider_marker;
 pub mod quota_observation;
 pub mod recovery;
 pub mod runtimes;
@@ -562,6 +563,7 @@ impl Daemon {
             realm_id,
             config.capacity,
             jira,
+            config.state_root.clone(),
             config.state_root.join("runtime-roots"),
             usage_poller.clone(),
             quota_signals,

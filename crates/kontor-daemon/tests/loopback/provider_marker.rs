@@ -1,0 +1,402 @@
+//! The provider-marker correction, over the real router and a real state root.
+//!
+//! The correction is the one supported way to delete a stale
+//! `unavailable_providers` entry from `<state-root>/runtimes.json`. What these
+//! tests exist to prove, besides the before/after and the refusals, is the
+//! boundary: the operation writes that one member and nothing else — no runtime
+//! call, no run, no binding, no topology node.
+
+use super::*;
+
+/// A fleet document an operator could have written.
+///
+/// It carries a member this build does not know (`future_member`) and the one
+/// sensitive field (`host_target`), so a test can prove the correction preserves
+/// both.
+fn marker_document() -> String {
+    serde_json::json!({
+        "schema_version": 5,
+        "runtimes": [
+            {
+                "family": "paseo",
+                "runtime_kind": fake_family().to_string(),
+                "host_key": "paseo-host",
+                "future_member": { "kept": true },
+                "mini_project_id": "01890000-0000-7000-8000-000000000001",
+                "jira_epic_key": "ASMA-7968",
+                "mini_project_short_title": "Provider marker",
+                "plan_item_key": "KON-OP-20",
+                "jira_issue_key": "ASMA-7968",
+                "ticket_short_code": "KON-OP-20",
+                "seat_display_roles": { "implement": { "role": "Implement" } },
+                "project_root_cwd": "/w/epic",
+                "canonical_worktree_cwd": "/w/task",
+                "orchestrator_agent_id": "agent-1",
+                "max_concurrent_sessions": 2,
+                "unavailable_providers": ["claude", "codex"],
+                "executable": "paseo",
+                "host_target": "https://user:hunter2@paseo.example",
+                "endpoint": "ws://127.0.0.1:6767/ws",
+                "client_id": "kontor-mini-1",
+                "timeout_seconds": 30
+            }
+        ]
+    })
+    .to_string()
+}
+
+fn fixture(world: &World) -> std::path::PathBuf {
+    let path = world.directory.path().join("runtimes.json");
+    std::fs::write(&path, marker_document()).expect("the fixture document is installed");
+    path
+}
+
+fn preview_body() -> serde_json::Value {
+    serde_json::json!({
+        "runtime_family": fake_family().to_string(),
+        "provider": "claude",
+    })
+}
+
+#[tokio::test]
+async fn a_marker_correction_is_previewed_applied_replayed_and_moves_no_seat() {
+    let world = World::open().await;
+    let path = fixture(&world);
+    // The running daemon still holds the marker, exactly as an outage left it.
+    world.fake.provider_outage("claude", None);
+    let (run, _) = world.launch().await;
+    let calls = world.fake.calls().len();
+    let (task_before, team_before, run_before, nodes_before) =
+        world.daemon.state().with_store(|store| {
+            (
+                store.get_task(world.project, world.task).unwrap(),
+                store.get_team_run(world.project, world.team_run).unwrap(),
+                store.get_agent_run(world.project, run).unwrap(),
+                store.list_topology_nodes(world.project, None).unwrap(),
+            )
+        });
+
+    let preview = Call::post("/v1/provider-markers:preview", &preview_body())
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let preview_json = preview.json();
+    assert_eq!(
+        preview_json["before"],
+        serde_json::json!(["claude", "codex"]),
+        "before is the document's own set"
+    );
+    assert_eq!(preview_json["after"], serde_json::json!(["codex"]));
+    assert_eq!(preview_json["changed"], true);
+    assert_eq!(preview_json["host_key"], "paseo-host");
+    assert_eq!(
+        preview_json["effects"],
+        serde_json::json!(["marker_removed", "restart_required"]),
+        "the running daemon still holds the marker, so a start is still owed"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the document reads"),
+        marker_document(),
+        "a preview rewrites nothing"
+    );
+    let revision = preview_json["revision"]
+        .as_str()
+        .expect("a revision")
+        .to_owned();
+    let preview_hash = preview_json["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+
+    let applied = Call::post(
+        "/v1/provider-markers:apply",
+        &serde_json::json!({
+            "runtime_family": fake_family().to_string(),
+            "provider": "claude",
+            "expected_revision": revision,
+            "preview_hash": preview_hash,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("provider-marker-clear")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let applied_json = applied.json();
+    assert_eq!(applied_json["outcome"], "cleared");
+    assert_eq!(applied_json["changed"], true);
+    assert_eq!(
+        applied_json["before"],
+        serde_json::json!(["claude", "codex"])
+    );
+    assert_eq!(applied_json["after"], serde_json::json!(["codex"]));
+    assert_ne!(
+        applied_json["revision"].as_str().expect("a revision"),
+        revision,
+        "the applied document is a new revision"
+    );
+
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("the document reads"))
+            .expect("the corrected document is JSON");
+    assert_eq!(
+        written["runtimes"][0]["unavailable_providers"],
+        serde_json::json!(["codex"])
+    );
+    assert_eq!(
+        written["runtimes"][0]["host_target"], "https://user:hunter2@paseo.example",
+        "the one sensitive field is preserved untouched"
+    );
+    assert_eq!(
+        written["runtimes"][0]["future_member"],
+        serde_json::json!({ "kept": true }),
+        "a member this build does not know survives the correction"
+    );
+
+    // The same key is the same act: answered from the durable binding, with no
+    // second write, even though its revision is now stale.
+    let corrected = std::fs::read_to_string(&path).expect("the document reads");
+    let replayed = Call::post(
+        "/v1/provider-markers:apply",
+        &serde_json::json!({
+            "runtime_family": fake_family().to_string(),
+            "provider": "claude",
+            "expected_revision": revision,
+            "preview_hash": preview_hash,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("provider-marker-clear")
+    .send(&world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["outcome"], "replayed");
+    assert_eq!(replayed.json()["changed"], false);
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the document reads"),
+        corrected,
+        "a replay writes nothing"
+    );
+
+    // The other provider is still marked, and a fresh preview corrects it.
+    let second = Call::post("/v1/provider-markers:preview", &preview_body())
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+    assert_eq!(second.status, 200, "{}", second.body);
+    assert_eq!(second.json()["changed"], false);
+    assert_eq!(second.json()["before"], serde_json::json!(["codex"]));
+    assert_eq!(second.json()["after"], serde_json::json!(["codex"]));
+
+    // Nothing about the realm's work moved: the correction reached no runtime,
+    // retired no seat, replaced no run and touched no topology node.
+    assert_eq!(
+        world.fake.calls().len(),
+        calls,
+        "a configuration correction must not reach the runtime"
+    );
+    world.daemon.state().with_store(|store| {
+        assert_eq!(
+            store.get_task(world.project, world.task).unwrap(),
+            task_before
+        );
+        assert_eq!(
+            store.get_team_run(world.project, world.team_run).unwrap(),
+            team_before
+        );
+        assert_eq!(store.get_agent_run(world.project, run).unwrap(), run_before);
+        assert_eq!(
+            store.list_topology_nodes(world.project, None).unwrap(),
+            nodes_before
+        );
+    });
+}
+
+#[tokio::test]
+async fn a_marker_correction_refuses_unknown_stale_malformed_and_unauthorized_calls() {
+    let world = World::open().await;
+    let path = fixture(&world);
+    let family = fake_family().to_string();
+    let preview = Call::post("/v1/provider-markers:preview", &preview_body())
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let revision = preview.json()["revision"]
+        .as_str()
+        .expect("a revision")
+        .to_owned();
+    let preview_hash = preview.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+    let apply_body = |revision: &str, preview_hash: &str| {
+        serde_json::json!({
+            "runtime_family": family.clone(),
+            "provider": "claude",
+            "expected_revision": revision,
+            "preview_hash": preview_hash,
+        })
+    };
+
+    // A configuration route is admin work, and an operator reaches nothing.
+    let refused = Call::post(
+        "/v1/provider-markers:apply",
+        &apply_body(&revision, &preview_hash),
+    )
+    .signed_as(&world, "operator")
+    .with_key("marker-operator")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 403, "{}", refused.body);
+
+    // An unknown family is not found on either half of the pair.
+    let unknown_preview = Call::post(
+        "/v1/provider-markers:preview",
+        &serde_json::json!({
+            "runtime_family": "paseo.other",
+            "provider": "claude",
+        }),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(unknown_preview.status, 404, "{}", unknown_preview.body);
+    assert_eq!(unknown_preview.code(), "not_found");
+    let unknown_apply = Call::post(
+        "/v1/provider-markers:apply",
+        &serde_json::json!({
+            "runtime_family": "paseo.other",
+            "provider": "claude",
+            "expected_revision": revision,
+            "preview_hash": preview_hash,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("marker-unknown")
+    .send(&world)
+    .await;
+    assert_eq!(unknown_apply.status, 404, "{}", unknown_apply.body);
+    assert_eq!(unknown_apply.code(), "not_found");
+
+    // A provider name that is not an open key never reaches the document.
+    let invalid = Call::post(
+        "/v1/provider-markers:preview",
+        &serde_json::json!({
+            "runtime_family": family,
+            "provider": "Claude",
+        }),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(invalid.status, 400, "{}", invalid.body);
+    assert_eq!(invalid.code(), "invalid_request");
+
+    // A body that is not this route's schema is one typed invalid_request.
+    let malformed = Call::post_raw("/v1/provider-markers:preview", "{\"runtime_family\": }")
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+    assert_eq!(malformed.status, 400, "{}", malformed.body);
+    assert_eq!(malformed.code(), "invalid_request");
+
+    // Every mutation must carry a key.
+    let keyless = Call::post(
+        "/v1/provider-markers:apply",
+        &apply_body(&revision, &preview_hash),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(keyless.status, 400, "{}", keyless.body);
+    assert_eq!(keyless.code(), "invalid_request");
+
+    // A hash that does not describe this correction is refused without writing.
+    let wrong_hash = Call::post(
+        "/v1/provider-markers:apply",
+        &apply_body(&revision, &"0".repeat(64)),
+    )
+    .signed_as(&world, "admin")
+    .with_key("marker-wrong-hash")
+    .send(&world)
+    .await;
+    assert_eq!(wrong_hash.status, 400, "{}", wrong_hash.body);
+    assert_eq!(wrong_hash.code(), "invalid_request");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the document reads"),
+        marker_document(),
+        "a refused apply rewrites nothing"
+    );
+
+    // The document moved after the preview: the stale revision is the conflict.
+    std::fs::write(&path, format!("{}\n", marker_document())).expect("a competing edit");
+    let stale = Call::post(
+        "/v1/provider-markers:apply",
+        &apply_body(&revision, &preview_hash),
+    )
+    .signed_as(&world, "admin")
+    .with_key("marker-stale")
+    .send(&world)
+    .await;
+    assert_eq!(stale.status, 409, "{}", stale.body);
+    assert_eq!(stale.code(), "revision_conflict");
+
+    // Restore the original revision, clear the marker once, then prove that a
+    // fresh correction of an absent marker is a stable already-cleared, and
+    // that replaying *that* key is a stable replayed.
+    std::fs::write(&path, marker_document()).expect("the original document is restored");
+    let cleared = Call::post(
+        "/v1/provider-markers:apply",
+        &apply_body(&revision, &preview_hash),
+    )
+    .signed_as(&world, "admin")
+    .with_key("marker-first")
+    .send(&world)
+    .await;
+    assert_eq!(cleared.status, 200, "{}", cleared.body);
+    assert_eq!(cleared.json()["outcome"], "cleared");
+    let after_clear = std::fs::read_to_string(&path).expect("the document reads");
+
+    let fresh = Call::post("/v1/provider-markers:preview", &preview_body())
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+    assert_eq!(fresh.status, 200, "{}", fresh.body);
+    assert_eq!(fresh.json()["changed"], false);
+    let fresh_revision = fresh.json()["revision"]
+        .as_str()
+        .expect("a revision")
+        .to_owned();
+    let fresh_hash = fresh.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+    let already = Call::post(
+        "/v1/provider-markers:apply",
+        &apply_body(&fresh_revision, &fresh_hash),
+    )
+    .signed_as(&world, "admin")
+    .with_key("marker-already")
+    .send(&world)
+    .await;
+    assert_eq!(already.status, 200, "{}", already.body);
+    assert_eq!(already.json()["outcome"], "already_cleared");
+    assert_eq!(already.json()["changed"], false);
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the document reads"),
+        after_clear
+    );
+    let replayed = Call::post(
+        "/v1/provider-markers:apply",
+        &apply_body(&fresh_revision, &fresh_hash),
+    )
+    .signed_as(&world, "admin")
+    .with_key("marker-already")
+    .send(&world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["outcome"], "replayed");
+    assert_eq!(replayed.json()["changed"], false);
+}

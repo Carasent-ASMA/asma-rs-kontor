@@ -149,7 +149,7 @@ mod durable_seats;
 mod pr_reviews;
 use crate::events::append::stored_payload;
 use crate::events::replay::{EVENT_COLUMNS, read_event};
-use crate::graph::{Applied, IdempotencyBinding};
+use crate::graph::{Applied, IdempotencyBinding, RecordedIdempotencyBinding};
 
 /// Maximum length of an agent-run parent chain that is walked when checking for
 /// a lineage cycle.
@@ -13534,6 +13534,30 @@ impl SqliteStore {
         };
         transaction.commit().map_err(backend)?;
         Ok(applied)
+    }
+
+    /// The realm-scoped operation one key is bound to, if it has ever been used.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn realm_idempotency_binding(
+        &self,
+        key: &str,
+    ) -> RepositoryResult<Option<RecordedIdempotencyBinding>> {
+        self.connection
+            .query_row(
+                "SELECT operation, fingerprint FROM realm_idempotency_bindings
+                 WHERE idempotency_key = ?1",
+                params![key],
+                |row| {
+                    Ok(RecordedIdempotencyBinding {
+                        operation: row.get(0)?,
+                        fingerprint: row.get(1)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(backend)
     }
 }
 

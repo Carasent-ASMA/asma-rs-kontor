@@ -3748,6 +3748,19 @@ pub struct IdempotencyBinding {
     pub bound_at: Timestamp,
 }
 
+/// One realm-scoped binding as the table reads it back.
+///
+/// The stored spelling rather than [`IdempotencyBinding`]: an operation read
+/// from a row is text, and a caller comparing it against the operation it is
+/// performing does so without pretending the row can carry a `&'static str`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedIdempotencyBinding {
+    /// The realm-scoped operation the key was first used for.
+    pub operation: String,
+    /// The digest of the canonical document that operation was.
+    pub fingerprint: String,
+}
+
 /// One pack row read inside an open transaction.
 fn read_pack_row(
     transaction: &Transaction<'_>,
