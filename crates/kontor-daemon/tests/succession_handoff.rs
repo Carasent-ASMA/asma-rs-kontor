@@ -81,6 +81,20 @@ impl SuccessionSummarizerTransport for RecordingTransport {
     }
 }
 
+/// A transport whose provider call never answers.
+struct HangingTransport;
+
+#[async_trait]
+impl SuccessionSummarizerTransport for HangingTransport {
+    async fn summarize(
+        &self,
+        _model_rung: &ModelRung,
+        _request: &SuccessionSummaryRequest,
+    ) -> Result<SuccessionSummaryResponse, SuccessionSummarizerError> {
+        std::future::pending().await
+    }
+}
+
 fn at() -> Timestamp {
     parse_utc_timestamp("2026-09-04T12:30:00Z").expect("canonical timestamp")
 }
@@ -499,7 +513,7 @@ fn governed_summarizer<'a>(
     declared: &[ModelRung],
     accounts: &[EligibleAccount],
     states: &[ProviderQuotaState],
-    transport: &'a RecordingTransport,
+    transport: &'a dyn SuccessionSummarizerTransport,
 ) -> GovernedSuccessionSummarizer<'a> {
     GovernedSuccessionSummarizer::resolve(
         declared,
@@ -726,6 +740,39 @@ async fn an_unconfigured_summarizer_never_dispatches_and_stays_degraded() {
         }
     ));
     assert_eq!(transport.calls().len(), 0);
+    assert_no_source_or_compaction(&handoff);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_hanging_summarizer_degrades_before_it_can_hold_the_realm() {
+    let binding_id = RuntimeBindingId::generate();
+    let native = native_identity();
+    let declared = vec![model_rung()];
+    let accounts = [eligible_account(&["codex"])];
+    let states = [quota_state("codex", ProviderQuotaKind::Available)];
+    let transport = HangingTransport;
+    let summarizer = governed_summarizer(&declared, &accounts, &states, &transport);
+
+    let handoff = produce_succession_handoff(
+        request(
+            binding_id,
+            native.clone(),
+            Some(timeline(binding_id, &native)),
+            summarizer.admitted_rung().cloned(),
+        ),
+        &policy(),
+        &summarizer,
+    )
+    .await;
+
+    assert!(matches!(
+        handoff.outcome,
+        SuccessionHandoffOutcome::Degraded {
+            timeline: Some(_),
+            reason: SuccessionHandoffDegradedReason::SummaryRejected,
+            ..
+        }
+    ));
     assert_no_source_or_compaction(&handoff);
 }
 

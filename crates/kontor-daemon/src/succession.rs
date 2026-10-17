@@ -35,6 +35,12 @@ pub const MAX_SUCCESSION_SUMMARY_INPUT_BYTES: usize = 256 * 1024;
 /// Maximum characters a summarizer may return for one durable handoff.
 pub const MAX_SUCCESSION_SUMMARY_OUTPUT_CHARS: usize = 16 * 1024;
 
+/// How long one governed summary may run before the handoff degrades.
+///
+/// A summary is produced while the realm-wide succession guard is held, so a
+/// stalled provider call must not block every other succession in the realm.
+pub const SUCCESSION_SUMMARY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Exact predecessor and transient timeline inputs for one handoff.
 pub struct SuccessionHandoffRequest {
     /// Succession attempt receiving this handoff.
@@ -251,7 +257,18 @@ impl SuccessionSummarizerTransport for GovernedSuccessionSummarizer<'_> {
     ) -> Result<SuccessionSummaryResponse, SuccessionSummarizerError> {
         match self.admitted.as_ref() {
             Some(admitted) if admitted == model_rung => {
-                self.transport.summarize(admitted, request).await
+                // The succession guard is held across this call. A transport
+                // that never answers must become a typed refusal rather than
+                // holding the realm's other successions behind it.
+                match tokio::time::timeout(
+                    SUCCESSION_SUMMARY_TIMEOUT,
+                    self.transport.summarize(admitted, request),
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(_) => Err(SuccessionSummarizerError::Rejected),
+                }
             }
             // No admitted route, or a route the declared walk did not admit.
             // Either way nothing is dispatched and no provenance is invented.
