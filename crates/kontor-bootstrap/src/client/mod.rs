@@ -840,6 +840,41 @@ mod tests {
     }
 
     #[test]
+    fn a_ledger_update_waits_for_the_held_exclusive_lock() {
+        use std::sync::{Arc, Barrier};
+        use std::time::Duration;
+
+        let holder = tempfile::tempdir().expect("tempdir");
+        let state = holder.path().join("state");
+        let store = OwnershipStore::at(&state).expect("store");
+        let guard = store.lock().expect("lock");
+        let record = ObservedHash::of_bytes(b"entry");
+        let spec_hash = ObservedHash::of_bytes(b"spec");
+        let worker = store.clone();
+        let worker_record = record.clone();
+        let ready = Arc::new(Barrier::new(2));
+        let worker_ready = Arc::clone(&ready);
+        let handle = std::thread::spawn(move || {
+            worker_ready.wait();
+            worker.record(ClientId::Codex, &worker_record, &spec_hash)
+        });
+        ready.wait();
+        // The worker has reached `record` and is blocked on the held lock. If
+        // `record` stops taking the lock, the entry lands inside this window.
+        std::thread::sleep(Duration::from_millis(250));
+        assert!(
+            !store.load().expect("load").owns(ClientId::Codex, &record),
+            "record did not wait for the held ledger lock"
+        );
+        drop(guard);
+        handle
+            .join()
+            .expect("the record thread")
+            .expect("record after the lock is released");
+        assert!(store.load().expect("load").owns(ClientId::Codex, &record));
+    }
+
+    #[test]
     fn a_malformed_ledger_refuses_instead_of_reading_as_empty() {
         let holder = tempfile::tempdir().expect("tempdir");
         let state = holder.path().join("state");

@@ -100,6 +100,10 @@ pub struct ArtifactStatus {
     /// one is active. `None` means no active generation was observed; this
     /// operand is the release attribution that travels with the digest.
     pub release: Option<String>,
+    /// The permission bits observed on the active artifact, or `None` when no
+    /// active generation was observed. Content plus release is not enough:
+    /// a binary its owner cannot execute is reported as mode drift.
+    pub mode: Option<u32>,
 }
 
 impl ArtifactStatus {
@@ -110,16 +114,23 @@ impl ArtifactStatus {
             name,
             sha256: None,
             release: None,
+            mode: None,
         }
     }
 
     /// An artifact observed in the active generation: the digest and the
     /// release actually declared by that generation's marker travel together.
-    fn observed(name: ArtifactName, sha256: Option<String>, release: Option<String>) -> Self {
+    fn observed(
+        name: ArtifactName,
+        sha256: Option<String>,
+        release: Option<String>,
+        mode: Option<u32>,
+    ) -> Self {
         Self {
             name,
             sha256,
             release,
+            mode,
         }
     }
 
@@ -129,6 +140,12 @@ impl ArtifactStatus {
         manifest
             .entry(self.name)
             .is_some_and(|entry| self.sha256.as_deref() == Some(entry.sha256.as_str()))
+    }
+
+    /// Whether the observed mode lets the owner execute this artifact.
+    #[must_use]
+    pub fn is_executable(&self) -> bool {
+        self.mode.is_some_and(|mode| mode & 0o100 != 0)
     }
 }
 
@@ -263,6 +280,7 @@ struct ActiveGeneration {
     generation: String,
     release: String,
     hashes: Vec<(ArtifactName, String)>,
+    modes: Vec<(ArtifactName, u32)>,
     executable: bool,
 }
 
@@ -272,6 +290,13 @@ impl ActiveGeneration {
             .iter()
             .find(|(candidate, _)| *candidate == name)
             .map(|(_, digest)| digest.as_str())
+    }
+
+    fn mode(&self, name: ArtifactName) -> Option<u32> {
+        self.modes
+            .iter()
+            .find(|(candidate, _)| *candidate == name)
+            .map(|(_, mode)| *mode)
     }
 
     fn matches(&self, manifest: &ArtifactManifest) -> bool {
@@ -363,6 +388,7 @@ impl Installer {
                     name,
                     active.digest(name).map(str::to_owned),
                     Some(active.release.clone()),
+                    active.mode(name),
                 ),
                 None => ArtifactStatus::absent(name),
             })
@@ -1107,6 +1133,7 @@ impl Installer {
             return Err(InstallError::ActiveUnverified);
         }
         let mut hashes = Vec::with_capacity(ArtifactName::ALL.len());
+        let mut modes = Vec::with_capacity(ArtifactName::ALL.len());
         let mut executable = true;
         for name in ArtifactName::ALL {
             let entry = marker
@@ -1130,23 +1157,38 @@ impl Installer {
             let mode = generation_dir
                 .child_mode(name.file_name())?
                 .ok_or(InstallError::ActiveUnverified)?;
-            executable &= mode & 0o111 != 0;
+            // Bootstrap-owned binaries are executed by their owner, so a bit
+            // that only some other class may execute is not usable.
+            executable &= mode & 0o100 != 0;
+            modes.push((name, mode));
             hashes.push((name, digest));
         }
         Ok(Some(ActiveGeneration {
             generation: generation.to_owned(),
             release: marker.release,
             hashes,
+            modes,
             executable,
         }))
     }
 
     /// Restore the installed executable mode on a verified active generation.
+    ///
+    /// Only an artifact whose owner cannot execute it is repaired, and it is
+    /// opened read-only: `fchmod` needs no write access to the bytes, so a
+    /// read-only executable sibling or a running Linux binary does not block
+    /// the repair.
     fn repair_modes(&self, root: &Dir, generation: &str) -> Result<(), InstallError> {
         let releases = root.open_child(RELEASES_DIR)?;
         let generation_dir = releases.open_child(generation)?;
         for name in ArtifactName::ALL {
-            let file = generation_dir.open_child_file_rw(name.file_name())?;
+            let mode = generation_dir
+                .child_mode(name.file_name())?
+                .ok_or(InstallError::ActiveUnverified)?;
+            if mode & 0o100 != 0 {
+                continue;
+            }
+            let file = generation_dir.open_child_file_ro(name.file_name())?;
             Dir::set_file_mode(&file, BINARY_MODE)?;
         }
         Ok(())
