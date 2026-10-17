@@ -1054,6 +1054,7 @@ fn start_local_endpoint(
 }
 
 fn serve_connection(mut stream: TcpStream, expected: &[u8], state: &LocalEndpoint) {
+    let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
     let mut head = Vec::new();
     let mut chunk = [0u8; 1024];
