@@ -8,6 +8,12 @@ Implements the bounded ASMA-8101 contract:
     release branch   releases/v<X>.<Y>.<Z>        (the only keyless form)
     release title    Release v<exact captured version>
 
+One exemption: a pull request opened by ``dependabot[bot]`` from a
+``dependabot/`` branch carries no Jira key and is accepted with the code
+``bot_branch_exempt``. The base and head checks still apply to it. The author
+is the event's ``pull_request.user.login``; a ``[bot]`` login belongs to a
+GitHub App and no person can register one.
+
 The workflow that runs this module is ``pull_request_target``: the current PR
 metadata is read from the event as data, the trusted base revision supplies the
 code, and no PR-head or merge code is executed. The release title compares the
@@ -48,6 +54,7 @@ BRANCH_TYPES: tuple[str, ...] = (
 )
 
 CODE_OK = "ok"
+CODE_BOT_BRANCH_EXEMPT = "bot_branch_exempt"
 CODE_BASE_BRANCH_NOT_DEFAULT = "base_branch_not_default"
 CODE_HEAD_SHA_INVALID = "head_sha_invalid"
 CODE_BRANCH_SHAPE_INVALID = "branch_shape_invalid"
@@ -60,6 +67,11 @@ CODE_RELEASE_BRANCH_INVALID = "release_branch_invalid"
 CODE_PR_TITLE_KEY_MISSING = "pr_title_key_missing"
 CODE_PR_TITLE_KEY_MISMATCH = "pr_title_key_mismatch"
 CODE_RELEASE_TITLE_MISMATCH = "release_title_mismatch"
+
+ACCEPT_CODES: tuple[str, ...] = (CODE_OK, CODE_BOT_BRANCH_EXEMPT)
+
+# (exact pull request author login, branch prefix) pairs exempt from the grammar.
+BOT_BRANCHES: tuple[tuple[str, str], ...] = (("dependabot[bot]", "dependabot/"),)
 
 CHECK_NAME = "asma/publication-branch-title"
 
@@ -94,11 +106,14 @@ def _refuse(code: str, detail: str) -> Decision:
     return Decision(False, code, None, detail)
 
 
-def evaluate(*, base_ref: str, head_ref: str, title: str, head_sha: str) -> Decision:
+def evaluate(
+    *, base_ref: str, head_ref: str, title: str, head_sha: str, pr_author: str = ""
+) -> Decision:
     """Decide one current PR metadata snapshot. Pure function, no I/O.
 
     ``head_sha`` is the asserted ``pull_request.head.sha``; it is required so a
-    run that cannot name the exact head never reports success.
+    run that cannot name the exact head never reports success. ``pr_author`` is
+    the ``pull_request.user.login``; it matters only for the bot exemption.
     """
 
     if base_ref != DEFAULT_BASE:
@@ -129,7 +144,21 @@ def evaluate(*, base_ref: str, head_ref: str, title: str, head_sha: str) -> Deci
     if ordinary_match is not None:
         return _ordinary_title(ordinary_match.group("key"), title)
 
+    if _is_bot_branch(pr_author, head_ref):
+        return Decision(
+            True, CODE_BOT_BRANCH_EXEMPT, pr_author, f"bot branch {head_ref}"
+        )
+
     return _branch_refusal(head_ref)
+
+
+def _is_bot_branch(pr_author: str, head_ref: str) -> bool:
+    return isinstance(pr_author, str) and any(
+        pr_author == author
+        and head_ref.startswith(prefix)
+        and len(head_ref) > len(prefix)
+        for author, prefix in BOT_BRANCHES
+    )
 
 
 def _ordinary_title(key: str, title: str) -> Decision:
@@ -228,11 +257,13 @@ def main(
     base_ref = env.get("BASE_REF", "")
     head_ref = env.get("HEAD_REF", "")
     head_sha = env.get("HEAD_SHA", "")
+    pr_author = env.get("PR_AUTHOR", "")
     decision = evaluate(
         base_ref=base_ref,
         head_ref=head_ref,
         title=env.get("PR_TITLE", ""),
         head_sha=head_sha,
+        pr_author=pr_author,
     )
 
     record = {
@@ -243,6 +274,7 @@ def main(
         "decision": "accept" if decision.accepted else "refuse",
         "head_ref": head_ref,
         "head_sha": head_sha,
+        "pr_author": pr_author,
         "pr_number": _pr_number(env.get("PR_NUMBER", "")),
     }
     print(json.dumps(record, sort_keys=True), file=out)

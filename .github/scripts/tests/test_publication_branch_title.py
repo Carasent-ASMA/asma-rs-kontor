@@ -38,7 +38,7 @@ REQUIRED_ACTIVITIES = (
 REASON_CODES = {
     value
     for name, value in vars(checker).items()
-    if name.startswith("CODE_") and value != checker.CODE_OK
+    if name.startswith("CODE_") and value not in checker.ACCEPT_CODES
 }
 
 FETCH_STEP_NAME = "Fetch the checker from the exact workflow revision"
@@ -47,6 +47,7 @@ CHECKER_RELATIVE_PATH = ".github/scripts/publication_branch_title.py"
 RUNNER_TEMP_CHECKER = "${{ runner.temp }}/publication_branch_title.py"
 WORKFLOW_SHA_EXPRESSION = "${{ github.workflow_sha }}"
 HEAD_SHA_EXPRESSION = "${{ github.event.pull_request.head.sha }}"
+PR_AUTHOR_EXPRESSION = "${{ github.event.pull_request.user.login }}"
 
 
 def _indented_block(text: str, key: str, indent: int | None = None) -> str | None:
@@ -176,9 +177,27 @@ class FixtureCasesTest(unittest.TestCase):
             case["headRef"].split("/", 1)[0]
             for case in self.cases
             if case["expect"]["accepted"]
+            and case["expect"]["code"] == checker.CODE_OK
             and not release_re.fullmatch(case["headRef"])
         }
         self.assertEqual(accepted_types, set(checker.BRANCH_TYPES))
+
+    def test_fixture_covers_every_bot_exemption(self) -> None:
+        exempt = {
+            (case["prAuthor"], case["headRef"].split("/", 1)[0] + "/")
+            for case in self.cases
+            if case["expect"]["code"] == checker.CODE_BOT_BRANCH_EXEMPT
+        }
+        self.assertEqual(exempt, set(checker.BOT_BRANCHES))
+
+    def test_only_bot_cases_carry_an_author(self) -> None:
+        for case in self.cases:
+            with self.subTest(case=case["name"]):
+                if case["expect"]["code"] == checker.CODE_BOT_BRANCH_EXEMPT:
+                    self.assertTrue(case["expect"]["accepted"])
+                    self.assertTrue(case["name"].startswith("bot_"))
+                if "prAuthor" in case:
+                    self.assertTrue(case["name"].startswith("bot_"))
 
     def test_fixture_covers_the_keyless_release_form(self) -> None:
         release_cases = [
@@ -199,6 +218,7 @@ class FixtureCasesTest(unittest.TestCase):
                     head_ref=case["headRef"],
                     title=case["title"],
                     head_sha=case.get("headSha", self.default_head_sha),
+                    pr_author=case.get("prAuthor", ""),
                 )
                 expect = case["expect"]
                 self.assertEqual(
@@ -363,6 +383,15 @@ class WorkflowContractTest(unittest.TestCase):
         self.assertNotIn("continue-on-error", self.evaluate)
         self.assertNotIn("if:", self.evaluate)
 
+    def test_bot_author_is_the_pull_request_author(self) -> None:
+        self.assertEqual(
+            _step_env(self.evaluate).get("PR_AUTHOR"), PR_AUTHOR_EXPRESSION
+        )
+        self.assertEqual(self.text.count("PR_AUTHOR:"), 1)
+        self.assertNotIn("PR_AUTHOR", self.fetch)
+        self.assertIsNone(re.search(r"github\.(triggering_)?actor\b", self.text))
+        self.assertNotIn("sender", self.text)
+
     def test_asserted_head_is_pr_head_metadata(self) -> None:
         self.assertEqual(
             _step_env(self.evaluate).get("HEAD_SHA"), HEAD_SHA_EXPRESSION
@@ -386,6 +415,7 @@ class WorkflowContractTest(unittest.TestCase):
             "HEAD_REF": "github.event.pull_request.head.ref",
             "HEAD_SHA": "github.event.pull_request.head.sha",
             "PR_TITLE": "github.event.pull_request.title",
+            "PR_AUTHOR": "github.event.pull_request.user.login",
         }
         for key, value in expected.items():
             self.assertRegex(
@@ -443,6 +473,33 @@ class CheckerCliTest(unittest.TestCase):
         self.assertEqual(record["decision"], "refuse")
         self.assertEqual(record["code"], "base_branch_not_default")
         self.assertIn("base_branch_not_default", err)
+
+    def _bot_env(self) -> dict[str, str]:
+        env = self._valid_env()
+        env["HEAD_REF"] = "dependabot/cargo/zip-2.4.2"
+        env["PR_TITLE"] = "Bump zip from 2.1.0 to 2.4.2"
+        env["PR_AUTHOR"] = "dependabot[bot]"
+        return env
+
+    def test_bot_branch_is_accepted_as_exempt_and_records_the_author(self) -> None:
+        code, out, err = self._run(self._bot_env())
+        self.assertEqual(code, 0)
+        record = json.loads(out.strip().splitlines()[-1])
+        self.assertEqual(record["decision"], "accept")
+        self.assertEqual(record["code"], "bot_branch_exempt")
+        self.assertEqual(record["pr_author"], "dependabot[bot]")
+        self.assertNotIn("title", record)
+        self.assertIn("accepted dependabot[bot]", err)
+
+    def test_bot_branch_without_the_author_refuses(self) -> None:
+        env = self._bot_env()
+        del env["PR_AUTHOR"]
+        code, out, err = self._run(env)
+        self.assertEqual(code, 1)
+        record = json.loads(out.strip().splitlines()[-1])
+        self.assertEqual(record["code"], "branch_type_unknown")
+        self.assertEqual(record["pr_author"], "")
+        self.assertIn("branch_type_unknown", err)
 
     def test_missing_head_sha_refuses(self) -> None:
         env = self._valid_env()
