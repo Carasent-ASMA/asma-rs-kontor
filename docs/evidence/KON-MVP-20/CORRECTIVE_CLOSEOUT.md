@@ -22,7 +22,7 @@ The command log SHA-256 is
 ## Real Paseo evidence, kept honest
 
 External immutable input:
-`/Users/igor/kon-mvp-20-scratch/evidence/kon18-closeout/live-20260814T193824Z/`.
+`$HOME/kon-mvp-20-scratch/evidence/kon18-closeout/live-20260814T193824Z/`.
 Its aggregate file-manifest hash is
 `ef2106e655384c7981ac232e726af165586094d48e0e77727ab009a36f592833`;
 `manifest.json`, `verdict.json`, and `cleanup.json` hash to

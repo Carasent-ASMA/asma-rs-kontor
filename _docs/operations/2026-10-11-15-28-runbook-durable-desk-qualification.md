@@ -32,7 +32,7 @@ Run from the isolated qualification checkout, containing all four merged impleme
 ```sh
 python3 scripts/qualify-durable-desks.py baseline
 python3 scripts/qualify-durable-desks.py declarations \
-  --declaration-source /Users/igor/.paseo/worktrees/0vl4ss0m/asma-8419-pr-draft-status-checker/config/orchestration/pr-desk.yml
+  --declaration-source $HOME/.paseo/worktrees/0vl4ss0m/asma-8419-pr-draft-status-checker/config/orchestration/pr-desk.yml
 python3 scripts/qualify-durable-desks.py mutations
 ```
 

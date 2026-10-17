@@ -1,7 +1,7 @@
 # ASMA-7854 / KON-MVP-25 — IMPLEMENT handoff
 
 Date: 2026-08-14
-TSW: `/Users/igor/.paseo/worktrees/0vl4ss0m/feat-asma-7854-kon-mvp-25`
+TSW: `$HOME/.paseo/worktrees/0vl4ss0m/feat-asma-7854-kon-mvp-25`
 Outer branch: `feat/ASMA-7854-kon-mvp-25`
 Submodule base before checkpoint: `3cf8221efb0b6497b1069b526b6960d5072f1127` (detached submodule checkout)
 Prototype source: `.worktrees/proto-kontor-teams`, seven console paths ported and remediated.

@@ -1,7 +1,7 @@
 {
   "name": "base-full",
   "source_commit": "e376f4059e47de8fb40956d4dbfbf6920dabc4ec",
-  "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/reproduction/base-e376f405",
+  "cwd": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/reproduction/base-e376f405",
   "command": [
     "cargo",
     "test",
@@ -15,7 +15,7 @@
     "--nocapture",
     "--test-threads=2"
   ],
-  "target_dir": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/reproduction/target-base",
+  "target_dir": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/reproduction/target-base",
   "started_at": "2026-10-11T15:14:35.093400+00:00",
   "exit_code": 0,
   "log": ".qualification/reproduction/base-full.log",

@@ -1,4 +1,4 @@
-   Compiling kontor-jira v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-jira)
+   Compiling kontor-jira v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-jira)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 2.88s
      Running tests/native_connector.rs (target/debug/deps/native_connector-5252c31c842590af)
 

@@ -4,8 +4,8 @@ schema_version: 1
 
 # A domain is one failure domain: accounts that go down together.
 domains:
-  claude:     { provider: claude,   accounts: [claude-personal, claude-work] }   # exact aliases only; never the bare `claude` login
-  codex:      { provider: codex,    accounts: [codex-work, codex-personal] }
+  claude:     { provider: claude,   accounts: [claude-a, claude-b] }   # exact aliases only; never the bare `claude` login
+  codex:      { provider: codex,    accounts: [codex-b, codex-a] }
   cursor:     { provider: cursor,   accounts: [cursor] }
   openrouter: { provider: opencode, accounts: [opencode], model_prefix: "openrouter/" }
   deepseek:   { provider: opencode, accounts: [opencode], model_prefix: "deepseek/" }
@@ -13,7 +13,7 @@ domains:
 # For providers that do not work at all. Quota exhaustion needs no entry.
 unavailable:
   domains: [openrouter, deepseek] # DEC-010: remove after drills D-8 (delivery launch, G6) and D-4 (consultation, G20) pass
-  accounts: [claude-work]         # switched off 2026-09-23; remove when it is back
+  accounts: [claude-b]         # one switched-off login; remove when it is back
 
 models:
   opus-5.5:       { domain: claude,     id: claude-opus-5-5, vendor: anthropic, efforts: [low, medium, high, xhigh, max, ultracode],        vision: true,  calibrated: false }

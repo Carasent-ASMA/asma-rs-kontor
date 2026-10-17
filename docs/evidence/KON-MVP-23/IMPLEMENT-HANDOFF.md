@@ -4,7 +4,7 @@ Status: **bounded IMPLEMENT parity correction complete; ready for the remaining 
 
 ## Tree identity
 
-- TSW: `/Users/igor/.paseo/worktrees/0vl4ss0m/kon-mvp-23`
+- TSW: `$HOME/.paseo/worktrees/0vl4ss0m/kon-mvp-23`
 - Submodule: `_tools/asma-rs-kontor`
 - Base commit: `3cf8221efb0b6497b1069b526b6960d5072f1127`
 - Checkout: local branch `feat/ASMA-7821-kon-mvp-23`, created from the base without Jira mutation because `JIRA_BASE_URL` remains absent.

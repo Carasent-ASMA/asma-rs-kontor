@@ -1,6 +1,6 @@
-   Compiling kontor-runtime v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-restart-20261004/crates/kontor-runtime)
+   Compiling kontor-runtime v0.2.1 ($HOME/.paseo/worktrees/0n8yzbno/asma-8278-module-restart-20261004/crates/kontor-runtime)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 3.61s
-     Running unittests src/lib.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/kontor_runtime-38fd6bad31f23716)
+     Running unittests src/lib.rs ($HOME/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/kontor_runtime-38fd6bad31f23716)
 
 running 157 tests
 test capability::tests::advisory_grade_may_read_but_not_drive ... ok
@@ -163,7 +163,7 @@ test planning_pair::attestation::tests::unknown_issuer_key_and_wrong_public_key_
 
 test result: ok. 157 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.66s
 
-     Running tests/binding_timeline.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/binding_timeline-d7b96736b3bc4249)
+     Running tests/binding_timeline.rs ($HOME/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/binding_timeline-d7b96736b3bc4249)
 
 running 5 tests
 test projection_refuses_contradictory_content_at_one_position ... ok
@@ -174,7 +174,7 @@ test projection_returns_only_messages_in_position_order_and_covers_the_source_ra
 
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/bound_container_contract.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/bound_container_contract-d72f8b82b3673799)
+     Running tests/bound_container_contract.rs ($HOME/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/bound_container_contract-d72f8b82b3673799)
 
 running 7 tests
 test the_shared_predicate_preserves_ticket_isolation_and_epic_consultation_worktrees ... ok
@@ -187,7 +187,7 @@ test the_fake_accepts_epic_directories_and_consultation_worktrees ... ok
 
 test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/retitle_container.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/retitle_container-b7a3276cdb775a3a)
+     Running tests/retitle_container.rs ($HOME/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/retitle_container-b7a3276cdb775a3a)
 
 running 8 tests
 test retitling_is_a_change_and_is_declared_as_one ... ok

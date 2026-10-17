@@ -139,7 +139,7 @@ async fn synthetic_55_cohort_current_57_snapshot_restore_conflict_history_and_re
     let before_items = rows(&tx, "SELECT * FROM memory_items ORDER BY project_id,id");
     let census = rows(
         &tx,
-        include_str!("../../../docs/evidence/ASMA-8159/production-prep/census.sql"),
+        include_str!("fixtures/census.sql"),
     );
     assert_eq!(census.len(), 57);
     let before_hash = ContentHash::of(&serde_json::to_vec(&before).unwrap());

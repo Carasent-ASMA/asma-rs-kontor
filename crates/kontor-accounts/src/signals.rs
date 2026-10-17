@@ -224,13 +224,7 @@ mod tests {
             .iter()
             .map(|signal| signal.provider.as_str())
             .collect();
-        for alias in [
-            "claude-work",
-            "claude-personal",
-            "codex-work",
-            "codex-personal",
-            "opencode",
-        ] {
+        for alias in ["claude-b", "claude-a", "codex-b", "codex-a", "opencode"] {
             assert!(providers.contains(&alias), "missing {alias}: {providers:?}");
         }
         assert!(
@@ -251,10 +245,10 @@ mod tests {
     fn every_active_alias_classifies_its_own_vendor_wording() {
         let document = parse(EXAMPLE).expect("valid document");
         for (alias, text) in [
-            ("claude-work", CLAUDE_LIMIT),
-            ("claude-personal", CLAUDE_LIMIT),
-            ("codex-work", CODEX_LIMIT),
-            ("codex-personal", CODEX_LIMIT),
+            ("claude-b", CLAUDE_LIMIT),
+            ("claude-a", CLAUDE_LIMIT),
+            ("codex-b", CODEX_LIMIT),
+            ("codex-a", CODEX_LIMIT),
             ("opencode", "insufficient credits remaining"),
         ] {
             let eligible: Vec<QuotaSignal> = document
@@ -283,7 +277,7 @@ mod tests {
         let codex: Vec<QuotaSignal> = document
             .signals
             .iter()
-            .filter(|signal| signal.provider == "codex-work")
+            .filter(|signal| signal.provider == "codex-b")
             .cloned()
             .collect();
         for innocuous in [
@@ -309,7 +303,7 @@ mod tests {
         let eligible: Vec<QuotaSignal> = document
             .signals
             .iter()
-            .filter(|signal| signal.provider == "codex-work")
+            .filter(|signal| signal.provider == "codex-b")
             .cloned()
             .collect();
         let observed = classify(
@@ -318,7 +312,7 @@ mod tests {
             parse_utc_timestamp("2026-08-21T07:00:00Z").expect("a canonical instant"),
         )
         .expect("a quota refusal");
-        assert_eq!(observed.provider, "codex-work");
+        assert_eq!(observed.provider, "codex-b");
         assert_eq!(observed.kind, ProviderQuotaKind::Exhausted);
     }
 
@@ -330,7 +324,7 @@ mod tests {
         let eligible: Vec<QuotaSignal> = document
             .signals
             .iter()
-            .filter(|signal| signal.provider == "codex-work")
+            .filter(|signal| signal.provider == "codex-b")
             .cloned()
             .collect();
         assert_eq!(

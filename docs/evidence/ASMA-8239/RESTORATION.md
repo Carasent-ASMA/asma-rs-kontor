@@ -1,7 +1,7 @@
 # ASMA-8239 / PUB-09 — shared-worktree containment restoration
 
 Branch `feat/ASMA-8239-pub-09-admin-container-recreation-and-operation-specific-applicability`,
-worktree `/Users/igor/carasent/asma-modules/.worktrees/asma-8239/asma-rs-kontor`,
+worktree `$HOME/carasent/asma-modules/.worktrees/asma-8239/asma-rs-kontor`,
 head `267c67a7` (unchanged; no commit, no reset, no cleanup performed).
 
 Restoration was performed from this seat's exact prior Write/Edit contents.

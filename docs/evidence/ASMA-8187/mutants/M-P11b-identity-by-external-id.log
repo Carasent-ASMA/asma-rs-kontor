@@ -9,7 +9,7 @@ platform        : Darwin 25.6.0 arm64
 --- mutated sha256 ---
 ee6bb3e579e4da4af194dd5d05a1ed825df33b5e9d0f42e85dae90445557bce9  crates/kontor-store/src/repository.rs
 --- raw output ---
-   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-store)
+   Compiling kontor-store v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-store)
 warning: unused variable: `successor_generation`
     --> crates/kontor-store/src/repository.rs:5684:46
      |

@@ -300,7 +300,7 @@ evidence.
 
 ```
 # Ground truth — authoritative plan
-$ git -C /Users/igor/carasent/asma-modules show 6e30536:_docs/ai-orchestration/plans/\
+$ git -C $HOME/carasent/asma-modules show 6e30536:_docs/ai-orchestration/plans/\
 2026-08-14-23-21-plan-kontor-operational-mvp.md          → 507 lines
 
 # Cleanliness and attribution

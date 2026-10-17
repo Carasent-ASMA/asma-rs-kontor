@@ -133,7 +133,9 @@ definition, canonical document or hash was edited.
 
 ### 4. Successor documents
 
-`team-definition-successors/` holds four complete candidates, their four exact
+`team-definition-successors/` (since 2026-10-17 in
+[`crates/kontor-core/tests/fixtures/`](../../../crates/kontor-core/tests/fixtures/team-definition-successors/MANIFEST.json))
+holds four complete candidates, their four exact
 source documents and a manifest binding each pair. Sources were read through
 the supported `kontor team-definition-get` route; all four canonical hashes
 match the census in the scope record exactly, and the contract test re-derives
@@ -450,7 +452,7 @@ dispatched-message path to this seat.
 The frozen OpenCode verify predecessor AgentRun
 `01a077ab-6ddc-7193-a59e-eed847eec6c5` was abandoned at revision 4 under
 receipt `01a077bf-1ef9-7f93-8a5a-62e58e3d531f`. The approved successor route is
-`codex-personal / gpt-5.6-sol / max`, and it remains fenced until the durable
+`codex-a / gpt-5.6-sol / max`, and it remains fenced until the durable
 implementation→verify handoff this record is part of.
 
 This seat does not create that successor and does not claim verification. The

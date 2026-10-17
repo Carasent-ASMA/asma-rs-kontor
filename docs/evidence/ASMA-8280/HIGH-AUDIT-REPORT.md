@@ -8,7 +8,7 @@ Audit seat: Paseo agent `ed34590c-3623-41ca-ac27-68853c9cb4b9`
 Native session/handle: `01a0e42c-474d-7891-a835-23988f03f626`
 Parent TPM: `3c52abda-4fd0-4af6-b086-476bc51eb305`
 Workspace: `wks_a284b5d96a0ea32b`
-Checkout: `/Users/igor/carasent/asma-modules/.worktrees/asma-8280/asma-rs-kontor`
+Checkout: `$HOME/carasent/asma-modules/.worktrees/asma-8280/asma-rs-kontor`
 Audited verification HEAD: `0eee8f6341104877f5c54749c2d90a030a164d71`
 Implementation candidate: `ec68ec5a8c5029d11728cc6f6c45c77b5b4255bf`
 Implementation tree: `51db91c62531dea43f4332105d29e1c54d9ae82b`

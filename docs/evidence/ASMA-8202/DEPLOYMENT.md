@@ -41,7 +41,7 @@ LaunchAgent `com.asma.kontor.daemon` restarted the same state root and realm:
 The verified snapshot, old binaries, installed hashes, configurations and
 machine-readable receipt are retained at:
 
-`/Users/igor/.local/state/kontor/asma/deploy-backups/20260917T040259Z-asma-8202-1e3f35a/`
+`$HOME/.local/state/kontor/asma/deploy-backups/20260917T040259Z-asma-8202-1e3f35a/`
 
 ## Live recovery proof
 
@@ -75,4 +75,4 @@ Readback then proved the original queued/unbound state and old binary hashes wer
 restored. The gate was corrected to wait for both attachment and `in_progress`;
 the successful receipt above is the second attempt. The failed attempt is
 retained separately at
-`/Users/igor/.local/state/kontor/asma/deploy-backups/20260917T040109Z-asma-8202-1e3f35a/`.
+`$HOME/.local/state/kontor/asma/deploy-backups/20260917T040109Z-asma-8202-1e3f35a/`.

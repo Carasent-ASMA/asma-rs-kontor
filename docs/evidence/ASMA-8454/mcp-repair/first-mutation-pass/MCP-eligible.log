@@ -1,4 +1,4 @@
-   Compiling kontor-runtime-paseo v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-runtime-paseo)
+   Compiling kontor-runtime-paseo v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-runtime-paseo)
 warning: variant `OwnedDirectory` is never constructed
    --> crates/kontor-runtime-paseo/src/seat_mcp.rs:345:5
     |

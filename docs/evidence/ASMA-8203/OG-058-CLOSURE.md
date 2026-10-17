@@ -125,7 +125,7 @@ changed since the deployed artefact was built — and the byte comparison agains
 the installed path still reports `MATCH`. `cargo fmt` had touched only two test
 files, neither of which is compiled into this binary.
 
-Guard verified **from `/Users/igor/.local/bin/kontor-mcp` itself**, not from
+Guard verified **from `$HOME/.local/bin/kontor-mcp` itself**, not from
 `target/release` and not from a copy — 9/9 before the deploy and 9/9 after:
 permitted reads and scoped consultation tools `allow`; shell execution,
 delegation, `kontor_turn_settle`, a foreign server using the same tool name, the

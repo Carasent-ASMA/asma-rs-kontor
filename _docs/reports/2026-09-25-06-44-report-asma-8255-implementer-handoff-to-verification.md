@@ -75,7 +75,7 @@
 ## How to re-run the implementer's evidence
 
 ```sh
-export CARGO_TARGET_DIR=/Users/igor/carasent/asma-modules/.worktrees/kontor-settled-turn-evidence/target
+export CARGO_TARGET_DIR=$HOME/carasent/asma-modules/.worktrees/kontor-settled-turn-evidence/target
 cargo test -p kontor-daemon --lib                       # 119 unit tests, incl. fleet + independence
 cargo test -p kontor-daemon --test loopback_api          # 473 pass, 1 ignored
 cargo test -p kontor-runtime-paseo                       # 126 + 285

@@ -52,10 +52,10 @@ git -C _tools/asma-rs-kontor diff --cached --quiet
 sha256sum _tools/asma-rs-kontor/Cargo.lock
   exit 0 — recorded fd022e16 value
 
-test -f /Users/igor/kon-mvp-20-scratch/evidence/kon18-closeout/LIVE-PASEO-EVIDENCE.md
+test -f $HOME/kon-mvp-20-scratch/evidence/kon18-closeout/LIVE-PASEO-EVIDENCE.md
   exit 0
 
-test -f /Users/igor/kon-mvp-20-scratch/evidence/kon18-closeout/live-inventory.json
+test -f $HOME/kon-mvp-20-scratch/evidence/kon18-closeout/live-inventory.json
   exit 0
 ```
 
@@ -65,7 +65,7 @@ The only residual is the documented conditional live-Paseo gap: no qualifying li
 
 ## Composite close-out QA — 2026-08-14
 
-Live evidence reviewed: `/Users/igor/kon-mvp-20-scratch/evidence/kon18-closeout/live-20260814T193824Z/`.
+Live evidence reviewed: `$HOME/kon-mvp-20-scratch/evidence/kon18-closeout/live-20260814T193824Z/`.
 
 ### Requirement (1) — committed MCP-only journey
 

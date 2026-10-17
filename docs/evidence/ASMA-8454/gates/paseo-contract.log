@@ -7,15 +7,15 @@
    Compiling tempfile v3.27.0
    Compiling tower-http v0.6.11
    Compiling tokio-tungstenite v0.30.0
-   Compiling kontor-core v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-core)
+   Compiling kontor-core v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-core)
    Compiling tracing-attributes v0.1.31
    Compiling tracing v0.1.44
    Compiling hyper-util v0.1.20
    Compiling hyper-rustls v0.27.9
    Compiling reqwest v0.13.4
-   Compiling kontor-runtime v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-runtime)
-   Compiling kontor-tests-contract v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/tests/contract)
-   Compiling kontor-runtime-paseo v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-runtime-paseo)
+   Compiling kontor-runtime v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-runtime)
+   Compiling kontor-tests-contract v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/tests/contract)
+   Compiling kontor-runtime-paseo v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-runtime-paseo)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 17.17s
      Running tests/contract.rs (target/debug/deps/contract-bdc6d10e09ebcd98)
 

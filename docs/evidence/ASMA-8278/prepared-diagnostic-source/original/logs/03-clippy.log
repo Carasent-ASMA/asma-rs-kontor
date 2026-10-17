@@ -28,7 +28,7 @@
     Checking zeroize v1.9.0
     Checking untrusted v0.7.1
     Checking hex v0.4.3
-    Checking kontor-core v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-restart-20261004/crates/kontor-core)
+    Checking kontor-core v0.2.1 ($HOME/.paseo/worktrees/0n8yzbno/asma-8278-module-restart-20261004/crates/kontor-core)
     Checking signal-hook-registry v1.4.8
     Checking mio v1.2.3
     Checking socket2 v0.6.5
@@ -36,5 +36,5 @@
     Checking bytes v1.12.1
     Checking tokio v1.53.1
    Compiling aws-lc-rs v1.18.1
-    Checking kontor-runtime v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-restart-20261004/crates/kontor-runtime)
+    Checking kontor-runtime v0.2.1 ($HOME/.paseo/worktrees/0n8yzbno/asma-8278-module-restart-20261004/crates/kontor-runtime)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 36.37s

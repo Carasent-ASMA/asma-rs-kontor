@@ -6,17 +6,19 @@
 > **Scope:** ASMA-8159 read-only join of independently reviewed ASMA-8157 docs
 > **Summary:** Compare frozen docs with accepted ASMA-8156/8158 source names and configuration. No docs-branch edit or independent review verdict is issued.
 
+> **Public tree, 2026-10-17 (ASMA-8511):** the run receipts and deployment records this document linked were removed from the public tree. Their links are now plain text. Each removed file is listed with its SHA-256 in the [removed-evidence manifest](../removed-run-evidence-2026-10-17.tsv), and stays in git history at `0971674d`.
+
 ## When to load
 
 Load to route the documentation join before final release or to reproduce the
 exact operation/configuration comparison. Evidence is in
-[docs-join.json](receipts/docs-join.json).
+docs-join.json.
 
 ## Pins and method
 
 Docs repository: asma-modules, frozen commit
 9b5b538c269deca55058f3fdd9efc66ee8046ab9, worktree
-/Users/igor/.paseo/worktrees/0vl4ss0m/docs-asma-8157-experience-memory-skill-and-runbook.
+$HOME/.paseo/worktrees/0vl4ss0m/docs-asma-8157-experience-memory-skill-and-runbook.
 HEAD matched the frozen commit and status was clean. All comparisons read
 immutable git-show blobs; this checkout was never modified.
 

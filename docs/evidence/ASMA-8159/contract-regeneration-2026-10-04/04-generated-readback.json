@@ -4,7 +4,7 @@
     "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/verify-generated-readback.py",
     "complete"
   ],
-  "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+  "cwd": "$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
   "completed_at_utc": "2026-10-04T01:31:39.497598+00:00",
   "exit_code": 0,
   "status": "PASS",
