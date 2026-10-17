@@ -9,7 +9,7 @@ relaunch plan (ASMA-8507): the decided binding hooks plus the
 | Hook | Behaviour |
 | --- | --- |
 | `before("agent.create")` | Adds one stable system-prompt line and the `kontor-observer` MCP server at **observer** authority. The server has its own name, so a `kontor` server the provider home already defines (at any tier) is never replaced. |
-| `before("agent.session_open")` | Reads the session's own labels from the local daemon and sets `KONTOR_SEAT` and `KONTOR_BINDING_GENERATION`, or `KONTOR_SEAT=unbound`. A failed or slow read sets `KONTOR_SEAT=unresolved`; it never blocks the open. |
+| `before("agent.session_open")` | Reads the session's own labels from the local daemon and sets `KONTOR_SEAT` and `KONTOR_BINDING_GENERATION`, or `KONTOR_SEAT=unbound` with an empty generation. A failed or slow read sets `KONTOR_SEAT=unresolved` and clears the generation. Both keys are rewritten on every open, so an old seat's generation never survives a resume. It never blocks the open. |
 | `before("workspace.create")` | Refuses a labelled Kontor seat's explicit workspace creation outside that seat's own placement: its bound project and canonical worktree. Both the initial agent's labels and the caller carried on the request (Paseo 0.11.2 passes it as `agent.callerAgentId`) are checked. Interactive and unlabelled creation is unchanged, and an unreadable caller lookup with no seat labels on the request fails open. |
 
 The plugin adds no UI, no menu and no agent-creation path.

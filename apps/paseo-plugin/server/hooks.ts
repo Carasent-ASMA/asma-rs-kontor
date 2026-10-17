@@ -77,6 +77,10 @@ export function addKontorAgentConfig(
  * Fails open by design: when the local labels cannot be read within the hook
  * budget, the environment carries `unresolved` and the Paseo operation
  * continues. A person opening a tab never blocks on Kontor.
+ *
+ * Both keys are written on every open: a resumed session can carry the previous
+ * seat's environment, and an old generation must never outlive the seat
+ * identity it belonged to. A generation that cannot be resolved is cleared.
  */
 export async function seatEnvironment(
   request: SessionOpenRequest,
@@ -88,18 +92,18 @@ export async function seatEnvironment(
     signal: context.signal,
   });
   if (labels === null) {
-    return { [SEAT_ENV]: UNRESOLVED };
+    return { [SEAT_ENV]: UNRESOLVED, [BINDING_GENERATION_ENV]: "" };
   }
   if (!isKontorSeat(labels)) {
-    return { [SEAT_ENV]: UNBOUND };
+    return { [SEAT_ENV]: UNBOUND, [BINDING_GENERATION_ENV]: "" };
   }
   const { seat, generation } = seatBinding(labels);
   if (seat === null) {
-    return { [SEAT_ENV]: UNRESOLVED };
+    return { [SEAT_ENV]: UNRESOLVED, [BINDING_GENERATION_ENV]: "" };
   }
   return {
     [SEAT_ENV]: seat,
-    ...(generation === null ? {} : { [BINDING_GENERATION_ENV]: generation }),
+    [BINDING_GENERATION_ENV]: generation ?? "",
   };
 }
 
