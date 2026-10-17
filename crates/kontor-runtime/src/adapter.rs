@@ -2116,4 +2116,31 @@ pub trait RuntimeAdapter: Send + Sync {
     ///   different content.
     /// * Every preflight failure, refused before any native effect.
     async fn compact(&self, request: &CompactRequest) -> RuntimeResult<CompactionReceipt>;
+
+    /// Produce one bounded summary from an already-redacted prompt.
+    ///
+    /// The control plane resolves `model_rung` through the same account-before-
+    /// rung headroom walk every launch uses, so an implementation executes
+    /// exactly that route and never re-resolves, retries or substitutes another
+    /// one. Only the redacted predecessor projection crosses this boundary; the
+    /// derived text it returns is redacted and validated again before it can be
+    /// persisted or handed to a successor.
+    ///
+    /// The default refuses. A runtime with no governed summary surface must say
+    /// so before it can acquire one by accident, and the handoff then keeps its
+    /// typed degraded outcome.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError::UnsupportedCapability`] when the runtime does not
+    /// declare [`crate::capability::RuntimeCapability::Summarize`], and any
+    /// closed runtime refusal when the exact route cannot be executed.
+    async fn summarize_succession(
+        &self,
+        _model_rung: &ModelRung,
+        _prompt: &str,
+    ) -> RuntimeResult<String> {
+        Err(RuntimeError::UnsupportedCapability {
+            capability: crate::capability::RuntimeCapability::Summarize,
+        })
+    }
 }

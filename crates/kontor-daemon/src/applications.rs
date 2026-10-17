@@ -1121,10 +1121,11 @@ pub struct Services {
     /// The governed summarizer transport succession handoffs dispatch through.
     ///
     /// The exact route is still decided by the declared-chain headroom walk;
-    /// this is only the implementation that executes an admitted dispatch. The
-    /// executable composes the unavailable fallback until a configured governed
-    /// transport exists, so an unconfigured Realm keeps its typed degraded
-    /// handoff and nothing is launched implicitly.
+    /// this is only the implementation that executes an admitted dispatch.
+    /// Startup composes the runtime named in `succession-summarizer.json`, or
+    /// the unavailable fallback when no document exists, so an unconfigured
+    /// Realm keeps its typed degraded handoff and nothing is launched
+    /// implicitly.
     succession_summarizer: Arc<dyn SuccessionSummarizerTransport>,
 }
 
@@ -40025,15 +40026,23 @@ impl Services {
     ) -> Result<GovernedSuccessionSummarizer<'a>, ApiError> {
         let state = self.state()?;
         let project_id = attempt.request.project_id;
-        let adapter = state
-            .runtimes()
-            .get(&attempt.request.predecessor_native_identity.runtime_kind)
-            .ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::Unavailable,
-                    "the succession predecessor's runtime adapter is not composed",
-                )
-            })?;
+        // The configured summarizer runtime is the one that will execute the
+        // admitted route, so it is the one whose provider exclusions decide
+        // whether a rung can be placed. An unconfigured transport keeps the
+        // predecessor's family, which is all an unconfigured realm knows.
+        let adapter_kind = transport.runtime_kind().cloned().unwrap_or_else(|| {
+            attempt
+                .request
+                .predecessor_native_identity
+                .runtime_kind
+                .clone()
+        });
+        let adapter = state.runtimes().get(&adapter_kind).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the succession summarizer's runtime adapter is not composed",
+            )
+        })?;
         let team = state
             .with_store(|store| store.get_team_run(project_id, attempt.request.team_run_id))
             .map_err(|error| self.refuse(&error))?
@@ -40130,10 +40139,10 @@ impl Services {
             state.credentials().redaction_secrets(),
         );
         // The configured governed transport executes only the route the
-        // declared-chain walk admits. Until a runtime-backed governed transport
-        // is composed, the executable supplies the unavailable fallback, which
-        // keeps the typed degraded path honest. A handoff with no stable
-        // timeline never consults placement at all.
+        // declared-chain walk admits. Startup composes the runtime selected in
+        // `succession-summarizer.json`, and an unconfigured Realm keeps the
+        // unavailable fallback, which preserves the typed degraded path. A
+        // handoff with no stable timeline never consults placement at all.
         let transport = Arc::clone(&self.succession_summarizer);
         let summarizer = if timeline.is_some() {
             match self.governed_succession_summarizer(attempt, produced_at, transport.as_ref()) {

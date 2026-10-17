@@ -147,6 +147,11 @@ pub const UNSUPPORTED: &[(RuntimeCapability, &str)] = &[
         "AO 0.12.1 exposes no compaction operation; typing a compact command into a \
          terminal would be an unverifiable guess rather than an observed lifecycle",
     ),
+    (
+        RuntimeCapability::Summarize,
+        "AO 0.12.1 exposes no one-shot model invocation outside a spawned session, and a \
+         summary session would need the same header workspace AO cannot prepare or verify",
+    ),
 ];
 
 // ---------------------------------------------------------------------------

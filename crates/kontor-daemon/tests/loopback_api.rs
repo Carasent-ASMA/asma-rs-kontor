@@ -26113,6 +26113,123 @@ async fn a_configured_governed_summarizer_produces_the_persisted_handoff_summary
     assert!(!prompt.as_str().contains("trailing tool call"));
 }
 
+/// Ordinary startup composes the summarizer from the configured runtime.
+///
+/// This is the executable's path: `succession-summarizer.json` names a
+/// composed runtime, `start_with_supervision` reads it, and the admitted route
+/// is dispatched through that runtime's adapter. Nothing injects a transport,
+/// so the handoff can only be a summary if the production composition works.
+#[tokio::test]
+async fn startup_composes_the_configured_runtime_summarizer() {
+    let summary_text = "Continue from the accepted checkpoint and keep the watcher armed";
+    let world = World::open_empty_with_runtime_summarizer(summary_text).await;
+    world.daemon.reconcile().await;
+    let operator_secret = secret(&world, "operator");
+    let CodexAliasEpic { project, seats, .. } = codex_alias_epic(&world, false, true).await;
+    let project_id = ProjectId::parse(&project).expect("project id");
+    let predecessor_id =
+        AgentRunId::parse(seats[0]["agent_run_id"].as_str().expect("predecessor id"))
+            .expect("canonical predecessor id");
+    let predecessor = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("predecessor reads")
+            .expect("predecessor exists")
+    });
+    let binding = predecessor
+        .binding
+        .as_ref()
+        .expect("predecessor binding")
+        .clone();
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(binding.id)
+        .expect("the process holds the exact predecessor binding");
+    let now = kontor_api::now();
+    world
+        .fake
+        .observe_uncorrelated_user_message(
+            &held,
+            &format!(
+                "The accepted checkpoint is the schema v1 handoff; the operator credential is X{operator_secret}"
+            ),
+            now,
+        )
+        .expect("one predecessor message is recorded");
+    world
+        .fake
+        .observe_trailing_tool_call(&held, now)
+        .expect("one excluded tool call is recorded");
+    world
+        .fake
+        .observe_blocked_refusal(
+            &held,
+            "[System Error] You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Jan 1st, 2099 12:00 AM.",
+            now,
+        )
+        .expect("the native session reaches a quota refusal");
+
+    let route = format!("/v1/projects/{project}/agent-runs/{predecessor_id}/successors:recover");
+    let recovered = Call::post_raw(&route, "")
+        .signed_as(&world, "admin")
+        .with_key("startup-runtime-summary-recovery")
+        .send(&world)
+        .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    assert_eq!(recovered.json()["state"], "confirmed");
+
+    let key = IdempotencyKey::parse("startup-runtime-summary-recovery").expect("idempotency key");
+    let attempt = world.daemon.state().with_store(|store| {
+        store
+            .succession_attempt_by_key(&key)
+            .expect("attempt reads")
+            .expect("attempt exists")
+    });
+    let handoff = attempt.handoff.clone().expect("handoff is durable");
+
+    let calls = world.fake.succession_summary_calls();
+    assert_eq!(
+        calls.len(),
+        1,
+        "the configured runtime executes exactly one governed summary"
+    );
+    let (dispatched_route, prompt) = &calls[0];
+    let SuccessionHandoffOutcome::Summary {
+        summarizer_model_rung,
+        summary,
+        ..
+    } = &handoff.outcome
+    else {
+        panic!(
+            "startup must compose a working governed summarizer, got {:?}",
+            handoff.outcome
+        );
+    };
+    assert_eq!(
+        dispatched_route, summarizer_model_rung,
+        "the runtime executes exactly the persisted provenance route"
+    );
+    assert_eq!(
+        summarizer_model_rung.provider.0, "codex-personal",
+        "the walk leaves the alias whose allowance refused"
+    );
+    assert_eq!(summary.as_str(), summary_text);
+    assert!(
+        prompt.contains("accepted checkpoint"),
+        "the predecessor message crosses the transport boundary"
+    );
+    assert!(
+        !prompt.contains("trailing tool call"),
+        "a ToolCall payload never crosses the summarizer boundary"
+    );
+    assert!(
+        !prompt.contains(&operator_secret),
+        "the production redaction policy removes the realm's own bearer"
+    );
+}
+
 /// A task pinned to one account never summarizes on another enabled alias.
 ///
 /// The predecessor's account is blocked, so an unpinned walk would move to the
