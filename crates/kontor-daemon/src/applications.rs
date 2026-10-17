@@ -40124,7 +40124,10 @@ impl Services {
         };
         let redaction = SuccessionRedactionPolicy::new(
             ContentHash::of(b"kontor-succession-redaction-v1"),
-            Vec::new(),
+            // The Realm's own bearer values are resolved from the live
+            // generation, so a transcript that quotes one cannot carry it into
+            // the outbound request or the persisted handoff.
+            state.credentials().redaction_secrets(),
         );
         // The configured governed transport executes only the route the
         // declared-chain walk admits. Until a runtime-backed governed transport

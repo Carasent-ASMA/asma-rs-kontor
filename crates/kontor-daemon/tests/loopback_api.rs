@@ -25966,6 +25966,7 @@ async fn a_configured_governed_summarizer_produces_the_persisted_handoff_summary
     let summarizer = Arc::new(GovernedSummarizerFake::new(summary_text));
     let world = World::open_empty_with_succession_summarizer(summarizer.clone()).await;
     world.daemon.reconcile().await;
+    let operator_secret = secret(&world, "operator");
     let CodexAliasEpic { project, seats, .. } = codex_alias_epic(&world, false, true).await;
     let project_id = ProjectId::parse(&project).expect("project id");
     let predecessor_id =
@@ -25993,7 +25994,9 @@ async fn a_configured_governed_summarizer_produces_the_persisted_handoff_summary
         .fake
         .observe_uncorrelated_user_message(
             &held,
-            "The accepted checkpoint is the schema v1 handoff",
+            &format!(
+                "The accepted checkpoint is the schema v1 handoff; the operator credential is X{operator_secret}"
+            ),
             now,
         )
         .expect("one predecessor message is recorded");
@@ -26063,6 +26066,10 @@ async fn a_configured_governed_summarizer_produces_the_persisted_handoff_summary
         !outbound_json.contains("trailing tool call"),
         "a ToolCall payload never crosses the summarizer boundary"
     );
+    assert!(
+        !outbound_json.contains(&operator_secret),
+        "the production redaction policy removes the realm's own bearer"
+    );
     assert_eq!(summary.as_str(), summary_text);
     assert_eq!(summary_hash, &ContentHash::of(summary_text.as_bytes()));
     assert_eq!(input_redaction.pass, SuccessionRedactionPass::Input);
@@ -26083,6 +26090,10 @@ async fn a_configured_governed_summarizer_produces_the_persisted_handoff_summary
     assert!(
         !canonical.json().contains("trailing tool call"),
         "the persisted handoff carries no tool payload"
+    );
+    assert!(
+        !canonical.json().contains(&operator_secret),
+        "the persisted handoff never carries the realm's own bearer"
     );
 
     let successor_id = AgentRunId::parse(
