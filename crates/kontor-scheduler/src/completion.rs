@@ -524,6 +524,17 @@ pub enum HistoricalEvidenceDisposition {
     ProvenanceUnavailable,
 }
 
+/// The only authority that may record a historical disposition.
+///
+/// A closed type rather than a compared string: a record naming any other
+/// authority does not deserialize, so no transition has to recognize a name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoricalEvidenceAuthority {
+    /// The server-authenticated admin tier.
+    Admin,
+}
+
 /// Immutable operator disposition and committed current-source verification packet.
 /// This is never producer evidence and cannot satisfy a delivery gate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -537,7 +548,7 @@ pub struct HistoricalCompletionEvidence {
     /// Explicit account of why historical producer provenance is unavailable.
     pub reason: String,
     /// Server-authenticated authority, always admin for this operation.
-    pub recorded_by: String,
+    pub recorded_by: HistoricalEvidenceAuthority,
     /// Immutable repository location of the verified packet.
     pub git_dir: String,
     /// Full commit containing the packet.
@@ -885,7 +896,6 @@ pub fn advance(
         ) => {
             if record.generation != current.generation
                 || record.tasks.is_empty()
-                || record.recorded_by != "admin"
                 || current
                     .historical_evidence
                     .iter()
@@ -893,7 +903,7 @@ pub fn advance(
             {
                 return Err(DomainError::invalid(
                     "completion historical evidence",
-                    "the disposition is empty, duplicated or belongs to another era or authority",
+                    "the disposition is empty, duplicated or belongs to another era",
                 ));
             }
             let present = completion_ticket_evidence(current, evidence);

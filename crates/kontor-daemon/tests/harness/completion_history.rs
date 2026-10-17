@@ -544,6 +544,8 @@ async fn historical_completion_packet_is_visible_to_the_existing_independent_com
     let epic = &fixture.seed.epic;
     confirm_test_epic_identity(&fixture.world, project, epic);
     prepare_fake_provider_headroom(&fixture.world, project).await;
+    // The formal template seats only through a compliant selected fleet.
+    write_fleet(&fixture.world, &formal_review_fleet_yaml());
     let invoked=Call::post(format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),&serde_json::json!({
         "profile":{"id":COMMITTEE_PRESET,"version":4},"topic":"Current-source verification",
         "question":"Independently assess actual obligations and disclosed unavailable historical provenance; the operator disposition is not an acceptance pass.",

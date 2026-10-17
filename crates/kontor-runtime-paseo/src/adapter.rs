@@ -3389,12 +3389,8 @@ impl PaseoAdapter {
         let binding = crate::checkout::ManagedBranchBinding::from_scopes(
             request.scope.iter().chain(effective.iter()),
         );
-        crate::checkout::prepare_managed_worktree(
-            &self.config.project_root_cwd,
-            cwd,
-            &binding,
-        )
-        .await?;
+        crate::checkout::prepare_managed_worktree(&self.config.project_root_cwd, cwd, &binding)
+            .await?;
         let existing = self.fetch_workspaces(project_id.as_str()).await?;
         let same_path = existing
             .iter()

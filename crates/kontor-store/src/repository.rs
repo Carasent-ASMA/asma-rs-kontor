@@ -9386,13 +9386,13 @@ impl SqliteStore {
             .enumerate()
             .filter(|(_, record)| record.generation == next.generation)
         {
-            if record.recorded_by != "admin"
-                || record.tasks.is_empty()
-                || ContentHash::of(record.packet.as_bytes()) != record.sha256
+            // Admin provenance is the record's type: a disposition naming any
+            // other authority never deserializes into `next`.
+            if record.tasks.is_empty() || ContentHash::of(record.packet.as_bytes()) != record.sha256
             {
                 return Err(conflict(
                     "completion historical evidence",
-                    "a disposition requires authenticated admin provenance and its exact verified packet",
+                    "a disposition requires its pinned tasks and its exact verified packet",
                 ));
             }
             for pin in &record.tasks {

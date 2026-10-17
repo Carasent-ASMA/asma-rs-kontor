@@ -934,7 +934,7 @@ fn historical_record(task: TaskId) -> kontor_scheduler::HistoricalCompletionEvid
         evidence_hash: digest("historical-disposition"),
         generation: 1,
         reason: "Old producer record unavailable; verify current source independently".to_owned(),
-        recorded_by: "admin".to_owned(),
+        recorded_by: kontor_scheduler::HistoricalEvidenceAuthority::Admin,
         git_dir: "/fixture/.git".to_owned(),
         commit: "a".repeat(40),
         path: "verification.md".to_owned(),
@@ -1054,7 +1054,15 @@ fn historical_disposition_never_fills_goals_or_accepts_arbitrary_already_present
     );
     assert_eq!(pending.phase, CompletionPhase::Tickets);
     assert!(pending.ticket_evidence[0].goals.is_empty());
-    for variant in 0..5 {
+    // Another authority is not a value a transition can be handed: the record
+    // naming it does not deserialize.
+    let mut foreign = serde_json::to_value(historical_record(task)).expect("record serializes");
+    foreign["recorded_by"] = serde_json::json!("operator");
+    assert!(
+        serde_json::from_value::<kontor_scheduler::HistoricalCompletionEvidence>(foreign).is_err(),
+        "only the admin authority is representable"
+    );
+    for variant in 0..4 {
         let mut record = historical_record(task);
         let mut actual = empty.clone();
         match variant {
@@ -1063,8 +1071,7 @@ fn historical_disposition_never_fills_goals_or_accepts_arbitrary_already_present
                 actual.evidence.insert(name("tests"));
             }
             2 => record.tasks.push(record.tasks[0].clone()),
-            3 => record.generation = 2,
-            _ => record.recorded_by = "operator".to_owned(),
+            _ => record.generation = 2,
         }
         assert!(
             advance(

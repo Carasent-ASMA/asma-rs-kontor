@@ -201,7 +201,7 @@ impl Services {
                 evidence_hash: evidence_hash.clone(),
                 generation: current.generation,
                 reason: reason.to_owned(),
-                recorded_by: "admin".to_owned(),
+                recorded_by: kontor_scheduler::HistoricalEvidenceAuthority::Admin,
                 git_dir,
                 commit: packet.commit.clone(),
                 path: packet.path.clone(),
