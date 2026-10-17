@@ -51906,10 +51906,9 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
         assert_eq!(cross_epic.code(), "forbidden");
         assert!(cross_epic.json().get("phase").is_none());
     }
-    // The other epic's TPM seat retires. Its completion now holds no live TPM,
-    // so the membership fence fails while resolving that role. A seat that is
-    // not this epic's leadership must still be refused as non-authority rather
-    // than be told the role is unbound and asked to bind it.
+    // The other epic's TPM seat retires. The membership check refuses this
+    // reader before any of that epic's staffing is read, so its unbound role
+    // is never reported.
     let other_tpm = SeatBindingId::parse(
         other_seats
             .iter()
