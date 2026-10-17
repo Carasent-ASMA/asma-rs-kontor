@@ -1,0 +1,176 @@
+import type {
+  PluginBeforeRequests,
+  PluginHookContext,
+  PluginServerContext,
+} from "@getpaseo/plugin/server";
+import { readAgentLabels } from "./agent-labels";
+import {
+  DEFAULT_CREDENTIAL_TIER,
+  readConfig,
+  type KontorPluginConfig,
+} from "./config";
+import { isKontorSeat, seatBinding, type AgentLabels } from "./labels";
+import { evaluatePlacement } from "./placement";
+
+type AgentCreateRequest = PluginBeforeRequests["agent.create"];
+type SessionOpenRequest = PluginBeforeRequests["agent.session_open"];
+type WorkspaceCreateRequest = PluginBeforeRequests["workspace.create"];
+
+export const KONTOR_MCP_SERVER_NAME = "kontor";
+export const KONTOR_SYSTEM_PROMPT_LINE =
+  "This session may be a Kontor seat: resolve its mini-project from Kontor at start and after compaction.";
+
+export const SEAT_ENV = "KONTOR_SEAT";
+export const BINDING_GENERATION_ENV = "KONTOR_BINDING_GENERATION";
+export const UNBOUND = "unbound";
+export const UNRESOLVED = "unresolved";
+
+function appendPromptLine(systemPrompt: string | undefined, line: string): string {
+  const current = systemPrompt?.trimEnd() ?? "";
+  if (current.split("\n").some((entry) => entry.trim() === line)) {
+    return current;
+  }
+  return current.length === 0 ? line : `${current}\n${line}`;
+}
+
+/**
+ * Add the Kontor read surface to a new agent.
+ *
+ * The server is always composed at observer authority. The plugin never reads
+ * or carries a `kontord` credential: it names the state root, and the MCP
+ * process reads its own read-only credential there.
+ */
+export function addKontorAgentConfig(
+  request: AgentCreateRequest,
+  config: KontorPluginConfig,
+): AgentCreateRequest {
+  const current = request.config;
+  const mcpServers = { ...(current.mcpServers ?? {}) };
+  if (config.mcpEnabled && !(KONTOR_MCP_SERVER_NAME in mcpServers)) {
+    mcpServers[KONTOR_MCP_SERVER_NAME] = {
+      type: "stdio",
+      command: config.mcpCommand,
+      args: [
+        "--state-root",
+        config.stateRoot,
+        "--credential-tier",
+        DEFAULT_CREDENTIAL_TIER,
+        ...(config.serveProfile ? ["--serve-profile", config.serveProfile] : []),
+      ],
+    };
+  }
+  return {
+    ...request,
+    config: {
+      ...current,
+      mcpServers,
+      systemPrompt: appendPromptLine(current.systemPrompt, KONTOR_SYSTEM_PROMPT_LINE),
+    },
+  };
+}
+
+/**
+ * Resolve the seat identity for a session opening.
+ *
+ * Fails open by design: when the local labels cannot be read within the hook
+ * budget, the environment carries `unresolved` and the Paseo operation
+ * continues. A person opening a tab never blocks on Kontor.
+ */
+export async function seatEnvironment(
+  request: SessionOpenRequest,
+  context: Pick<PluginHookContext, "paseo" | "signal">,
+  config: KontorPluginConfig,
+): Promise<Record<string, string>> {
+  const labels = await readAgentLabels(context.paseo, request.agentId, {
+    timeoutMs: config.labelReadTimeoutMs,
+    signal: context.signal,
+  });
+  if (labels === null) {
+    return { [SEAT_ENV]: UNRESOLVED };
+  }
+  if (!isKontorSeat(labels)) {
+    return { [SEAT_ENV]: UNBOUND };
+  }
+  const { seat, generation } = seatBinding(labels);
+  if (seat === null) {
+    return { [SEAT_ENV]: UNRESOLVED };
+  }
+  return {
+    [SEAT_ENV]: seat,
+    ...(generation === null ? {} : { [BINDING_GENERATION_ENV]: generation }),
+  };
+}
+
+/**
+ * The caller the daemon attached to this creation, when the release carries it.
+ *
+ * Paseo 0.11.2 strips this from `workspace.create` before the hook, so the
+ * guard also reads the initial agent's labels below. The field is still read
+ * at runtime because a release that restores caller identity needs no code
+ * change.
+ */
+function callerAgentIdOf(request: WorkspaceCreateRequest): string | undefined {
+  const value = (request as { callerAgentId?: unknown }).callerAgentId;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function initialAgentLabelsOf(request: WorkspaceCreateRequest): Record<string, string> | null {
+  const agent = (request as { agent?: { labels?: unknown } }).agent;
+  const labels = agent?.labels;
+  if (!labels || typeof labels !== "object" || Array.isArray(labels)) {
+    return null;
+  }
+  return labels as Record<string, string>;
+}
+
+/**
+ * Refuse a labelled Kontor seat's workspace creation outside Kontor placement.
+ *
+ * A human's request carries no labelled caller, an unlabelled caller is
+ * interactive, and an unreadable label lookup fails open; in those cases the
+ * request is unchanged. The guard applies when either the caller (on releases
+ * that pass it) or the request's initial agent is a labelled Kontor seat.
+ */
+export async function guardWorkspaceCreate(
+  request: WorkspaceCreateRequest,
+  context: Pick<PluginHookContext, "paseo" | "signal">,
+  config: KontorPluginConfig,
+): Promise<void> {
+  const callerAgentId = callerAgentIdOf(request);
+  let labels: AgentLabels = initialAgentLabelsOf(request);
+  if (callerAgentId) {
+    labels = await readAgentLabels(context.paseo, callerAgentId, {
+      timeoutMs: config.labelReadTimeoutMs,
+      signal: context.signal,
+    });
+  }
+  if (!labels || !isKontorSeat(labels)) {
+    return;
+  }
+  const decision = evaluatePlacement(request, config);
+  if (!decision.allowed) {
+    throw new Error(`Kontor workspace guard refused: ${decision.reason}`);
+  }
+}
+
+export function contribute(
+  server: PluginServerContext,
+  config: KontorPluginConfig = readConfig(),
+): () => void {
+  server.before("agent.create", ({ request }) => addKontorAgentConfig(request, config));
+
+  server.before("agent.session_open", async ({ request }, context) => ({
+    ...request,
+    env: {
+      ...request.env,
+      ...(await seatEnvironment(request, context, config)),
+    },
+  }));
+
+  server.before("workspace.create", async ({ request }, context) => {
+    await guardWorkspaceCreate(request, context, config);
+    return request;
+  });
+
+  return () => {};
+}
