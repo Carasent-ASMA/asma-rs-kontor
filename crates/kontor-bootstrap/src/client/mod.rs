@@ -248,6 +248,8 @@ impl ConflictReason {
 pub enum EntryState {
     /// The client itself is not present on this machine.
     ClientAbsent,
+    /// The client is present but this build has no boundary to drive it.
+    Unsupported,
     /// The client is present and has no `kontor` entry.
     EntryAbsent,
     /// The entry is bootstrap's own and already exact.
@@ -280,7 +282,10 @@ impl EntryState {
             EntryState::Current { observed }
             | EntryState::ManagedStale { observed }
             | EntryState::Unrelated { observed } => Some(observed),
-            EntryState::ClientAbsent | EntryState::EntryAbsent | EntryState::Refused { .. } => None,
+            EntryState::ClientAbsent
+            | EntryState::Unsupported
+            | EntryState::EntryAbsent
+            | EntryState::Refused { .. } => None,
         }
     }
 }
@@ -299,6 +304,8 @@ pub enum AdapterResult {
     Repaired,
     /// The client or entry is absent; nothing was written.
     Absent,
+    /// This build has no boundary that can drive the present client.
+    Unsupported,
     /// The entry was refused and nothing was written.
     Conflict {
         /// Why.
@@ -320,6 +327,7 @@ impl AdapterResult {
             AdapterResult::AlreadyCurrent => "already_current",
             AdapterResult::Repaired => "repaired",
             AdapterResult::Absent => "absent",
+            AdapterResult::Unsupported => "unsupported",
             AdapterResult::Conflict { .. } => "conflict",
             AdapterResult::FailedReadback => "failed_readback",
         }

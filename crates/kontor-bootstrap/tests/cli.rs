@@ -190,7 +190,7 @@ fn install_then_readback_then_replay_and_update() {
     }
     assert_eq!(
         world.client_report(&document, "claude-code")["result"]["result"],
-        "absent"
+        "unsupported"
     );
     assert!(world.state_root.join("bootstrap-receipt.json").exists());
     assert!(world.state_root.join("bootstrap-ownership.json").exists());
@@ -208,6 +208,10 @@ fn install_then_readback_then_replay_and_update() {
             "{client}"
         );
     }
+    assert_eq!(
+        world.client_report(&observed, "claude-code")["state"]["state"],
+        "unsupported"
+    );
 
     let replay = world.install();
     assert!(

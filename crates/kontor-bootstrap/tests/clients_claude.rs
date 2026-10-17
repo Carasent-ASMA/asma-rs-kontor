@@ -387,18 +387,18 @@ fn a_production_claude_cas_gap_is_a_typed_refusal_and_recorded_as_a_goal_gap() {
 }
 
 #[test]
-fn an_unavailable_client_is_absent_and_never_a_silent_success() {
+fn an_unavailable_boundary_is_unsupported_and_never_a_silent_success() {
     let mut harness = harness(FakeClaudeBoundary::unavailable());
     assert_eq!(
         harness.adapter.inspect(&managed()).expect("inspect"),
-        EntryState::ClientAbsent
+        EntryState::Unsupported
     );
     assert_eq!(
         harness
             .adapter
             .install(&managed(), &mut NoFaults)
             .expect("install"),
-        AdapterResult::Absent
+        AdapterResult::Unsupported
     );
 }
 

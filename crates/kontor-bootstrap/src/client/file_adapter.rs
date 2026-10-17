@@ -744,6 +744,7 @@ impl ClientAdapter for FileClientAdapter {
         let state = self.observe(spec)?.state;
         match &state {
             EntryState::ClientAbsent => Ok(AdapterResult::Absent),
+            EntryState::Unsupported => Ok(AdapterResult::Unsupported),
             EntryState::EntryAbsent => {
                 self.write(spec, &state, faults).map(|result| match result {
                     AdapterResult::Updated => AdapterResult::Installed,
@@ -772,6 +773,7 @@ impl ClientAdapter for FileClientAdapter {
         let state = self.observe(spec)?.state;
         match &state {
             EntryState::ClientAbsent | EntryState::EntryAbsent => Ok(AdapterResult::Absent),
+            EntryState::Unsupported => Ok(AdapterResult::Unsupported),
             EntryState::Current { .. } => Ok(AdapterResult::AlreadyCurrent),
             EntryState::ManagedStale { observed } | EntryState::Unrelated { observed } => {
                 if observed != expected {

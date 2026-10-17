@@ -141,7 +141,7 @@ impl ClaudeAdapter {
         spec.validate()?;
         let entry = match self.boundary.get(ENTRY_NAME) {
             Ok(entry) => entry,
-            Err(ClaudeBoundaryError::Unavailable) => return Ok(EntryState::ClientAbsent),
+            Err(ClaudeBoundaryError::Unavailable) => return Ok(EntryState::Unsupported),
             Err(_) => return Err(AdapterError::CommandFailed),
         };
         let Some(value) = entry else {
@@ -296,6 +296,7 @@ impl ClientAdapter for ClaudeAdapter {
     ) -> Result<AdapterResult, AdapterError> {
         match self.observe(spec)? {
             EntryState::ClientAbsent => Ok(AdapterResult::Absent),
+            EntryState::Unsupported => Ok(AdapterResult::Unsupported),
             EntryState::EntryAbsent => self.add_absent(spec, faults).map(|result| match result {
                 AdapterResult::Updated => AdapterResult::Installed,
                 other => other,
@@ -321,6 +322,7 @@ impl ClientAdapter for ClaudeAdapter {
     ) -> Result<AdapterResult, AdapterError> {
         match self.observe(spec)? {
             EntryState::ClientAbsent | EntryState::EntryAbsent => Ok(AdapterResult::Absent),
+            EntryState::Unsupported => Ok(AdapterResult::Unsupported),
             EntryState::Current { .. } => Ok(AdapterResult::AlreadyCurrent),
             EntryState::ManagedStale { observed } | EntryState::Unrelated { observed } => {
                 if &observed != expected {
@@ -359,8 +361,8 @@ fn schema_accepts(value: &Value) -> bool {
 /// This unit defines the command boundary but drives no client process; the
 /// production boundary belongs to the later live-installation unit. Every call
 /// therefore answers with a typed [`ClaudeBoundaryError::Unavailable`], which
-/// the adapter reports as [`crate::client::EntryState::ClientAbsent`] rather
-/// than as a success it did not achieve.
+/// the adapter reports as [`crate::client::EntryState::Unsupported`] rather
+/// than as an absent client or a success it did not achieve.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UnavailableClaudeBoundary;
 
@@ -431,7 +433,8 @@ impl FakeClaudeBoundary {
         }
     }
 
-    /// An unavailable fake, as on a machine without Claude Code.
+    /// An unavailable fake, as when this build cannot drive the command
+    /// surface.
     #[must_use]
     pub fn unavailable() -> Self {
         Self::default()
