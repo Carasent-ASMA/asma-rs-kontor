@@ -567,10 +567,7 @@ mod tests {
             .runtimes
             .iter()
             .find(|setting| setting.family() == "paseo.agent")
-            .expect("the addressed setting survives")
-        else {
-            unreachable!("the fixture is a Paseo setting")
-        };
+            .expect("the addressed setting survives");
         assert!(
             !setting.unavailable_providers.contains("claude"),
             "a duplicate the parser merged into the set is removed from the document too"
