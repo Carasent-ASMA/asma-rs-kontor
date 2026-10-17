@@ -147,6 +147,16 @@ pub fn effective_user() -> u32 {
     }
 }
 
+/// Whether one held directory belongs to the effective user and is not
+/// writable by group or other users.
+///
+/// # Errors
+/// [`ConfinementError::Io`] when the held descriptor cannot be inspected.
+pub fn is_private_directory(dir: &Dir) -> Result<bool, ConfinementError> {
+    let (owner, mode) = dir.owner_and_mode()?;
+    Ok(owner == effective_user() && mode & 0o022 == 0)
+}
+
 #[cfg(unix)]
 mod unix {
     use std::io::Write;

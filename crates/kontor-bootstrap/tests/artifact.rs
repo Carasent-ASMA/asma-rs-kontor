@@ -209,6 +209,30 @@ fn a_clean_install_activates_one_generation_and_replay_writes_nothing() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn a_library_install_on_a_group_or_world_writable_root_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root_holder = tempfile::tempdir().expect("root");
+    let root = root_holder.path().join("install");
+    std::fs::create_dir(&root).expect("install root");
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o777)).expect("chmod");
+    let version_one = release("1.0.0");
+    let installer = installer(&root);
+
+    assert_eq!(
+        install(&installer, &version_one),
+        Err(InstallError::InsecureRoot),
+        "a caller that skips the CLI still gets the private-root refusal"
+    );
+    assert_eq!(
+        std::fs::read_dir(&root).expect("root").count(),
+        0,
+        "the refusal happens before any effect"
+    );
+}
+
 #[test]
 #[cfg(unix)]
 fn a_lost_owner_execute_bit_is_repaired_before_already_current() {

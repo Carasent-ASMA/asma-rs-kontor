@@ -170,7 +170,8 @@ pub enum InstallError {
     /// The install root itself (or its internal state directory) is a symlink.
     #[error("the install root may not be a symlink")]
     SymlinkRoot,
-    /// The internal state directory is not private to the effective user.
+    /// The install root or its internal state directory is not private to the
+    /// effective user.
     #[error("the install root is writable by another local user")]
     InsecureRoot,
     /// Another bootstrap holds the install root.
@@ -1244,11 +1245,21 @@ impl Installer {
     }
 
     fn open_or_create_root(&self) -> Result<Dir, InstallError> {
-        if let Some(root) = self.open_root_if_exists()? {
-            return Ok(root);
+        let root = match self.open_root_if_exists()? {
+            Some(root) => root,
+            None => {
+                crate::confinement::create_private_dir_all(&self.root)?;
+                self.open_root_if_exists()?.ok_or(InstallError::Io)?
+            }
+        };
+        // The root may have been created by another local user between the
+        // CLI's validation and this open (or by `create_private_dir_all`
+        // accepting a name that already exists), so the descriptor that the
+        // transaction uses carries its own owner-and-mode check.
+        if !crate::confinement::is_private_directory(&root)? {
+            return Err(InstallError::InsecureRoot);
         }
-        crate::confinement::create_private_dir_all(&self.root)?;
-        self.open_root_if_exists()?.ok_or(InstallError::Io)
+        Ok(root)
     }
 
     fn lock(&self, root: &Dir) -> Result<InstallLock, InstallError> {

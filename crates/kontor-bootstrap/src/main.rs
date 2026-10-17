@@ -194,8 +194,10 @@ fn validate_root(path: &Path, code: &'static str, scope: RootScope) -> Result<()
 }
 
 /// Refuse a root this process does not own or that another local user can
-/// write. The check runs on the held descriptor, so a path swap cannot change
-/// what was inspected.
+/// write. The check runs on the descriptor opened here. A missing root can be
+/// created by another local user before the writer opens it, so the artifact
+/// installer, the ownership store and the receipt writer repeat the same
+/// owner-and-mode check on the descriptor they actually use.
 fn validate_private_root(
     path: &Path,
     code: &'static str,
