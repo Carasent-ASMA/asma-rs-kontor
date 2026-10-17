@@ -108,6 +108,18 @@ pub fn is_simple_name(name: &str) -> bool {
         && !name.contains('\0')
 }
 
+/// The normalized form of one injected root path: trailing separators and
+/// redundant components are removed, so the final component is inspected and
+/// opened as itself. A path at the filesystem root keeps its separator.
+///
+/// A trailing separator makes `lstat` and `openat` resolve a final symlink, so
+/// normalizing before both is what keeps the "roots are never symlinks"
+/// refusal true for `root-link/` as well as `root-link`.
+#[must_use]
+pub fn normalized_root_path(root: &std::path::Path) -> std::path::PathBuf {
+    root.components().collect()
+}
+
 /// Create a missing directory and its parents with owner-only access.
 ///
 /// An existing directory is accepted unchanged; the caller's root validation
@@ -289,11 +301,17 @@ mod unix {
             if !super::supported_target() {
                 return Err(ConfinementError::UnsupportedPlatform);
             }
+            let root = super::normalized_root_path(root);
             if !root.is_absolute() {
                 return Err(ConfinementError::UnsafeName);
             }
-            let fd = rustix::fs::openat(rustix::fs::CWD, root, flags_nofollow(), Mode::empty())
-                .map_err(|error| map_open_at(rustix::fs::CWD, root, error))?;
+            let fd = rustix::fs::openat(
+                rustix::fs::CWD,
+                root.as_path(),
+                flags_nofollow(),
+                Mode::empty(),
+            )
+            .map_err(|error| map_open_at(rustix::fs::CWD, root.as_path(), error))?;
             Ok(Self { fd })
         }
 
@@ -1260,6 +1278,25 @@ mod tests {
         symlink(outside.path(), &link).expect("link");
         assert_eq!(
             Dir::open_root(&link).unwrap_err(),
+            ConfinementError::Symlink
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_root_with_a_trailing_separator_is_refused() {
+        use std::os::unix::fs::symlink;
+        let holder = tempfile::tempdir().expect("holder");
+        let outside = tempfile::tempdir().expect("outside");
+        let link = holder.path().join("root-link");
+        symlink(outside.path(), &link).expect("link");
+        let trailing = holder.path().join("root-link/");
+        assert_eq!(
+            Dir::open_root(&trailing).unwrap_err(),
+            ConfinementError::Symlink
+        );
+        assert_eq!(
+            Dir::open_root(&holder.path().join("./root-link/")).unwrap_err(),
             ConfinementError::Symlink
         );
     }

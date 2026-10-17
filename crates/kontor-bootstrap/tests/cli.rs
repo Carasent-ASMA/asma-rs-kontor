@@ -513,6 +513,47 @@ fn a_group_or_world_writable_install_root_is_refused_without_writes() {
 
 #[cfg(unix)]
 #[test]
+fn a_trailing_separator_does_not_bypass_a_root_symlink_refusal() {
+    use std::os::unix::fs::symlink;
+    let world = World::new();
+    let outside = world._holder.path().join("outside-root");
+    std::fs::create_dir_all(&outside).expect("outside");
+    let link = world._holder.path().join("root-link");
+    symlink(&outside, &link).expect("link");
+    let trailing = format!("{}/", link.to_str().expect("utf8"));
+
+    for (option, expected) in [
+        ("--install-root", "install_root_invalid"),
+        ("--state-root", "state_root_invalid"),
+    ] {
+        let mut arguments = vec!["install".to_owned()];
+        arguments.extend(world.common());
+        arguments.push("--source-dir".to_owned());
+        arguments.push(world.source_dir.to_str().expect("utf8").to_owned());
+        let position = arguments
+            .iter()
+            .position(|argument| argument == option)
+            .expect("option")
+            + 1;
+        arguments[position] = trailing.clone();
+        let refs: Vec<&str> = arguments.iter().map(String::as_str).collect();
+        let (document, success, stdout) = world.run(&refs);
+        assert!(!success, "{option}: {stdout}");
+        assert_eq!(document["error"]["code"], expected, "{option}");
+        assert!(
+            std::fs::read_dir(&outside)
+                .expect("outside")
+                .next()
+                .is_none(),
+            "{option}: nothing may land in the symlink target"
+        );
+    }
+    world.assert_no_mutations();
+    assert!(!world.state_root.exists(), "no state may be created");
+}
+
+#[cfg(unix)]
+#[test]
 fn a_group_or_world_writable_state_root_is_refused_without_writes() {
     use std::os::unix::fs::PermissionsExt;
 

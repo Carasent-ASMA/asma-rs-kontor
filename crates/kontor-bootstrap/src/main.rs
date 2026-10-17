@@ -12,7 +12,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use kontor_bootstrap::client::claude::UnavailableClaudeBoundary;
-use kontor_bootstrap::confinement::{ConfinementError, Dir, effective_user};
+use kontor_bootstrap::confinement::{ConfinementError, Dir, effective_user, normalized_root_path};
 use kontor_bootstrap::{
     AdapterResult, ArtifactManifest, BootstrapReceipt, ClaudeAdapter, ClientAdapter, ClientFailure,
     ClientHome, ClientId, ClientReport, FileClientAdapter, InstallError, Installer, NoFaults,
@@ -174,17 +174,18 @@ enum RootScope {
 
 /// Validate one injected root before any effect.
 fn validate_root(path: &Path, code: &'static str, scope: RootScope) -> Result<(), Failure> {
+    let path = normalized_root_path(path);
     if !path.is_absolute() {
         return Err((code, "the root must be an absolute path".to_owned()));
     }
-    match std::fs::symlink_metadata(path) {
+    match std::fs::symlink_metadata(&path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
             Err((code, "the root may not be a symlink".to_owned()))
         }
         Ok(metadata) if !metadata.is_dir() => Err((code, "the root is not a directory".to_owned())),
         Ok(_) => match scope {
             RootScope::Install | RootScope::State => {
-                validate_private_root(path, code, scope == RootScope::Install)
+                validate_private_root(&path, code, scope == RootScope::Install)
             }
             RootScope::Home => Ok(()),
         },
