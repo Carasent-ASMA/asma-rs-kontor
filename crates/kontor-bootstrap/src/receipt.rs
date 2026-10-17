@@ -44,6 +44,8 @@ pub enum ArtifactDisposition {
     Repaired,
     /// Not installed.
     Absent,
+    /// A different release is active.
+    OtherRelease,
     /// Completed by an interrupted-transaction recovery.
     Recovered,
 }
@@ -265,12 +267,12 @@ impl BootstrapReceipt {
                     status.is_current(manifest)
                         && status.release.as_deref() == Some(manifest.release.as_str())
                 });
-                let disposition = match content_current {
-                    true if status.is_some_and(ArtifactStatus::is_executable) => {
-                        ArtifactDisposition::AlreadyCurrent
-                    }
-                    true => ArtifactDisposition::ModeDrift,
-                    false => ArtifactDisposition::Absent,
+                let disposition = match status {
+                    None => ArtifactDisposition::Absent,
+                    Some(status) if status.release.is_none() => ArtifactDisposition::Absent,
+                    Some(_) if !content_current => ArtifactDisposition::OtherRelease,
+                    Some(status) if status.is_executable() => ArtifactDisposition::AlreadyCurrent,
+                    Some(_) => ArtifactDisposition::ModeDrift,
                 };
                 ArtifactReceipt {
                     name: entry.name,
@@ -722,7 +724,7 @@ mod tests {
             receipt
                 .artifacts
                 .iter()
-                .all(|artifact| artifact.disposition == ArtifactDisposition::Absent)
+                .all(|artifact| artifact.disposition == ArtifactDisposition::OtherRelease)
         );
     }
 
