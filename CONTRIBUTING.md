@@ -103,6 +103,10 @@ pnpm -r test
 pnpm audit --prod
 ```
 
+The KON-MVP-18 e2e pilot inside `cargo test --workspace` still writes a run
+bundle into `docs/evidence/KON-MVP-18/<run-id>/` on every run; delete it and
+never commit it until ASMA-8511 moves that output.
+
 During development, `scripts/test-lanes.py` runs only what a change reaches:
 
 ```sh

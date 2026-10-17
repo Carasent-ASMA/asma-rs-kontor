@@ -201,10 +201,9 @@ exact confirmed, project-scoped Jira binding resolved with its immutable Jira
 issue id (schema v95, #215, `6355b850`); a missing, ambiguous or foreign
 subject refuses the render rather than falling back to an item code. The
 bundled Team Definitions v1 and v7 still render item codes. The Jira-key
-successors (`asma-operational-v4` to `v6`) exist only as prepared evidence in
-[`evidence/ASMA-8117/team-definition-successors/`](evidence/ASMA-8117/team-definition-successors/MANIFEST.json),
-status `prepared-not-published`; a realm's selection of one is not recorded
-here.
+successors (`asma-operational-v4` to `v6`) exist only as prepared Team
+Definition documents, status `prepared-not-published`; a realm's selection of
+one is not recorded here.
 
 ### Native-root creation invariant
 
