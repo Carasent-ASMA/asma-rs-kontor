@@ -8,7 +8,7 @@
 //! digest) before replacing anything.
 //!
 //! The shapes are the KON-OP-08 table's: `[mcp_servers.kontor]` for Codex,
-//! `mcp.servers.kontor` with a local command array for OpenCode,
+//! `mcp.kontor` with a local command array for OpenCode,
 //! `servers.kontor` stdio for Copilot, and `mcpServers.kontor` for Cursor.
 
 use std::path::{Path, PathBuf};
@@ -153,7 +153,7 @@ impl FileClientAdapter {
     fn entry_path(&self) -> &'static [&'static str] {
         match self.client {
             ClientId::Codex => &["mcp_servers", "kontor"],
-            ClientId::OpenCode => &["mcp", "servers", "kontor"],
+            ClientId::OpenCode => &["mcp", "kontor"],
             ClientId::Copilot => &["servers", "kontor"],
             ClientId::Cursor => &["mcpServers", "kontor"],
             ClientId::ClaudeCode => &[],
@@ -243,7 +243,7 @@ impl FileClientAdapter {
                     return ParsedEntry::Refused(ConflictReason::LegacySchema);
                 }
                 let parents: &[&[&str]] = match self.client {
-                    ClientId::OpenCode => &[&["mcp"], &["mcp", "servers"]],
+                    ClientId::OpenCode => &[&["mcp"]],
                     ClientId::Copilot => &[&["servers"]],
                     ClientId::Cursor => &[&["mcpServers"]],
                     _ => &[],

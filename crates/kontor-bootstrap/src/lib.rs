@@ -23,7 +23,7 @@
 //!
 //! The client shapes implemented here are the ones recorded by the accepted
 //! KON-OP-08 architecture table (`mcp_servers.kontor` for Codex,
-//! `mcp.servers.kontor` for OpenCode, `servers.kontor` for VS Code/Copilot,
+//! `mcp.kontor` for OpenCode, `servers.kontor` for VS Code/Copilot,
 //! `mcpServers.kontor` for Cursor, and the native `claude mcp add-json` command
 //! boundary for Claude Code). A shape the repository does not document is not
 //! guessed: the adapter refuses it with a typed conflict instead.
