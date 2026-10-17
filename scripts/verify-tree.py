@@ -12,9 +12,9 @@ Modes (KON-MVP-02 verification requirement):
   --mode inplace  no git export at all: run gates against the current tree
                   (the tree was already extracted from git archive / checkout).
 
-Every mode runs the full gate list: cargo fmt --check, clippy -D warnings,
-workspace tests, cargo audit, cargo deny check, frozen pnpm install,
-typecheck, vitest run and the production dependency audit.
+Every mode runs the full gate list: the scripts' own tests, cargo fmt --check,
+clippy -D warnings, workspace tests, cargo audit, cargo deny check, frozen pnpm
+install, typecheck, vitest run and the production dependency audit.
 
 Exit code 0 only when every gate passes.
 """
@@ -103,6 +103,7 @@ def verify_lockfile_satisfies_manifests(tree: Path) -> None:
 
 def run_gates(tree: Path) -> None:
     """Run every gate inside the exported tree."""
+    run([sys.executable, "-B", "-m", "unittest", "discover", "-s", "scripts/tests"], tree)
     run(["cargo", "fmt", "--all", "--", "--check"], tree)
     run(
         ["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"],
