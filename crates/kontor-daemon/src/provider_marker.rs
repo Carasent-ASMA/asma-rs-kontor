@@ -210,11 +210,16 @@ fn remove_marker(
     else {
         return Err(MarkerError::Malformed);
     };
-    let position = providers
+    if !providers
         .iter()
-        .position(|value| value.as_str() == Some(provider))
-        .ok_or(MarkerError::Malformed)?;
-    providers.remove(position);
+        .any(|value| value.as_str() == Some(provider))
+    {
+        return Err(MarkerError::Malformed);
+    }
+    // The settings parser collects the marker into a set, so one provider
+    // listed twice is still one marked provider. Removing only the first copy
+    // would report the marker cleared while the document still held it.
+    providers.retain(|value| value.as_str() != Some(provider));
     Ok(edited)
 }
 
@@ -502,6 +507,35 @@ mod tests {
         assert!(
             host < future,
             "the member order is the document's, not an alphabetized rewrite"
+        );
+    }
+
+    #[test]
+    fn every_copy_of_a_duplicated_marker_is_removed() {
+        let duplicated = String::from_utf8(document().to_vec())
+            .expect("utf-8")
+            .replace(
+                "\"unavailable_providers\": [\"claude\", \"codex\"]",
+                "\"unavailable_providers\": [\"claude\", \"codex\", \"claude\"]",
+            );
+        let plan = plan(duplicated.as_bytes(), "paseo.agent", "claude").expect("removable");
+        let updated = plan.updated.expect("the marker is present");
+        let settings = crate::runtimes::parse(&updated).expect("the rewritten document composes");
+        let crate::runtimes::RuntimeSetting::Paseo(setting) = settings
+            .runtimes
+            .iter()
+            .find(|setting| setting.family() == "paseo.agent")
+            .expect("the addressed setting survives")
+        else {
+            unreachable!("the fixture is a Paseo setting")
+        };
+        assert!(
+            !setting.unavailable_providers.contains("claude"),
+            "a duplicate the parser merged into the set is removed from the document too"
+        );
+        assert_eq!(
+            value(&updated)["runtimes"][0]["unavailable_providers"],
+            serde_json::json!(["codex"])
         );
     }
 
