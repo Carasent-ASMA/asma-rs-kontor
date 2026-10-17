@@ -21,7 +21,7 @@
 //!
 //! ```text
 //! KONTOR_ASMA8015_KEYCHAIN_LIVE=1 \
-//!   cargo test -p kontor-jira --test macos_credential_platform -- --ignored
+//!   cargo test -p kontor-jira --test macos_credential_platform -- --ignored --show-output
 //! ```
 //!
 //! The binary case additionally needs the exact daemon binary built at the
@@ -31,7 +31,7 @@
 //! ```text
 //! KONTOR_ASMA8015_KEYCHAIN_LIVE=1 \
 //! KONTOR_ASMA8015_DAEMON_BIN=/abs/path/to/kontor-daemon \
-//!   cargo test -p kontor-jira --test macos_credential_platform -- --ignored --exact \
+//!   cargo test -p kontor-jira --test macos_credential_platform -- --ignored --show-output --exact \
 //!   the_built_daemon_installs_and_the_shared_production_readers_present_the_installed_credential
 //! ```
 //!
@@ -183,7 +183,7 @@ macro_rules! live_keychain {
         match live_keychain_opt_in() {
             Ok(()) => {}
             Err(Skip(reason)) => {
-                println!("skipped: {reason}");
+                println!("skipped (not evidence): {reason}");
                 return;
             }
         }
@@ -1220,7 +1220,7 @@ async fn the_built_daemon_installs_and_the_shared_production_readers_present_the
     let daemon = match daemon_binary() {
         Ok(daemon) => daemon,
         Err(Skip(reason)) => {
-            println!("skipped: {reason}");
+            println!("skipped (not evidence): {reason}");
             return;
         }
     };
