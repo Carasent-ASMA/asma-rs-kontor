@@ -40,5 +40,6 @@ material, runtime transcript or token delta is in it, and it names in its own
 ## Publication
 
 The code is open source under `MIT OR Apache-2.0`, and a maintainer may publish
-it. Publication has no separate review gate (Igor Efrem, 2026-10-17). Every push
-still keeps credentials, run receipts and account data out of the repository.
+it. Publication has no separate review gate (Igor Efrem, 2026-10-17).
+Credentials, run receipts and account data must stay out of the repository;
+they belong in the operator's own stores.
