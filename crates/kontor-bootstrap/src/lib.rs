@@ -21,12 +21,14 @@
 //!
 //! # Reference
 //!
-//! The client shapes implemented here are the ones recorded by the accepted
-//! KON-OP-08 architecture table (`mcp_servers.kontor` for Codex,
-//! `mcp.kontor` for OpenCode, `servers.kontor` for VS Code/Copilot,
-//! `mcpServers.kontor` for Cursor, and the native `claude mcp add-json` command
-//! boundary for Claude Code). A shape the repository does not document is not
-//! guessed: the adapter refuses it with a typed conflict instead.
+//! The client shapes implemented here follow the accepted KON-OP-08
+//! architecture table (`mcp_servers.kontor` for Codex, `servers.kontor` for
+//! VS Code/Copilot, `mcpServers.kontor` for Cursor, and the native
+//! `claude mcp add-json` command boundary for Claude Code), with one deliberate
+//! correction: OpenCode resolves the flat `mcp.kontor` member and ignores
+//! `mcp.servers.kontor`, so the adapter uses `mcp.kontor` (see the dated
+//! correction beside that row in KON-OP-08). A shape the repository does not
+//! document is not guessed: the adapter refuses it with a typed conflict.
 
 pub mod artifact;
 pub mod client;

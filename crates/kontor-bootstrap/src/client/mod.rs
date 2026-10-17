@@ -18,12 +18,13 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 
+use fs4::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::artifact::install::InstallError;
 use crate::artifact::manifest::sha256_hex;
-use crate::confinement::{ConfinementError, Dir, MAX_DOCUMENT_BYTES};
+use crate::confinement::{ConfinementError, Dir, MAX_DOCUMENT_BYTES, NodeKind};
 use crate::fault::FaultInjector;
 
 /// The executable name every managed entry must point at.
@@ -434,7 +435,13 @@ pub struct OwnershipStore {
 }
 
 const LEDGER_FILE: &str = "bootstrap-ownership.json";
+const LEDGER_LOCK_FILE: &str = ".bootstrap-ownership.lock";
 const LEDGER_SCHEMA_VERSION: u32 = 1;
+
+/// The exclusive holder of the ledger lock file.
+struct LedgerLock {
+    _file: std::fs::File,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -507,6 +514,7 @@ impl OwnershipStore {
         entry: &ObservedHash,
         spec: &ObservedHash,
     ) -> Result<(), AdapterError> {
+        let _lock = self.lock()?;
         let mut ledger = self.load()?;
         ledger.pending.insert(
             client,
@@ -524,6 +532,7 @@ impl OwnershipStore {
         entry: &ObservedHash,
         spec: &ObservedHash,
     ) -> Result<(), AdapterError> {
+        let _lock = self.lock()?;
         let mut ledger = self.load()?;
         ledger.entries.insert(
             client,
@@ -534,6 +543,28 @@ impl OwnershipStore {
         );
         ledger.pending.remove(&client);
         self.write(&ledger)
+    }
+
+    /// Take the exclusive cross-process lock that serializes one complete
+    /// load-modify-write of the ledger.
+    fn lock(&self) -> Result<LedgerLock, AdapterError> {
+        let dir = self.open_or_create_root()?;
+        let file = match dir.kind_child(LEDGER_LOCK_FILE) {
+            Ok(Some(NodeKind::File)) => dir
+                .open_child_file_rw(LEDGER_LOCK_FILE)
+                .map_err(|_| AdapterError::OwnershipUnreadable)?,
+            Ok(Some(_)) => return Err(AdapterError::OwnershipUnreadable),
+            Ok(None) => match dir.create_child_file(LEDGER_LOCK_FILE, &[], 0o600) {
+                Ok(file) => file,
+                Err(ConfinementError::Exists) => dir
+                    .open_child_file_rw(LEDGER_LOCK_FILE)
+                    .map_err(|_| AdapterError::OwnershipUnreadable)?,
+                Err(_) => return Err(AdapterError::OwnershipUnreadable),
+            },
+            Err(_) => return Err(AdapterError::OwnershipUnreadable),
+        };
+        FileExt::lock(&file).map_err(|_| AdapterError::Io)?;
+        Ok(LedgerLock { _file: file })
     }
 
     fn write(&self, ledger: &OwnershipLedger) -> Result<(), AdapterError> {
@@ -791,6 +822,21 @@ mod tests {
         assert!(loaded.owns(ClientId::Codex, &record));
         assert!(!loaded.owns(ClientId::Cursor, &record));
         assert!(!loaded.owns(ClientId::Codex, &ObservedHash::of_bytes(b"other")));
+    }
+
+    #[test]
+    fn a_ledger_write_holds_an_exclusive_cross_process_lock() {
+        let holder = tempfile::tempdir().expect("tempdir");
+        let state = holder.path().join("state");
+        let store = OwnershipStore::at(&state).expect("store");
+        let guard = store.lock().expect("lock");
+        let other = std::fs::File::open(state.join(LEDGER_LOCK_FILE)).expect("open lock file");
+        assert!(matches!(
+            FileExt::try_lock(&other),
+            Err(fs4::TryLockError::WouldBlock)
+        ));
+        drop(guard);
+        assert!(FileExt::try_lock(&other).is_ok());
     }
 
     #[test]

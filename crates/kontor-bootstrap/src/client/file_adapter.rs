@@ -7,9 +7,11 @@
 //! snapshot, and requires bootstrap-owned provenance (or an explicit repair
 //! digest) before replacing anything.
 //!
-//! The shapes are the KON-OP-08 table's: `[mcp_servers.kontor]` for Codex,
-//! `mcp.kontor` with a local command array for OpenCode,
+//! The shapes follow the KON-OP-08 table: `[mcp_servers.kontor]` for Codex,
 //! `servers.kontor` stdio for Copilot, and `mcpServers.kontor` for Cursor.
+//! OpenCode deliberately differs from that table's `mcp.servers.kontor` row:
+//! OpenCode resolves the flat `mcp.kontor` member, so that is the entry path
+//! (see the dated correction beside that row).
 
 use std::path::{Path, PathBuf};
 
