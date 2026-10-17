@@ -96,6 +96,38 @@ canonical bytes with hash verification before retrieving again; approval,
 tombstone, task edits and projection changes do not replace the selection.
 An explicit purge returns the accepted typed refusal and preserves the binding.
 
+## Provider-unavailability markers (`runtimes.json`)
+
+`unavailable_providers` on a runtime setting is an operational outage marker:
+launch admission refuses that provider until the entry is gone. The daemon
+composes the set once, at start, so an outage that lifts leaves a marker that no
+restart removes by itself. The supported correction is the
+`kontor_provider_marker_preview` / `kontor_provider_marker_apply` pair
+(`/v1/provider-markers:preview` and `:apply`), naming the runtime family key that
+holds the marker and the provider to remove.
+
+- **Preview** is effect-free. It reads the document, reports the exact `before`
+  and `after` provider sets, the document `revision`, and the effects: whether
+  the correction would rewrite the document, and whether the *running* daemon
+  still holds the marker (a start is required before the document governs new
+  launches).
+- **Apply** takes the preview's `revision` and `preview_hash` and edits only the
+  addressed setting's marker array. Every other member — including fields this
+  build does not know and the sensitive `host_target` — is preserved, and the
+  file keeps its permissions. A document that changed since the preview is a
+  `revision_conflict`.
+- **Idempotent replay.** The key is judged before the revision and claimed
+  durably before the document is written: a retry of a completed correction
+  answers `replayed` without a second write, a retry whose first attempt never
+  wrote finishes the correction at the revision it read, a correction of an
+  already-absent marker answers `already_cleared`, and a key reused for anything
+  else is an `idempotency_conflict`. An unknown family is `not_found`; a
+  malformed document or a non-regular settings file is a typed refusal and is
+  never rewritten.
+
+The correction edits one configuration member. It retires, replaces or relaunches
+nothing, and no seat, run or topology node changes.
+
 ## Jira-derived backlog and topology names
 
 An epic apply accepts `epic_backlog_code`. Omit it to allocate from the epic

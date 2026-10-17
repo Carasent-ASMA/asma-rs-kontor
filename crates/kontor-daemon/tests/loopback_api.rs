@@ -38,6 +38,12 @@ mod committee_evidence;
 #[path = "loopback/provider_refresh.rs"]
 mod provider_refresh;
 
+#[path = "loopback/provider_marker.rs"]
+mod provider_marker;
+
+#[path = "loopback/pinned_ahead.rs"]
+mod pinned_ahead;
+
 #[path = "loopback/message_delivery_proofs.rs"]
 mod message_delivery_proofs;
 

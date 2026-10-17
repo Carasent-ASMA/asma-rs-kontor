@@ -6768,6 +6768,67 @@ pub static REGISTRY: &[ToolSpec] = &[
         about: "Resolve one binding, allocate one Committee jointly, or place one planning_pair@1 pair, against the activated fleet policy in --state-root, with no daemon: the policy's choice under the stated eligibility and its provenance. Refuses anything unverifiable; never reads fleet.yml.",
     },
     ToolSpec {
+        name: "kontor_provider_marker_preview",
+        tier: CallerTier::Admin,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/provider-markers:preview",
+        },
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "runtime_family",
+                Place::Body,
+                ArgType::OpenKey,
+                "The runtime family key naming the configured setting.",
+            ),
+            req(
+                "provider",
+                Place::Body,
+                ArgType::OpenKey,
+                "The provider whose unavailability marker would be removed.",
+            ),
+        ],
+        about: "What removing one provider from one runtime setting's unavailable list would do. Commits nothing.",
+    },
+    ToolSpec {
+        name: "kontor_provider_marker_apply",
+        tier: CallerTier::Admin,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/provider-markers:apply",
+        },
+        kind: OpKind::Write,
+        args: &[
+            IDEMPOTENCY,
+            req(
+                "runtime_family",
+                Place::Body,
+                ArgType::OpenKey,
+                "The runtime family key naming the configured setting.",
+            ),
+            req(
+                "provider",
+                Place::Body,
+                ArgType::OpenKey,
+                "The provider whose unavailability marker is removed.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Text,
+                "The runtime settings document revision the preview read.",
+            ),
+            req(
+                "preview_hash",
+                Place::Body,
+                ArgType::Text,
+                "The hash the preview answered with.",
+            ),
+        ],
+        about: "Remove one provider from one runtime setting's unavailable list under compare-and-swap.",
+    },
+    ToolSpec {
         name: "kontor_capacity_get",
         tier: CallerTier::Observer,
         execution: Execution::Http {

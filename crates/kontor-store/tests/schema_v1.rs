@@ -810,7 +810,10 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // subjects and one live session per subject (ASMA-8452). v134 adds PR
     // review subjects and the receipt kinds that open and close a review
     // (ASMA-8453).
-    assert_eq!(SCHEMA_VERSION, 134);
+    // v135 widens the realm-scoped idempotency operations by exactly one for
+    // the provider-marker correction, preserving every existing binding and
+    // both permanence triggers across the table rebuild (ASMA-7968).
+    assert_eq!(SCHEMA_VERSION, 135);
 }
 
 #[test]
@@ -6289,6 +6292,74 @@ fn v126_fleet_bundle_keys_bind_once_and_every_binding_stays_bound() {
         "UPDATE realm_idempotency_bindings SET fingerprint = fingerprint
          WHERE idempotency_key = 'activate_fleet_bundle-key'",
         "DELETE FROM realm_idempotency_bindings WHERE idempotency_key = 'publish_fleet_bundle-key'",
+    ] {
+        assert!(
+            connection.execute(statement, []).is_err(),
+            "a binding is permanent: {statement}"
+        );
+    }
+}
+
+/// v135: the provider-marker correction binds its key realm-wide, once; every
+/// earlier binding survives the rebuild and both permanence triggers are
+/// recreated with the table (ASMA-7968).
+#[test]
+fn v135_provider_marker_keys_bind_once_and_every_binding_stays_bound() {
+    let directory = temp();
+    let store = open(&directory);
+    let binding =
+        |key: &str, operation: &'static str, fingerprint: &[u8]| kontor_store::IdempotencyBinding {
+            key: key.to_owned(),
+            operation,
+            fingerprint: kontor_core::id::ContentHash::of(fingerprint),
+            bound_at: kontor_core::id::parse_utc_timestamp("2026-10-17T12:00:00Z")
+                .expect("a timestamp"),
+        };
+    for operation in [
+        "publish_fleet_policy",
+        "activate_fleet_policy",
+        "publish_fleet_bundle",
+        "activate_fleet_bundle",
+        "clear_provider_marker",
+    ] {
+        let key = format!("{operation}-key");
+        assert_eq!(
+            store
+                .bind_realm_operation(&binding(&key, operation, b"one"))
+                .expect("a first use binds"),
+            kontor_store::Applied::Created
+        );
+        assert_eq!(
+            store
+                .bind_realm_operation(&binding(&key, operation, b"one"))
+                .expect("an exact replay is answered"),
+            kontor_store::Applied::Unchanged
+        );
+    }
+    assert!(
+        store
+            .bind_realm_operation(&binding(
+                "clear_provider_marker-key",
+                "activate_fleet_bundle",
+                b"one"
+            ))
+            .is_err(),
+        "one key cannot name a second operation"
+    );
+    drop(store);
+
+    let connection = raw(&directory);
+    let unknown = connection.execute(
+        "INSERT INTO realm_idempotency_bindings (idempotency_key, operation, fingerprint, bound_at)
+         VALUES ('unknown', 'restore_provider_marker', ?1, '2026-10-17T12:00:00Z')",
+        [kontor_core::id::ContentHash::of(b"x").as_str()],
+    );
+    assert!(unknown.is_err(), "the operation list stays closed");
+    for statement in [
+        "UPDATE realm_idempotency_bindings SET fingerprint = fingerprint
+         WHERE idempotency_key = 'clear_provider_marker-key'",
+        "DELETE FROM realm_idempotency_bindings WHERE idempotency_key = 'clear_provider_marker-key'",
+        "DELETE FROM realm_idempotency_bindings WHERE idempotency_key = 'publish_fleet_policy-key'",
     ] {
         assert!(
             connection.execute(statement, []).is_err(),
