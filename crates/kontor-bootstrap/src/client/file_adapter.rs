@@ -306,6 +306,12 @@ impl FileClientAdapter {
                 (name, dialect, None)
             }
         };
+        // A `PreserveBoth` leaves the displaced bytes in one bootstrap
+        // temporary beside this file. Until the operator reconciles it, the
+        // adapter keeps refusing instead of reporting the entry as current.
+        if self.has_unreconciled_temporary(&directory, file)? {
+            return Ok(refused(ConflictReason::UnreconciledTemporary));
+        }
 
         let ledger = match self.ownership.load() {
             Ok(ledger) => ledger,
@@ -660,6 +666,20 @@ impl FileClientAdapter {
             }
             _ => Ok(AdapterResult::FailedReadback),
         }
+    }
+
+    /// Whether an earlier `PreserveBoth` left its displaced bytes in one of
+    /// this configuration file's bootstrap temporaries.
+    fn has_unreconciled_temporary(
+        &self,
+        directory: &Dir,
+        file: &str,
+    ) -> Result<bool, AdapterError> {
+        let prefix = format!(".{file}.kontor-bootstrap-");
+        Ok(directory
+            .entries()?
+            .iter()
+            .any(|name| name.starts_with(&prefix) && name.ends_with(".tmp")))
     }
 
     /// Complete the ownership record for a write a replay verified.

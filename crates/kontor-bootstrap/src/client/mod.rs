@@ -221,6 +221,9 @@ pub enum ConflictReason {
     TooLarge,
     /// A document nested deeper than the supported bound.
     TooDeep,
+    /// An earlier reconciliation left a bootstrap temporary beside the
+    /// configuration file; the operator must resolve it first.
+    UnreconciledTemporary,
 }
 
 impl ConflictReason {
@@ -239,6 +242,7 @@ impl ConflictReason {
             ConflictReason::OwnershipUnreadable => "ownership_unreadable",
             ConflictReason::TooLarge => "too_large",
             ConflictReason::TooDeep => "too_deep",
+            ConflictReason::UnreconciledTemporary => "unreconciled_temporary",
         }
     }
 }
@@ -373,6 +377,10 @@ pub enum AdapterError {
     /// the displaced name was exchanged back or unlinked.
     #[error("both the installed and displaced material were preserved")]
     PreserveBoth,
+    /// The injected state root is not private to the effective user, so the
+    /// ownership ledger cannot be trusted or written.
+    #[error("the state root is writable by another local user")]
+    InsecureRoot,
 }
 
 impl From<InstallError> for AdapterError {
@@ -380,6 +388,7 @@ impl From<InstallError> for AdapterError {
         match error {
             InstallError::Injected { .. } => AdapterError::Injected,
             InstallError::Confinement(error) => AdapterError::Confinement(error),
+            InstallError::InsecureRoot => AdapterError::InsecureRoot,
             _ => AdapterError::CommandFailed,
         }
     }
@@ -587,15 +596,22 @@ impl OwnershipStore {
     }
 
     fn open_or_create_root(&self) -> Result<Dir, AdapterError> {
-        match Dir::open_root(&self.state_root) {
-            Ok(dir) => Ok(dir),
+        let dir = match Dir::open_root(&self.state_root) {
+            Ok(dir) => dir,
             Err(ConfinementError::Missing) => {
                 crate::confinement::create_private_dir_all(&self.state_root)
                     .map_err(|_| AdapterError::Io)?;
-                Dir::open_root(&self.state_root).map_err(AdapterError::from)
+                Dir::open_root(&self.state_root).map_err(AdapterError::from)?
             }
-            Err(error) => Err(error.into()),
+            Err(error) => return Err(error.into()),
+        };
+        // A state root created by another local user between the CLI's
+        // validation and this open must not receive the ledger. The check runs
+        // on the descriptor the ledger write uses.
+        if !crate::confinement::is_private_directory(&dir)? {
+            return Err(AdapterError::InsecureRoot);
         }
+        Ok(dir)
     }
 }
 
@@ -892,5 +908,32 @@ mod tests {
         std::fs::write(state.join(LEDGER_FILE), "not json").expect("write");
         let store = OwnershipStore::at(&state).expect("store");
         assert_eq!(store.load().unwrap_err(), AdapterError::OwnershipUnreadable);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_group_or_world_writable_state_root_refuses_a_ledger_write() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let holder = tempfile::tempdir().expect("tempdir");
+        let state = holder.path().join("state");
+        std::fs::create_dir(&state).expect("state");
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o777)).expect("chmod");
+        let store = OwnershipStore::at(&state).expect("store");
+        assert_eq!(
+            store
+                .record(
+                    ClientId::Codex,
+                    &ObservedHash::of_bytes(b"entry"),
+                    &ObservedHash::of_bytes(b"spec"),
+                )
+                .unwrap_err(),
+            AdapterError::InsecureRoot
+        );
+        assert_eq!(
+            std::fs::read_dir(&state).expect("state").count(),
+            0,
+            "the unsafe root receives no ledger or lock file"
+        );
     }
 }

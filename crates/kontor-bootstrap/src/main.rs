@@ -12,7 +12,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use kontor_bootstrap::client::claude::UnavailableClaudeBoundary;
-use kontor_bootstrap::confinement::{ConfinementError, Dir, effective_user};
+use kontor_bootstrap::confinement::{ConfinementError, Dir, effective_user, normalized_root_path};
 use kontor_bootstrap::{
     AdapterResult, ArtifactManifest, BootstrapReceipt, ClaudeAdapter, ClientAdapter, ClientFailure,
     ClientHome, ClientId, ClientReport, FileClientAdapter, InstallError, Installer, NoFaults,
@@ -174,17 +174,18 @@ enum RootScope {
 
 /// Validate one injected root before any effect.
 fn validate_root(path: &Path, code: &'static str, scope: RootScope) -> Result<(), Failure> {
+    let path = normalized_root_path(path);
     if !path.is_absolute() {
         return Err((code, "the root must be an absolute path".to_owned()));
     }
-    match std::fs::symlink_metadata(path) {
+    match std::fs::symlink_metadata(&path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
             Err((code, "the root may not be a symlink".to_owned()))
         }
         Ok(metadata) if !metadata.is_dir() => Err((code, "the root is not a directory".to_owned())),
         Ok(_) => match scope {
             RootScope::Install | RootScope::State => {
-                validate_private_root(path, code, scope == RootScope::Install)
+                validate_private_root(&path, code, scope == RootScope::Install)
             }
             RootScope::Home => Ok(()),
         },
@@ -194,8 +195,10 @@ fn validate_root(path: &Path, code: &'static str, scope: RootScope) -> Result<()
 }
 
 /// Refuse a root this process does not own or that another local user can
-/// write. The check runs on the held descriptor, so a path swap cannot change
-/// what was inspected.
+/// write. The check runs on the descriptor opened here. A missing root can be
+/// created by another local user before the writer opens it, so the artifact
+/// installer, the ownership store and the receipt writer repeat the same
+/// owner-and-mode check on the descriptor they actually use.
 fn validate_private_root(
     path: &Path,
     code: &'static str,
@@ -420,6 +423,9 @@ fn repair(
     validate_root(home_root, "home_root_invalid", RootScope::Home)?;
     validate_root(state_root, "state_root_invalid", RootScope::State)?;
     let installer = Installer::at(install_root.to_path_buf())
+        .map_err(|error| ("install_root_invalid", error.to_string()))?;
+    installer
+        .verify_active_for_execution()
         .map_err(|error| ("install_root_invalid", error.to_string()))?;
     let spec = server_spec(&installer, state_root);
     spec.validate().map_err(client_error)?;

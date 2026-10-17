@@ -160,11 +160,13 @@ impl ClaudeAdapter {
             }
         };
         let desired = desired_entry(ClientId::ClaudeCode, spec);
-        Ok(super::classify(
-            &value,
-            &desired,
-            ledger.owns(ClientId::ClaudeCode, &observed),
-        ))
+        // A write that landed can be pending rather than committed when the
+        // post-write readback was interrupted. That pending record already
+        // proves bootstrap wrote this exact snapshot, exactly as the file
+        // adapters treat `pending_owns`.
+        let owned = ledger.owns(ClientId::ClaudeCode, &observed)
+            || ledger.pending_owns(ClientId::ClaudeCode, &observed);
+        Ok(super::classify(&value, &desired, owned))
     }
 
     fn readback(&mut self, spec: &ServerSpec) -> Result<AdapterResult, AdapterError> {

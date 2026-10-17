@@ -757,6 +757,27 @@ fn an_existing_entry_raced_at_the_final_boundary_is_never_replaced() {
         raced_inode.borrow().expect("captured raced inode"),
         "the raced inode is preserved exactly at the retained displaced name"
     );
+
+    // A replay must not report the client as current while the displaced
+    // bytes still sit in the temporary: the reconciliation stays visible.
+    assert_eq!(
+        fixture.inspect(&second),
+        EntryState::Refused {
+            reason: ConflictReason::UnreconciledTemporary,
+        }
+    );
+    assert_eq!(
+        fixture.install(&second),
+        AdapterResult::Conflict {
+            reason: ConflictReason::UnreconciledTemporary,
+            observed: None,
+        }
+    );
+    assert_eq!(
+        std::fs::read(fixture.file()).expect("target bytes"),
+        expected_rendered,
+        "the replay writes nothing"
+    );
 }
 
 #[test]

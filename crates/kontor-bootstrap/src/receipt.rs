@@ -90,6 +90,8 @@ pub enum ClientFailure {
     RestoreFailed,
     /// Bootstrap-owned and foreign material could not be separated.
     PreserveBoth,
+    /// The state root is not private to the effective user.
+    InsecureRoot,
 }
 
 impl ClientFailure {
@@ -107,6 +109,7 @@ impl ClientFailure {
             ClientFailure::OwnershipUnreadable => "ownership_unreadable",
             ClientFailure::RestoreFailed => "restore_failed",
             ClientFailure::PreserveBoth => "preserve_both",
+            ClientFailure::InsecureRoot => "insecure_root",
         }
     }
 }
@@ -125,6 +128,7 @@ impl From<crate::client::AdapterError> for ClientFailure {
             AdapterError::OwnershipUnreadable => ClientFailure::OwnershipUnreadable,
             AdapterError::RestoreFailed => ClientFailure::RestoreFailed,
             AdapterError::PreserveBoth => ClientFailure::PreserveBoth,
+            AdapterError::InsecureRoot => ClientFailure::InsecureRoot,
         }
     }
 }
@@ -198,8 +202,9 @@ pub enum ReceiptError {
     /// The state root is relative, which bootstrap refuses.
     #[error("the state root must be an absolute path")]
     RelativeStateRoot,
-    /// The state root or receipt path is a symlink, which bootstrap refuses.
-    #[error("the receipt destination is not a real directory")]
+    /// The state root or receipt path is a symlink, or the state root is not
+    /// private to the effective user; bootstrap refuses both.
+    #[error("the receipt destination is not a private real directory")]
     UnsafeDestination,
     /// A free-form field violates the safe-token rules.
     #[error("the bootstrap receipt contains an unsafe {field} field")]
@@ -411,6 +416,12 @@ impl BootstrapReceipt {
             }
             Err(error) => return Err(map_root(error)),
         };
+        // The state root may have been created by another local user between
+        // the CLI's validation and this write, so the descriptor that the
+        // receipt uses carries its own owner-and-mode check.
+        if !crate::confinement::is_private_directory(&dir).map_err(|_| ReceiptError::Io)? {
+            return Err(ReceiptError::UnsafeDestination);
+        }
         let file = match dir.create_child_file(temporary, document.as_bytes(), 0o600) {
             Ok(file) => file,
             Err(ConfinementError::Exists) => return Err(ReceiptError::TemporaryTaken),
@@ -536,6 +547,22 @@ mod tests {
                 .next()
                 .is_none()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_group_or_world_writable_receipt_destination_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let holder = tempfile::tempdir().expect("holder");
+        let state = holder.path().join("state");
+        std::fs::create_dir(&state).expect("state");
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o777)).expect("chmod");
+        let receipt = BootstrapReceipt::from_install(&manifest(), InstallOutcome::Installed);
+        assert_eq!(
+            receipt.write_to(&state),
+            Err(ReceiptError::UnsafeDestination)
+        );
+        assert_eq!(std::fs::read_dir(&state).expect("state").count(), 0);
     }
 
     #[test]

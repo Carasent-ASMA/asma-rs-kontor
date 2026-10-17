@@ -646,44 +646,78 @@ fn a_lost_readback_after_add_completes_ownership_on_replay() {
         }
     }
 
-    let mut harness = harness(LostReadback {
+    let mut lost = harness(LostReadback {
         inner: FakeClaudeBoundary::new(),
         gets: 0,
     });
     let first = spec("/synthetic/one");
     let desired = ObservedHash::of_value(&desired_entry(ClientId::ClaudeCode, &first));
     assert_eq!(
-        harness.adapter.install(&first, &mut NoFaults),
+        lost.adapter.install(&first, &mut NoFaults),
         Err(AdapterError::CommandFailed)
     );
-    let ledger = harness.ownership.load().expect("ledger");
+    let ledger = lost.ownership.load().expect("ledger");
     assert!(!ledger.owns(ClientId::ClaudeCode, &desired));
     assert!(
         ledger.pending_owns(ClientId::ClaudeCode, &desired),
         "the pending write is durable before the entry is written"
     );
     assert_eq!(
-        harness.adapter.inspect(&first).expect("inspect"),
+        lost.adapter.inspect(&first).expect("inspect"),
         EntryState::Current {
             observed: desired.clone()
         }
     );
+
+    // A different spec directly after the lost readback is classified from
+    // the pending record too, so it replaces the entry instead of refusing it
+    // as same-name unrelated.
+    let second = spec("/synthetic/two");
+    let second_hash = ObservedHash::of_value(&desired_entry(ClientId::ClaudeCode, &second));
     assert_eq!(
-        harness
+        lost.adapter
+            .install(&second, &mut NoFaults)
+            .expect("update after a lost readback"),
+        AdapterResult::Updated
+    );
+    let ledger = lost.ownership.load().expect("ledger");
+    assert!(ledger.owns(ClientId::ClaudeCode, &second_hash));
+    assert!(!ledger.pending_owns(ClientId::ClaudeCode, &second_hash));
+
+    // The same-spec replay still adopts the pending record it matches.
+    let mut replay = harness(LostReadback {
+        inner: FakeClaudeBoundary::new(),
+        gets: 0,
+    });
+    let third = spec("/synthetic/three");
+    let third_hash = ObservedHash::of_value(&desired_entry(ClientId::ClaudeCode, &third));
+    assert_eq!(
+        replay.adapter.install(&third, &mut NoFaults),
+        Err(AdapterError::CommandFailed)
+    );
+    assert!(
+        replay
+            .ownership
+            .load()
+            .expect("ledger")
+            .pending_owns(ClientId::ClaudeCode, &third_hash)
+    );
+    assert_eq!(
+        replay.adapter.inspect(&third).expect("inspect"),
+        EntryState::Current {
+            observed: third_hash.clone()
+        }
+    );
+    assert_eq!(
+        replay
             .adapter
-            .install(&first, &mut NoFaults)
+            .install(&third, &mut NoFaults)
             .expect("replay"),
         AdapterResult::AlreadyCurrent
     );
-    let ledger = harness.ownership.load().expect("ledger");
-    assert!(ledger.owns(ClientId::ClaudeCode, &desired));
-    assert_eq!(
-        harness
-            .adapter
-            .install(&spec("/synthetic/two"), &mut NoFaults)
-            .expect("update"),
-        AdapterResult::Updated
-    );
+    let ledger = replay.ownership.load().expect("ledger");
+    assert!(ledger.owns(ClientId::ClaudeCode, &third_hash));
+    assert!(!ledger.pending_owns(ClientId::ClaudeCode, &third_hash));
 }
 
 #[test]

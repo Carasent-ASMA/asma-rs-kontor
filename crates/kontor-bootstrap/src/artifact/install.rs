@@ -170,7 +170,8 @@ pub enum InstallError {
     /// The install root itself (or its internal state directory) is a symlink.
     #[error("the install root may not be a symlink")]
     SymlinkRoot,
-    /// The internal state directory is not private to the effective user.
+    /// The install root or its internal state directory is not private to the
+    /// effective user.
     #[error("the install root is writable by another local user")]
     InsecureRoot,
     /// Another bootstrap holds the install root.
@@ -413,6 +414,32 @@ impl Installer {
             return Ok(None);
         };
         Ok(self.read_active(&root)?.map(|active| active.generation))
+    }
+
+    /// Verify that a client command naming [`Installer::active_mcp_path`] can
+    /// actually run: a verified active generation must exist and its managed
+    /// MCP executable must carry the owner execute bit.
+    ///
+    /// # Errors
+    /// [`InstallError::ActiveUnverified`] when no verified active generation is
+    /// present or its MCP executable is not owner-executable.
+    pub fn verify_active_for_execution(&self) -> Result<(), InstallError> {
+        if !crate::confinement::supported_target() {
+            return Err(InstallError::UnsupportedPlatform);
+        }
+        let Some(root) = self.open_root_if_exists()? else {
+            return Err(InstallError::ActiveUnverified);
+        };
+        let Some(active) = self.read_active(&root)? else {
+            return Err(InstallError::ActiveUnverified);
+        };
+        if !active
+            .mode(ArtifactName::Mcp)
+            .is_some_and(|mode| mode & 0o100 != 0)
+        {
+            return Err(InstallError::ActiveUnverified);
+        }
+        Ok(())
     }
 
     /// Install, update or confirm one coherent artifact generation.
@@ -1244,11 +1271,21 @@ impl Installer {
     }
 
     fn open_or_create_root(&self) -> Result<Dir, InstallError> {
-        if let Some(root) = self.open_root_if_exists()? {
-            return Ok(root);
+        let root = match self.open_root_if_exists()? {
+            Some(root) => root,
+            None => {
+                crate::confinement::create_private_dir_all(&self.root)?;
+                self.open_root_if_exists()?.ok_or(InstallError::Io)?
+            }
+        };
+        // The root may have been created by another local user between the
+        // CLI's validation and this open (or by `create_private_dir_all`
+        // accepting a name that already exists), so the descriptor that the
+        // transaction uses carries its own owner-and-mode check.
+        if !crate::confinement::is_private_directory(&root)? {
+            return Err(InstallError::InsecureRoot);
         }
-        crate::confinement::create_private_dir_all(&self.root)?;
-        self.open_root_if_exists()?.ok_or(InstallError::Io)
+        Ok(root)
     }
 
     fn lock(&self, root: &Dir) -> Result<InstallLock, InstallError> {
