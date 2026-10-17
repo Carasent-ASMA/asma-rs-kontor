@@ -207,11 +207,11 @@ pub(crate) fn consultation_permission_mode(provider: &str) -> RuntimeResult<Opti
 /// Kontor hands the seat.
 ///
 /// A route whose source is the live fleet configuration runs Cursor and
-/// OpenCode in `plan` for any model the owner-only `fleet.yml` lists, except
-/// `cursor`/`auto-smart`, whose vendor is unknown and never eligible for a
-/// reviewer slot. Claude and Codex modes are unchanged. The file accepts the
-/// same risk as the two accepted fallbacks above: `plan` is behavioral
-/// guidance, not an OS-level boundary.
+/// OpenCode in `plan`, under any account alias of either, for any model the
+/// owner-only `fleet.yml` lists, except `cursor`/`auto-smart`, whose vendor is
+/// unknown and never eligible for a reviewer slot. Claude and Codex modes are
+/// unchanged. The file accepts the same risk as the two accepted fallbacks
+/// above: `plan` is behavioral guidance, not an OS-level boundary.
 pub(crate) fn consultation_route_permission_mode(
     rung: &ModelRung,
     provenance: &ConsultationRouteProvenance,
@@ -230,14 +230,15 @@ pub(crate) fn consultation_route_permission_mode(
             provider: rung.provider.0.clone(),
         });
     }
-    if rung.provider.0 == "opencode" {
+    if built_in_provider(&rung.provider.0) == "opencode" {
         if provenance.is_fleet_configuration() {
             return Ok(Some("plan"));
         }
-        let exact_model = matches!(
-            rung.model.0.as_str(),
-            "deepseek/deepseek-v4-flash" | "deepseek/deepseek-flash"
-        );
+        let exact_model = rung.provider.0 == "opencode"
+            && matches!(
+                rung.model.0.as_str(),
+                "deepseek/deepseek-v4-flash" | "deepseek/deepseek-flash"
+            );
         let exact_effort = rung.effort.is_some_and(|effort| effort.as_str() == "max");
         if exact_model && exact_effort && provenance.is_operator_accepted_initial_recovery_profile()
         {
@@ -2836,9 +2837,10 @@ mod tests {
     }
 
     /// REQ-016: a consultation route whose source is the live fleet
-    /// configuration runs Cursor and OpenCode in `plan` for any model the file
-    /// lists, while Cursor Auto, template routes and unlisted sources stay
-    /// refused and Claude and Codex keep their ordinary modes.
+    /// configuration runs Cursor and OpenCode, under any account alias, in
+    /// `plan` for any model the file lists, while Cursor Auto, template routes
+    /// and unlisted sources stay refused and Claude and Codex keep their
+    /// ordinary modes.
     #[test]
     fn a_fleet_route_runs_cursor_and_opencode_consultations_in_plan_mode() {
         let fleet = ConsultationRouteProvenance::fleet_configuration(ContentHash::of(b"fleet"));
@@ -2867,6 +2869,14 @@ mod tests {
                     Some(EffortLevel::Max),
                 ),
                 "an OpenCode fleet route",
+            ),
+            (
+                route(
+                    "opencode-zai",
+                    "zai-coding-plan/glm-5.3",
+                    Some(EffortLevel::Max),
+                ),
+                "an OpenCode fleet route under a per-service alias",
             ),
         ] {
             let request = create(&rung, &fleet).unwrap_or_else(|error| panic!("{case}: {error:?}"));

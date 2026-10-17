@@ -5385,7 +5385,7 @@ impl PaseoAdapter {
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value))
         .collect();
-        if request.model_rung.provider.0 == "opencode" {
+        if crate::client::built_in_provider(&request.model_rung.provider.0) == "opencode" {
             labels.insert(
                 label::OPERATOR_ACCEPTED_FALLBACK.to_owned(),
                 request.route_provenance.evidence_hash.as_str().to_owned(),
@@ -6847,13 +6847,14 @@ impl RuntimeAdapter for PaseoAdapter {
         let before = self.fetch_agent_including_archived(native_id).await?;
         let expected_seat = request.seat_binding_id.to_string();
         let fallback_hash = request.route_provenance.evidence_hash.as_str();
-        let restriction_matches = if request.model_rung.provider.0 == "opencode" {
-            before.label(label::READ_ONLY).is_none()
-                && before.label(label::OPERATOR_ACCEPTED_FALLBACK) == Some(fallback_hash)
-        } else {
-            before.label(label::READ_ONLY) == Some("true")
-                && before.label(label::OPERATOR_ACCEPTED_FALLBACK).is_none()
-        };
+        let restriction_matches =
+            if crate::client::built_in_provider(&request.model_rung.provider.0) == "opencode" {
+                before.label(label::READ_ONLY).is_none()
+                    && before.label(label::OPERATOR_ACCEPTED_FALLBACK) == Some(fallback_hash)
+            } else {
+                before.label(label::READ_ONLY) == Some("true")
+                    && before.label(label::OPERATOR_ACCEPTED_FALLBACK).is_none()
+            };
         if before.label(label::SEAT_BINDING) != Some(expected_seat.as_str())
             || before.label(label::CONSULTATION_RUN).is_none()
             || !restriction_matches
