@@ -67640,15 +67640,17 @@ fn seat_topology_node(
         .topology_node_id
 }
 
-/// Preview proves the bound ECP, and proving it writes nothing.
+/// Lineage refuses a preview whose control-plane container the runtime no
+/// longer holds.
 ///
-/// Operation 4 used to plan a retirement having proved no placement at all. A
-/// preview that cannot prove the container the seat hangs off is a preview of a
-/// retirement against a place that may not be there, so it refuses — and
-/// because the proof is an exact-id readback, refusing costs no native effect,
-/// no seat movement and no receipt.
+/// Missing-container coverage for the placement check inside
+/// `hosted_seat_lineage`: the seat's stored ECP cannot be observed, so lineage
+/// answers `placement_blocked` before anything is planned. The exact native-id
+/// and root drifts are covered by
+/// `route_preview_refuses_exact_container_drift_with_node_and_membership_preserved`.
+/// Refusing costs no native effect, no seat movement and no receipt.
 #[tokio::test]
-async fn route_preview_proves_the_bound_ecp_and_refuses_without_writing() {
+async fn route_preview_refuses_a_missing_container_through_lineage() {
     let (composed, binding, native, generation) = hosted_tpm_seat(
         "/tmp/kontor-8234-op4-preview",
         "asma-8234-op4-preview-seats",
@@ -67682,9 +67684,11 @@ async fn route_preview_proves_the_bound_ecp_and_refuses_without_writing() {
     .signed_as(world, "admin")
     .send(world)
     .await;
-    assert_ne!(
-        refused.status, 200,
-        "a preview proved nothing and answered anyway: {}",
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.code(), "placement_blocked", "{}", refused.body);
+    assert!(
+        refused.body.contains("not in the ECP workspace"),
+        "the refusal must be lineage's placement rule: {}",
         refused.body
     );
     assert!(
@@ -67708,15 +67712,16 @@ async fn route_preview_proves_the_bound_ecp_and_refuses_without_writing() {
     );
 }
 
-/// Apply re-proves the ECP before the retirement, and drift stops it there.
+/// Lineage re-runs in the apply re-plan, and a container that disappeared
+/// after preview stops the retirement there.
 ///
-/// The preview proved a container; by apply the runtime no longer holds it.
-/// The retirement is irreversible, so the proof is taken again on the apply
-/// path before any predecessor effect. Predecessor, session and SeatBinding all
-/// stay live, no successor is created, and nothing is archived, launched or
-/// written to history.
+/// The preview was planned while the ECP was still held. By apply the runtime
+/// no longer holds it, so the re-plan's lineage check refuses with
+/// `placement_blocked` before any predecessor effect. Predecessor, session and
+/// SeatBinding all stay live, no successor is created, and nothing is archived,
+/// launched or written to history.
 #[tokio::test]
-async fn route_apply_reproves_the_ecp_before_retiring_and_drift_retires_nothing() {
+async fn route_apply_refuses_a_container_missing_after_preview_through_lineage() {
     let (composed, binding, native, generation) =
         hosted_tpm_seat("/tmp/kontor-8234-op4-drift", "asma-8234-op4-drift-seats").await;
     let world = &composed.world;
@@ -67742,9 +67747,11 @@ async fn route_apply_reproves_the_ecp_before_retiring_and_drift_retires_nothing(
     .with_key("asma-8234-op4-drift")
     .send(world)
     .await;
-    assert_ne!(
-        refused.status, 200,
-        "apply retired against a container it could not re-prove: {}",
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.code(), "placement_blocked", "{}", refused.body);
+    assert!(
+        refused.body.contains("not in the ECP workspace"),
+        "the refusal must be lineage's placement rule: {}",
         refused.body
     );
     assert!(

@@ -9510,37 +9510,6 @@ impl Services {
                 },
             ));
         }
-        // The seat's bound ECP is proved here, in the preview, by an exact-id
-        // readback that creates, renames, archives and launches nothing. Apply
-        // re-plans and compares the hash below, so a container that moves
-        // between preview and apply expires the preview instead of being
-        // retired against.
-        //
-        // Proved only when a native replacement is actually in prospect. The
-        // same predicate `needs_native_replacement` applies: a correction that
-        // retires nothing has no placement to name, and an already-recorded
-        // success reads its successor back rather than touching the runtime a
-        // second time.
-        let will_replace_native =
-            successor.is_none() && (predecessor.model_rung != desired || stale_native_recovery);
-        // The proof's worth is its refusal, not its value: apply takes its own
-        // proof immediately before the retirement, and that is the snapshot the
-        // placement is built from. Here it answers one question — can this
-        // correction be previewed at all against a container the runtime still
-        // holds — and refuses the preview when it cannot.
-        if will_replace_native {
-            let control_node = state
-                .with_store(|store| store.get_topology_node(project_id, binding.topology_node_id))
-                .map_err(|error| self.refuse(&error))?
-                .ok_or_else(|| {
-                    self.deny(
-                        ApiErrorCode::PlacementBlocked,
-                        "the Core Team control-plane node no longer exists",
-                    )
-                })?;
-            self.prove_existing_bound_container(project_id, &control_node)
-                .await?;
-        }
         let mut preview_document = serde_json::json!({
             "schema_version": 1,
             "operation": "core_team_route_correction",
@@ -35581,6 +35550,11 @@ impl ApplicationOperations for Services {
         task_id: TaskId,
         request: &WorktreeClaimCorrectionApplyRequest,
     ) -> Result<WorktreeClaimCorrectionAppliedDto, ApiError> {
+        // Serialize the claim change with native placement repairs: a recovery
+        // that froze this claim must finish before a correction can replace it,
+        // or its successful result would land at a directory the claim no
+        // longer names.
+        let _native_lifecycle = self.native_lifecycle_change().await?;
         let state = self.state()?;
         let intent = self.worktree_claim_correction_intent(project_id, task_id, request)?;
         let target = AggregateRef::Task { task_id };

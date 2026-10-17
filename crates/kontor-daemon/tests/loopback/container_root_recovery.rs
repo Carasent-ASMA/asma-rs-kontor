@@ -385,3 +385,220 @@ async fn corrected_root_recovery_adopts_one_unacknowledged_candidate_at_the_curr
         "adopt without creating another native"
     );
 }
+
+/// A task with a module and no live run, placed and materialized, whose
+/// persisted container binding still names an older directory than the claim.
+async fn claim_recovery_race_fixture() -> (World, ProjectId, TaskId, TopologyNodeId) {
+    let world = World::open_empty_with_a_plane().await;
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let created = ensure_project(
+        &world,
+        "claim-recovery-race",
+        "Claim recovery race",
+        "/tmp/kontor-claim-recovery-race",
+    )
+    .await;
+    let project = ProjectId::parse(created.json()["project_id"].as_str().expect("project"))
+        .expect("a canonical project id");
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Claim recovery race",
+            &category,
+            serde_json::json!([{
+                "title": "Moved container",
+                "module": "_tools/asma-rs-kontor",
+            }]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("claim-race-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("epic").to_owned();
+    let task = TaskId::parse(
+        applied.json()["tasks"][0]["task_id"]
+            .as_str()
+            .expect("task"),
+    )
+    .expect("a canonical task id");
+    confirm_test_epic_identity(&world, &project.to_string(), &epic);
+    materialize_test_provider_topology(
+        &world,
+        &project.to_string(),
+        revision,
+        &epic,
+        &task.to_string(),
+        "claim-race",
+    )
+    .await;
+    let node = world.daemon.state().with_store(|store| {
+        store
+            .get_task_topology_node(project, task)
+            .expect("node reads")
+            .expect("the task has a topology node")
+            .id
+    });
+    (world, project, task, node)
+}
+
+/// A worktree-claim correction cannot overtake a recovery that froze the claim.
+///
+/// The recovery reads the claim, then builds a native at it. If a correction
+/// could land between those two steps, the recovery would successfully bind a
+/// directory the claim no longer names. Both writers now take the same native
+/// lifecycle lock, so the correction waits here while the recovery is held at
+/// its create, and applies only after the recovery's result is durable.
+#[tokio::test]
+async fn a_worktree_claim_correction_waits_for_a_container_recovery_in_flight() {
+    let (world, project, task, node) = claim_recovery_race_fixture().await;
+    let claim = world
+        .daemon
+        .state()
+        .with_store(|store| store.task_worktree(project, task))
+        .expect("claim reads")
+        .expect("the task claims a worktree");
+    let task_revision = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_task(project, task))
+        .expect("task reads")
+        .expect("task exists")
+        .revision;
+    let jira_key = world
+        .daemon
+        .state()
+        .with_store(|store| store.confirmed_jira_task_key(project, task))
+        .expect("Jira binding reads")
+        .expect("the task has a confirmed Jira key");
+    let corrected = format!(
+        "/tmp/kontor-claim-recovery-race/.worktrees/{}/asma-rs-kontor",
+        jira_key.as_str().to_ascii_lowercase()
+    );
+
+    // The binding names a directory the task no longer claims, and the native
+    // is gone, so recovery is a positively vacant recreation at the claim it
+    // freezes.
+    let previous = world.directory.path().join("previous-container-root");
+    std::fs::create_dir(&previous).expect("the previous root exists");
+    let previous = std::fs::canonicalize(&previous).expect("the previous root canonicalizes");
+    let db = rusqlite::Connection::open(world.directory.path().join("kontor.db")).expect("db");
+    db.execute(
+        "UPDATE topology_node_containers SET canonical_cwd=?1, revision=revision+1 WHERE topology_node_id=?2",
+        rusqlite::params![previous.to_str().expect("utf-8"), node.to_string()],
+    )
+    .expect("the stale binding moves");
+    world.fake.forget_container(node);
+
+    let project_revision = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_project(project))
+        .expect("project reads")
+        .expect("project exists")
+        .revision;
+    let preview = Call::post(
+        format!("/v1/projects/{project}/topology/nodes/{node}/container:recovery-preview"),
+        &serde_json::json!({"expected_revision": project_revision}),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert_eq!(preview.json()["disposition"], "recreate_absent");
+    assert_eq!(
+        preview.json()["canonical_cwd"],
+        std::fs::canonicalize(claim.as_str())
+            .expect("the claim canonicalizes")
+            .to_str()
+            .expect("utf-8")
+    );
+
+    let correction_uri = format!("/v1/projects/{project}/tasks/{task}/worktree-claim");
+    let correction_body = serde_json::json!({
+        "expected_revision": task_revision,
+        "old_worktree": claim.as_str(),
+        "new_worktree": corrected,
+    });
+    let correction_preview = Call::post(format!("{correction_uri}:preview"), &correction_body)
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+    assert_eq!(
+        correction_preview.status, 200,
+        "{}",
+        correction_preview.body
+    );
+    assert_eq!(correction_preview.json()["new_worktree"], corrected);
+    let mut correction_apply = correction_body.clone();
+    correction_apply["preview_hash"] = correction_preview.json()["preview_hash"].clone();
+
+    let pause = world.fake.pause_next_container_create();
+    let recovery = async {
+        Call::post(
+            format!("/v1/projects/{project}/topology/nodes/{node}/container:recovery-apply"),
+            &serde_json::json!({
+                "expected_revision": project_revision,
+                "preview_hash": preview.json()["preview_hash"],
+            }),
+        )
+        .signed_as(&world, "admin")
+        .with_key("claim-race-recovery")
+        .send(&world)
+        .await
+    };
+    let correction = async {
+        pause.entered().await;
+        Call::post(format!("{correction_uri}:apply"), &correction_apply)
+            .signed_as(&world, "operator")
+            .with_key("claim-race-correction")
+            .send(&world)
+            .await
+    };
+    let release = async {
+        pause.entered().await;
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        let held = world
+            .daemon
+            .state()
+            .with_store(|store| store.task_worktree(project, task))
+            .expect("claim reads")
+            .expect("the task still claims its worktree");
+        assert_eq!(
+            held, claim,
+            "the correction changed the claim while the recovery held the native lifecycle lock"
+        );
+        pause.release();
+    };
+    let (recovered, corrected_answer, ()) = tokio::join!(recovery, correction, release);
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    assert_eq!(corrected_answer.status, 200, "{}", corrected_answer.body);
+
+    let bound = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_topology_node_container(project, node))
+        .expect("binding reads")
+        .expect("the node is bound");
+    assert_eq!(
+        bound
+            .canonical_cwd
+            .expect("the replacement names its root")
+            .as_str(),
+        std::fs::canonicalize(claim.as_str())
+            .expect("the claim canonicalizes")
+            .to_str()
+            .expect("utf-8")
+    );
+    let stored = world
+        .daemon
+        .state()
+        .with_store(|store| store.task_worktree(project, task))
+        .expect("claim reads")
+        .expect("the task claims a worktree");
+    assert_eq!(stored.as_str(), corrected);
+}
