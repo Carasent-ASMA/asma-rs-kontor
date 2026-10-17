@@ -556,6 +556,59 @@ fn a_group_or_world_writable_releases_directory_is_refused_before_any_effect() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn a_group_or_world_writable_internal_directory_is_refused_before_recovery() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let world = World::new();
+    world.install();
+    let pointer = std::fs::read_link(world.install_root.join("current")).expect("pointer");
+    let internal = world.install_root.join(".kontor-bootstrap");
+    std::fs::set_permissions(&internal, std::fs::Permissions::from_mode(0o777)).expect("chmod");
+    let manifest: Value =
+        serde_json::from_str(&std::fs::read_to_string(&world.manifest).expect("manifest"))
+            .expect("manifest json");
+    let nonce = "123-456";
+    let generation = format!("{}-{nonce}", manifest["release"].as_str().expect("release"));
+    let journal = serde_json::json!({
+        "schema_version": 2,
+        "nonce": nonce,
+        "generation": generation,
+        "state": "staged",
+        "manifest": manifest,
+        "previous": null,
+    });
+    std::fs::write(
+        internal.join("journal.json"),
+        serde_json::to_vec(&journal).expect("journal"),
+    )
+    .expect("write journal");
+    let staging = internal.join(format!("staging-{nonce}"));
+    std::fs::create_dir(&staging).expect("staging");
+    std::fs::write(staging.join("planted"), b"planted").expect("planted");
+    let before = std::fs::read(internal.join("journal.json")).expect("journal");
+
+    let mut arguments = vec!["install".to_owned()];
+    arguments.extend(world.common());
+    arguments.push("--source-dir".to_owned());
+    arguments.push(world.source_dir.to_str().expect("utf8").to_owned());
+    let refs: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    let (document, success, stdout) = world.run(&refs);
+    assert!(!success, "{stdout}");
+    assert_eq!(document["error"]["code"], "install_root_invalid");
+    assert_eq!(
+        std::fs::read_link(world.install_root.join("current")).expect("pointer"),
+        pointer,
+        "the active pointer was not changed"
+    );
+    assert_eq!(
+        std::fs::read(internal.join("journal.json")).expect("journal"),
+        before,
+        "the planted journal was not acted on"
+    );
+}
+
 #[test]
 fn an_unknown_client_is_refused_without_reflection() {
     let world = World::new();

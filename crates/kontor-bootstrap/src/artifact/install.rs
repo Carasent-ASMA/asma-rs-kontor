@@ -170,6 +170,9 @@ pub enum InstallError {
     /// The install root itself (or its internal state directory) is a symlink.
     #[error("the install root may not be a symlink")]
     SymlinkRoot,
+    /// The internal state directory is not private to the effective user.
+    #[error("the install root is writable by another local user")]
+    InsecureRoot,
     /// Another bootstrap holds the install root.
     #[error("another bootstrap holds this install root")]
     Locked,
@@ -1250,6 +1253,10 @@ impl Installer {
 
     fn lock(&self, root: &Dir) -> Result<InstallLock, InstallError> {
         let internal = root.open_child_or_create(INTERNAL_DIR, INTERNAL_MODE)?;
+        let (owner, mode) = internal.owner_and_mode()?;
+        if owner != crate::confinement::effective_user() || mode & 0o022 != 0 {
+            return Err(InstallError::InsecureRoot);
+        }
         let file = match internal.kind_child(LOCK_FILE)? {
             Some(crate::confinement::NodeKind::Symlink) => {
                 return Err(InstallError::SymlinkRoot);

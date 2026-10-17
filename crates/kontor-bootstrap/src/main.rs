@@ -15,8 +15,8 @@ use kontor_bootstrap::client::claude::UnavailableClaudeBoundary;
 use kontor_bootstrap::confinement::{ConfinementError, Dir, effective_user};
 use kontor_bootstrap::{
     AdapterResult, ArtifactManifest, BootstrapReceipt, ClaudeAdapter, ClientAdapter, ClientFailure,
-    ClientHome, ClientId, ClientReport, FileClientAdapter, Installer, NoFaults, ObservedHash,
-    OwnershipStore, ServerSpec,
+    ClientHome, ClientId, ClientReport, FileClientAdapter, InstallError, Installer, NoFaults,
+    ObservedHash, OwnershipStore, ServerSpec,
 };
 
 type Failure = (&'static str, String);
@@ -322,7 +322,10 @@ fn install(
 
     let outcome = installer
         .install(&manifest, &sources, &source, &mut NoFaults)
-        .map_err(|error| ("artifact_install_failed", error.to_string()))?;
+        .map_err(|error| match error {
+            InstallError::InsecureRoot => ("install_root_invalid", error.to_string()),
+            _ => ("artifact_install_failed", error.to_string()),
+        })?;
 
     let mut receipt = BootstrapReceipt::from_install(&manifest, outcome);
     let mut first_failure = None;
@@ -442,7 +445,10 @@ fn recover(install_root: &Path, manifest_path: &Path) -> Result<String, Failure>
         .map_err(|error| ("install_root_invalid", error.to_string()))?;
     let outcome = installer
         .recover(&mut NoFaults)
-        .map_err(|error| ("artifact_recovery_failed", error.to_string()))?;
+        .map_err(|error| match error {
+            InstallError::InsecureRoot => ("install_root_invalid", error.to_string()),
+            _ => ("artifact_recovery_failed", error.to_string()),
+        })?;
     let statuses = installer
         .status(&manifest)
         .map_err(|error| ("artifact_readback_failed", error.to_string()))?;
