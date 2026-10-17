@@ -35,15 +35,17 @@ typecheck exit=0
 
 $ pnpm --filter @carasent/kontor-paseo-plugin test
 Test Files  5 passed (5)
-     Tests  37 passed (37)
+     Tests  38 passed (38)
 ```
 
 ## Isolated closure run
 
 `apps/paseo-plugin/scripts/closure-suite.sh` creates a disposable Paseo home
 under the system temp directory, a free loopback port and its own git fixture.
-It does not read or write `~/.paseo`, does not restart the live daemon and does
-not touch the running PR-desk agents.
+It starts the daemon with `KONTOR_PLUGIN_MCP=off`, so the plugin never reaches
+the live state root or the live realm. It does not read or write `~/.paseo`,
+does not restart the live daemon and does not touch the running PR-desk
+agents.
 
 Install readback:
 
