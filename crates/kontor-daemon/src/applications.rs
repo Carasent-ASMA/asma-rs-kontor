@@ -322,10 +322,10 @@ use kontor_scheduler::{
 use kontor_store::authority::{AuthorityError, SubjectOrigins};
 use kontor_store::publication::{NewPublicationAttestation, PublicationAttestation};
 use kontor_store::{
-    AdmissionCommit, AdmissionScanKey, Applied, AuthorizationRevocation, BacklogImport,
-    ConsultationPermissionDecision, ConsultationPermissionResponseStatus, EpicApplication,
-    EpicExecutionScopeDeclaration, EpicTask, EpicTicketLink, IdempotencyBinding, JiraIntentKind,
-    JiraItemKind, JiraMaterializationRecoveryItem, NewJiraMaterializationBatch,
+    AdmissionCommit, AdmissionScanKey, Applied, AppliedEpic, AuthorizationRevocation,
+    BacklogImport, ConsultationPermissionDecision, ConsultationPermissionResponseStatus,
+    EpicApplication, EpicExecutionScopeDeclaration, EpicTask, EpicTicketLink, IdempotencyBinding,
+    JiraIntentKind, JiraItemKind, JiraMaterializationRecoveryItem, NewJiraMaterializationBatch,
     NewJiraMaterializationItem, NewRoleTurn, ProfileSelection, ProjectEnsure, RegisteredPack,
     RoleTurnReplay, RoleTurnRuntimeProof, SettledTurn, SqliteStore, StoredConflict,
     StoredConsultationPermissionResponse, StoredTeamDraft, StoredTeamsProjection,
@@ -32845,47 +32845,61 @@ impl ApplicationOperations for Services {
         // queued writer refuses all new native work until its turn, and a fresh
         // or unchanged apply has no claim a recovery could freeze. The lock is
         // released before governance, which takes its own native-activity read.
-        let native_lifecycle =
-            if self.apply_epic_moves_worktree_claim(project_id, &request.name, &tasks)? {
-                Some(self.native_lifecycle_change().await?)
-            } else {
-                None
-            };
+        //
+        // The claim decision and the write share one store hold, so no other
+        // apply can move a claim between them and make an apparently unchanged
+        // apply write a moved claim without the lock. A decision that does move
+        // a claim releases that hold, takes the lifecycle lock, and retries the
+        // write under it; that retry sees every claim the wait made durable.
         let seed = AdaptivePosition::initial(self.capacity.adaptive);
+        let write = |store: &SqliteStore| -> Result<AppliedEpic, RepositoryError> {
+            let applied = store.apply_epic(&EpicApplication {
+                project_id,
+                name: request.name.clone(),
+                epic_backlog_code: epic_backlog_code.as_ref(),
+                execution_scope: execution_scope.as_ref(),
+                tasks: &tasks,
+                profile: &bundle.profile,
+                definition: &bundle.profile.definition,
+                team: bundle.team.as_ref(),
+                team_source,
+                applied_at: now,
+            })?;
+            // Seeded once, when the epic first exists. Applying the same
+            // epic again is idempotent and must stay that way — and it must
+            // not reset a position later observations have already moved.
+            if store
+                .get_adaptive_admission_state(project_id, applied.mini_project_id)?
+                .is_none()
+            {
+                store.create_adaptive_admission_state(&NewAdaptiveAdmissionState {
+                    project_id,
+                    mini_project_id: applied.mini_project_id,
+                    current_window: seed.current_window,
+                    clean_observation_streak: seed.clean_observation_streak,
+                    last_observation_id: seed.last_observation_id.clone(),
+                    created_at: now,
+                })?;
+            }
+            Ok(applied)
+        };
         let applied = state
             .with_store(|store| {
-                let applied = store.apply_epic(&EpicApplication {
-                    project_id,
-                    name: request.name.clone(),
-                    epic_backlog_code: epic_backlog_code.as_ref(),
-                    execution_scope: execution_scope.as_ref(),
-                    tasks: &tasks,
-                    profile: &bundle.profile,
-                    definition: &bundle.profile.definition,
-                    team: bundle.team.as_ref(),
-                    team_source,
-                    applied_at: now,
-                })?;
-                // Seeded once, when the epic first exists. Applying the same
-                // epic again is idempotent and must stay that way — and it must
-                // not reset a position later observations have already moved.
-                if store
-                    .get_adaptive_admission_state(project_id, applied.mini_project_id)?
-                    .is_none()
-                {
-                    store.create_adaptive_admission_state(&NewAdaptiveAdmissionState {
-                        project_id,
-                        mini_project_id: applied.mini_project_id,
-                        current_window: seed.current_window,
-                        clean_observation_streak: seed.clean_observation_streak,
-                        last_observation_id: seed.last_observation_id.clone(),
-                        created_at: now,
-                    })?;
+                if self.apply_epic_moves_worktree_claim(store, project_id, &request.name, &tasks)? {
+                    return Ok(None);
                 }
-                Ok::<_, RepositoryError>(applied)
+                write(store).map(Some)
             })
             .map_err(|error| self.refuse(&error))?;
-        drop(native_lifecycle);
+        let applied = match applied {
+            Some(applied) => applied,
+            None => {
+                let _native_lifecycle = self.native_lifecycle_change().await?;
+                state
+                    .with_store(&write)
+                    .map_err(|error| self.refuse(&error))?
+            }
+        };
 
         // Before governance can remove the scheduler's ungoverned barrier,
         // persist the optional covering authorization already revoked.
@@ -44599,38 +44613,34 @@ impl Services {
 
     /// Whether this apply would move an existing task's worktree claim.
     ///
-    /// A container recovery freezes the claims it plans against, builds a
-    /// native at those directories, and only then binds it. The one epic write
-    /// that can land inside that window is a claim write, so only it has to
-    /// hold the native lifecycle lock. A new epic, a task this apply creates,
-    /// and an identical re-apply write no claim and must not wait behind native
-    /// work: a queued writer refuses every new native operation in the realm
-    /// until it gets its turn.
+    /// The caller holds the store, so this decision and the write it guards see
+    /// the same claims. A container recovery freezes the claims it plans
+    /// against, builds a native at those directories, and only then binds it.
+    /// The one epic write that can land inside that window is a claim write, so
+    /// only it has to hold the native lifecycle lock. A new epic, a task this
+    /// apply creates, and an identical re-apply write no claim and must not
+    /// wait behind native work: a queued writer refuses every new native
+    /// operation in the realm until it gets its turn.
     fn apply_epic_moves_worktree_claim(
         &self,
+        store: &SqliteStore,
         project_id: ProjectId,
         name: &ExternalName,
         tasks: &[EpicTask],
-    ) -> Result<bool, ApiError> {
-        let state = self.state()?;
-        let Some(epic) = state
-            .with_store(|store| store.list_mini_projects(project_id))
-            .map_err(|error| self.refuse(&error))?
+    ) -> Result<bool, RepositoryError> {
+        let Some(epic) = store
+            .list_mini_projects(project_id)?
             .into_iter()
             .find(|epic| &epic.name == name)
         else {
             return Ok(false);
         };
-        let stored = state
-            .with_store(|store| store.list_epic_tasks(project_id, epic.id))
-            .map_err(|error| self.refuse(&error))?;
+        let stored = store.list_epic_tasks(project_id, epic.id)?;
         for plan in tasks {
             let Some(task) = stored.iter().find(|task| task.title == plan.title) else {
                 continue;
             };
-            let current = state
-                .with_store(|store| store.task_worktree(project_id, task.id))
-                .map_err(|error| self.refuse(&error))?;
+            let current = store.task_worktree(project_id, task.id)?;
             // The same fallback `apply_epic` writes: a declared claim always,
             // else the derived one only where nothing was ever declared.
             let writes_claim = match (&plan.worktree, &plan.derived_worktree) {
