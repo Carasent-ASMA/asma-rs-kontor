@@ -489,9 +489,7 @@ fn a_failed_client_still_writes_a_receipt_and_the_run_continues() {
     use std::os::unix::fs::PermissionsExt;
     let world = World::new();
     let codex = world.home_root.join(".codex");
-    let mut permissions = std::fs::metadata(&codex)
-        .expect("metadata")
-        .permissions();
+    let mut permissions = std::fs::metadata(&codex).expect("metadata").permissions();
     permissions.set_mode(0o500);
     std::fs::set_permissions(&codex, permissions).expect("chmod");
     let mut arguments = vec!["install".to_owned()];
@@ -500,9 +498,7 @@ fn a_failed_client_still_writes_a_receipt_and_the_run_continues() {
     arguments.push(world.source_dir.to_str().expect("utf8").to_owned());
     let refs: Vec<&str> = arguments.iter().map(String::as_str).collect();
     let (document, success, _) = world.run(&refs);
-    let mut restore = std::fs::metadata(&codex)
-        .expect("metadata")
-        .permissions();
+    let mut restore = std::fs::metadata(&codex).expect("metadata").permissions();
     restore.set_mode(0o700);
     std::fs::set_permissions(&codex, restore).expect("restore");
 

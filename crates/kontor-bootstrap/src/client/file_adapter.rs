@@ -340,7 +340,12 @@ impl FileClientAdapter {
                     EntryState::Unrelated { observed }
                 } else {
                     let desired = desired_entry(self.client, spec);
-                    super::classify(&value, &desired, ledger.owns(self.client, &observed))
+                    super::classify(
+                        &value,
+                        &desired,
+                        ledger.owns(self.client, &observed)
+                            || ledger.pending_owns(self.client, &observed),
+                    )
                 }
             }
         };
@@ -465,6 +470,13 @@ impl FileClientAdapter {
                 Ok(Some(bytes)) if bytes == edited.as_bytes() => {}
                 _ => return Err(AdapterError::ConcurrentChange),
             }
+            // The pending provenance is durable before the configuration
+            // commits, so a replay can complete ownership if this process is
+            // interrupted between the write and the ledger update.
+            let desired = desired_entry(self.client, spec);
+            let desired_hash = ObservedHash::of_value(&desired);
+            self.ownership
+                .begin(self.client, &desired_hash, &desired_hash)?;
             match &observed.original {
                 None => {
                     // Creation is no-replace; the named temporary is
@@ -649,6 +661,25 @@ impl FileClientAdapter {
         }
     }
 
+    /// Complete the ownership record for a write a replay verified.
+    ///
+    /// A pending record is durable before the configuration commits. When the
+    /// observed entry is exactly that pending snapshot, the write did land and
+    /// only the post-write ledger update was lost, so complete it now.
+    fn adopt_pending(
+        &self,
+        spec: &ServerSpec,
+        observed: &ObservedHash,
+    ) -> Result<(), AdapterError> {
+        let ledger = self.ownership.load()?;
+        if ledger.owns(self.client, observed) || !ledger.pending_owns(self.client, observed) {
+            return Ok(());
+        }
+        let desired = desired_entry(self.client, spec);
+        self.ownership
+            .record(self.client, observed, &ObservedHash::of_value(&desired))
+    }
+
     /// Render the complete new file text for one desired entry.
     fn render(
         &self,
@@ -751,7 +782,10 @@ impl ClientAdapter for FileClientAdapter {
                     other => other,
                 })
             }
-            EntryState::Current { .. } => Ok(AdapterResult::AlreadyCurrent),
+            EntryState::Current { observed } => {
+                self.adopt_pending(spec, observed)?;
+                Ok(AdapterResult::AlreadyCurrent)
+            }
             EntryState::ManagedStale { observed: _ } => self.write(spec, &state, faults),
             EntryState::Unrelated { observed } => Ok(AdapterResult::Conflict {
                 reason: ConflictReason::SameNameUnrelated,
@@ -774,7 +808,10 @@ impl ClientAdapter for FileClientAdapter {
         match &state {
             EntryState::ClientAbsent | EntryState::EntryAbsent => Ok(AdapterResult::Absent),
             EntryState::Unsupported => Ok(AdapterResult::Unsupported),
-            EntryState::Current { .. } => Ok(AdapterResult::AlreadyCurrent),
+            EntryState::Current { observed } => {
+                self.adopt_pending(spec, observed)?;
+                Ok(AdapterResult::AlreadyCurrent)
+            }
             EntryState::ManagedStale { observed } | EntryState::Unrelated { observed } => {
                 if observed != expected {
                     return Ok(AdapterResult::Conflict {

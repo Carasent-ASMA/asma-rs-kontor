@@ -249,9 +249,7 @@ fn seed_entry(fixture: &Fixture, value: &Value) {
                 toml_args(&value["args"])
             ));
         }
-        ClientId::OpenCode => {
-            fixture.write(&json!({"mcp": {"kontor": value}}).to_string())
-        }
+        ClientId::OpenCode => fixture.write(&json!({"mcp": {"kontor": value}}).to_string()),
         ClientId::Copilot => fixture.write(&json!({"servers": {"kontor": value}}).to_string()),
         ClientId::Cursor => fixture.write(&json!({"mcpServers": {"kontor": value}}).to_string()),
         ClientId::ClaudeCode => unreachable!(),
@@ -1761,6 +1759,44 @@ fn a_failed_readback_does_not_record_ownership() {
             ),
             "{client}: a failed readback must not claim ownership"
         );
+    }
+}
+
+#[test]
+fn a_replay_after_an_interrupted_write_completes_ownership() {
+    for client in FileClientAdapter::FILE_CLIENTS {
+        let fixture = Fixture::new(client);
+        fixture.present();
+        let first = spec("/synthetic/one");
+        let second = spec("/synthetic/two");
+        assert_eq!(
+            fixture.install(&first),
+            AdapterResult::Installed,
+            "{client}"
+        );
+        let mut faults = ScriptedFaults::failing_at(FailPoint::AfterClientWrite(client));
+        let mut adapter = fixture.adapter.clone();
+        assert_eq!(
+            adapter.install(&second, &mut faults),
+            Err(AdapterError::Injected),
+            "{client}: the interruption lands after the configuration write"
+        );
+        assert!(
+            !fixture.owns(&desired_value(client, &second)),
+            "{client}: the ledger update was lost"
+        );
+        // Replay verifies the landed snapshot and completes ownership.
+        assert_eq!(
+            fixture.install(&second),
+            AdapterResult::AlreadyCurrent,
+            "{client}"
+        );
+        assert!(
+            fixture.owns(&desired_value(client, &second)),
+            "{client}: the replay completes ownership"
+        );
+        // A later update proceeds instead of reporting SameNameUnrelated.
+        assert_eq!(fixture.install(&first), AdapterResult::Updated, "{client}");
     }
 }
 

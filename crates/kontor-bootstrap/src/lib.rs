@@ -47,7 +47,8 @@ pub use client::{
 };
 pub use fault::{FailPoint, FaultInjector, NoFaults};
 pub use receipt::{
-    ArtifactDisposition, ArtifactReceipt, BootstrapReceipt, ClientFailure, ClientReport, ReceiptError,
+    ArtifactDisposition, ArtifactReceipt, BootstrapReceipt, ClientFailure, ClientReport,
+    ReceiptError,
 };
 pub use service::{
     FakeServiceManager, ServiceCall, ServiceError, ServicePlan, ServicePlatform, ServiceReceipt,

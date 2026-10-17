@@ -507,7 +507,8 @@ fn an_unrestorable_failed_replacement_is_reported_as_restore_failed() {
 }
 
 #[test]
-fn a_write_that_does_not_read_back_is_failed_readback_without_ownership() {    struct Vanish;
+fn a_write_that_does_not_read_back_is_failed_readback_without_ownership() {
+    struct Vanish;
 
     impl ClaudeBoundary for Vanish {
         fn get(&mut self, _name: &str) -> Result<Option<Value>, ClaudeBoundaryError> {
