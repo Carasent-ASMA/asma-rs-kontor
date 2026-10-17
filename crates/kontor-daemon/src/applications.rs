@@ -21665,6 +21665,12 @@ impl Services {
                     "the runtime settings document is not a regular file this realm may rewrite",
                 )
                 .advising("replace the symlink with the settings file itself, then retry"),
+            MarkerError::Busy => self
+                .deny(
+                    ApiErrorCode::Unavailable,
+                    "another writer holds the runtime settings lock",
+                )
+                .advising("wait for that writer to finish, then retry"),
             MarkerError::Changed => self
                 .deny(
                     ApiErrorCode::RevisionConflict,
