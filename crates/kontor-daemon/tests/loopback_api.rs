@@ -51835,6 +51835,50 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
     );
 
     // Another real epic has a durable completion to leak if scope is bypassed.
+    // Materialize its control plane first, so its own LSA and TPM seats exist
+    // and the refusal below is the epic-membership fence rather than "this
+    // epic has no control plane".
+    let other_epic_read = Call::get(format!("/v1/projects/{project}/epics/{}", composed.epic))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(other_epic_read.status, 200, "{}", other_epic_read.body);
+    let other_materialized = Call::post(
+        format!(
+            "/v1/projects/{project}/epics/{}/core-team/seats:materialize",
+            composed.epic
+        ),
+        &serde_json::json!({"expected_revision": other_epic_read.json()["revision"]}),
+    )
+    .signed_as(world, "admin")
+    .with_key("op06-other-epic-materialize")
+    .send(world)
+    .await;
+    assert_eq!(
+        other_materialized.status, 200,
+        "{}",
+        other_materialized.body
+    );
+    let other_seats = other_materialized.json()["core_team"]["seats"]
+        .as_array()
+        .expect("core seats")
+        .clone();
+    for role in ["LSA", "TPM"] {
+        let other_seat = SeatBindingId::parse(
+            other_seats
+                .iter()
+                .find(|entry| entry["role"]["role_code"] == role)
+                .unwrap_or_else(|| panic!("the other epic's {role} seat"))["seat_binding_id"]
+                .as_str()
+                .unwrap_or_else(|| panic!("a bound {role} seat")),
+        )
+        .expect("a seat binding id");
+        assert_ne!(
+            other_seat,
+            seat_of(role),
+            "the other epic must hold its own {role}"
+        );
+    }
     let mut other_completion = seed(&ticket_phase);
     other_completion.mini_project_id = MiniProjectId::parse(&composed.epic).unwrap();
     world
@@ -51854,11 +51898,12 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
         let cross_epic = scoped_completion(actor, 1, project, &composed.epic)
             .send(world)
             .await;
-        assert!(
-            matches!(cross_epic.status.as_u16(), 403 | 409),
-            "cross-epic read was not refused: {}",
+        assert_eq!(
+            cross_epic.status, 403,
+            "another epic's leadership must not read this completion: {}",
             cross_epic.body
         );
+        assert_eq!(cross_epic.code(), "forbidden");
         assert!(cross_epic.json().get("state").is_none());
     }
     let foreign_project = ensure_project(
