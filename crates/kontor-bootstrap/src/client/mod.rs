@@ -590,7 +590,8 @@ impl OwnershipStore {
         match Dir::open_root(&self.state_root) {
             Ok(dir) => Ok(dir),
             Err(ConfinementError::Missing) => {
-                std::fs::create_dir_all(&self.state_root).map_err(|_| AdapterError::Io)?;
+                crate::confinement::create_private_dir_all(&self.state_root)
+                    .map_err(|_| AdapterError::Io)?;
                 Dir::open_root(&self.state_root).map_err(AdapterError::from)
             }
             Err(error) => Err(error.into()),

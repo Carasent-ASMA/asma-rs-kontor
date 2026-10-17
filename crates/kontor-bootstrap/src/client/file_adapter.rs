@@ -7,11 +7,11 @@
 //! snapshot, and requires bootstrap-owned provenance (or an explicit repair
 //! digest) before replacing anything.
 //!
-//! The shapes follow the KON-OP-08 table: `[mcp_servers.kontor]` for Codex,
-//! `servers.kontor` stdio for Copilot, and `mcpServers.kontor` for Cursor.
-//! OpenCode deliberately differs from that table's `mcp.servers.kontor` row:
-//! OpenCode resolves the flat `mcp.kontor` member, so that is the entry path
-//! (see the dated correction beside that row).
+//! The shapes follow the KON-OP-08 table as corrected: `[mcp_servers.kontor]`
+//! for Codex, `mcpServers.kontor` stdio for Copilot, and `mcpServers.kontor`
+//! for Cursor. OpenCode deliberately differs from that table's
+//! `mcp.servers.kontor` row: OpenCode resolves the flat `mcp.kontor` member, so
+//! that is the entry path (see the dated corrections beside those rows).
 
 use std::path::{Path, PathBuf};
 
@@ -156,7 +156,7 @@ impl FileClientAdapter {
         match self.client {
             ClientId::Codex => &["mcp_servers", "kontor"],
             ClientId::OpenCode => &["mcp", "kontor"],
-            ClientId::Copilot => &["servers", "kontor"],
+            ClientId::Copilot => &["mcpServers", "kontor"],
             ClientId::Cursor => &["mcpServers", "kontor"],
             ClientId::ClaudeCode => &[],
         }
@@ -246,7 +246,7 @@ impl FileClientAdapter {
                 }
                 let parents: &[&[&str]] = match self.client {
                     ClientId::OpenCode => &[&["mcp"]],
-                    ClientId::Copilot => &[&["servers"]],
+                    ClientId::Copilot => &[&["mcpServers"]],
                     ClientId::Cursor => &[&["mcpServers"]],
                     _ => &[],
                 };

@@ -232,7 +232,7 @@ fn a_lost_owner_execute_bit_is_repaired_before_already_current() {
         std::fs::set_permissions(&mcp, std::fs::Permissions::from_mode(lost)).expect("chmod");
         assert_eq!(
             install(&installer, &version_one),
-            Ok(InstallOutcome::AlreadyCurrent),
+            Ok(InstallOutcome::ModeRepaired(vec![ArtifactName::Mcp])),
             "mode {lost:o}"
         );
         let mode = std::fs::metadata(&mcp)
@@ -268,7 +268,7 @@ fn mode_repair_does_not_require_write_access_to_other_binaries() {
     std::fs::set_permissions(&mcp, std::fs::Permissions::from_mode(0o644)).expect("chmod mcp");
     assert_eq!(
         install(&installer, &version_one),
-        Ok(InstallOutcome::AlreadyCurrent)
+        Ok(InstallOutcome::ModeRepaired(vec![ArtifactName::Mcp]))
     );
     let mcp_mode = std::fs::metadata(&mcp)
         .expect("metadata")

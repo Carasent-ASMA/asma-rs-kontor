@@ -250,7 +250,7 @@ fn seed_entry(fixture: &Fixture, value: &Value) {
             ));
         }
         ClientId::OpenCode => fixture.write(&json!({"mcp": {"kontor": value}}).to_string()),
-        ClientId::Copilot => fixture.write(&json!({"servers": {"kontor": value}}).to_string()),
+        ClientId::Copilot => fixture.write(&json!({"mcpServers": {"kontor": value}}).to_string()),
         ClientId::Cursor => fixture.write(&json!({"mcpServers": {"kontor": value}}).to_string()),
         ClientId::ClaudeCode => unreachable!(),
     }
@@ -300,7 +300,7 @@ fn assert_shape(fixture: &Fixture, spec: &ServerSpec) {
         }
         ClientId::Copilot => {
             let document: Value = serde_json::from_str(&text).expect("json");
-            assert_eq!(document["servers"]["kontor"], expected);
+            assert_eq!(document["mcpServers"]["kontor"], expected);
         }
         ClientId::Cursor => {
             let document: Value = serde_json::from_str(&text).expect("json");
@@ -766,11 +766,7 @@ fn an_existing_entry_raced_at_the_final_boundary_is_never_replaced() {
 fn an_entry_with_null_and_boolean_extras_is_not_refused() {
     for client in [ClientId::Cursor, ClientId::Copilot] {
         let fixture = Fixture::new(client);
-        let key = if client == ClientId::Cursor {
-            "mcpServers"
-        } else {
-            "servers"
-        };
+        let key = "mcpServers";
         let seed = format!(
             "{{\"{key}\":{{\"kontor\":{{\"type\":\"stdio\",\"command\":\"/usr/bin/other-mcp\",\"args\":[],\"extra\":null,\"nested\":{{\"none\":null}},\"flag\":true,\"list\":[1,null,2]}}}}}}"
         );
@@ -1307,11 +1303,7 @@ fn a_present_entry_with_an_unrepresentable_number_is_refused_never_absent() {
     for client in [ClientId::Cursor, ClientId::Copilot] {
         let fixture = Fixture::new(client);
         let desired = spec("/synthetic/realm");
-        let key = if client == ClientId::Cursor {
-            "mcpServers"
-        } else {
-            "servers"
-        };
+        let key = "mcpServers";
         // Raw text: a huge integer is intentionally outside i64/u64.
         let seed = format!(
             "{{\"{key}\":{{\"kontor\":{{\"type\":\"stdio\",\"command\":\"/usr/bin/other-mcp\",\"args\":[],\"out_of_range\":1e9999,\"huge_integer\":123456789012345678901234567890}}}}}}"

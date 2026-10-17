@@ -61,7 +61,7 @@ const BINARY_MODE: u32 = 0o755;
 const PRIVATE_MODE: u32 = 0o600;
 
 /// What one install or update did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallOutcome {
     /// No active generation existed; a new one is active.
     Installed,
@@ -69,6 +69,9 @@ pub enum InstallOutcome {
     Updated,
     /// The active generation already carries this release's digests.
     AlreadyCurrent,
+    /// The active generation already carries this release's digests, but one
+    /// or more artifacts had lost their owner execute bit and were repaired.
+    ModeRepaired(Vec<ArtifactName>),
 }
 
 /// What one recovery found and did.
@@ -448,9 +451,13 @@ impl Installer {
         if let Some(active) = active.as_ref().filter(|active| active.matches(manifest)) {
             // A verified artifact whose content is exact but whose mode lost
             // its execute bits would fail at execution. Repair the modes
-            // before reporting the generation as already current.
+            // before reporting the generation as already current, and report
+            // exactly which artifacts the repair touched.
             if !active.executable {
-                self.repair_modes(&root, &active.generation)?;
+                let repaired = self.repair_modes(&root, &active.generation)?;
+                if !repaired.is_empty() {
+                    return Ok(InstallOutcome::ModeRepaired(repaired));
+                }
             }
             return Ok(InstallOutcome::AlreadyCurrent);
         }
@@ -1177,10 +1184,15 @@ impl Installer {
     /// Only an artifact whose owner cannot execute it is repaired, and it is
     /// opened read-only: `fchmod` needs no write access to the bytes, so a
     /// read-only executable sibling or a running Linux binary does not block
-    /// the repair.
-    fn repair_modes(&self, root: &Dir, generation: &str) -> Result<(), InstallError> {
+    /// the repair. Returns the artifacts whose mode changed.
+    fn repair_modes(
+        &self,
+        root: &Dir,
+        generation: &str,
+    ) -> Result<Vec<ArtifactName>, InstallError> {
         let releases = root.open_child(RELEASES_DIR)?;
         let generation_dir = releases.open_child(generation)?;
+        let mut repaired = Vec::new();
         for name in ArtifactName::ALL {
             let mode = generation_dir
                 .child_mode(name.file_name())?
@@ -1190,8 +1202,9 @@ impl Installer {
             }
             let file = generation_dir.open_child_file_ro(name.file_name())?;
             Dir::set_file_mode(&file, BINARY_MODE)?;
+            repaired.push(name);
         }
-        Ok(())
+        Ok(repaired)
     }
 
     fn accept_sources(
@@ -1231,7 +1244,7 @@ impl Installer {
         if let Some(root) = self.open_root_if_exists()? {
             return Ok(root);
         }
-        std::fs::create_dir_all(&self.root).map_err(|_| InstallError::Io)?;
+        crate::confinement::create_private_dir_all(&self.root)?;
         self.open_root_if_exists()?.ok_or(InstallError::Io)
     }
 
