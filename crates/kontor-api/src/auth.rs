@@ -149,6 +149,25 @@ impl RealmCredentials {
         granted
     }
 
+    /// The current bearer values, for transient redaction of derived content.
+    ///
+    /// A handoff derived from a transcript must not carry a Realm credential
+    /// even when the transcript quotes one. These values are resolved from the
+    /// live generation, so a rotation takes effect on the next derived artifact.
+    /// Callers must never persist, log or serialize the returned strings.
+    #[must_use]
+    pub fn redaction_secrets(&self) -> Vec<String> {
+        let held = self
+            .secrets
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        vec![
+            held.observer.expose_secret().to_owned(),
+            held.operator.expose_secret().to_owned(),
+            held.admin.expose_secret().to_owned(),
+        ]
+    }
+
     /// Mint a bearer credential scoped to one persistent seat.
     ///
     /// The credential is derived from the Realm's operator secret and the

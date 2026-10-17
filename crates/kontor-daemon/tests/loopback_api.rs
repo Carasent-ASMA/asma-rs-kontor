@@ -25966,6 +25966,7 @@ async fn a_configured_governed_summarizer_produces_the_persisted_handoff_summary
     let summarizer = Arc::new(GovernedSummarizerFake::new(summary_text));
     let world = World::open_empty_with_succession_summarizer(summarizer.clone()).await;
     world.daemon.reconcile().await;
+    let operator_secret = secret(&world, "operator");
     let CodexAliasEpic { project, seats, .. } = codex_alias_epic(&world, false, true).await;
     let project_id = ProjectId::parse(&project).expect("project id");
     let predecessor_id =
@@ -25993,7 +25994,9 @@ async fn a_configured_governed_summarizer_produces_the_persisted_handoff_summary
         .fake
         .observe_uncorrelated_user_message(
             &held,
-            "The accepted checkpoint is the schema v1 handoff",
+            &format!(
+                "The accepted checkpoint is the schema v1 handoff; the operator credential is X{operator_secret}"
+            ),
             now,
         )
         .expect("one predecessor message is recorded");
@@ -26063,6 +26066,10 @@ async fn a_configured_governed_summarizer_produces_the_persisted_handoff_summary
         !outbound_json.contains("trailing tool call"),
         "a ToolCall payload never crosses the summarizer boundary"
     );
+    assert!(
+        !outbound_json.contains(&operator_secret),
+        "the production redaction policy removes the realm's own bearer"
+    );
     assert_eq!(summary.as_str(), summary_text);
     assert_eq!(summary_hash, &ContentHash::of(summary_text.as_bytes()));
     assert_eq!(input_redaction.pass, SuccessionRedactionPass::Input);
@@ -26084,6 +26091,10 @@ async fn a_configured_governed_summarizer_produces_the_persisted_handoff_summary
         !canonical.json().contains("trailing tool call"),
         "the persisted handoff carries no tool payload"
     );
+    assert!(
+        !canonical.json().contains(&operator_secret),
+        "the persisted handoff never carries the realm's own bearer"
+    );
 
     let successor_id = AgentRunId::parse(
         recovered.json()["successor"]["successor_agent_run_id"]
@@ -26100,6 +26111,159 @@ async fn a_configured_governed_summarizer_produces_the_persisted_handoff_summary
         "the successor starts from the persisted summary"
     );
     assert!(!prompt.as_str().contains("trailing tool call"));
+}
+
+/// A task pinned to one account never summarizes on another enabled alias.
+///
+/// The predecessor's account is blocked, so an unpinned walk would move to the
+/// other alias and send the task's redacted transcript there. The pin keeps the
+/// handoff on the operator's account; because that account has no headroom, the
+/// summary degrades instead of dispatching anywhere else.
+#[tokio::test]
+async fn a_pinned_task_never_summarizes_on_an_unpinned_account_alias() {
+    let summarizer = Arc::new(GovernedSummarizerFake::new(
+        "Continue from the accepted checkpoint",
+    ));
+    let world = World::open_empty_with_succession_summarizer(summarizer.clone()).await;
+    world.daemon.reconcile().await;
+    let CodexAliasEpic {
+        project,
+        seats,
+        work,
+        ..
+    } = codex_alias_epic_with_pin(&world, false, true, Some("work")).await;
+    let project_id = ProjectId::parse(&project).expect("project id");
+    let predecessor_id =
+        AgentRunId::parse(seats[0]["agent_run_id"].as_str().expect("predecessor id"))
+            .expect("canonical predecessor id");
+    let predecessor = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("predecessor reads")
+            .expect("predecessor exists")
+    });
+    let binding = predecessor
+        .binding
+        .as_ref()
+        .expect("predecessor binding")
+        .clone();
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(binding.id)
+        .expect("the process holds the exact predecessor binding");
+    world
+        .fake
+        .observe_uncorrelated_user_message(
+            &held,
+            "The accepted checkpoint is the schema v1 handoff",
+            kontor_api::now(),
+        )
+        .expect("one predecessor message is recorded");
+    let work_account = AccountProfileId::parse(&work).expect("work account");
+    let (predecessor, _) = record_runtime_quota_refusal(
+        &world,
+        project_id,
+        predecessor_id,
+        &binding,
+        work_account,
+        "codex-work",
+        at("2099-01-01T00:00:00Z"),
+    )
+    .await;
+    let (task, team, quota) = world.daemon.state().with_store(|store| {
+        let team = store
+            .get_team_run(project_id, predecessor.team_run_id)
+            .expect("team reads")
+            .expect("team exists");
+        let task = store
+            .get_task(project_id, team.task_id)
+            .expect("task reads")
+            .expect("task exists");
+        let quota = store
+            .list_provider_quota_states(project_id)
+            .expect("quota rows read")
+            .into_iter()
+            .find(|row| row.account_profile_id == work_account && row.provider == "codex-work")
+            .expect("exact quota row");
+        (task, team, quota)
+    });
+    assert_eq!(
+        world
+            .fake
+            .launched_model(predecessor_id)
+            .expect("the frozen route")
+            .provider
+            .0,
+        "codex-work",
+        "the pinned seat starts on the pinned account"
+    );
+    let key = IdempotencyKey::parse("pinned-summary-recovery").expect("idempotency key");
+    world.daemon.state().with_store(|store| {
+        store
+            .create_succession_attempt(&NewSuccessionAttempt {
+                id: kontor_core::id::SuccessionAttemptId::generate(),
+                project_id,
+                task_id: task.id,
+                team_run_id: team.id,
+                role: predecessor.role.clone(),
+                predecessor_agent_run_id: predecessor_id,
+                predecessor_runtime_binding_id: binding.id,
+                predecessor_native_identity: binding.identity.clone(),
+                expected_task_revision: task.revision,
+                expected_team_revision: team.revision,
+                expected_predecessor_revision: predecessor.revision,
+                runtime_observation_cursor: predecessor
+                    .projection
+                    .last_cursor
+                    .expect("blocked cursor"),
+                quota_provenance_id: quota.provenance_id.expect("runtime provenance"),
+                quota_state_revision: quota.revision,
+                quota_evidence_hash: quota.evidence_hash.clone(),
+                quota_provider: quota.provider.clone(),
+                successor_model_rung: Some(ModelRung {
+                    provider: ProviderRef("codex-work".to_owned()),
+                    model: ModelRef("gpt-5.6-sol".to_owned()),
+                    effort: Some(EffortLevel::High),
+                }),
+                successor_account_profile_id: Some(work_account),
+                idempotency_key: key.clone(),
+                intent_hash: ContentHash::of(b"pinned-summary-intent"),
+                deferred_until: None,
+                created_at: kontor_api::now(),
+            })
+            .expect("the planned attempt is durable")
+    });
+    let recovered = Call::post_raw(
+        format!("/v1/projects/{project}/agent-runs/{predecessor_id}/successors:recover"),
+        "",
+    )
+    .signed_as(&world, "admin")
+    .with_key("pinned-summary-recovery")
+    .send(&world)
+    .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    assert_eq!(recovered.json()["state"], "confirmed", "{}", recovered.body);
+
+    assert!(
+        summarizer.calls().is_empty(),
+        "a blocked pin must degrade, never dispatch the transcript to the other alias"
+    );
+    let attempt = world.daemon.state().with_store(|store| {
+        store
+            .succession_attempt_by_key(&key)
+            .expect("attempt reads")
+            .expect("attempt exists")
+    });
+    assert!(matches!(
+        attempt.handoff.as_ref().map(|handoff| &handoff.outcome),
+        Some(SuccessionHandoffOutcome::Degraded {
+            timeline: Some(_),
+            reason: kontor_core::succession::SuccessionHandoffDegradedReason::SummarizerUnplaceable,
+            ..
+        })
+    ));
 }
 
 /// A transport refusal after the successor row is durably linked resumes that
@@ -57318,6 +57482,17 @@ async fn codex_alias_epic(
     exhaust_work: bool,
     declare_aliases: bool,
 ) -> CodexAliasEpic {
+    codex_alias_epic_with_pin(world, exhaust_work, declare_aliases, None).await
+}
+
+/// The same fixture with an optional task pin written before the first seat
+/// launches, because a run snapshots the task's selections.
+async fn codex_alias_epic_with_pin(
+    world: &World,
+    exhaust_work: bool,
+    declare_aliases: bool,
+    pin: Option<&str>,
+) -> CodexAliasEpic {
     let registered = Call::post(
         "/v1/catalog/packs:register",
         &serde_json::json!({"pack": codex_account_pack()}),
@@ -57411,6 +57586,30 @@ async fn codex_alias_epic(
     assert_eq!(applied.status, 200, "{}", applied.body);
     let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
     let epic_revision = applied.json()["revision"].as_u64().expect("revision");
+    if let Some(alias) = pin {
+        let task = &applied.json()["tasks"][0];
+        let account = match alias {
+            "work" => &work,
+            "personal" => &personal,
+            other => panic!("unknown account pin {other}"),
+        };
+        let selected = Call::post(
+            format!(
+                "/v1/projects/{project}/tasks/{}/account-selection",
+                task["task_id"].as_str().expect("task id"),
+            ),
+            &serde_json::json!({
+                "expected_revision": task["revision"].as_u64().expect("task revision"),
+                "account_profile_id": account,
+                "reason": "Pin the task before its seats launch"
+            }),
+        )
+        .signed_as(world, "admin")
+        .with_key("codex-alias-task-pin")
+        .send(world)
+        .await;
+        assert_eq!(selected.status, 200, "{}", selected.body);
+    }
     confirm_test_epic_identity(world, &project, &epic);
     materialize_execution_topology(
         world,

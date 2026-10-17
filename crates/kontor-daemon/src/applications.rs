@@ -40009,8 +40009,9 @@ impl Services {
     /// The seat's exact declared chain — the fleet binding or frozen template
     /// chain in force — is walked through the same account-before-rung headroom
     /// resolution every launch uses, so a summary can never be dispatched onto
-    /// the account that just refused. The walk is unpinned on purpose: the
-    /// predecessor's own account is the one that is out.
+    /// the account that just refused. The task's account pin is read exactly as
+    /// the successor placement reads it: the summary is the same task's
+    /// redacted transcript, so it must follow the same operator choice.
     ///
     /// No declaration is an ordinary unconfigured realm, not an error: it
     /// composes as unplaceable and the handoff keeps the typed degraded path.
@@ -40051,9 +40052,13 @@ impl Services {
         };
         let accounts = self.eligible_accounts(project_id)?;
         let states = self.admission_quota_states(project_id)?;
+        let task_pin = state
+            .with_store(|store| store.task_account_selection(project_id, attempt.request.task_id))
+            .map_err(|error| self.refuse(&error))?
+            .map(|(account, _)| account);
         let outlook = QuotaOutlook {
             states: &states,
-            account: None,
+            account: task_pin,
             accounts: &accounts,
             headroom: self.headroom_policy(),
             freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
@@ -40064,7 +40069,7 @@ impl Services {
             .map_err(|error| self.refuse_domain(&error))?;
         GovernedSuccessionSummarizer::resolve(
             &effective,
-            &accounts,
+            &outlook.candidates(&effective),
             &states,
             &outlook.headroom,
             now,
@@ -40119,7 +40124,10 @@ impl Services {
         };
         let redaction = SuccessionRedactionPolicy::new(
             ContentHash::of(b"kontor-succession-redaction-v1"),
-            Vec::new(),
+            // The Realm's own bearer values are resolved from the live
+            // generation, so a transcript that quotes one cannot carry it into
+            // the outbound request or the persisted handoff.
+            state.credentials().redaction_secrets(),
         );
         // The configured governed transport executes only the route the
         // declared-chain walk admits. Until a runtime-backed governed transport
