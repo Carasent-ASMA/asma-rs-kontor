@@ -9,6 +9,10 @@
 > **Delivery order:** merge and deploy PR #122, merge this corrected boundary,
 > then rebase, renumber, regenerate, revalidate, independently review, and merge
 > PR #123.
+>
+> **Delivered (noted 2026-10-17):** PR #122 (`dbd76600`), this boundary
+> (PR #121, `4f579676`) and PR #123 (`c6eaf666`) merged to `master` in that
+> order on 2026-08-26. The delivery order above is historical.
 
 ## Problem
 

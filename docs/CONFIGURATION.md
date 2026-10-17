@@ -1,6 +1,8 @@
 # Configuration
 
-> **Checkout disposition — 2026-09-05:** This document accompanies the older `e6da270` branch baseline and preserves its pending/uncommitted work. Its implementation counts and “no engine” statements describe that baseline, not the current released control plane. For released source `082b63ad`, schema/tool counts, merged OP-21 supervision and OP-22 convergence, use the [revision-stamped inventory](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/reference/2026-09-05-11-36-reference-kontor-implementation-inventory.md). Release-documentation corrections are isolated from this checkout’s runtime changes.
+> **Stamped to `0971674d` (PR #300, 2026-10-11):** the state-root file inventory, section status labels, the Jira connector and credential contract, fleet, quota-signal, supervision, seat permission posture, seat MCP surface, desk and GitHub App configuration were re-verified against the source at that commit. Merged is not qualified, deployed or enabled for a realm; each section says what its pull request recorded. The 2026-09-05 note below is kept as history.
+
+> **Historical checkout disposition — 2026-09-05 (superseded by the stamp above):** This document accompanies the older `e6da270` branch baseline and preserves its pending/uncommitted work. Its implementation counts and “no engine” statements describe that baseline, not the current released control plane. For released source `082b63ad`, schema/tool counts, merged OP-21 supervision and OP-22 convergence, use the [revision-stamped inventory](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/reference/2026-09-05-11-36-reference-kontor-implementation-inventory.md). Release-documentation corrections are isolated from this checkout’s runtime changes.
 
 Kontor separates invariants from deployment behavior. Rust enforces safety
 properties such as one non-terminal session per role slot and uncertainty not
@@ -16,26 +18,40 @@ system behaviour instead of instructions somebody has to remember.
 
 ## Where configuration lives
 
-| Location | Holds |
-| --- | --- |
-| `<state-root>/kontor.db` | Every versioned specification published through `/v1`: Team Definitions, topology specs, role catalogs, work profiles, team templates, advisor profiles, committee templates, completion profiles, Core Team revisions, connector field/workflow specs; also Team Definition defaults, epic pins and migration evidence |
-| `<state-root>/runtimes.json` | Runtime family, plane endpoint, per-account provider aliases and the plane's default seat posture. Schema generation `5`; generation `4` is read as a `5` that declares no posture, which resolves to `ask`; generation `3` is refused rather than upgraded, because it can compose the right sessions under misleading names |
-| `<state-root>/supervision.yml` | Optional seat supervision policy. Schema v1 is validation/classification only; schema v2 can explicitly enable resident bounded succession (see below) |
-| `<state-root>/quota-signals.yml` | Vendor exhaustion wording, applied to a seat's own refusal text (optional; see below) |
-| `<state-root>/fleet.yml` | Live model routing — domains, accounts, models, chains and seat bindings, read at every placement (optional; see below) |
-| `<state-root>/fleet-activation.json` | Generated: which published fleet policy placement reads, by content hash — and, for an aligned (schema_version 2) activation, which orchestration bundle and Core Team roster. Written only by activation; while it exists, `fleet.yml` is not read (see below) |
-| `<state-root>/core-team-history/`, `<state-root>/orchestration-history/` | Generated, immutable: canonical Core Team revisions and orchestration bundle manifests, each named by its content hash (see below) |
-| `<state-root>/memory-cognee.json` | Optional bounded experience-retrieval configuration; disabled by default (see below) |
-| `<state-root>/credentials.json` | The realm's three tier secrets, `0600` |
-| `<state-root>/endpoint.json` | Where the realm listens, when not on the default loopback port |
-| `<state-root>/provider-homes/` | One credential home per provider account — `CODEX_HOME` for Codex, `CLAUDE_CONFIG_DIR` for Claude |
-| `crates/kontor-mcp/seats/*.json` | Which tier and serve profile one MCP server process runs at |
+| Location | Holds | Schema; when absent |
+| --- | --- | --- |
+| `<state-root>/kontor.db` | Every versioned specification published through `/v1`: Team Definitions, topology specs, role catalogs, work profiles, team templates, advisor profiles, committee templates, completion profiles, Core Team revisions, connector field/workflow specs; also Team Definition defaults, epic pins and migration evidence, desk, durable-seat, desk-Adam and PR-review records, and the durable capacity ceilings, which are read once at startup | Store migrations through v134; created and migrated at first start |
+| `<state-root>/kontor.lock` | The exclusive state-root lock a serving daemon, and every stopped-realm operator command, holds | Generated |
+| `<state-root>/credentials.json` | The realm's three tier secrets, `0600`, read by the CLI and every MCP server | `schema_version: 1`; generated at first start |
+| `<state-root>/endpoint.json` | The bound loopback `base_url`, rewritten after every bind | `schema_version: 1`; generated. Clients read it when present and otherwise use `http://127.0.0.1:7717` |
+| `<state-root>/runtimes.json` | Runtime family, plane endpoint, per-account provider aliases, the plane's default seat posture, and per-plane outage controls (`unavailable_providers`, catalogued `provider_fallbacks`) | Generation `5`; generation `4` is read as a `5` that declares no posture, which resolves to `ask`; generation `3` is refused rather than upgraded, because it can compose the right sessions under misleading names. Absent: no runtimes, and session routes answer unconfigured |
+| `<state-root>/supervision.yml` | Optional seat supervision policy. Schema v1 is validation/classification only; schema v2 can explicitly enable resident bounded succession (see below) | `schema_version` 1 or 2; absent: no supervisor |
+| `<state-root>/quota-signals.yml` | Vendor exhaustion wording, applied to a seat's own refusal text (see below) | `schema_version: 1`; absent: refusal classification is inert. Present but invalid refuses the start |
+| `<state-root>/fleet.yml` | Live model routing — domains, accounts, models, chains and seat bindings, read at every placement (see below) | `schema_version: 1`; absent: template routing. Not read while `fleet-activation.json` exists |
+| `<state-root>/fleet-activation.json` | Generated: which published fleet policy placement reads, by content hash — and, for an aligned (schema_version 2) activation, which orchestration bundle and Core Team roster. Written only by activation; while it exists, `fleet.yml` is not read (see below) | `schema_version` 1 or 2; absent: unmigrated `fleet.yml` behaviour |
+| `<state-root>/fleet-status.json`, `fleet-history/`, `fleet-decisions/` | Generated: the last `fleet.yml` load result, accepted and published policy copies by hash, and per-placement decision and launch-provenance logs (see below) | Generated |
+| `<state-root>/core-team-history/`, `<state-root>/orchestration-history/` | Generated, immutable: canonical Core Team revisions and orchestration bundle manifests, each named by its content hash (see below) | Generated by bundle publication |
+| `<state-root>/jira.json` | Jira connectors keyed by Kontor project id: endpoint, project key, credential alias and extra create fields (see below) | `schema_version: 1`; absent: Jira is not configured. Present but invalid refuses the start |
+| OS keychain service `kontor-jira:<realm-id>:<sha256 of the canonical state root>` | The Jira `email`/`api_token` for each alias `jira.json` names, written only by `kontor-daemon install-jira-credential` (see below) | Absent: Jira calls for that alias fail as an `unavailable` credential refusal |
+| `<state-root>/config/github-app.json` | Optional GitHub App gateway for publication identity; its PEM key lives outside every repository (see below) | `schema_version: 1`; absent: no forge check is posted. Present but invalid refuses the start |
+| `<state-root>/memory-cognee.json` | Optional bounded experience-retrieval configuration; disabled by default (see below) | No version field, strict JSON, at most 8 KiB; absent: lexical recall only. Present but invalid refuses the start |
+| `<state-root>/provider-homes/` | One credential home per provider account — `CODEX_HOME` for Codex, `CLAUDE_CONFIG_DIR` for Claude. At startup the daemon reconciles each owned Codex home's `config.toml`: `codebase-memory-mcp` is made non-required and the `kontor` server's `env_vars` names `KONTOR_AUTH`; no secret value is written | Absent: no approved account homes |
+| `<state-root>/runtime-roots/` | Generated: daemon-owned working directories, including each desk's `<project id>/desk-<desk node id>` and each PR review room's `…-room-<room node id>` | Generated |
+| `<state-root>/hosted-directory-publications/` | Generated, private: the recovery journal for seat MCP composition into a desk's non-Git directory (see Seat MCP surface) | Generated |
+| `<state-root>/backups/` | Default directory of `kontor-daemon snapshot` / `snapshots`; see [`RECOVERY.md`](../RECOVERY.md) | Generated |
+| `crates/kontor-mcp/seats/*.json` | Which tier and serve profile one MCP server process runs at | See [the seats README](../crates/kontor-mcp/seats/README.md) |
+| Project checkout `config/orchestration/` | `orchestration.yml`, `fleet.yml` and `teams/core-team.yml`, the authoring sources of an orchestration bundle (see below) | Sent as exact bytes to the bundle operations; the daemon never reads a checkout |
+| Daemon environment `KONTOR_SEAT_MCP` | `off` disables seat MCP file composition for every plane | Absent or any other value: composition on |
 
 Everything in the database is published through a preview/apply pair with a
 content hash: the apply is compared against the hash the preview returned, so a
 specification cannot change between the two.
 
-## Experience memory transport (ASMA-8158 source candidate)
+## Experience memory transport
+
+> **Status:** merged with ASMA-8155 in PR #291 (`abe990ac`, 2026-10-04). The
+> PR records source and synthetic qualification only; live credential resolution and projection
+> activation are not recorded here.
 
 `memory-cognee.json` is optional, strict JSON, at most 8 KiB. Absence keeps
 typed, bounded lexical recall enabled and performs no Cognee network work.
@@ -60,11 +76,12 @@ projection preview. The default document policy remains `local_only`.
 | `dataset_prefix` | `kontor`; v1 requires this value to preserve the accepted immutable `kontor_<project_uuid>_<memory_cursor>` dataset identity |
 | `timeout_ms` | `1500`; 1–1500 ms for the entire semantic operation, reserving at least 500 ms of the 2-second target for authoritative lexical selection |
 
-This source candidate qualifies **synthetic transport only**. Embeddings and
+The merged source qualifies **synthetic transport only**. Embeddings and
 fixture tests can compose `Client::new(config, synthetic_secret)` with
-`DaemonConfig::with_memory_cognee`. Ordinary startup validates the document and
-refuses `enabled: true` with static `cognee_unavailable` until an authorized
-credential/transport composition is supplied. It never reads Keychain, provider
+`DaemonConfig::with_memory_cognee`. Ordinary daemon startup never constructs a
+Cognee client: it validates the document and refuses `enabled: true` with
+static `cognee_unavailable` until an authorized credential/transport
+composition is supplied. It never reads Keychain, provider
 credentials or environment secrets. ASMA-8159 owns live credential resolution,
 release qualification and projection activation; configuration here does not
 claim those capabilities are deployed.
@@ -200,6 +217,72 @@ only as empty in-memory defaults. It removes them again for legacy canonical
 hashing, continuity comparison and serialization; a genuine generation-3
 export therefore verifies byte-for-byte without being rewritten into a false
 generation-4 shape.
+
+## Jira connector and credentials
+
+`<state-root>/jira.json` connects Kontor projects to Jira. It is strict JSON
+(unknown fields are refused) keyed by Kontor project id, and it never holds a
+credential:
+
+```json
+{
+  "schema_version": 1,
+  "projects": [
+    {
+      "project_id": "<kontor project id>",
+      "endpoint": "https://example.atlassian.net",
+      "project_key": "ASMA",
+      "credential_alias": "work",
+      "create_fields": { "epic": {}, "task": {} }
+    }
+  ]
+}
+```
+
+- Absent means Jira is not configured. A file that cannot be read, does not
+  parse, declares another `schema_version` or configures one project twice
+  refuses the daemon start.
+- `endpoint` must be HTTPS, or HTTP on an explicit loopback host, with no
+  userinfo, query or fragment. Redirects are not followed.
+- `credential_alias` is a non-secret name of at most 128 characters with no
+  control characters.
+- `create_fields` optionally adds the fields your Jira screens require on
+  create, separately for epics and tasks: at most 64 fields and 64 KiB each,
+  ids of ASCII letters, digits and `_`. Kontor keeps `project`, `issuetype`,
+  `summary`, `description`, `labels` and `parent`; naming one is refused.
+
+The credential lives in the OS keychain (`/usr/bin/security` on macOS, the
+platform keyring elsewhere) under service
+`kontor-jira:<realm-id>:<SHA-256 of the canonical state-root path>` and the
+alias as account. Because the address binds the realm and its root, a copied
+database under another root cannot overwrite the original realm's entry. There
+is no fallback to an older host-global address: an alias enrolled before this
+build must be installed again.
+
+Install it with the daemon's stopped-realm command, piping the document from a
+password manager so it never appears in argv or shell history:
+
+```sh
+# The realm must be stopped: the command takes the state-root lock.
+<password-manager command> | kontor-daemon --state-root /absolute/state/root \
+  install-jira-credential --alias work
+# stdin: {"email": "...", "api_token": "..."}
+```
+
+The command refuses before it reads stdin unless the state root is absolute and
+canonicalizable, the lock is free (`state_root_locked`), `kontor.db` is an
+initialized realm at this build's exact schema (it is never created or
+migrated: start the upgraded daemon once, then stop it), and `jira.json`
+references the alias. The document must be exactly `email` and `api_token`,
+non-blank, without control characters and at most 8,192 bytes. A write is
+accepted only after the stored bytes read back exactly; on a failed write or
+readback the previous entry is restored, or a new one removed, and verified.
+An outcome reporting that rollback could not be proven must be reconciled
+before the realm is restarted. Errors are static and never echo the input.
+
+> **Status:** merged in PR #278 (`f95e2065`, ASMA-8015). The PR records source
+> and fake-backend verification only; no installation into a real keychain is recorded here. The design and evidence are in the
+> [ASMA-8015 report](../_docs/reports/2026-09-26-17-20-report-asma-8015-stopped-realm-jira-credential-kontor-operational-gap.md).
 
 ## Jira reconciliation
 
@@ -343,6 +426,15 @@ A template that already decided keeps deciding, even when the plane default is
 the wider one. A realm that declares nothing at either level behaves exactly as
 it did before the field existed, which is why a generation-4 document can be read
 without migrating it: absence resolves to `ask` and never widens a seat.
+
+The bundled team pack declares the first level since ASMA-8192 (PR #227,
+`edcf4bb1`): version 2 of *Plan, build and verify* and *Research spike* in
+[`mvp-team-pack.json`](../crates/kontor-teams/fixtures/mvp-team-pack.json)
+declares `autonomy: bounded` (`autonomous`) on every slot. Version 1 is
+preserved byte for byte and declares none, so a run frozen on it still
+resolves through the plane default. `bounded` stays inside the execution
+authorization's window, concurrency and budget, and the destructive floor
+applies under every writing posture.
 
 ### How each provider is told
 
@@ -499,6 +591,9 @@ next placement with no rebuild, restart or template republish.
 The file lives in the state root, outside every git checkout, so a branch switch
 can never change routing.
 
+> **Status:** merged in PR #271 (`7ffd650d`, ASMA-8255). The shipped example is
+> a starting point, not a record of any realm's live file.
+
 ### File rules
 
 - `<state-root>/fleet.yml` must be a regular file, not a symlink, owned by the
@@ -560,6 +655,22 @@ seats the file does not bind. A bound chain that flattens to no admissible route
 fails closed — it never falls back to the route the operator replaced.
 `core/<role_code>` keys are rejected in v1.
 
+### Models and the catalog
+
+A route is admitted when the compiled catalog accepts it **or** the current
+fleet snapshot lists its account alias, model and effort. Explicit routes —
+recovery profiles, bridge moves, Committee seat recovery — pass the same check,
+so a fleet-only model such as `claude-opus-5-5` is nameable without a rebuild;
+`/v1/catalog` still advertises only the compiled list. Since 2026-09-05 the
+compiled list also admits the approved watchdog fallback routes — `gpt-5.6-luna`
+on the Codex aliases, `cursor/auto-smart`, `openrouter/z-ai/glm-5.3-flash` and
+`openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` (medium and high only)
+(PR #238) — `cursor/gpt-5.6-sol` (PR #267), and DeepSeek V4.1 Flash as
+`opencode/deepseek/deepseek-flash`, which is also the OpenCode default model;
+the retired `deepseek/deepseek-v4-flash` id stays admissible for runs already
+pinned to it (PR #214). Catalog presence is recognition only: headroom, role
+eligibility, provider availability and the rules below still decide.
+
 ### `unavailable`
 
 `unavailable.domains` switches off a whole domain and `unavailable.accounts` a
@@ -588,8 +699,12 @@ at once. An invalid edit keeps the last valid snapshot, reports the failing rule
 there, and is never applied in part. Every accepted version is stored once under
 `<state-root>/fleet-history/<hash>.yml`, and each admitted fleet placement
 appends one JSON line, including its step and sub-step, to
-`<state-root>/fleet-decisions/<team_run_id>.jsonl`. Rollback is one copy from
-`fleet-history/`.
+`<state-root>/fleet-decisions/<team_run_id>.jsonl`. Leadership effects under an
+activated policy append to `fleet-decisions/leadership/<seat_binding_id>.jsonl`,
+and each launch that carries fleet provenance appends what it requested and what
+the runtime observed to `fleet-decisions/launches/<subject>.jsonl`; all three
+are `0600`.
+Rollback is one copy from `fleet-history/`.
 
 ### Turning it off, and removing a model safely
 
@@ -599,12 +714,27 @@ every placement then behaves exactly as if the file had never existed.
 To remove a model from a live file, **remove it from every `chains` entry
 first** — the validator rejects a file that deletes a model while a chain still
 names it. Delete it from `models` only once no live seat is frozen on it:
-explicit-route commands (bridge moves, `replace_seat` with a named route, and
-consultation seat recovery naming the frozen route) re-check that exact route
-against the catalog when they run. Automatic quota takeover walks the declared
-chain and is not affected.
+explicit-route commands (bridge moves, `replace_seat` with a named route,
+an Admin `model_route` on seat fill, and consultation seat recovery naming the
+frozen route) re-check that exact route against the catalog when they run.
+Automatic quota takeover walks the declared chain and is not affected.
+
+Two Admin-only explicit routes move work off a provider that is down (PR #267,
+operator exception of 2026-09-23). `kontor_team_run_seat_fill` accepts a
+`model_route` that replaces the frozen chain for that seat; it is placed on an
+eligible account with headroom before the receipt exists. `kontor_seat_replace`
+with `unavailable_provider` evidence retires a provider-blocked seat, and one
+that already ran also needs a `model_route` naming a different provider.
+Consultation admits the exact `cursor/gpt-5.6-sol` `xhigh` route only under an
+operator-accepted recovery profile, never from template data; Cursor `plan`
+refuses direct file tools, not shell writes, so this is a recorded risk
+acceptance.
 
 ### Activated fleet policy (ASMA-8280)
+
+> **Status:** merged with the shared orchestration runtime in PR #292
+> (`4097afb8`, ASMA-8278, 2026-10-04). No realm activation record is kept in
+> this repository.
 
 The policy both orchestration modes share is authored in the project checkout
 and handed to Kontor through four admin operations, which the CLI and MCP
@@ -810,6 +940,13 @@ answer is the same document without `members` under `status: 409`
 `placement_blocked`. It is placement evidence only: it carries no verdict, and
 it never satisfies a review gate.
 
+Placement is not launch. At `0971674d` the Paseo adapter refuses every
+planning-pair member route before any native effect, with
+`PlanningPairMemberSurfaceUnsupported` naming the provider and its gap
+(`../crates/kontor-runtime-paseo/src/adapter.rs`), so no planning pair launches
+through the production Paseo runtime. See
+[`CONSULTATION_LIFECYCLE.md`](CONSULTATION_LIFECYCLE.md#governed-planning-pairs-asma-8282).
+
 ## Provider quota signals
 
 Copy [`config/examples/quota-signals.yml`](../config/examples/quota-signals.yml)
@@ -910,13 +1047,13 @@ A broken document is never quietly degraded to "inert". It states an intent the
 realm cannot honour, and starting anyway would leave an operator believing
 reactive classification is armed when it is not.
 
-> **Status:** the `claude` entry in the shipped example is **provisional** — no
-> live Claude refusal has been captured into this repository, so its markers are
-> stated from observed phrasing rather than verified against a recorded message,
-> and it declares no `reset_prefix`. A Claude refusal therefore records a
-> blocking state with **no** stated reset instant until a real message is
-> captured and the document corrected. The Codex entry is verified against the
-> message recorded on 2026-08-21.
+> **Status:** both Claude entries match the refusal captured verbatim on
+> 2026-08-30 (quoted in the example) and declare `reset_prefix`
+> `'your session limit resets '` with `Europe/Chisinau` (`2087430e`,
+> `f80446bc`); the earlier provisional, prefix-less Claude entry is superseded.
+> Both Codex entries are verified against the message recorded on 2026-08-21.
+> The `opencode` entry reads a prepaid `credit_balance` refusal, which records
+> as drained with no reset instant.
 
 ## Seat MCP surface
 
@@ -928,7 +1065,7 @@ widen it, and never beyond what the credential already allows.
 | Seat file | Tier | Serve profile |
 | --- | --- | --- |
 | `paseo-lead.json` | `admin` | none — the whole vocabulary |
-| `worker.json` | `operator` | `worker` — 18 tools: read its work, claim, settle a turn, record a gate verdict, session follow-up, intake, memory search/propose, resolve context |
+| `worker.json` | `operator` | `worker` — 25 tools: read its work, claim, settle and observe a turn, record an artifact and a gate verdict, session follow-up, intake, memory search/history/propose, experience proposals and recall previews, resolve context, list and record open questions |
 | `reviewer.json` | `observer` | none — reads only |
 
 Profiles are declared in the registry beside the tier declarations, deliberately
@@ -937,12 +1074,34 @@ authority model that drifts. An unknown profile name refuses to start, and a too
 the profile excludes is refused at call time as well as hidden from the list. See
 [`../crates/kontor-mcp/seats/README.md`](../crates/kontor-mcp/seats/README.md).
 
-The dynamically composed `leadership` profile for persistent LSA/TPM seats is
-limited to completion read/remediation and exact Committee-seat permission
-inspection/response. A response uses a canonical UUIDv7 `Idempotency-Key` and is
-persisted in schema v75 before the runtime effect. Confirmed replay is inert;
+The daemon composes its own seats' servers from the same registry
+(`../crates/kontor-runtime-paseo/src/seat_mcp.rs`). Every composed server runs
+`kontor-mcp --credential-tier operator --serve-profile <profile>`; a scoped
+consultation or hosted credential reaches it only through `KONTOR_AUTH` in the
+creation frame's secret channel, never through a shared file. At `0971674d`:
+
+| Profile | Tools | Composed for |
+| --- | --- | --- |
+| `worker` | 25, as above | OpenCode delivery seats, in the creation frame |
+| `consultation` | 5: Advisor run read and settle, Committee run and artifact read, findings record | Advisor and Committee fillers, with the consultation tool guard; Claude delivery seats, in the worktree `.mcp.json` |
+| `planning_pair_member` | 3: run read, findings record, answer record | planning-pair members, with the guard — refused before launch through Paseo today ([above](#direct-mode-resolution-without-a-daemon)) |
+| `planning_pair_caller` | 4: run read, invoke, clarification request, disposition record | nothing; selectable by name only |
+| `leadership` | 6: completion read and remediation, open-question list and record, Committee-seat permission inspection and response | hosted LSA, TPM and desk seats: Claude's cwd files plus the creation frame for every provider |
+
+A leadership permission response uses a canonical UUIDv7 `Idempotency-Key` and
+is persisted in schema v75 before the runtime effect. Confirmed replay is inert;
 confirmation-unknown dispatch fails closed instead of guessing or answering a
 second time.
+
+A hosted desk seat whose proved workspace is a local directory rather than a
+Git worktree gets its `.claude/settings.local.json` then `.mcp.json` published
+into that directory, with the exact originals kept in a private journal at
+`<state-root>/hosted-directory-publications/<sha256(cwd)>.json` and recovered
+under a canonical-cwd lock before any create or reload; a healthy replay only
+validates, and refuses when the files differ (PR #300, `0971674d`). Delivery and
+consultation seats never use this path. `KONTOR_SEAT_MCP=off` in the daemon's
+environment withdraws every composed MCP file daemon-wide; declared permission
+posture is composed either way.
 
 Quota succession is exposed separately. `kontor_seat_quota_states_list` is an
 Observer read joining each live delivery seat to its exact account and provider
@@ -951,6 +1110,45 @@ only by project, predecessor run and `Idempotency-Key`; the server fresh-reads
 and freezes every binding, revision and quota-provenance fact rather than
 accepting an eligibility claim from the caller.
 
+## Durable desks, desk seats and PR reviews
+
+> **Status:** merged in PRs #295 (`733807cc`), #296 (`430975a3`), #297
+> (`b3db4adf`), #298 (`e376f405`), #299 (`813135fd`) and #300 (`0971674d`),
+> 2026-10-11. The
+> [qualification report](../_docs/reports/2026-10-11-16-00-report-asma-8454-desk-qualification.md)
+> records a frozen source candidate with Independent Review and release
+> readback pending.
+
+Desks are Team Definition data, not a file in the state root. What configures
+them:
+
+- **Which desks exist.** A Team Definition revision's `desks` array, composed
+  against a topology revision that declares the `DESK` and `DWS` kinds. The
+  bundled default declares none, and nothing selects a desk-capable revision
+  implicitly: the shipped ASMA Operational Team Definition v7 (`adam`,
+  `pr-review`) takes an explicit selection preview and apply, then a
+  materialization per desk.
+- **Desk Adams and PR reviews.** A revision opts in with
+  `desk_leadership {desk_key, epic_kind, ad_hoc_kind}` and
+  `pr_review {desk_key, adam_kind, room_kind, room_roles}`. No bundled revision
+  declares either, so a project publishes its own successor first.
+- **Durable seats.** Each is an immutable dated declaration through
+  `kontor_desk_seat_declare` (Operator). `recovery_owner: paseo_direct` is
+  recorded and reported only; `daemon` makes Kontor launch and recover it as a
+  hosted seat and needs one exact compiled-catalog `model_route`. To amend a
+  decision, declare a new `seat_key`.
+- **PR review repository authority** comes from the confirmed Jira key's
+  publication binding, never from a title.
+- **Where they run.** A desk registers `runtime-roots/<project>/desk-<desk node>`
+  and a review room `runtime-roots/<project>/desk-<desk node>-room-<room node>`;
+  hosted desk seats get the [leadership surface](#seat-mcp-surface).
+
+Operations, refusals, backup and rollback are in the references:
+[durable desks](../_docs/reference/2026-10-10-23-55-reference-kontord-durable-desks.md),
+[desk seats](../_docs/reference/2026-10-11-02-20-reference-kontord-durable-desk-seats.md),
+[desk Adams](../_docs/reference/2026-10-11-05-36-reference-kontord-desk-adams.md) and
+[PR reviews](../_docs/reference/2026-10-11-11-35-reference-kontord-pr-reviews.md).
+
 ## GitHub App for publication identity (ASMA-8101)
 
 Kontor judges every publication against the confirmed Kontor/Jira binding
@@ -958,6 +1156,9 @@ Kontor judges every publication against the confirmed Kontor/Jira binding
 only through a GitHub App whose identity cannot bypass the rules it reports on.
 The App is optional: without it the attestation endpoints still serve the ASMA
 CLI, and nothing is posted to GitHub.
+
+> **Status:** merged in PR #195 (`e4bb5fbd`). Whether an App is installed and
+> configured for a realm is not recorded here.
 
 Create the App once per organisation (Settings → Developer settings → GitHub
 Apps → New GitHub App) with:
@@ -983,6 +1184,11 @@ Then write `<state root>/config/github-app.json`:
   "poll_seconds": 60
 }
 ```
+
+`check_name` defaults to `asma/publication-identity` and `poll_seconds` to 60
+(at least 1). An optional `api_base` (default `https://api.github.com`) points
+the gateway at another GitHub API host. `repositories` must list at least one
+`owner/name`.
 
 Absence of the document is valid. A present document that will not parse, or
 that names a key that will not load, refuses the start: an operator who wrote
