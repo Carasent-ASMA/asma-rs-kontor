@@ -17,7 +17,7 @@ type AgentCreateRequest = PluginBeforeRequests["agent.create"];
 type SessionOpenRequest = PluginBeforeRequests["agent.session_open"];
 type WorkspaceCreateRequest = PluginBeforeRequests["workspace.create"];
 
-export const KONTOR_MCP_SERVER_NAME = "kontor";
+export const KONTOR_MCP_SERVER_NAME = "kontor-observer";
 export const KONTOR_SYSTEM_PROMPT_LINE =
   "This session may be a Kontor seat: resolve its mini-project from Kontor at start and after compaction.";
 
@@ -37,9 +37,10 @@ function appendPromptLine(systemPrompt: string | undefined, line: string): strin
 /**
  * Add the Kontor read surface to a new agent.
  *
- * The server is always composed at observer authority. The plugin never reads
- * or carries a `kontord` credential: it names the state root, and the MCP
- * process reads its own read-only credential there.
+ * The server is always composed at observer authority under its own name, so a
+ * `kontor` server the provider home already defines is never replaced. The
+ * plugin never reads or carries a `kontord` credential: it names the state
+ * root, and the MCP process reads its own read-only credential there.
  */
 export function addKontorAgentConfig(
   request: AgentCreateRequest,

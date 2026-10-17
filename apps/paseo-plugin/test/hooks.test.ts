@@ -191,7 +191,7 @@ describe("agent.create hook", () => {
     });
   });
 
-  it("preserves a Kontor server already composed for the seat", () => {
+  it("does not replace a Kontor server already composed for the seat", () => {
     const request = addKontorAgentConfig(
       createRequest({
         config: {
@@ -207,6 +207,16 @@ describe("agent.create hook", () => {
     expect(request.config.mcpServers?.kontor).toEqual({
       type: "stdio",
       command: "seat-kontor-mcp",
+    });
+    expect(request.config.mcpServers?.[KONTOR_MCP_SERVER_NAME]).toEqual({
+      type: "stdio",
+      command: "kontor-mcp",
+      args: [
+        "--state-root",
+        "/tmp/kontor-state",
+        "--credential-tier",
+        "observer",
+      ],
     });
   });
 

@@ -88,6 +88,31 @@ behaviour.
   `test/security.test.ts` fails if one is introduced.
 - The plugin names the realm state root but never opens it.
 
+## MCP server name — no collision with a provider home
+
+The plugin composes its server as `kontor-observer`, never `kontor`, so a
+home-level `kontor` server at any tier is untouched by whatever merge rule a
+provider applies.
+
+Source probe of the installed Paseo 0.11.2 bundle:
+
+- **Codex** — `buildCodexInnerConfig` in
+  `dist/server/server/agent/providers/codex-app-server-agent.js` builds
+  `innerConfig.mcp_servers` from the request's `mcpServers` and passes it as a
+  config override; a request entry named `kontor` would replace the provider
+  home's `[mcp_servers.kontor]` as a whole. This is the collision the rename
+  removes.
+- **Claude** — `claude/agent.js` passes the request `mcpServers` as explicit
+  SDK options, which take precedence over a same-named settings entry.
+- **opencode** — `opencode-agent.js` registers each request server through
+  `client.mcp.add({ name, config })`; which entry wins for a name that already
+  exists in the provider config is not recorded here. Open, and not needed for
+  this plugin because the name differs.
+
+The unit test "does not replace a Kontor server already composed for the seat"
+pins the request-level half: a request `kontor` entry is preserved and the
+plugin adds `kontor-observer` beside it.
+
 ## Residual blocker — Paseo 0.11.2 hook input
 
 The hook cannot identify a *caller* seat in Paseo 0.11.2, and the Paseo MCP
