@@ -129,6 +129,7 @@ impl JsonDocument {
         }
         let mut parser = Parser {
             bytes: text.as_bytes(),
+            text: &text,
             pos: 0,
             dialect,
         };
@@ -354,6 +355,7 @@ fn decode_string_literal(raw: &str) -> Option<String> {
     let bytes = raw.as_bytes();
     let mut parser = Parser {
         bytes,
+        text: raw,
         pos: 0,
         dialect: Dialect::Json,
     };
@@ -432,6 +434,7 @@ fn skip_trivia_from(
 
 struct Parser<'a> {
     bytes: &'a [u8],
+    text: &'a str,
     pos: usize,
     dialect: Dialect,
 }
@@ -627,9 +630,10 @@ impl Parser<'_> {
                 }
                 0x00..=0x1f => return Err(JsonEditError::Malformed),
                 _ => {
-                    let rest = std::str::from_utf8(&self.bytes[self.pos..])
-                        .map_err(|_| JsonEditError::Malformed)?;
-                    let character = rest.chars().next().ok_or(JsonEditError::Malformed)?;
+                    let character = self.text[self.pos..]
+                        .chars()
+                        .next()
+                        .ok_or(JsonEditError::Malformed)?;
                     decoded.push(character);
                     self.pos += character.len_utf8();
                 }
@@ -961,6 +965,26 @@ mod tests {
             document.text(),
             original,
             "the document bytes are unchanged"
+        );
+    }
+
+    #[test]
+    fn long_and_multibyte_strings_are_decoded_without_losing_characters() {
+        let text = format!(
+            "{{\"note\":\"{}\u{00e9}\",\"mcp\":{{\"other\":1}}}}",
+            "a".repeat(200_000)
+        );
+        let mut document = JsonDocument::parse(text, Dialect::Json).expect("parse");
+        document
+            .insert_member(&["mcp"], "kontor", r#"{"type":"local"}"#)
+            .expect("insert");
+        assert_eq!(
+            document.value(&["note"]),
+            Some(Value::String(format!("{}\u{00e9}", "a".repeat(200_000))))
+        );
+        assert_eq!(
+            document.value(&["mcp", "kontor"]),
+            Some(serde_json::json!({"type": "local"}))
         );
     }
 
