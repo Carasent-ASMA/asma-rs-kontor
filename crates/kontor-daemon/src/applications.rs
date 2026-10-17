@@ -35581,6 +35581,11 @@ impl ApplicationOperations for Services {
         task_id: TaskId,
         request: &WorktreeClaimCorrectionApplyRequest,
     ) -> Result<WorktreeClaimCorrectionAppliedDto, ApiError> {
+        // Serialize the claim change with native placement repairs: a recovery
+        // that froze this claim must finish before a correction can replace it,
+        // or its successful result would land at a directory the claim no
+        // longer names.
+        let _native_lifecycle = self.native_lifecycle_change().await?;
         let state = self.state()?;
         let intent = self.worktree_claim_correction_intent(project_id, task_id, request)?;
         let target = AggregateRef::Task { task_id };

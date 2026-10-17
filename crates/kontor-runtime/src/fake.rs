@@ -903,6 +903,9 @@ struct FakeState {
     pause_send_once: Option<FakeNativePause>,
     /// Holds the next hosted launch before it is recorded or mints anything.
     pause_hosted_launch_once: Option<FakeNativePause>,
+    /// Holds the next container recreation before it is recorded or mints a
+    /// native, so a test can race a placement repair with another writer.
+    pause_container_create_once: Option<FakeNativePause>,
     /// What each live hosted native is doing, when a test said; idle otherwise.
     hosted_activity: BTreeMap<ExternalId, DurableSeatActivity>,
     /// Natives a census reports for a binding beside the one this fake holds:
@@ -1624,6 +1627,7 @@ impl ScriptedFakeRuntime {
                 pause_hosted_retire_once: None,
                 pause_send_once: None,
                 pause_hosted_launch_once: None,
+                pause_container_create_once: None,
                 hosted_activity: BTreeMap::new(),
                 extra_hosted_carriers: BTreeMap::new(),
                 hosted_census_refusal: None,
@@ -2512,6 +2516,20 @@ impl ScriptedFakeRuntime {
     pub fn pause_next_hosted_launch(&self) -> FakeNativePause {
         let pause = FakeNativePause::default();
         self.lock().pause_hosted_launch_once = Some(pause.clone());
+        pause
+    }
+
+    /// Hold the next container recreation before it is recorded or mints a
+    /// native.
+    ///
+    /// The recovery repair reads a task's claim and then writes a binding for
+    /// it. Holding the create lets a test attempt a worktree-claim correction
+    /// exactly in that window and show the correction cannot overtake the
+    /// repair.
+    #[must_use]
+    pub fn pause_next_container_create(&self) -> FakeNativePause {
+        let pause = FakeNativePause::default();
+        self.lock().pause_container_create_once = Some(pause.clone());
         pause
     }
 
@@ -3820,6 +3838,10 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         &self,
         request: &ContainerRecreationRequest,
     ) -> RuntimeResult<ContainerRecreationOutcome> {
+        let pause = { self.lock().pause_container_create_once.take() };
+        if let Some(pause) = pause {
+            pause.pause().await;
+        }
         let mut state = self.lock();
         state.require_plane()?;
         let census = state.recreation_census(request, request.requested_at)?;
