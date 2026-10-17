@@ -68,7 +68,7 @@ try {
   report.checks.push({ name: "interactive directory create", outcome: "created", workspaceId: base });
 
   const bindingLabels = {
-    "kontor.seat": "seat-closure",
+    "kontor.seat_binding_id": "seat-closure",
     "kontor.workspace_id": base,
     "kontor.worktree": repo,
   };

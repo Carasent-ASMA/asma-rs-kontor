@@ -7,7 +7,6 @@ import { describe, expect, it } from "vitest";
 import type { KontorPluginConfig } from "../server/config";
 import {
   addKontorAgentConfig,
-  BINDING_GENERATION_ENV,
   contribute,
   guardWorkspaceCreate,
   KONTOR_MCP_SERVER_NAME,
@@ -93,7 +92,7 @@ function context(
 
 function seatLabels(overrides: Record<string, string> = {}): Record<string, string> {
   return {
-    "kontor.seat": "seat-1",
+    "kontor.seat_binding_id": "seat-1",
     "kontor.workspace_id": "wks_seat",
     "kontor.worktree": CANONICAL,
     ...overrides,
@@ -191,7 +190,7 @@ describe("agent.create hook", () => {
     });
   });
 
-  it("does not replace a Kontor server already composed for the seat", () => {
+  it("leaves a Kontor-composed seat untouched", () => {
     const request = addKontorAgentConfig(
       createRequest({
         config: {
@@ -208,16 +207,7 @@ describe("agent.create hook", () => {
       type: "stdio",
       command: "seat-kontor-mcp",
     });
-    expect(request.config.mcpServers?.[KONTOR_MCP_SERVER_NAME]).toEqual({
-      type: "stdio",
-      command: "kontor-mcp",
-      args: [
-        "--state-root",
-        "/tmp/kontor-state",
-        "--credential-tier",
-        "observer",
-      ],
-    });
+    expect(request.config.mcpServers?.[KONTOR_MCP_SERVER_NAME]).toBeUndefined();
   });
 
   it("adds the context line once", () => {
@@ -235,25 +225,31 @@ describe("agent.create hook", () => {
 });
 
 describe("agent.session_open hook", () => {
-  it("sets the seat and generation for a labelled seat", async () => {
+  it("sets the seat for a labelled seat", async () => {
     const env = await seatEnvironment(
       openRequest(),
       context({
-        "kontor.seat": "01a00000-0000-7000-8000-000000000001",
-        "kontor.binding_generation": "4",
+        "kontor.seat_binding_id": "01a00000-0000-7000-8000-000000000001",
       }),
       config(),
     );
     expect(env).toEqual({
       [SEAT_ENV]: "01a00000-0000-7000-8000-000000000001",
-      [BINDING_GENERATION_ENV]: "4",
     });
+  });
+
+  it("reads the delivery role-slot id", async () => {
+    const env = await seatEnvironment(
+      openRequest(),
+      context({ "kontor.role_slot_id": "slot-1" }),
+      config(),
+    );
+    expect(env).toEqual({ [SEAT_ENV]: "slot-1" });
   });
 
   it("marks an unlabelled session unbound", async () => {
     expect(await seatEnvironment(openRequest(), context({}), config())).toEqual({
       [SEAT_ENV]: UNBOUND,
-      [BINDING_GENERATION_ENV]: "",
     });
   });
 
@@ -264,40 +260,33 @@ describe("agent.session_open hook", () => {
         context({ orchestration: "paseo-direct", "asma.slot": "SWE" }),
         config(),
       ),
-    ).toEqual({ [SEAT_ENV]: UNRESOLVED, [BINDING_GENERATION_ENV]: "" });
+    ).toEqual({ [SEAT_ENV]: UNRESOLVED });
   });
 
   it("fails open when the labels cannot be read", async () => {
     expect(await seatEnvironment(openRequest(), context("error"), config())).toEqual({
       [SEAT_ENV]: UNRESOLVED,
-      [BINDING_GENERATION_ENV]: "",
     });
   });
 
   it("fails open when the label read exceeds the budget", async () => {
     expect(await seatEnvironment(openRequest(), context("never"), config())).toEqual({
       [SEAT_ENV]: UNRESOLVED,
-      [BINDING_GENERATION_ENV]: "",
     });
   });
 
-  it("replaces an old seat and clears its stale binding generation", async () => {
+  it("replaces an old seat", async () => {
     const request = openRequest({
-      env: {
-        EXISTING: "kept",
-        [SEAT_ENV]: "old-seat",
-        [BINDING_GENERATION_ENV]: "12",
-      },
+      env: { EXISTING: "kept", [SEAT_ENV]: "old-seat" },
     });
     const env = await seatEnvironment(
       request,
-      context({ "kontor.seat": "new-seat" }),
+      context({ "kontor.seat_binding_id": "new-seat" }),
       config(),
     );
     expect({ ...request.env, ...env }).toEqual({
       EXISTING: "kept",
       [SEAT_ENV]: "new-seat",
-      [BINDING_GENERATION_ENV]: "",
     });
   });
 });

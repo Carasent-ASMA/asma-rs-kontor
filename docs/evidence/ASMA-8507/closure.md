@@ -1,8 +1,10 @@
 # ASMA-8507 — Kontor Paseo plugin floor and workspace guard
 
 > **Date:** 2026-10-18
-> **Base:** `0971674d` (`origin/master`), rerun at `4d91d258` plus the round-2 fixes
-> **Paseo:** 0.11.2
+> **Base:** `0971674d` (`origin/master`), rerun at `056771d0` plus the round-3
+> fixes
+> **Paseo:** 0.11.4 for the final closure rerun; the source facts below are
+> from 0.11.2 and the same paths remain in the upgraded daemon.
 > **Scope:** KR-11 of the Kontor relaunch plan. Plugin source in
 > `apps/paseo-plugin`.
 
@@ -14,17 +16,27 @@
 | `apps/paseo-plugin/index.server.ts` | Server entry point. |
 | `apps/paseo-plugin/server/hooks.ts` | The three before hooks and the guard. |
 | `apps/paseo-plugin/server/config.ts` | Read-only configuration; observer tier is fixed. |
-| `apps/paseo-plugin/server/labels.ts` | Kontor/Paseo-direct seat detection and seat generation. |
+| `apps/paseo-plugin/server/labels.ts` | Kontor/Paseo-direct seat detection and seat identity. |
 | `apps/paseo-plugin/server/agent-labels.ts` | Bounded local label read; every failure returns `null`. |
 | `apps/paseo-plugin/server/placement.ts` | Kontor placement check against the seat's bound project and canonical worktree. |
+| `apps/paseo-plugin/server/placement-binding.ts` | Read-only binding resolution from `kontor.workspace_id`/`kontor.worktree`. |
 | `apps/paseo-plugin/test/*.test.ts` | Unit tests, including the no-write-credential boundary. |
 | `apps/paseo-plugin/scripts/closure.mjs` | Assertions against a running daemon. |
-| `apps/paseo-plugin/scripts/closure-suite.sh` | Isolated install → guarded → uninstall → restored run. |
+| `apps/paseo-plugin/scripts/cli-seat.mjs` | Creates a labelled seat for the CLI bypass cases. |
+| `apps/paseo-plugin/scripts/closure-suite.sh` | Isolated install → guarded → CLI cases → uninstall → restored run. |
 
-The hooks are the decided ones: `agent.create` adds the Kontor MCP at
-observer authority and one stable context line; `agent.session_open` sets
-`KONTOR_SEAT`/`KONTOR_BINDING_GENERATION`, `unbound` or `unresolved`; the
-`workspace.create` hook refuses a labelled seat outside Kontor placement.
+The hooks are the decided ones: `agent.create` adds the `kontor-observer` MCP
+at observer authority and one stable context line only when the request has no
+`kontor` server of its own; `agent.session_open` sets `KONTOR_SEAT`, `unbound`
+or `unresolved`; the `workspace.create` hook refuses a labelled seat outside
+its Kontor placement.
+
+The seat identity reads the labels the Kontor writer actually plants in
+`crates/kontor-runtime-paseo/src/wire.rs`: `kontor.seat_binding_id` (hosted
+seat), `kontor.role_slot_id` (delivery), and `kontor.agent-run` (run fallback).
+No writer plants `kontor.seat` or a binding-generation label, so the plugin
+publishes only `KONTOR_SEAT`; a generation key returns only when a writer
+carries one.
 
 ## Unit and type gates
 
@@ -35,7 +47,7 @@ typecheck exit=0
 
 $ pnpm --filter @carasent/kontor-paseo-plugin test
 Test Files  5 passed (5)
-     Tests  47 passed (47)
+     Tests  49 passed (49)
 ```
 
 ## Isolated closure run
@@ -57,34 +69,37 @@ Guarded behaviour:
 
 ```json
 {"expected":"guarded","checks":[
- {"name":"interactive directory create","outcome":"created",
-  "workspaceId":"wks_4c3a86558c3c35d2"},
+ {"name":"interactive directory create","outcome":"created"},
  {"name":"labelled worktree create","outcome":"refused",
   "message":"Plugin kontor before workspace.create failed: Kontor workspace guard refused: Kontor placement registers an existing directory; worktree creation is outside it"},
  {"name":"labelled directory without projectId","outcome":"refused",
   "message":"Plugin kontor before workspace.create failed: Kontor workspace guard refused: Kontor placement requires an explicit projectId"},
- {"name":"interactive worktree create","outcome":"created",
-  "workspaceId":"wks_38b6bced692f1c1c"}]}
+ {"name":"interactive worktree create","outcome":"created"}]}
 ```
 
-CLI residual with the same installed plugin — `paseo workspace create` carries
-no agent and no caller, so the guard cannot see a seat:
+CLI cases, run in the disposable daemon from a real labelled seat's
+environment (`PASEO_AGENT_ID`, `PASEO_WORKSPACE_ID`, `PASEO_AGENT_CWD` set to a
+seat carrying `kontor.seat_binding_id`, `kontor.workspace_id` and
+`kontor.worktree`). Both paths create today because neither CLI carries a
+caller on the `workspace.create` request:
 
 ```json
-{"name":"cli workspace create","outcome":"created","workspaceId":"wks_dfbf84b672dcefb0"}
+{"name":"cli workspace create (labelled seat env)","outcome":"created","must_be":"refused after ASMA-8530"}
+{"name":"cli run --new-workspace (labelled seat env)","outcome":"created","must_be":"refused after ASMA-8530"}
 ```
+
+ASMA-8530 must turn both CLI cases into refusals once Paseo carries caller
+identity on those paths. Until then the closure run records them as known
+bypasses, not as passes.
 
 Uninstall readback and restored behaviour:
 
 ```json
 {"plugins":0}
 {"expected":"unguarded","checks":[
- {"name":"interactive directory create","outcome":"created",
-  "workspaceId":"wks_6556b4c15ee3d275"},
- {"name":"labelled worktree create","outcome":"created",
-  "workspaceId":"wks_85af55ac9f25ce21"},
- {"name":"interactive worktree create","outcome":"created",
-  "workspaceId":"wks_16598d78f9a816cb"}]}
+ {"name":"interactive directory create","outcome":"created"},
+ {"name":"labelled worktree create","outcome":"created"},
+ {"name":"interactive worktree create","outcome":"created"}]}
 ```
 
 The same labelled worktree create that the installed plugin refused succeeds
@@ -104,11 +119,12 @@ daemon, the plugin install and the assertions are unchanged.
   `test/security.test.ts` fails if one is introduced.
 - The plugin names the realm state root but never opens it.
 
-## MCP server name — no collision with a provider home
+## MCP server composition — no collision with a Kontor-composed seat
 
-The plugin composes its server as `kontor-observer`, never `kontor`, so a
-home-level `kontor` server at any tier is untouched by whatever merge rule a
-provider applies.
+The plugin composes its own server as `kontor-observer` and skips it entirely
+when the request already has a `kontor` server. A Kontor-composed scoped seat
+therefore keeps its own server at its own tier and never receives a second
+realm-wide observer server.
 
 Source probe of the installed Paseo 0.11.2 bundle:
 
@@ -116,26 +132,26 @@ Source probe of the installed Paseo 0.11.2 bundle:
   `dist/server/server/agent/providers/codex-app-server-agent.js` builds
   `innerConfig.mcp_servers` from the request's `mcpServers` and passes it as a
   config override; a request entry named `kontor` would replace the provider
-  home's `[mcp_servers.kontor]` as a whole. This is the collision the rename
-  removes.
+  home's `[mcp_servers.kontor]` as a whole. Skipping the observer entry when
+  `kontor` is present is what avoids that.
 - **Claude** — `claude/agent.js` passes the request `mcpServers` as explicit
   SDK options, which take precedence over a same-named settings entry.
 - **opencode** — `opencode-agent.js` registers each request server through
   `client.mcp.add({ name, config })`; which entry wins for a name that already
-  exists in the provider config is not recorded here. Open, and not needed for
-  this plugin because the name differs.
+  exists in the provider config is not recorded here. The plugin's own name
+  differs, and it is not added beside a `kontor` entry.
 
-The unit test "does not replace a Kontor server already composed for the seat"
-pins the request-level half: a request `kontor` entry is preserved and the
-plugin adds `kontor-observer` beside it.
+The unit test "leaves a Kontor-composed seat untouched" pins the request-level
+behaviour: a request `kontor` entry is preserved and no `kontor-observer` is
+added beside it.
 
-## Residual blocker — Paseo 0.11.2 workspace creation paths
+## Residual blocker — Paseo 0.11.x workspace creation paths
 
-The guard sees a caller only when the request carries one. Paseo 0.11.2
-carries the caller as `agent.callerAgentId` on `workspace.create` and passes
+The guard sees a caller only when the request carries one. At 0.11.2 Paseo
+carried the caller as `agent.callerAgentId` on `workspace.create` and passed
 it to the hook (`WorkspaceInitialAgentSchema` keeps the field from
-`AgentCreateRequestSchema`), and the guard reads it. Three paths still create
-a workspace with no seat and no caller:
+`AgentCreateRequestSchema`), and the guard reads it. The final 0.11.4 closure
+run still creates on the three paths below:
 
 - The Paseo tool host's `create_workspace` calls
   `workspaceProvisioning.createWorkspaceForDirectory` directly
@@ -153,13 +169,14 @@ this hook until Paseo supplies a caller on every workspace creation and routes
 the MCP tool through the hook.
 
 - **Owner:** Kontor LSA for the upstream ask; Paseo upstream for the change.
+  ASMA-8530 owns making both CLI cases refused in the closure run.
 - **Next action:** widen the upstream ask: pass the caller on every
   `workspace.create` request, including MCP `create_workspace` and the CLI
   (`paseo run --new-workspace`, `paseo workspace create`), or route those
   paths through the hook.
 - **Resumption trigger:** a Paseo release that carries caller identity on all
   three paths, or routes them through the hook; re-run
-  `apps/paseo-plugin/scripts/closure-suite.sh` with a caller-labelled seat,
-  including the CLI case.
+  `apps/paseo-plugin/scripts/closure-suite.sh` with a caller-labelled seat and
+  require the two CLI cases to be refused.
 - **Interim:** keep `create_workspace` out of ECP/seat tool surfaces per the
   QNR-P1-06 containment note.

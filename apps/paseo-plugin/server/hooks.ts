@@ -18,11 +18,11 @@ type SessionOpenRequest = PluginBeforeRequests["agent.session_open"];
 type WorkspaceCreateRequest = PluginBeforeRequests["workspace.create"];
 
 export const KONTOR_MCP_SERVER_NAME = "kontor-observer";
+export const KONTOR_COMPOSED_SERVER_NAME = "kontor";
 export const KONTOR_SYSTEM_PROMPT_LINE =
   "This session may be a Kontor seat: resolve its mini-project from Kontor at start and after compaction.";
 
 export const SEAT_ENV = "KONTOR_SEAT";
-export const BINDING_GENERATION_ENV = "KONTOR_BINDING_GENERATION";
 export const UNBOUND = "unbound";
 export const UNRESOLVED = "unresolved";
 
@@ -37,10 +37,12 @@ function appendPromptLine(systemPrompt: string | undefined, line: string): strin
 /**
  * Add the Kontor read surface to a new agent.
  *
- * The server is always composed at observer authority under its own name, so a
- * `kontor` server the provider home already defines is never replaced. The
- * plugin never reads or carries a `kontord` credential: it names the state
- * root, and the MCP process reads its own read-only credential there.
+ * The server is composed at observer authority under its own name only when the
+ * request carries no `kontor` server of its own. A Kontor-composed scoped seat
+ * keeps its server at its own tier and never receives a second realm-wide
+ * observer server. The plugin never reads or carries a `kontord` credential: it
+ * names the state root, and the MCP process reads its own read-only credential
+ * there.
  */
 export function addKontorAgentConfig(
   request: AgentCreateRequest,
@@ -48,7 +50,12 @@ export function addKontorAgentConfig(
 ): AgentCreateRequest {
   const current = request.config;
   const mcpServers = { ...(current.mcpServers ?? {}) };
-  if (config.mcpEnabled && !(KONTOR_MCP_SERVER_NAME in mcpServers)) {
+  const hasKontorServer = Object.keys(mcpServers).some(
+    (name) =>
+      name === KONTOR_COMPOSED_SERVER_NAME ||
+      name.startsWith(`${KONTOR_COMPOSED_SERVER_NAME}-`),
+  );
+  if (config.mcpEnabled && !hasKontorServer) {
     mcpServers[KONTOR_MCP_SERVER_NAME] = {
       type: "stdio",
       command: config.mcpCommand,
@@ -78,9 +85,10 @@ export function addKontorAgentConfig(
  * budget, the environment carries `unresolved` and the Paseo operation
  * continues. A person opening a tab never blocks on Kontor.
  *
- * Both keys are written on every open: a resumed session can carry the previous
- * seat's environment, and an old generation must never outlive the seat
- * identity it belonged to. A generation that cannot be resolved is cleared.
+ * `KONTOR_SEAT` is written on every open, so a resumed session cannot keep the
+ * previous seat's environment. Kontor writes no binding-generation label today,
+ * so the plugin does not publish a generation key; when a writer carries one,
+ * restore it here and in the README.
  */
 export async function seatEnvironment(
   request: SessionOpenRequest,
@@ -92,19 +100,13 @@ export async function seatEnvironment(
     signal: context.signal,
   });
   if (labels === null) {
-    return { [SEAT_ENV]: UNRESOLVED, [BINDING_GENERATION_ENV]: "" };
+    return { [SEAT_ENV]: UNRESOLVED };
   }
   if (!isKontorSeat(labels)) {
-    return { [SEAT_ENV]: UNBOUND, [BINDING_GENERATION_ENV]: "" };
+    return { [SEAT_ENV]: UNBOUND };
   }
-  const { seat, generation } = seatBinding(labels);
-  if (seat === null) {
-    return { [SEAT_ENV]: UNRESOLVED, [BINDING_GENERATION_ENV]: "" };
-  }
-  return {
-    [SEAT_ENV]: seat,
-    [BINDING_GENERATION_ENV]: generation ?? "",
-  };
+  const { seat } = seatBinding(labels);
+  return { [SEAT_ENV]: seat ?? UNRESOLVED };
 }
 
 /**

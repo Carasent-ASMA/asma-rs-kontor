@@ -2,11 +2,16 @@ export type AgentLabels = Record<string, string> | null | undefined;
 
 export const KONTOR_LABEL_PREFIX = "kontor.";
 export const PASEO_DIRECT_ORCHESTRATION = "paseo-direct";
-export const KONTOR_SEAT_LABEL = "kontor.seat";
-export const KONTOR_BINDING_GENERATION_LABEL = "kontor.binding_generation";
 
+/**
+ * The labels a real Kontor launch writes for the seat identity.
+ *
+ * `kontor.seat_binding_id` is the persistent hosted seat. A delivery seat
+ * carries `kontor.role_slot_id`; `kontor.agent-run` is the run correlation and
+ * stays readable as the last fallback. There is no `kontor.seat` label in the
+ * writer (`crates/kontor-runtime-paseo/src/wire.rs`).
+ */
 const SEAT_LABEL_KEYS = [
-  KONTOR_SEAT_LABEL,
   "kontor.seat_binding_id",
   "kontor.role_slot_id",
   "kontor.agent-run",
@@ -14,7 +19,6 @@ const SEAT_LABEL_KEYS = [
 
 export interface SeatBinding {
   readonly seat: string | null;
-  readonly generation: string | null;
 }
 
 /**
@@ -37,20 +41,15 @@ export function isKontorSeat(labels: AgentLabels): boolean {
 /**
  * The seat identity carried by the labels.
  *
- * `kontor.seat` is the current key. The older keys stay readable because live
- * sessions still carry them; a labelled seat without any of them stays
- * unresolved so the pull path can settle it.
+ * Only keys the Kontor writer actually plants are read. A labelled seat without
+ * any of them stays unresolved so the pull path can settle it.
  */
 export function seatBinding(labels: AgentLabels): SeatBinding {
   if (!labels) {
-    return { seat: null, generation: null };
+    return { seat: null };
   }
   const seat = SEAT_LABEL_KEYS.map((key) => labels[key])
     .map((value) => value?.trim())
     .find((value) => value !== undefined && value.length > 0);
-  const generation = labels[KONTOR_BINDING_GENERATION_LABEL]?.trim();
-  return {
-    seat: seat ?? null,
-    generation: generation && generation.length > 0 ? generation : null,
-  };
+  return { seat: seat ?? null };
 }
