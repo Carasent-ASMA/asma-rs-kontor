@@ -233,6 +233,63 @@ fn a_library_install_on_a_group_or_world_writable_root_is_refused() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn a_writable_active_generation_is_never_trusted() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root_holder = tempfile::tempdir().expect("root");
+    let version_one = release("1.0.0");
+    let installer = installer(root_holder.path());
+    assert_eq!(
+        install(&installer, &version_one),
+        Ok(InstallOutcome::Installed)
+    );
+    let pointer = std::fs::read_link(root_holder.path().join("current")).expect("pointer");
+    let generation = root_holder.path().join(pointer);
+    std::fs::set_permissions(&generation, std::fs::Permissions::from_mode(0o777))
+        .expect("chmod generation");
+
+    assert_eq!(
+        install(&installer, &version_one),
+        Err(InstallError::InsecureRoot),
+        "another local user could replace the verified binaries"
+    );
+    assert_eq!(
+        installer.status(&version_one.manifest),
+        Err(InstallError::InsecureRoot)
+    );
+    assert_eq!(
+        installer.active_generation(),
+        Err(InstallError::InsecureRoot)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_writable_managed_artifact_is_never_trusted() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root_holder = tempfile::tempdir().expect("root");
+    let version_one = release("1.0.0");
+    let installer = installer(root_holder.path());
+    assert_eq!(
+        install(&installer, &version_one),
+        Ok(InstallOutcome::Installed)
+    );
+    let pointer = std::fs::read_link(root_holder.path().join("current")).expect("pointer");
+    let mcp = root_holder
+        .path()
+        .join(pointer)
+        .join(ArtifactName::Mcp.file_name());
+    std::fs::set_permissions(&mcp, std::fs::Permissions::from_mode(0o777)).expect("chmod mcp");
+
+    assert_eq!(
+        install(&installer, &version_one),
+        Err(InstallError::InsecureRoot)
+    );
+}
+
 #[test]
 #[cfg(unix)]
 fn a_lost_owner_execute_bit_is_repaired_before_already_current() {

@@ -1144,11 +1144,27 @@ impl Installer {
             Err(ConfinementError::Missing) => return Err(InstallError::ActiveUnverified),
             Err(error) => return Err(error.into()),
         };
+        if !crate::confinement::is_private_directory(&releases)? {
+            return Err(InstallError::InsecureRoot);
+        }
         let generation_dir = match releases.open_child(generation) {
             Ok(dir) => dir,
             Err(ConfinementError::Missing) => return Err(InstallError::ActiveUnverified),
             Err(error) => return Err(error.into()),
         };
+        // The held generation descriptor is what every trusted byte is read
+        // through: a directory another local user can write can replace the
+        // binaries after verification, so it is refused before its content is
+        // trusted.
+        if !crate::confinement::is_private_directory(&generation_dir)? {
+            return Err(InstallError::InsecureRoot);
+        }
+        let marker_mode = generation_dir
+            .child_mode(MARKER_FILE)?
+            .ok_or(InstallError::ActiveUnverified)?;
+        if marker_mode & 0o022 != 0 {
+            return Err(InstallError::InsecureRoot);
+        }
         let bytes = generation_dir
             .read_child(MARKER_FILE, MAX_DOCUMENT_BYTES)?
             .ok_or(InstallError::ActiveUnverified)?;
@@ -1194,6 +1210,11 @@ impl Installer {
             let mode = generation_dir
                 .child_mode(name.file_name())?
                 .ok_or(InstallError::ActiveUnverified)?;
+            // A managed artifact another local user can replace is not
+            // trusted, even when its current content matches its digest.
+            if mode & 0o022 != 0 {
+                return Err(InstallError::InsecureRoot);
+            }
             // Bootstrap-owned binaries are executed by their owner, so a bit
             // that only some other class may execute is not usable.
             executable &= mode & 0o100 != 0;
