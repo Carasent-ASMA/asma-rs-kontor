@@ -8,11 +8,13 @@ import {
   collectDirectory,
   emptyDirectoryState,
   SessionDirectory,
+  toDirectoryEntry,
   type AgentDirectoryPage,
   type DirectoryClient,
   type DirectoryEntry,
   type DirectoryState,
 } from "../client/session-directory";
+import { matchesQuery } from "../client/session-view";
 
 type Observer = {
   snapshot: (snapshot: PaseoAgentListResult & { subscriptionId: string }) => void;
@@ -28,6 +30,8 @@ type EntryOverrides = {
   archivedAt?: string | null;
   workspaceName?: string;
   projectName?: string;
+  updatedAt?: string;
+  labels?: Record<string, string>;
 };
 
 function entry(id: string, overrides: EntryOverrides = {}): AgentDirectoryPage {
@@ -39,7 +43,7 @@ function entry(id: string, overrides: EntryOverrides = {}): AgentDirectoryPage {
       workspaceId: "wks_1",
       model: null,
       createdAt: "2026-10-18T10:00:00.000Z",
-      updatedAt: "2026-10-18T10:00:00.000Z",
+      updatedAt: overrides.updatedAt ?? "2026-10-18T10:00:00.000Z",
       lastUserMessageAt: null,
       status: overrides.status ?? "idle",
       capabilities: {
@@ -55,7 +59,7 @@ function entry(id: string, overrides: EntryOverrides = {}): AgentDirectoryPage {
       pendingPermissions: [],
       persistence: null,
       title: overrides.title ?? `Session ${id}`,
-      labels: {},
+      labels: overrides.labels ?? {},
       requiresAttention: overrides.requiresAttention ?? false,
       attentionReason: overrides.attentionReason ?? null,
       attentionTimestamp: null,
@@ -89,6 +93,13 @@ function pageInfo(index: number, count: number) {
 function fakeDirectory(initialPages: AgentDirectoryPage[][]) {
   let pages = initialPages;
   let observer: Observer | null = null;
+  const observers: Observer[] = [];
+  let heldPage: {
+    readonly started: Promise<void>;
+    readonly markStarted: () => void;
+    readonly gate: Promise<void>;
+    readonly release: () => void;
+  } | null = null;
   let released = false;
   let failure: "none" | "next" | "always" = "none";
   let subscribeFailure = false;
@@ -127,9 +138,12 @@ function fakeDirectory(initialPages: AgentDirectoryPage[][]) {
         ready: Promise.resolve(snapshot),
         subscribe: (next: Observer) => {
           observer = next;
+          observers.push(next);
           next.snapshot(snapshot);
           return () => {
-            observer = null;
+            if (observer === next) {
+              observer = null;
+            }
           };
         },
         release: async () => {
@@ -137,6 +151,12 @@ function fakeDirectory(initialPages: AgentDirectoryPage[][]) {
         },
       };
       return { ...snapshot, subscription };
+    }
+    if (heldPage) {
+      const held = heldPage;
+      heldPage = null;
+      held.markStarted();
+      await held.gate;
     }
     const index = cursorIndex(options.page?.cursor);
     return {
@@ -167,6 +187,24 @@ function fakeDirectory(initialPages: AgentDirectoryPage[][]) {
     failSubscription(value = true) {
       subscribeFailure = value;
     },
+    holdNextPage() {
+      let markStarted!: () => void;
+      let releaseGate!: () => void;
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
+      });
+      const gate = new Promise<void>((resolve) => {
+        releaseGate = resolve;
+      });
+      heldPage = { started, markStarted, gate, release: releaseGate };
+      return {
+        started,
+        release: () => {
+          heldPage = null;
+          releaseGate();
+        },
+      };
+    },
     setPageInfo(
       override: (index: number, count: number) => ReturnType<typeof pageInfo>,
     ) {
@@ -174,6 +212,9 @@ function fakeDirectory(initialPages: AgentDirectoryPage[][]) {
     },
     emitUpdate(update: PaseoAgentUpdate) {
       observer?.update({ type: "agent_update", payload: update });
+    },
+    emitUpdateOn(index: number, update: PaseoAgentUpdate) {
+      observers[index]?.update({ type: "agent_update", payload: update });
     },
     emitReconnectSnapshot() {
       const first = visiblePages({ filter: { includeArchived: false } })[0] ?? [];
@@ -249,6 +290,25 @@ describe("collectDirectory", () => {
 });
 
 describe("SessionDirectory", () => {
+  it("searches recognized epic and workstream label values", () => {
+    const directoryEntry = toDirectoryEntry(
+      entry("labeled", {
+        title: "Planner session",
+        labels: {
+          epic: "ASMA-8539",
+          workstream: "kontor",
+          "paseo.parent-agent-id": "internal-only",
+        },
+      }),
+    );
+
+    expect(directoryEntry.searchText).toContain("asma-8539");
+    expect(directoryEntry.searchText).toContain("kontor");
+    expect(directoryEntry.searchText).not.toContain("internal-only");
+    expect(matchesQuery(directoryEntry, "ASMA-8539")).toBe(true);
+    expect(matchesQuery(directoryEntry, "kontor")).toBe(true);
+  });
+
   it("tracks native status and attention separately and keeps duplicate titles distinct", async () => {
     const fake = fakeDirectory([
       [
@@ -402,6 +462,93 @@ describe("SessionDirectory", () => {
     expect(latest.status).toBe("error");
     expect(latest.live).toBe(false);
     expect(latest.error).toMatch(/daemon unavailable/);
+
+    await directory.dispose();
+  });
+
+  it("fences a queued pre-reconnect update so the reconciled snapshot wins", async () => {
+    const oldRunning = entry("agent-a", {
+      status: "running",
+      updatedAt: "2026-10-18T10:00:00.000Z",
+    });
+    const fake = fakeDirectory([[oldRunning]]);
+    let latest = emptyDirectoryState();
+    const directory = new SessionDirectory({
+      client: () => fake.client,
+      includeArchived: false,
+      onChange: (state) => {
+        latest = state;
+      },
+    });
+
+    await directory.start();
+    const held = fake.holdNextPage();
+    const oldRefresh = directory.refresh();
+    await held.started;
+
+    fake.emitUpdate({
+      kind: "upsert",
+      agent: {
+        ...oldRunning.agent,
+        status: "error",
+        updatedAt: "2026-10-18T10:01:00.000Z",
+      },
+    } as PaseoAgentUpdate);
+
+    directory.markHostOffline();
+    fake.setPages([
+      [
+        entry("agent-a", {
+          status: "idle",
+          updatedAt: "2026-10-18T10:02:00.000Z",
+        }),
+      ],
+    ]);
+    const reconnect = directory.reconnect();
+    held.release();
+    await Promise.all([oldRefresh, reconnect]);
+
+    expect(latest.status).toBe("ready");
+    expect(latest.live).toBe(true);
+    expect(latest.entries).toHaveLength(1);
+    expect(latest.entries[0]?.status).toBe("idle");
+    expect(latest.entries[0]?.updatedAt).toBe("2026-10-18T10:02:00.000Z");
+
+    await directory.dispose();
+  });
+
+  it("ignores a late update from the previous subscription generation", async () => {
+    const authoritative = entry("agent-a", {
+      status: "idle",
+      updatedAt: "2026-10-18T10:02:00.000Z",
+    });
+    const fake = fakeDirectory([[authoritative]]);
+    let latest = emptyDirectoryState();
+    const directory = new SessionDirectory({
+      client: () => fake.client,
+      includeArchived: false,
+      onChange: (state) => {
+        latest = state;
+      },
+    });
+
+    await directory.start();
+    await directory.reconnect();
+    expect(latest.entries[0]?.status).toBe("idle");
+
+    fake.emitUpdateOn(0, {
+      kind: "upsert",
+      agent: {
+        ...authoritative.agent,
+        status: "error",
+        updatedAt: "2026-10-18T10:01:00.000Z",
+      },
+    } as PaseoAgentUpdate);
+
+    expect(latest.status).toBe("ready");
+    expect(latest.live).toBe(true);
+    expect(latest.entries[0]?.status).toBe("idle");
+    expect(latest.entries[0]?.updatedAt).toBe("2026-10-18T10:02:00.000Z");
 
     await directory.dispose();
   });

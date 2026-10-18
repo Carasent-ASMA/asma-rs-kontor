@@ -24,6 +24,22 @@ export const DIRECTORY_PAGE_LIMIT = 200;
 export const DIRECTORY_MAX_PAGES = 1_000;
 export const PENDING_UPDATE_LIMIT = 256;
 
+/**
+ * Structured labels that carry workflow identifiers and PR references. They are
+ * search text only; none of them creates hierarchy or changes native placement.
+ */
+export const SEARCH_LABEL_KEYS = [
+  "epic",
+  "workstream",
+  "pr",
+  "ticket",
+  "jira.epic",
+  "jira.issue",
+  "origin.epic",
+  "desk",
+  "role",
+] as const;
+
 const AGENT_SORT: NonNullable<PaseoAgentListOptions["sort"]> = [
   { key: "updated_at", direction: "desc" },
 ];
@@ -117,8 +133,19 @@ function searchTextOf(input: {
   readonly projectName: string | null;
   readonly projectKey: string | null;
   readonly cwd: string;
+  readonly labels: Readonly<Record<string, string>>;
 }): string {
-  return [input.title, input.workspaceName, input.projectName, input.projectKey, input.cwd]
+  const labelValues = SEARCH_LABEL_KEYS.map((key) => input.labels[key]).filter(
+    (value): value is string => typeof value === "string" && value.trim().length > 0,
+  );
+  return [
+    input.title,
+    input.workspaceName,
+    input.projectName,
+    input.projectKey,
+    input.cwd,
+    ...labelValues,
+  ]
     .filter((part): part is string => part !== null)
     .join("\n")
     .toLowerCase();
@@ -134,6 +161,7 @@ export function toDirectoryEntry(
   const projectName = text(project?.projectName) ?? previous?.projectName ?? null;
   const projectKey = text(project?.projectKey) ?? previous?.projectKey ?? null;
   const cwd = agent.cwd || previous?.cwd || "";
+  const labels = agent.labels ?? {};
   return {
     id: agent.id,
     title,
@@ -149,11 +177,11 @@ export function toDirectoryEntry(
     provider: agent.provider,
     model: agent.model ?? null,
     parentAgentId: (agent as { parentAgentId?: string | null }).parentAgentId ?? null,
-    labels: agent.labels ?? {},
+    labels,
     projectKey,
     projectName,
     workspaceName,
-    searchText: searchTextOf({ title, workspaceName, projectName, projectKey, cwd }),
+    searchText: searchTextOf({ title, workspaceName, projectName, projectKey, cwd, labels }),
   };
 }
 
@@ -276,7 +304,10 @@ export class SessionDirectory {
   private subscription: OwnedSubscription<PaseoAgentListResult> | null = null;
   private unsubscribe: (() => void) | null = null;
   private subscriptionActive = false;
-  private pendingUpdates: PaseoAgentUpdate[] = [];
+  private pendingUpdates: Array<{
+    readonly generation: number;
+    readonly update: PaseoAgentUpdate;
+  }> = [];
   private pendingOverflow = false;
   private hostOnline = false;
 
@@ -409,6 +440,10 @@ export class SessionDirectory {
     if (this.disposed || !this.hostOnline) {
       return;
     }
+    // Every connection attempt gets a new generation. A queued update from the
+    // previous subscription and an in-flight page walk from before the
+    // reconnect are both fenced by this value.
+    this.generation += 1;
     const generation = this.generation;
     if (this.entries.size === 0) {
       this.status = "loading";
@@ -463,6 +498,9 @@ export class SessionDirectory {
     try {
       this.unsubscribe = result.subscription.subscribe({
         snapshot: () => {
+          if (this.disposed || generation !== this.generation) {
+            return;
+          }
           snapshots += 1;
           if (snapshots === 1) {
             this.live = this.status === "ready";
@@ -477,15 +515,15 @@ export class SessionDirectory {
         },
         update: (message) => {
           if (message.type === "agent_update") {
-            this.receiveUpdate(message.payload);
+            this.receiveUpdate(message.payload, generation);
           }
         },
         error: (error) => {
-          this.subscriptionActive = false;
-          this.live = false;
-          if (this.disposed) {
+          if (this.disposed || generation !== this.generation) {
             return;
           }
+          this.subscriptionActive = false;
+          this.live = false;
           this.error = describeDirectoryError(error);
           this.status = this.entries.size > 0 ? "stale" : "error";
           this.staleReason = this.entries.size > 0 ? "Live updates stopped." : null;
@@ -514,6 +552,10 @@ export class SessionDirectory {
     if (subscription) {
       void subscription.release().catch(() => undefined);
     }
+    // Buffered updates belong to the subscription that just ended. They must
+    // never be replayed over a newer connection's reconciled snapshot.
+    this.pendingUpdates = [];
+    this.pendingOverflow = false;
   }
 
   private async runRefresh(): Promise<void> {
@@ -558,13 +600,13 @@ export class SessionDirectory {
     this.emit();
   }
 
-  private receiveUpdate(update: PaseoAgentUpdate): void {
-    if (this.disposed) {
+  private receiveUpdate(update: PaseoAgentUpdate, generation: number): void {
+    if (this.disposed || generation !== this.generation) {
       return;
     }
     if (this.refreshing) {
       if (this.pendingUpdates.length < PENDING_UPDATE_LIMIT) {
-        this.pendingUpdates.push(update);
+        this.pendingUpdates.push({ generation, update });
       } else {
         this.pendingOverflow = true;
       }
@@ -577,8 +619,10 @@ export class SessionDirectory {
   private applyPendingUpdates(): void {
     const pending = this.pendingUpdates;
     this.pendingUpdates = [];
-    for (const update of pending) {
-      this.applyUpdate(update);
+    for (const entry of pending) {
+      if (entry.generation === this.generation) {
+        this.applyUpdate(entry.update);
+      }
     }
   }
 

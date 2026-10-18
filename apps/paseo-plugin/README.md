@@ -34,11 +34,17 @@ Command Center entry. All three are navigation affordances only:
   host's navigation API. Duplicate titles never select by name. Missing
   sessions, older hosts without plugin navigation and host failures produce a
   recoverable message instead of opening a different conversation.
-- **Return entry.** Opening a session pushes the host's own session route, so
-  the native close/back returns to the plugin screen. The sidebar entry and the
-  global **Open Kontor Sessions** Command Center item remain available from the
-  session room. The screen restores its search, filters and scroll offset for
-  that client session.
+- **Return entry.** Opening a session uses the host's native workspace
+  navigation. Paseo 0.11.4 uses `router.dismissTo` / `POP_TO` to reach the host
+  workspace route, so the plugin screen is not kept underneath the session.
+  Return through the persistent plugin sidebar entry or the global **Open
+  Kontor Sessions** Command Center item; the screen restores its search,
+  filters and scroll offset for that client session.
+- **Archived placement limit.** The advanced archived option asks the host for
+  archived agents. The host directory can omit an archived session when its
+  workspace/project placement cannot be resolved. That is a host scope limit,
+  not a client filter; the option still keeps `archivedAt` distinct from native
+  `closed` whenever the host returns the row.
 
 The screen is a React Native plugin screen. It does not replace Paseo's native
 sidebar, footer, tab strip, session room or composer, and it does not embed the
@@ -62,9 +68,10 @@ merging remain KN-02 work.
 
 Observed on this workstation:
 
-- Paseo app and daemon/CLI `0.11.4`; the plugin SDK client contracts are
-  identical between the `0.11.2` floor and `0.11.4`, and the plugin now pins
-  `0.11.4`. The manifest requires `paseo >= 0.11.4`.
+- Paseo app and daemon/CLI `0.11.4` observed. The plugin development/SDK pin
+  is `0.11.4`; the manifest declares `paseo >= 0.11.4`. Only `0.11.4` is
+  runtime-qualified (see the compatibility range below). The SDK client
+  contracts used here are identical between `0.11.2` and `0.11.4`.
 - The native directory API supports a complete page walk, a subscribed
   `fetch_agents_result`, native `agent_update` upserts/removals and a second
   subscription snapshot after a daemon restart. A disposable-daemon probe
@@ -72,8 +79,8 @@ Observed on this workstation:
   read every page with a `limit: 1` walk.
 - `navigation.openAgent` is the supported native open. The `0.11.4` host maps
   it to its own `navigateToAgent`, which resolves the workspace from the agent
-  ID and pushes the native session route. The plugin screen route is pushed as
-  well, so native close/back returns to it.
+  ID and uses `dismissTo`/`POP_TO` to reach the host workspace route. It does not
+  push a session route on top of the plugin screen.
 - **Reorder gap:** the plugin SDK exposes no reorder, drag or move primitive,
   and no plugin-safe gesture package. The only supported pointer/touch route is
   React Native's `PanResponder` and responder props from the allowed
@@ -86,11 +93,76 @@ Observed on this workstation:
   isolated daemon. The host's own plugin compiler bundled `index.client.tsx`
   and `index.server.ts`; the compiled client bundle executed under the host
   module allowlist and registered the screen, sidebar item and Command Center
-  item. The desktop host bundle's navigation mapping (`openAgent` to its native
-  `navigateToAgent`) and the plugin-screen route push were inspected; open-by-ID
-  behavior is pinned by unit tests, not by a device run. A physical iPhone was
-  not available in this checkout; device acceptance remains a KN-03 gate rather
-  than a claim here.
+  item. The host navigation mapping and its `dismissTo`/`POP_TO` route behavior
+  were inspected: the plugin screen is popped rather than left under the
+  session, so the sidebar and Command Center entries are the return path.
+  Open-by-ID behavior is pinned by unit tests.
+- **Compatibility range:** the manifest declares `paseo >= 0.11.4`. Only
+  0.11.4 is runtime-qualified on this workstation. The 0.11.2 SDK client
+  contracts were inspected and are identical for the used surface, but 0.11.2
+  is not runtime-qualified.
+- **KN-01 device acceptance is not performed and is not waived.** KN-01 closure
+  requires opening the correct existing session on desktop and actual iPhone,
+  and returning with search, filter and position preserved. KN-03 does not
+  substitute for those KN-01 checks. The procedure and evidence checklist are
+  recorded below; the authorized device window is separate.
+
+### Desktop and iPhone acceptance procedure (pending)
+
+This procedure has not been performed for this revision. It runs only in the
+authorized installation/device window; browser screenshots alone do not satisfy
+the desktop or iPhone check.
+
+Record before starting:
+
+- Paseo desktop app version and iPhone app version.
+- Daemon/CLI version (`paseo --version`, `paseo status --json`).
+- Plugin revision: repository commit and the installed plugin identity and
+  revision (`paseo plugin ls --json`).
+- Selected host `serverId`/label, `KONTOR_PLUGIN_MCP=off`, and `kontord`
+  stopped or unavailable.
+- Complete inventory count and pages read from the screen header.
+- Two sessions that share the same title but have different native IDs.
+
+Desktop steps:
+
+1. Open **Sessions** and record the host, archive scope, count and pages read.
+2. Type a unique search term; select a state filter, the attention filter and a
+   scroll position deep enough that the target row is not initially visible.
+3. Open the first duplicate-title row. Confirm the host session room shows the
+   same native session ID recorded from the row, not merely the same title.
+4. Return via the sidebar entry and then via the global Command Center item.
+   Confirm the search text, filter selection, scroll position and target row are
+   preserved.
+5. Open the second duplicate-title row and confirm a distinct native ID.
+6. In an authorized controlled/disposable check, remove the target session and
+   confirm a recoverable “no longer available” state rather than opening another
+   session by name.
+7. In an authorized controlled/disposable check, disconnect and reconnect the
+   host. Confirm the rows first show stale/not-live, then a complete reconciled
+   inventory with no missing or duplicated rows.
+
+iPhone steps:
+
+1. Repeat the desktop steps on the actual iPhone app.
+2. Check keyboard behavior, row touch targets, safe-area clearance, long titles
+   and the compact layout.
+3. Confirm the correct duplicate-title session opens by native ID and that the
+   sidebar/Command Center return preserves search, filter and position.
+
+Evidence checklist:
+
+- [ ] Desktop app version, iPhone app version, daemon/CLI version.
+- [ ] Plugin commit and installed plugin identity/revision.
+- [ ] Host ID/label, `KONTOR_PLUGIN_MCP=off`, `kontord` unavailable.
+- [ ] Inventory count and pages read; no first-page-only count.
+- [ ] Duplicate-title pair with both native IDs.
+- [ ] Opened native ID matches the selected row on desktop.
+- [ ] Opened native ID matches the selected row on iPhone.
+- [ ] Return preserves search, filter and scroll position on desktop.
+- [ ] Return preserves search, filter and scroll position on iPhone.
+- [ ] Missing-session and reconnect cases use controlled/disposable data only.
+- [ ] Desktop pass/fail, iPhone pass/fail, tester and timestamp.
 
 ## Hooks
 
@@ -100,7 +172,8 @@ Observed on this workstation:
 | `before("agent.session_open")` | Reads the session's own labels from the local daemon and sets `KONTOR_SEAT` from the keys Kontor actually writes (`kontor.seat_binding_id`, `kontor.role_slot_id`, or `kontor.agent-run`), or `KONTOR_SEAT=unbound`. A failed or slow read sets `KONTOR_SEAT=unresolved`. The key is rewritten on every open, so an old seat never survives a resume. It never blocks the open. |
 | `before("workspace.create")` | Refuses a labelled Kontor seat's explicit workspace creation outside that seat's own placement: its bound project and canonical worktree. Both the initial agent's labels and the caller carried on the request (`agent.callerAgentId`) are checked. Interactive and unlabelled creation is unchanged, and an unreadable caller lookup with no seat labels on the request fails open. |
 
-The plugin adds no UI, no menu and no agent-creation path.
+The hooks add no menu and no agent-creation path. The navigator adds only the
+Sessions screen, sidebar row and Command Center entry described above.
 
 ## Kontor placement
 
@@ -179,9 +252,11 @@ archive scope, session count and pages read).
 2. Type in the search field to match the full session title, workspace,
    project or cwd. Use the state chips and **Filters** for native state,
    attention and archived sessions.
-3. Select a row to open that exact native session. Return with the native
-   close/back action, the sidebar entry or the global **Open Kontor Sessions**
-   Command Center item.
+3. Select a row to open that exact native session. In 0.11.4 the host reaches
+   the workspace route with `dismissTo`/`POP_TO`, so return through the
+   persistent sidebar entry or the global **Open Kontor Sessions** Command
+   Center item; native back does not keep the plugin screen underneath the
+   session. Search, filters and scroll offset are restored on return.
 4. If the host disconnects, the rows stay visible with a stale banner. Retry or
    wait for reconnect; the next subscription snapshot reconciles every page
    before the screen reports **Live** again.
@@ -209,7 +284,8 @@ apps/paseo-plugin/scripts/closure-suite.sh
 
 `test/session-directory.test.ts` covers a 505-session three-page walk, repeated
 and missing cursors, native upserts/removals, attention, archival scope,
-disconnect staleness, reconnect reconciliation and source failures.
+recognized epic/workstream label search, disconnect staleness, reconnect
+reconciliation, obsolete-generation update fencing and source failures.
 `test/session-actions.test.ts` covers duplicate-name open by native ID and the
 missing/navigation/failure cases. `test/client-entry.test.ts` pins the screen,
 sidebar and Command Center contributions. `test/security.test.ts` extends the
@@ -221,6 +297,12 @@ session, subscribes to the native directory, verifies a `limit: 1` complete
 page walk and observes a native title update through the subscription.
 
 ## Known limit — Paseo 0.11.x
+
+The archived option follows the host directory. An archived session can be
+absent when its workspace or project placement no longer resolves; the client
+does not invent a row or a workspace. When the host returns an archived row,
+`archivedAt` is shown separately from the native `closed` status. The default
+non-archived inventory is not affected.
 
 The guard covers an explicit `workspace.create` request whose initial agent
 carries Kontor labels, and the caller carried as `agent.callerAgentId` on
