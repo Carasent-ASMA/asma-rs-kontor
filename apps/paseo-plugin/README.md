@@ -1,14 +1,16 @@
 # Kontor Paseo plugin
 
-The Kontor-owned Paseo plugin. It provides the native Sessions navigator and
+The Kontor-owned Paseo plugin. It provides the native Kontor Sessions navigator and
 the KR-11 foundation of the Kontor relaunch plan (ASMA-8507): the decided
 binding hooks plus the `before("workspace.create")` placement guard. The
 navigator reads Paseo directly and works without `kontord`.
 
 ## Sessions navigator
 
-The plugin adds one **Sessions** screen, one sidebar entry and one global
-Command Center entry. All three are navigation affordances only:
+The plugin adds the **Kontor** screen, one sidebar entry, one global Command
+Center command and an in-session **← Kontor** composer pill. The screen,
+sidebar and command are navigation affordances; the pill is the in-session
+return control.
 
 - **Complete inventory.** The screen walks every page of the selected host's
   native agent directory (200 rows per page) before it reports the inventory
@@ -39,9 +41,11 @@ Command Center entry. All three are navigation affordances only:
 - **Return entry.** Opening a session uses the host's native workspace
   navigation. Paseo 0.11.4 uses `router.dismissTo` / `POP_TO` to reach the host
   workspace route, so the plugin screen is not kept underneath the session.
-  Return through the persistent plugin sidebar entry or the global **Open
-  Kontor Sessions** Command Center item; the screen restores its search,
-  filters and scroll offset for that client session.
+  Return with the **← Kontor** composer pill, the persistent plugin sidebar
+  entry or the global **Open Kontor** Command Center item. The pill is
+  registered for each live agent and opens the same host's Kontor screen; the
+  screen restores its search, filters, expansion and scroll offset for that
+  client session.
 - **Archived placement limit.** The advanced archived option asks the host for
   archived agents. The host directory can omit an archived session when its
   workspace/project placement cannot be resolved. That is a host scope limit,
@@ -83,6 +87,11 @@ Observed on this workstation:
   it to its own `navigateToAgent`, which resolves the workspace from the agent
   ID and uses `dismissTo`/`POP_TO` to reach the host workspace route. It does not
   push a session route on top of the plugin screen.
+- The installed `0.11.4` SDK exports `addComposerPill` and `openScreen`. The
+  host renders composer pills with their icon and label and keeps the label on
+  compact layouts; exact ordering and overflow among built-in controls stay
+  Paseo-owned. The plugin adds one **← Kontor** pill per live agent and no
+  header button, so there is one in-session return control rather than two.
 - **Reorder gap:** the plugin SDK exposes no reorder, drag or move primitive,
   and no plugin-safe gesture package. The only supported pointer/touch route is
   React Native's `PanResponder` and responder props from the allowed
@@ -97,8 +106,8 @@ Observed on this workstation:
   module allowlist and registered the screen, sidebar item and Command Center
   item. The host navigation mapping and its `dismissTo`/`POP_TO` route behavior
   were inspected: the plugin screen is popped rather than left under the
-  session, so the sidebar and Command Center entries are the return path.
-  Open-by-ID behavior is pinned by unit tests.
+  session, so the composer pill, sidebar and Command Center are the return
+  paths. Open-by-ID behavior is pinned by unit tests.
 - **Compatibility range:** the manifest declares `paseo >= 0.11.4`. Only
   0.11.4 is runtime-qualified on this workstation. The 0.11.2 SDK client
   contracts were inspected and are identical for the used surface, but 0.11.2
@@ -139,15 +148,17 @@ Record before starting:
 
 Desktop steps:
 
-1. Open **Sessions** and record the host, archive scope, count and pages read.
+1. Open **Kontor** and record the host, archive scope, count and pages read.
 2. Type a unique search term; select a state filter, the attention filter and a
    scroll position deep enough that the target row is not initially visible.
 3. Record the native ID shown in the first duplicate-title row, then open that
    row. In the host session, use the tab menu **Copy agent id** and compare it
    with the recorded row ID; confirm it is not merely the same title.
-4. Return via the sidebar entry and then via the global Command Center item.
-   Confirm the search text, filter selection, scroll position and target row are
-   preserved.
+4. Confirm the session's composer control row shows the **← Kontor** pill.
+   Press it and confirm the Kontor screen opens on the same host with the
+   search text, filter selection, expansion, scroll position and target row
+   preserved. Also verify the sidebar entry and the global **Open Kontor**
+   Command Center item return to the same screen.
 5. Open the second duplicate-title row and confirm both its visible native ID
    and the host-copied agent ID are the distinct second ID.
 6. In an authorized controlled/disposable check, remove the target session and
@@ -163,8 +174,10 @@ iPhone steps:
 2. Check keyboard behavior, row touch targets, safe-area clearance, long titles
    and the compact layout.
 3. Confirm the visible row ID matches the host-copied agent ID for both
-   duplicate-title sessions, and that the sidebar/Command Center return
-   preserves search, filter and position.
+   duplicate-title sessions. Confirm the **← Kontor** pill is visible in the
+   native composer control row with an adequate touch target; pressing it
+   preserves search, filter, expansion and position. Repeat the sidebar and
+   Command Center return checks.
 
 Evidence checklist:
 
@@ -175,8 +188,12 @@ Evidence checklist:
 - [ ] Duplicate-title pair with both native IDs.
 - [ ] Row native ID matches the host-copied agent ID on desktop.
 - [ ] Row native ID matches the host-copied agent ID on iPhone.
-- [ ] Return preserves search, filter and scroll position on desktop.
-- [ ] Return preserves search, filter and scroll position on iPhone.
+- [ ] **← Kontor** composer pill is visible, labelled and tappable on desktop.
+- [ ] **← Kontor** composer pill is visible, labelled and tappable on iPhone.
+- [ ] Pill, sidebar and Command Center returns preserve search, filter,
+      expansion and scroll position on desktop.
+- [ ] Pill, sidebar and Command Center returns preserve search, filter,
+      expansion and scroll position on iPhone.
 - [ ] Missing-session and reconnect cases use controlled/disposable data only.
 - [ ] Desktop pass/fail, iPhone pass/fail, tester and timestamp.
 
@@ -188,8 +205,9 @@ Evidence checklist:
 | `before("agent.session_open")` | Reads the session's own labels from the local daemon and sets `KONTOR_SEAT` from the keys Kontor actually writes (`kontor.seat_binding_id`, `kontor.role_slot_id`, or `kontor.agent-run`), or `KONTOR_SEAT=unbound`. A failed or slow read sets `KONTOR_SEAT=unresolved`. The key is rewritten on every open, so an old seat never survives a resume. It never blocks the open. |
 | `before("workspace.create")` | Refuses a labelled Kontor seat's explicit workspace creation outside that seat's own placement: its bound project and canonical worktree. Both the initial agent's labels and the caller carried on the request (`agent.callerAgentId`) are checked. Interactive and unlabelled creation is unchanged, and an unreadable caller lookup with no seat labels on the request fails open. |
 
-The hooks add no menu and no agent-creation path. The navigator adds only the
-Sessions screen, sidebar row and Command Center entry described above.
+The hooks add no menu and no agent-creation path. The navigator adds the
+Kontor screen, sidebar row, Command Center command and per-agent **← Kontor**
+composer pill described above.
 
 ## Kontor placement
 
@@ -256,23 +274,24 @@ KONTOR_PLUGIN_MCP=off paseo daemon start --home ~/.paseo
 ```
 
 The hooks and placement guard stay active; only the composed MCP server is
-skipped. Open **Sessions** from the plugin sidebar. To check the installed
+skipped. Open **Kontor** from the plugin sidebar. To check the installed
 revision and the host's scope, use the header line in the screen (host label,
 archive scope, session count and pages read).
 
 ### Using the screen
 
-1. Open **Sessions** in the plugin sidebar. The header shows the selected host,
+1. Open **Kontor** in the plugin sidebar. The header shows the selected host,
    archive scope, session count and whether the directory is live, stale or
    unavailable.
 2. Type in the search field to match the full session title, workspace,
    project, cwd or recognized epic/workstream/PR/ticket labels. Use the state
    chips and **Filters** for native state, attention and archived sessions.
 3. Select a row to open that exact native session. In 0.11.4 the host reaches
-   the workspace route with `dismissTo`/`POP_TO`, so return through the
-   persistent sidebar entry or the global **Open Kontor Sessions** Command
-   Center item; native back does not keep the plugin screen underneath the
-   session. Search, filters and scroll offset are restored on return.
+   the workspace route with `dismissTo`/`POP_TO`, so return with the **← Kontor**
+   composer pill, the persistent sidebar entry or the global **Open Kontor**
+   Command Center item; native back does not keep the plugin screen underneath
+   the session. Search, filters, expansion and scroll offset are restored on
+   return.
 4. If the host disconnects, the rows stay visible with a stale banner. Retry or
    wait for reconnect; the next subscription snapshot reconciles every page
    before the screen reports **Live** again.
@@ -303,10 +322,15 @@ and missing cursors, native upserts/removals, attention, archival scope,
 recognized epic/workstream label search, disconnect staleness, reconnect
 reconciliation, obsolete-generation update fencing and source failures.
 `test/session-actions.test.ts` covers duplicate-name open by native ID and the
-missing/navigation/failure cases. `test/client-entry.test.ts` pins the screen,
-sidebar and Command Center contributions. `test/security.test.ts` extends the
-floor checks to the client files: no Kontor credential, no `kontord`, no
-file/process access and no agent-control or workflow-write call.
+missing/navigation/failure cases. `test/client-entry.test.ts` pins the Kontor
+screen, sidebar and **Open Kontor** command. `test/return-control.test.ts`
+covers per-agent pill registration, snapshot reconciliation, close/archive/
+remove/workspace lifecycle, ad-hoc sessions without a workspace, cleanup,
+late-walk fencing and opening the screen. `test/session-view-store.test.ts`
+covers host-scoped query, filter, expansion and scroll restoration.
+`test/security.test.ts` extends the floor checks to the client files: no Kontor
+credential, no `kontord`, no file/process access and no agent-control or
+workflow-write call.
 
 The isolated closure suite's `navigator-probe.mjs` creates one disposable
 session, subscribes to the native directory, verifies a `limit: 1` complete
@@ -319,6 +343,12 @@ catalog and compiles it with the React Native 0.81.5 Hermes compiler
 parse; the bundle must reach exit 0.
 
 ## Known limit — Paseo 0.11.x
+
+The composer pill contribution requires a workspace ID. A live ad-hoc agent
+with no workspace at all cannot receive a pill; the sidebar and **Open Kontor**
+Command Center item remain available. Composer pill order and overflow are
+Paseo-owned and are not promised. The plugin does not control the standard
+top-left Back button.
 
 The archived option follows the host directory. An archived session can be
 absent when its workspace or project placement no longer resolves; the client

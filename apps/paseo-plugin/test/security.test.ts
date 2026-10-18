@@ -44,6 +44,7 @@ describe("no Kontor write credential", () => {
 
 const clientFiles = [
   "../index.client.tsx",
+  "../client/return-control.ts",
   "../client/session-actions.ts",
   "../client/session-directory.ts",
   "../client/session-view-store.ts",

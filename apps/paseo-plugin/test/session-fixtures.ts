@@ -12,6 +12,7 @@ type SessionEntryOverrides = {
   workspaceName?: string | null;
   projectName?: string | null;
   projectKey?: string | null;
+  workspaceId?: string | null;
   cwd?: string;
   updatedAt?: string;
 };
@@ -31,7 +32,8 @@ export function sessionEntry(
     createdAt: "2026-10-18T09:00:00.000Z",
     updatedAt: overrides.updatedAt ?? "2026-10-18T10:00:00.000Z",
     cwd: overrides.cwd ?? "/tmp/work",
-    workspaceId: "wks_1",
+    workspaceId:
+      overrides.workspaceId === undefined ? "wks_1" : overrides.workspaceId,
     provider: "opencode/deepseek/deepseek-flash",
     model: null,
     parentAgentId: null,
