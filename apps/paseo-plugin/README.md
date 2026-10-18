@@ -103,6 +103,15 @@ Observed on this workstation:
   0.11.4 is runtime-qualified on this workstation. The 0.11.2 SDK client
   contracts were inspected and are identical for the used surface, but 0.11.2
   is not runtime-qualified.
+- **Native client bundle:** Paseo evaluates the client bundle with
+  `globalThis.eval` on Hermes. The React Native 0.81.5 Hermes compiler (HBC96)
+  used by the native app rejects ES6 class syntax, so the client source is
+  deliberately class-free. The actual host-compiled client bundle from a
+  disposable 0.11.4 host is fetched from the plugin catalog and compiled with
+  that Hermes compiler by `scripts/native-bundle-check.mjs`; the closure suite
+  runs it. A disposable host compiling the pre-fix `e04fdac5` source reproduces
+  `242:24: Invalid expression encountered` at `var SessionDirectory = class {`;
+  the fixed bundle compiles with exit 0.
 - **KN-01 device acceptance is not performed and is not waived.** KN-01 closure
   requires opening the correct existing session on desktop and actual iPhone,
   and returning with search, filter and position preserved. KN-03 does not
@@ -302,6 +311,12 @@ file/process access and no agent-control or workflow-write call.
 The isolated closure suite's `navigator-probe.mjs` creates one disposable
 session, subscribes to the native directory, verifies a `limit: 1` complete
 page walk and observes a native title update through the subscription.
+
+The closure suite also runs `scripts/native-bundle-check.mjs`. It fetches the
+actual host-compiled Kontor client bundle from the disposable daemon's plugin
+catalog and compiles it with the React Native 0.81.5 Hermes compiler
+(`sdks/hermesc`, HBC96). This is the native parser check, not a Node or browser
+parse; the bundle must reach exit 0.
 
 ## Known limit — Paseo 0.11.x
 

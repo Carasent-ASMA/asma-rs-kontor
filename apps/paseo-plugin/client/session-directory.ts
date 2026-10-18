@@ -286,375 +286,104 @@ export async function collectDirectory(
  * subscription snapshot; that snapshot triggers a fresh full walk before the
  * directory is current again.
  */
-export class SessionDirectory {
-  private readonly options: SessionDirectoryOptions;
-  private readonly entries = new Map<string, DirectoryEntry>();
-  private status: DirectoryStatus = "idle";
-  private live = false;
-  private error: string | null = null;
-  private staleReason: string | null = null;
-  private pages = 0;
-  private lastUpdatedAt: number | null = null;
-  private includeArchived: boolean;
-  private disposed = false;
-  private generation = 0;
-  private readEpoch = 0;
-  private refreshing = false;
-  private refreshQueued = false;
-  private refreshPromise: Promise<void> | null = null;
-  private subscription: OwnedSubscription<PaseoAgentListResult> | null = null;
-  private unsubscribe: (() => void) | null = null;
-  private subscriptionActive = false;
-  private pendingUpdates: Array<{
-    readonly generation: number;
-    readonly update: PaseoAgentUpdate;
-  }> = [];
-  private pendingOverflow = false;
-  private hostOnline = false;
+export interface SessionDirectory {
+  getState(): DirectoryState;
+  start(): Promise<void>;
+  reconnect(): Promise<void>;
+  markHostOffline(reason?: string): void;
+  setIncludeArchived(includeArchived: boolean): Promise<void>;
+  refresh(reason?: string): Promise<void>;
+  dispose(): Promise<void>;
+}
 
-  constructor(options: SessionDirectoryOptions) {
-    this.options = options;
-    this.includeArchived = options.includeArchived;
-  }
+export type SessionDirectoryConstructor = new (
+  options: SessionDirectoryOptions,
+) => SessionDirectory;
 
-  getState(): DirectoryState {
+type PendingUpdate = {
+  readonly generation: number;
+  readonly update: PaseoAgentUpdate;
+};
+
+/**
+ * Native Paseo evaluates plugin client bundles with Hermes, where ES6 class
+ * syntax is disabled. This constructor is deliberately class-free: the host
+ * compiles the source with its fixed es2020 target, so classes would otherwise
+ * survive into a bundle that native rejects. The returned object preserves the
+ * previous `new SessionDirectory(...)` API and behavior.
+ */
+export const SessionDirectory: SessionDirectoryConstructor = function SessionDirectory(
+  options: SessionDirectoryOptions,
+): SessionDirectory {
+  const entries = new Map<string, DirectoryEntry>();
+  let status: DirectoryStatus = "idle";
+  let live = false;
+  let error: string | null = null;
+  let staleReason: string | null = null;
+  let pages = 0;
+  let lastUpdatedAt: number | null = null;
+  let includeArchived = options.includeArchived;
+  let disposed = false;
+  let generation = 0;
+  let readEpoch = 0;
+  let refreshing = false;
+  let refreshQueued = false;
+  let refreshPromise: Promise<void> | null = null;
+  let subscription: OwnedSubscription<PaseoAgentListResult> | null = null;
+  let unsubscribe: (() => void) | null = null;
+  let subscriptionActive = false;
+  let pendingUpdates: PendingUpdate[] = [];
+  let pendingOverflow = false;
+  let hostOnline = false;
+
+  function getState(): DirectoryState {
     return {
-      entries: sortDirectoryEntries([...this.entries.values()]),
-      status: this.status,
-      live: this.live,
-      error: this.error,
-      staleReason: this.staleReason,
-      pages: this.pages,
-      lastUpdatedAt: this.lastUpdatedAt,
-      includeArchived: this.includeArchived,
+      entries: sortDirectoryEntries([...entries.values()]),
+      status,
+      live,
+      error,
+      staleReason,
+      pages,
+      lastUpdatedAt,
+      includeArchived,
     };
   }
 
-  async start(): Promise<void> {
-    if (this.disposed) {
+  function emit(): void {
+    if (disposed) {
       return;
     }
-    this.hostOnline = true;
-    await this.connect();
+    options.onChange(getState());
   }
 
-  async reconnect(): Promise<void> {
-    if (this.disposed) {
-      return;
+  function releaseSubscription(): void {
+    const currentUnsubscribe = unsubscribe;
+    unsubscribe = null;
+    if (currentUnsubscribe) {
+      currentUnsubscribe();
     }
-    this.hostOnline = true;
-    await this.connect();
-  }
-
-  markHostOffline(reason = "The Paseo host is disconnected. Showing the last inventory."): void {
-    this.hostOnline = false;
-    this.generation += 1;
-    this.live = false;
-    this.subscriptionActive = false;
-    this.releaseSubscription();
-    if (this.entries.size > 0) {
-      this.status = "stale";
-      this.staleReason = reason;
-      this.error = null;
-    } else {
-      this.status = "error";
-      this.staleReason = null;
-      this.error = reason;
-    }
-    this.emit();
-  }
-
-  async setIncludeArchived(includeArchived: boolean): Promise<void> {
-    if (this.disposed || includeArchived === this.includeArchived) {
-      return;
-    }
-    this.includeArchived = includeArchived;
-    this.generation += 1;
-    this.pendingUpdates = [];
-    this.pendingOverflow = false;
-    this.entries.clear();
-    this.pages = 0;
-    this.lastUpdatedAt = null;
-    this.status = "loading";
-    this.staleReason = null;
-    this.error = null;
-    this.live = false;
-    this.subscriptionActive = false;
-    this.releaseSubscription();
-    this.emit();
-    if (this.hostOnline) {
-      await this.connect();
-    }
-  }
-
-  async refresh(reason = "Refreshing the session directory."): Promise<void> {
-    if (this.disposed) {
-      return;
-    }
-    if (!this.hostOnline) {
-      this.markHostOffline();
-      return;
-    }
-    if (this.refreshing) {
-      this.refreshQueued = true;
-      return this.refreshPromise ?? Promise.resolve();
-    }
-    if (!this.subscriptionActive) {
-      await this.openSubscription(this.generation);
-    }
-    this.refreshing = true;
-    if (this.entries.size > 0) {
-      this.status = "stale";
-      this.staleReason = this.staleReason ?? reason;
-      this.emit();
-    }
-    this.refreshPromise = (async () => {
-      do {
-        this.refreshQueued = false;
-        await this.runRefresh();
-      } while (this.refreshQueued && !this.disposed);
-    })();
-    try {
-      await this.refreshPromise;
-    } finally {
-      this.refreshing = false;
-      this.refreshPromise = null;
-    }
-    if (this.refreshQueued && !this.disposed) {
-      this.refreshQueued = false;
-      await this.refresh(reason);
-    }
-  }
-
-  async dispose(): Promise<void> {
-    if (this.disposed) {
-      return;
-    }
-    this.disposed = true;
-    this.generation += 1;
-    this.live = false;
-    this.subscriptionActive = false;
-    await this.releaseSubscription();
-  }
-
-  private async connect(): Promise<void> {
-    if (this.disposed || !this.hostOnline) {
-      return;
-    }
-    // Every connection attempt gets a new generation. A queued update from the
-    // previous subscription and an in-flight page walk from before the
-    // reconnect are both fenced by this value.
-    this.generation += 1;
-    const generation = this.generation;
-    if (this.entries.size === 0) {
-      this.status = "loading";
-      this.staleReason = null;
-      this.error = null;
-      this.emit();
-    } else {
-      this.status = "stale";
-      this.staleReason = "Reconnected to the Paseo host; reconciling the full directory.";
-      this.emit();
-    }
-    await this.openSubscription(generation);
-    await this.refresh("Reconciling the full session directory.");
-  }
-
-  private async openSubscription(generation: number): Promise<void> {
-    if (this.disposed || generation !== this.generation) {
-      return;
-    }
-    this.releaseSubscription();
-    let result: PaseoAgentListResult & {
-      subscriptionId: string;
-      subscription: OwnedSubscription<PaseoAgentListResult>;
-    };
-    try {
-      result = await this.options.client().agents.list({
-        filter: filterOptions(this.includeArchived),
-        sort: AGENT_SORT,
-        page: { limit: DIRECTORY_PAGE_LIMIT },
-        subscribe: {},
-      });
-    } catch (error) {
-      if (generation !== this.generation || this.disposed) {
-        return;
-      }
-      this.subscriptionActive = false;
-      this.live = false;
-      this.error = describeDirectoryError(error);
-      this.status = this.entries.size > 0 ? "stale" : "error";
-      this.staleReason = this.entries.size > 0 ? "Live updates are unavailable." : null;
-      this.emit();
-      return;
-    }
-    if (generation !== this.generation || this.disposed) {
-      await result.subscription.release().catch(() => undefined);
-      return;
-    }
-
-    this.subscription = result.subscription;
-    this.subscriptionActive = true;
-    let snapshots = 0;
-    try {
-      this.unsubscribe = result.subscription.subscribe({
-        snapshot: () => {
-          if (this.disposed || generation !== this.generation) {
-            return;
-          }
-          snapshots += 1;
-          if (snapshots === 1) {
-            this.live = this.status === "ready";
-            this.emit();
-            return;
-          }
-          // The transport reconnected. Anything buffered from before the new
-          // snapshot belongs to the previous connection and must not be replayed
-          // over the reconciled inventory. The read epoch also fences a page
-          // walk that started before this snapshot: it must not publish old
-          // inventory as ready/live while the fresh reconciliation is pending.
-          this.readEpoch += 1;
-          this.pendingUpdates = [];
-          this.pendingOverflow = false;
-          this.status = "stale";
-          this.staleReason = "Paseo reconnected; reconciling the full directory.";
-          this.live = false;
-          this.emit();
-          void this.refresh("Reconciling the full session directory.");
-        },
-        update: (message) => {
-          if (message.type === "agent_update") {
-            this.receiveUpdate(message.payload, generation);
-          }
-        },
-        error: (error) => {
-          if (this.disposed || generation !== this.generation) {
-            return;
-          }
-          this.subscriptionActive = false;
-          this.live = false;
-          this.error = describeDirectoryError(error);
-          this.status = this.entries.size > 0 ? "stale" : "error";
-          this.staleReason = this.entries.size > 0 ? "Live updates stopped." : null;
-          this.emit();
-        },
-      });
-    } catch (error) {
-      this.subscriptionActive = false;
-      this.live = false;
-      await result.subscription.release().catch(() => undefined);
-      this.error = describeDirectoryError(error);
-      this.status = this.entries.size > 0 ? "stale" : "error";
-      this.staleReason = this.entries.size > 0 ? "Live updates are unavailable." : null;
-      this.emit();
-    }
-  }
-
-  private releaseSubscription(): void {
-    const unsubscribe = this.unsubscribe;
-    this.unsubscribe = null;
-    if (unsubscribe) {
-      unsubscribe();
-    }
-    const subscription = this.subscription;
-    this.subscription = null;
-    if (subscription) {
-      void subscription.release().catch(() => undefined);
+    const currentSubscription = subscription;
+    subscription = null;
+    if (currentSubscription) {
+      void currentSubscription.release().catch(() => undefined);
     }
     // Buffered updates belong to the subscription that just ended. They must
     // never be replayed over a newer connection's reconciled snapshot.
-    this.pendingUpdates = [];
-    this.pendingOverflow = false;
+    pendingUpdates = [];
+    pendingOverflow = false;
   }
 
-  private async runRefresh(): Promise<void> {
-    const generation = this.generation;
-    const readEpoch = this.readEpoch;
-    let collected: CollectedDirectory;
-    try {
-      collected = await collectDirectory(this.options.client(), this.includeArchived);
-    } catch (error) {
-      if (
-        generation !== this.generation ||
-        readEpoch !== this.readEpoch ||
-        this.disposed
-      ) {
-        return;
-      }
-      this.applyPendingUpdates();
-      this.error = describeDirectoryError(error);
-      this.staleReason =
-        this.entries.size > 0 ? "Could not refresh the full directory." : null;
-      this.status = this.entries.size > 0 ? "stale" : "error";
-      this.live = false;
-      this.emit();
-      return;
-    }
-    if (
-      generation !== this.generation ||
-      readEpoch !== this.readEpoch ||
-      this.disposed
-    ) {
-      return;
-    }
-
-    this.entries.clear();
-    for (const entry of collected.entries) {
-      this.entries.set(entry.id, entry);
-    }
-    this.applyPendingUpdates();
-    this.pages = collected.pages;
-    this.lastUpdatedAt = Date.now();
-    this.error = null;
-    this.staleReason = this.subscriptionActive
-      ? null
-      : "Live updates are unavailable; showing the last complete read.";
-    this.status = "ready";
-    this.live = this.subscriptionActive;
-    if (this.pendingOverflow) {
-      this.pendingOverflow = false;
-      this.refreshQueued = true;
-    }
-    this.emit();
-  }
-
-  private receiveUpdate(update: PaseoAgentUpdate, generation: number): void {
-    if (this.disposed || generation !== this.generation) {
-      return;
-    }
-    if (this.refreshing) {
-      if (this.pendingUpdates.length < PENDING_UPDATE_LIMIT) {
-        this.pendingUpdates.push({ generation, update });
-      } else {
-        this.pendingOverflow = true;
-      }
-      return;
-    }
-    this.applyUpdate(update);
-    this.emit();
-  }
-
-  private applyPendingUpdates(): void {
-    const pending = this.pendingUpdates;
-    this.pendingUpdates = [];
-    for (const entry of pending) {
-      if (entry.generation === this.generation) {
-        this.applyUpdate(entry.update);
-      }
-    }
-  }
-
-  private applyUpdate(update: PaseoAgentUpdate): void {
+  function applyUpdate(update: PaseoAgentUpdate): void {
     if (update.kind === "remove") {
-      this.entries.delete(update.agentId);
+      entries.delete(update.agentId);
       return;
     }
-    if (!this.includeArchived && (update.agent.archivedAt ?? null) !== null) {
-      this.entries.delete(update.agent.id);
+    if (!includeArchived && (update.agent.archivedAt ?? null) !== null) {
+      entries.delete(update.agent.id);
       return;
     }
-    const previous = this.entries.get(update.agent.id);
-    this.entries.set(
+    const previous = entries.get(update.agent.id);
+    entries.set(
       update.agent.id,
       toDirectoryEntry(
         {
@@ -666,10 +395,305 @@ export class SessionDirectory {
     );
   }
 
-  private emit(): void {
-    if (this.disposed) {
+  function applyPendingUpdates(): void {
+    const pending = pendingUpdates;
+    pendingUpdates = [];
+    for (const entry of pending) {
+      if (entry.generation === generation) {
+        applyUpdate(entry.update);
+      }
+    }
+  }
+
+  function receiveUpdate(update: PaseoAgentUpdate, expectedGeneration: number): void {
+    if (disposed || expectedGeneration !== generation) {
       return;
     }
-    this.options.onChange(this.getState());
+    if (refreshing) {
+      if (pendingUpdates.length < PENDING_UPDATE_LIMIT) {
+        pendingUpdates.push({ generation: expectedGeneration, update });
+      } else {
+        pendingOverflow = true;
+      }
+      return;
+    }
+    applyUpdate(update);
+    emit();
   }
-}
+
+  async function runRefresh(): Promise<void> {
+    const runGeneration = generation;
+    const runEpoch = readEpoch;
+    let collected: CollectedDirectory;
+    try {
+      collected = await collectDirectory(options.client(), includeArchived);
+    } catch (refreshError) {
+      if (runGeneration !== generation || runEpoch !== readEpoch || disposed) {
+        return;
+      }
+      applyPendingUpdates();
+      error = describeDirectoryError(refreshError);
+      staleReason = entries.size > 0 ? "Could not refresh the full directory." : null;
+      status = entries.size > 0 ? "stale" : "error";
+      live = false;
+      emit();
+      return;
+    }
+    if (runGeneration !== generation || runEpoch !== readEpoch || disposed) {
+      return;
+    }
+
+    entries.clear();
+    for (const entry of collected.entries) {
+      entries.set(entry.id, entry);
+    }
+    applyPendingUpdates();
+    pages = collected.pages;
+    lastUpdatedAt = Date.now();
+    error = null;
+    staleReason = subscriptionActive
+      ? null
+      : "Live updates are unavailable; showing the last complete read.";
+    status = "ready";
+    live = subscriptionActive;
+    if (pendingOverflow) {
+      pendingOverflow = false;
+      refreshQueued = true;
+    }
+    emit();
+  }
+
+  async function openSubscription(expectedGeneration: number): Promise<void> {
+    if (disposed || expectedGeneration !== generation) {
+      return;
+    }
+    releaseSubscription();
+    let result: PaseoAgentListResult & {
+      subscriptionId: string;
+      subscription: OwnedSubscription<PaseoAgentListResult>;
+    };
+    try {
+      result = await options.client().agents.list({
+        filter: filterOptions(includeArchived),
+        sort: AGENT_SORT,
+        page: { limit: DIRECTORY_PAGE_LIMIT },
+        subscribe: {},
+      });
+    } catch (subscriptionError) {
+      if (expectedGeneration !== generation || disposed) {
+        return;
+      }
+      subscriptionActive = false;
+      live = false;
+      error = describeDirectoryError(subscriptionError);
+      status = entries.size > 0 ? "stale" : "error";
+      staleReason = entries.size > 0 ? "Live updates are unavailable." : null;
+      emit();
+      return;
+    }
+    if (expectedGeneration !== generation || disposed) {
+      await result.subscription.release().catch(() => undefined);
+      return;
+    }
+
+    subscription = result.subscription;
+    subscriptionActive = true;
+    let snapshots = 0;
+    try {
+      unsubscribe = result.subscription.subscribe({
+        snapshot: () => {
+          if (disposed || expectedGeneration !== generation) {
+            return;
+          }
+          snapshots += 1;
+          if (snapshots === 1) {
+            live = status === "ready";
+            emit();
+            return;
+          }
+          // The transport reconnected. Anything buffered from before the new
+          // snapshot belongs to the previous connection and must not be replayed
+          // over the reconciled inventory. The read epoch also fences a page
+          // walk that started before this snapshot: it must not publish old
+          // inventory as ready/live while the fresh reconciliation is pending.
+          readEpoch += 1;
+          pendingUpdates = [];
+          pendingOverflow = false;
+          status = "stale";
+          staleReason = "Paseo reconnected; reconciling the full directory.";
+          live = false;
+          emit();
+          void refresh("Reconciling the full session directory.");
+        },
+        update: (message) => {
+          if (message.type === "agent_update") {
+            receiveUpdate(message.payload, expectedGeneration);
+          }
+        },
+        error: (subscriptionError) => {
+          if (disposed || expectedGeneration !== generation) {
+            return;
+          }
+          subscriptionActive = false;
+          live = false;
+          error = describeDirectoryError(subscriptionError);
+          status = entries.size > 0 ? "stale" : "error";
+          staleReason = entries.size > 0 ? "Live updates stopped." : null;
+          emit();
+        },
+      });
+    } catch (subscriptionError) {
+      subscriptionActive = false;
+      live = false;
+      await result.subscription.release().catch(() => undefined);
+      error = describeDirectoryError(subscriptionError);
+      status = entries.size > 0 ? "stale" : "error";
+      staleReason = entries.size > 0 ? "Live updates are unavailable." : null;
+      emit();
+    }
+  }
+
+  async function connect(): Promise<void> {
+    if (disposed || !hostOnline) {
+      return;
+    }
+    // Every connection attempt gets a new generation. A queued update from the
+    // previous subscription and an in-flight page walk from before the
+    // reconnect are both fenced by this value.
+    generation += 1;
+    const connectionGeneration = generation;
+    if (entries.size === 0) {
+      status = "loading";
+      staleReason = null;
+      error = null;
+      emit();
+    } else {
+      status = "stale";
+      staleReason = "Reconnected to the Paseo host; reconciling the full directory.";
+      emit();
+    }
+    await openSubscription(connectionGeneration);
+    await refresh("Reconciling the full session directory.");
+  }
+
+  async function refresh(reason = "Refreshing the session directory."): Promise<void> {
+    if (disposed) {
+      return;
+    }
+    if (!hostOnline) {
+      markHostOffline();
+      return;
+    }
+    if (refreshing) {
+      refreshQueued = true;
+      return refreshPromise ?? Promise.resolve();
+    }
+    if (!subscriptionActive) {
+      await openSubscription(generation);
+    }
+    refreshing = true;
+    if (entries.size > 0) {
+      status = "stale";
+      staleReason = staleReason ?? reason;
+      emit();
+    }
+    refreshPromise = (async () => {
+      do {
+        refreshQueued = false;
+        await runRefresh();
+      } while (refreshQueued && !disposed);
+    })();
+    try {
+      await refreshPromise;
+    } finally {
+      refreshing = false;
+      refreshPromise = null;
+    }
+    if (refreshQueued && !disposed) {
+      refreshQueued = false;
+      await refresh(reason);
+    }
+  }
+
+  async function start(): Promise<void> {
+    if (disposed) {
+      return;
+    }
+    hostOnline = true;
+    await connect();
+  }
+
+  async function reconnect(): Promise<void> {
+    if (disposed) {
+      return;
+    }
+    hostOnline = true;
+    await connect();
+  }
+
+  function markHostOffline(
+    reason = "The Paseo host is disconnected. Showing the last inventory.",
+  ): void {
+    hostOnline = false;
+    generation += 1;
+    live = false;
+    subscriptionActive = false;
+    releaseSubscription();
+    if (entries.size > 0) {
+      status = "stale";
+      staleReason = reason;
+      error = null;
+    } else {
+      status = "error";
+      staleReason = null;
+      error = reason;
+    }
+    emit();
+  }
+
+  async function setIncludeArchived(nextIncludeArchived: boolean): Promise<void> {
+    if (disposed || nextIncludeArchived === includeArchived) {
+      return;
+    }
+    includeArchived = nextIncludeArchived;
+    generation += 1;
+    pendingUpdates = [];
+    pendingOverflow = false;
+    entries.clear();
+    pages = 0;
+    lastUpdatedAt = null;
+    status = "loading";
+    staleReason = null;
+    error = null;
+    live = false;
+    subscriptionActive = false;
+    releaseSubscription();
+    emit();
+    if (hostOnline) {
+      await connect();
+    }
+  }
+
+  async function dispose(): Promise<void> {
+    if (disposed) {
+      return;
+    }
+    disposed = true;
+    generation += 1;
+    live = false;
+    subscriptionActive = false;
+    await releaseSubscription();
+  }
+
+  const directory: SessionDirectory = {
+    getState,
+    start,
+    reconnect,
+    markHostOffline,
+    setIncludeArchived,
+    refresh,
+    dispose,
+  };
+  Object.setPrototypeOf(directory, SessionDirectory.prototype);
+  return directory;
+} as unknown as SessionDirectoryConstructor;
