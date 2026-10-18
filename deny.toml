@@ -27,16 +27,21 @@ yanked = "deny"
 # libsodium-sys-stable 1.24.0 (Stronghold, kontor-desktop). As of 2026-10-17 no
 # release of either reaches zip >=9.0.0: utoipa-swagger-ui 10.0.1 and
 # libsodium-sys-stable 1.24.3 still require zip ^8.6. Both uses are build-script
-# only: utoipa-swagger-ui writes the Swagger UI entries itself and never calls
-# `ZipArchive::extract`; libsodium-sys-stable calls it only for the Windows MSVC
-# prebuilt, after verifying the archive's minisign signature.
+# only. utoipa-swagger-ui never calls `ZipArchive::extract`, but its own loop
+# copies each entry's raw Unix mode (`unix_mode()`, `fs::set_permissions`) into
+# OUT_DIR, so it repeats the RUSTSEC-2026-0367 SUID/SGID behaviour. Residual
+# risk: the input is the Swagger UI v5.17.14 archive from a pinned HTTPS GitHub
+# URL, so only a compromised upstream archive, or a build environment that sets
+# SWAGGER_UI_DOWNLOAD_URL, reaches it. That loop is utoipa-swagger-ui code, so
+# re-check it when lifting. libsodium-sys-stable calls `ZipArchive::extract` only
+# for the Windows MSVC prebuilt, after verifying the archive's minisign signature.
 # Owner: KR-13 (ASMA-8520, release candidate qualification). Review by
 # 2026-11-16. Lift: both dependents release with zip >=9.0.0; upgrade them and
 # remove these entries here and in .cargo/audit.toml (cargo deny then reports
 # them as advisory-not-detected).
 ignore = [
     "RUSTSEC-2024-0429",
-    { id = "RUSTSEC-2026-0367", reason = "zip build-script use only; no release reaches zip >=9.0.0; owner KR-13 (ASMA-8520); review by 2026-11-16" },
+    { id = "RUSTSEC-2026-0367", reason = "zip build-script use only; utoipa-swagger-ui copies raw entry modes (residual risk above); no release reaches zip >=9.0.0; owner KR-13 (ASMA-8520); review by 2026-11-16" },
     { id = "RUSTSEC-2026-0368", reason = "zip build-script use only; no release reaches zip >=9.0.0; owner KR-13 (ASMA-8520); review by 2026-11-16" },
     { id = "RUSTSEC-2026-0369", reason = "zip build-script use only; no release reaches zip >=9.0.0; owner KR-13 (ASMA-8520); review by 2026-11-16" },
 ]

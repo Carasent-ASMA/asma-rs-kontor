@@ -1,6 +1,9 @@
 # cargo-audit configuration for the Kontor workspace, read from the repository
-# root. Keep these ignores identical to the [advisories] ignore list in
-# deny.toml, which records the full rationale.
+# root. The three zip entries below must stay identical to the zip entries in
+# the [advisories] ignore list of deny.toml, which records the full rationale.
+# deny.toml additionally ignores RUSTSEC-2024-0429 (glib, unsound): cargo-deny
+# fails on it (`unsound = "all"`), while cargo audit only reports it as a
+# warning, so it is deliberately not listed here.
 [advisories]
 # zip <9.0.0 extraction advisories: zip 3.0.0 (utoipa-swagger-ui 9.0.2) and
 # zip 8.6.0 (libsodium-sys-stable 1.24.0) are build-script dependencies with no
