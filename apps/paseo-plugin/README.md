@@ -8,9 +8,9 @@ navigator reads Paseo directly and works without `kontord`.
 ## Sessions navigator
 
 The plugin adds the **Kontor** screen, one sidebar entry, one global Command
-Center command and an in-session **← Kontor** composer pill. The screen,
-sidebar and command are navigation affordances; the pill is the in-session
-return control.
+Center command and an in-session **← Kontor** composer pill for live agents with
+a workspace. The screen, sidebar and command are navigation affordances; the
+pill is the in-session return control where the composer supports it.
 
 - **Complete inventory.** The screen walks every page of the selected host's
   native agent directory (200 rows per page) before it reports the inventory
@@ -23,7 +23,10 @@ return control.
 - **Live native truth.** Initializing, running, idle, error and closed come
   from the host. Attention is a separate signal with its reason (`finished`,
   `error`, `permission`) when the host supplies it. A subscription streams
-  native `agent_update` upserts and removals.
+  native `agent_update` upserts and removals. If the initial observation
+  bootstrap fails, the last inventory stays visible and the plugin retries the
+  owned observation with bounded backoff. Cleanup cancels the retry and releases
+  any owned subscription; a retry never creates a second observer.
 - **Reconnect reconciliation.** A dropped host marks the visible rows stale and
   stops claiming to be live. A new subscription snapshot triggers a fresh page
   walk before the directory is current again. Failed refreshes keep the last
@@ -41,11 +44,13 @@ return control.
 - **Return entry.** Opening a session uses the host's native workspace
   navigation. Paseo 0.11.4 uses `router.dismissTo` / `POP_TO` to reach the host
   workspace route, so the plugin screen is not kept underneath the session.
-  Return with the **← Kontor** composer pill, the persistent plugin sidebar
-  entry or the global **Open Kontor** Command Center item. The pill is
-  registered for each live agent and opens the same host's Kontor screen; the
-  screen restores its search, filters, expansion and scroll offset for that
-  client session.
+  Return with the **← Kontor** composer pill (for a live agent with a
+  workspace), the persistent plugin sidebar entry or the global **Open Kontor**
+  Command Center item. The pill opens the same host's Kontor screen; the screen
+  restores its search, filters, expansion and scroll offset for that client
+  session. A live agent with no workspace has no composer pill and keeps the
+  sidebar and Command Center paths. The plugin does not add or control the
+  native top-left Back button.
 - **Archived placement limit.** The advanced archived option asks the host for
   archived agents. The host directory can omit an archived session when its
   workspace/project placement cannot be resolved. That is a host scope limit,
@@ -90,8 +95,10 @@ Observed on this workstation:
 - The installed `0.11.4` SDK exports `addComposerPill` and `openScreen`. The
   host renders composer pills with their icon and label and keeps the label on
   compact layouts; exact ordering and overflow among built-in controls stay
-  Paseo-owned. The plugin adds one **← Kontor** pill per live agent and no
-  header button, so there is one in-session return control rather than two.
+  Paseo-owned. The plugin adds one **← Kontor** pill per live agent that has a
+  workspace and no header button. Workspace-less agents retain the sidebar and
+  Command Center paths, so composer-only is not universal one-action coverage.
+  Native top-left Back remains outside plugin control.
 - **Reorder gap:** the plugin SDK exposes no reorder, drag or move primitive,
   and no plugin-safe gesture package. The only supported pointer/touch route is
   React Native's `PanResponder` and responder props from the allowed
@@ -120,7 +127,9 @@ Observed on this workstation:
   that Hermes compiler by `scripts/native-bundle-check.mjs`; the closure suite
   runs it. A disposable host compiling the pre-fix `e04fdac5` source reproduces
   `242:24: Invalid expression encountered` at `var SessionDirectory = class {`;
-  the fixed bundle compiles with exit 0.
+  the fixed bundle compiles with exit 0. Bytecode hashes embed the compilation
+  source filename; record each bytecode hash with its compilation path rather
+  than as a universal artifact hash.
 - **KN-01 device acceptance is not performed and is not waived.** KN-01 closure
   requires opening the correct existing session on desktop and actual iPhone,
   and returning with search, filter and position preserved. KN-03 does not
@@ -325,7 +334,8 @@ reconciliation, obsolete-generation update fencing and source failures.
 missing/navigation/failure cases. `test/client-entry.test.ts` pins the Kontor
 screen, sidebar and **Open Kontor** command. `test/return-control.test.ts`
 covers per-agent pill registration, snapshot reconciliation, close/archive/
-remove/workspace lifecycle, ad-hoc sessions without a workspace, cleanup,
+remove/workspace lifecycle, failed-bootstrap and owned-subscription-error
+observation recovery, retry cleanup, ad-hoc sessions without a workspace,
 late-walk fencing and opening the screen. `test/session-view-store.test.ts`
 covers host-scoped query, filter, expansion and scroll restoration.
 `test/security.test.ts` extends the floor checks to the client files: no Kontor

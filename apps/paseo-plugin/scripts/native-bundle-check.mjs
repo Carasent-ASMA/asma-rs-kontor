@@ -68,6 +68,7 @@ try {
       {
         pluginId: plugin.id,
         appVersion,
+        bundleSource: "daemon-plugin-catalog",
         compiler: hermesc,
         compilerVersion: hermesVersion,
         bundleBytes: plugin.clientBundle.length,
@@ -75,6 +76,7 @@ try {
         hermesExit: 0,
         bytecodeBytes: bytecode.length,
         bytecodeSha256: sha256(bytecode),
+        bytecodeSourcePath: bundlePath,
       },
       null,
       2,

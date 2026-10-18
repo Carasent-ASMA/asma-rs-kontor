@@ -6,7 +6,7 @@ import type {
   PluginButtonRegistration,
   PluginClientContext,
 } from "@getpaseo/plugin/client";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { collectDirectory } = vi.hoisted(() => ({ collectDirectory: vi.fn() }));
 
@@ -39,6 +39,7 @@ type ReadyAgent = {
 type Observer = {
   snapshot: () => void;
   update: (message: { type: "agent_update"; payload: PaseoAgentUpdate }) => void;
+  error?: () => void;
 };
 
 type PillContribution = {
@@ -85,12 +86,14 @@ function readyAgent(
 function fakeClient(
   readyEntries: readonly PaseoAgentListResult["entries"][number][] = [],
   bufferedUpdates: readonly PaseoAgentUpdate[] = [],
+  options: { failFirstObservation?: boolean } = {},
 ) {
   const pills: Pill[] = [];
   const observers: Observer[] = [];
   const release = vi.fn(async () => undefined);
   const unsubscribe = vi.fn();
   let signal: AbortSignal | undefined;
+  let observationAttempts = 0;
   const subscription = {
     subscribe(observer: Observer) {
       observers.push(observer);
@@ -102,11 +105,15 @@ function fakeClient(
     },
     release,
   };
-  const list = vi.fn(async (options?: { subscribe?: unknown; signal?: AbortSignal }) => {
-    if (!options?.subscribe) {
+  const list = vi.fn(async (listOptions?: { subscribe?: unknown; signal?: AbortSignal }) => {
+    if (!listOptions?.subscribe) {
       throw new Error("the return-control test only walks through the mocked collectDirectory");
     }
-    signal = options.signal;
+    signal = listOptions.signal;
+    observationAttempts += 1;
+    if (options.failFirstObservation && observationAttempts === 1) {
+      throw new Error("observation bootstrap unavailable");
+    }
     return {
       requestId: "request-subscribe",
       subscriptionId: "sub-1",
@@ -145,6 +152,9 @@ function fakeClient(
     get signal() {
       return signal;
     },
+    get observationAttempts() {
+      return observationAttempts;
+    },
     pillFor(agentId: string): Pill | undefined {
       return [...pills]
         .reverse()
@@ -164,6 +174,10 @@ describe("Kontor return control", () => {
   beforeEach(() => {
     clearSessionViews();
     vi.resetAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it("registers a Kontor pill for each live agent and opens the screen on press", async () => {
@@ -283,6 +297,85 @@ describe("Kontor return control", () => {
     expect(pillD!.registration.remove).toHaveBeenCalledTimes(1);
 
     stop();
+  });
+
+  it("recovers observation after a failed bootstrap and follows later agents", async () => {
+    const fake = fakeClient([readyAgent("agent-a", "wks-a")], [], {
+      failFirstObservation: true,
+    });
+    collectDirectory.mockResolvedValueOnce({
+      entries: [sessionEntry("agent-a", { workspaceId: "wks-a" })],
+      pages: 1,
+    });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const stop = contributeReturnControl(fake.client, "sessions", { retryDelayMs: 100 });
+    await vi.waitFor(() => expect(fake.pillFor("agent-a")).toBeDefined(), { interval: 5 });
+
+    collectDirectory.mockResolvedValue({
+      entries: [
+        sessionEntry("agent-a", { workspaceId: "wks-a" }),
+        sessionEntry("agent-b", { workspaceId: "wks-b" }),
+      ],
+      pages: 1,
+    });
+    await vi.waitFor(() => expect(fake.observers).toHaveLength(1), { interval: 5 });
+
+    expect(fake.observationAttempts).toBe(2);
+    expect(errorSpy).toHaveBeenCalledWith(
+      "Kontor return control could not observe agents",
+      expect.any(Error),
+    );
+    await vi.waitFor(() => expect(fake.pillFor("agent-b")).toBeDefined());
+    expect(fake.observers).toHaveLength(1);
+
+    fake.observers[0]!.update({
+      type: "agent_update",
+      payload: { kind: "remove", agentId: "agent-b" },
+    });
+    await vi.waitFor(() => expect(fake.pillFor("agent-b")).toBeUndefined());
+
+    expect(fake.observers).toHaveLength(1);
+    stop();
+  });
+
+  it("re-establishes observation after an owned subscription error", async () => {
+    const fake = fakeClient([readyAgent("agent-a", "wks-a")]);
+    collectDirectory.mockResolvedValue({
+      entries: [sessionEntry("agent-a", { workspaceId: "wks-a" })],
+      pages: 1,
+    });
+
+    const stop = contributeReturnControl(fake.client, "sessions", { retryDelayMs: 100 });
+    await vi.waitFor(() => expect(fake.observers).toHaveLength(1), { interval: 5 });
+
+    fake.observers[0]!.error?.();
+    await vi.waitFor(() => expect(fake.observers).toHaveLength(2), { interval: 5 });
+    expect(fake.release).toHaveBeenCalledTimes(1);
+
+    fake.observers[1]!.update({
+      type: "agent_update",
+      payload: updateAgent(agentSnapshot("agent-b", "wks-b")),
+    });
+    await vi.waitFor(() => expect(fake.pillFor("agent-b")).toBeDefined());
+
+    stop();
+  });
+
+  it("does not retry observation after cleanup", async () => {
+    const fake = fakeClient([], [], { failFirstObservation: true });
+    collectDirectory.mockResolvedValue({ entries: [], pages: 1 });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const stop = contributeReturnControl(fake.client, "sessions", { retryDelayMs: 100 });
+    await vi.waitFor(() => expect(errorSpy).toHaveBeenCalled(), { interval: 5 });
+    stop();
+
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    expect(fake.observationAttempts).toBe(1);
+    expect(fake.observers).toHaveLength(0);
+    expect(fake.signal?.aborted).toBe(true);
   });
 
   it("cleans every registration and ignores late work after cleanup", async () => {

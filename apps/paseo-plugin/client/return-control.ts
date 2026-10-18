@@ -26,6 +26,16 @@ type RegisteredPill = {
   readonly registration: PluginButtonRegistration;
 };
 
+export type ReturnControlOptions = {
+  /** Delay before retrying a failed observation bootstrap; default 500 ms. */
+  readonly retryDelayMs?: number;
+  /** Maximum exponential retry delay; default 30 s. */
+  readonly maxRetryDelayMs?: number;
+};
+
+const DEFAULT_RETRY_DELAY_MS = 500;
+const DEFAULT_MAX_RETRY_DELAY_MS = 30_000;
+
 /**
  * Adds one understated return pill to each live agent's composer track. The
  * host owns the pill's styling, spacing, touch target and ordering; this module
@@ -40,11 +50,20 @@ type RegisteredPill = {
 export function contributeReturnControl(
   client: PluginClientContext,
   screenId: string,
+  options: ReturnControlOptions = {},
 ): () => void {
   const pills = new Map<string, RegisteredPill>();
   const pendingUpdates: PaseoAgentUpdate[] = [];
   const lifetime = new AbortController();
+  const initialRetryDelay = Math.max(0, options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS);
+  const maxRetryDelay = Math.max(
+    initialRetryDelay,
+    options.maxRetryDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS,
+  );
+  let retryDelay = initialRetryDelay;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
+  let observing = false;
   let walking = false;
   let walkQueued = false;
   let unsubscribe: (() => void) | null = null;
@@ -180,11 +199,49 @@ export function contributeReturnControl(
     }
   }
 
-  void client.paseo.agents
-    .list({ subscribe: {}, signal: lifetime.signal })
-    .then((ready) => {
+  function clearRetryTimer(): void {
+    if (retryTimer !== null) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+  }
+
+  function releaseObservation(): void {
+    if (unsubscribe) {
+      unsubscribe();
+      unsubscribe = null;
+    }
+    if (subscription) {
+      void subscription.release().catch(() => undefined);
+      subscription = null;
+    }
+  }
+
+  function scheduleObservationRetry(): void {
+    if (stopped || subscription || retryTimer !== null) {
+      return;
+    }
+    const delay = retryDelay;
+    retryDelay = Math.min(Math.max(retryDelay * 2, 1), maxRetryDelay);
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      void observeAgents();
+    }, delay);
+  }
+
+  async function observeAgents(): Promise<void> {
+    if (stopped || observing || subscription) {
+      return;
+    }
+    observing = true;
+    clearRetryTimer();
+    try {
+      const ready = await client.paseo.agents.list({
+        subscribe: {},
+        signal: lifetime.signal,
+      });
       if (stopped) {
-        void ready.subscription?.release().catch(() => undefined);
+        await ready.subscription?.release().catch(() => undefined);
         return;
       }
       subscription = ready.subscription ?? null;
@@ -208,28 +265,37 @@ export function contributeReturnControl(
               observeUpdate(message.payload);
             }
           },
+          error: () => {
+            if (stopped) {
+              return;
+            }
+            releaseObservation();
+            scheduleObservationRetry();
+          },
         });
+        retryDelay = initialRetryDelay;
       }
       void walkDirectory();
-    })
-    .catch((error) => {
-      if (!stopped) {
-        console.error("Kontor return control could not observe agents", error);
-        void walkDirectory();
+    } catch (error) {
+      if (stopped) {
+        return;
       }
-    });
+      console.error("Kontor return control could not observe agents", error);
+      releaseObservation();
+      void walkDirectory();
+      scheduleObservationRetry();
+    } finally {
+      observing = false;
+    }
+  }
+
+  void observeAgents();
 
   return () => {
     stopped = true;
     lifetime.abort();
-    if (unsubscribe) {
-      unsubscribe();
-      unsubscribe = null;
-    }
-    if (subscription) {
-      void subscription.release().catch(() => undefined);
-      subscription = null;
-    }
+    clearRetryTimer();
+    releaseObservation();
     pendingUpdates.length = 0;
     removeAll();
   };
