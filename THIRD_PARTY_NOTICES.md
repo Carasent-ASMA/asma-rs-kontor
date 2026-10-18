@@ -28,7 +28,10 @@ The exact tree is `pnpm-lock.yaml`. Production advisories are checked with
 `pnpm audit --prod`. The console's runtime dependencies are React,
 React DOM and the Tauri JS API/Stronghold plugin (used from KON-MVP-17
 onwards); development tooling (Vite, TypeScript, Vitest, Testing Library,
-Playwright, openapi-typescript) is not distributed.
+Playwright, openapi-typescript) is not distributed. The Paseo plugin
+(`apps/paseo-plugin`) has no distributed runtime dependencies: Paseo provides
+its plugin SDK, and the `@getpaseo/*`, TypeScript and Vitest packages are
+development and test tooling.
 
 ## Separately installed runtimes
 
