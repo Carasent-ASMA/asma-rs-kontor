@@ -798,6 +798,25 @@ fn a_leftover_temporary_from_an_interrupted_write_does_not_block_a_replay() {
     );
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn a_non_utf8_directory_entry_does_not_break_the_adapter() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let fixture = Fixture::new(ClientId::Cursor);
+    fixture.present();
+    let name = std::ffi::OsString::from_vec(vec![0xff, b'k']);
+    std::fs::write(fixture.directory().join(&name), b"unrelated").expect("non-utf8 entry");
+    let desired = spec("/synthetic/realm");
+    assert_eq!(fixture.install(&desired), AdapterResult::Installed);
+    assert_eq!(
+        fixture.inspect(&desired),
+        EntryState::Current {
+            observed: ObservedHash::of_value(&desired_value(ClientId::Cursor, &desired)),
+        }
+    );
+}
+
 #[test]
 fn an_entry_with_null_and_boolean_extras_is_not_refused() {
     for client in [ClientId::Cursor, ClientId::Copilot] {
