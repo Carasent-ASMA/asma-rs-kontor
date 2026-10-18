@@ -1100,6 +1100,12 @@ impl Installer {
     /// Verify the generation marker and every artifact digest in one promoted
     /// generation before it is trusted.
     fn verify_marker(&self, generation: &Dir, journal: &Journal) -> Result<(), InstallError> {
+        // Activation points the client command at this directory name, so a
+        // generation another local user can write is never trusted even when
+        // its current bytes match the journal.
+        if !crate::confinement::is_private_directory(generation)? {
+            return Err(InstallError::InsecureRoot);
+        }
         let bytes = generation
             .read_child(MARKER_FILE, MAX_DOCUMENT_BYTES)?
             .ok_or(InstallError::ActiveUnverified)?;
