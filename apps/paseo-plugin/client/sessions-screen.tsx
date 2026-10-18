@@ -124,6 +124,7 @@ const SessionRow = memo(function SessionRow({
   const detail = project ? `${context} · ${project}` : context;
   const accessibilityLabel = [
     entry.title,
+    `Native ID ${entry.id}`,
     entry.status,
     attention ? `Needs attention: ${attention}` : null,
     archived,
@@ -172,6 +173,15 @@ const SessionRow = memo(function SessionRow({
         >
           {detail || "No workspace context"}
           {archived ? ` · ${archived}` : ""}
+        </Text>
+        <Text
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.75}
+          ellipsizeMode="middle"
+          style={{ color: colors.foregroundMuted, fontSize: 10, marginTop: 1, opacity: 0.8 }}
+        >
+          {entry.id}
         </Text>
       </View>
       <View style={{ alignItems: "flex-end", gap: 2, maxWidth: compact ? 84 : 120 }}>

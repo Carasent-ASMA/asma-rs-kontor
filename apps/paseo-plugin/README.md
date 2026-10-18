@@ -30,10 +30,11 @@ Command Center entry. All three are navigation affordances only:
   session title, workspace name, project name/key and cwd. Native state and
   attention filter independently; the advanced area shows an active-filter
   count and a clear action.
-- **Open the existing session.** A row opens by native agent ID through the
-  host's navigation API. Duplicate titles never select by name. Missing
-  sessions, older hosts without plugin navigation and host failures produce a
-  recoverable message instead of opening a different conversation.
+- **Open the existing session.** Each row shows its native agent ID and opens
+  by that ID through the host's navigation API. Duplicate titles never select
+  by name. Missing sessions, older hosts without plugin navigation and host
+  failures produce a recoverable message instead of opening a different
+  conversation.
 - **Return entry.** Opening a session uses the host's native workspace
   navigation. Paseo 0.11.4 uses `router.dismissTo` / `POP_TO` to reach the host
   workspace route, so the plugin screen is not kept underneath the session.
@@ -122,19 +123,23 @@ Record before starting:
 - Selected host `serverId`/label, `KONTOR_PLUGIN_MCP=off`, and `kontord`
   stopped or unavailable.
 - Complete inventory count and pages read from the screen header.
-- Two sessions that share the same title but have different native IDs.
+- Two sessions that share the same title but have different native IDs and
+  distinct workspace/cwd context. Each row shows its native ID, so the pair is
+  distinguishable without relying on the title.
 
 Desktop steps:
 
 1. Open **Sessions** and record the host, archive scope, count and pages read.
 2. Type a unique search term; select a state filter, the attention filter and a
    scroll position deep enough that the target row is not initially visible.
-3. Open the first duplicate-title row. Confirm the host session room shows the
-   same native session ID recorded from the row, not merely the same title.
+3. Record the native ID shown in the first duplicate-title row, then open that
+   row. In the host session, use the tab menu **Copy agent id** and compare it
+   with the recorded row ID; confirm it is not merely the same title.
 4. Return via the sidebar entry and then via the global Command Center item.
    Confirm the search text, filter selection, scroll position and target row are
    preserved.
-5. Open the second duplicate-title row and confirm a distinct native ID.
+5. Open the second duplicate-title row and confirm both its visible native ID
+   and the host-copied agent ID are the distinct second ID.
 6. In an authorized controlled/disposable check, remove the target session and
    confirm a recoverable “no longer available” state rather than opening another
    session by name.
@@ -147,8 +152,9 @@ iPhone steps:
 1. Repeat the desktop steps on the actual iPhone app.
 2. Check keyboard behavior, row touch targets, safe-area clearance, long titles
    and the compact layout.
-3. Confirm the correct duplicate-title session opens by native ID and that the
-   sidebar/Command Center return preserves search, filter and position.
+3. Confirm the visible row ID matches the host-copied agent ID for both
+   duplicate-title sessions, and that the sidebar/Command Center return
+   preserves search, filter and position.
 
 Evidence checklist:
 
@@ -157,8 +163,8 @@ Evidence checklist:
 - [ ] Host ID/label, `KONTOR_PLUGIN_MCP=off`, `kontord` unavailable.
 - [ ] Inventory count and pages read; no first-page-only count.
 - [ ] Duplicate-title pair with both native IDs.
-- [ ] Opened native ID matches the selected row on desktop.
-- [ ] Opened native ID matches the selected row on iPhone.
+- [ ] Row native ID matches the host-copied agent ID on desktop.
+- [ ] Row native ID matches the host-copied agent ID on iPhone.
 - [ ] Return preserves search, filter and scroll position on desktop.
 - [ ] Return preserves search, filter and scroll position on iPhone.
 - [ ] Missing-session and reconnect cases use controlled/disposable data only.
