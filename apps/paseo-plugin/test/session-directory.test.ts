@@ -517,6 +517,59 @@ describe("SessionDirectory", () => {
     await directory.dispose();
   });
 
+  it("drops buffered updates when the existing subscription reconnects", async () => {
+    const fake = fakeDirectory([
+      [
+        entry("agent-a", {
+          status: "running",
+          updatedAt: "2026-10-18T10:00:00.000Z",
+        }),
+      ],
+    ]);
+    let latest = emptyDirectoryState();
+    const directory = new SessionDirectory({
+      client: () => fake.client,
+      includeArchived: false,
+      onChange: (state) => {
+        latest = state;
+      },
+    });
+
+    await directory.start();
+    const held = fake.holdNextPage();
+    const oldRefresh = directory.refresh();
+    await held.started;
+
+    fake.emitUpdate({
+      kind: "upsert",
+      agent: {
+        ...entry("agent-a").agent,
+        status: "error",
+        updatedAt: "2026-10-18T10:01:00.000Z",
+      },
+    } as PaseoAgentUpdate);
+    fake.setPages([
+      [
+        entry("agent-a", {
+          status: "idle",
+          updatedAt: "2026-10-18T10:02:00.000Z",
+        }),
+      ],
+    ]);
+    fake.emitReconnectSnapshot();
+    held.release();
+    await oldRefresh;
+
+    const settled = await waitForState(
+      () => latest,
+      (state) => state.status === "ready" && state.entries[0]?.status === "idle",
+    );
+    expect(settled.live).toBe(true);
+    expect(settled.entries[0]?.updatedAt).toBe("2026-10-18T10:02:00.000Z");
+
+    await directory.dispose();
+  });
+
   it("ignores a late update from the previous subscription generation", async () => {
     const authoritative = entry("agent-a", {
       status: "idle",

@@ -507,6 +507,11 @@ export class SessionDirectory {
             this.emit();
             return;
           }
+          // The transport reconnected. Anything buffered from before the new
+          // snapshot belongs to the previous connection and must not be replayed
+          // over the reconciled inventory.
+          this.pendingUpdates = [];
+          this.pendingOverflow = false;
           this.status = "stale";
           this.staleReason = "Paseo reconnected; reconciling the full directory.";
           this.live = false;
