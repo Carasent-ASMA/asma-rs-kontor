@@ -1802,6 +1802,43 @@ fn a_replay_after_an_interrupted_write_completes_ownership() {
 }
 
 #[test]
+fn consecutive_interruptions_keep_the_landed_entry_owned() {
+    for client in FileClientAdapter::FILE_CLIENTS {
+        let fixture = Fixture::new(client);
+        fixture.present();
+        let first = spec("/synthetic/one");
+        let second = spec("/synthetic/two");
+        let third = spec("/synthetic/three");
+        assert_eq!(
+            fixture.install(&first),
+            AdapterResult::Installed,
+            "{client}"
+        );
+        let mut interrupted = ScriptedFaults::failing_at(FailPoint::AfterClientWrite(client));
+        let mut adapter = fixture.adapter.clone();
+        assert_eq!(
+            adapter.install(&second, &mut interrupted),
+            Err(AdapterError::Injected),
+            "{client}: the first write lands but its record is pending"
+        );
+        // The second update is interrupted before its exchange: the landed
+        // second snapshot stays active and must keep its provenance.
+        let mut interrupted = ScriptedFaults::failing_at(FailPoint::BeforeClientExchange(client));
+        let mut adapter = fixture.adapter.clone();
+        assert_eq!(
+            adapter.install(&third, &mut interrupted),
+            Err(AdapterError::Injected),
+            "{client}: the replacement is interrupted before the exchange"
+        );
+        assert_eq!(
+            fixture.install(&third),
+            AdapterResult::Updated,
+            "{client}: the earlier landed entry is still owned"
+        );
+    }
+}
+
+#[test]
 fn an_absent_client_is_a_typed_absence_without_creation() {
     for client in FileClientAdapter::FILE_CLIENTS {
         let fixture = Fixture::new(client);

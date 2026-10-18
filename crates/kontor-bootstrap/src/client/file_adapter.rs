@@ -483,6 +483,9 @@ impl FileClientAdapter {
             // interrupted between the write and the ledger update.
             let desired = desired_entry(self.client, spec);
             let desired_hash = ObservedHash::of_value(&desired);
+            if let Some(observed_hash) = observed.state.observed() {
+                self.ownership.commit_pending(self.client, observed_hash)?;
+            }
             self.ownership
                 .begin(self.client, &desired_hash, &desired_hash)?;
             match &observed.original {
