@@ -27,9 +27,10 @@ Command Center entry. All three are navigation affordances only:
   walk before the directory is current again. Failed refreshes keep the last
   rows visible with the failure and a Retry action.
 - **Search and filters.** Search matches every token against the full original
-  session title, workspace name, project name/key and cwd. Native state and
-  attention filter independently; the advanced area shows an active-filter
-  count and a clear action.
+  session title, workspace name, project name/key, cwd and recognized
+  structured labels (`epic`, `workstream`, PR and ticket identifiers). Native
+  state and attention filter independently; the advanced area shows an
+  active-filter count and a clear action.
 - **Open the existing session.** Each row shows its native agent ID and opens
   by that ID through the host's navigation API. Duplicate titles never select
   by name. Missing sessions, older hosts without plugin navigation and host
@@ -256,8 +257,8 @@ archive scope, session count and pages read).
    archive scope, session count and whether the directory is live, stale or
    unavailable.
 2. Type in the search field to match the full session title, workspace,
-   project or cwd. Use the state chips and **Filters** for native state,
-   attention and archived sessions.
+   project, cwd or recognized epic/workstream/PR/ticket labels. Use the state
+   chips and **Filters** for native state, attention and archived sessions.
 3. Select a row to open that exact native session. In 0.11.4 the host reaches
    the workspace route with `dismissTo`/`POP_TO`, so return through the
    persistent sidebar entry or the global **Open Kontor Sessions** Command
