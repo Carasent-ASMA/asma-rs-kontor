@@ -416,6 +416,7 @@ struct OwnershipRecord {
 pub struct OwnershipLedger {
     entries: BTreeMap<ClientId, OwnershipRecord>,
     pending: BTreeMap<ClientId, OwnershipRecord>,
+    preserved: BTreeMap<ClientId, String>,
 }
 
 impl OwnershipLedger {
@@ -434,6 +435,12 @@ impl OwnershipLedger {
         self.pending
             .get(&client)
             .is_some_and(|record| record.entry_sha256 == observed.as_str())
+    }
+
+    /// The `PreserveBoth` temporary this client recorded, if any.
+    #[must_use]
+    pub fn preserved_temporary(&self, client: ClientId) -> Option<&str> {
+        self.preserved.get(&client).map(String::as_str)
     }
 }
 
@@ -459,6 +466,8 @@ struct LedgerDocument {
     entries: BTreeMap<ClientId, OwnershipRecord>,
     #[serde(default)]
     pending: BTreeMap<ClientId, OwnershipRecord>,
+    #[serde(default)]
+    preserved: BTreeMap<ClientId, String>,
 }
 
 impl OwnershipStore {
@@ -506,9 +515,17 @@ impl OwnershipStore {
                 return Err(AdapterError::OwnershipUnreadable);
             }
         }
+        if !document
+            .preserved
+            .values()
+            .all(|temporary| crate::confinement::is_simple_name(temporary))
+        {
+            return Err(AdapterError::OwnershipUnreadable);
+        }
         Ok(OwnershipLedger {
             entries: document.entries,
             pending: document.pending,
+            preserved: document.preserved,
         })
     }
 
@@ -573,6 +590,26 @@ impl OwnershipStore {
             },
         );
         ledger.pending.remove(&client);
+        ledger.preserved.remove(&client);
+        self.write(&ledger)
+    }
+
+    /// Record the temporary a `PreserveBoth` left behind for this client.
+    ///
+    /// Only the exact name bootstrap recorded is treated as an unreconciled
+    /// reconciliation; an ordinary crash residue or a foreign name with the
+    /// same prefix no longer blocks the adapter.
+    fn record_preserved_temporary(
+        &self,
+        client: ClientId,
+        temporary: &str,
+    ) -> Result<(), AdapterError> {
+        if !crate::confinement::is_simple_name(temporary) {
+            return Err(AdapterError::Io);
+        }
+        let _lock = self.lock()?;
+        let mut ledger = self.load()?;
+        ledger.preserved.insert(client, temporary.to_owned());
         self.write(&ledger)
     }
 
@@ -603,6 +640,7 @@ impl OwnershipStore {
             schema_version: LEDGER_SCHEMA_VERSION,
             entries: ledger.entries.clone(),
             pending: ledger.pending.clone(),
+            preserved: ledger.preserved.clone(),
         };
         let bytes = serde_json::to_vec_pretty(&document).map_err(|_| AdapterError::Io)?;
         let dir = self.open_or_create_root()?;

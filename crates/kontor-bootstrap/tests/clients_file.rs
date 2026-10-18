@@ -781,6 +781,24 @@ fn an_existing_entry_raced_at_the_final_boundary_is_never_replaced() {
 }
 
 #[test]
+fn a_leftover_temporary_from_an_interrupted_write_does_not_block_a_replay() {
+    let fixture = Fixture::new(ClientId::Cursor);
+    fixture.present();
+    let residue = fixture
+        .directory()
+        .join(".mcp.json.kontor-bootstrap-123-456.tmp");
+    std::fs::write(&residue, b"interrupted write residue").expect("residue");
+    let desired = spec("/synthetic/realm");
+    assert_eq!(fixture.install(&desired), AdapterResult::Installed);
+    assert_eq!(fixture.install(&desired), AdapterResult::AlreadyCurrent);
+    assert_eq!(
+        std::fs::read(&residue).expect("residue"),
+        b"interrupted write residue",
+        "an untracked temporary is preserved, not removed"
+    );
+}
+
+#[test]
 fn an_entry_with_null_and_boolean_extras_is_not_refused() {
     for client in [ClientId::Cursor, ClientId::Copilot] {
         let fixture = Fixture::new(client);
