@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { URL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_CREDENTIAL_TIER } from "../server/config";
 
@@ -36,6 +37,39 @@ describe("no Kontor write credential", () => {
       const text = source(file);
       expect(text, file).not.toMatch(
         /writeFile|appendFile|createWriteStream|execFile|spawn\(|node:child_process|fetch\(|node:http|node:net/,
+      );
+    }
+  });
+});
+
+const clientFiles = [
+  "../index.client.tsx",
+  "../client/session-actions.ts",
+  "../client/session-directory.ts",
+  "../client/session-view-store.ts",
+  "../client/session-view.ts",
+  "../client/sessions-screen.tsx",
+  "../client/use-session-directory.ts",
+] as const;
+
+describe("client navigation stays on the borrowed host connection", () => {
+  it("names no Kontor credential, Kontor daemon or file/process access", () => {
+    for (const file of clientFiles) {
+      const text = source(file);
+      expect(text, file).not.toContain("KONTOR_AUTH");
+      expect(text, file).not.toContain("credentials.json");
+      expect(text, file).not.toContain("kontor-mcp");
+      expect(text, file).not.toMatch(
+        /node:child_process|node:fs|node:net|node:http|writeFile|appendFile|fetch\(/,
+      );
+    }
+  });
+
+  it("contains no agent-control or workflow-write call", () => {
+    for (const file of clientFiles) {
+      const text = source(file);
+      expect(text, file).not.toMatch(
+        /respondToPermission|agents\.ref\(|\.send\(|\.run\(|\.archive\(|workspaces\.(?:create|archive)|config\.patch/,
       );
     }
   });
