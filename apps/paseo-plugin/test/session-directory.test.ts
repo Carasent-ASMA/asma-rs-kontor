@@ -94,12 +94,13 @@ function fakeDirectory(initialPages: AgentDirectoryPage[][]) {
   let pages = initialPages;
   let observer: Observer | null = null;
   const observers: Observer[] = [];
-  let heldPage: {
+  type HeldPage = {
     readonly started: Promise<void>;
     readonly markStarted: () => void;
     readonly gate: Promise<void>;
     readonly release: () => void;
-  } | null = null;
+  };
+  const heldPages: HeldPage[] = [];
   let released = false;
   let failure: "none" | "next" | "always" = "none";
   let subscribeFailure = false;
@@ -152,9 +153,8 @@ function fakeDirectory(initialPages: AgentDirectoryPage[][]) {
       };
       return { ...snapshot, subscription };
     }
-    if (heldPage) {
-      const held = heldPage;
-      heldPage = null;
+    if (heldPages.length > 0) {
+      const held = heldPages.shift() as HeldPage;
       held.markStarted();
       await held.gate;
     }
@@ -196,14 +196,20 @@ function fakeDirectory(initialPages: AgentDirectoryPage[][]) {
       const gate = new Promise<void>((resolve) => {
         releaseGate = resolve;
       });
-      heldPage = { started, markStarted, gate, release: releaseGate };
-      return {
+      const held: HeldPage = {
         started,
+        markStarted,
+        gate,
         release: () => {
-          heldPage = null;
+          const index = heldPages.indexOf(held);
+          if (index >= 0) {
+            heldPages.splice(index, 1);
+          }
           releaseGate();
         },
       };
+      heldPages.push(held);
+      return { started, release: held.release };
     },
     setPageInfo(
       override: (index: number, count: number) => ReturnType<typeof pageInfo>,
@@ -566,6 +572,73 @@ describe("SessionDirectory", () => {
     );
     expect(settled.live).toBe(true);
     expect(settled.entries[0]?.updatedAt).toBe("2026-10-18T10:02:00.000Z");
+
+    await directory.dispose();
+  });
+
+  it("keeps stale and not live while the post-reconnect walk is still pending", async () => {
+    const oldRunning = entry("agent-a", {
+      status: "running",
+      updatedAt: "2026-10-18T10:00:00.000Z",
+    });
+    const freshIdle = entry("agent-a", {
+      status: "idle",
+      updatedAt: "2026-10-18T10:02:00.000Z",
+    });
+    const fake = fakeDirectory([[oldRunning]]);
+    const states: DirectoryState[] = [];
+    let latest = emptyDirectoryState();
+    const directory = new SessionDirectory({
+      client: () => fake.client,
+      includeArchived: false,
+      onChange: (state) => {
+        latest = state;
+        states.push(state);
+      },
+    });
+
+    await directory.start();
+    const oldWalk = fake.holdNextPage();
+    const freshWalk = fake.holdNextPage();
+    const refreshing = directory.refresh();
+    await oldWalk.started;
+
+    fake.emitUpdate({
+      kind: "upsert",
+      agent: {
+        ...oldRunning.agent,
+        status: "error",
+        updatedAt: "2026-10-18T10:01:00.000Z",
+      },
+    } as PaseoAgentUpdate);
+    fake.setPages([[freshIdle]]);
+    const beforeReconnect = states.length;
+    fake.emitReconnectSnapshot();
+
+    oldWalk.release();
+    await freshWalk.started;
+
+    const duringFreshWalk = states.slice(beforeReconnect);
+    expect(
+      duringFreshWalk.some((state) => state.status === "ready" || state.live),
+    ).toBe(false);
+    expect(latest.status).toBe("stale");
+    expect(latest.live).toBe(false);
+    expect(latest.entries[0]?.status).toBe("running");
+    expect(latest.entries[0]?.updatedAt).toBe("2026-10-18T10:00:00.000Z");
+
+    freshWalk.release();
+    await refreshing;
+
+    const settled = await waitForState(
+      () => latest,
+      (state) =>
+        state.status === "ready" &&
+        state.live &&
+        state.entries[0]?.status === "idle" &&
+        state.entries[0]?.updatedAt === "2026-10-18T10:02:00.000Z",
+    );
+    expect(settled.entries[0]?.status).toBe("idle");
 
     await directory.dispose();
   });

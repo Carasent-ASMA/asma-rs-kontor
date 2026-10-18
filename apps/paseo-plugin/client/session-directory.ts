@@ -298,6 +298,7 @@ export class SessionDirectory {
   private includeArchived: boolean;
   private disposed = false;
   private generation = 0;
+  private readEpoch = 0;
   private refreshing = false;
   private refreshQueued = false;
   private refreshPromise: Promise<void> | null = null;
@@ -509,7 +510,10 @@ export class SessionDirectory {
           }
           // The transport reconnected. Anything buffered from before the new
           // snapshot belongs to the previous connection and must not be replayed
-          // over the reconciled inventory.
+          // over the reconciled inventory. The read epoch also fences a page
+          // walk that started before this snapshot: it must not publish old
+          // inventory as ready/live while the fresh reconciliation is pending.
+          this.readEpoch += 1;
           this.pendingUpdates = [];
           this.pendingOverflow = false;
           this.status = "stale";
@@ -565,11 +569,16 @@ export class SessionDirectory {
 
   private async runRefresh(): Promise<void> {
     const generation = this.generation;
+    const readEpoch = this.readEpoch;
     let collected: CollectedDirectory;
     try {
       collected = await collectDirectory(this.options.client(), this.includeArchived);
     } catch (error) {
-      if (generation !== this.generation || this.disposed) {
+      if (
+        generation !== this.generation ||
+        readEpoch !== this.readEpoch ||
+        this.disposed
+      ) {
         return;
       }
       this.applyPendingUpdates();
@@ -581,7 +590,11 @@ export class SessionDirectory {
       this.emit();
       return;
     }
-    if (generation !== this.generation || this.disposed) {
+    if (
+      generation !== this.generation ||
+      readEpoch !== this.readEpoch ||
+      this.disposed
+    ) {
       return;
     }
 
