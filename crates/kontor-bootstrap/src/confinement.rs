@@ -166,7 +166,64 @@ pub fn effective_user() -> u32 {
 /// [`ConfinementError::Io`] when the held descriptor cannot be inspected.
 pub fn is_private_directory(dir: &Dir) -> Result<bool, ConfinementError> {
     let (owner, mode) = dir.owner_and_mode()?;
-    Ok(owner == effective_user() && mode & 0o022 == 0)
+    if owner != effective_user() || mode & 0o022 != 0 {
+        return Ok(false);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return macos_acl_is_private(dir);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(true)
+    }
+}
+
+/// Whether the held directory's macOS ACL lets other users add, delete or
+/// write its entries.
+///
+/// The mode bits do not describe an ACL entry, so a root at 0700 with an
+/// inherited `allow add_file,add_subdirectory,delete_child` entry still lets
+/// every local account replace `current` and the installed binaries. The
+/// listing is taken from the path of the held descriptor, with every allow
+/// entry that grants a write permission refused.
+#[cfg(target_os = "macos")]
+fn macos_acl_is_private(dir: &Dir) -> Result<bool, ConfinementError> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let path = rustix::fs::getpath(&dir.fd).map_err(|_| ConfinementError::Io)?;
+    let output = std::process::Command::new("/bin/ls")
+        .arg("-led")
+        .arg(std::ffi::OsStr::from_bytes(path.as_bytes()))
+        .output()
+        .map_err(|_| ConfinementError::Io)?;
+    if !output.status.success() {
+        return Err(ConfinementError::Io);
+    }
+    let listing = std::str::from_utf8(&output.stdout).map_err(|_| ConfinementError::Io)?;
+    Ok(!listing.lines().any(acl_entry_allows_foreign_write))
+}
+
+/// Whether one `ls -le` line is an allow entry that grants another user a
+/// write permission on the directory.
+#[cfg(target_os = "macos")]
+fn acl_entry_allows_foreign_write(line: &str) -> bool {
+    let line = line.trim_start();
+    let Some((index, rest)) = line.split_once(':') else {
+        return false;
+    };
+    if index.is_empty() || !index.bytes().all(|byte| byte.is_ascii_digit()) {
+        return false;
+    }
+    let Some((_, permissions)) = rest.rsplit_once(" allow ") else {
+        return false;
+    };
+    permissions.split(',').any(|permission| {
+        matches!(
+            permission.trim(),
+            "write" | "add_file" | "add_subdirectory" | "delete_child"
+        )
+    })
 }
 
 #[cfg(unix)]

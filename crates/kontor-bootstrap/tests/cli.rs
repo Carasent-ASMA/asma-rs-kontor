@@ -572,6 +572,32 @@ fn a_group_or_world_writable_install_root_is_refused_without_writes() {
     assert!(!world.state_root.exists(), "no state may be created");
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn a_root_with_an_allow_acl_for_other_users_is_refused() {
+    let world = World::new();
+    world.install();
+    let status = std::process::Command::new("/bin/chmod")
+        .arg("+a")
+        .arg(
+            "group:staff allow add_file,add_subdirectory,delete_child,\
+             file_inherit,directory_inherit",
+        )
+        .arg(&world.install_root)
+        .status()
+        .expect("chmod");
+    assert!(status.success(), "chmod +a on the install root");
+
+    let mut arguments = vec!["install".to_owned()];
+    arguments.extend(world.common());
+    arguments.push("--source-dir".to_owned());
+    arguments.push(world.source_dir.to_str().expect("utf8").to_owned());
+    let refs: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    let (document, success, stdout) = world.run(&refs);
+    assert!(!success, "{stdout}");
+    assert_eq!(document["error"]["code"], "install_root_invalid");
+}
+
 #[cfg(unix)]
 #[test]
 fn a_trailing_separator_does_not_bypass_a_root_symlink_refusal() {
