@@ -430,6 +430,12 @@ impl Installer {
         let Some(root) = self.open_root_if_exists()? else {
             return Err(InstallError::ActiveUnverified);
         };
+        // This path ends in a client command that runs with the admin
+        // credential tier, so the root and the generation read from it carry
+        // the same owner-and-mode check as every other installer path.
+        if !crate::confinement::is_private_directory(&root)? {
+            return Err(InstallError::InsecureRoot);
+        }
         let Some(active) = self.read_active(&root)? else {
             return Err(InstallError::ActiveUnverified);
         };

@@ -290,6 +290,38 @@ fn a_writable_managed_artifact_is_never_trusted() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn verify_active_for_execution_refuses_a_shared_root_or_releases() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root_holder = tempfile::tempdir().expect("root");
+    let version_one = release("1.0.0");
+    let installer = installer(root_holder.path());
+    assert_eq!(
+        install(&installer, &version_one),
+        Ok(InstallOutcome::Installed)
+    );
+    assert_eq!(installer.verify_active_for_execution(), Ok(()));
+
+    let releases = root_holder.path().join("releases");
+    std::fs::set_permissions(&releases, std::fs::Permissions::from_mode(0o777))
+        .expect("chmod releases");
+    assert_eq!(
+        installer.verify_active_for_execution(),
+        Err(InstallError::InsecureRoot)
+    );
+    std::fs::set_permissions(&releases, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod releases");
+
+    std::fs::set_permissions(root_holder.path(), std::fs::Permissions::from_mode(0o777))
+        .expect("chmod root");
+    assert_eq!(
+        installer.verify_active_for_execution(),
+        Err(InstallError::InsecureRoot)
+    );
+}
+
 #[test]
 #[cfg(unix)]
 fn a_lost_owner_execute_bit_is_repaired_before_already_current() {

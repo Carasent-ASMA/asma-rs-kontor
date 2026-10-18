@@ -414,6 +414,17 @@ fn repair_refuses_an_install_root_without_a_runnable_generation() {
         before,
         "an unexecutable active generation must not change the client entry"
     );
+
+    std::fs::set_permissions(&world.install_root, std::fs::Permissions::from_mode(0o777))
+        .expect("chmod");
+    let (document, success, stdout) = repair_at(&world.install_root);
+    assert!(!success, "{stdout}");
+    assert_eq!(document["error"]["code"], "install_root_invalid");
+    assert_eq!(
+        std::fs::read_to_string(&cursor).expect("read"),
+        before,
+        "a root another local user can write must not change the client entry"
+    );
 }
 
 #[test]
