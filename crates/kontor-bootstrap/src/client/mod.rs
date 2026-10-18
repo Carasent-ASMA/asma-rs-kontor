@@ -558,11 +558,7 @@ impl OwnershipStore {
     /// Beginning the next write would overwrite it and erase the only proof
     /// that the still-active entry is bootstrap's own, so a replacement of
     /// exactly that snapshot completes the record first.
-    fn commit_pending(
-        &self,
-        client: ClientId,
-        entry: &ObservedHash,
-    ) -> Result<(), AdapterError> {
+    fn commit_pending(&self, client: ClientId, entry: &ObservedHash) -> Result<(), AdapterError> {
         let _lock = self.lock()?;
         let mut ledger = self.load()?;
         if ledger.owns(client, entry) || !ledger.pending_owns(client, entry) {

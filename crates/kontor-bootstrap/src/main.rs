@@ -240,9 +240,7 @@ fn require_private_directory(dir: &Dir, code: &'static str) -> Result<(), Failur
             "the root must not be writable by group or other users".to_owned(),
         ));
     }
-    if !is_private_directory(dir)
-        .map_err(|_| (code, "the root cannot be inspected".to_owned()))?
-    {
+    if !is_private_directory(dir).map_err(|_| (code, "the root cannot be inspected".to_owned()))? {
         return Err((
             code,
             "the root must not be writable by another local user".to_owned(),

@@ -171,7 +171,7 @@ pub fn is_private_directory(dir: &Dir) -> Result<bool, ConfinementError> {
     }
     #[cfg(target_os = "macos")]
     {
-        return macos_acl_is_private(dir);
+        macos_acl_is_private(dir)
     }
     #[cfg(not(target_os = "macos"))]
     {
