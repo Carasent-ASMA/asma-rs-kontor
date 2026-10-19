@@ -25,22 +25,36 @@ export function useSessionDirectory(input: {
   readonly refresh: () => void;
 } {
   const { hostId, hostStatus, includeArchived } = input;
-  const [state, setState] = useState<DirectoryState>(() =>
-    emptyDirectoryState(includeArchived),
-  );
+  const [stateForHost, setStateForHost] = useState<{
+    readonly hostId: string;
+    readonly state: DirectoryState;
+  }>(() => ({ hostId, state: emptyDirectoryState(includeArchived) }));
+  const state =
+    stateForHost.hostId === hostId
+      ? stateForHost.state
+      : emptyDirectoryState(includeArchived);
   const directoryRef = useRef<SessionDirectory | null>(null);
   const includeArchivedRef = useRef(includeArchived);
   includeArchivedRef.current = includeArchived;
 
   useEffect(() => {
+    let active = true;
     const directory = new SessionDirectory({
       client: () => getPaseoClient(hostId),
       includeArchived: includeArchivedRef.current,
-      onChange: setState,
+      onChange: (next) => {
+        if (active) {
+          setStateForHost({ hostId, state: next });
+        }
+      },
     });
     directoryRef.current = directory;
-    setState(emptyDirectoryState(includeArchivedRef.current));
+    setStateForHost({
+      hostId,
+      state: emptyDirectoryState(includeArchivedRef.current),
+    });
     return () => {
+      active = false;
       if (directoryRef.current === directory) {
         directoryRef.current = null;
       }

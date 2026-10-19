@@ -220,7 +220,10 @@ vi.mock("@getpaseo/plugin/client", () => ({
   getPaseoClient: () => {
     throw new Error("No host in the sessions-screen event test");
   },
-  useHosts: () => [{ serverId: "host-a", status: "online" }],
+  useHosts: () => [
+    { serverId: "host-a", status: "online" },
+    { serverId: "host-b", status: "online" },
+  ],
 }));
 
 vi.mock("@getpaseo/plugin/client/react-native", () => ({
@@ -355,6 +358,7 @@ describe("SessionsScreen toolbar events", () => {
       staleReason: null,
       pages: 1,
       lastUpdatedAt: 0,
+      inventoryComplete: true,
       includeArchived: true,
     };
     patchSessionView("host-a", {
@@ -369,6 +373,86 @@ describe("SessionsScreen toolbar events", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("restores the selected view when the screen host changes without remounting", () => {
+    patchSessionView("host-a", {
+      query: "host-a query",
+      status: "all",
+      attentionOnly: false,
+      includeArchived: true,
+      advancedOpen: false,
+      scrollOffset: 0,
+    });
+    patchSessionView("host-b", {
+      query: "host-b query",
+      status: "error",
+      attentionOnly: true,
+      includeArchived: false,
+      advancedOpen: true,
+      scrollOffset: 0,
+    });
+    let activeHost = "host-a";
+    const render = () =>
+      harness.render(() =>
+        SessionsScreen({
+          host: { id: activeHost, label: `srv_${activeHost}` },
+          layout: { compact: true, platform: "ios" },
+          navigation: {
+            openAgent: () => undefined,
+            openBrowser: () => undefined,
+            openWorkspace: () => undefined,
+          },
+          theme: { colors } as PluginTheme,
+          params: {},
+        } as PluginScreenProps),
+      );
+
+    render();
+    expect(findByTestID(harness.current(), "sessions-search").props.value).toBe(
+      "host-a query",
+    );
+
+    activeHost = "host-b";
+    harness.flush();
+    expect(findByTestID(harness.current(), "sessions-search").props.value).toBe(
+      "host-b query",
+    );
+
+    const search = findByTestID(harness.current(), "sessions-search");
+    (search.props.onChangeText as (query: string) => void)("host-b edited");
+    harness.flush();
+
+    expect(readSessionView("host-b").query).toBe("host-b edited");
+    expect(readSessionView("host-a").query).toBe("host-a query");
+  });
+
+  it("labels an unavailable-live read as partial instead of complete", () => {
+    directory.state = {
+      entries: [sessionEntry("session-a", { status: "idle" })],
+      status: "ready",
+      live: false,
+      error: null,
+      staleReason:
+        "Live updates are unavailable; the inventory may be incomplete.",
+      pages: 1,
+      lastUpdatedAt: 0,
+      inventoryComplete: false,
+      includeArchived: true,
+    };
+    renderScreen();
+    const list = findByTestID(harness.current(), "sessions-list");
+    const footer = walk(list.props.ListFooterComponent).find(
+      (element) => element.props.testID === "sessions-footer",
+    );
+
+    expect(footer).toBeDefined();
+    expect(JSON.stringify(footer?.props.children)).toContain(
+      "partial inventory read",
+    );
+    expect(JSON.stringify(footer?.props.children)).not.toContain(
+      "complete inventory read",
+    );
   });
 
   it("compensates compact collapse and near-bottom reveal through the actual screen event path", () => {
