@@ -25411,6 +25411,14 @@ async fn a_runtime_observed_terminal_run_closes_its_stranded_team_on_abandon_rep
         "the replay closes the stranded envelope"
     );
     assert!(
+        matches!(
+            closed.terminal.as_ref().map(|terminal| &terminal.source),
+            Some(kontor_core::state::TeamEvidenceSource::ChildEvidence { .. })
+        ),
+        "the replay records the children's own outcome rather than an operator abandon: {:?}",
+        closed.terminal
+    );
+    assert!(
         world
             .daemon
             .state()

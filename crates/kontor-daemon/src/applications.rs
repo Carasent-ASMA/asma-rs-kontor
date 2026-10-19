@@ -37493,14 +37493,19 @@ impl ApplicationOperations for Services {
                 self.release_run_leases(project_id, agent_run_id, receipt_id, now)?;
                 self.release_abandoned_reservation(&run).await?;
             }
-            let (mut team_run_closed, mut team_pending) =
-                self.team_closure_state(project_id, &run)?;
             // The first abandonment may have happened while sibling runs were
-            // still live. Once they have all ended, replaying that same decision
-            // must converge the team too; otherwise the immutable terminal run
-            // can never be acted on again and the task stays in flight forever.
-            // It does not matter how the siblings ended: a runtime observation
-            // is as final as an operator abandon.
+            // still live, and a first settlement can also fail after closing
+            // the run. Once every child has ended, the certified closure the
+            // first-abandon path attempts is attempted here first, so the same
+            // state records the children's own outcome whichever replay an
+            // operator calls. Abandoning is the fallback for a team that no
+            // certificate can close, and only once nothing is left running;
+            // otherwise the immutable terminal run can never be acted on again
+            // and the task stays in flight forever. It does not matter how the
+            // siblings ended: a runtime observation is as final as an operator
+            // abandon.
+            let (mut team_run_closed, mut team_pending) =
+                self.settle_team(project_id, &run, now)?;
             if team_run_closed.is_none()
                 && let Some(abandoned) = self.abandon_team_run(key, project_id, &run, now)?
             {
