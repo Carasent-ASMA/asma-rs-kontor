@@ -1,6 +1,7 @@
 # Durable desk seats in kontord
 
-> Status: ASMA-8451 (TASK-002 of ASMA-8449) candidate. Describes how a
+> Status: ASMA-8451 (TASK-002 of ASMA-8449), merged in PR #296 (`430975a3`,
+> 2026-10-11); merged is not deployed, see the [router](../index.md). Describes how a
 > long-lived seat of a durable desk is declared, how the daemon reports it, and
 > the one reconciliation it supports: restarting a selected, daemon-owned seat
 > that the runtime has proved missing. Desks themselves are described in
@@ -42,7 +43,7 @@ addition is a read-only census of the natives that carry one binding label.
 
 The CLI is generated from the same tools. They are served by an MCP server
 with no serve profile. No restricted profile (worker, consultation,
-planning-pair member) includes them.
+leadership, planning-pair member or caller) includes them.
 
 Receipts name the project and use two new kinds, `declare_durable_seat` and
 `reconcile_durable_seats` (schema 132). Like every command receipt, a receipt

@@ -1,13 +1,22 @@
 # Consultation permissions and session release
 
+> Status: verified against source at `0971674d` (2026-10-11). The ASMA-8111
+> permission, release and recovery work merged through #202 (`40ad3a54`), #206
+> (`08156f1f`) and #208 (`dac0eabb`); the planning-pair section merged through
+> #292 (`4097afb8`, 2026-10-04). Merged is not deployed: no live daemon
+> migration or planning-pair activation is recorded here.
+
 ASMA-8111 exposed two independent failures: Claude consultation seats ended in
 plan approval instead of submitting a finding, and idle native sessions held
 codebase-memory-mcp's shared daemon connections until new Codex seats failed
 their required MCP handshake.
 
 Claude consultations now use `default` mode with a Kontor `PreToolUse` guard.
-The guard permits `Read`, `Glob`, `Grep`, `ToolSearch`, and exactly the four
-operations in the registry's `consultation` serve profile. Every other tool is
+The guard permits `Read`, `Glob`, `Grep`, `ToolSearch`, and exactly the five
+operations in the registry's `consultation` serve profile. The fifth,
+`kontor_committee_artifact_get` (ASMA-8188, #262, `f06623f4`), reads at most
+64 KiB of verified artifact text per page for a registry `evidence_id` from the
+run's `subject_evidence`; arbitrary paths are refused. Every other tool is
 denied immediately, including shell execution, file edits, delegation and plan
 transitions. The allowed finding writes still require the native occupant's
 generation-fenced credential; tool approval grants no additional API authority.
@@ -81,7 +90,7 @@ it. This is a domain contract decision (LSA disposition D-1 to D-3,
 2026-10-02), not a platform ADR. The ASMA-8113 owner's compatibility review
 fences acceptance of the widened identity vocabulary.
 
-Schema 122 widens the family checks to `advisor`, `committee` and
+Schema v127 (`0127_planning_pair_family.sql`) widens the family checks to `advisor`, `committee` and
 `planning_pair` and conditions run state on the family. Advisor and Committee
 keep exactly their earlier states. A planning pair is only `materializing`,
 `running`, `needs_human` or `disposed`, with `result` and `settled_at` always
@@ -89,11 +98,12 @@ NULL, so it can never be settled, judged or read as a verdict. Its run shares
 the semantic identity function and unique index with the other families. Its
 placement receipt, canonical record revisions and member contributions live in
 immutable tables keyed by the run, and `disposed` is terminal. Rolling schema
-122 back requires the pre-upgrade database snapshot.
+v127 back requires the pre-upgrade database snapshot.
 
-Nine registered operations cover it: the profile list, preview and apply; run
-invoke and get; a member's finding and answer; and the caller's one
-clarification and disposition. The registry tier is a floor. The caller is the
+Ten registered operations cover it: the profile list, preview and apply; run
+invoke and get; a member's finding and answer; the caller's one
+clarification and disposition; and the caller's same-native seat recovery,
+described below. The registry tier is a floor. The caller is the
 exact frozen caller seat at its current hosted generation. A member is the exact
 frozen member seat at its current occupancy generation, and its slot comes from
 its credential, never from the body. Ambient Admin and Operator credentials
@@ -135,7 +145,8 @@ actual placed routes, once before the pair is frozen and again before its
 container is prepared. Its answer is a typed refusal per route.
 
 Through Paseo, every real route is refused today, before the launch claim and
-before any plane call, composed file, process or session:
+before any plane call, composed file, process or session, so no planning pair
+can launch through the production Paseo runtime at this revision:
 
 - **Claude** (`restriction_unacknowledged`): its member guard, serve profile
   and creation restriction are composable. But Paseo acknowledges no applied
@@ -165,7 +176,8 @@ A member is bound, and so may contribute, only when every mandatory
 member-surface field is observed as matched: its correlation, its route and its
 closed tool restriction. Its readback must also observe exactly its requested
 provenance. Whatever the readback shows, the exact session it names is first
-kept as the member's known native claim (schema 123). The claim is immutable
+kept as the member's known native claim (schema v128,
+`0128_planning_pair_member_natives.sql`). The claim is immutable
 and keyed by the run, the SeatBinding and the occupancy generation. It is never
 a qualification: only the bound seat qualifies a member. A missing observation,
 or any unmatched or unsupported field, is then a typed refusal: the session is
