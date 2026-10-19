@@ -25262,6 +25262,18 @@ async fn a_team_stranded_behind_a_migration_fence_closes_when_its_settlement_is_
         "{}",
         still_fenced.body
     );
+    // The terminal replay gives up the frozen snapshot before the fenced seat
+    // release, so the refused replay does not leave a closed run reporting
+    // `seat_live`.
+    assert!(
+        world
+            .daemon
+            .state()
+            .sessions()
+            .get(last_binding.id)
+            .is_none(),
+        "the fenced replay released the closed run's frozen snapshot"
+    );
 
     // The same key completes the interrupted migration, and the next replay of
     // the settlement closes the team.
@@ -25549,6 +25561,110 @@ async fn an_abandon_replay_of_an_already_closed_team_answers_behind_a_migration_
         abandoned.json()["team_pending"].is_null(),
         "{}",
         abandoned.body
+    );
+}
+
+/// A settlement replay of an already-closed run and team changes nothing. A
+/// Team Definition migration in flight must not turn the documented 200 into a
+/// 409, and the replay must not leave the closed run's frozen snapshot held.
+#[tokio::test]
+async fn a_settlement_replay_of_an_already_closed_team_answers_behind_a_migration_fence() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "closed-team-settle-replay").await;
+    let runs: Vec<String> = seats
+        .as_array()
+        .expect("the seated roster")
+        .iter()
+        .map(|seat| {
+            seat["agent_run_id"]
+                .as_str()
+                .expect("an agent run id")
+                .to_owned()
+        })
+        .collect();
+    for (index, run) in runs.iter().enumerate() {
+        finish_natively(&world, run).await;
+        let settled = Call::post(
+            format!("/v1/projects/{project}/agent-runs/{run}/runtime:settle"),
+            &serde_json::json!({}),
+        )
+        .signed_as(&world, "operator")
+        .with_key(format!("closed-team-settle-replay-settle-{index}"))
+        .send(&world)
+        .await;
+        assert_eq!(settled.status, 200, "seat {index}: {}", settled.body);
+    }
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
+    let last = runs.last().expect("a final seat");
+    let last_id = AgentRunId::parse(last).expect("an agent run id");
+    let run = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, last_id)
+            .expect("the last run reads")
+            .expect("the last run exists")
+    });
+    let last_binding = run.binding.clone().expect("the last run is bound");
+    let team = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(project_id, run.team_run_id)
+            .expect("the team reads")
+            .expect("the team exists")
+    });
+    assert!(
+        team.lifecycle.is_terminal(),
+        "the fixture settled every seat, so the team is closed"
+    );
+
+    leave_team_definition_migration_in_flight(&world, &project, &epic, "closed-team-settle-replay")
+        .await;
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.get_in_flight_team_definition_migration(project_id, epic_id))
+            .expect("the migration reads")
+            .is_some(),
+        "the fixture really left a Team Definition migration in flight"
+    );
+
+    let settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{last}/runtime:settle"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("closed-team-settle-replay-again")
+    .send(&world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    assert_eq!(settled.json()["applied"], "unchanged", "{}", settled.body);
+    assert_eq!(
+        settled.json()["team_run_closed"],
+        serde_json::json!(run.team_run_id.to_string()),
+        "{}",
+        settled.body
+    );
+    assert!(settled.json()["team_pending"].is_null(), "{}", settled.body);
+    assert!(
+        world
+            .daemon
+            .state()
+            .sessions()
+            .get(last_binding.id)
+            .is_none(),
+        "the replay leaves no frozen snapshot held"
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.list_binding_snapshots())
+            .expect("the binding snapshots read")
+            .iter()
+            .all(|snapshot| snapshot.binding_id != last_binding.id),
+        "the replay leaves no durable binding snapshot behind"
     );
 }
 

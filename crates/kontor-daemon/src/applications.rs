@@ -37743,12 +37743,22 @@ impl ApplicationOperations for Services {
             // it is asked. The `runtime:abandon` route is what accounts for that
             // slot and lets the envelope close: it abandons a never-bound run,
             // or, once every existing run has ended, closes the envelope itself.
-            let (team_run_closed, team_pending) = self.settle_team(project_id, &run, now)?;
-            // A first settlement that failed after closing the run never reached
-            // the release below, so the snapshot would stay held for a session
-            // that is already over. Releasing it here is what makes the recovery
-            // path finish the whole settlement, not only the team.
+            //
+            // The run is immutable now and its session is already over, so the
+            // frozen snapshot is given up before any fallible team work: a Team
+            // Definition migration fence must not leave a terminal run reporting
+            // `seat_live`.
             self.release(binding.id)?;
+            // An already-terminal envelope is answered from its stored closure.
+            // Calling `settle_team` here would re-release its seats, which the
+            // same fence refuses even though this replay changes nothing. Only
+            // an envelope that is still open needs the settlement attempted.
+            let (team_run_closed, team_pending) = self.team_closure_state(project_id, &run)?;
+            let (team_run_closed, team_pending) = if team_run_closed.is_some() {
+                (team_run_closed, team_pending)
+            } else {
+                self.settle_team(project_id, &run, now)?
+            };
             return Ok(RuntimeSettlementDto {
                 realm_id,
                 agent_run_id: agent_run_id.to_string(),
