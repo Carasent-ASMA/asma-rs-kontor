@@ -1008,8 +1008,10 @@ The repository also ships the dependency-free
 `asma/publication-branch-title` Actions check. Require it on the default branch
 as the forge-local grammar boundary: it rejects a PR unless the base is
 `master`, the branch is canonical, and branch and title carry the same Jira
-key. The GitHub App check remains the stronger semantic boundary because it
-also proves that key against Kontor's confirmed Jira binding.
+key. A `dependabot/` branch opened by `dependabot[bot]` is exempt from the
+branch and title rules (code `bot_branch_exempt`); the base and head checks
+still apply. The GitHub App check remains the stronger semantic boundary
+because it also proves that key against Kontor's confirmed Jira binding.
 
 ## Other deployment data
 
