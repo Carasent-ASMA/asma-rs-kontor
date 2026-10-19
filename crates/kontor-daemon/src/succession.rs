@@ -346,7 +346,7 @@ impl SuccessionRedactionPolicy {
     }
 
     fn redact_text(&self, source: &str) -> String {
-        let mut redacted = source.to_owned();
+        let mut redacted = redact_json_web_tokens(source);
         for literal in &self.sensitive_literals {
             redacted = redacted.replace(literal.expose_secret(), REDACTED_SUCCESSION_CONTENT);
         }
@@ -379,6 +379,82 @@ impl SuccessionRedactionPolicy {
             scalar => scalar.clone(),
         }
     }
+}
+
+/// Replace bare JSON Web Tokens with the redaction placeholder.
+///
+/// The masking set holds the Realm's tier secrets, not the predecessor seat's
+/// own account credential — for example the Codex OAuth JWT inside
+/// `CODEX_HOME/auth.json`. That value carries no `Bearer` prefix and no marker
+/// [`reject_sensitive_text`] knows, so a quoted one would otherwise reach the
+/// summarizer and the persisted handoff. A JWT is exactly three unpadded
+/// base64url segments, and its header begins `eyJ` because the first bytes are
+/// `{"`. Matching that shape removes the token without touching ordinary
+/// dotted text. The rule lives here rather than in the shared persisted-string
+/// scan: that scan also admits runtime evidence, and refusing a whole frame
+/// because it quotes a token would break a live turn rather than mask a copy.
+fn redact_json_web_tokens(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut ranges = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if !is_json_web_token_byte(bytes[index]) {
+            index += 1;
+            continue;
+        }
+        let mut start = index;
+        while index < bytes.len() && is_json_web_token_byte(bytes[index]) {
+            index += 1;
+        }
+        let mut end = index;
+        // A full stop is both a separator and the segment character, so a JWT
+        // at the end of a sentence reads as one run with an empty tail. The
+        // punctuation stays in the text; only the credential is replaced.
+        while start < end && bytes[start] == b'.' {
+            start += 1;
+        }
+        while end > start && bytes[end - 1] == b'.' {
+            end -= 1;
+        }
+        if start < end && is_json_web_token(&source[start..end]) {
+            ranges.push((start, end));
+        }
+    }
+    if ranges.is_empty() {
+        return source.to_owned();
+    }
+    let mut redacted = String::with_capacity(source.len());
+    let mut cursor = 0;
+    for (start, end) in ranges {
+        redacted.push_str(&source[cursor..start]);
+        redacted.push_str(REDACTED_SUCCESSION_CONTENT);
+        cursor = end;
+    }
+    redacted.push_str(&source[cursor..]);
+    redacted
+}
+
+/// The unpadded base64url alphabet plus the segment separator.
+const fn is_json_web_token_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
+}
+
+fn is_json_web_token(candidate: &str) -> bool {
+    let mut segments = candidate.split('.');
+    let (Some(header), Some(payload), Some(signature), None) = (
+        segments.next(),
+        segments.next(),
+        segments.next(),
+        segments.next(),
+    ) else {
+        return false;
+    };
+    header.len() >= 16
+        && payload.len() >= 8
+        && signature.len() >= 16
+        && header
+            .get(..3)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("eyj"))
 }
 
 struct PreparedSummaryInput {

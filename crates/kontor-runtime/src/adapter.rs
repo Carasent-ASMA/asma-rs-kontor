@@ -2143,6 +2143,12 @@ pub trait RuntimeAdapter: Send + Sync {
     /// projection crosses this boundary; the derived text it returns is redacted
     /// and validated again before it can be persisted or handed to a successor.
     ///
+    /// The daemon drops this call after `SUCCESSION_SUMMARY_TIMEOUT` (sixty
+    /// seconds) while it holds the realm's succession guard. An implementation
+    /// must therefore stop every native effect when this future is dropped: a
+    /// cancelled summary must not keep spending on the admitted account after
+    /// the handoff has already degraded.
+    ///
     /// The default refuses. A runtime with no governed summary surface must say
     /// so before it can acquire one by accident, and the handoff then keeps its
     /// typed degraded outcome.
