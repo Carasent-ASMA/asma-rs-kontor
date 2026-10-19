@@ -2,6 +2,7 @@ import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { useHosts } from "@getpaseo/plugin/client";
 import {
   FlatList,
+  ScrollView,
   TextInput,
   useToast,
 } from "@getpaseo/plugin/client/react-native";
@@ -152,6 +153,14 @@ export const SCOPE_SUMMARY_TEST_ID = "sessions-scope-summary";
 export const COMPACT_COLLAPSE_DISTANCE = 24;
 /** Scroll room a short list keeps while the compact toolbar is open, so a small drag closes it on every platform. */
 export const COMPACT_SCROLL_SLACK = 2 * COMPACT_COLLAPSE_DISTANCE;
+/**
+ * Filters & view scrolls inside its own frame: the toolbar ends at this share of the space it shares
+ * with the list, so the rest still shows sessions, and the frame shows at least three 44pt controls.
+ */
+export const OPTIONS_SPACE_SHARE = 0.7;
+export const OPTIONS_MIN_HEIGHT = 3 * FILTERS_TOUCH_TARGET;
+/** Wide screen padding above the toolbar and below the list. */
+const WIDE_SCREEN_PADDING = 16;
 
 /** Compact toolbar disclosure, kept in the local in-memory view store beside the filters. */
 export function compactToolbarOpen(view: SessionViewState): boolean {
@@ -1135,6 +1144,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const compactAnchorRef = useRef(scrollOffsetRef.current);
   const previousCompactRef = useRef(compact);
   const [listHeight, setListHeight] = useState(0);
+  const [optionsTop, setOptionsTop] = useState(0);
   const programmaticUntilRef = useRef(0);
   const pendingCompensationRef = useRef<number | null>(null);
   const pendingRevealRef = useRef<{ readonly focusSearch: boolean } | null>(null);
@@ -1709,6 +1719,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     : activeCount;
   // While the compact toolbar is open, a short list still has room for the small drag that closes it.
   const scrollSlack = compact && !toolbarCollapsed && listHeight > 0 ? { minHeight: listHeight + COMPACT_SCROLL_SLACK } : {};
+  // Compact draws the toolbar inside the list, so they share the list viewport; wide stacks them in the screen.
+  const optionsSpace = compact ? listHeight : rootSize.height - 2 * WIDE_SCREEN_PADDING;
+  const optionsMaxHeight = optionsSpace > 0 ? Math.max(OPTIONS_MIN_HEIGHT, Math.round(optionsSpace * OPTIONS_SPACE_SHARE) - optionsTop) : undefined;
 
   useEffect(() => {
     if (restoredRef.current || state.entries.length === 0) {
@@ -1878,17 +1891,21 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       {optionParts.length > 0 && !view.advancedOpen ? <Text testID="sessions-options-summary" numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 11 }}>{optionParts.join(" · ")}</Text> : null}
 
       {view.advancedOpen ? (
-        <View
+        <ScrollView
           testID="sessions-options"
           accessibilityLabel="Filters and view options"
+          nestedScrollEnabled
+          keyboardShouldPersistTaps="handled"
+          onLayout={(event: LayoutChangeEvent) => { const top = Math.round(event.nativeEvent.layout.y); if (top !== optionsTop) setOptionsTop(top); }}
           style={{
+            flexGrow: 0,
+            maxHeight: optionsMaxHeight,
             borderColor: colors.border,
             borderWidth: 1,
             borderRadius: 8,
             backgroundColor: colors.surface1,
-            padding: 10,
-            gap: 10,
           }}
+          contentContainerStyle={{ padding: 10, gap: 10 }}
         >
           <OptionSelect testID="sessions-grouping" label="Group by" value={GROUPINGS.find(({ id }) => id === grouping)?.label ?? grouping} expanded={optionMenu === "grouping"} anchor={groupingRef} compact={compact} colors={colors} {...focusProps} onPress={() => setOptionMenu(optionMenu === "grouping" ? null : "grouping")} />
           {streamChoices.length > 1 ? <OptionLine label={streams === null ? "Workstreams · all" : `Workstreams · ${streams.length} of ${streamChoices.length}`} colors={colors}>
@@ -1928,7 +1945,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
               Icons mark a workstream, epic, workspace or native project. {Object.entries(WORKSPACE_KINDS).map(([code, meaning]) => `${code} · ${meaning}`).join("  ")}. Repeated title prefixes group siblings for display only; they do not establish an authorized role.
             </Text>
           </Disclosure>
-        </View>
+        </ScrollView>
       ) : null}
     </View>
   );
@@ -1944,9 +1961,12 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     <AnchoredMenu testID={`sessions-${optionMenu}-menu`} anchor={optionAnchor} root={rootRef} rootSize={rootSize} colors={colors}
       label={optionMenu === "grouping" ? "Group sessions by" : "Session workspace scope"} onClose={() => setOptionMenu(null)}
       placement={compact ? { align: "stretch", width: 0, maxHeight: Math.min(rootSize.height * 0.6, 360) } : { align: "start", width: 240 }}>
-      {optionMenu === "grouping"
-        ? GROUPINGS.map(({ id, label }) => <MenuItem key={id} label={label} tall={compact} selected={grouping === id} colors={colors} onPress={() => chooseOption(() => chooseGrouping(id))} />)
-        : SCOPE_CHOICES.map(({ id, label }) => <MenuItem key={label} label={label} tall={compact} selected={shortcut === id} colors={colors} onPress={() => chooseOption(() => { pinFilterInteraction(); updateView({ shortcut: id, scrollOffset: 0 }); })} />)}
+      {/* The frame is clamped to the screen, so a short screen scrolls the choices instead of cutting off the last ones. */}
+      <ScrollView testID={`sessions-${optionMenu}-choices`} keyboardShouldPersistTaps="handled" style={{ flexGrow: 0, flexShrink: 1 }}>
+        {optionMenu === "grouping"
+          ? GROUPINGS.map(({ id, label }) => <MenuItem key={id} label={label} tall={compact} selected={grouping === id} colors={colors} onPress={() => chooseOption(() => chooseGrouping(id))} />)
+          : SCOPE_CHOICES.map(({ id, label }) => <MenuItem key={label} label={label} tall={compact} selected={shortcut === id} colors={colors} onPress={() => chooseOption(() => { pinFilterInteraction(); updateView({ shortcut: id, scrollOffset: 0 }); })} />)}
+      </ScrollView>
     </AnchoredMenu>
   );
   const handleRootLayout = (event: LayoutChangeEvent) => {
@@ -2092,9 +2112,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       style={{
         flex: 1,
         backgroundColor: colors.surface0,
-        paddingTop: compact ? 12 : 16,
+        paddingTop: compact ? 12 : WIDE_SCREEN_PADDING,
         paddingHorizontal: compact ? 12 : 18,
-        paddingBottom: compact ? 20 : 16,
+        paddingBottom: compact ? 20 : WIDE_SCREEN_PADDING,
         gap: TOOLBAR_LAYOUT_GAP,
       }}
     >

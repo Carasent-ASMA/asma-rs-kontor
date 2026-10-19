@@ -236,6 +236,7 @@ vi.mock("@getpaseo/plugin/client", () => ({
 vi.mock("@getpaseo/plugin/client/react-native", () => ({
   FlatList: "FlatList",
   Icon: "Icon",
+  ScrollView: "ScrollView",
   TextInput: "TextInput",
   useToast: () => ({ show: () => undefined, error: () => undefined }),
 }));
@@ -256,6 +257,8 @@ import {
   FILTER_SUMMARY_TEST_ID,
   FiltersButton,
   HIDE_FILTERS_TEST_ID,
+  OPTIONS_MIN_HEIGHT,
+  OPTIONS_SPACE_SHARE,
   SCOPE_SUMMARY_TEST_ID,
   SessionsScreen,
   SlimActionButton,
@@ -1350,6 +1353,15 @@ describe("SessionsScreen compact toolbar", () => {
 
     (select("sessions-scope").onPress as () => void)(); harness.flush();
     expect([select("sessions-scope").expanded, ariaExpanded("sessions-scope"), menus()]).toEqual([true, true, ["sessions-scope-menu"]]);
+    // The menu frame is clamped to the screen (390x320: 130pt for five 44pt choices), so the choices scroll inside it.
+    const choices = (id: string) => {
+      const menu = findByTestID(harness.current(), `sessions-${id}-menu`);
+      const children = [menu.props.children].flat() as (ElementLike & { readonly type: unknown })[];
+      expect(children.map((child) => child.type)).toEqual(["ScrollView"]);
+      expect(children[0]!.props.style).toEqual({ flexGrow: 0, flexShrink: 1 });
+      return walk(children[0]).filter((element) => "tall" in element.props).map((element) => element.props.label);
+    };
+    expect(choices("scope")).toEqual(["All Paseo workspaces", "Durable desks", "PR Review desk", "Adam desk", "Other workspaces"]);
     // Durable desks lives only here; the four others repeat the desk shortcuts.
     expect(items().map((item) => [item.props.label, item.props.selected])).toEqual([["All Paseo workspaces", true], ["Durable desks", false], ["PR Review desk", false], ["Adam desk", false], ["Other workspaces", false]]);
     choose("Durable desks");
@@ -1368,6 +1380,7 @@ describe("SessionsScreen compact toolbar", () => {
 
     (select("sessions-grouping").onPress as () => void)(); harness.flush();
     expect(items().map((item) => [item.props.label, item.props.selected])).toEqual([["Workstreams", true], ["Desks & workspaces", false], ["Role", false], ["Flat", false]]);
+    expect(choices("grouping")).toEqual(["Workstreams", "Desks & workspaces", "Role", "Flat"]);
     choose("Role");
     expect([select("sessions-grouping").value, menus(), groupingFocus.mock.calls.length]).toEqual(["Role", [], 1]);
     expect(save).toHaveBeenCalledWith({ grouping: "role" });
@@ -1379,5 +1392,55 @@ describe("SessionsScreen compact toolbar", () => {
     expect(menus()).toEqual([]);
     (filters().onPress as () => void)(); harness.flush();
     expect([select("sessions-scope").expanded, menus()]).toEqual([false, []]);
+  });
+
+  it("bounds compact Filters & view to its own scroll frame, so the list keeps a share of the viewport and every control stays in the frame", () => {
+    patchSessionView("host-a", { ...toolbarOpenPatch(true), advancedOpen: true });
+    renderScreen();
+    const options = () => findByTestID(harness.current(), "sessions-options") as ElementLike & { readonly type: unknown };
+    const layout = (testID: string, values: { y?: number; height?: number }) => {
+      (findByTestID(harness.current(), testID).props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 0, ...values } } });
+      harness.flush();
+    };
+    expect([options().type, options().props.nestedScrollEnabled, options().props.keyboardShouldPersistTaps]).toEqual(["ScrollView", true, "handled"]);
+    // Unmeasured, the frame is not guessed.
+    expect((options().props.style as { maxHeight?: number }).maxHeight).toBeUndefined();
+    // 390x844, touch: a 585pt list viewport, and the frame starts 278pt down the toolbar.
+    layout("sessions-list", { height: 585 });
+    layout("sessions-options", { y: 278 });
+    const frame = () => (options().props.style as { maxHeight?: number; flexGrow?: number });
+    expect(frame()).toMatchObject({ flexGrow: 0, maxHeight: 132 });
+    // The toolbar ends at 70% of the viewport; 175pt below it still shows sessions.
+    expect([OPTIONS_MIN_HEIGHT, OPTIONS_SPACE_SHARE, 585 - 278 - frame().maxHeight!]).toEqual([132, 0.7, 175]);
+    // A taller viewport gives the frame the extra room; a shorter one keeps three 44pt controls.
+    layout("sessions-list", { height: 760 });
+    expect(frame().maxHeight).toBe(254);
+    layout("sessions-list", { height: 400 });
+    expect(frame().maxHeight).toBe(132);
+    // Every control is still in the frame: nothing moved out or was dropped.
+    const ids = walk(options()).map((element) => element.props.testID).filter(Boolean);
+    expect(ids).toEqual(expect.arrayContaining(["sessions-grouping", "sessions-scope", "sessions-filter-initializing", "sessions-filter-closed", "sessions-advanced-archived", "sessions-arrange", "sessions-expand-all", "sessions-collapse-all", "sessions-options-count"]));
+    expect(walk(options()).some((element) => element.props.label === "Legend")).toBe(true);
+  });
+
+  it("bounds wide Filters & view by the screen it shares with the list, so a short window keeps every control in the frame", () => {
+    patchSessionView("host-a", { advancedOpen: true });
+    renderScreen(undefined, false);
+    const frame = () => findByTestID(harness.current(), "sessions-options").props.style as { maxHeight?: number };
+    const layout = (target: ElementLike, values: { y?: number; height?: number }) => {
+      (target.props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 0, width: 1200, height: 0, ...values } } });
+      harness.flush();
+    };
+    expect(frame().maxHeight).toBeUndefined();
+    // 1440x900, mouse: a 752pt screen with the frame 120pt down the toolbar has room for the whole 354pt panel.
+    layout(harness.current() as ElementLike, { height: 752 });
+    layout(findByTestID(harness.current(), "sessions-options"), { y: 120 });
+    expect(frame().maxHeight).toBe(384);
+    // 1440x600, touch: the frame scrolls instead of pushing Arrange, Expand all, Collapse all and Legend off the screen.
+    layout(harness.current() as ElementLike, { height: 452 });
+    layout(findByTestID(harness.current(), "sessions-options"), { y: 156 });
+    expect(frame().maxHeight).toBe(138);
+    layout(harness.current() as ElementLike, { height: 300 });
+    expect(frame().maxHeight).toBe(132);
   });
 });
