@@ -85,7 +85,14 @@ class Recorder:
         return self.answer(list(argv))
 
     def launchctl(self) -> list[list[str]]:
-        return [call for call in self.calls if call[0] == "launchctl"]
+        return [
+            call
+            for call in self.calls
+            if call[0] == "launchctl" and call[1:2] != ["print"]
+        ]
+
+    def prints(self) -> list[list[str]]:
+        return [call for call in self.calls if call[:2] == ["launchctl", "print"]]
 
 
 class World:
@@ -272,25 +279,52 @@ class ProductionJobGuardTest(WorldTest):
         production = self.world.plist(PRODUCTION_LABEL)
         base = plistlib.loads(production.read_bytes())
         base["Label"] = DISPOSABLE_LABEL
-        program = list(base["ProgramArguments"])
+        production_daemon = self.world.bin / "kontor-daemon"
+        production_state = self.world.state
+        other_bin = self.world.home / "other-bin"
+        other_state = self.world.home / "other-state"
+        other_bin.mkdir()
+        other_state.mkdir()
+        other_daemon = other_bin / "kontor-daemon"
+        other_daemon.write_bytes(b"other daemon\n")
         daemon_alias = self.world.state / "kontor-daemon"
-        daemon_alias.symlink_to(self.world.bin / "kontor-daemon")
+        daemon_alias.symlink_to(production_daemon)
         state_alias = self.world.state / "state-alias"
-        state_alias.symlink_to(self.world.state)
-        symlinked_state = list(program)
-        symlinked_state[program.index("--state-root") + 1] = str(state_alias)
+        state_alias.symlink_to(production_state)
+
+        def arguments(daemon: Path, state_root: Path) -> list[str]:
+            return [str(daemon), "--state-root", str(state_root), "--port", "47717"]
+
         cases = {
             "copied production plist": base,
-            "symlinked daemon": {**base, "ProgramArguments": [str(daemon_alias), *program[1:]]},
-            "symlinked state root": {**base, "ProgramArguments": symlinked_state},
+            "production daemon only": {
+                **base,
+                "ProgramArguments": arguments(production_daemon, other_state),
+            },
+            "production state root only": {
+                **base,
+                "ProgramArguments": arguments(other_daemon, production_state),
+            },
+            "symlinked daemon only": {
+                **base,
+                "ProgramArguments": arguments(daemon_alias, other_state),
+            },
+            "symlinked state root only": {
+                **base,
+                "ProgramArguments": arguments(other_daemon, state_alias),
+            },
         }
         upper_bin = self.world.bin.parent / self.world.bin.name.upper()
         upper_state = self.world.state.parent / self.world.state.name.upper()
         if upper_bin.exists() and upper_state.exists():
-            case_variant = list(program)
-            case_variant[0] = str(upper_bin / "kontor-daemon")
-            case_variant[program.index("--state-root") + 1] = str(upper_state)
-            cases["case-variant paths"] = {**base, "ProgramArguments": case_variant}
+            cases["case-variant daemon only"] = {
+                **base,
+                "ProgramArguments": arguments(upper_bin / "kontor-daemon", other_state),
+            }
+            cases["case-variant state root only"] = {
+                **base,
+                "ProgramArguments": arguments(other_daemon, upper_state),
+            }
         for case, document in cases.items():
             with self.subTest(case=case):
                 plist = self.world.agents / f"{DISPOSABLE_LABEL}-{case.replace(' ', '-')}.plist"
@@ -355,6 +389,56 @@ class ProductionJobGuardTest(WorldTest):
             run_main(argv, self.world.host(recorder, DISPOSABLE_UID)), deploy.EXIT_REFUSED
         )
         self.assertEqual(recorder.calls, [])
+        self.assertFalse(self.world.backup.exists())
+
+    def test_the_loaded_production_job_seeds_the_target_without_a_plist_or_record(
+        self,
+    ) -> None:
+        production_bin = self.world.home / "prod-bin"
+        production_state = self.world.home / "prod-state"
+        production_bin.mkdir()
+        production_state.mkdir()
+        production_daemon = production_bin / "kontor-daemon"
+        production_daemon.write_bytes(b"prod daemon\n")
+        loaded = (
+            f"gui/{DISPOSABLE_UID}/{PRODUCTION_LABEL} = {{\n"
+            f"\tprogram = {production_daemon}\n"
+            "\targuments = {\n"
+            f"\t\t{production_daemon}\n"
+            "\t\t--state-root\n"
+            f"\t\t{production_state}\n"
+            "\t\t--port\n"
+            "\t\t47717\n"
+            "\t}\n"
+            "}\n"
+        )
+
+        def answer(argv: list[str]) -> subprocess.CompletedProcess[str]:
+            if argv[:2] == ["launchctl", "print"]:
+                return done(0, loaded)
+            return done()
+
+        disposable = self.world.plist(
+            DISPOSABLE_LABEL,
+            daemon=production_daemon,
+            state_root=production_state,
+        )
+        recorder = Recorder(answer)
+        argv = [
+            "--label", DISPOSABLE_LABEL,
+            "--domain", DISPOSABLE_DOMAIN,
+            "--plist", str(disposable),
+            *command_argv("replace", self.world),
+        ]
+        self.assertEqual(
+            run_main(argv, self.world.host(recorder, DISPOSABLE_UID)),
+            deploy.EXIT_REFUSED,
+        )
+        self.assertEqual(
+            recorder.prints(),
+            [["launchctl", "print", f"gui/{DISPOSABLE_UID}/{PRODUCTION_LABEL}"]],
+        )
+        self.assertEqual(recorder.launchctl(), [])
         self.assertFalse(self.world.backup.exists())
 
     def test_a_production_deploy_cannot_be_declared_for_another_label(self) -> None:
@@ -749,7 +833,7 @@ class ReplaceTest(WorldTest):
         self.world.backup.mkdir()
         recorder = Recorder(self.answer())
         self.assertEqual(self.replace(recorder), deploy.EXIT_FAILED)
-        self.assertEqual(recorder.calls, [])
+        self.assertEqual(recorder.launchctl(), [])
 
 
 if __name__ == "__main__":

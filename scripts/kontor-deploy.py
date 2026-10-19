@@ -10,7 +10,7 @@ production label (gap G-01).
 ``--label`` and ``--domain`` are required, and ``--plist`` is required except
 for ``bootout``. None has a default, an environment fallback or a value read
 from a file. Every command passes the target guard (``resolve_job``) before it
-starts any process:
+changes any job:
 
 * the production label ``com.asma.kontor.daemon`` is refused unless
   ``--production-deploy <JIRA-KEY>`` declares the deploy;
@@ -21,7 +21,8 @@ starts any process:
   the production one is refused even under another label, because its install
   would overwrite the production binaries; when the canonical production plist
   is missing, the target recorded by the last declared production deploy is
-  used instead;
+  used, and when neither exists the loaded production job is read with
+  ``launchctl print``;
 * a relative ``--state-root`` is resolved against the plist's
   ``WorkingDirectory``, or ``/`` when it has none, so the snapshot and read-back
   address the state root launchd serves;
@@ -48,7 +49,7 @@ The daemon binary, state root and port come from the plist's
 daemon.
 
 Exit codes: 0 done, 1 failed (after any rollback), 2 usage, 3 refused by the
-target guard (no process was started).
+target guard (no launchctl mutation was attempted).
 
 Tests use a disposable label and an injected runner, and never reach launchctl:
 
@@ -111,7 +112,7 @@ def _run(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
 
 
 class Refused(Exception):
-    """The target guard refused the job; no process was started."""
+    """The target guard refused the job; no launchctl mutation was attempted."""
 
     def __init__(self, code: str, rule: str) -> None:
         super().__init__(f"{code}: {rule}")
@@ -214,6 +215,8 @@ def resolve_job(
             target = _job_paths(_read_plist(canonical)[1], canonical)
         else:
             target = _recorded_production_target(host)
+            if target is None:
+                target = _loaded_production_target(host)
         if target is not None:
             production_daemon, production_state_root = target
             if _same_path(daemon, production_daemon) or _same_path(
@@ -283,6 +286,43 @@ def _recorded_production_target(host: Host) -> tuple[Path, Path] | None:
     if not isinstance(daemon, str) or not isinstance(state_root, str):
         return None
     return Path(daemon), Path(state_root)
+
+
+def _loaded_production_target(host: Host) -> tuple[Path, Path] | None:
+    try:
+        result = host.run(["launchctl", "print", f"gui/{host.uid}/{PRODUCTION_LABEL}"])
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    arguments: list[str] = []
+    working_directory: str | None = None
+    in_arguments = False
+    for raw_line in result.stdout.splitlines():
+        line = raw_line.strip()
+        if in_arguments:
+            if line == "}":
+                break
+            if line:
+                arguments.append(line.strip('"'))
+            continue
+        if line == "arguments = {":
+            in_arguments = True
+        elif line.startswith("working directory = "):
+            working_directory = line.split("=", 1)[1].strip().strip('"')
+    if not arguments:
+        return None
+    daemon = Path(arguments[0])
+    state_root = _option(arguments, "--state-root")
+    if not daemon.is_absolute() or daemon.name != "kontor-daemon" or state_root is None:
+        return None
+    state_root_path = Path(state_root)
+    if not state_root_path.is_absolute():
+        base = Path(working_directory) if working_directory else Path("/")
+        if not base.is_absolute():
+            return None
+        state_root_path = (base / state_root_path).resolve()
+    return daemon, state_root_path
 
 
 def _same_path(left: Path, right: Path) -> bool:

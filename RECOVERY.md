@@ -195,7 +195,7 @@ database; restore the snapshot as above. `bootout` needs only `--label` and
 `--domain`, so it can stop a job whose plist is missing or truncated; without a
 readable plist it skips the port wait. `bootstrap` runs one step.
 
-Before it starts any process, the script refuses (exit 3):
+Before it changes any launchctl job, the script refuses (exit 3):
 
 * the production label `com.asma.kontor.daemon`, unless the deploy is declared
   with `--production-deploy <JIRA-KEY>`;
@@ -203,8 +203,9 @@ Before it starts any process, the script refuses (exit 3):
   any plist but `~/Library/LaunchAgents/com.asma.kontor.daemon.plist`;
 * `--production-deploy` with any other label;
 * a non-production `bootstrap` or `replace` whose daemon or state root is the
-  production one, using the canonical plist or, when that plist is absent, the
-  target recorded by the last declared production deploy;
+  production one, using the canonical plist, the target recorded by the last
+  declared production deploy, or the loaded `com.asma.kontor.daemon` job when
+  both are absent;
 * a plist whose `Label` differs from `--label`. `launchctl bootstrap` registers
   the label written in the plist, and that is how a test once replaced the
   production job.
