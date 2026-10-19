@@ -52052,7 +52052,7 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
             format!("/v1/projects/{project}/epics/{key}/completion:remediate"),
             remediation,
         )
-        .with_token(token)
+        .with_token(token.clone())
         .with_key(format!("foreign-remediate-{key}"))
         .send(world)
         .await;
@@ -52062,6 +52062,34 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
             remediated.body
         );
         assert_eq!(remediated.code(), "forbidden");
+        let invoked = Call::post(
+            format!("/v1/projects/{project}/epics/{key}/planning-pair-runs:invoke"),
+            &serde_json::json!({
+                "protocol": "planning_pair@1",
+                "profile": {
+                    "id": "planning_pair",
+                    "version": 1,
+                    "definition_hash": ContentHash::of(b"foreign-planning-pair-profile").as_str()
+                },
+                "topic": "A foreign project binding probe",
+                "question": "A seat of another project must not learn this project's binding state.",
+                "members": [
+                    {"slot": "seat-a", "binding_key": "seat-a"},
+                    {"slot": "seat-b", "binding_key": "seat-b"}
+                ],
+                "expected_revision": 1
+            }),
+        )
+        .with_token(token)
+        .with_key(format!("foreign-planning-pair-{key}"))
+        .send(world)
+        .await;
+        assert_eq!(
+            invoked.status, 403,
+            "a seat of another project must not invoke its planning pair: {}",
+            invoked.body
+        );
+        assert_eq!(invoked.code(), "forbidden");
     }
     for actor in [lsa, tpm] {
         for key in [absent_key.as_str(), foreign_epic_key.as_str()] {
@@ -52156,6 +52184,36 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
         assert_eq!(unmaterialized_read.code(), "forbidden");
         assert!(unmaterialized_read.json().get("phase").is_none());
     }
+    // An in-project leadership seat resolves this epic, which exists but never
+    // started completion. The daemon reports that absence, and writes no
+    // receipt for the refused remediation.
+    let receipts_before_unstarted = read_receipts();
+    let unstarted = Call::post(
+        format!("/v1/projects/{project}/epics/{unmaterialized_epic}/completion:remediate"),
+        &foreign_remediation,
+    )
+    .with_token(
+        world
+            .daemon
+            .state()
+            .credentials()
+            .seat_credential_for_generation(lsa, 1),
+    )
+    .with_key("op06-remediate-unstarted")
+    .send(world)
+    .await;
+    assert_eq!(
+        unstarted.status, 404,
+        "an epic with no completion run has nothing to remediate: {}",
+        unstarted.body
+    );
+    assert_eq!(unstarted.code(), "not_found");
+    assert!(unstarted.json().get("receipt_id").is_none());
+    assert_eq!(
+        read_receipts(),
+        receipts_before_unstarted,
+        "a refused remediation writes no receipt"
+    );
 
     let calls_before_advance_replay = world.fake.calls().len();
 
@@ -53340,9 +53398,10 @@ async fn the_closeout_receipts_carry_an_epic_to_done() {
     );
 }
 
-/// `:remediate` on an epic that never started completion is an absence.
+/// A seat credential that names no seat of the addressed project is refused
+/// before any epic or completion is looked up, and leaves no receipt.
 #[tokio::test]
-async fn remediate_on_an_unstarted_completion_run_refuses_without_a_receipt() {
+async fn remediate_with_a_foreign_seat_refuses_without_a_receipt() {
     let world = World::open().await;
     let project = world.project;
     let epic = MiniProjectId::generate();
@@ -53365,7 +53424,8 @@ async fn remediate_on_an_unstarted_completion_run_refuses_without_a_receipt() {
     .with_key("op06-remediate-nothing")
     .send(&world)
     .await;
-    assert_eq!(answer.status, 404, "{}", answer.body);
+    assert_eq!(answer.status, 403, "{}", answer.body);
+    assert_eq!(answer.code(), "forbidden");
     assert!(
         answer.json().get("receipt_id").is_none(),
         "a refusal must not carry a receipt: {}",
