@@ -613,9 +613,6 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       refreshQueued = true;
       return refreshPromise ?? Promise.resolve();
     }
-    if (!subscriptionActive) {
-      await openSubscription(generation);
-    }
     refreshing = true;
     if (entries.size > 0) {
       status = "stale";
@@ -623,6 +620,9 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       emit();
     }
     refreshPromise = (async () => {
+      if (!subscriptionActive) {
+        await openSubscription(generation);
+      }
       do {
         refreshQueued = false;
         await runRefresh();
