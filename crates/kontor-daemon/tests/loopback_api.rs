@@ -25434,13 +25434,14 @@ async fn a_runtime_observed_terminal_run_closes_its_stranded_team_on_abandon_rep
 /// A team stopped by a declared slot that never produced a terminal run is not
 /// repaired by replaying `runtime:settle`.
 ///
+/// The refused slot is mid-order, so the slot after it has no run at all.
 /// `settle_team` only certifies an envelope whose every declared slot is
 /// accounted for, so this shape stays pending however often the settlement
 /// replay is asked. `runtime:abandon` of the never-bound run is the route that
-/// makes that slot terminal and closes the envelope.
+/// makes its slot terminal and lets the envelope close.
 #[tokio::test]
 async fn a_settlement_replay_leaves_a_never_bound_slot_pending_until_abandoned() {
-    let seeded = alpha_with_one_unbound_slot("missing-slot-replay").await;
+    let seeded = omega_with_one_refused_slot("missing-slot-replay", "omega-cat", "omega-k4").await;
     let UnboundWorld {
         world,
         project,
@@ -25500,16 +25501,29 @@ async fn a_settlement_replay_leaves_a_never_bound_slot_pending_until_abandoned()
         replayed.body
     );
 
-    // The never-bound run is the route: abandoning it accounts for its declared
-    // slot, and the envelope closes once every slot is terminal.
-    let unbound = world
+    // The refused slot is mid-order, so the slot after it has no run at all:
+    // that is the missing declared slot this route has to account for.
+    let rows = world
         .daemon
         .state()
         .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run_id))
-        .expect("the seats are readable")
+        .expect("the seats are readable");
+    assert!(
+        rows.iter().all(|run| run.role.as_str() != "omega-k3"),
+        "a declared slot after the refused one has no AgentRun at all: {rows:?}"
+    );
+
+    // The never-bound run is the route: abandoning it accounts for its declared
+    // slot, and the envelope closes once every existing run is terminal.
+    let unbound = rows
         .into_iter()
         .find(|seat| seat.native_id.is_none())
         .expect("the refused launch left its durable unbound run");
+    assert_eq!(
+        unbound.role.as_str(),
+        "omega-k4",
+        "the abandoned run is the refused slot's"
+    );
     let unbound_run = world
         .daemon
         .state()
@@ -39195,6 +39209,18 @@ async fn alpha_with_one_unbound_slot(slug: &'static str) -> UnboundWorld {
 /// `derive_follow_ups` — with a condition in front of it the derivation
 /// short-circuits first, and the guard cannot be falsified.
 async fn omega_with_one_unbound_slot(slug: &'static str, category: &'static str) -> UnboundWorld {
+    omega_with_one_refused_slot(slug, category, "omega-k3").await
+}
+
+/// The same, with the refused slot named.
+///
+/// A refusal stops the seating loop, so a slot refused before the end of the
+/// frozen order leaves every declared slot after it with no AgentRun at all.
+async fn omega_with_one_refused_slot(
+    slug: &'static str,
+    category: &'static str,
+    refused: &'static str,
+) -> UnboundWorld {
     let world = World::open_empty_with_a_plane().await;
     world.script(HISTORY_LIVE);
     assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
@@ -39202,7 +39228,7 @@ async fn omega_with_one_unbound_slot(slug: &'static str, category: &'static str)
     // is never bound, and it is a transport fact: no session, no binding.
     world
         .fake
-        .refusing_launch_of(&kontor_core::id::RoleSlotId::parse("omega-k3").expect("a slot"));
+        .refusing_launch_of(&kontor_core::id::RoleSlotId::parse(refused).expect("a slot"));
 
     let pack: serde_json::Value = serde_json::from_str(OMEGA_PACK).expect("the omega pack parses");
     let registered = Call::post(
@@ -39346,8 +39372,8 @@ async fn omega_with_one_unbound_slot(slug: &'static str, category: &'static str)
         })
         .collect();
     assert!(
-        seats.iter().all(|seat| seat["role_slot"] != "omega-k3"),
-        "omega-k3 must never have been bound: {rows:?}"
+        seats.iter().all(|seat| seat["role_slot"] != refused),
+        "{refused} must never have been bound: {rows:?}"
     );
     assert!(
         !seats.is_empty(),
