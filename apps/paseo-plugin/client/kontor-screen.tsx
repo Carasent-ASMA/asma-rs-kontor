@@ -51,6 +51,8 @@ function HostScreen(props: PluginScreenProps) {
   const rootRef = useRef<View | null>(null), moreRef = useRef<View | null>(null), contextRef = useRef<View | null>(null);
   const [query, setQuery] = useState(() => readRouteView(host.id, route).query);
   const [includeArchived, setIncludeArchived] = useState(() => readSessionView(sessionScopeKey(host.id, route)).includeArchived);
+  // The Teams page is controlled by its view in the navigation store, which does not render by itself.
+  const [, setTeamsViewRevision] = useState(0);
   const directory = useSessionDirectory({ hostId: host.id, hostStatus, includeArchived });
   const sourceState = useReadSources(host.id, hostStatus);
   const workspaces = useWorkspaceDirectory(host.id, hostStatus === "online");
@@ -202,7 +204,7 @@ function HostScreen(props: PluginScreenProps) {
     onEpicTab={(tab, epicKey, sourceId) => visitContext({ tab, epicKey, sourceId, sourceRevision: sourceId ? sourceState.reads[sourceId]?.revision ?? null : null, originAgentId: null })}
     scoped={!unscoped} onGraph={() => visit({ tab: "Graph" })}
     planView={readPageView(host.id, route, DEFAULT_PLAN_VIEW)} onPlanView={(view) => writePageView(host.id, route, view)}
-    teamsView={readPageView(host.id, route, DEFAULT_TEAMS_VIEW)} onTeamsView={(view) => writePageView(host.id, route, view)}
+    teamsView={readPageView(host.id, route, DEFAULT_TEAMS_VIEW)} onTeamsView={(view) => { writePageView(host.id, route, view); setTeamsViewRevision((revision) => revision + 1); }}
     initialOffset={readRouteView(host.id, route).offset} onScroll={(offset) => { writeRouteView(host.id, route, { offset }); }} />;
   return <SafeAreaView style={{ flex: 1, backgroundColor: colors.surface0 }}><KeyboardAvoidingView behavior={layout.platform === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
     <View ref={rootRef} style={{ flex: 1 }} onLayout={(event) => { const { width, height } = event.nativeEvent.layout; if (width !== rootSize.width || height !== rootSize.height) setRootSize({ width, height }); }}>

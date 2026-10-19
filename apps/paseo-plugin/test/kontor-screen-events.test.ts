@@ -9,11 +9,11 @@ import { Linking } from "react-native";
 
 const model = vi.hoisted(() => ({
   slots: [] as unknown[], cursor: 0, entries: [] as DirectoryEntry[], sources: [] as ReadSourceSummary[], reads: {} as Record<string, SourceRead>, values: {} as object,
-  hosts: [] as PluginHostSummary[], toastError: vi.fn(),
+  hosts: [] as PluginHostSummary[], toastError: vi.fn(), updates: 0,
   useState<T>(initial: T | (() => T)): [T, (next: T | ((previous: T) => T)) => void] {
     const index = this.cursor++;
     if (!(index in this.slots)) this.slots[index] = typeof initial === "function" ? (initial as () => T)() : initial;
-    return [this.slots[index] as T, (next) => { this.slots[index] = typeof next === "function" ? (next as (previous: T) => T)(this.slots[index] as T) : next; }];
+    return [this.slots[index] as T, (next) => { this.updates++; this.slots[index] = typeof next === "function" ? (next as (previous: T) => T)(this.slots[index] as T) : next; }];
   },
 }));
 vi.mock("react", async (original) => ({
@@ -45,6 +45,8 @@ import { AnchoredMenu, MenuItem } from "../client/anchored-menu";
 import { SessionsScreen } from "../client/sessions-screen";
 import { NativeFreshnessPill } from "../client/native-freshness";
 import { DEFAULT_PLAN_VIEW, type PlanView } from "../client/plan-reader";
+import { ReadOnlyPage } from "../client/read-only-pages";
+import { TeamsSourcePage } from "../client/teams-source-page";
 
 const actualGraph = canonicalGraphSchema.parse(JSON.parse(readFileSync(new URL("./fixtures/plan-graph-asma-8371.json", import.meta.url), "utf8")));
 const capturedHistory = jiraHistorySchema.parse(JSON.parse(readFileSync(new URL("./fixtures/jira-history.json", import.meta.url), "utf8")));
@@ -54,7 +56,7 @@ function elements(value: ReactNode): ReactElement<Record<string, unknown>>[] {
   return [value, ...elements(value.props.children as ReactNode)];
 }
 let sequence = 0;
-beforeEach(() => { vi.clearAllMocks(); model.slots = []; model.cursor = 0; model.values = DEFAULT_ORGANIZATION_SETTINGS; model.entries = [sessionEntry("native", { labels: { epic: "ASMA-1" } })]; model.sources = []; model.reads = {}; model.hosts = []; });
+beforeEach(() => { vi.clearAllMocks(); model.slots = []; model.cursor = 0; model.updates = 0; model.values = DEFAULT_ORGANIZATION_SETTINGS; model.entries = [sessionEntry("native", { labels: { epic: "ASMA-1" } })]; model.sources = []; model.reads = {}; model.hosts = []; });
 /** Renders the header selector as the screen would, so its own semantics and style are visible. */
 function pickerField(picker: ReactElement<Record<string, unknown>>): ReactElement<Record<string, unknown>> {
   return (picker.type as (props: Record<string, unknown>) => ReactElement<Record<string, unknown>>)(picker.props);
@@ -65,11 +67,13 @@ function mount(compact: boolean, initial?: Partial<KontorRoute>) {
   if (initial) navigate(props.host.id, initial);
   const entry = KontorScreen(props);
   const component = entry.type as (props: PluginScreenProps) => ReactNode;
-  let tree: ReactNode;
-  const render = () => { model.cursor = 0; tree = component(props); };
+  let tree: ReactNode, drawn = 0;
+  const render = () => { model.cursor = 0; drawn = model.updates; tree = component(props); };
   render();
   return {
     props, render,
+    /** Like React, draws again only when a state update was scheduled since the last render. */
+    flush() { if (model.updates !== drawn) render(); },
     action(label: string) { const action = elements(tree).find((element) => element.props.label === label); if (!action) throw new Error(`Missing action ${label}`); return action; },
     click(label: string) { const action = this.action(label); const press = action.props.onPress; expect(typeof press).toBe("function"); if (typeof press === "function") press(); render(); },
     elements() { return elements(tree); },
@@ -377,6 +381,28 @@ describe("Kontor shell native actions", () => {
     const page = screen.elements().find((element) => typeof element.props.onTeamsView === "function")!;
     expect(page.props.teamsView).toMatchObject({ configured: true });
     screen.click("Back"); expect(hostNavigation(screen.props.host.id).route.tab).toBe("Settings");
+  });
+  it.each([true, false])("redraws the mounted Teams page as soon as its view changes, without leaving it (compact=%s)", (compact) => {
+    model.sources = [{ id: "authoring", title: "Authoring fleet", kind: "teams", path: "/configured/authoring.yml", projectId: null, epic: null, workstream: null, revisionKind: "working copy" }];
+    const screen = mount(compact); screen.click("More"); screen.choose("Settings");
+    const settings = screen.elements().find((element) => typeof element.props.onOpenTeams === "function")!;
+    (settings.props.onOpenTeams as () => void)(); screen.render();
+    const draw = (element: ReactElement<Record<string, unknown>>) => (element.type as (props: Record<string, unknown>) => ReactNode)(element.props);
+    // Disclosures as the mounted page draws them now, through ReadOnlyPage and TeamsSourcePage.
+    const disclosure = (label: string) => {
+      const teams = elements(draw(screen.elements().find((element) => element.type === ReadOnlyPage)!)).find((element) => element.type === TeamsSourcePage)!;
+      return elements(draw(teams)).find((element) => String(element.props.label).startsWith(label))!;
+    };
+    const toggle = (label: string, open: boolean) => { (disclosure(label).props.onToggle as (open: boolean) => void)(open); screen.flush(); };
+    expect(disclosure("Configured teams & templates").props.open).toBe(true);
+    toggle("Configured teams & templates", false);
+    expect(disclosure("Configured teams & templates").props.open).toBe(false);
+    toggle("Configured teams & templates", true);
+    expect(disclosure("Configured teams & templates").props.open).toBe(true);
+    // A per-source drill-down takes the same path as the role and template cards.
+    expect(disclosure("Source details").props.open).toBe(false);
+    toggle("Source details", true);
+    expect(disclosure("Source details").props.open).toBe(true);
   });
   it("selects an exact plan in the compact Overview context picker and isolates hosts", () => {
     model.entries = [sessionEntry("one", { projectKey: "p-one", labels: { epic: "ASMA-1" } }), sessionEntry("two", { projectKey: "p-two", labels: { epic: "ASMA-2" } })];
