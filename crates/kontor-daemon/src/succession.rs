@@ -9,8 +9,9 @@
 
 use async_trait::async_trait;
 use kontor_core::id::{
-    AgentRunId, BoundedText, CanonicalDocument, ContentHash, RuntimeBindingId, RuntimeKindKey,
-    SuccessionAttemptId, Timestamp, reject_sensitive_material, reject_sensitive_text,
+    AccountProfileId, AgentRunId, BoundedText, CanonicalDocument, ContentHash, RuntimeBindingId,
+    RuntimeKindKey, SuccessionAttemptId, Timestamp, reject_sensitive_material,
+    reject_sensitive_text,
 };
 use kontor_core::repository::ProviderQuotaState;
 use kontor_core::spec::ModelRung;
@@ -58,6 +59,10 @@ pub struct SuccessionHandoffRequest {
     /// Governed route admitted for summarization. `None` is an explicit
     /// unplaceable decision and never causes an implicit seat launch.
     pub summarizer_model_rung: Option<ModelRung>,
+    /// Account admitted together with that route. It is the account the
+    /// runtime must execute the summary as, so the call never falls back to an
+    /// ambient account such as the exhausted predecessor's.
+    pub summarizer_account: Option<AccountProfileId>,
     /// Instant at which the handoff evidence is produced.
     pub produced_at: Timestamp,
 }
@@ -144,13 +149,17 @@ pub enum SuccessionSummarizerError {
 /// Provider-neutral transport port for one governed summarization call.
 ///
 /// The request has already passed input redaction and contains no raw binding,
-/// account, credential, tool, permission or diagnostic material.
+/// account, credential, tool, permission or diagnostic material. The admitted
+/// account travels beside the request rather than inside it: the transport must
+/// execute the summary as that account and must not substitute the ambient one.
 #[async_trait]
 pub trait SuccessionSummarizerTransport: Send + Sync {
-    /// Produce a derived summary from only the redacted message request.
+    /// Produce a derived summary from only the redacted message request, on the
+    /// exact admitted route and account.
     async fn summarize(
         &self,
         model_rung: &ModelRung,
+        account: AccountProfileId,
         request: &SuccessionSummaryRequest,
     ) -> Result<SuccessionSummaryResponse, SuccessionSummarizerError>;
 
@@ -176,6 +185,7 @@ impl SuccessionSummarizerTransport for UnavailableSuccessionSummarizer {
     async fn summarize(
         &self,
         _model_rung: &ModelRung,
+        _account: AccountProfileId,
         _request: &SuccessionSummaryRequest,
     ) -> Result<SuccessionSummaryResponse, SuccessionSummarizerError> {
         Err(SuccessionSummarizerError::Unplaceable)
@@ -193,11 +203,17 @@ impl SuccessionSummarizerTransport for UnavailableSuccessionSummarizer {
 ///
 /// This type launches nothing and falls back to nothing. [`Placement::Wait`]
 /// and [`Placement::NeedsHuman`] compose as unplaceable, and every dispatch is
-/// guarded so only the exact admitted route can cross the transport boundary;
-/// a different route is refused rather than retried or re-resolved.
+/// guarded so only the exact admitted route and account can cross the transport
+/// boundary; a different route is refused rather than retried or re-resolved.
 pub struct GovernedSuccessionSummarizer<'a> {
-    admitted: Option<ModelRung>,
+    admitted: Option<AdmittedSummaryRoute>,
     transport: &'a dyn SuccessionSummarizerTransport,
+}
+
+/// The exact route and account one headroom walk admitted.
+struct AdmittedSummaryRoute {
+    rung: ModelRung,
+    account: AccountProfileId,
 }
 
 impl<'a> GovernedSuccessionSummarizer<'a> {
@@ -232,7 +248,7 @@ impl<'a> GovernedSuccessionSummarizer<'a> {
             provider_enabled,
         )?;
         let admitted = match placement {
-            Placement::Admit { rung, .. } => Some(rung),
+            Placement::Admit { rung, account } => Some(AdmittedSummaryRoute { rung, account }),
             Placement::Wait { .. } | Placement::NeedsHuman { .. } => None,
         };
         Ok(Self {
@@ -256,7 +272,13 @@ impl<'a> GovernedSuccessionSummarizer<'a> {
     /// The exact route the walk admitted, when it admitted one.
     #[must_use]
     pub fn admitted_rung(&self) -> Option<&ModelRung> {
-        self.admitted.as_ref()
+        self.admitted.as_ref().map(|admitted| &admitted.rung)
+    }
+
+    /// The exact account the walk admitted with that route, when it admitted one.
+    #[must_use]
+    pub fn admitted_account(&self) -> Option<AccountProfileId> {
+        self.admitted.as_ref().map(|admitted| admitted.account)
     }
 }
 
@@ -265,16 +287,18 @@ impl SuccessionSummarizerTransport for GovernedSuccessionSummarizer<'_> {
     async fn summarize(
         &self,
         model_rung: &ModelRung,
+        account: AccountProfileId,
         request: &SuccessionSummaryRequest,
     ) -> Result<SuccessionSummaryResponse, SuccessionSummarizerError> {
         match self.admitted.as_ref() {
-            Some(admitted) if admitted == model_rung => {
+            Some(admitted) if admitted.rung == *model_rung && admitted.account == account => {
                 // The succession guard is held across this call. A transport
                 // that never answers must become a typed refusal rather than
                 // holding the realm's other successions behind it.
                 match tokio::time::timeout(
                     SUCCESSION_SUMMARY_TIMEOUT,
-                    self.transport.summarize(admitted, request),
+                    self.transport
+                        .summarize(&admitted.rung, admitted.account, request),
                 )
                 .await
                 {
@@ -282,8 +306,9 @@ impl SuccessionSummarizerTransport for GovernedSuccessionSummarizer<'_> {
                     Err(_) => Err(SuccessionSummarizerError::Rejected),
                 }
             }
-            // No admitted route, or a route the declared walk did not admit.
-            // Either way nothing is dispatched and no provenance is invented.
+            // No admitted route, or a route or account the declared walk did
+            // not admit. Either way nothing is dispatched and no provenance is
+            // invented.
             _ => Err(SuccessionSummarizerError::Unplaceable),
         }
     }
@@ -376,6 +401,7 @@ pub async fn produce_succession_handoff(
         predecessor_native_identity,
         timeline,
         summarizer_model_rung,
+        summarizer_account,
         produced_at,
     } = request;
 
@@ -457,7 +483,9 @@ pub async fn produce_succession_handoff(
             ),
         );
     };
-    let Some(summarizer_model_rung) = summarizer_model_rung.filter(|rung| rung.validate().is_ok())
+    let Some((summarizer_model_rung, summarizer_account)) = summarizer_model_rung
+        .filter(|rung| rung.validate().is_ok())
+        .zip(summarizer_account)
     else {
         return degraded(
             SuccessionHandoffDegradedReason::SummarizerUnplaceable,
@@ -469,7 +497,7 @@ pub async fn produce_succession_handoff(
         );
     };
     let response = match transport
-        .summarize(&summarizer_model_rung, summary_request)
+        .summarize(&summarizer_model_rung, summarizer_account, summary_request)
         .await
     {
         Ok(response) => response,

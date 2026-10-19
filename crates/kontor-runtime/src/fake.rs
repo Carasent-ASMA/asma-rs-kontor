@@ -853,7 +853,7 @@ struct FakeState {
     /// Governed summary answers, in dispatch order.
     succession_summaries: VecDeque<String>,
     /// Every governed summary dispatch this runtime was asked to execute.
-    succession_summary_calls: Vec<(ModelRung, String)>,
+    succession_summary_calls: Vec<(ModelRung, AccountProfileId, String)>,
     consultation_routes: BTreeMap<SeatBindingId, ModelRung>,
     consultation_route_provenances: BTreeMap<SeatBindingId, &'static str>,
     retired_consultations: BTreeMap<ExternalId, ConsultationSeatRetireRequest>,
@@ -2113,9 +2113,10 @@ impl ScriptedFakeRuntime {
 
     /// Every governed summary this runtime was asked to execute.
     ///
-    /// The prompt is the already-redacted daemon projection, recorded verbatim
-    /// so a test can prove what crossed the transport boundary.
-    pub fn succession_summary_calls(&self) -> Vec<(ModelRung, String)> {
+    /// The route, the admitted account and the already-redacted daemon
+    /// projection are recorded verbatim so a test can prove what crossed the
+    /// transport boundary and which account was asked to execute it.
+    pub fn succession_summary_calls(&self) -> Vec<(ModelRung, AccountProfileId, String)> {
         self.lock().succession_summary_calls.clone()
     }
 
@@ -6121,17 +6122,21 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
     async fn summarize_succession(
         &self,
         model_rung: &ModelRung,
+        account: AccountProfileId,
         prompt: &str,
     ) -> RuntimeResult<String> {
         let mut state = self.lock();
         let declared = state.capabilities.clone();
-        preflight(
-            &declared,
-            &OperationContext::new(RuntimeCapability::Summarize),
-        )?;
+        // The summary carries an exact admitted account, so it is judged like
+        // any other account-pinned operation: a runtime that cannot prove a
+        // per-run account environment refuses instead of answering as the
+        // ambient account.
+        let mut context = OperationContext::new(RuntimeCapability::Summarize);
+        context.account_pinned = true;
+        preflight(&declared, &context)?;
         state
             .succession_summary_calls
-            .push((model_rung.clone(), prompt.to_owned()));
+            .push((model_rung.clone(), account, prompt.to_owned()));
         state
             .succession_summaries
             .pop_front()

@@ -18,8 +18,8 @@ use kontor_core::DomainError;
 use kontor_core::compaction::CompactionReceipt;
 use kontor_core::consultation::ConsultationRunId;
 use kontor_core::id::{
-    BoundedText, ContentHash, ExternalId, ExternalName, RoleSlotId, RuntimeBindingId,
-    SeatBindingId, Timestamp,
+    AccountProfileId, BoundedText, ContentHash, ExternalId, ExternalName, RoleSlotId,
+    RuntimeBindingId, SeatBindingId, Timestamp,
 };
 use kontor_core::repository::RuntimeBinding;
 use kontor_core::spec::{ContextPolicySnapshot, ModelRung, SeatAutonomy};
@@ -2136,9 +2136,12 @@ pub trait RuntimeAdapter: Send + Sync {
     /// The control plane resolves `model_rung` through the same account-before-
     /// rung headroom walk every launch uses, so an implementation executes
     /// exactly that route and never re-resolves, retries or substitutes another
-    /// one. Only the redacted predecessor projection crosses this boundary; the
-    /// derived text it returns is redacted and validated again before it can be
-    /// persisted or handed to a successor.
+    /// one. `account` is the exact account the walk admitted with that route:
+    /// the summary must run as it, even when the runtime's ambient account is a
+    /// different one, and a runtime that cannot bind the account refuses rather
+    /// than answering as the ambient account. Only the redacted predecessor
+    /// projection crosses this boundary; the derived text it returns is redacted
+    /// and validated again before it can be persisted or handed to a successor.
     ///
     /// The default refuses. A runtime with no governed summary surface must say
     /// so before it can acquire one by accident, and the handoff then keeps its
@@ -2146,11 +2149,14 @@ pub trait RuntimeAdapter: Send + Sync {
     ///
     /// # Errors
     /// Returns [`RuntimeError::UnsupportedCapability`] when the runtime does not
-    /// declare [`crate::capability::RuntimeCapability::Summarize`], and any
-    /// closed runtime refusal when the exact route cannot be executed.
+    /// declare [`crate::capability::RuntimeCapability::Summarize`],
+    /// [`RuntimeError::AccountEnvironmentUnavailable`] when it cannot execute as
+    /// the admitted account, and any closed runtime refusal when the exact route
+    /// cannot be executed.
     async fn summarize_succession(
         &self,
         _model_rung: &ModelRung,
+        _account: AccountProfileId,
         _prompt: &str,
     ) -> RuntimeResult<String> {
         Err(RuntimeError::UnsupportedCapability {

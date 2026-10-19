@@ -25924,7 +25924,7 @@ async fn bodyless_quota_recovery_is_confirmed_once_with_handoff_and_receipt_chai
 
 /// A deterministic governed summarizer that records what crossed its boundary.
 struct GovernedSummarizerFake {
-    calls: Mutex<Vec<(ModelRung, SuccessionSummaryRequest)>>,
+    calls: Mutex<Vec<(ModelRung, AccountProfileId, SuccessionSummaryRequest)>>,
     summary: String,
 }
 
@@ -25936,7 +25936,7 @@ impl GovernedSummarizerFake {
         }
     }
 
-    fn calls(&self) -> Vec<(ModelRung, SuccessionSummaryRequest)> {
+    fn calls(&self) -> Vec<(ModelRung, AccountProfileId, SuccessionSummaryRequest)> {
         self.calls.lock().expect("the summarizer lock").clone()
     }
 }
@@ -25946,12 +25946,14 @@ impl SuccessionSummarizerTransport for GovernedSummarizerFake {
     async fn summarize(
         &self,
         model_rung: &ModelRung,
+        account: AccountProfileId,
         request: &SuccessionSummaryRequest,
     ) -> Result<SuccessionSummaryResponse, SuccessionSummarizerError> {
-        self.calls
-            .lock()
-            .expect("the summarizer lock")
-            .push((model_rung.clone(), request.clone()));
+        self.calls.lock().expect("the summarizer lock").push((
+            model_rung.clone(),
+            account,
+            request.clone(),
+        ));
         Ok(SuccessionSummaryResponse::new(self.summary.clone()))
     }
 }
@@ -25967,7 +25969,12 @@ async fn a_configured_governed_summarizer_produces_the_persisted_handoff_summary
     let world = World::open_empty_with_succession_summarizer(summarizer.clone()).await;
     world.daemon.reconcile().await;
     let operator_secret = secret(&world, "operator");
-    let CodexAliasEpic { project, seats, .. } = codex_alias_epic(&world, false, true).await;
+    let CodexAliasEpic {
+        project,
+        seats,
+        personal,
+        ..
+    } = codex_alias_epic(&world, false, true).await;
     let project_id = ProjectId::parse(&project).expect("project id");
     let predecessor_id =
         AgentRunId::parse(seats[0]["agent_run_id"].as_str().expect("predecessor id"))
@@ -26033,7 +26040,7 @@ async fn a_configured_governed_summarizer_produces_the_persisted_handoff_summary
 
     let calls = summarizer.calls();
     assert_eq!(calls.len(), 1, "exactly one governed dispatch is executed");
-    let (dispatched_route, outbound) = &calls[0];
+    let (dispatched_route, dispatched_account, outbound) = &calls[0];
     let SuccessionHandoffOutcome::Summary {
         timeline,
         summarizer_model_rung,
@@ -26051,6 +26058,11 @@ async fn a_configured_governed_summarizer_produces_the_persisted_handoff_summary
     assert_eq!(
         dispatched_route, summarizer_model_rung,
         "the executed route is exactly the persisted provenance"
+    );
+    assert_eq!(
+        dispatched_account.to_string(),
+        personal,
+        "the runtime executes the summary as the account the walk admitted"
     );
     assert_eq!(
         summarizer_model_rung.provider.0, "codex-personal",
@@ -26125,7 +26137,12 @@ async fn startup_composes_the_configured_runtime_summarizer() {
     let world = World::open_empty_with_runtime_summarizer(summary_text).await;
     world.daemon.reconcile().await;
     let operator_secret = secret(&world, "operator");
-    let CodexAliasEpic { project, seats, .. } = codex_alias_epic(&world, false, true).await;
+    let CodexAliasEpic {
+        project,
+        seats,
+        personal,
+        ..
+    } = codex_alias_epic(&world, false, true).await;
     let project_id = ProjectId::parse(&project).expect("project id");
     let predecessor_id =
         AgentRunId::parse(seats[0]["agent_run_id"].as_str().expect("predecessor id"))
@@ -26195,7 +26212,7 @@ async fn startup_composes_the_configured_runtime_summarizer() {
         1,
         "the configured runtime executes exactly one governed summary"
     );
-    let (dispatched_route, prompt) = &calls[0];
+    let (dispatched_route, dispatched_account, prompt) = &calls[0];
     let SuccessionHandoffOutcome::Summary {
         summarizer_model_rung,
         summary,
@@ -26210,6 +26227,11 @@ async fn startup_composes_the_configured_runtime_summarizer() {
     assert_eq!(
         dispatched_route, summarizer_model_rung,
         "the runtime executes exactly the persisted provenance route"
+    );
+    assert_eq!(
+        dispatched_account.to_string(),
+        personal,
+        "the runtime executes the summary as the account the walk admitted"
     );
     assert_eq!(
         summarizer_model_rung.provider.0, "codex-personal",
