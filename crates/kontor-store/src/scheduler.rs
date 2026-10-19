@@ -718,6 +718,13 @@ impl SqliteStore {
     /// a module contender may live in another project, and a project-scoped read
     /// cannot see it.
     ///
+    /// The envelope, not its children, is the unit of in-flight work. A settled
+    /// turn closure lands while its persistent sessions are expected to stay
+    /// live: it releases the seats, so the task — and every task serialized with
+    /// it — must be free to admit a replacement even though the old native
+    /// sessions have not ended. That is why this read keys only on the envelope's
+    /// own lifecycle.
+    ///
     /// # Errors
     /// Backend failures only.
     pub fn tasks_with_open_runs(&self) -> RepositoryResult<BTreeSet<TaskId>> {
