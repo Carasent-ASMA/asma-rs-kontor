@@ -1,12 +1,21 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { dirname, join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginServerContext, PluginSettings } from "@getpaseo/plugin/server";
 import { contributeReadSources, readConfiguredSource, sourceCatalog } from "../server/read-sources";
 import { DEFAULT_ORGANIZATION_SETTINGS, organizationSettingsSchema } from "../shared/organization";
 import { readPlanAssociations, type ReadSourceSummary } from "../shared/read-sources";
+
+const catalogFailure = vi.hoisted(() => ({ denyOpen: false }));
+vi.mock("node:fs", async (original) => {
+  const actual = await original<typeof import("node:fs")>();
+  return { ...actual, openSync: (...args: Parameters<typeof actual.openSync>) => {
+    if (catalogFailure.denyOpen) throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+    return actual.openSync(...args);
+  } };
+});
 
 const temporary: string[] = [];
 afterEach(async () => { await Promise.all(temporary.splice(0).map((path) => rm(path, { recursive: true, force: true }))); });
@@ -19,7 +28,7 @@ async function fixture(content = "# Plan\n\nNo dependencies are inferred from th
 }
 describe("configured read sources", () => {
   it("fails closed for relative paths, duplicate IDs, unknown fields and malformed catalog", () => {
-    expect(sourceCatalog().sources).toEqual([]);
+    expect(sourceCatalog("[]").sources).toEqual([]);
     for (const raw of ["no json", JSON.stringify([{ id: "x", title: "x", kind: "plan", path: "relative.md" }]), JSON.stringify([{ id: "x", title: "x", kind: "plan", path: "/tmp/p", credential: "forbidden" }])]) expect(sourceCatalog(raw).sources).toEqual([]);
     const item = { id: "x", title: "x", kind: "plan", path: "/tmp/p" };
     expect(sourceCatalog(JSON.stringify([item, item])).diagnostics.join()).toContain("Duplicate source IDs");
@@ -79,5 +88,66 @@ describe("configured read sources", () => {
     listener?.({ status: "invalid", revision: "3", error: "invalid stored preferences" });
     expect(await handlers.get(readPlanAssociations.name)?.({})).toMatchObject({ status: "invalid", associations: {} });
     cleanup(); expect(stop).toHaveBeenCalledOnce();
+  });
+});
+
+describe("operator catalog file on plugin load/reload", () => {
+  let home: string;
+  let file: string;
+  const entry = { id: "operator-plan", title: "Operator plan", kind: "plan", path: "/operator/plan.md" };
+  beforeEach(async () => {
+    home = await mkdtemp(join(tmpdir(), "kontor-catalog-")); temporary.push(home);
+    file = join(home, "plugin-config", "kontor", "read-sources.json");
+    await mkdir(dirname(file), { recursive: true });
+    vi.stubEnv("PASEO_HOME", home); vi.stubEnv("KONTOR_PLUGIN_READ_SOURCES", undefined);
+  });
+  afterEach(() => { catalogFailure.denyOpen = false; vi.unstubAllEnvs(); });
+  it("keeps an absent file an honest no-sources state", () => {
+    expect(sourceCatalog()).toEqual({ sources: [], diagnostics: ["No read sources configured on this host."] });
+  });
+  it("uses the same schema for a host-home file without reading its declared source contents", async () => {
+    const raw = JSON.stringify([entry]); await writeFile(file, raw);
+    expect(sourceCatalog()).toEqual(sourceCatalog(raw));
+    expect(sourceCatalog().sources[0]?.path).toBe("/operator/plan.md");
+  });
+  it("preserves nonblank environment precedence, including empty and invalid explicit catalogs", async () => {
+    await writeFile(file, JSON.stringify([entry]));
+    for (const raw of [JSON.stringify([{ ...entry, id: "environment" }]), "[]", "invalid JSON"]) {
+      vi.stubEnv("KONTOR_PLUGIN_READ_SOURCES", raw);
+      expect(sourceCatalog()).toEqual(sourceCatalog(raw));
+      expect(sourceCatalog().sources.some((source) => source.id === entry.id)).toBe(false);
+    }
+    vi.stubEnv("KONTOR_PLUGIN_READ_SOURCES", "  "); expect(sourceCatalog().sources[0]?.id).toBe(entry.id);
+  });
+  it("loads a fresh snapshot on the next plugin load, without altering the prior snapshot", async () => {
+    await writeFile(file, JSON.stringify([entry])); const previous = sourceCatalog();
+    await writeFile(file, JSON.stringify([{ ...entry, id: "replacement" }]));
+    expect(sourceCatalog().sources[0]?.id).toBe("replacement");
+    expect(previous.sources[0]?.id).toBe(entry.id);
+  });
+  it("uses the existing default Paseo home when PASEO_HOME is absent", async () => {
+    vi.stubEnv("PASEO_HOME", undefined); vi.stubEnv("HOME", home);
+    const defaultFile = join(home, ".paseo", "plugin-config", "kontor", "read-sources.json");
+    await mkdir(dirname(defaultFile), { recursive: true }); await writeFile(defaultFile, JSON.stringify([entry]));
+    expect(sourceCatalog().sources[0]?.id).toBe(entry.id);
+  });
+  it.each([
+    "not JSON", JSON.stringify([{ ...entry, path: "relative.md" }]),
+    JSON.stringify([{ ...entry, credential: "not allowed" }]), JSON.stringify([entry, entry]),
+    JSON.stringify([{ ...entry, revisionKind: "approved revision" }]),
+    JSON.stringify(Array.from({ length: 65 }, (_, index) => ({ ...entry, id: `source-${index}` }))),
+  ])("reports invalid file entries with the file origin (%#)", async (raw) => {
+    await writeFile(file, raw); const result = sourceCatalog();
+    expect(result.sources).toEqual([]); expect(result.diagnostics.join()).toContain(`Invalid source catalog ${file}:`);
+    expect(sourceCatalog(raw).sources).toEqual([]);
+  });
+  it("accepts a 2 MiB catalog and diagnoses oversized or non-regular files", async () => {
+    await writeFile(file, "[]" + " ".repeat(2 * 1024 * 1024 - 2)); expect(sourceCatalog()).toEqual({ sources: [], diagnostics: [] });
+    await writeFile(file, "x".repeat(2 * 1024 * 1024 + 1)); expect(sourceCatalog().diagnostics.join()).toContain("regular file of at most 2 MiB");
+    await rm(file); await mkdir(file); expect(sourceCatalog().diagnostics.join()).toContain("regular file of at most 2 MiB");
+  });
+  it("reports unreadable file errors instead of claiming no configuration", () => {
+    catalogFailure.denyOpen = true; const result = sourceCatalog();
+    expect(result.sources).toEqual([]); expect(result.diagnostics.join()).toContain(`Cannot read source catalog ${file}: permission denied`);
   });
 });

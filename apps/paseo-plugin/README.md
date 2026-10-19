@@ -138,7 +138,22 @@ explicit unavailable state. Governed scheduler/gate data says **kontord is not e
 ### Host-side source catalog
 
 `KONTOR_PLUGIN_READ_SOURCES` is a JSON array configured in the plugin server's
-environment. Each entry has a unique `id`, `title`, `kind` (`plan`, `teams`,
+environment. A nonblank value takes precedence, including `[]` to select no
+sources; an invalid value reports its error without falling back. When the value
+is absent or blank, the server reads the operator-owned file
+`$PASEO_HOME/plugin-config/kontor/read-sources.json` (default
+`~/.paseo/plugin-config/kontor/read-sources.json`). This uses the existing Paseo
+home configuration and the same JSON entry validation, unique IDs and maximum
+of 64 entries. The file must be regular and at most 2 MiB. An absent file leaves
+an honest no-sources state; malformed or unreadable files report diagnostics.
+
+The catalog is a snapshot loaded when the plugin starts or reloads. An operator
+can atomically replace this file, then reload the plugin without restarting the
+daemon. The plugin never writes it, watches it, or accepts its path from a client.
+Presentation settings do not store catalog paths or source contents. This file
+only declares read sources; it does not activate teams or grant execution.
+
+Each entry has a unique `id`, `title`, `kind` (`plan`, `teams`,
 `delivery`, `decisions` or `jira`) and absolute `path`. Optional fields are `workstream`,
 confirmed `epic`, native `projectId`, `revisionKind` and `expectedSha256`.
 `revisionKind` defaults to `working copy`; `saved draft` permits a plan without an

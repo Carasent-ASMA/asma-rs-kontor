@@ -1,13 +1,15 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import { constants, closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { open, realpath, stat } from "node:fs/promises";
-import { dirname, isAbsolute } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
 import type { PluginServerContext, PluginSettings } from "@getpaseo/plugin/server";
 import { canonicalGraphSchema, jiraHistorySchema, listReadSources, readPlanAssociations, readSource, recordsSchema,
   sourceSummarySchema, type ReadSourceSummary, type SourceRead } from "../shared/read-sources";
 import type { organizationSettingsSchema } from "../shared/organization";
+import { readConfig } from "./config";
 
 const MAX_BYTES = 2 * 1024 * 1024;
 const execute = promisify(execFile);
@@ -18,14 +20,41 @@ const entrySchema = sourceSummarySchema.extend({
   path: z.string().refine(isAbsolute, "Source path must be absolute"),
 }).strict().refine((entry) => entry.revisionKind !== "approved revision" || entry.expectedSha256 != null, "An approved revision requires an expected SHA-256");
 export type SourceCatalog = { sources: ReadSourceSummary[]; diagnostics: string[] };
-export function sourceCatalog(raw = process.env.KONTOR_PLUGIN_READ_SOURCES): SourceCatalog {
-  if (!raw?.trim()) return { sources: [], diagnostics: ["No read sources configured on this host."] };
+function parseSourceCatalog(raw: string, origin: string): SourceCatalog {
   try {
     const sources = z.array(entrySchema).max(64).parse(JSON.parse(raw));
     if (new Set(sources.map((source) => source.id)).size !== sources.length) throw new Error("Duplicate source IDs");
     return { sources, diagnostics: [] };
   } catch (error) {
-    return { sources: [], diagnostics: [`Invalid KONTOR_PLUGIN_READ_SOURCES: ${error instanceof Error ? error.message : String(error)}`] };
+    return { sources: [], diagnostics: [`Invalid ${origin}: ${error instanceof Error ? error.message : String(error)}`] };
+  }
+}
+/** Read one operator-owned catalog snapshot on plugin load/reload, never from client settings. */
+export function sourceCatalog(raw = process.env.KONTOR_PLUGIN_READ_SOURCES): SourceCatalog {
+  if (raw?.trim()) return parseSourceCatalog(raw, "KONTOR_PLUGIN_READ_SOURCES");
+  const file = join(dirname(readConfig().paseoWorktreesRoot), "plugin-config", "kontor", "read-sources.json");
+  let descriptor: number | undefined;
+  try {
+    // Non-blocking open prevents a misconfigured FIFO from blocking plugin reload.
+    descriptor = openSync(file, constants.O_RDONLY | constants.O_NONBLOCK);
+    const info = fstatSync(descriptor);
+    if (!info.isFile() || info.size > MAX_BYTES) throw new Error("Catalog must be a regular file of at most 2 MiB");
+    const buffer = Buffer.alloc(MAX_BYTES + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const count = readSync(descriptor, buffer, length, buffer.length - length, null);
+      if (!count) break;
+      length += count;
+    }
+    if (length > MAX_BYTES) throw new Error("Catalog exceeds 2 MiB");
+    return parseSourceCatalog(buffer.subarray(0, length).toString("utf8"), `source catalog ${file}`);
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return { sources: [], diagnostics: ["No read sources configured on this host."] };
+    }
+    return { sources: [], diagnostics: [`Cannot read source catalog ${file}: ${error instanceof Error ? error.message : String(error)}`] };
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
   }
 }
 const sha256 = (data: string) => createHash("sha256").update(data).digest("hex");
