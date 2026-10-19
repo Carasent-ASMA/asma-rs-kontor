@@ -8,7 +8,7 @@ const model = vi.hoisted(() => ({ evidence: false }));
 vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useMemo: (factory: () => unknown) => factory(), useRef: (current: unknown) => ({ current }), useState: () => [model.evidence, (value: boolean) => { model.evidence = value; }] }));
 vi.mock("react-native", () => ({ Text: "Text", View: "View", Pressable: "Pressable" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ FlatList: "FlatList", ScrollView: "ScrollView", Icon: "Icon" }));
-import { COMPACT_ISSUE_SLOP, GraphPage, captureDay, capturedJiraChildren, type BoardItem } from "../client/graph-page";
+import { GraphPage, captureDay, capturedJiraChildren, type BoardItem } from "../client/graph-page";
 import { PlanGraph } from "../client/plan-graph/graph";
 import { SourceDetails } from "../client/source-details";
 import { Action } from "../client/page-controls";
@@ -39,10 +39,10 @@ function text(node: ReactNode): string {
   if (isRow(node)) return text(expand(node));
   return text(node.props.children as ReactNode);
 }
-function mount(options: { selectedId?: string | null; reads?: SourceRead[]; epicKey?: string | null; compact?: boolean; mode?: "Board" | "Graph"; initialOffset?: number; onBoard?: () => void } = {}) {
+function mount(options: { selectedId?: string | null; reads?: SourceRead[]; epicKey?: string | null; compact?: boolean; mode?: "Board" | "Graph"; initialOffset?: number; onBoard?: () => void; page?: typeof GraphPage } = {}) {
   const reads = options.reads ?? [jira];
   const onPlan = vi.fn(); const onIssue = vi.fn(); const onChooseSource = vi.fn(); const onScroll = vi.fn();
-  const tree = GraphPage({ mode: options.mode ?? "Board", hostId: "board-host", theme: { colors } as PluginTheme, compact: options.compact ?? true,
+  const tree = (options.page ?? GraphPage)({ mode: options.mode ?? "Board", hostId: "board-host", theme: { colors } as PluginTheme, compact: options.compact ?? true,
     sources: reads.map((read) => read.source), selectedId: options.selectedId ?? null, reads: Object.fromEntries(reads.map((read) => [read.source.id, read])),
     available: true, error: null, epicKey: options.epicKey, onSelect: vi.fn(), onPlan, onIssue, onChooseSource, onScroll, initialOffset: options.initialOffset, onBoard: options.onBoard }) as Element;
   const data = (tree.props.data ?? []) as BoardItem[];
@@ -328,7 +328,7 @@ describe("compact Board density (iPhone 390x844)", () => {
     expect(elements(section).some((element) => typeof element.type === "function")).toBe(false);
   });
 
-  it("budgets each compact task row to a two-line title and one meta line within 64-76pt, with a 44pt issue target", () => {
+  it("budgets each compact task row to a two-line title and one meta line within 64-76pt, with a real 44pt issue target beside the text on touch", () => {
     const { data, row } = mount({ selectedId: "plan", reads: [plan, jira] });
     for (const item of [...taskRows(data), ...jiraRows(data)]) {
       const rendered = row(item);
@@ -341,22 +341,52 @@ describe("compact Board density (iPhone 390x844)", () => {
       expect(lines.map((element) => element.props.numberOfLines)).toEqual([2, 1]);
       const [title, meta] = lines as [Element, Element];
       const shell = shellElement!.props.style as Record<string, number>;
-      const metaRow = tree.find((element) => element.type === "View" && elements(element.props.children as ReactNode).includes(meta))!;
-      const height = 2 * shell.paddingVertical! + 2 * shell.borderWidth! + 2 * (title.props.style as { lineHeight: number }).lineHeight + shell.gap! + (metaRow.props.style as { minHeight: number }).minHeight;
+      const metaRow = tree.find((element) => element.type === "View" && [element.props.children].flat(Infinity).includes(meta))!;
+      const textHeight = 2 * (title.props.style as { lineHeight: number }).lineHeight + shell.gap! + (metaRow.props.style as { minHeight: number }).minHeight;
+      const target = issue.length ? (issue[0]!.props.style as { minHeight: number }).minHeight : 0;
+      const height = 2 * shell.paddingVertical! + 2 * shell.borderWidth! + Math.max(textHeight, target);
       expect(height).toBeGreaterThanOrEqual(64); expect(height).toBeLessThanOrEqual(76);
       // 669pt list viewport under the context row and above the tab bar on the 390x844 test surface.
       expect(Math.floor(669 / (height + shell.marginBottom!))).toBeGreaterThanOrEqual(8);
       if (item.kind === "task" ? item.node.jira : true) {
         expect(issue).toHaveLength(1);
+        // A real 44pt target, since the web ignores a hit slop; it fits beside the two text lines, so the row keeps its height.
         const style = issue[0]!.props.style as { minHeight: number; minWidth: number };
-        const slop = issue[0]!.props.hitSlop as typeof COMPACT_ISSUE_SLOP;
-        expect(style.minHeight + slop.top + slop.bottom).toBeGreaterThanOrEqual(44);
-        expect(style.minWidth).toBeGreaterThanOrEqual(44);
-        expect(elements(metaRow.props.children as ReactNode).includes(issue[0]!)).toBe(true);
+        expect([style.minHeight, style.minWidth, issue[0]!.props.hitSlop]).toEqual([44, 44, undefined]);
+        expect(target).toBeLessThanOrEqual(textHeight);
+        // In its own column inside the row: not in the meta line, and not over the title.
+        expect(elements(metaRow.props.children as ReactNode).includes(issue[0]!)).toBe(false);
+        const columns = tree.find((element) => element.type === "View" && (element.props.style as { flexDirection?: string } | undefined)?.flexDirection === "row" && (element.props.children as ReactNode[]).includes(issue[0]!))!;
+        const [textColumn] = columns.props.children as Element[];
+        expect(elements(textColumn).includes(title) && elements(textColumn).includes(metaRow)).toBe(true);
+        expect(elements(textColumn).includes(issue[0]!)).toBe(false);
       }
     }
     const wide = mount({ selectedId: "plan", reads: [plan, jira], compact: false });
     expect(actions(wide.row(wide.data[1]!)).map((button) => [button.props.label, button.props.small])).toEqual([["Open in plan", true], ["Open issue", true]]);
+  });
+
+  it("keeps the dense 22pt issue action in the meta line for a mouse or trackpad", async () => {
+    vi.resetModules();
+    vi.stubGlobal("matchMedia", (query: string) => ({ matches: query !== "(pointer: coarse)" }));
+    try {
+      const { GraphPage: FinePage } = await import("../client/graph-page");
+      const { data, row, onIssue, onPlan } = mount({ selectedId: "plan", reads: [plan, jira], page: FinePage });
+      const rendered = row(data[1]!);
+      const tree = elements(outer(rendered));
+      const issue = tree.filter((element) => element.type === "Pressable" && String(element.props.accessibilityLabel).startsWith("Open issue"));
+      expect(issue).toHaveLength(1);
+      const style = issue[0]!.props.style as { minHeight: number; minWidth: number };
+      expect([style.minHeight, style.minWidth, issue[0]!.props.hitSlop]).toEqual([22, 44, undefined]);
+      const meta = tree.find((element) => element.type === "Text" && element.props.numberOfLines === 1 && (element.props.style as { flex?: number }).flex === 1)!;
+      const metaRow = tree.find((element) => element.type === "View" && [element.props.children].flat(Infinity).includes(meta))!;
+      expect(elements(metaRow.props.children as ReactNode).includes(issue[0]!)).toBe(true);
+      (issue[0]!.props.onPress as () => void)();
+      (outer(rendered).props.onPress as () => void)();
+      expect([onIssue.mock.calls, onPlan.mock.calls]).toEqual([[[graph.nodes[0]!.jira]], [["plan", graph.nodes[0]!.id]]]);
+    } finally {
+      vi.unstubAllGlobals(); vi.resetModules();
+    }
   });
 
   it("formats capture days from the capture's own calendar date and leaves unparseable values as captured", () => {

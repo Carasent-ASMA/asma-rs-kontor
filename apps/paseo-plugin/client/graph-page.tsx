@@ -8,7 +8,7 @@ import { PlanGraph, createPlanGraphStore, planGraphViewKey, type PlanGraphStore 
 import { validatePlanGraph } from "./plan-graph/contract";
 import { SourceDetails } from "./source-details";
 import { historicalPlanProgress } from "./page-data";
-import { Action, Copy, type Colors } from "./page-controls";
+import { Action, COARSE_POINTER, Copy, type Colors } from "./page-controls";
 
 const stores = new Map<string, PlanGraphStore>();
 function retainedStore(hostId: string): PlanGraphStore {
@@ -248,13 +248,12 @@ function BoardRow({ testID, title, lines, label, actions, colors }: { testID: st
   </View>;
 }
 
-/** Visible issue action is 22pt tall; its hit slop brings the touch target to 44pt. */
-export const COMPACT_ISSUE_SLOP = { top: 11, bottom: 11, left: 6, right: 6 };
-
 /**
  * Compact Board row: at most two title lines and one meta line. A plan task row is one button
  * (open the task in its plan); Open issue is a trailing action that screen readers also reach as
- * a custom action, because an accessible row hides its nested controls on iOS.
+ * a custom action, because an accessible row hides its nested controls on iOS. A mouse keeps the
+ * 22pt action in the meta line; a touch pointer gets a real 44pt action in its own column beside
+ * the text, inside the row, since the web ignores a hit slop.
  */
 function CompactBoardRow({ testID, title, meta, label, tone, onPress, issue, colors }: {
   testID: string; title: ReactNode; meta: string; label: string; tone: Tone; colors: Colors;
@@ -269,17 +268,22 @@ function CompactBoardRow({ testID, title, meta, label, tone, onPress, issue, col
     onAccessibilityAction: ({ nativeEvent }: { nativeEvent: { actionName: string } }) => { if (nativeEvent.actionName === "openIssue") issue?.open(); },
   };
   const style = { marginHorizontal: 8, marginBottom: 6, paddingHorizontal: 8, paddingVertical: 6, gap: 2, borderWidth: 1, borderRadius: 8, borderColor: colors.border, backgroundColor: colors.surface1 };
-  const body = <>
+  const action = issue ? <Pressable testID={`${testID}-issue`} accessibilityRole="button" accessibilityLabel={`Open issue ${issue.key}`} onPress={issue.open}
+    style={{ minHeight: COARSE_POINTER ? 44 : 22, minWidth: 44, paddingHorizontal: 8, justifyContent: "center", alignItems: "center", borderWidth: 1, borderRadius: 6, borderColor: colors.border }}>
+    <Text numberOfLines={1} style={{ color: colors.foreground, fontSize: 12, lineHeight: 16 }}>Open issue</Text>
+  </Pressable> : null;
+  const lines = <>
     <Text numberOfLines={2} style={{ color: colors.foreground, fontWeight: "600", fontSize: 13, lineHeight: 17 }}>{title}</Text>
     <View style={{ flexDirection: "row", alignItems: "center", gap: 6, minHeight: 22 }}>
       <View testID={`${testID}-tone`} importantForAccessibility="no" accessibilityElementsHidden style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: dot }} />
       <Text numberOfLines={1} style={{ flex: 1, minWidth: 0, color: colors.foregroundMuted, fontSize: 12, lineHeight: 16 }}>{meta}</Text>
-      {issue ? <Pressable accessibilityRole="button" accessibilityLabel={`Open issue ${issue.key}`} hitSlop={COMPACT_ISSUE_SLOP} onPress={issue.open}
-        style={{ minHeight: 22, minWidth: 44, paddingHorizontal: 8, justifyContent: "center", alignItems: "center", borderWidth: 1, borderRadius: 6, borderColor: colors.border }}>
-        <Text numberOfLines={1} style={{ color: colors.foreground, fontSize: 12, lineHeight: 16 }}>Open issue</Text>
-      </Pressable> : null}
+      {COARSE_POINTER ? null : action}
     </View>
   </>;
+  const body = COARSE_POINTER && action ? <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+    <View style={{ flex: 1, minWidth: 0, gap: 2 }}>{lines}</View>
+    {action}
+  </View> : lines;
   return onPress
     ? <Pressable testID={testID} accessibilityRole="button" onPress={onPress} style={style} {...accessibility}>{body}</Pressable>
     : <View testID={testID} style={style} {...accessibility}>{body}</View>;
