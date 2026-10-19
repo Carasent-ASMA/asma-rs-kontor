@@ -44,7 +44,9 @@ Commands:
              candidates, start the job and read the realm back. A failure
              after the stop restores the old binaries and restarts the job.
              The database is not restored: the snapshot in --backup-dir
-             restores it per RECOVERY.md.
+             restores it per RECOVERY.md. A declared production replace
+             needs ``--expected-sha256`` for each candidate and compares
+             them before the job is stopped.
 
 The daemon binary, state root and port come from the plist's
 ``ProgramArguments``; a missing ``--port`` uses the daemon default 7717, and
@@ -620,11 +622,25 @@ def replace(
     backup_dir: Path,
     realm_id: str,
     production_deploy: str | None,
+    expected: dict[str, str],
 ) -> dict:
     for name in BINARIES:
         if not (candidates / name).is_file():
             raise Failed(f"{candidates / name} is missing")
     after = {name: digest(candidates / name) for name in BINARIES}
+    if production_deploy is not None:
+        missing = [name for name in BINARIES if name not in expected]
+        if missing:
+            raise Failed(
+                "a declared production replace needs --expected-sha256 for "
+                + ", ".join(missing)
+            )
+    for name, checksum in expected.items():
+        if after[name] != checksum:
+            raise Failed(
+                f"{candidates / name} has SHA-256 {after[name]}, not the expected "
+                f"{checksum}; the job was not stopped"
+            )
     try:
         backup_dir.mkdir(mode=0o700, parents=True)
     except FileExistsError:
@@ -750,6 +766,16 @@ def parse_arguments(argv: Sequence[str] | None) -> argparse.Namespace:
     deploy.add_argument(
         "--realm-id", required=True, help="the realm the restarted daemon must read back"
     )
+    deploy.add_argument(
+        "--expected-sha256",
+        action="append",
+        default=[],
+        metavar="NAME=SHA256",
+        help=(
+            "expected SHA-256 of a candidate binary, repeatable; a declared "
+            "production replace needs one for each binary"
+        ),
+    )
     arguments = parser.parse_args(argv)
     if arguments.plist is None and arguments.command != "bootout":
         parser.error("--plist is required unless the command is bootout")
@@ -757,6 +783,22 @@ def parse_arguments(argv: Sequence[str] | None) -> argparse.Namespace:
         parser.error("--timeout must be positive")
     if arguments.wait < 0:
         parser.error("--wait must not be negative")
+    expected: dict[str, str] = {}
+    for value in getattr(arguments, "expected_sha256", []):
+        name, separator, checksum = value.partition("=")
+        if (
+            not separator
+            or name not in BINARIES
+            or re.fullmatch(r"[0-9a-f]{64}", checksum) is None
+        ):
+            parser.error(
+                "--expected-sha256 needs NAME=SHA256 for one of "
+                + ", ".join(BINARIES)
+            )
+        if name in expected:
+            parser.error(f"--expected-sha256 names {name} more than once")
+        expected[name] = checksum
+    arguments.expected_sha256 = expected
     return arguments
 
 
@@ -788,6 +830,7 @@ def main(argv: Sequence[str] | None = None, host: Host | None = None) -> int:
                 arguments.backup_dir,
                 arguments.realm_id,
                 arguments.production_deploy,
+                arguments.expected_sha256,
             )
             print(json.dumps(receipt, indent=2, sort_keys=True))
     except (Failed, OSError, subprocess.SubprocessError) as error:

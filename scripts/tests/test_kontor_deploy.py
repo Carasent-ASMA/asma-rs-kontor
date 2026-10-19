@@ -1295,6 +1295,49 @@ class ReplaceTest(WorldTest):
         self.assertEqual(self.replace(recorder), deploy.EXIT_FAILED)
         self.assertEqual(recorder.launchctl(), [])
 
+    def production_replace(
+        self, recorder: Recorder, expected: list[str]
+    ) -> int:
+        argv = [
+            "--label", PRODUCTION_LABEL,
+            "--domain", DISPOSABLE_DOMAIN,
+            "--plist", str(self.world.plist(PRODUCTION_LABEL)),
+            "--production-deploy", "ASMA-8506",
+            *command_argv("replace", self.world),
+            *[
+                part
+                for value in expected
+                for part in ("--expected-sha256", value)
+            ],
+        ]
+        return run_main(argv, self.world.host(recorder, DISPOSABLE_UID))
+
+    def test_a_declared_production_replace_needs_expected_hashes(self) -> None:
+        recorder = Recorder(self.answer())
+        self.assertEqual(self.production_replace(recorder, []), deploy.EXIT_FAILED)
+        self.assertEqual(recorder.launchctl(), [])
+        self.assertFalse(self.world.backup.exists())
+
+    def test_a_declared_production_replace_refuses_unexpected_candidate_bytes(self) -> None:
+        recorder = Recorder(self.answer())
+        wrong = [f"{name}={'0' * 64}" for name in deploy.BINARIES]
+        self.assertEqual(self.production_replace(recorder, wrong), deploy.EXIT_FAILED)
+        self.assertEqual(recorder.launchctl(), [])
+        self.assertFalse(self.world.backup.exists())
+
+    def test_a_declared_production_replace_pins_the_candidate_hashes(self) -> None:
+        expected = {name: deploy.digest(self.world.candidates / name) for name in deploy.BINARIES}
+        recorder = Recorder(self.answer())
+        code = self.production_replace(
+            recorder, [f"{name}={checksum}" for name, checksum in expected.items()]
+        )
+        self.assertEqual(code, 0)
+        receipt = json.loads((self.world.backup / "deployment.json").read_text())
+        self.assertEqual(receipt["productionDeploy"], "ASMA-8506")
+        self.assertEqual(receipt["binarySha256After"], expected)
+        for name in deploy.BINARIES:
+            self.assertEqual((self.world.bin / name).read_bytes(), f"new {name}\n".encode())
+
 
 if __name__ == "__main__":
     unittest.main()
