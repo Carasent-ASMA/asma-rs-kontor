@@ -25463,6 +25463,119 @@ async fn a_runtime_observed_terminal_run_closes_its_stranded_team_on_abandon_rep
     );
 }
 
+/// A stranded envelope's abandon replay gives up the closed run's frozen
+/// snapshot before any fallible team work. The fence may still refuse the
+/// settlement, but a terminal run must not keep reporting `seat_live` while it
+/// does.
+#[tokio::test]
+async fn a_stranded_team_abandon_replay_releases_the_seat_before_the_fence() {
+    let world = World::open_empty_with_a_plane().await;
+    let fenced = strand_a_team_behind_a_migration_fence(&world, "stranded-abandon-fence").await;
+    let last = finish_every_seat_but_the_last(&world, &fenced, "stranded-abandon-fence").await;
+    strand_the_last_seat(&world, &fenced, &last, "stranded-abandon-fence").await;
+
+    let project_id = ProjectId::parse(&fenced.project).expect("a project id");
+    let last_id = AgentRunId::parse(&last).expect("the last agent run id");
+    let (team_run_id, last_binding, last_revision) = world.daemon.state().with_store(|store| {
+        let run = store
+            .get_agent_run(project_id, last_id)
+            .expect("the last run reads")
+            .expect("the last run exists");
+        let binding = run.binding.clone().expect("the last run is bound");
+        (run.team_run_id, binding, run.revision.get())
+    });
+    assert!(
+        world
+            .daemon
+            .state()
+            .sessions()
+            .get(last_binding.id)
+            .is_some(),
+        "the failed settlement left the closed run's frozen snapshot held"
+    );
+
+    let abandon_uri = format!(
+        "/v1/projects/{}/agent-runs/{last}/runtime:abandon",
+        fenced.project
+    );
+    let body = serde_json::json!({
+        "expected_revision": last_revision,
+        "reason": "Every run of this team has ended; the envelope is stranded"
+    });
+    // The fence refuses the settlement, but the closed run must not keep its
+    // frozen snapshot because of it.
+    let refused = Call::post(&abandon_uri, &body)
+        .signed_as(&world, "operator")
+        .with_key("stranded-abandon-fence-run")
+        .send(&world)
+        .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.code(), "placement_blocked", "{}", refused.body);
+    assert!(
+        world
+            .daemon
+            .state()
+            .sessions()
+            .get(last_binding.id)
+            .is_none(),
+        "the fenced abandon replay released the closed run's frozen snapshot"
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.list_binding_snapshots())
+            .expect("the binding snapshots read")
+            .iter()
+            .all(|snapshot| snapshot.binding_id != last_binding.id),
+        "the fenced abandon replay forgets the durable binding snapshot"
+    );
+
+    let resumed = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/team-definition:upgrade-apply",
+            fenced.project, fenced.epic
+        ),
+        &fenced.apply_body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("stranded-abandon-fence-migration")
+    .send(&world)
+    .await;
+    assert_eq!(resumed.status, 200, "{}", resumed.body);
+
+    let abandoned = Call::post(&abandon_uri, &body)
+        .signed_as(&world, "operator")
+        .with_key("stranded-abandon-fence-run-again")
+        .send(&world)
+        .await;
+    assert_eq!(abandoned.status, 200, "{}", abandoned.body);
+    assert_eq!(
+        abandoned.json()["team_run_closed"],
+        serde_json::json!(team_run_id.to_string()),
+        "{}",
+        abandoned.body
+    );
+    let closed = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(project_id, team_run_id)
+            .expect("the team reads")
+            .expect("the team exists")
+    });
+    assert!(
+        closed.lifecycle.is_terminal(),
+        "the replay closes the stranded envelope"
+    );
+    assert!(
+        matches!(
+            closed.terminal.as_ref().map(|terminal| &terminal.source),
+            Some(kontor_core::state::TeamEvidenceSource::ChildEvidence { .. })
+        ),
+        "the replay records the children's own outcome rather than an operator abandon: {:?}",
+        closed.terminal
+    );
+}
+
 /// An abandon replay of an already-closed team changes nothing. A Team
 /// Definition migration in flight must not turn the endpoint's documented 200
 /// into a `placement_blocked` 409; the stored closure is the answer.
