@@ -1338,6 +1338,24 @@ class ReplaceTest(WorldTest):
         for name in deploy.BINARIES:
             self.assertEqual((self.world.bin / name).read_bytes(), f"new {name}\n".encode())
 
+    def test_the_realm_get_wait_is_configurable(self) -> None:
+        recorder = Recorder(self.answer(readback_status=503))
+        argv = [
+            "--label", DISPOSABLE_LABEL,
+            "--domain", DISPOSABLE_DOMAIN,
+            "--plist", str(self.world.plist(DISPOSABLE_LABEL)),
+            "--wait", "1",
+            *command_argv("replace", self.world),
+        ]
+        code = run_main(argv, self.world.host(recorder, DISPOSABLE_UID, wait=1.0))
+        self.assertEqual(code, deploy.EXIT_FAILED)
+        polls = [
+            call
+            for call in recorder.calls
+            if call[:2] == [str(self.world.bin / "kontor"), "realm-get"]
+        ]
+        self.assertEqual(len(polls), 2)
+
 
 if __name__ == "__main__":
     unittest.main()
