@@ -65,7 +65,7 @@ restores the database snapshot as well as the binaries**; restoring binaries
 alone would have stranded the realm.
 
 Snapshot taken before the step, and the rollback source:
-`/Users/igor/.local/state/kontor/asma/deploy-backups/20260917T091805Z-asma-8202-combined-86ba6065/database/` — `integrity_check` `ok` at schema 98.
+`$HOME/.local/state/kontor/asma/deploy-backups/20260917T091805Z-asma-8202-combined-86ba6065/database/` — `integrity_check` `ok` at schema 98.
 
 ## Installed artifacts
 
@@ -77,7 +77,7 @@ Snapshot taken before the step, and the rollback source:
 
 Installed hashes were compared against the built hashes and matched exactly, so
 the realm runs precisely this build and not a mixture. The replaced set is
-retained at `/Users/igor/.local/state/kontor/asma/deploy-backups/20260917T091805Z-asma-8202-combined-86ba6065/old-binaries/`.
+retained at `$HOME/.local/state/kontor/asma/deploy-backups/20260917T091805Z-asma-8202-combined-86ba6065/old-binaries/`.
 
 ## Identity preservation
 
@@ -136,4 +136,4 @@ implement run `confirmed`, schema 99.
 A deployment of the pre-merge ASMA-8202 head was performed earlier and reversed
 because it overwrote the ASMA-8203 build then under verification; that episode
 is recorded in [INTEGRATION.md](INTEGRATION.md). Backup for the present
-deployment: `/Users/igor/.local/state/kontor/asma/deploy-backups/20260917T091805Z-asma-8202-combined-86ba6065`.
+deployment: `$HOME/.local/state/kontor/asma/deploy-backups/20260917T091805Z-asma-8202-combined-86ba6065`.

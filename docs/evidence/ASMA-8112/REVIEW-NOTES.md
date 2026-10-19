@@ -295,7 +295,7 @@ builder's; they adopted a number this review supplied.
 mutation run explains it exactly. Under a wrongly-authorizing gate this test
 does not fail on a created seat; it passes the gate and dies one step later at
 `account_for_explicit_provider_alias`, because the negatives seed no
-`codex-personal` recovery account. The observed failure is
+`codex-a` recovery account. The observed failure is
 `400 invalid_request`, subject `ModelRoute` — the precise status the builder
 saw once. So a 400 here is the signature of *the gate having authorized*, and
 must never be read as noise.

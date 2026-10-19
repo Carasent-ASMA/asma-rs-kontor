@@ -7,7 +7,7 @@
    Compiling zerofrom-derive v0.1.7
    Compiling yoke-derive v0.8.2
    Compiling zerofrom v0.1.8
-   Compiling kontor-core v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-core)
+   Compiling kontor-core v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-core)
    Compiling yoke v0.8.3
    Compiling zerovec v0.11.8
    Compiling tinystr v0.8.4
@@ -24,7 +24,7 @@
    Compiling idna_adapter v1.2.2
    Compiling futures-channel v0.3.34
    Compiling hyper v1.11.1
-   Compiling kontor-runtime v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-runtime)
+   Compiling kontor-runtime v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-runtime)
    Compiling tracing v0.1.44
    Compiling idna v1.1.0
    Compiling nom v8.0.0
@@ -36,16 +36,16 @@
    Compiling hyper-rustls v0.27.9
    Compiling iso8601 v0.6.5
    Compiling nom-language v0.1.0
-   Compiling kontor-context v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-context)
-   Compiling kontor-policy v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-policy)
+   Compiling kontor-context v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-context)
+   Compiling kontor-policy v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-policy)
    Compiling reqwest v0.13.4
-   Compiling kontor-scheduler v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-scheduler)
-   Compiling kontor-teams v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-teams)
+   Compiling kontor-scheduler v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-scheduler)
+   Compiling kontor-teams v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-teams)
    Compiling icalendar v0.17.13
-   Compiling kontor-calendar v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-calendar)
+   Compiling kontor-calendar v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-calendar)
    Compiling tempfile v3.27.0
-   Compiling kontor-profiles v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-profiles)
-   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-store)
+   Compiling kontor-profiles v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-profiles)
+   Compiling kontor-store v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-store)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 49.38s
      Running unittests src/lib.rs (target/qualification/debug/deps/kontor_store-fadb9bdd90feb094)
 

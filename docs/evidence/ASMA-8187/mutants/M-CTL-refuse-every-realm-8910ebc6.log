@@ -26,9 +26,9 @@ command           : cargo test -p kontor-daemon --bin kontor-daemon -- a_current
 toolchain         : rustc 1.97.1 (8bab26f4f 2026-07-14)
 platform          : Darwin 25.6.0 arm64
 --- raw output ---
-   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-store)
-   Compiling kontor-api v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-api)
-   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-daemon)
+   Compiling kontor-store v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-store)
+   Compiling kontor-api v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-api)
+   Compiling kontor-daemon v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-daemon)
 warning: method `epic_control_seat_binding` is never used
     --> crates/kontor-daemon/src/applications.rs:8448:8
      |

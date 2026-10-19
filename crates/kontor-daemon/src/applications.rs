@@ -48090,7 +48090,7 @@ mod tests {
     #[test]
     fn a_fleet_listed_route_is_catalogued_only_while_listed() {
         let request = RuntimeModelRouteRequest {
-            provider: "claude-personal".to_owned(),
+            provider: "claude-a".to_owned(),
             model: "claude-opus-5-5".to_owned(),
             effort: Some("xhigh".to_owned()),
         };
@@ -48108,7 +48108,7 @@ mod tests {
         assert_eq!(
             parse_runtime_model_route(&request, Some(&snapshot)),
             Ok(ModelRung {
-                provider: ProviderRef("claude-personal".to_owned()),
+                provider: ProviderRef("claude-a".to_owned()),
                 model: ModelRef("claude-opus-5-5".to_owned()),
                 effort: Some(EffortLevel::Xhigh),
             }),

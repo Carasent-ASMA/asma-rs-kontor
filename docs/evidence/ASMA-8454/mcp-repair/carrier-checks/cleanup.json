@@ -1,7 +1,7 @@
 {
   "time": "2026-10-11T19:28:45.203007+00:00",
   "owner": "Codex / ASMA-8454 qualification owner",
-  "target": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/final-head/tmp",
+  "target": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/final-head/tmp",
   "command": "python3 .qualification/mcp-repair/cleanup-final-head.py",
   "top_level_entries_before": 5,
   "recursive_entries_before": 120,

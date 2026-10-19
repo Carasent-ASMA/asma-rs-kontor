@@ -125,7 +125,7 @@ TeamRun, AgentRun, SeatBinding, topology, or native-runtime evidence.
   `01a09f49-0bc3-7e83-a339-5b2590f92c24`, native workspace
   `wks_a177fd8f877b54d5`.
 - Exact refusal: the TSW is rooted at
-  `/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8049-jira-key-integration`,
+  `$HOME/carasent/asma-modules/.worktrees/feat/ASMA-8049-jira-key-integration`,
   where `_tools/asma-rs-kontor` is absent; current recovery refuses immediately
   because the persisted native container still exists.
 - Current checkpoint: the dirty TSW and all original TeamRun, AgentRun,

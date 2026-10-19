@@ -113,7 +113,7 @@ authority.
   archive verification, and was deployed as daemon hash
   `73e36142d743e965bf7dc58a239837c77b061877dcbfaef564c305fa263e700a`
   with PID `77742`. Its rollback unit is
-  `/Users/igor/.local/state/kontor/asma/deploy-backups/20260903T201428Z-kon-op-22-eba40aa/`.
+  `$HOME/.local/state/kontor/asma/deploy-backups/20260903T201428Z-kon-op-22-eba40aa/`.
   The replay correctly confirmed the legacy Epic `ASMA-7869`, then failed
   closed at ordinal 1 before creating a new Jira issue.
 - Remaining failure class: Kontor's internal item kind `task` was incorrectly
@@ -137,7 +137,7 @@ authority.
   archive verifiers, and was deployed as daemon hash
   `f1592ef87a42616345ffd6def9a6d2489cd263536a1eef2f9462c7cb2fc5cbbd`
   with PID `90200`. Its rollback unit is
-  `/Users/igor/.local/state/kontor/asma/deploy-backups/20260903T213548Z-kon-op-22-162d807/`.
+  `$HOME/.local/state/kontor/asma/deploy-backups/20260903T213548Z-kon-op-22-162d807/`.
   The replay accepted Jira hierarchy readback and was then refused before any
   Jira create because confirmation searched only the new `connector.jira`
   spelling while the immutable canonical ledger selected a preserved legacy
@@ -156,7 +156,7 @@ authority.
   The exact merge was deployed as daemon hash
   `be248241ce784172e258601eb2ae5b18bb2dc72bb7f1ecd575241072000b8ee6`
   with PID `33075`; its rollback unit is
-  `/Users/igor/.local/state/kontor/asma/deploy-backups/20260903T223249Z-kon-op-22-3705ba9/`.
+  `$HOME/.local/state/kontor/asma/deploy-backups/20260903T223249Z-kon-op-22-3705ba9/`.
 - Live replay result: ordinals 0–18, including the epic and all historical
   links, are confirmed. Ordinals 19–21 remain planned. The first Jira `Task`
   create returned a non-success response, but the connector collapsed every
@@ -184,7 +184,7 @@ authority.
   `248e7a385a5cafcaa990087b9d7f1e42fb914348a5506b34d35caf0f180b8744`.
   LaunchAgent PID `43055` serves the healthy schema-v83 realm. The coherent
   rollback unit and verified pre-deploy snapshot are under
-  `/Users/igor/.local/state/kontor/asma/deploy-backups/20260903T232131Z-kon-op-22-d224b15/`.
+  `$HOME/.local/state/kontor/asma/deploy-backups/20260903T232131Z-kon-op-22-d224b15/`.
 - Recovery result: the original materialization receipt
   `01a0683f-7579-7d82-90b7-00781902f8b3` activated as
   `01a06994-ff6e-7501-82d5-1199259eea08` and created exactly `ASMA-8088`,
@@ -305,11 +305,11 @@ authority.
   `55444de6-e5f1-42b4-8a81-373e88b1a2ee` still reported absent predecessor
   workspace `wks_6ebdd414d51c49e8`.
 - Supported recovery: Kontor resumed an already-prepared, empty-profile
-  provider recovery for reviewer A and selected governed alias `claude-work`;
+  provider recovery for reviewer A and selected governed alias `claude-b`;
   receipt `01a070b0-c897-7ad3-b8c9-6ec73d65cbf6` preserved SeatBinding
   `01a02bb5-fcf6-7ea0-9849-1697ca5918e6` and installed native
   `e83106cf-14e4-4a2d-81d3-a2d5cd605c48`. It then recovered reviewer B to
-  governed alias `codex-work`; receipt
+  governed alias `codex-b`; receipt
   `01a070b1-2c0d-7310-8640-f0a7c55ff91a` preserved SeatBinding
   `01a02bb5-fcf6-7ea0-9849-16add5e1076a` and installed native
   `497ce202-d2c1-4cef-b807-7fe7a318a837`. Both successors read back in the
@@ -467,7 +467,7 @@ authority.
   `fbecb4715218169ce1377ecfb5a9cc72fd9453552d1dc3b2072c8af872bb90d9`,
   PID `5040`; schema v88, database integrity, foreign keys, realm and project
   revision 6 all read back healthy. Deployment receipt:
-  `/Users/igor/.local/state/kontor/asma/deploy-backups/20260905T221625Z-asma-8090-8100-9894060/deployment.json`.
+  `$HOME/.local/state/kontor/asma/deploy-backups/20260905T221625Z-asma-8090-8100-9894060/deployment.json`.
 - The migration-resume session used Kontor only. It did not build, install,
   restart or replace a binary and made no direct Jira, Paseo or SQLite write.
 - The exact archived Advisor target retired at revision 3 under receipt

@@ -1136,9 +1136,9 @@ async fn an_identical_semantic_refusal_still_proposes_exact_provenance() {
 async fn a_no_match_appends_no_provenance_and_moves_no_pointer() {
     let world = World::open().await;
     let seat = seat(&world).await;
-    let profile = account(&world, "no-match-cardinality", "codex-work").await;
+    let profile = account(&world, "no-match-cardinality", "codex-b").await;
     let state = world.daemon.state();
-    let loose = [codex_signal_for("codex-work")];
+    let loose = [codex_signal_for("codex-b")];
 
     classify_and_record(
         &state,
@@ -1174,7 +1174,7 @@ async fn a_no_match_appends_no_provenance_and_moves_no_pointer() {
             &state,
             world.project,
             profile,
-            &[shipped_signal_for("codex-work")],
+            &[shipped_signal_for("codex-b")],
             &refusal(&seat, mention),
             at("2026-08-21T11:00:00Z"),
         )

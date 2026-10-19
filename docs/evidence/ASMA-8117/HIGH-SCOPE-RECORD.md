@@ -134,7 +134,9 @@ revisions pinned by epics with active topology:
 | Recovery `01a07400-1000-7000-8000-000000008098` v2 | `d2f1131e1b9548873c7a02a0c15761c982e70779c8d7e6ded872439659d79a43` | 1 | same lineage v3 |
 
 Prepare four complete candidate documents plus a manifest under
-`docs/evidence/ASMA-8117/team-definition-successors/`. The manifest must bind
+`docs/evidence/ASMA-8117/team-definition-successors/` (moved on 2026-10-17 to
+[`crates/kontor-core/tests/fixtures/team-definition-successors/`](../../../crates/kontor-core/tests/fixtures/team-definition-successors/MANIFEST.json)).
+The manifest must bind
 each candidate to the exact source tuple and hash above. A candidate differs
 from its source only in its immutable version and these container-template
 token substitutions:

@@ -1133,7 +1133,7 @@ mod tests {
             (
                 V04,
                 EXAMPLE.replacen(
-                    "accounts: [claude-personal, claude-work]",
+                    "accounts: [claude-a, claude-b]",
                     "accounts: []",
                     1,
                 ),
@@ -1141,7 +1141,7 @@ mod tests {
             (
                 V05,
                 EXAMPLE.replacen(
-                    "accounts: [claude-personal, claude-work]",
+                    "accounts: [claude-a, claude-b]",
                     "accounts: [personal]",
                     1,
                 ),
@@ -1149,8 +1149,8 @@ mod tests {
             (
                 V06,
                 EXAMPLE.replacen(
-                    "accounts: [claude-personal, claude-work]",
-                    "accounts: [claude-personal, claude-personal]",
+                    "accounts: [claude-a, claude-b]",
+                    "accounts: [claude-a, claude-a]",
                     1,
                 ),
             ),
@@ -1268,8 +1268,8 @@ mod tests {
             (
                 V27,
                 EXAMPLE.replacen(
-                    "accounts: [claude-work]",
-                    "accounts: [claude-work, nope]",
+                    "accounts: [claude-b]",
+                    "accounts: [claude-b, nope]",
                     1,
                 ),
             ),

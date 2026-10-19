@@ -496,15 +496,15 @@ async fn enabled_directory_cross_vendor_replacement_and_route_correction_keep_sh
         .fenced_predecessor_native_ids
         .push(codex.identity.native_id);
     f.request.model_rung = model_rung();
-    f.request.model_rung.provider = ProviderRef("claude-work".into());
+    f.request.model_rung.provider = ProviderRef("claude-b".into());
     f.request.autonomy = SeatAutonomy::standard();
     f.agent["agent"]["id"] = serde_json::json!("agt_claude_corrected");
-    f.agent["agent"]["provider"] = serde_json::json!("claude-work");
+    f.agent["agent"]["provider"] = serde_json::json!("claude-b");
     f.agent["agent"]["model"] = serde_json::json!("claude-opus-5");
     f.agent["agent"]["currentModeId"] = serde_json::json!("auto");
     f.agent["agent"]["runtimeInfo"] = serde_json::json!({"provider":"claude","sessionId":"claude_session_3","model":"claude-opus-5","modeId":"auto"});
     f.agent["agent"]["persistence"] =
-        serde_json::json!({"provider":"claude-work","sessionId":"claude_session_3"});
+        serde_json::json!({"provider":"claude-b","sessionId":"claude_session_3"});
     f.plane
         .daemon
         .set_answer_rpc("fetch_agent_request", f.agent.clone());

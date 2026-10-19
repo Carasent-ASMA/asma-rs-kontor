@@ -4,7 +4,7 @@
 date: 2026-08-14
 outer_commit: 741e7f8e9c781fb80f274c12b19717194c6f0082
 submodule_commit: babe668ffc41f1c8b90f9b1ed001e50d99fbde69
-design_gate: /Users/igor/kon-mvp-20-scratch/evidence/kontor-teams/RE-GATE-RECORD.md
+design_gate: $HOME/kon-mvp-20-scratch/evidence/kontor-teams/RE-GATE-RECORD.md
 design_gate_verdict: COMPLIANT
 overall: READY-FOR-AUDIT
 ```

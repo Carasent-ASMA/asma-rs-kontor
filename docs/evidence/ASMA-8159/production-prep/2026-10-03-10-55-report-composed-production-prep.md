@@ -6,13 +6,15 @@
 > Scope: MEM-04 / TASK-004 of ASMA-8155; Paseo-direct
 > Summary: Async supplied-client rebuild, durable original-result replay, composed mutation proof and synthetic migration/corpus rehearsal. Exact command/results and remaining qualification blockers accompany this frozen additive candidate.
 
+> **Public tree, 2026-10-17 (ASMA-8511):** the run receipts and deployment records this document linked were removed from the public tree. Their links are now plain text. Each removed file is listed with its SHA-256 in the [removed-evidence manifest](../../removed-run-evidence-2026-10-17.tsv), and stays in git history at `0971674d`.
+
 ## When to load
 
 Load for TPM admission of existing independent review on the writer’s frozen SHA, routing inherited qualification findings, coordinating serialized external joins, or presenting the real credential proposal to Igor. This is writer verification and preparation, not an independent review or release acceptance.
 
 ## Authority and immutable pins
 
-Checkout `/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and`; branch `feat/ASMA-8155-kontor-experience-memory-and-analogue-recall`; repository `Carasent-ASMA/asma-rs-kontor`; TSW `wks_b22a010864eaa006`.
+Checkout `$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and`; branch `feat/ASMA-8155-kontor-experience-memory-and-analogue-recall`; repository `Carasent-ASMA/asma-rs-kontor`; TSW `wks_b22a010864eaa006`.
 
 Starting checkpoint `29c8134646b610234abcb740738979dea84c85fe`, tree `c8b03ad2a0694a0b48500d2c0e397c83bc6a0a03`. Operational authorization `44d5d916-d778-46b8-b00d-2cca01cc6553/8155-production-prep`. The full LSA disposition was read and verified: 30,440 bytes, final LF, SHA-256 `2b2c89f3b417237dadaebbb1d3f8698eb94b60c926bc01dc4b975224d7a8c55c`, path `/private/tmp/ASMA-8155-ASMA-8159-lsa-production-prep-disposition-20261003.json`. Its partial acceptance permits the existing supplied-client source/fake seam and continues reserving real credential resolution and account child-environment extraction.
 
@@ -38,7 +40,7 @@ Owned source paths: API `src/applications.rs`, `src/memory.rs`; daemon `src/appl
 
 ## Proof and exact commands
 
-Each [command receipt](receipts/) contains argv, exact cwd, UTC start/end, exit, test summaries, full gzip output and raw/archive SHA-256, recorder identity and pre-command source hashes. `run.py` captures the commands without altering historical receipts. Initial own-development failures are retained and labelled; they are not mutation kills. Full command/results tables are generated below after all runs finish.
+Each command receipt contains argv, exact cwd, UTC start/end, exit, test summaries, full gzip output and raw/archive SHA-256, recorder identity and pre-command source hashes. `run.py` captures the commands without altering historical receipts. Initial own-development failures are retained and labelled; they are not mutation kills. Full command/results tables are generated below after all runs finish.
 
 The composed fixture target covers actual loopback qualification success, provider-only egress, bearer/response redaction, failed add/cognify/canary/malformed/timeout preserving the prior active pointer, stale preview before egress, in-flight ledger change with an unlocked store, competing same/distinct keys, completed replay after ledger change/restart, immutable receipt failure/retry, absent/disabled/no-supplier refusal and operator/observer parity. It performs no real alias lookup.
 
@@ -90,66 +92,66 @@ Release still needs independent review/acceptance of this combined change and an
 
 ## Final outcomes and command inventory
 
-The exact scoped source manifest is SHA-256 `e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5` (761 files). [Candidate source hashes](receipts/candidate-source.json) enumerate every changed/new source file and protected file identities. The final mutant, loopback, store-library, schema, composed/recovery, runtime-contract, Jira-fixture, fmt and whitespace receipts carry that same manifest. Initial F4/synthetic runs predate the added rehearsal target or census-manifest scope; their tested production code bytes are unchanged and exact pre-command manifests are retained.
+The exact scoped source manifest is SHA-256 `e0e1f5107ba42b2c4b748fcdb8bad6d75e554edcc378c535c86aa8f84c0015d5` (761 files). Candidate source hashes enumerate every changed/new source file and protected file identities. The final mutant, loopback, store-library, schema, composed/recovery, runtime-contract, Jira-fixture, fmt and whitespace receipts carry that same manifest. Initial F4/synthetic runs predate the added rehearsal target or census-manifest scope; their tested production code bytes are unchanged and exact pre-command manifests are retained.
 
 F1 seven composed fixtures pass; all seven final mutants compile, fail behaviorally and restore exactly. F4 passes forced rollback, fresh schema and predecessor upgrade plus separate backup/recovery proof. F3 executed breadth totals **1,551 passing tests, one inherited ignored case and one inherited failing publication assertion** across the final listed targets; this excludes duplicate baselines/mutation/restoration runs. Build, clippy, fmt, whitespace, OpenAPI/console schema parity and selective deny policy pass. **F3 is blocked, not PASS.** Full native lane/full console/full heavy-store completion is not claimed.
 
 | Receipt | Exact command | Exit / result |
 | --- | --- | --- |
-| [f1-composed-baseline](receipts/f1-composed-baseline.json) | `cargo test -p kontor-daemon --test projection_rebuild --locked --offline` | 101 — FAILED. 0 passed |
-| [f1-composed-envelope-corrected](receipts/f1-composed-envelope-corrected.json) | `cargo test -p kontor-daemon --test projection_rebuild --locked --offline` | 0 — ok. 6 passed |
-| [f1-composed-final-baseline](receipts/f1-composed-final-baseline.json) | `cargo test -p kontor-daemon --test projection_rebuild --locked --offline` | 101 — FAILED. 6 passed |
-| [f1-composed-atomicity-corrected](receipts/f1-composed-atomicity-corrected.json) | `cargo test -p kontor-daemon --test projection_rebuild --locked --offline` | 0 — ok. 7 passed |
-| [primary-upstream-inspection](receipts/primary-upstream-inspection.json) | `python3 docs/evidence/ASMA-8159/production-prep/inspect-upstream.py` | 0 — PASS |
-| [f4-migration-0120-forced-rollback](receipts/f4-migration-0120-forced-rollback.json) | `cargo test -p kontor-store --test memory_migration_rollback --locked --offline -- --nocapture` | 0 — ok. 1 passed |
-| [f4-v119-upgrade](receipts/f4-v119-upgrade.json) | `cargo test -p kontor-store --test schema_v1 v120_upgrade_preserves_generic_ledger_and_enforces_immutable_memory_receipts --locked --offline -- --exact` | 0 — ok. 1 passed |
-| [f4-fresh-schema](receipts/f4-fresh-schema.json) | `cargo test -p kontor-store --test schema_v1 an_empty_database_migrates_to_the_current_schema_version --locked --offline -- --exact` | 0 — ok. 1 passed |
-| [synthetic-census-rehearsal](receipts/synthetic-census-rehearsal.json) | `cargo test -p kontor-daemon --test synthetic_census_rehearsal --locked --offline -- --nocapture` | 0 — ok. 1 passed |
-| [f3-clippy-workspace-contract](receipts/f3-clippy-workspace-contract.json) | `cargo clippy --workspace --all-targets --locked --offline -- -D warnings` | 0 — PASS |
-| [f3-build-workspace](receipts/f3-build-workspace.json) | `cargo build --workspace --locked --offline` | 0 — PASS |
-| [f3-fast-lane-plan](receipts/f3-fast-lane-plan.json) | `env CARGO_NET_OFFLINE=true python3 scripts/test-lanes.py --lane fast --base 29c81346 --dry-run` | 0 — PASS |
-| [f3-light-and-contract-breadth](receipts/f3-light-and-contract-breadth.json) | `cargo test -p kontor-core -p kontor-api -p kontor-cli -p kontor-mcp -p kontor-memory-cognee -p kontor-tests-contract --locked --offline` | 0 — 569 passed across 41 result lines; full target counts in receipt |
-| [f3-heavy-lane-plan](receipts/f3-heavy-lane-plan.json) | `env CARGO_NET_OFFLINE=true python3 scripts/test-lanes.py --lane heavy --base 29c81346 --dry-run` | 0 — PASS |
-| [f3-cargo-deny-policy](receipts/f3-cargo-deny-policy.json) | `cargo deny --offline check licenses bans sources` | 0 — PASS |
-| [actual-default-heads-and-docs](receipts/actual-default-heads-and-docs.json) | `python3 docs/evidence/ASMA-8159/production-prep/inspect-integration.py` | 0 — PASS |
-| [supported-git-operations](receipts/supported-git-operations.json) | `asma git --help` | 0 — PASS |
-| [f3-generated-console-contract-parity](receipts/f3-generated-console-contract-parity.json) | `python3 docs/evidence/ASMA-8159/production-prep/check-contract-parity.py` | 0 — PASS |
-| [f3-safe-isolation-inventory](receipts/f3-safe-isolation-inventory.json) | `python3 docs/evidence/ASMA-8159/production-prep/safety-inventory.py` | 0 — PASS |
-| [f3-full-safe-loopback](receipts/f3-full-safe-loopback.json) | `cargo test -p kontor-daemon --test loopback_api --locked --offline -- --test-threads=4` | 0 — ok. 488 passed |
-| [f3-store-library](receipts/f3-store-library.json) | `cargo test -p kontor-store --lib --locked --offline` | 0 — ok. 25 passed |
-| [f3-fmt](receipts/f3-fmt.json) | `cargo fmt --all -- --check` | 0 — PASS |
-| [f3-composed-memory-and-recovery](receipts/f3-composed-memory-and-recovery.json) | `cargo test -p kontor-daemon --test projection_rebuild --test experience_memory --test recovery_security --locked --offline -- --test-threads=4` | 0 — ok. 2 passed; ok. 7 passed; ok. 6 passed |
-| [f3-whitespace](receipts/f3-whitespace.json) | `git diff --check` | 0 — PASS |
-| [f3-full-schema-v1](receipts/f3-full-schema-v1.json) | `cargo test -p kontor-store --test schema_v1 --locked --offline -- --test-threads=4` | 0 — ok. 65 passed |
-| [f3-runtime-synthetic-contracts](receipts/f3-runtime-synthetic-contracts.json) | `cargo test -p kontor-runtime-paseo -p kontor-runtime-codex -p kontor-runtime-ao --test contract --locked --offline` | 0 — ok. 60 passed; ok. 22 passed; ok. 285 passed |
-| [f3-jira-fake-boundary](receipts/f3-jira-fake-boundary.json) | `cargo test -p kontor-jira --test credential_scope --test native_connector --locked --offline` | 0 — ok. 2 passed; ok. 20 passed |
-| [f3-publication-immutable-boundary](receipts/f3-publication-immutable-boundary.json) | `cargo test -p kontor-store --test publication_attestations_immutable --locked --offline` | 101 — FAILED. 0 passed |
+| f1-composed-baseline | `cargo test -p kontor-daemon --test projection_rebuild --locked --offline` | 101 — FAILED. 0 passed |
+| f1-composed-envelope-corrected | `cargo test -p kontor-daemon --test projection_rebuild --locked --offline` | 0 — ok. 6 passed |
+| f1-composed-final-baseline | `cargo test -p kontor-daemon --test projection_rebuild --locked --offline` | 101 — FAILED. 6 passed |
+| f1-composed-atomicity-corrected | `cargo test -p kontor-daemon --test projection_rebuild --locked --offline` | 0 — ok. 7 passed |
+| primary-upstream-inspection | `python3 docs/evidence/ASMA-8159/production-prep/inspect-upstream.py` | 0 — PASS |
+| f4-migration-0120-forced-rollback | `cargo test -p kontor-store --test memory_migration_rollback --locked --offline -- --nocapture` | 0 — ok. 1 passed |
+| f4-v119-upgrade | `cargo test -p kontor-store --test schema_v1 v120_upgrade_preserves_generic_ledger_and_enforces_immutable_memory_receipts --locked --offline -- --exact` | 0 — ok. 1 passed |
+| f4-fresh-schema | `cargo test -p kontor-store --test schema_v1 an_empty_database_migrates_to_the_current_schema_version --locked --offline -- --exact` | 0 — ok. 1 passed |
+| synthetic-census-rehearsal | `cargo test -p kontor-daemon --test synthetic_census_rehearsal --locked --offline -- --nocapture` | 0 — ok. 1 passed |
+| f3-clippy-workspace-contract | `cargo clippy --workspace --all-targets --locked --offline -- -D warnings` | 0 — PASS |
+| f3-build-workspace | `cargo build --workspace --locked --offline` | 0 — PASS |
+| f3-fast-lane-plan | `env CARGO_NET_OFFLINE=true python3 scripts/test-lanes.py --lane fast --base 29c81346 --dry-run` | 0 — PASS |
+| f3-light-and-contract-breadth | `cargo test -p kontor-core -p kontor-api -p kontor-cli -p kontor-mcp -p kontor-memory-cognee -p kontor-tests-contract --locked --offline` | 0 — 569 passed across 41 result lines; full target counts in receipt |
+| f3-heavy-lane-plan | `env CARGO_NET_OFFLINE=true python3 scripts/test-lanes.py --lane heavy --base 29c81346 --dry-run` | 0 — PASS |
+| f3-cargo-deny-policy | `cargo deny --offline check licenses bans sources` | 0 — PASS |
+| actual-default-heads-and-docs | `python3 docs/evidence/ASMA-8159/production-prep/inspect-integration.py` | 0 — PASS |
+| supported-git-operations | `asma git --help` | 0 — PASS |
+| f3-generated-console-contract-parity | `python3 docs/evidence/ASMA-8159/production-prep/check-contract-parity.py` | 0 — PASS |
+| f3-safe-isolation-inventory | `python3 docs/evidence/ASMA-8159/production-prep/safety-inventory.py` | 0 — PASS |
+| f3-full-safe-loopback | `cargo test -p kontor-daemon --test loopback_api --locked --offline -- --test-threads=4` | 0 — ok. 488 passed |
+| f3-store-library | `cargo test -p kontor-store --lib --locked --offline` | 0 — ok. 25 passed |
+| f3-fmt | `cargo fmt --all -- --check` | 0 — PASS |
+| f3-composed-memory-and-recovery | `cargo test -p kontor-daemon --test projection_rebuild --test experience_memory --test recovery_security --locked --offline -- --test-threads=4` | 0 — ok. 2 passed; ok. 7 passed; ok. 6 passed |
+| f3-whitespace | `git diff --check` | 0 — PASS |
+| f3-full-schema-v1 | `cargo test -p kontor-store --test schema_v1 --locked --offline -- --test-threads=4` | 0 — ok. 65 passed |
+| f3-runtime-synthetic-contracts | `cargo test -p kontor-runtime-paseo -p kontor-runtime-codex -p kontor-runtime-ao --test contract --locked --offline` | 0 — ok. 60 passed; ok. 22 passed; ok. 285 passed |
+| f3-jira-fake-boundary | `cargo test -p kontor-jira --test credential_scope --test native_connector --locked --offline` | 0 — ok. 2 passed; ok. 20 passed |
+| f3-publication-immutable-boundary | `cargo test -p kontor-store --test publication_attestations_immutable --locked --offline` | 101 — FAILED. 0 passed |
 
 All commands above run from the exact task checkout. Native fast/heavy rows are dry-run plans only; they earn no executed-lane credit. The full lane was not invoked, including with `--dry-run`, because its implementation delegates to `verify-tree.py` before honoring dry-run and executes workspace tests, audits and installation. Selective policy command checks licenses/bans/sources only; it does not claim advisories. Upstream primary inspection performs bounded public immutable source GETs only.
 
 ### Final mutation witnesses
 
-Run command: `python3 docs/evidence/ASMA-8159/production-prep/run.py mutants final-`. Initial ordered set used `.../run.py mutants` before F4. Each witness below ran baseline → seeded → exact restored with the same argv. Baseline and restoration each exit 0 with one passing executed witness; seeded exit 101 after compilation, with the named behavioral failure. Every restored file hash equals its baseline hash. [Full final patch/source/result identities](receipts/final-mutants.json); [baseline source](receipts/final-mutant-source.json). The initial set remains in `mutants.json`.
+Run command: `python3 docs/evidence/ASMA-8159/production-prep/run.py mutants final-`. Initial ordered set used `.../run.py mutants` before F4. Each witness below ran baseline → seeded → exact restored with the same argv. Baseline and restoration each exit 0 with one passing executed witness; seeded exit 101 after compilation, with the named behavioral failure. Every restored file hash equals its baseline hash. Full final patch/source/result identities; baseline source. The initial set remains in `mutants.json`.
 
 | Mutant | Exact witness argv | Seeded failure / result |
 | --- | --- | --- |
-| MUT-007 | `cargo test -p kontor-daemon --test projection_rebuild --locked --offline -- composed_adverse_qualification_cannot_activate_before_canary --exact` | KILLED; `composed_adverse_qualification_cannot_activate_before_canary`; [baseline](receipts/final-mut-007-baseline.json), [seeded](receipts/final-mut-007-seeded.json), [restored](receipts/final-mut-007-restored.json) |
-| MUT-001 | `cargo test -p kontor-core --test experience_memory --locked --offline -- strict_experience_roundtrip_and_non_memory_eligibility --exact` | KILLED; `strict_experience_roundtrip_and_non_memory_eligibility`; [baseline](receipts/final-mut-001-baseline.json), [seeded](receipts/final-mut-001-seeded.json), [restored](receipts/final-mut-001-restored.json) |
-| MUT-002 | `cargo test -p kontor-store --lib --locked --offline -- memory::experience_tests::malicious_tuple_project_current_approval_tombstone_hash_policy_and_kind --exact` | KILLED; `memory::experience_tests::malicious_tuple_project_current_approval_tombstone_hash_policy_and_kind`; [baseline](receipts/final-mut-002-baseline.json), [seeded](receipts/final-mut-002-seeded.json), [restored](receipts/final-mut-002-restored.json) |
-| MUT-003 | `cargo test -p kontor-store --lib --locked --offline -- memory::experience_tests::exact_budget_32768_32769_unicode_escaping_and_skip_oversized_top --exact` | KILLED; `memory::experience_tests::exact_budget_32768_32769_unicode_escaping_and_skip_oversized_top`; [baseline](receipts/final-mut-003-baseline.json), [seeded](receipts/final-mut-003-seeded.json), [restored](receipts/final-mut-003-restored.json) |
-| MUT-004 | `cargo test -p kontor-memory-cognee --test fixtures authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text --locked --offline -- --exact` | KILLED; `authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text`; [baseline](receipts/final-mut-004-baseline.json), [seeded](receipts/final-mut-004-seeded.json), [restored](receipts/final-mut-004-restored.json) |
-| MUT-005 | `cargo test -p kontor-daemon --test loopback_api experience_launch::degraded_launch_never_lists_the_corpus_and_timeout_keeps_store_unlocked --locked --offline -- --exact` | KILLED; `experience_launch::degraded_launch_never_lists_the_corpus_and_timeout_keeps_store_unlocked`; [baseline](receipts/final-mut-005-baseline.json), [seeded](receipts/final-mut-005-seeded.json), [restored](receipts/final-mut-005-restored.json) |
-| MUT-006 | `cargo test -p kontor-daemon --test loopback_api experience_launch::root_launch_contains_exact_frozen_canonical_bytes_and_downstream_cites_same_binding --locked --offline -- --exact` | KILLED; `experience_launch::root_launch_contains_exact_frozen_canonical_bytes_and_downstream_cites_same_binding`; [baseline](receipts/final-mut-006-baseline.json), [seeded](receipts/final-mut-006-seeded.json), [restored](receipts/final-mut-006-restored.json) |
+| MUT-007 | `cargo test -p kontor-daemon --test projection_rebuild --locked --offline -- composed_adverse_qualification_cannot_activate_before_canary --exact` | KILLED; `composed_adverse_qualification_cannot_activate_before_canary`; baseline, seeded, restored |
+| MUT-001 | `cargo test -p kontor-core --test experience_memory --locked --offline -- strict_experience_roundtrip_and_non_memory_eligibility --exact` | KILLED; `strict_experience_roundtrip_and_non_memory_eligibility`; baseline, seeded, restored |
+| MUT-002 | `cargo test -p kontor-store --lib --locked --offline -- memory::experience_tests::malicious_tuple_project_current_approval_tombstone_hash_policy_and_kind --exact` | KILLED; `memory::experience_tests::malicious_tuple_project_current_approval_tombstone_hash_policy_and_kind`; baseline, seeded, restored |
+| MUT-003 | `cargo test -p kontor-store --lib --locked --offline -- memory::experience_tests::exact_budget_32768_32769_unicode_escaping_and_skip_oversized_top --exact` | KILLED; `memory::experience_tests::exact_budget_32768_32769_unicode_escaping_and_skip_oversized_top`; baseline, seeded, restored |
+| MUT-004 | `cargo test -p kontor-memory-cognee --test fixtures authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text --locked --offline -- --exact` | KILLED; `authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text`; baseline, seeded, restored |
+| MUT-005 | `cargo test -p kontor-daemon --test loopback_api experience_launch::degraded_launch_never_lists_the_corpus_and_timeout_keeps_store_unlocked --locked --offline -- --exact` | KILLED; `experience_launch::degraded_launch_never_lists_the_corpus_and_timeout_keeps_store_unlocked`; baseline, seeded, restored |
+| MUT-006 | `cargo test -p kontor-daemon --test loopback_api experience_launch::root_launch_contains_exact_frozen_canonical_bytes_and_downstream_cites_same_binding --locked --offline -- --exact` | KILLED; `experience_launch::root_launch_contains_exact_frozen_canonical_bytes_and_downstream_cites_same_binding`; baseline, seeded, restored |
 
 ### Accepted-source defect and mandatory stop
 
-Exact command: `cargo test -p kontor-store --test publication_attestations_immutable --locked --offline`. It compiled, then exited 101: `recorded_publication_attestations_are_immutable_at_the_database_boundary` fails at `crates/kontor-store/tests/publication_attestations_immutable.rs:18`, actual 121, expected hard-coded 119. That file is byte-identical to accepted `831dd7c1`, SHA-256 recorded in [source attribution](receipts/inherited-publication-source.json); accepted source already declared schema 120. The stale assertion therefore predates this new 121 receipt migration. The actual immutability body is never reached, so this target earns no immutability proof. Full schema tests separately execute existing publication trigger checks.
+Exact command: `cargo test -p kontor-store --test publication_attestations_immutable --locked --offline`. It compiled, then exited 101: `recorded_publication_attestations_are_immutable_at_the_database_boundary` fails at `crates/kontor-store/tests/publication_attestations_immutable.rs:18`, actual 121, expected hard-coded 119. That file is byte-identical to accepted `831dd7c1`, SHA-256 recorded in source attribution; accepted source already declared schema 120. The stale assertion therefore predates this new 121 receipt migration. The actual immutability body is never reached, so this target earns no immutability proof. Full schema tests separately execute existing publication trigger checks.
 
 Per the user’s accepted-source-defect rule, source changes and further qualification stopped at this finding. The accepted test is not modified. TPM must route its owner’s correction, including checking other predecessor-rewind fixtures, then admit renewed affected combined breadth on the resulting frozen tree. Remaining full store/heavy/full-lane checks are unperformed, not inferred passed. This candidate is committed for review/routing with that blocker; it does not certify complete combined qualification.
 
 ### Exact excluded boundaries and other blockers
 
-- Entire `kontor-daemon --lib`, especially all `usage.rs` tests, remains excluded on macOS: the inherited provider-home Claude path invokes `/usr/bin/security find-generic-password`. [Isolation source inventory](receipts/safety-inventory.json) records TempDir harness, empty provider-home approval set and scripted exact-provider reporters used by full loopback.
+- Entire `kontor-daemon --lib`, especially all `usage.rs` tests, remains excluded on macOS: the inherited provider-home Claude path invokes `/usr/bin/security find-generic-password`. Isolation source inventory records TempDir harness, empty provider-home approval set and scripted exact-provider reporters used by full loopback.
 - Full loopback’s inherited ignored case is `a_configured_jira_boundary_distinguishes_historical_from_native_completion`, marked superseded by kontor-jira native connector contract tests. It is not executed or credited; selected native connector/credential fixtures pass separately.
 - `kontor-runtime-ao`, `kontor-runtime-codex`, `kontor-runtime-paseo` live targets are unexecuted; only their explicit synthetic `contract` targets ran. Unisolated blanket accounts/e2e tests, including `tests/e2e/pilot_sections/runtime.rs` SystemKeychain use, are not promoted to executed coverage.
 - Console app typecheck/vitest/production audit remain unexecuted because `apps/console/node_modules` is absent and installation is not authorized. Existing installed generator and standalone schema typecheck pass; these do not substitute for full app gates.
@@ -164,4 +166,4 @@ Initial own-development compile/envelope/fault-status expectation failures are r
 Only additive owned changes are staged; adapters, Cargo.lock, accepted 0120 SQL, account resolver, external docs checkout and historical receipts remain unchanged. The commit SHA/tree are reported in the writer’s final handoff to avoid a self-referential commit hash. Independent review follows through TPM; this writer stops after the checkpoint.
 
 
-Initial checkpoint whitespace command: `git diff --cached --check`, exit 2 on an extra blank line at EOF in this new report; [initial receipt](receipts/checkpoint-staged-whitespace.json). The report whitespace was corrected; the passing rerun is [checkpoint-staged-whitespace-corrected](receipts/checkpoint-staged-whitespace-corrected.json). Staging is restricted to the 13 enumerated owned source paths plus this new evidence subtree and parent README.
+Initial checkpoint whitespace command: `git diff --cached --check`, exit 2 on an extra blank line at EOF in this new report; initial receipt. The report whitespace was corrected; the passing rerun is checkpoint-staged-whitespace-corrected. Staging is restricted to the 13 enumerated owned source paths plus this new evidence subtree and parent README.

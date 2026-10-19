@@ -3,7 +3,7 @@
 import hashlib,json,subprocess,tempfile
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[4]
-GEN=Path("/Users/igor/.npm/_npx/f1e70922fc87e24a/node_modules/openapi-typescript/bin/cli.js")
+GEN=Path.home()/".npm/_npx/f1e70922fc87e24a/node_modules/openapi-typescript/bin/cli.js"
 contract=ROOT/"crates/kontor-api/contract/openapi.json"
 schema=ROOT/"apps/console/src/api/schema.d.ts"
 assert GEN.is_file(),"installed generator unavailable; no installation authorized"

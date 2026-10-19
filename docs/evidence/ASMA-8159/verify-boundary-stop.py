@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 
 
 ROOT = Path(__file__).resolve().parents[3]
-ROOT_REPOSITORY = Path("/Users/igor/carasent/asma-modules")
+ROOT_REPOSITORY = Path.home() / "carasent/asma-modules"
 OUTPUT = ROOT / "docs/evidence/ASMA-8159/receipts/production-prep-boundary-stop.json"
 BASE = "fe5373f2d2a2c147a6e2b6398c07b5091eaa1ca0"
 MODULE_DEFAULT = "8acdbd17e83d9d7ec545221c4b957e0325916997"

@@ -46,7 +46,7 @@ No P0 or P1 finding remains in the reviewed source scope.
 | Port commits | `0612a839b7ef1379fa6c8dd4412646196166dd87`, `c56b80eba5879ee7f6a45afc43a1c2e3ed4d6cd5` |
 | Corrective source head | `940138c5578b67c1590587a0d29c10390a58847a` |
 | Re-verification evidence commit | `f77c32501c92aecad1ee10180edbfd3158cd06fb` |
-| Review checkout | `/Users/igor/carasent/asma-modules/.worktrees/asma-8196/asma-rs-kontor` |
+| Review checkout | `$HOME/carasent/asma-modules/.worktrees/asma-8196/asma-rs-kontor` |
 
 The evidence commit is a descendant of the corrective source head and changes only `docs/evidence/ASMA-8196/2026-10-02-22-06-report-roster-persona-reverification.md`. The source under test at evidence head is therefore the exact `940138c5` source.
 
@@ -128,7 +128,7 @@ The earlier behavioral rejection remains part of the record and is not rewritten
 
 ## Exact checks run
 
-All commands ran in `/Users/igor/carasent/asma-modules/.worktrees/asma-8196/asma-rs-kontor`.
+All commands ran in `$HOME/carasent/asma-modules/.worktrees/asma-8196/asma-rs-kontor`.
 
 ```text
 git rev-parse HEAD

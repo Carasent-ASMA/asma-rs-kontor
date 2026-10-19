@@ -111,7 +111,7 @@ The requested untracked files were left byte-identical and uncommitted:
   not an acceptance-evidence input.
 
 Incident input
-`/Users/igor/kon-mvp-20-scratch/evidence/paseo-corrective/incidents/2026-08-14-destructive-reset-dirty-tsw.md`
+`$HOME/kon-mvp-20-scratch/evidence/paseo-corrective/incidents/2026-08-14-destructive-reset-dirty-tsw.md`
 hashes to `b809886960d48bd6512428dc66150f481c0b33cfa46cca44af4de9f2f7f1b1f9`.
 It records that destructive reset was used against a
 dirty TSW. The KON-09 four-file residue is fully superseded by this merged

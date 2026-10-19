@@ -1,6 +1,6 @@
-   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/crates/kontor-store)
+   Compiling kontor-store v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/crates/kontor-store)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 11.55s
-     Running tests/backup_export.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/backup_export-86507a0c15daf53a)
+     Running tests/backup_export.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/backup_export-86507a0c15daf53a)
 
 running 1 test
 

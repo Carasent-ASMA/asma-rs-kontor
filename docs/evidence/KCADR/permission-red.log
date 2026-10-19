@@ -1,4 +1,4 @@
-   Compiling kontor-runtime-paseo v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-runtime-paseo)
+   Compiling kontor-runtime-paseo v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-runtime-paseo)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 4.89s
      Running tests/contract.rs (target/debug/deps/contract-8d2dbf8a351e6ce1)
 

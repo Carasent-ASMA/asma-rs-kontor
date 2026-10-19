@@ -192,7 +192,7 @@ The separate acting evaluator account is verified as
 `01a00751-5be9-7281-bba5-75d8c0c101e7` (`Igor · Local Paseo`). The current
 native session readback identifies the unaliased local `codex` provider on
 `paseo-local`; the supported provider catalog distinguishes that route from
-`codex-work` and `codex-personal`, and the supported Kontor account read maps
+`codex-b` and `codex-a`, and the supported Kontor account read maps
 the local Paseo acting profile to that exact enabled account. No producer
 account is inferred from this acting-account evidence.
 

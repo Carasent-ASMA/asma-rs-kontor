@@ -3,7 +3,7 @@
 Date: 2026-10-02
 Task: Jira `ASMA-8196` under epic `ASMA-8190` (Paseo-direct)
 Branch: `feat/ASMA-8196-roster-occupancy-read-port`
-Checkout: `/Users/igor/carasent/asma-modules/.worktrees/asma-8196/asma-rs-kontor`
+Checkout: `$HOME/carasent/asma-modules/.worktrees/asma-8196/asma-rs-kontor`
 Source head: `940138c5578b67c1590587a0d29c10390a58847a`
 Parent: `c56b80eba5879ee7f6a45afc43a1c2e3ed4d6cd5`
 Base: `f95e206563bca88b6871f48528623441e5e1a231`

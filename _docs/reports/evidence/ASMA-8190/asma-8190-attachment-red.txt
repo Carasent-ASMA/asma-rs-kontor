@@ -1,16 +1,16 @@
-   Compiling kontor-runtime v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-runtime)
-   Compiling kontor-scheduler v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-scheduler)
-   Compiling kontor-teams v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-teams)
-   Compiling kontor-runtime-paseo v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-runtime-paseo)
-   Compiling kontor-profiles v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-profiles)
-   Compiling kontor-calendar v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-calendar)
-   Compiling kontor-accounts v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-accounts)
-   Compiling kontor-jira v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-jira)
-   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-store)
-   Compiling kontor-api v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-api)
-   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-daemon)
+   Compiling kontor-runtime v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-runtime)
+   Compiling kontor-scheduler v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-scheduler)
+   Compiling kontor-teams v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-teams)
+   Compiling kontor-runtime-paseo v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-runtime-paseo)
+   Compiling kontor-profiles v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-profiles)
+   Compiling kontor-calendar v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-calendar)
+   Compiling kontor-accounts v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-accounts)
+   Compiling kontor-jira v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-jira)
+   Compiling kontor-store v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-store)
+   Compiling kontor-api v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-api)
+   Compiling kontor-daemon v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-daemon)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 23.96s
-     Running tests/loopback_api.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/loopback_api-b347fa1894c0337e)
+     Running tests/loopback_api.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/loopback_api-b347fa1894c0337e)
 
 running 2 tests
 

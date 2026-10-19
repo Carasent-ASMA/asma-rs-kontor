@@ -389,7 +389,7 @@ PROV-FND-003, which the required workflows do not exercise.
   to candidate commit `6f884a0e`.
 - **Attached record:** this report; builder turn
   `01a0213a-f1a4-77a1-b29e-05b509f0ec5d`; installed
-  `/Users/igor/.local/bin/kontor-daemon`; workspace `target/release/kontor-daemon`.
+  `$HOME/.local/bin/kontor-daemon`; workspace `target/release/kontor-daemon`.
 - **Why ambiguous:** the handoff records deployment of the candidate and the
   installed daemon timestamp is `2026-08-21T00:18:00+0200`, but `--version`
   reports only `0.2.0`. Its SHA-256

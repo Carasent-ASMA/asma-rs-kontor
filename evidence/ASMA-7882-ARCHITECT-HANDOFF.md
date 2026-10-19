@@ -129,7 +129,7 @@ round-consumption-down.
    the personal Codex login reports its own rate limits or shares the work
    account's is settled by pointing the observer at each `CODEX_HOME` in turn.
    (The fleet policy still spells these `codex:team` / `codex:prolite`; commit
-   #78 on this ticket renamed the ids to `codex-work` / `codex-personal`,
+   #78 on this ticket renamed the ids to `codex-b` / `codex-a`,
    because an account is named for the identity it holds and not for its
    billing tier.) The mechanism
    keeps them apart; nobody has taken the reading. Account-before-rung

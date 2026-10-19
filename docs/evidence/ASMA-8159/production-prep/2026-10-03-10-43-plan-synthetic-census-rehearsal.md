@@ -6,6 +6,8 @@
 > Scope: ASMA-8159 local preparation; same-Realm synthetic copy only
 > Summary: A 55-identity artificial cohort plus two current additions exercises coherent census, verified backup/restore, optimistic mutations and immutable replay. No real historical identity is asserted.
 
+> **Public tree, 2026-10-17 (ASMA-8511):** the run receipts and deployment records this document linked were removed from the public tree. Their links are now plain text. Each removed file is listed with its SHA-256 in the [removed-evidence manifest](../../removed-run-evidence-2026-10-17.tsv), and stays in git history at `0971674d`.
+
 ## When to load
 
 Load for rerunning the synthetic proof or preparing a later precisely authorized same-Realm copied-data rehearsal. This extends the existing corpus scaffold; it does not replace the owning plan or its Goal.
@@ -20,7 +22,7 @@ python3 docs/evidence/ASMA-8159/production-prep/run.py run synthetic-census-rehe
 
 Choose a fresh receipt name for each run. The test calls supported `propose_memory_revision`, `approve_memory_revision`, `tombstone_memory`, `classify_experiences`, `projection_preview`, `recall_experiences_idempotent`, `recovery::snapshot` and `recovery::restore`. It performs no purge or direct mutation of canonical ledger tables. Administrative census SQL is read-only in one transaction. The deliberately injected migration failure is a separate disposable F4 fixture.
 
-Recorded result: [synthetic proof](receipts/synthetic-rehearsal-proof.json); complete command/log/source identities in [run receipt](receipts/synthetic-census-rehearsal.json). The test prints `SYNTHETIC_REHEARSAL_RESULT` with all 55 artificial project/item/revision/hash identities, classification rows, snapshot manifest, actual temporary destinations, prior-history digest and teardown proof. The [real 55-slot worksheet](../historical-55-census.csv) remains unchanged and pending.
+Recorded result: synthetic proof; complete command/log/source identities in run receipt. The test prints `SYNTHETIC_REHEARSAL_RESULT` with all 55 artificial project/item/revision/hash identities, classification rows, snapshot manifest, actual temporary destinations, prior-history digest and teardown proof. The [real 55-slot worksheet](../historical-55-census.csv) remains unchanged and pending.
 
 The synthetic current corpus contains 57 items: 55 in the explicit artificial cohort and two additional items. Current approved, untombstoned heads: 47, comprising 41 typed recall-eligible heads and six generic heads. Of the typed heads, 31 are provider eligible and ten local only. Five pending and five tombstoned items account for the remaining ten. The projection contains exactly 31 provider-eligible entries. SQL `document_type` is a candidate label; the Rust validator supplies final typed eligibility. No SQL shape heuristic grants provider eligibility.
 
@@ -43,7 +45,7 @@ The paths below are placeholders that must be bound to the approved source, copi
 
 Record the product snapshot manifest and independently verify hash/length; preserve the original snapshot. Confirm the destination is stopped, isolated from production sockets/processes/worktrees and has no provider credential/config homes. Product restore must report same Realm, exact schema and reconciliation required. Do not start normal serving until approved recovery/isolation prerequisites are met. Do not substitute a portable export/import for a same-Realm database rehearsal.
 
-The exact read-only census is [census.sql](census.sql). Execute it under `BEGIN` on the isolated authorized copy, together with coherent counts of items, revisions, approvals, tombstones, receipts, bindings and actual current approved heads. Export ordered identity/hash/provenance/classification rows to a reviewed redacted artifact. Call supported typed classification for final eligibility and report generic/pending/tombstoned/local/provider counts separately. Hash ordered rows, including immutable prior revisions, approvals, tombstones, receipts, context bindings, recall keys and metadata; record current mutable aggregate revisions/head pointers separately.
+The exact read-only census is [census.sql](../../../../crates/kontor-daemon/tests/fixtures/census.sql) (moved into the daemon test fixtures on 2026-10-17). Execute it under `BEGIN` on the isolated authorized copy, together with coherent counts of items, revisions, approvals, tombstones, receipts, bindings and actual current approved heads. Export ordered identity/hash/provenance/classification rows to a reviewed redacted artifact. Call supported typed classification for final eligibility and report generic/pending/tombstoned/local/provider counts separately. Hash ordered rows, including immutable prior revisions, approvals, tombstones, receipts, context bindings, recall keys and metadata; record current mutable aggregate revisions/head pointers separately.
 
 Compare the immutable owning historical 55-cohort artifact by its exact identity tuples against coherent current N. Report retained, superseded, tombstoned, missing and additional identities explicitly. Never infer the first 55 current rows, replace the historical artifact with synthetic identities, or classify a generic row as an experience automatically. Real cohort and current N remain unavailable in this checkpoint.
 

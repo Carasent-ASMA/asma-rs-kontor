@@ -63,7 +63,7 @@ The new match arms reproduce the approved record exactly:
 
 | Provider/model route | Explicit efforts admitted |
 | --- | --- |
-| `codex`, `codex-work`, `codex-personal` / `gpt-5.6-luna` | `low`, `medium`, `high`, `xhigh`, `max` |
+| `codex`, `codex-b`, `codex-a` / `gpt-5.6-luna` | `low`, `medium`, `high`, `xhigh`, `max` |
 | `cursor/auto-smart` | `low`, `medium`, `high`, `xhigh` |
 | `opencode/openrouter/z-ai/glm-5.3-flash` | `low`, `high`, `max` |
 | `opencode/openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` | `medium`, `high` |

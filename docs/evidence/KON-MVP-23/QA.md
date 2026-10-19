@@ -91,7 +91,7 @@ No concrete KON-MVP-20 mutant-ID ledger was present in the supplied committee-me
 ## Evidence integrity and tree state
 
 - Handoff read from `docs/evidence/KON-MVP-23/IMPLEMENT-HANDOFF.md` inside the frozen submodule.
-- Governing ruling read from `/Users/igor/kon-mvp-20-scratch/evidence/committee-memory/2026-08-13-judge-ruling-BLOCK_1_0_WITH_KON_MVP_23.md`.
+- Governing ruling read from `$HOME/kon-mvp-20-scratch/evidence/committee-memory/2026-08-13-judge-ruling-BLOCK_1_0_WITH_KON_MVP_23.md`.
 - Every acceptance citation in the handoff was checked against the cited file/line in commit `53a2eb99`; cited symbols/routes exist.
 - Submodule HEAD: `53a2eb99ca710931b47a15a4eefdd7e972b42bec`.
 - `Cargo.lock` is byte-identical to `HEAD` (`03c9e37793cf1de5b1e385f47991784f4c725b35`). Cargo rewrote it during uncapped test runs; it was restored before this verdict.

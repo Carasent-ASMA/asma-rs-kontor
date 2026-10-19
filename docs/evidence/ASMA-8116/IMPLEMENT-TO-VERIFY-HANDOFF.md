@@ -9,7 +9,7 @@ Artifact: implement-to-verify-handoff
 | Branch | `feat/ASMA-8116-implement-confirmed-jira-key-resolution-and-public-projections` |
 | Head | `bc19803` (branch pushed; PR #215, draft) |
 | Integrated onto | `origin/master` `e40b5f4` (contained; verified ancestor) |
-| Worktree | `/Users/igor/carasent/asma-modules/.worktrees/asma-8116/asma-rs-kontor` |
+| Worktree | `$HOME/carasent/asma-modules/.worktrees/asma-8116/asma-rs-kontor` |
 | Schema | `SCHEMA_VERSION = 95`, migration `0095_immutable_jira_issue_identity.sql` |
 | Recovery ref | tag `asma8116-preintegration-2-backup` → `b0b711f` |
 

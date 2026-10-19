@@ -46,12 +46,12 @@
    Compiling bytes v1.12.1
    Compiling hex v0.4.3
    Compiling untrusted v0.7.1
-   Compiling kontor-core v0.2.1 (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/mutation-source/crates/kontor-core)
+   Compiling kontor-core v0.2.1 ($HOME/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/mutation-source/crates/kontor-core)
    Compiling tokio v1.53.1
    Compiling async-trait v0.1.92
-   Compiling kontor-runtime v0.2.1 (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/mutation-source/crates/kontor-runtime)
+   Compiling kontor-runtime v0.2.1 ($HOME/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/mutation-source/crates/kontor-runtime)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 49.31s
-     Running unittests src/lib.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/mutation-target/debug/deps/kontor_runtime-38fd6bad31f23716)
+     Running unittests src/lib.rs ($HOME/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/mutation-target/debug/deps/kontor_runtime-38fd6bad31f23716)
 
 running 16 tests
 test planning_pair::attestation::prepared_diagnostic::tests::selected_key_identity_and_immutable_registration_must_match_preparation ... ok

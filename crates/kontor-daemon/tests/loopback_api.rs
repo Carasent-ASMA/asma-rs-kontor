@@ -58839,9 +58839,9 @@ async fn duplicate_rendered_slots_in_one_team_are_refused_before_runtime_or_admi
 // ---------------------------------------------------------------------------
 
 const LEGACY_ASMA_8120_WORKTREE: &str =
-    "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8049-jira-key-rollout";
+    "/Users/operator/carasent/asma-modules/.worktrees/feat/ASMA-8049-jira-key-rollout";
 const CORRECTED_ASMA_8120_WORKTREE: &str =
-    "/Users/igor/carasent/asma-modules/.worktrees/asma-8120/asma-rs-kontor";
+    "/Users/operator/carasent/asma-modules/.worktrees/asma-8120/asma-rs-kontor";
 const ASMA_8120_BRANCH: &str =
     "feat/ASMA-8120-deploy-jira-key-runtime-and-migrate-current-native-containers";
 
@@ -58858,7 +58858,7 @@ async fn worktree_correction_fixture(world: &World, key: &str) -> WorktreeCorrec
         world,
         key,
         "ASMA modules",
-        "/Users/igor/carasent/asma-modules",
+        "/Users/operator/carasent/asma-modules",
     )
     .await;
     let project = created.json()["project_id"]
@@ -59081,7 +59081,7 @@ async fn a_task_worktree_claim_correction_refuses_every_unbound_input() {
             serde_json::json!({
                 "expected_revision": fixture.task_revision,
                 "old_worktree": LEGACY_ASMA_8120_WORKTREE,
-                "new_worktree": "/Users/igor/carasent/asma-modules/.worktrees/asma-9999/asma-rs-kontor",
+                "new_worktree": "/Users/operator/carasent/asma-modules/.worktrees/asma-9999/asma-rs-kontor",
             }),
             "invalid_request",
             "worktree_target_invalid",
@@ -59416,7 +59416,7 @@ const GOVERNED_PROJECT_ID: &str = "01a0064a-e056-7603-9968-ef64fdaacb75";
 
 /// The root path the mapping used to key on, kept only to prove it no longer
 /// confers anything.
-const FORMER_GOVERNED_ROOT: &str = "/Users/igor/carasent/asma-modules";
+const FORMER_GOVERNED_ROOT: &str = "/Users/operator/carasent/asma-modules";
 
 /// The governed project, seeded under its exact durable id.
 ///
@@ -62378,7 +62378,7 @@ async fn a_policy_blocked_epic_pass_still_carries_a_proved_rename_forward() {
 /// the same document at an unused version, with each container template moved
 /// to its typed Jira-key token and nothing else changed.
 ///
-/// `docs/evidence/ASMA-8117/team-definition-successors/asma-operational-v4.json`
+/// `crates/kontor-core/tests/fixtures/team-definition-successors/asma-operational-v4.json`
 /// is this exact document; `kontor-core`'s `team_definition_successors` suite
 /// proves the two agree field by field.
 fn jira_key_successor_definition() -> kontor_core::spec::TeamDefinitionSpec {

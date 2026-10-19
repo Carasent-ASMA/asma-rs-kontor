@@ -5,7 +5,7 @@ verdict: AUDITED_FALSE
 outer_commit: 741e7f8e9c781fb80f274c12b19717194c6f0082
 submodule_commit: babe668ffc41f1c8b90f9b1ed001e50d99fbde69
 qa: evidence/ASMA-7854-QA.md — READY-FOR-AUDIT
-design_gate: /Users/igor/kon-mvp-20-scratch/evidence/kontor-teams/RE-GATE-RECORD.md — COMPLIANT
+design_gate: $HOME/kon-mvp-20-scratch/evidence/kontor-teams/RE-GATE-RECORD.md — COMPLIANT
 read_only: true
 ```
 

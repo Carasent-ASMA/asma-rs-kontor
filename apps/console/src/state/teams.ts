@@ -34,7 +34,7 @@
  * record promoted it, what was read, and when. Promotion without a review
  * reference is itself a validation failure — see `provenanceIssues`.
  *
- * @see /Users/igor/kon-mvp-20-scratch/evidence/kontor-teams/COMMITTEE-RECORD.md §5
+ * @see the KON-MVP-20 committee record, COMMITTEE-RECORD.md §5 (kept outside this repository)
  * @see _docs/ai-orchestration/analysis/2026-08-14-11-35-analysis-kontor-teams-capability-ui.md
  * @see _docs/ai-orchestration/architecture/2026-08-05-01-07-architecture-agent-fleet-roles-model-policy.md
  * @see _docs/ai-orchestration/architecture/2026-08-13-09-43-architecture-seat-context-window-compaction-policy.md
@@ -159,7 +159,7 @@ export function provenanceIssues(subject: string, provenance: Provenance): reado
  * Need-band provenance is then enforced per draft by `reviewSeat` and
  * `validateTeam`.
  *
- * @see /Users/igor/kon-mvp-20-scratch/evidence/kontor-teams/RE-GATE-RECORD.md §4.1 (F1)
+ * @see the KON-MVP-20 re-gate record, RE-GATE-RECORD.md §4.1 (F1) (kept outside this repository)
  */
 export function validateCatalog(catalog: ModelCatalog): readonly Issue[] {
   const issues: Issue[] = []
@@ -1225,7 +1225,7 @@ function verifiedNoWindow(call: string): Sourced<number | null> {
  * conservative direction, which is the direction the gate's own row-ambiguity
  * rule binds.
  *
- * @see /Users/igor/kon-mvp-20-scratch/evidence/kontor-teams/RE-GATE-RECORD.md §4.2 (F2)
+ * @see the KON-MVP-20 re-gate record, RE-GATE-RECORD.md §4.2 (F2) (kept outside this repository)
  */
 function observedNotPromoted<T>(value: T, citation: string): Sourced<T> {
   return {
@@ -1542,7 +1542,7 @@ export const TELEMETRY_ROLE_RESOLUTION = {
 } as const
 
 const NEED_BAND_TELEMETRY =
-  '/Users/igor/.agentsroom/stats/proj-1785577413079-edhf21.json; median non-zero per-agent/day tokens moved per prompt (input + cache creation + output), observed 2026-08-02..2026-08-14'
+  '$HOME/.agentsroom/stats/proj-1785577413079-edhf21.json; median non-zero per-agent/day tokens moved per prompt (input + cache creation + output), observed 2026-08-02..2026-08-14'
 
 /** A telemetry-derived band that remains unpromoted until a review signs it. */
 function observedBand(minTokens: number, rationale: string, role: string): SeatNeedBand {
