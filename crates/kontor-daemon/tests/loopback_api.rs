@@ -25011,6 +25011,908 @@ async fn an_in_flight_team_definition_migration_fences_replacement_before_any_ef
     );
 }
 
+/// A team seated behind an in-flight Team Definition migration.
+struct FencedTeam {
+    project: String,
+    epic: String,
+    runs: Vec<String>,
+    apply_body: serde_json::Value,
+}
+
+/// Start a Team Definition migration and leave it in flight, exactly as a lost
+/// acknowledgement leaves it. The epic must already be pinned and materialized.
+async fn leave_team_definition_migration_in_flight(
+    world: &World,
+    project: &str,
+    epic: &str,
+    slug: &str,
+) -> serde_json::Value {
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let epic_id = MiniProjectId::parse(epic).expect("an epic id");
+    let (project_revision, target) = world.daemon.state().with_store(|store| {
+        let revision = store
+            .get_project(project_id)
+            .expect("the project reads")
+            .expect("the project exists")
+            .revision;
+        let pin = store
+            .get_mini_project_team_definition(project_id, epic_id)
+            .expect("the pin reads")
+            .expect("the epic is pinned");
+        let mut definition = store
+            .get_team_definition(
+                project_id,
+                pin.definition.definition_id,
+                pin.definition.version,
+            )
+            .expect("the definition reads")
+            .expect("the definition exists");
+        definition.version =
+            SpecVersion::parse(definition.version.get() + 1).expect("the next revision");
+        definition
+            .containers
+            .iter_mut()
+            .find(|container| container.kind.as_str() == "ESW")
+            .expect("the ESW definition")
+            .prefix = ExternalName::parse("ESW2").expect("a distinct configured prefix");
+        store
+            .publish_team_definition(project_id, &definition, kontor_api::now())
+            .expect("the target definition publishes");
+        (revision, definition)
+    });
+    let upgrade = serde_json::json!({
+        "target_definition": {"id": target.definition_id, "version": target.version},
+        "legacy_topics": {},
+        "expected_revision": project_revision,
+    });
+    let preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/team-definition:upgrade-preview"),
+        &upgrade,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let changing_node = preview.json()["targets"]
+        .as_array()
+        .expect("the migration census")
+        .iter()
+        .find(|target| target["subject_kind"] == "container" && target["would_change"] == true)
+        .and_then(|target| target["topology_node_id"].as_str())
+        .map(TopologyNodeId::parse)
+        .transpose()
+        .expect("a valid topology node")
+        .expect("a changing container");
+    let apply_body = serde_json::json!({
+        "upgrade": upgrade,
+        "preview_hash": preview.json()["preview_hash"],
+    });
+    world.fake.lose_next_retitle_ack(changing_node);
+    let partial = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/team-definition:upgrade-apply"),
+        &apply_body,
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("{slug}-migration"))
+    .send(world)
+    .await;
+    assert_eq!(partial.code(), "rename_pending", "{}", partial.body);
+    apply_body
+}
+
+/// Seat a multi-slot team, then leave one Team Definition migration in flight
+/// exactly as a lost acknowledgement leaves it.
+async fn strand_a_team_behind_a_migration_fence(world: &World, slug: &'static str) -> FencedTeam {
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(world, slug).await;
+    let runs: Vec<String> = seats
+        .as_array()
+        .expect("the seated roster")
+        .iter()
+        .map(|seat| {
+            seat["agent_run_id"]
+                .as_str()
+                .expect("an agent run id")
+                .to_owned()
+        })
+        .collect();
+    assert!(
+        runs.len() > 1,
+        "the fixture must seat a multi-slot team: {}",
+        seats
+    );
+    let apply_body = leave_team_definition_migration_in_flight(world, &project, &epic, slug).await;
+    FencedTeam {
+        project,
+        epic,
+        runs,
+        apply_body,
+    }
+}
+
+/// Finish every seat but the last. That declared slot is still live, so the
+/// team is legitimately incomplete and the fence is not consulted yet.
+async fn finish_every_seat_but_the_last(world: &World, fenced: &FencedTeam, slug: &str) -> String {
+    let (last, earlier) = fenced.runs.split_last().expect("a final seat");
+    for (index, run) in earlier.iter().enumerate() {
+        finish_natively(world, run).await;
+        let settled = Call::post(
+            format!(
+                "/v1/projects/{}/agent-runs/{run}/runtime:settle",
+                fenced.project
+            ),
+            &serde_json::json!({}),
+        )
+        .signed_as(world, "operator")
+        .with_key(format!("{slug}-seat-{index}"))
+        .send(world)
+        .await;
+        assert_eq!(settled.status, 200, "seat {index}: {}", settled.body);
+        assert!(
+            settled.json()["team_run_closed"].is_null(),
+            "the team is incomplete while a declared slot is live: {}",
+            settled.body
+        );
+    }
+    last.clone()
+}
+
+/// Strand the last run: its own closure commits, then the fence refuses only
+/// the team closure.
+async fn strand_the_last_seat(
+    world: &World,
+    fenced: &FencedTeam,
+    last: &str,
+    slug: &str,
+) -> String {
+    finish_natively(world, last).await;
+    let uri = format!(
+        "/v1/projects/{}/agent-runs/{last}/runtime:settle",
+        fenced.project
+    );
+    let refused = Call::post(&uri, &serde_json::json!({}))
+        .signed_as(world, "operator")
+        .with_key(format!("{slug}-seat-last"))
+        .send(world)
+        .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.code(), "placement_blocked", "{}", refused.body);
+    uri
+}
+
+/// An envelope whose last child ended while a Team Definition migration fenced
+/// its closure is not a permanent hold.
+///
+/// `close_agent_run` commits before `settle_team` runs. The fence can then
+/// refuse the closure, leaving a non-terminal TeamRun with no live child. The
+/// run itself is immutable, so `runtime:settle` is the only path back to it:
+/// the replay must retry the closure rather than merely report the stranded
+/// envelope, and it must close the team once the fence lifts.
+#[tokio::test]
+async fn a_team_stranded_behind_a_migration_fence_closes_when_its_settlement_is_replayed() {
+    let world = World::open_empty_with_a_plane().await;
+    let fenced = strand_a_team_behind_a_migration_fence(&world, "stranded-settlement-replay").await;
+    let last = finish_every_seat_but_the_last(&world, &fenced, "stranded-settlement-replay").await;
+    let last_uri = strand_the_last_seat(&world, &fenced, &last, "stranded-settlement-replay").await;
+
+    let project_id = ProjectId::parse(&fenced.project).expect("a project id");
+    let last_id = AgentRunId::parse(&last).expect("the last agent run id");
+    let (team_run_id, last_binding) = world.daemon.state().with_store(|store| {
+        let run = store
+            .get_agent_run(project_id, last_id)
+            .expect("the last run reads")
+            .expect("the last run exists");
+        let binding = run.binding.expect("the last run is bound");
+        (run.team_run_id, binding)
+    });
+    assert!(
+        world
+            .daemon
+            .state()
+            .sessions()
+            .get(last_binding.id)
+            .is_some(),
+        "the failed settlement left the closed run's frozen snapshot held"
+    );
+    let task_id = TaskId::parse(
+        Call::get(format!(
+            "/v1/projects/{}/epics/{}",
+            fenced.project, fenced.epic
+        ))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await
+        .json()["tasks"][0]["task_id"]
+            .as_str()
+            .expect("the task id"),
+    )
+    .expect("a canonical task id");
+    let stranded = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(project_id, team_run_id)
+            .expect("the team reads")
+            .expect("the team exists")
+    });
+    assert!(
+        !stranded.lifecycle.is_terminal(),
+        "the fence left the envelope open with no live child"
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.tasks_with_open_runs())
+            .expect("the in-flight tasks read")
+            .contains(&task_id),
+        "admission must see the stranded envelope as in flight"
+    );
+
+    // A replay while the fence is still up retries the closure and is refused
+    // by the same fence — it does not report a bare stuck-open team.
+    let still_fenced = Call::post(&last_uri, &serde_json::json!({}))
+        .signed_as(&world, "operator")
+        .with_key("stranded-settlement-replay-seat-last-again")
+        .send(&world)
+        .await;
+    assert_eq!(still_fenced.status, 409, "{}", still_fenced.body);
+    assert_eq!(
+        still_fenced.code(),
+        "placement_blocked",
+        "{}",
+        still_fenced.body
+    );
+    // The terminal replay gives up the frozen snapshot before the fenced seat
+    // release, so the refused replay does not leave a closed run reporting
+    // `seat_live`.
+    assert!(
+        world
+            .daemon
+            .state()
+            .sessions()
+            .get(last_binding.id)
+            .is_none(),
+        "the fenced replay released the closed run's frozen snapshot"
+    );
+
+    // The same key completes the interrupted migration, and the next replay of
+    // the settlement closes the team.
+    let resumed = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/team-definition:upgrade-apply",
+            fenced.project, fenced.epic
+        ),
+        &fenced.apply_body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("stranded-settlement-replay-migration")
+    .send(&world)
+    .await;
+    assert_eq!(resumed.status, 200, "{}", resumed.body);
+
+    let settled = Call::post(&last_uri, &serde_json::json!({}))
+        .signed_as(&world, "operator")
+        .with_key("stranded-settlement-replay-seat-last-released")
+        .send(&world)
+        .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    assert_eq!(
+        settled.json()["team_run_closed"],
+        serde_json::json!(team_run_id.to_string()),
+        "{}",
+        settled.body
+    );
+    let closed = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(project_id, team_run_id)
+            .expect("the team reads")
+            .expect("the team exists")
+    });
+    assert!(
+        closed.lifecycle.is_terminal(),
+        "the replayed settlement closes the envelope"
+    );
+    assert!(
+        !world
+            .daemon
+            .state()
+            .with_store(|store| store.tasks_with_open_runs())
+            .expect("the in-flight tasks read")
+            .contains(&task_id),
+        "the task is schedulable again once the envelope is terminal"
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .sessions()
+            .get(last_binding.id)
+            .is_none(),
+        "the replayed settlement releases the closed run's frozen snapshot"
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.list_binding_snapshots())
+            .expect("the binding snapshots read")
+            .iter()
+            .all(|snapshot| snapshot.binding_id != last_binding.id),
+        "the replayed settlement forgets the durable binding snapshot"
+    );
+}
+
+/// A runtime-observed terminal run is as final as an operator abandon: a replay
+/// may close the team whatever closed the children.
+///
+/// The first abandonment is recorded before the runtime sees the run end, so a
+/// replay of `runtime:abandon` on a runtime-observed run carries no abandon
+/// receipt of its own. The team must still converge once every child is
+/// terminal, or the admission change turns that history into a permanent hold.
+#[tokio::test]
+async fn a_runtime_observed_terminal_run_closes_its_stranded_team_on_abandon_replay() {
+    let world = World::open_empty_with_a_plane().await;
+    let fenced = strand_a_team_behind_a_migration_fence(&world, "stranded-abandon-replay").await;
+    let last = finish_every_seat_but_the_last(&world, &fenced, "stranded-abandon-replay").await;
+    strand_the_last_seat(&world, &fenced, &last, "stranded-abandon-replay").await;
+
+    let resumed = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/team-definition:upgrade-apply",
+            fenced.project, fenced.epic
+        ),
+        &fenced.apply_body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("stranded-abandon-replay-migration")
+    .send(&world)
+    .await;
+    assert_eq!(resumed.status, 200, "{}", resumed.body);
+
+    let project_id = ProjectId::parse(&fenced.project).expect("a project id");
+    let last_id = AgentRunId::parse(&last).expect("the last agent run id");
+    let run = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, last_id)
+            .expect("the last run reads")
+            .expect("the last run exists")
+    });
+    assert!(
+        matches!(
+            run.terminal.as_ref().map(|terminal| &terminal.source),
+            Some(kontor_core::state::TerminalEvidenceSource::RuntimeObservation { .. })
+        ),
+        "the run must be closed by the runtime, not by this operator"
+    );
+    let last_binding = run
+        .binding
+        .clone()
+        .expect("the stranded run is bound to its session");
+    assert!(
+        world
+            .daemon
+            .state()
+            .sessions()
+            .get(last_binding.id)
+            .is_some(),
+        "the failed settlement left the closed run's frozen snapshot held"
+    );
+    let abandoned = Call::post(
+        format!(
+            "/v1/projects/{}/agent-runs/{last}/runtime:abandon",
+            fenced.project
+        ),
+        &serde_json::json!({
+            "expected_revision": run.revision.get(),
+            "reason": "Every run of this team has ended; the envelope is stranded"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("stranded-abandon-replay-run")
+    .send(&world)
+    .await;
+    assert_eq!(abandoned.status, 200, "{}", abandoned.body);
+    assert_eq!(
+        abandoned.json()["applied"],
+        "unchanged",
+        "{}",
+        abandoned.body
+    );
+    assert_eq!(
+        abandoned.json()["team_run_closed"],
+        serde_json::json!(run.team_run_id.to_string()),
+        "{}",
+        abandoned.body
+    );
+    let closed = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(project_id, run.team_run_id)
+            .expect("the team reads")
+            .expect("the team exists")
+    });
+    assert!(
+        closed.lifecycle.is_terminal(),
+        "the replay closes the stranded envelope"
+    );
+    assert!(
+        matches!(
+            closed.terminal.as_ref().map(|terminal| &terminal.source),
+            Some(kontor_core::state::TeamEvidenceSource::ChildEvidence { .. })
+        ),
+        "the replay records the children's own outcome rather than an operator abandon: {:?}",
+        closed.terminal
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .sessions()
+            .get(last_binding.id)
+            .is_none(),
+        "the abandon replay releases the closed run's frozen snapshot"
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.list_binding_snapshots())
+            .expect("the binding snapshots read")
+            .iter()
+            .all(|snapshot| snapshot.binding_id != last_binding.id),
+        "the abandon replay forgets the durable binding snapshot"
+    );
+}
+
+/// A stranded envelope's abandon replay gives up the closed run's frozen
+/// snapshot before any fallible team work. The fence may still refuse the
+/// settlement, but a terminal run must not keep reporting `seat_live` while it
+/// does.
+#[tokio::test]
+async fn a_stranded_team_abandon_replay_releases_the_seat_before_the_fence() {
+    let world = World::open_empty_with_a_plane().await;
+    let fenced = strand_a_team_behind_a_migration_fence(&world, "stranded-abandon-fence").await;
+    let last = finish_every_seat_but_the_last(&world, &fenced, "stranded-abandon-fence").await;
+    strand_the_last_seat(&world, &fenced, &last, "stranded-abandon-fence").await;
+
+    let project_id = ProjectId::parse(&fenced.project).expect("a project id");
+    let last_id = AgentRunId::parse(&last).expect("the last agent run id");
+    let (team_run_id, last_binding, last_revision) = world.daemon.state().with_store(|store| {
+        let run = store
+            .get_agent_run(project_id, last_id)
+            .expect("the last run reads")
+            .expect("the last run exists");
+        let binding = run.binding.clone().expect("the last run is bound");
+        (run.team_run_id, binding, run.revision.get())
+    });
+    assert!(
+        world
+            .daemon
+            .state()
+            .sessions()
+            .get(last_binding.id)
+            .is_some(),
+        "the failed settlement left the closed run's frozen snapshot held"
+    );
+
+    let abandon_uri = format!(
+        "/v1/projects/{}/agent-runs/{last}/runtime:abandon",
+        fenced.project
+    );
+    let body = serde_json::json!({
+        "expected_revision": last_revision,
+        "reason": "Every run of this team has ended; the envelope is stranded"
+    });
+    // The fence refuses the settlement, but the closed run must not keep its
+    // frozen snapshot because of it.
+    let refused = Call::post(&abandon_uri, &body)
+        .signed_as(&world, "operator")
+        .with_key("stranded-abandon-fence-run")
+        .send(&world)
+        .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.code(), "placement_blocked", "{}", refused.body);
+    assert!(
+        world
+            .daemon
+            .state()
+            .sessions()
+            .get(last_binding.id)
+            .is_none(),
+        "the fenced abandon replay released the closed run's frozen snapshot"
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.list_binding_snapshots())
+            .expect("the binding snapshots read")
+            .iter()
+            .all(|snapshot| snapshot.binding_id != last_binding.id),
+        "the fenced abandon replay forgets the durable binding snapshot"
+    );
+
+    let resumed = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/team-definition:upgrade-apply",
+            fenced.project, fenced.epic
+        ),
+        &fenced.apply_body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("stranded-abandon-fence-migration")
+    .send(&world)
+    .await;
+    assert_eq!(resumed.status, 200, "{}", resumed.body);
+
+    let abandoned = Call::post(&abandon_uri, &body)
+        .signed_as(&world, "operator")
+        .with_key("stranded-abandon-fence-run-again")
+        .send(&world)
+        .await;
+    assert_eq!(abandoned.status, 200, "{}", abandoned.body);
+    assert_eq!(
+        abandoned.json()["team_run_closed"],
+        serde_json::json!(team_run_id.to_string()),
+        "{}",
+        abandoned.body
+    );
+    let closed = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(project_id, team_run_id)
+            .expect("the team reads")
+            .expect("the team exists")
+    });
+    assert!(
+        closed.lifecycle.is_terminal(),
+        "the replay closes the stranded envelope"
+    );
+    assert!(
+        matches!(
+            closed.terminal.as_ref().map(|terminal| &terminal.source),
+            Some(kontor_core::state::TeamEvidenceSource::ChildEvidence { .. })
+        ),
+        "the replay records the children's own outcome rather than an operator abandon: {:?}",
+        closed.terminal
+    );
+}
+
+/// An abandon replay of an already-closed team changes nothing. A Team
+/// Definition migration in flight must not turn the endpoint's documented 200
+/// into a `placement_blocked` 409; the stored closure is the answer.
+#[tokio::test]
+async fn an_abandon_replay_of_an_already_closed_team_answers_behind_a_migration_fence() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "closed-team-abandon-replay").await;
+    let runs: Vec<String> = seats
+        .as_array()
+        .expect("the seated roster")
+        .iter()
+        .map(|seat| {
+            seat["agent_run_id"]
+                .as_str()
+                .expect("an agent run id")
+                .to_owned()
+        })
+        .collect();
+    for (index, run) in runs.iter().enumerate() {
+        finish_natively(&world, run).await;
+        let settled = Call::post(
+            format!("/v1/projects/{project}/agent-runs/{run}/runtime:settle"),
+            &serde_json::json!({}),
+        )
+        .signed_as(&world, "operator")
+        .with_key(format!("closed-team-abandon-replay-settle-{index}"))
+        .send(&world)
+        .await;
+        assert_eq!(settled.status, 200, "seat {index}: {}", settled.body);
+    }
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
+    let last = runs.last().expect("a final seat");
+    let last_id = AgentRunId::parse(last).expect("an agent run id");
+    let run = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, last_id)
+            .expect("the last run reads")
+            .expect("the last run exists")
+    });
+    let team = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(project_id, run.team_run_id)
+            .expect("the team reads")
+            .expect("the team exists")
+    });
+    assert!(
+        team.lifecycle.is_terminal(),
+        "the fixture settled every seat, so the team is closed"
+    );
+
+    leave_team_definition_migration_in_flight(
+        &world,
+        &project,
+        &epic,
+        "closed-team-abandon-replay",
+    )
+    .await;
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.get_in_flight_team_definition_migration(project_id, epic_id))
+            .expect("the migration reads")
+            .is_some(),
+        "the fixture really left a Team Definition migration in flight"
+    );
+
+    let abandoned = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{last}/runtime:abandon"),
+        &serde_json::json!({
+            "expected_revision": run.revision.get(),
+            "reason": "Replaying the closure of an already-abandoned run"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("closed-team-abandon-replay-again")
+    .send(&world)
+    .await;
+    assert_eq!(abandoned.status, 200, "{}", abandoned.body);
+    assert_eq!(
+        abandoned.json()["applied"],
+        "unchanged",
+        "{}",
+        abandoned.body
+    );
+    assert_eq!(
+        abandoned.json()["team_run_closed"],
+        serde_json::json!(run.team_run_id.to_string()),
+        "{}",
+        abandoned.body
+    );
+    assert!(
+        abandoned.json()["team_pending"].is_null(),
+        "{}",
+        abandoned.body
+    );
+}
+
+/// A settlement replay of an already-closed run and team changes nothing. A
+/// Team Definition migration in flight must not turn the documented 200 into a
+/// 409, and the replay must not leave the closed run's frozen snapshot held.
+#[tokio::test]
+async fn a_settlement_replay_of_an_already_closed_team_answers_behind_a_migration_fence() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "closed-team-settle-replay").await;
+    let runs: Vec<String> = seats
+        .as_array()
+        .expect("the seated roster")
+        .iter()
+        .map(|seat| {
+            seat["agent_run_id"]
+                .as_str()
+                .expect("an agent run id")
+                .to_owned()
+        })
+        .collect();
+    for (index, run) in runs.iter().enumerate() {
+        finish_natively(&world, run).await;
+        let settled = Call::post(
+            format!("/v1/projects/{project}/agent-runs/{run}/runtime:settle"),
+            &serde_json::json!({}),
+        )
+        .signed_as(&world, "operator")
+        .with_key(format!("closed-team-settle-replay-settle-{index}"))
+        .send(&world)
+        .await;
+        assert_eq!(settled.status, 200, "seat {index}: {}", settled.body);
+    }
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
+    let last = runs.last().expect("a final seat");
+    let last_id = AgentRunId::parse(last).expect("an agent run id");
+    let run = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, last_id)
+            .expect("the last run reads")
+            .expect("the last run exists")
+    });
+    let last_binding = run.binding.clone().expect("the last run is bound");
+    let team = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(project_id, run.team_run_id)
+            .expect("the team reads")
+            .expect("the team exists")
+    });
+    assert!(
+        team.lifecycle.is_terminal(),
+        "the fixture settled every seat, so the team is closed"
+    );
+
+    leave_team_definition_migration_in_flight(&world, &project, &epic, "closed-team-settle-replay")
+        .await;
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.get_in_flight_team_definition_migration(project_id, epic_id))
+            .expect("the migration reads")
+            .is_some(),
+        "the fixture really left a Team Definition migration in flight"
+    );
+
+    let settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{last}/runtime:settle"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("closed-team-settle-replay-again")
+    .send(&world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    assert_eq!(settled.json()["applied"], "unchanged", "{}", settled.body);
+    assert_eq!(
+        settled.json()["team_run_closed"],
+        serde_json::json!(run.team_run_id.to_string()),
+        "{}",
+        settled.body
+    );
+    assert!(settled.json()["team_pending"].is_null(), "{}", settled.body);
+    assert!(
+        world
+            .daemon
+            .state()
+            .sessions()
+            .get(last_binding.id)
+            .is_none(),
+        "the replay leaves no frozen snapshot held"
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.list_binding_snapshots())
+            .expect("the binding snapshots read")
+            .iter()
+            .all(|snapshot| snapshot.binding_id != last_binding.id),
+        "the replay leaves no durable binding snapshot behind"
+    );
+}
+
+/// A team stopped by a declared slot that never produced a terminal run is not
+/// repaired by replaying `runtime:settle`.
+///
+/// The refused slot is mid-order, so the slot after it has no run at all.
+/// `settle_team` only certifies an envelope whose every declared slot is
+/// accounted for, so this shape stays pending however often the settlement
+/// replay is asked. `runtime:abandon` of the never-bound run is the route that
+/// makes its slot terminal and lets the envelope close.
+#[tokio::test]
+async fn a_settlement_replay_leaves_a_never_bound_slot_pending_until_abandoned() {
+    let seeded = omega_with_one_refused_slot("missing-slot-replay", "omega-cat", "omega-k4").await;
+    let UnboundWorld {
+        world,
+        project,
+        team_run,
+        seats,
+        ..
+    } = &seeded;
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let team_run_id = TeamRunId::parse(team_run).expect("a team run id");
+
+    // Every seat the runtime accepted ends. The refused slot has no terminal
+    // run, so the envelope cannot certify yet.
+    for (index, seat) in seats.iter().enumerate() {
+        let agent_run = seat["agent_run_id"].as_str().expect("a run id");
+        finish_natively(world, agent_run).await;
+        let settled = Call::post(
+            format!("/v1/projects/{project}/agent-runs/{agent_run}/runtime:settle"),
+            &serde_json::json!({}),
+        )
+        .signed_as(world, "operator")
+        .with_key(format!("missing-slot-settle-{index}"))
+        .send(world)
+        .await;
+        assert_eq!(settled.status, 200, "{}", settled.body);
+        assert!(
+            settled.json()["team_run_closed"].is_null(),
+            "the declared slot with no terminal run keeps the team open: {}",
+            settled.body
+        );
+        assert!(
+            !settled.json()["team_pending"].is_null(),
+            "the settlement says why the team cannot close: {}",
+            settled.body
+        );
+    }
+
+    // Replaying that settlement retries the closure, but the shape is still
+    // incomplete, so it stays pending instead of closing or claiming success.
+    let first = seats[0]["agent_run_id"].as_str().expect("a run id");
+    let replayed = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{first}/runtime:settle"),
+        &serde_json::json!({}),
+    )
+    .signed_as(world, "operator")
+    .with_key("missing-slot-settle-replay")
+    .send(world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert!(
+        replayed.json()["team_run_closed"].is_null(),
+        "a settlement replay does not repair a declared slot that never ran: {}",
+        replayed.body
+    );
+    assert!(
+        !replayed.json()["team_pending"].is_null(),
+        "the replay reports the same lift condition: {}",
+        replayed.body
+    );
+
+    // The refused slot is mid-order, so the slot after it has no run at all:
+    // that is the missing declared slot this route has to account for.
+    let rows = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run_id))
+        .expect("the seats are readable");
+    assert!(
+        rows.iter().all(|run| run.role.as_str() != "omega-k3"),
+        "a declared slot after the refused one has no AgentRun at all: {rows:?}"
+    );
+
+    // The never-bound run is the route: abandoning it accounts for its declared
+    // slot, and the envelope closes once every existing run is terminal.
+    let unbound = rows
+        .into_iter()
+        .find(|seat| seat.native_id.is_none())
+        .expect("the refused launch left its durable unbound run");
+    assert_eq!(
+        unbound.role.as_str(),
+        "omega-k4",
+        "the abandoned run is the refused slot's"
+    );
+    let unbound_run = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_agent_run(project_id, unbound.agent_run_id))
+        .expect("the unbound run reads")
+        .expect("the unbound run exists");
+    let abandoned = Call::post(
+        format!(
+            "/v1/projects/{project}/agent-runs/{}/runtime:abandon",
+            unbound.agent_run_id
+        ),
+        &serde_json::json!({
+            "expected_revision": unbound_run.revision.get(),
+            "reason": "The refused launch never bound a session, so this declared slot has no terminal run"
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("missing-slot-abandon")
+    .send(world)
+    .await;
+    assert_eq!(abandoned.status, 200, "{}", abandoned.body);
+    assert_eq!(
+        abandoned.json()["team_run_closed"],
+        serde_json::json!(team_run),
+        "{}",
+        abandoned.body
+    );
+    let closed = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(project_id, team_run_id)
+            .expect("the team reads")
+            .expect("the team exists")
+    });
+    assert!(
+        closed.lifecycle.is_terminal(),
+        "the declared slot is accounted for and the envelope closes"
+    );
+}
+
 /// The refusal that made the 2026-08-22 incident unrecoverable, and its cure.
 ///
 /// A seat that hits a usage limit is **still reachable** — it answers, it just
@@ -38657,6 +39559,18 @@ async fn alpha_with_one_unbound_slot(slug: &'static str) -> UnboundWorld {
 /// `derive_follow_ups` — with a condition in front of it the derivation
 /// short-circuits first, and the guard cannot be falsified.
 async fn omega_with_one_unbound_slot(slug: &'static str, category: &'static str) -> UnboundWorld {
+    omega_with_one_refused_slot(slug, category, "omega-k3").await
+}
+
+/// The same, with the refused slot named.
+///
+/// A refusal stops the seating loop, so a slot refused before the end of the
+/// frozen order leaves every declared slot after it with no AgentRun at all.
+async fn omega_with_one_refused_slot(
+    slug: &'static str,
+    category: &'static str,
+    refused: &'static str,
+) -> UnboundWorld {
     let world = World::open_empty_with_a_plane().await;
     world.script(HISTORY_LIVE);
     assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
@@ -38664,7 +39578,7 @@ async fn omega_with_one_unbound_slot(slug: &'static str, category: &'static str)
     // is never bound, and it is a transport fact: no session, no binding.
     world
         .fake
-        .refusing_launch_of(&kontor_core::id::RoleSlotId::parse("omega-k3").expect("a slot"));
+        .refusing_launch_of(&kontor_core::id::RoleSlotId::parse(refused).expect("a slot"));
 
     let pack: serde_json::Value = serde_json::from_str(OMEGA_PACK).expect("the omega pack parses");
     let registered = Call::post(
@@ -38808,8 +39722,8 @@ async fn omega_with_one_unbound_slot(slug: &'static str, category: &'static str)
         })
         .collect();
     assert!(
-        seats.iter().all(|seat| seat["role_slot"] != "omega-k3"),
-        "omega-k3 must never have been bound: {rows:?}"
+        seats.iter().all(|seat| seat["role_slot"] != refused),
+        "{refused} must never have been bound: {rows:?}"
     );
     assert!(
         !seats.is_empty(),

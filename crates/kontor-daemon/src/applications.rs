@@ -37493,16 +37493,39 @@ impl ApplicationOperations for Services {
                 self.release_run_leases(project_id, agent_run_id, receipt_id, now)?;
                 self.release_abandoned_reservation(&run).await?;
             }
+            // The first abandonment may have happened while sibling runs were
+            // still live, and a first settlement can also fail after closing
+            // the run. Once every child has ended, the certified closure the
+            // first-abandon path attempts is attempted here first, so the same
+            // state records the children's own outcome whichever replay an
+            // operator calls. Abandoning is the fallback for a team that no
+            // certificate can close, and only once nothing is left running;
+            // otherwise the immutable terminal run can never be acted on again
+            // and the task stays in flight forever. It does not matter how the
+            // siblings ended: a runtime observation is as final as an operator
+            // abandon.
+            //
+            // The run is immutable, but the frozen snapshot this process holds
+            // for it is not: a first abandonment that closed the run and then
+            // failed before releasing it leaves the session claimed here, and
+            // this replay is the only path back to give it up. The session is
+            // already over, so the snapshot is given up before any fallible team
+            // work: a Team Definition migration fence must not leave a terminal
+            // run reporting `seat_live`.
+            if let Some(binding) = run.binding.as_ref() {
+                self.release(binding.id)?;
+            }
+            // An already-terminal envelope is answered from its stored closure.
+            // Calling `settle_team` here would re-release its seats, which a
+            // Team Definition migration fence refuses even though this replay
+            // changes nothing. Only an envelope that is still open needs the
+            // settlement attempted.
             let (mut team_run_closed, mut team_pending) =
                 self.team_closure_state(project_id, &run)?;
-            // The first abandonment may have happened while sibling runs were
-            // still live. Once they have all ended, replaying that same operator
-            // decision must converge the team too; otherwise the immutable
-            // abandoned run can never be acted on again and the task stays in
-            // flight forever. Runtime-observed terminal runs carry no abandon
-            // receipt and therefore never enter this operator-only fallback.
+            if team_run_closed.is_none() {
+                (team_run_closed, team_pending) = self.settle_team(project_id, &run, now)?;
+            }
             if team_run_closed.is_none()
-                && receipt_id.is_some()
                 && let Some(abandoned) = self.abandon_team_run(key, project_id, &run, now)?
             {
                 team_run_closed = Some(abandoned);
@@ -37711,7 +37734,34 @@ impl ApplicationOperations for Services {
                 }
                 kontor_core::state::TerminalEvidenceSource::OperatorAbandon { .. } => None,
             };
+            // Closing the run commits before the team is settled, so a team
+            // closure that failed behind a Team Definition migration fence
+            // leaves an envelope with no live child. The run is immutable now,
+            // and this replay is the only path back to it: retry the closure,
+            // which is idempotent, instead of reporting the stranded envelope
+            // forever.
+            //
+            // A declared slot that never produced a terminal run is not repaired
+            // here: `settle_team` answers pending for that shape however often
+            // it is asked. The `runtime:abandon` route is what accounts for that
+            // slot and lets the envelope close: it abandons a never-bound run,
+            // or, once every existing run has ended, closes the envelope itself.
+            //
+            // The run is immutable now and its session is already over, so the
+            // frozen snapshot is given up before any fallible team work: a Team
+            // Definition migration fence must not leave a terminal run reporting
+            // `seat_live`.
+            self.release(binding.id)?;
+            // An already-terminal envelope is answered from its stored closure.
+            // Calling `settle_team` here would re-release its seats, which the
+            // same fence refuses even though this replay changes nothing. Only
+            // an envelope that is still open needs the settlement attempted.
             let (team_run_closed, team_pending) = self.team_closure_state(project_id, &run)?;
+            let (team_run_closed, team_pending) = if team_run_closed.is_some() {
+                (team_run_closed, team_pending)
+            } else {
+                self.settle_team(project_id, &run, now)?
+            };
             return Ok(RuntimeSettlementDto {
                 realm_id,
                 agent_run_id: agent_run_id.to_string(),
