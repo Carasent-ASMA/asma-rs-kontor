@@ -87,7 +87,7 @@ function HostScreen(props: PluginScreenProps) {
     : (route.projectId === null || source.projectId === route.projectId) && (scopedEpic === null || (sourceState.reads[source.id]?.graph?.epic.jira ?? source.epic) === scopedEpic) && (route.tab !== "Overview" || route.sourceId === null || source.id === route.sourceId || (source.kind !== "plan" && scopedEpic !== null)));
   const associationIds = route.originAgentId ? linkedPlans(saved.planAssociations, route.originAgentId, new Set(sourceState.sources.filter((source) => source.kind === "plan").map((source) => source.id))) : null;
   const linkedContext = ["Plan", "Graph", "Board"].includes(route.tab) && associationIds !== null;
-  const sources = linkedContext ? sourcesInContext.filter((source) => associationIds!.includes(source.id)) : sourcesInContext;
+  const sources = linkedContext ? sourcesInContext.filter((source) => source.kind !== "plan" || associationIds!.includes(source.id)) : sourcesInContext;
   const reads = Object.fromEntries(Object.entries(sourceState.reads).filter(([id]) => sources.some((source) => source.id === id)));
   const epics = [...new Set([...directory.state.entries.map(confirmedEpic), ...sourceState.sources.map((source) => sourceState.reads[source.id]?.graph?.epic.jira ?? source.epic)].filter((key): key is string => key !== null))].sort();
   const projectLabel = route.epicKey ?? (route.projectId === null ? "All projects" : projects.find(([id]) => id === route.projectId)?.[1] ?? "Project unavailable");
@@ -102,7 +102,7 @@ function HostScreen(props: PluginScreenProps) {
     if (!source) return;
     visit({ ...(tab ? { tab } : {}), sourceId, sourceRevision: sourceState.reads[sourceId]?.revision ?? null,
       projectId: source.projectId, epicKey: sourceState.reads[sourceId]?.graph?.epic.jira ?? source.epic,
-      originAgentId: route.tab === "Plan" ? route.originAgentId : null });
+      originAgentId: route.originAgentId });
   };
   const primary = layout.compact ? PRIMARY_MOBILE : PRIMARY_DESKTOP;
   const setSearch = (value: string) => { writeRouteView(host.id, route, { query: value, offset: 0 }); setQuery(value); };

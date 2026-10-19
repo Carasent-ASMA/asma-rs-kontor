@@ -1,12 +1,14 @@
+import { readFileSync } from "node:fs";
+import { URL } from "node:url";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DirectoryEntry } from "../client/session-directory";
-import type { ReadSourceSummary } from "../shared/read-sources";
+import { canonicalGraphSchema, jiraHistorySchema, type ReadSourceSummary, type SourceRead } from "../shared/read-sources";
 import { Linking } from "react-native";
 
 const model = vi.hoisted(() => ({
-  slots: [] as unknown[], cursor: 0, entries: [] as DirectoryEntry[], sources: [] as ReadSourceSummary[], values: {} as object,
+  slots: [] as unknown[], cursor: 0, entries: [] as DirectoryEntry[], sources: [] as ReadSourceSummary[], reads: {} as Record<string, SourceRead>, values: {} as object,
   useState<T>(initial: T | (() => T)): [T, (next: T | ((previous: T) => T)) => void] {
     const index = this.cursor++;
     if (!(index in this.slots)) this.slots[index] = typeof initial === "function" ? (initial as () => T)() : initial;
@@ -28,7 +30,7 @@ vi.mock("@getpaseo/plugin/client/react-native", () => ({
 }));
 vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: () => ({ state: { entries: model.entries, status: "ready", live: false, lastUpdatedAt: 1, error: null, staleReason: null, pages: 1, includeArchived: false }, refresh: () => {} }) }));
 vi.mock("../client/use-organization-settings", () => ({ useOrganizationSettings: () => ({ state: { status: "ready", values: model.values, saving: false, saveError: null }, save: async () => true }) }));
-vi.mock("../client/use-read-sources", () => ({ useReadSources: () => ({ sources: model.sources, reads: {}, error: null, loading: false, available: true }) }));
+vi.mock("../client/use-read-sources", () => ({ useReadSources: () => ({ sources: model.sources, reads: model.reads, error: null, loading: false, available: true }) }));
 vi.mock("../client/use-workspace-directory", () => ({ useWorkspaceDirectory: () => ({ entries: [], error: null, readAt: null }) }));
 
 import { KontorScreen } from "../client/kontor-screen";
@@ -36,13 +38,17 @@ import { DESTINATIONS, hostNavigation, navigate, type KontorRoute } from "../cli
 import { DEFAULT_ORGANIZATION_SETTINGS } from "../shared/organization";
 import { sessionEntry } from "./session-fixtures";
 import { GraphPage } from "../client/graph-page";
+import { historicalPlanProgress } from "../client/page-data";
+
+const actualGraph = canonicalGraphSchema.parse(JSON.parse(readFileSync(new URL("./fixtures/plan-graph-asma-8371.json", import.meta.url), "utf8")));
+const capturedHistory = jiraHistorySchema.parse(JSON.parse(readFileSync(new URL("./fixtures/jira-history.json", import.meta.url), "utf8")));
 function elements(value: ReactNode): ReactElement<Record<string, unknown>>[] {
   if (Array.isArray(value)) return value.flatMap(elements);
   if (!isValidElement<Record<string, unknown>>(value)) return [];
   return [value, ...elements(value.props.children as ReactNode)];
 }
 let sequence = 0;
-beforeEach(() => { model.slots = []; model.cursor = 0; model.values = DEFAULT_ORGANIZATION_SETTINGS; model.entries = [sessionEntry("native", { labels: { epic: "ASMA-1" } })]; model.sources = []; });
+beforeEach(() => { model.slots = []; model.cursor = 0; model.values = DEFAULT_ORGANIZATION_SETTINGS; model.entries = [sessionEntry("native", { labels: { epic: "ASMA-1" } })]; model.sources = []; model.reads = {}; });
 function mount(compact: boolean, initial?: Partial<KontorRoute>) {
   const props: PluginScreenProps = { host: { id: `shell-${++sequence}`, label: "Host" }, layout: { compact, platform: "ios" }, params: {}, navigation: { openAgent: vi.fn(), openWorkspace: vi.fn(), openBrowser: vi.fn() },
     theme: { colors: { surface0: "#fff", surface1: "#eee", surface2: "#ddd", foreground: "#111", foregroundMuted: "#555", border: "#aaa", accent: "#00f", accentForeground: "#fff", statusSuccess: "#080", statusWarning: "#850", statusDanger: "#b00" } } };
@@ -127,6 +133,54 @@ describe("Kontor shell native actions", () => {
     expect(hostNavigation(screen.props.host.id).route.originAgentId).toBe("native");
     screen.click("Return to conversation");
     expect(screen.props.navigation?.openAgent).toHaveBeenCalled();
+  });
+  it.each(["Graph", "Board"] as const)("keeps the originating conversation and linked choices after selecting another plan from %s", (tab) => {
+    model.values = { ...DEFAULT_ORGANIZATION_SETTINGS, planAssociations: { native: ["linked-a", "linked-b"] } };
+    model.sources = ["linked-a", "linked-b", "unrelated"].map((id, index) => ({ id, title: id, kind: "plan", path: `/configured/${id}.md`, projectId: index === 0 ? "project-a" : "project-b", epic: index === 0 ? "ASMA-1" : "ASMA-2", workstream: null, revisionKind: "working copy" }));
+    const screen = mount(true, { tab: "Plan", originAgentId: "native" });
+    const page = screen.elements().find((node) => typeof node.props.onSource === "function")!;
+    (page.props.onSource as (id: string) => void)("linked-a"); screen.render();
+    if (tab === "Graph") screen.click("More");
+    screen.click(tab); screen.click("ASMA-1 · linked-a ▾"); screen.click("Plan: linked-b");
+    expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab, sourceId: "linked-b", originAgentId: "native" });
+    expect(screen.action("Return to conversation").props.disabled).toBe(false);
+    screen.click("Return to conversation");
+    expect(screen.props.navigation?.openAgent).toHaveBeenCalledWith({ agentId: "native", serverId: screen.props.host.id });
+    screen.click("ASMA-2 · linked-b ▾");
+    const choices = () => screen.elements().filter((node) => String(node.props.label).startsWith("Plan: ")).map((node) => node.props.label);
+    expect(choices()).toEqual(["Plan: linked-a", "Plan: linked-b"]);
+    screen.click("All projects");
+    expect(hostNavigation(screen.props.host.id).route).toMatchObject({ originAgentId: null, sourceId: null, projectId: null, epicKey: null });
+    screen.click("All projects ▾"); expect(choices()).toContain("Plan: unrelated"); screen.click("Close");
+    screen.click("‹ Back");
+    expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab, sourceId: "linked-b", originAgentId: "native" });
+    screen.click("ASMA-2 · linked-b ▾"); expect(choices()).toEqual(["Plan: linked-a", "Plan: linked-b"]);
+  });
+  it.each([
+    { tab: "Graph", projectId: null }, { tab: "Graph", projectId: "linked-project" },
+    { tab: "Board", projectId: null }, { tab: "Board", projectId: "linked-project" },
+  ] as const)("retains exact-key historical evidence on linked $tab with history project $projectId", ({ tab, projectId }) => {
+    const plan: SourceRead = { source: { id: "linked-plan", title: "Linked plan", kind: "plan", path: actualGraph.source, projectId: "linked-project", epic: actualGraph.epic.jira, workstream: null, revisionKind: "working copy" }, status: "ready", revision: actualGraph.source_sha256, readAt: "2026-10-19T10:00:00Z", modifiedAt: null, content: "# Configured plan", graph: actualGraph, records: null, diagnostics: [] };
+    const jira: SourceRead = { ...plan, source: { ...plan.source, id: "jira-history", title: "Historical Jira", kind: "jira", epic: null, projectId, path: "/configured/history.json" }, revision: capturedHistory.provenance.sha256, content: null, graph: null, jiraHistory: capturedHistory };
+    const unrelated: SourceRead = { ...plan, source: { ...plan.source, id: "unrelated-plan" } };
+    const otherProject: SourceRead = { ...jira, source: { ...jira.source, id: "other-project-history", projectId: "other-project" } };
+    model.values = { ...DEFAULT_ORGANIZATION_SETTINGS, planAssociations: { native: [plan.source.id] } };
+    model.sources = [plan.source, jira.source, unrelated.source, otherProject.source];
+    model.reads = Object.fromEntries([plan, jira, unrelated, otherProject].map((read) => [read.source.id, read]));
+    const screen = mount(true, { tab: "Plan", originAgentId: "native", sourceId: plan.source.id, sourceRevision: plan.revision, projectId: plan.source.projectId, epicKey: plan.source.epic });
+    if (tab === "Graph") screen.click("More");
+    screen.click(tab);
+    const component = screen.elements().find((node) => node.type === GraphPage)!;
+    const forwarded = component.props.reads as Record<string, SourceRead>;
+    expect((component.props.sources as ReadSourceSummary[]).map((source) => source.id)).toEqual(["linked-plan", "jira-history"]);
+    expect(Object.keys(forwarded)).toEqual(["linked-plan", "jira-history"]);
+    expect(forwarded["jira-history"]).toBe(jira);
+    expect(forwarded["jira-history"]?.jiraHistory?.provenance).toEqual(capturedHistory.provenance);
+    const progress = historicalPlanProgress(actualGraph, Object.values(forwarded));
+    expect(progress).toEqual(historicalPlanProgress(actualGraph, [jira]));
+    expect(progress.known).toBe(19); expect(progress.unknown).toBe(0);
+    expect(progress.states[0]?.evidence?.observations).toMatchObject([{ issue: { key: actualGraph.nodes[0]!.jira, status: "Closed", cat: "done" }, sourceId: "jira-history", sourceTitle: "Historical Jira", observedAt: "2026-10-18T17:00+00:00" }]);
+    expect(hostNavigation(screen.props.host.id).route.originAgentId).toBe("native");
   });
   it("wires the inner document position independently from the outer Plan page through Back", () => {
     model.sources = ["plan-a", "plan-b"].map((id) => ({ id, title: id, kind: "plan", path: `/configured/${id}.md`, workstream: null, epic: null, projectId: null, revisionKind: "working copy" }));
