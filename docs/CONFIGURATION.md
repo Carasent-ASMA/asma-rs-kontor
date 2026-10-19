@@ -399,7 +399,7 @@ and exposes those references but does not reinterpret or execute them in the
 resident loop. They remain orchestration-surface metadata; the selected runtime
 adapter remains responsible for native inspection and placement.
 
-> **Release status — 2026-09-05:** KON-OP-21 is implemented and merged through PR #170 (`080e2db3`, 2026-09-05), included in the inspected release `082b63ad`. Local contract coverage is recorded; independent qualification, coherent fleet deployment and realm enablement require their own receipts and are not certified by this documentation refresh.
+> **Release status — 2026-09-05:** KON-OP-21 is implemented and merged through PR #164 (`3d7c6043`, 2026-09-04), included in the inspected release `082b63ad`. Local contract coverage is recorded; independent qualification, coherent fleet deployment and realm enablement require their own receipts and are not certified by this documentation refresh.
 
 See the [canonical implementation inventory](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/reference/2026-09-05-11-36-reference-kontor-implementation-inventory.md) for source and deployment distinctions.
 

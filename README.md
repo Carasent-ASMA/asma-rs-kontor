@@ -178,7 +178,7 @@ admits its absence:
 | --- | --- |
 | Calendar admission | `kontor-calendar` implements windows, holiday import and drain with tests, and is reached by **no** route and **no** tool. Every project resolves to `unrestricted`. |
 | Post-delivery profile packs | The seed manifest declares 17 work-profile categories; **four** ship (`code`, `ux-ui-layout`, `research`, `docs`). Operations, incident response, maintenance, compliance and retirement are declared, not implemented. |
-| KON-OP-21 qualification and enablement | Evidence-bound mid-run quota succession and the resident bounded supervisor are merged through PR #170 (`080e2db3`, 2026-09-05) with local contract coverage. This repository records no independent qualification, fleet deployment or realm-enablement receipt for them, and automatic succession stays off until a realm opts in through `supervision.yml` (below). |
+| KON-OP-21 qualification and enablement | Evidence-bound mid-run quota succession and the resident bounded supervisor are merged through PR #164 (`3d7c6043`, 2026-09-04) with local contract coverage. This repository records no independent qualification, fleet deployment or realm-enablement receipt for them, and automatic succession stays off until a realm opts in through `supervision.yml` (below). |
 | Planning pairs through Paseo | The protocol, operations and shared allocator are merged (PR #292, `4097afb8`), but the Paseo adapter refuses every member route before any native effect, because no provider route acknowledges the closed tool restriction a member requires. A pair cannot launch through the production runtime. |
 | Live Cognee projection | The Cognee transport (PR #291, `abe990ac`) is qualified against synthetic fixtures only. Ordinary daemon startup composes no Cognee client and refuses a `memory-cognee.json` with `enabled: true`; recall uses the bounded lexical path. |
 | Launch-time quota waiting | The account-before-rung resolver computes `Wait` / `NeedsHuman`, but delivery launch still needs a model rung, so it refuses `Wait` and `NeedsHuman` with a typed `ProviderHeadroom` missing-evidence refusal before any native effect instead of parking until the computed reset. |
@@ -300,7 +300,7 @@ document is schema v2, `watchdog.enabled` is `true`, and
 With no policy, with schema v1, or with a disabled watchdog, automatic
 succession does not start and Kontor invents no cadence or capacity. See
 [Configuration](docs/CONFIGURATION.md).
-This path is merged at `080e2db3` (PR #170, 2026-09-05). Independent audit, live-runtime verification and per-realm enablement require separate receipts.
+This path is merged at `3d7c6043` (PR #164, 2026-09-04). Independent audit, live-runtime verification and per-realm enablement require separate receipts.
 
 For frontend development:
 

@@ -5,7 +5,7 @@
 > registry tools, the crate list, the serve profiles and each capability named
 > below. "Merged" means present in that source. Qualification, deployment and
 > realm enablement require separate receipts and are not claimed here.
-> KON-OP-21 is merged through PR #170 (`080e2db3`). The
+> KON-OP-21 is merged through PR #164 (`3d7c6043`, 2026-09-04). The
 > [implementation inventory](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/reference/2026-09-05-11-36-reference-kontor-implementation-inventory.md)
 > records qualification and deployment separately and is stamped to its own
 > inspected revision.
@@ -423,7 +423,7 @@ source separately implements mid-run quota detection, durable
 redacted handoff, successor placement and resident bounded reconciliation. It
 does so only under explicit schema-v2 supervision enablement; schema v1 and an
 absent or disabled policy remain inert. Those KON-OP-21 paths have local tests
-and are merged through PR #170 (`080e2db3`, 2026-09-05). Deployment, live-runtime verification and realm enablement are separate receipt-backed stages.
+and are merged through PR #164 (`3d7c6043`, 2026-09-04). Deployment, live-runtime verification and realm enablement are separate receipt-backed stages.
 
 The calendar dimension is implemented in `kontor-calendar` and is reached by no
 route and no tool, so every project currently resolves to `unrestricted`. That
