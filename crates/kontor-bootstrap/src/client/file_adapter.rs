@@ -306,13 +306,6 @@ impl FileClientAdapter {
                 (name, dialect, None)
             }
         };
-        // A `PreserveBoth` leaves the displaced bytes in one bootstrap
-        // temporary beside this file. Until the operator reconciles it, the
-        // adapter keeps refusing instead of reporting the entry as current.
-        if self.has_unreconciled_temporary(&directory, file)? {
-            return Ok(refused(ConflictReason::UnreconciledTemporary));
-        }
-
         let ledger = match self.ownership.load() {
             Ok(ledger) => ledger,
             Err(_) => {
@@ -326,6 +319,16 @@ impl FileClientAdapter {
                 });
             }
         };
+
+        // A `PreserveBoth` leaves the displaced bytes in one bootstrap
+        // temporary beside this file. Only the exact temporary bootstrap
+        // recorded keeps the adapter refusing; an ordinary crash residue is
+        // not a reconciliation and must not block a replay.
+        if let Some(temporary) = ledger.preserved_temporary(self.client)
+            && directory.kind_child(temporary)?.is_some()
+        {
+            return Ok(refused(ConflictReason::UnreconciledTemporary));
+        }
 
         let Some(bytes) = &original else {
             return Ok(Observed {
@@ -483,6 +486,9 @@ impl FileClientAdapter {
             // interrupted between the write and the ledger update.
             let desired = desired_entry(self.client, spec);
             let desired_hash = ObservedHash::of_value(&desired);
+            if let Some(observed_hash) = observed.state.observed() {
+                self.ownership.commit_pending(self.client, observed_hash)?;
+            }
             self.ownership
                 .begin(self.client, &desired_hash, &desired_hash)?;
             match &observed.original {
@@ -652,6 +658,11 @@ impl FileClientAdapter {
                     observed: observed.state.observed().cloned(),
                 });
             }
+            Err(AdapterError::PreserveBoth) => {
+                self.ownership
+                    .record_preserved_temporary(self.client, &temporary)?;
+                return Err(AdapterError::PreserveBoth);
+            }
             Err(error) => return Err(error),
         }
         faults.hit(FailPoint::AfterClientWrite(self.client), &logical)?;
@@ -666,20 +677,6 @@ impl FileClientAdapter {
             }
             _ => Ok(AdapterResult::FailedReadback),
         }
-    }
-
-    /// Whether an earlier `PreserveBoth` left its displaced bytes in one of
-    /// this configuration file's bootstrap temporaries.
-    fn has_unreconciled_temporary(
-        &self,
-        directory: &Dir,
-        file: &str,
-    ) -> Result<bool, AdapterError> {
-        let prefix = format!(".{file}.kontor-bootstrap-");
-        Ok(directory
-            .entries()?
-            .iter()
-            .any(|name| name.starts_with(&prefix) && name.ends_with(".tmp")))
     }
 
     /// Complete the ownership record for a write a replay verified.

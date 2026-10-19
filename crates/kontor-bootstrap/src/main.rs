@@ -12,7 +12,9 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use kontor_bootstrap::client::claude::UnavailableClaudeBoundary;
-use kontor_bootstrap::confinement::{ConfinementError, Dir, effective_user, normalized_root_path};
+use kontor_bootstrap::confinement::{
+    ConfinementError, Dir, effective_user, is_private_directory, normalized_root_path,
+};
 use kontor_bootstrap::{
     AdapterResult, ArtifactManifest, BootstrapReceipt, ClaudeAdapter, ClientAdapter, ClientFailure,
     ClientHome, ClientId, ClientReport, FileClientAdapter, InstallError, Installer, NoFaults,
@@ -236,6 +238,12 @@ fn require_private_directory(dir: &Dir, code: &'static str) -> Result<(), Failur
         return Err((
             code,
             "the root must not be writable by group or other users".to_owned(),
+        ));
+    }
+    if !is_private_directory(dir).map_err(|_| (code, "the root cannot be inspected".to_owned()))? {
+        return Err((
+            code,
+            "the root must not be writable by another local user".to_owned(),
         ));
     }
     Ok(())

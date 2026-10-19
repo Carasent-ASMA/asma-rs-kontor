@@ -781,6 +781,43 @@ fn an_existing_entry_raced_at_the_final_boundary_is_never_replaced() {
 }
 
 #[test]
+fn a_leftover_temporary_from_an_interrupted_write_does_not_block_a_replay() {
+    let fixture = Fixture::new(ClientId::Cursor);
+    fixture.present();
+    let residue = fixture
+        .directory()
+        .join(".mcp.json.kontor-bootstrap-123-456.tmp");
+    std::fs::write(&residue, b"interrupted write residue").expect("residue");
+    let desired = spec("/synthetic/realm");
+    assert_eq!(fixture.install(&desired), AdapterResult::Installed);
+    assert_eq!(fixture.install(&desired), AdapterResult::AlreadyCurrent);
+    assert_eq!(
+        std::fs::read(&residue).expect("residue"),
+        b"interrupted write residue",
+        "an untracked temporary is preserved, not removed"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_non_utf8_directory_entry_does_not_break_the_adapter() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let fixture = Fixture::new(ClientId::Cursor);
+    fixture.present();
+    let name = std::ffi::OsString::from_vec(vec![0xff, b'k']);
+    std::fs::write(fixture.directory().join(&name), b"unrelated").expect("non-utf8 entry");
+    let desired = spec("/synthetic/realm");
+    assert_eq!(fixture.install(&desired), AdapterResult::Installed);
+    assert_eq!(
+        fixture.inspect(&desired),
+        EntryState::Current {
+            observed: ObservedHash::of_value(&desired_value(ClientId::Cursor, &desired)),
+        }
+    );
+}
+
+#[test]
 fn an_entry_with_null_and_boolean_extras_is_not_refused() {
     for client in [ClientId::Cursor, ClientId::Copilot] {
         let fixture = Fixture::new(client);
@@ -1798,6 +1835,43 @@ fn a_replay_after_an_interrupted_write_completes_ownership() {
         );
         // A later update proceeds instead of reporting SameNameUnrelated.
         assert_eq!(fixture.install(&first), AdapterResult::Updated, "{client}");
+    }
+}
+
+#[test]
+fn consecutive_interruptions_keep_the_landed_entry_owned() {
+    for client in FileClientAdapter::FILE_CLIENTS {
+        let fixture = Fixture::new(client);
+        fixture.present();
+        let first = spec("/synthetic/one");
+        let second = spec("/synthetic/two");
+        let third = spec("/synthetic/three");
+        assert_eq!(
+            fixture.install(&first),
+            AdapterResult::Installed,
+            "{client}"
+        );
+        let mut interrupted = ScriptedFaults::failing_at(FailPoint::AfterClientWrite(client));
+        let mut adapter = fixture.adapter.clone();
+        assert_eq!(
+            adapter.install(&second, &mut interrupted),
+            Err(AdapterError::Injected),
+            "{client}: the first write lands but its record is pending"
+        );
+        // The second update is interrupted before its exchange: the landed
+        // second snapshot stays active and must keep its provenance.
+        let mut interrupted = ScriptedFaults::failing_at(FailPoint::BeforeClientExchange(client));
+        let mut adapter = fixture.adapter.clone();
+        assert_eq!(
+            adapter.install(&third, &mut interrupted),
+            Err(AdapterError::Injected),
+            "{client}: the replacement is interrupted before the exchange"
+        );
+        assert_eq!(
+            fixture.install(&third),
+            AdapterResult::Updated,
+            "{client}: the earlier landed entry is still owned"
+        );
     }
 }
 

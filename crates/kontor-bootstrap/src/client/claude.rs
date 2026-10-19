@@ -263,6 +263,8 @@ impl ClaudeAdapter {
             }
             Err(_) => return self.restore_original(&current),
         }
+        self.ownership
+            .commit_pending(ClientId::ClaudeCode, &observed)?;
         if let Err(error) = self
             .ownership
             .begin(ClientId::ClaudeCode, &desired_hash, &desired_hash)

@@ -721,6 +721,73 @@ fn a_lost_readback_after_add_completes_ownership_on_replay() {
 }
 
 #[test]
+fn a_failed_replacement_keeps_the_restored_original_owned() {
+    struct LostReadbackAndFailedSecondAdd {
+        inner: FakeClaudeBoundary,
+        gets: usize,
+        adds: usize,
+    }
+
+    impl ClaudeBoundary for LostReadbackAndFailedSecondAdd {
+        fn get(&mut self, name: &str) -> Result<Option<Value>, ClaudeBoundaryError> {
+            self.gets += 1;
+            if self.gets == 2 {
+                return Err(ClaudeBoundaryError::Failed);
+            }
+            self.inner.get(name)
+        }
+
+        fn add_json(&mut self, name: &str, json: &str) -> Result<(), ClaudeBoundaryError> {
+            self.adds += 1;
+            if self.adds == 2 {
+                return Err(ClaudeBoundaryError::Failed);
+            }
+            self.inner.add_json(name, json)
+        }
+
+        fn remove(&mut self, name: &str) -> Result<(), ClaudeBoundaryError> {
+            self.inner.remove(name)
+        }
+
+        fn remove_if(
+            &mut self,
+            name: &str,
+            expected: &Value,
+        ) -> Result<Removal, ClaudeBoundaryError> {
+            self.inner.remove_if(name, expected)
+        }
+    }
+
+    let mut harness = harness(LostReadbackAndFailedSecondAdd {
+        inner: FakeClaudeBoundary::new(),
+        gets: 0,
+        adds: 0,
+    });
+    let first = spec("/synthetic/one");
+    let second = spec("/synthetic/two");
+    let third = spec("/synthetic/three");
+    // The first write lands, but its readback fails and leaves only the
+    // pending record.
+    assert_eq!(
+        harness.adapter.install(&first, &mut NoFaults),
+        Err(AdapterError::CommandFailed)
+    );
+    // The replacement removes the first entry, fails to add the second and
+    // restores the first through the no-overwrite add boundary.
+    assert_eq!(
+        harness.adapter.install(&second, &mut NoFaults),
+        Err(AdapterError::CommandFailed)
+    );
+    assert_eq!(
+        harness
+            .adapter
+            .install(&third, &mut NoFaults)
+            .expect("update after a failed replacement"),
+        AdapterResult::Updated
+    );
+}
+
+#[test]
 fn a_wrong_transport_is_never_current() {
     let mut boundary = FakeClaudeBoundary::new();
     boundary.seed(

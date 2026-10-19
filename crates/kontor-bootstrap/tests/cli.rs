@@ -414,6 +414,17 @@ fn repair_refuses_an_install_root_without_a_runnable_generation() {
         before,
         "an unexecutable active generation must not change the client entry"
     );
+
+    std::fs::set_permissions(&world.install_root, std::fs::Permissions::from_mode(0o777))
+        .expect("chmod");
+    let (document, success, stdout) = repair_at(&world.install_root);
+    assert!(!success, "{stdout}");
+    assert_eq!(document["error"]["code"], "install_root_invalid");
+    assert_eq!(
+        std::fs::read_to_string(&cursor).expect("read"),
+        before,
+        "a root another local user can write must not change the client entry"
+    );
 }
 
 #[test]
@@ -570,6 +581,32 @@ fn a_group_or_world_writable_install_root_is_refused_without_writes() {
         "validation refuses the root before any effect"
     );
     assert!(!world.state_root.exists(), "no state may be created");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_root_with_an_allow_acl_for_other_users_is_refused() {
+    let world = World::new();
+    world.install();
+    let status = std::process::Command::new("/bin/chmod")
+        .arg("+a")
+        .arg(
+            "group:staff allow add_file,add_subdirectory,delete_child,\
+             file_inherit,directory_inherit",
+        )
+        .arg(&world.install_root)
+        .status()
+        .expect("chmod");
+    assert!(status.success(), "chmod +a on the install root");
+
+    let mut arguments = vec!["install".to_owned()];
+    arguments.extend(world.common());
+    arguments.push("--source-dir".to_owned());
+    arguments.push(world.source_dir.to_str().expect("utf8").to_owned());
+    let refs: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    let (document, success, stdout) = world.run(&refs);
+    assert!(!success, "{stdout}");
+    assert_eq!(document["error"]["code"], "install_root_invalid");
 }
 
 #[cfg(unix)]
