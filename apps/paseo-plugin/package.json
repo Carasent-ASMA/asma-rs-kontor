@@ -1,0 +1,21 @@
+{
+  "name": "@carasent/kontor-paseo-plugin",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Kontor Paseo plugin: seat binding hooks and workspace placement guard",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:closure": "node scripts/closure.mjs"
+  },
+  "devDependencies": {
+    "@getpaseo/client": "0.11.2",
+    "@getpaseo/plugin": "0.11.2",
+    "@getpaseo/protocol": "0.11.2",
+    "@types/node": "24.19.2",
+    "typescript": "5.9.3",
+    "vitest": "4.1.10",
+    "zod": "4.4.3"
+  }
+}
