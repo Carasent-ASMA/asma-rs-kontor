@@ -195,7 +195,16 @@ pub(crate) fn write(path: &Path, expected: &[u8], updated: &[u8]) -> Result<(), 
         Io(std::io::Error),
     }
     let _lock = SettingsLock::acquire(path)?;
-    let metadata = std::fs::symlink_metadata(path).map_err(|_| MarkerError::WriteFailed)?;
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        // A document removed after its preview is a caller's conflict, not a
+        // disk this realm cannot write. The caller's next step is a fresh
+        // preview, which answers that the document is gone.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(MarkerError::Changed);
+        }
+        Err(_) => return Err(MarkerError::WriteFailed),
+    };
     if !metadata.is_file() || metadata.file_type().is_symlink() {
         return Err(MarkerError::NotRewritable);
     }
@@ -210,7 +219,16 @@ pub(crate) fn write(path: &Path, expected: &[u8], updated: &[u8]) -> Result<(), 
             .map_err(Commit::Io)?;
         file.write_all(updated).map_err(Commit::Io)?;
         file.sync_all().map_err(Commit::Io)?;
-        if std::fs::read(path).map_err(Commit::Io)? != expected {
+        let current = match std::fs::read(path) {
+            Ok(current) => current,
+            // Removed between the metadata check and this comparison: the same
+            // caller conflict as a replacement, never a disk failure.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(Commit::Changed);
+            }
+            Err(error) => return Err(Commit::Io(error)),
+        };
+        if current != expected {
             return Err(Commit::Changed);
         }
         std::fs::rename(&temporary, path).map_err(Commit::Io)
@@ -745,6 +763,21 @@ mod tests {
         assert_eq!(
             std::fs::read(&path).expect("the competing write stands"),
             b"{}"
+        );
+    }
+
+    #[test]
+    fn a_settings_file_that_disappears_after_the_plan_is_a_conflict() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let path = directory.path().join("runtimes.json");
+        std::fs::write(&path, document()).expect("the fixture is installed");
+        let first = plan(document(), "paseo.agent", "claude").expect("removable");
+        let updated = first.updated.expect("a marker to remove");
+        std::fs::remove_file(&path).expect("the document disappears after the preview");
+        assert_eq!(
+            write(&path, document(), &updated),
+            Err(MarkerError::Changed),
+            "an absent document is the caller's stale revision, not a disk failure"
         );
     }
 
