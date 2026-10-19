@@ -50,6 +50,27 @@ describe("inner Plan document position", () => {
     expect(screen.scrollTo).toHaveBeenCalledTimes(2);
     expect(readRouteView("document-measurement").documentOffset).toBe(1300);
   });
+  it.each([true, false])("persists wheel scrolling after a clamped restore without drag callbacks (clamp event: %s)", (emitClampEvent) => {
+    const hostId = `document-clamped-wheel-${emitClampEvent}`;
+    const route = navigate(hostId, { tab: "Plan", sourceId: "plan-a", sourceRevision: "sha-a" });
+    writeRouteView(hostId, route, { documentOffset: 900 });
+    const screen = mount(hostId); screen.layout(); screen.size(1000);
+    expect(screen.scrollTo).toHaveBeenLastCalledWith({ y: 360, animated: false });
+    if (emitClampEvent) screen.scroll(360);
+    // Web wheel events arrive through onScroll without onScrollBeginDrag.
+    screen.scroll(120);
+    expect(readRouteView(hostId).documentOffset).toBe(120);
+    screen.size(5000);
+    expect(screen.scrollTo).toHaveBeenCalledTimes(1);
+    navigate(hostId, { tab: "Overview" }); goBack(hostId);
+    const returned = mount(hostId); returned.layout(); returned.size(1000);
+    expect(returned.scrollTo).toHaveBeenLastCalledWith({ y: 120, animated: false });
+    navigate(hostId, { sourceRevision: "sha-b" });
+    expect(readRouteView(hostId).documentOffset).toBe(0);
+    expect(readRouteView(`${hostId}-other-host`, route).documentOffset).toBe(0);
+    goBack(hostId);
+    expect(readRouteView(hostId).documentOffset).toBe(120);
+  });
   it("persists heading navigation immediately and stops pending restoration", () => {
     const route = navigate("document-heading", { tab: "Plan", sourceId: "plan-a", sourceRevision: "sha-a" });
     writeRouteView("document-heading", route, { documentOffset: 900 });

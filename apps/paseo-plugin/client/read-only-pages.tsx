@@ -106,8 +106,10 @@ function Plan(props: PageProps) {
             const y = Math.max(0, event.nativeEvent.contentOffset.y);
             const state = position.current;
             if (state.restoring) {
-              // Ignore bootstrap/clamped events until the saved position is reachable.
-              if (state.requested === null || Math.abs(y - state.requested) > 1 || state.requested < state.target) return;
+              // Preserve a matching clamped restore for later measurement. A different
+              // offset releases it: web wheel scrolling has no begin-drag callback.
+              if (state.requested === null) return;
+              if (Math.abs(y - state.requested) <= 1 && state.requested < state.target) return;
               state.restoring = false;
             }
             props.onDocumentScroll(y);
