@@ -1093,13 +1093,15 @@ is persisted in schema v75 before the runtime effect. Confirmed replay is inert;
 confirmation-unknown dispatch fails closed instead of guessing or answering a
 second time.
 
-A hosted desk seat whose proved workspace is a local directory rather than a
-Git worktree gets its `.claude/settings.local.json` then `.mcp.json` published
-into that directory, with the exact originals kept in a private journal at
+A Claude hosted desk seat whose proved workspace is a local directory rather
+than a Git worktree gets its `.claude/settings.local.json` then `.mcp.json`
+published into that directory, with the exact originals kept in a private
+journal at
 `<state-root>/hosted-directory-publications/<sha256(cwd)>.json` and recovered
 under a canonical-cwd lock before any create or reload; a healthy replay only
-validates, and refuses when the files differ (PR #300, `0971674d`). Delivery and
-consultation seats never use this path. `KONTOR_SEAT_MCP=off` in the daemon's
+validates, and refuses when the files differ (PR #300, `0971674d`). Codex,
+OpenCode and every other provider receive the leadership MCP in their creation
+frame instead. Delivery and consultation seats never use this path. `KONTOR_SEAT_MCP=off` in the daemon's
 environment, read once at daemon start, disables further seat MCP composition
 for every plane; files already composed into a worktree or hosted directory and
 sessions already running need separate cleanup. With `off`, creation frames

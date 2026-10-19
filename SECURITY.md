@@ -67,11 +67,12 @@ The supported MVP assumes:
 - the Cognee experience-memory transport is off by default, and the shipped
   daemon at this revision refuses to start when `memory-cognee.json` enables
   it;
-- a desk seat's MCP configuration is composed into its working directory, and
-  the exact earlier contents of those files — including anything secret an
-  operator had already put there — are kept in a journal under
+- a Claude desk seat's MCP configuration is composed into its working
+  directory, and the exact earlier contents of those files — including anything
+  secret an operator had already put there — are kept in a journal under
   `<state root>/hosted-directory-publications/`, protected only by the state
-  root's permissions;
+  root's permissions; every provider receives the leadership MCP in its
+  creation frame instead;
 - project repositories and agent-generated content are untrusted input.
 
 Vulnerabilities in Paseo, Agent Orchestrator, Codex, another provider/runtime or
