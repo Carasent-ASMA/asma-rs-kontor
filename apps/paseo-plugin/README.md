@@ -34,7 +34,9 @@ pill is the in-session return control where the composer supports it.
   `running`/`idle`/`error`/`closed`/`initializing` status stays separate. The
   derived state clears when the host resolves or cancels the permission and is
   replaced by the fresh page walk after a reconnect; it is never carried over as
-  a stale badge.
+  a stale badge. The badge is only as current as the host snapshot: a host that
+  omits both public fields cannot be distinguished from a resolved permission.
+  No question subtype is inferred.
 - **Reconnect reconciliation.** A dropped host marks the visible rows stale and
   stops claiming to be live. A new subscription snapshot triggers a fresh page
   walk before the directory is current again. Failed refreshes keep the last
