@@ -25186,13 +25186,23 @@ async fn a_team_stranded_behind_a_migration_fence_closes_when_its_settlement_is_
 
     let project_id = ProjectId::parse(&fenced.project).expect("a project id");
     let last_id = AgentRunId::parse(&last).expect("the last agent run id");
-    let team_run_id = world.daemon.state().with_store(|store| {
-        store
+    let (team_run_id, last_binding) = world.daemon.state().with_store(|store| {
+        let run = store
             .get_agent_run(project_id, last_id)
             .expect("the last run reads")
-            .expect("the last run exists")
-            .team_run_id
+            .expect("the last run exists");
+        let binding = run.binding.expect("the last run is bound");
+        (run.team_run_id, binding)
     });
+    assert!(
+        world
+            .daemon
+            .state()
+            .sessions()
+            .get(last_binding.id)
+            .is_some(),
+        "the failed settlement left the closed run's frozen snapshot held"
+    );
     let task_id = TaskId::parse(
         Call::get(format!(
             "/v1/projects/{}/epics/{}",
@@ -25287,6 +25297,25 @@ async fn a_team_stranded_behind_a_migration_fence_closes_when_its_settlement_is_
             .contains(&task_id),
         "the task is schedulable again once the envelope is terminal"
     );
+    assert!(
+        world
+            .daemon
+            .state()
+            .sessions()
+            .get(last_binding.id)
+            .is_none(),
+        "the replayed settlement releases the closed run's frozen snapshot"
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.list_binding_snapshots())
+            .expect("the binding snapshots read")
+            .iter()
+            .all(|snapshot| snapshot.binding_id != last_binding.id),
+        "the replayed settlement forgets the durable binding snapshot"
+    );
 }
 
 /// A runtime-observed terminal run is as final as an operator abandon: a replay
@@ -25331,6 +25360,19 @@ async fn a_runtime_observed_terminal_run_closes_its_stranded_team_on_abandon_rep
         ),
         "the run must be closed by the runtime, not by this operator"
     );
+    let last_binding = run
+        .binding
+        .clone()
+        .expect("the stranded run is bound to its session");
+    assert!(
+        world
+            .daemon
+            .state()
+            .sessions()
+            .get(last_binding.id)
+            .is_some(),
+        "the failed settlement left the closed run's frozen snapshot held"
+    );
     let abandoned = Call::post(
         format!(
             "/v1/projects/{}/agent-runs/{last}/runtime:abandon",
@@ -25367,6 +25409,25 @@ async fn a_runtime_observed_terminal_run_closes_its_stranded_team_on_abandon_rep
     assert!(
         closed.lifecycle.is_terminal(),
         "the replay closes the stranded envelope"
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .sessions()
+            .get(last_binding.id)
+            .is_none(),
+        "the abandon replay releases the closed run's frozen snapshot"
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.list_binding_snapshots())
+            .expect("the binding snapshots read")
+            .iter()
+            .all(|snapshot| snapshot.binding_id != last_binding.id),
+        "the abandon replay forgets the durable binding snapshot"
     );
 }
 
