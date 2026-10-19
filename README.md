@@ -162,8 +162,9 @@ The current repository includes:
   OpenAPI contract;
 - one capability catalogue — 230 registry entries at `0971674d`, 228 of them
   listable at admin MCP scope by source computation rather than live tool
-  discovery, because one entry is CLI-only and one is a local CLI operation
-  with no `/v1` route — exposed through the stdio MCP server and a `kontor` CLI
+  discovery, because one entry is a local CLI operation with no `/v1` route and
+  one entry is kept off `tools/list` to save every seat's context but stays
+  callable by name — exposed through the stdio MCP server and a `kontor` CLI
   *generated from the same registry*, with credential tiers and narrow serve
   profiles;
 - a responsive React operator console and Tauri desktop shell, including a
