@@ -1,0 +1,263 @@
+# Unactivated ASMA-8278 G-6 authoring source. Writing selects no runtime policy.
+# Merged selection: c48f4b0b2f81aa4f8bdf5d495d3c8e7d1b38c24d
+# Base source: 884f9f66587cbeaf562a3dec9baf8d602a9ca2f4; reviewed candidate: 45e0098ae7a4d871608ab81008bb38c14e144da7.
+# Exact leadership source SHA256: a2691f7b4946c5c42ccd660b8ac5a4f03be5f3226972cafed96512b719b130da
+# Retained operator fleet baseline SHA256: ea44e3f53202332b0972cf8d96f83d1dcad6226d146d0f2190d8aa6a154992a7.
+# Canonical selected roster: a63662a1a6dd757cb9f73704c491b54c727c716be1a9613c5bbbfc48e2bb6ff0; role-catalog pin is in teams/core-team.yml.
+# DEC-010 exclusions retained. Account availability enters explicit Eligibility at placement.
+# Actual vendor independence, route/capability checks and rung limits remain binding.
+# Existing frozen pins/deployed personas require supported adoption; no calibration inherited.
+# Runtime outputs are owner-only and selected through the supported activation pointer.
+# This repository authoring file is never read as an activated placement policy.
+schema_version: 2
+
+# Domain keys group routing budgets; they do not prove independent infrastructure or capacity.
+# OpenRouter (Igor, 2026-10-07): only free models are used, as the last fallback step when
+# paid rungs are exhausted. Free models change often; the PR desk watchdog and its drift
+# check compare this list with OpenRouter's live model list. Paid OpenRouter models: none;
+# a paid model needs its own domain with a distinct model_prefix and Igor's explicit decision.
+domains:
+  # Igor 2026-10-18 (ASMA-8535): each OpenCode service has its own alias, so a quota limit on one never blocks the others.
+  openrouter-free: { provider: opencode, accounts: [opencode-openrouter], model_prefix: "openrouter/" } # free models only (ids end in :free)
+  claude:     { provider: claude,   accounts: [claude-work, claude-personal] }   # exact aliases only; never the bare `claude` login. Work first (Igor, 2026-09-25)
+  codex:      { provider: codex,    accounts: [codex-work, codex-personal] }
+  cursor:     { provider: cursor,   accounts: [cursor] }
+  deepseek:   { provider: opencode, accounts: [opencode-deepseek], model_prefix: "deepseek/" }
+  # Z.AI Coding Plan: its own subscription (ASMA-8373, 2026-10-06), reached through OpenCode under its own alias.
+  zai:        { provider: opencode, accounts: [opencode-zai], model_prefix: "zai-coding-plan/" }
+
+# For providers that do not work at all. Quota exhaustion needs no entry.
+unavailable:
+  domains: []                     # deepseek removed: Igor 2026-10-06 (ASMA-8371 DEC-014); OpenRouter is available (Igor 2026-10-07)
+  accounts: []                    # claude-work back 2026-09-25 (Igor checked; operator quota record rev 273)
+
+models:
+  # Free OpenRouter fallbacks (Igor 2026-10-07); adding and removing: _docs/ai-orchestration/operations/2026-10-07-02-50-runbook-openrouter-free-models.md
+  inkling-free:            { domain: openrouter-free, id: openrouter/thinkingmachines/inkling:free,              vendor: thinkingmachines, efforts: [low, medium, high, max], vision: false, calibrated: false }
+  nemotron-free:           { domain: openrouter-free, id: openrouter/nvidia/nemotron-3-ultra-550b-a55b:free,     vendor: nvidia,           efforts: [medium, high],          vision: false, calibrated: false }
+  laguna-free:             { domain: openrouter-free, id: openrouter/poolside/laguna-s-2.1:free,                 vendor: poolside,         efforts: [low, medium, high],     vision: false, calibrated: false }
+  north-code-free:         { domain: openrouter-free, id: openrouter/cohere/north-mini-code:free,                vendor: cohere,           efforts: [low, medium, high],     vision: false, calibrated: false }
+  nemotron-lightning-free: { domain: openrouter-free, id: openrouter/nvidia/nemotron-3.5-lightning:free,          vendor: nvidia,           efforts: [low, medium, high],     vision: false, calibrated: false }
+  opus-5.5:       { domain: claude,     id: claude-opus-5-5, vendor: anthropic, efforts: [low, medium, high, xhigh, max, ultracode],        vision: true,  calibrated: false }
+  opus-5:         { domain: claude,     id: claude-opus-5,   vendor: anthropic, efforts: ["off", low, medium, high, xhigh, max, ultracode], vision: true,  calibrated: true }
+  opus-4.8:       { domain: claude,     id: claude-opus-4-8, vendor: anthropic, efforts: ["off", low, medium, high, xhigh, max, ultracode], vision: true,  calibrated: true }    # DEC-016: approved by Igor, no calibration ticket
+  # Approval: "under my authority aprove i am confident that sol 6.1 is best model of it higher tier class right now"
+  # Igor 2026-10-02T19:15:10Z: "vision is true it has vision"; "also do push  comit merge activate if needed". Screenshot NOTPERFORMED; source flags do not qualify other native routes.
+  # Exact Personal/xhigh/full-access+Plan local PASS: /tmp/asma-8280-calibration-personal-xhigh-20261002-144ea9f5-mpcj5mm_/RESULT.json (manifest 2b6b77cc6c21d2e21e73836641d8873236e3e9dc0802a4c853fa119f1229302d); no other route or screenshot test proof implied.
+  sol:            { domain: codex,      id: gpt-6.1-sol,     vendor: openai,    efforts: [low, medium, high, xhigh, max, ultra],            vision: true,  calibrated: true } # Igor judging approval 2026-10-02T19:10:00Z and vision operatorattestation 19:15:10Z (runbook 3.3/DEC-015).
+  grok-4.7:       { domain: cursor,     id: grok-4.7,        vendor: xai,       efforts: [low, medium, high, xhigh],                        vision: true,  calibrated: false }
+  grok-4.6:       { domain: cursor,     id: grok-4.6,        vendor: xai,       efforts: [low, medium, high, xhigh],                        vision: true,  calibrated: true }
+  grok-4.5:       { domain: cursor,     id: grok-4.5,        vendor: xai,       efforts: [low, medium, high],                               vision: true,  calibrated: false }
+  composer-2.5:   { domain: cursor,     id: composer-2.5,    vendor: cursor,                                                                vision: false, calibrated: false }
+  cursor-auto:    { domain: cursor,     id: auto-smart,      vendor: unknown,                                                               vision: false, calibrated: false }   # listed for bridge moves only; V-25 keeps it out of independent seats
+  # ASMA-8373 2026-10-06: the OpenRouter route left the Paseo catalog; same model now via Z.AI. Calibration was recorded on the old route.
+  glm-5.3-flash:  { domain: zai,        id: zai-coding-plan/glm-5.3-flash, vendor: zhipu, efforts: [low, high, max],                       vision: true,  calibrated: true }
+  # Igor 2026-10-18: Z.AI Coding Plan (flat monthly). GLM-5.3 takes LSA, committee and advisor seats; Flash takes the work seats.
+  # Vision checked live 2026-10-18 (three-stripe image, opencode run): GLM-5.3 replied it has no image input; Flash named all three.
+  glm-5.3:        { domain: zai,        id: zai-coding-plan/glm-5.3,       vendor: zhipu, efforts: [low, high, max],                       vision: false, calibrated: true }    # calibrated: approved by Igor 2026-10-18, no calibration run (as DEC-016)
+  # ASMA-8373 2026-10-06: new-seat models, ids and efforts as listed by the live Paseo catalog; no calibration claimed.
+  luna-6:         { domain: codex,      id: gpt-6-luna,        vendor: openai,    efforts: [low, medium, high, xhigh, max],                   vision: false, calibrated: false }
+  sonnet-5.5:     { domain: claude,     id: claude-sonnet-5-5, vendor: anthropic, efforts: [low, medium, high, xhigh, max, ultracode],        vision: false, calibrated: false }
+  fable-5.1:      { domain: claude,     id: claude-fable-5-1,  vendor: anthropic, efforts: [low, medium, high, xhigh, max, ultracode],        vision: false, calibrated: false } # Rare use only: hard-decision chain (Igor 2026-10-06).
+  deepseek-flash: { domain: deepseek,   id: deepseek/deepseek-flash,       vendor: deepseek, efforts: [low, high, max],                     vision: false, calibrated: false }   # Historical DEC-017 research pending; not an admission gate under 2026-10-04 policy
+
+# A chain is a list of steps; each step is one domain; entries are `model@effort`.
+# Igor 2026-10-11 (ASMA-8460): Codex/Claude selections use xhigh; DeepSeek/GLM use max.
+# Supported-effort catalogs above describe capabilities, not selected policy.
+chains:
+  # ASMA-8373 (Igor 2026-10-06, ASMA-8371 DEC-001/DEC-005): Adam is the coordinator; LSA is a premium advisor.
+  # Rungs 3-4 may work but never give a pass, merge or release verdict (original rung-2 cutoff remains).
+  # DeepSeek V4 Pro stays excluded (Igor's 2026-08 decision, enforced by ModelRung::validate); Flash@max is the DeepSeek rung.
+  premium:            # brainstorm Adam (leadership lsa slot) and the LSA advisor
+    - [sol@xhigh]
+    - [opus-5.5@xhigh]
+    - [deepseek-flash@max]
+    - [glm-5.3@max]
+    - &free-fallback [inkling-free@high, nemotron-free@high, laguna-free@high, north-code-free@high, nemotron-lightning-free@high]  # last step: free OpenRouter models, used only when paid rungs are exhausted
+  coordinator:        # coordinator Adam (leadership tpm slot) and every PR Adam
+    - [deepseek-flash@max]
+    - [glm-5.3-flash@max]
+    - [luna-6@xhigh]
+    - [sonnet-5.5@xhigh]
+    - [composer-2.5]
+    - *free-fallback
+  hard-decision:      # rare, chosen on purpose: committee JUDGE on a hard decision, advisor on a very hard question
+    - [fable-5.1@xhigh, opus-5.5@xhigh]
+    - [glm-5.3@max]
+    - [sol@xhigh]
+    - [deepseek-flash@max]
+    - *free-fallback
+  # PR review desk (ASMA-8371). Reviewers skip the PR author's vendor; A, B and JUDGE resolve vendors jointly.
+  # Igor 2026-10-18: PRs are many, so REV A, REV B and JUDGE start on DeepSeek Flash and GLM-5.3-Flash;
+  # Sol and Opus are fallbacks, and lead only REV SEC and REV DB, which join risky PRs alone.
+  desk-review-a:
+    - [deepseek-flash@max]
+    - [glm-5.3-flash@max]
+    - [sol@xhigh]
+    - [opus-5.5@xhigh]
+    - *free-fallback
+  desk-review-b:
+    - [glm-5.3-flash@max]
+    - [deepseek-flash@max]
+    - [opus-5.5@xhigh]
+    - [sol@xhigh]
+    - *free-fallback
+  desk-judge:
+    - [glm-5.3-flash@max]
+    - [deepseek-flash@max]
+    - [sol@xhigh]
+    - [opus-5.5@xhigh]
+    - *free-fallback
+  desk-security:
+    - [opus-5.5@xhigh]
+    - [sol@xhigh]
+    - [deepseek-flash@max]
+    - [glm-5.3-flash@max]
+    - *free-fallback
+  desk-database:
+    - [sol@xhigh]
+    - [opus-5.5@xhigh]
+    - [deepseek-flash@max]
+    - [glm-5.3-flash@max]
+    - *free-fallback
+  desk-fixer:
+    - [deepseek-flash@max]
+    - [glm-5.3-flash@max]
+    - [sol@xhigh]
+    - [composer-2.5]
+    - [opus-5.5@xhigh]
+    - *free-fallback
+  # Consultation chains carry no Cursor step: Paseo 0.9.1 refuses Cursor consultation seats
+  # (ToolPolicyUnsupportedError: cannot preapprove exact MCP tools), 2026-09-25.
+  review-a:
+    - [sol@xhigh]
+    - [deepseek-flash@max]
+    - [opus-5.5@xhigh, opus-5@xhigh, opus-4.8@xhigh]
+    - [glm-5.3@max]
+    - *free-fallback
+  review-b:
+    - [opus-5.5@xhigh, opus-5@xhigh, opus-4.8@xhigh]
+    - [glm-5.3@max]
+    - [sol@xhigh]
+    - [deepseek-flash@max]
+    - *free-fallback
+  # Independent Review JUDGE: GLM-5.3 first (Igor 2026-10-18); only rungs 1-2 may give a verdict. Each rung's vendor
+  # differs from reviewer-a's and reviewer-b's on the same rung, so Sol, not the capped Claude seat, backs GLM.
+  review-judge:
+    - [glm-5.3@max]
+    - [sol@xhigh]
+    - [deepseek-flash@max]
+    - [opus-5.5@xhigh, opus-5@xhigh, opus-4.8@xhigh]
+    - *free-fallback
+  consult-codex-first:
+    - [sol@xhigh]
+    - [opus-5.5@xhigh, opus-5@xhigh, opus-4.8@xhigh]
+    - [deepseek-flash@max]
+    - [glm-5.3-flash@max]
+    - *free-fallback
+  claude-first:
+    - [opus-5.5@xhigh, opus-5@xhigh, opus-4.8@xhigh]
+    - [sol@xhigh]
+    - [grok-4.7@xhigh, grok-4.6@high]
+    - [deepseek-flash@max]
+    - [glm-5.3-flash@max]
+    - *free-fallback
+  claude-first-build:
+    - [opus-5.5@xhigh, opus-5@xhigh, opus-4.8@xhigh]
+    - [sol@xhigh]
+    - [composer-2.5, grok-4.5@high]
+    - [glm-5.3-flash@max]
+    - [deepseek-flash@max]
+    - *free-fallback
+  codex-first:
+    - [sol@xhigh]
+    - [opus-5.5@xhigh, opus-5@xhigh, opus-4.8@xhigh]
+    - [grok-4.6@high, grok-4.5@high]
+    - [deepseek-flash@max]
+    - [glm-5.3-flash@max]
+    - *free-fallback
+  open-first-build:
+    - [deepseek-flash@max]
+    - [composer-2.5]
+    - [glm-5.3-flash@max]
+    - [sol@xhigh]
+    - [opus-4.8@xhigh]
+    - *free-fallback
+  open-first-verify:
+    - [glm-5.3-flash@max]
+    - [deepseek-flash@max]
+    - [grok-4.6@high, composer-2.5]
+    - [sol@xhigh]
+    - [opus-5@xhigh, opus-4.8@xhigh]
+    - *free-fallback
+
+bindings:
+  leadership/a63662a1a6dd757cb9f73704c491b54c727c716be1a9613c5bbbfc48e2bb6ff0/lsa: premium
+  leadership/a63662a1a6dd757cb9f73704c491b54c727c716be1a9613c5bbbfc48e2bb6ff0/tpm: coordinator
+  # ASMA standard
+  team/01936f5a-0000-7000-8000-000000000101/scope: codex-first
+  team/01936f5a-0000-7000-8000-000000000101/implement: open-first-build
+  team/01936f5a-0000-7000-8000-000000000101/verify: open-first-verify
+  team/01936f5a-0000-7000-8000-000000000101/audit: codex-first
+  # high-stakes
+  team/01936f5a-0000-7000-8000-000000000102/scope: codex-first
+  team/01936f5a-0000-7000-8000-000000000102/implement: claude-first-build
+  team/01936f5a-0000-7000-8000-000000000102/verify: open-first-verify
+  team/01936f5a-0000-7000-8000-000000000102/audit: codex-first
+  # UX
+  team/01936f5a-0000-7000-8000-000000000103/research-design: claude-first
+  team/01936f5a-0000-7000-8000-000000000103/prototype: open-first-build
+  team/01936f5a-0000-7000-8000-000000000103/browser-verify: open-first-verify
+  team/01936f5a-0000-7000-8000-000000000103/audit: codex-first
+  # PR check
+  team/01936f5a-0000-7000-8000-000000000104/pr-check: open-first-verify
+  # Plan, build and verify
+  team/01936f5a-0000-7000-8000-000000000001/architect: codex-first
+  team/01936f5a-0000-7000-8000-000000000001/builder: claude-first-build
+  team/01936f5a-0000-7000-8000-000000000001/tester: open-first-verify
+  team/01936f5a-0000-7000-8000-000000000001/inspector: codex-first
+  team/01936f5a-0000-7000-8000-000000000001/verifier: open-first-verify
+  # Research spike
+  team/01936f5a-0000-7000-8000-000000000002/researcher-a: codex-first
+  team/01936f5a-0000-7000-8000-000000000002/researcher-b: claude-first
+  team/01936f5a-0000-7000-8000-000000000002/judge: claude-first
+  team/01936f5a-0000-7000-8000-000000000002/synthesizer: claude-first
+  team/01936f5a-0000-7000-8000-000000000002/final-reviewer: codex-first
+  # Independent review Committee
+  committee/01991c00-0000-7000-8000-000000000001/reviewer-a: review-a
+  committee/01991c00-0000-7000-8000-000000000001/reviewer-b: review-b
+  committee/01991c00-0000-7000-8000-000000000001/judge: review-judge
+  # Advisors
+  advisor/01a02d00-0000-7000-8000-00000000ad01: premium   # LSA advisor
+  # Rare hard questions and hard committee decisions (Fable first)
+  advisor/hard-question: hard-decision
+  committee/hard-decision/judge: hard-decision
+  # PR review desk (ASMA-8371)
+  team/pr-review-desk/adam: coordinator
+  team/pr-review-desk/rev-a: desk-review-a
+  team/pr-review-desk/rev-b: desk-review-b
+  team/pr-review-desk/judge: desk-judge
+  team/pr-review-desk/rev-sec: desk-security
+  team/pr-review-desk/rev-db: desk-database
+  team/pr-review-desk/swe: desk-fixer
+
+rules:
+  # 2026-10-04 operator rule: requested models default accepted; quality research optional.
+  # Historical calibrated flags/receipts are preserved, never manufactured. No runtime activation.
+  calibration_required: []
+  vision_required:
+    - team/01936f5a-0000-7000-8000-000000000103/browser-verify
+  # Seat: the seat whose vendor it must avoid in the same team run.
+  independent_of:
+    team/01936f5a-0000-7000-8000-000000000101/verify: team/01936f5a-0000-7000-8000-000000000101/implement
+    team/01936f5a-0000-7000-8000-000000000101/audit: team/01936f5a-0000-7000-8000-000000000101/implement
+    team/01936f5a-0000-7000-8000-000000000102/verify: team/01936f5a-0000-7000-8000-000000000102/implement
+    team/01936f5a-0000-7000-8000-000000000102/audit: team/01936f5a-0000-7000-8000-000000000102/implement
+    team/01936f5a-0000-7000-8000-000000000103/browser-verify: team/01936f5a-0000-7000-8000-000000000103/prototype
+    team/01936f5a-0000-7000-8000-000000000103/audit: team/01936f5a-0000-7000-8000-000000000103/prototype
+    team/01936f5a-0000-7000-8000-000000000001/tester: team/01936f5a-0000-7000-8000-000000000001/builder
+    team/01936f5a-0000-7000-8000-000000000001/inspector: team/01936f5a-0000-7000-8000-000000000001/builder
+    team/01936f5a-0000-7000-8000-000000000001/verifier: team/01936f5a-0000-7000-8000-000000000001/builder
+    team/01936f5a-0000-7000-8000-000000000002/researcher-b: team/01936f5a-0000-7000-8000-000000000002/researcher-a
+    team/pr-review-desk/rev-b: team/pr-review-desk/rev-a
+    team/pr-review-desk/judge: team/pr-review-desk/rev-a
