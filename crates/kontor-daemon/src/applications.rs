@@ -32949,7 +32949,7 @@ impl ApplicationOperations for Services {
             None => {
                 let _native_lifecycle = self.native_lifecycle_change().await?;
                 state
-                    .with_store(&write)
+                    .with_store(write)
                     .map_err(|error| self.refuse(&error))?
             }
         };
