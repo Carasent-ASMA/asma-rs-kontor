@@ -12562,7 +12562,7 @@ pub async fn completion(
 ///
 /// Only the bearer's persistent seat identity is known here; the path project
 /// has to vouch for it before anything reads that project's data.
-fn require_scoped_seat_membership(
+pub(crate) fn require_scoped_seat_membership(
     state: &ApiState,
     project_id: ProjectId,
     caller: Caller,

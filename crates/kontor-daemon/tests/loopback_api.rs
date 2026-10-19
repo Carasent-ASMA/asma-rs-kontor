@@ -51986,6 +51986,59 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
         .as_str()
         .expect("a foreign epic id")
         .to_owned();
+    // The open-question and remediation routes resolve the same selector, so a
+    // foreign seat must be refused there before the binding tables are read.
+    let foreign_question = serde_json::json!({
+        "question_id": kontor_core::id::OpenQuestionId::generate(),
+        "expected_revision": 0,
+        "action": {
+            "action": "raise",
+            "subject": "A foreign project binding probe",
+            "scope": "architecture",
+            "attachment": {"record": {"kind": "mini_project", "mini_project_id": foreign_epic}},
+            "why_ambiguous": "A seat of another project must not learn this project's binding state.",
+            "options": ["First answer", "Second answer"]
+        }
+    });
+    let foreign_seat = |actor: SeatBindingId| {
+        world
+            .daemon
+            .state()
+            .credentials()
+            .seat_credential_for_generation(actor, 1)
+    };
+    async fn assert_foreign_seat_refused(
+        world: &World,
+        project: &str,
+        key: &str,
+        token: String,
+        question: &serde_json::Value,
+    ) {
+        let listed = Call::get(format!("/v1/projects/{project}/epics/{key}/open-questions"))
+            .with_token(token.clone())
+            .send(world)
+            .await;
+        assert_eq!(
+            listed.status, 403,
+            "a seat of another project must not learn an open-question binding state: {}",
+            listed.body
+        );
+        assert_eq!(listed.code(), "forbidden");
+        let recorded = Call::post(
+            format!("/v1/projects/{project}/epics/{key}/open-questions:record"),
+            question,
+        )
+        .with_token(token.clone())
+        .with_key(format!("foreign-open-question-{key}"))
+        .send(world)
+        .await;
+        assert_eq!(
+            recorded.status, 403,
+            "a seat of another project must not record into its question ledger: {}",
+            recorded.body
+        );
+        assert_eq!(recorded.code(), "forbidden");
+    }
     for actor in [lsa, tpm] {
         for key in [absent_key.as_str(), foreign_epic_key.as_str()] {
             let probe = scoped_completion(actor, 1, &foreign_project_id, key)
@@ -51998,6 +52051,14 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
             );
             assert_eq!(probe.code(), "forbidden");
             assert!(probe.json().get("phase").is_none());
+            assert_foreign_seat_refused(
+                world,
+                &foreign_project_id,
+                key,
+                foreign_seat(actor),
+                &foreign_question,
+            )
+            .await;
         }
     }
     confirm_test_epic_identity_as(
@@ -52008,16 +52069,26 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
         &foreign_epic_key,
     );
     for actor in [lsa, tpm] {
-        let task_key_probe = scoped_completion(actor, 1, &foreign_project_id, &foreign_task_key)
-            .send(world)
+        for key in [foreign_task_key.as_str(), foreign_epic_key.as_str()] {
+            let task_key_probe = scoped_completion(actor, 1, &foreign_project_id, key)
+                .send(world)
+                .await;
+            assert_eq!(
+                task_key_probe.status, 403,
+                "a key in another project is not this reader's to resolve: {}",
+                task_key_probe.body
+            );
+            assert_eq!(task_key_probe.code(), "forbidden");
+            assert!(task_key_probe.json().get("phase").is_none());
+            assert_foreign_seat_refused(
+                world,
+                &foreign_project_id,
+                key,
+                foreign_seat(actor),
+                &foreign_question,
+            )
             .await;
-        assert_eq!(
-            task_key_probe.status, 403,
-            "a task-kind key in another project is not this reader's to resolve: {}",
-            task_key_probe.body
-        );
-        assert_eq!(task_key_probe.code(), "forbidden");
-        assert!(task_key_probe.json().get("phase").is_none());
+        }
     }
     // A real epic that was never materialized has no control plane at all. The
     // fence must refuse its readers as non-authority too, rather than report
