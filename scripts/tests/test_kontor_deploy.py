@@ -814,6 +814,33 @@ class ProductionJobGuardTest(WorldTest):
             )
         self.assertEqual(refusal.exception.code, "production_target_unreadable")
 
+    def test_a_failed_loaded_production_print_is_refused(self) -> None:
+        failures = {
+            "timeout": subprocess.TimeoutExpired(["launchctl"], deploy.DEFAULT_TIMEOUT),
+            "missing launchctl": OSError("launchctl is missing"),
+        }
+        for case, failure in failures.items():
+            with self.subTest(failure=case):
+                def answer(argv: list[str]) -> subprocess.CompletedProcess[str]:
+                    if argv[:2] == ["launchctl", "print"]:
+                        raise failure
+                    return done()
+
+                recorder = Recorder(answer)
+                with self.assertRaises(deploy.Refused) as refusal:
+                    deploy.resolve_job(
+                        DISPOSABLE_LABEL,
+                        DISPOSABLE_DOMAIN,
+                        self.world.plist(DISPOSABLE_LABEL),
+                        None,
+                        self.world.host(recorder, DISPOSABLE_UID),
+                        "bootstrap",
+                    )
+                self.assertEqual(
+                    refusal.exception.code, "production_target_unreadable"
+                )
+                self.assertEqual(recorder.launchctl(), [])
+
     def test_a_production_deploy_cannot_be_declared_for_another_label(self) -> None:
         recorder = Recorder()
         argv = [

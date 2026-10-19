@@ -353,8 +353,11 @@ def _loaded_production_target(host: Host, domain_uid: int) -> ProductionTarget |
     service = f"gui/{domain_uid}/{PRODUCTION_LABEL}"
     try:
         result = host.run(["launchctl", "print", service])
-    except (OSError, subprocess.SubprocessError):
-        return None
+    except (OSError, subprocess.SubprocessError) as error:
+        raise Refused(
+            "production_target_unreadable",
+            f"launchctl print {service} failed: {error}",
+        ) from error
     if result.returncode != 0:
         return None
 
