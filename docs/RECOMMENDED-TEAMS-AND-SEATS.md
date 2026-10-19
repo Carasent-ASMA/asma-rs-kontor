@@ -10,7 +10,7 @@ The routed, maintained copy of this recommendation is
 [`_docs/reference/2026-09-04-23-35-reference-recommended-teams-and-seats.md`](../_docs/reference/2026-09-04-23-35-reference-recommended-teams-and-seats.md),
 which adds an explicit implementation boundary; the repository README and
 [`_docs/index.md`](../_docs/index.md) route there. This file is the original
-2026-08-29 text, landed on `master` with `9af0afd5` (2026-09-13). Where the two
+2026-08-29 text, landed on `master` with `fd204794` (2026-08-29). Where the two
 differ, prefer the reference copy.
 
 **This is a recommendation to start from, not a prescription.** Teams, seats,
