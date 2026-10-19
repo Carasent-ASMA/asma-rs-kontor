@@ -1047,4 +1047,41 @@ describe("SessionDirectory", () => {
 
     expect(fake.listCalls.filter((call) => call.subscribe === undefined)).toHaveLength(0);
   });
+
+  it("opens one subscription when refresh races a pending connect", async () => {
+    const fake = fakeDirectory([[entry("agent-a")]]);
+    const directory = new SessionDirectory({
+      client: () => fake.client,
+      includeArchived: false,
+      onChange: () => undefined,
+    });
+
+    const subscribe = fake.holdNextSubscribe();
+    const starting = directory.start();
+    await subscribe.started;
+    const refreshing = directory.refresh();
+    subscribe.release();
+    await Promise.all([starting, refreshing]);
+
+    expect(fake.listCalls.filter((call) => call.subscribe !== undefined)).toHaveLength(1);
+    await directory.dispose();
+  });
+
+  it("stops page fetches after dispose during a walk", async () => {
+    const fake = fakeDirectory([[entry("agent-a")], [entry("agent-b")]]);
+    const directory = new SessionDirectory({
+      client: () => fake.client,
+      includeArchived: false,
+      onChange: () => undefined,
+    });
+
+    const page = fake.holdNextPage();
+    const starting = directory.start();
+    await page.started;
+    await directory.dispose();
+    page.release();
+    await starting;
+
+    expect(fake.listCalls.filter((call) => call.subscribe === undefined)).toHaveLength(1);
+  });
 });

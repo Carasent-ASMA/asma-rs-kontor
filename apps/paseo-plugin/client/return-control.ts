@@ -35,6 +35,7 @@ export type ReturnControlOptions = {
 
 const DEFAULT_RETRY_DELAY_MS = 500;
 const DEFAULT_MAX_RETRY_DELAY_MS = 30_000;
+const PENDING_UPDATE_LIMIT = 256;
 
 /**
  * Adds one understated return pill to each live agent's composer track. The
@@ -54,6 +55,7 @@ export function contributeReturnControl(
 ): () => void {
   const pills = new Map<string, RegisteredPill>();
   const pendingUpdates: PaseoAgentUpdate[] = [];
+  let pendingOverflow = false;
   const lifetime = new AbortController();
   const initialRetryDelay = Math.max(0, options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS);
   const maxRetryDelay = Math.max(
@@ -143,7 +145,11 @@ export function contributeReturnControl(
       return;
     }
     if (walking) {
-      pendingUpdates.push(update);
+      if (pendingUpdates.length < PENDING_UPDATE_LIMIT) {
+        pendingUpdates.push(update);
+      } else {
+        pendingOverflow = true;
+      }
       return;
     }
     applyUpdate(update);
@@ -170,6 +176,10 @@ export function contributeReturnControl(
     for (const update of pending) {
       applyUpdate(update);
     }
+    if (pendingOverflow) {
+      pendingOverflow = false;
+      walkQueued = true;
+    }
   }
 
   async function walkDirectory(): Promise<void> {
@@ -184,7 +194,7 @@ export function contributeReturnControl(
     try {
       do {
         walkQueued = false;
-        const collected = await collectDirectory(client.paseo, false);
+        const collected = await collectDirectory(client.paseo, false, lifetime.signal);
         if (stopped) {
           return;
         }
@@ -322,6 +332,7 @@ export function contributeReturnControl(
     clearWalkRetryTimer();
     releaseObservation();
     pendingUpdates.length = 0;
+    pendingOverflow = false;
     removeAll();
   };
 }

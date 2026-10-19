@@ -388,6 +388,51 @@ describe("Kontor return control", () => {
     stop();
   });
 
+  it("bounds updates buffered during a walk and reconciles with a follow-up walk", async () => {
+    let releaseWalk!: (value: {
+      entries: ReturnType<typeof sessionEntry>[];
+      pages: number;
+    }) => void;
+    const heldWalk = new Promise<{
+      entries: ReturnType<typeof sessionEntry>[];
+      pages: number;
+    }>((resolve) => {
+      releaseWalk = resolve;
+    });
+    collectDirectory
+      .mockReturnValueOnce(heldWalk)
+      .mockResolvedValueOnce({
+        entries: [
+          sessionEntry("agent-a", { workspaceId: "wks-a" }),
+          sessionEntry("agent-b", { workspaceId: "wks-b" }),
+        ],
+        pages: 1,
+      });
+    const fake = fakeClient([readyAgent("agent-a", "wks-a")]);
+
+    const stop = contributeReturnControl(fake.client, "sessions");
+    await vi.waitFor(() => expect(collectDirectory).toHaveBeenCalledTimes(1), { interval: 5 });
+    for (let index = 0; index < 300; index += 1) {
+      fake.observers[0]!.update({
+        type: "agent_update",
+        payload: updateAgent(agentSnapshot(`buffered-${index}`, `wks-${index}`)),
+      });
+    }
+    releaseWalk({
+      entries: [
+        sessionEntry("agent-a", { workspaceId: "wks-a" }),
+        sessionEntry("agent-b", { workspaceId: "wks-b" }),
+      ],
+      pages: 1,
+    });
+
+    await vi.waitFor(() => expect(collectDirectory).toHaveBeenCalledTimes(2), { interval: 5 });
+    await vi.waitFor(() => expect(fake.pillFor("agent-b")).toBeDefined(), { interval: 5 });
+    expect(fake.pillFor("buffered-0")).toBeUndefined();
+
+    stop();
+  });
+
   it("does not retry observation after cleanup", async () => {
     const fake = fakeClient([], [], { failFirstObservation: true });
     collectDirectory.mockResolvedValue({ entries: [], pages: 1 });
