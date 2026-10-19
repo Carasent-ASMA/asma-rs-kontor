@@ -157,10 +157,12 @@ Observed on this workstation:
   device checks for this iteration on candidate `e7006612` (test host
   `srv_tWq3jTzpOlc9`): "mobile check passed" and "desktop checked looks ok too".
   The acceptance covers the device test as performed and does not assert that
-  every subcase below was individually instrumented or observed. This candidate
-  still does not claim saved-view restoration or full B1, and KN-03 does not
-  substitute for the KN-01 checks. The procedure and evidence checklist are
-  recorded below.
+  every subcase below was individually instrumented or observed. The later
+  `cdb86818` head adds only the two refresh/dispose concurrency guards and the
+  acceptance wording; it does not change the accepted desktop/iPhone UI path,
+  and no new device pass is claimed. This candidate still does not claim
+  saved-view restoration or full B1, and KN-03 does not substitute for the KN-01
+  checks. The procedure and evidence checklist are recorded below.
 
 ### Desktop and iPhone acceptance procedure
 
