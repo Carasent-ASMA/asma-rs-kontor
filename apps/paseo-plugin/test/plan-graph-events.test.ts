@@ -8,10 +8,31 @@ import { planGraphSchema, type PlanGraphData } from "../client/plan-graph/contra
 const hooks = vi.hoisted(() => {
   const slots: unknown[] = [];
   let cursor = 0;
+  let effects: (() => void)[] = [];
   return {
-    reset() { slots.length = 0; cursor = 0; },
-    render() { cursor = 0; },
-    useMemo: (factory: () => unknown) => factory(),
+    reset() {
+      for (const slot of slots) {
+        if (slot && typeof slot === "object" && "cleanup" in slot && typeof slot.cleanup === "function") slot.cleanup();
+      }
+      slots.length = 0; cursor = 0; effects = [];
+    },
+    render() { cursor = 0; effects = []; },
+    flushEffects() { const queue = effects; effects = []; queue.forEach((effect) => effect()); return queue.length > 0; },
+    useLayoutEffect(effect: () => void | (() => void), deps: readonly unknown[]) {
+      const index = cursor++;
+      const previous = slots[index] as { deps: readonly unknown[]; cleanup?: () => void } | undefined;
+      if (!previous || previous.deps.length !== deps.length || previous.deps.some((value, i) => !Object.is(value, deps[i]))) {
+        const slot: { deps: readonly unknown[]; cleanup?: () => void } = { deps };
+        slots[index] = slot;
+        effects.push(() => { previous?.cleanup?.(); const cleanup = effect(); if (cleanup) slot.cleanup = cleanup; });
+      }
+    },
+    useMemo(factory: () => unknown, deps: readonly unknown[]) {
+      const index = cursor++;
+      const previous = slots[index] as { deps: readonly unknown[]; value: unknown } | undefined;
+      if (previous && previous.deps.length === deps.length && previous.deps.every((value, i) => Object.is(value, deps[i]))) return previous.value;
+      const value = factory(); slots[index] = { deps, value }; return value;
+    },
     useSyncExternalStore: (_subscribe: unknown, read: () => unknown) => read(),
     useRef(initial: unknown) {
       const index = cursor++;
@@ -54,10 +75,10 @@ function find(tree: unknown, id: string): Element {
   if (!element) throw new Error(`Element not found: ${id}`);
   return element;
 }
-function emit(element: Element, name: string, event?: unknown) {
+function emit(element: Element, name: string, ...events: unknown[]) {
   const handler = element.props[name];
   if (typeof handler !== "function") throw new Error(`Handler missing: ${name}`);
-  handler(event);
+  handler(...events);
 }
 function style(element: Element): Record<string, unknown> { return element.props.style as Record<string, unknown>; }
 function sample(): PlanGraphData { return JSON.parse(readFileSync(new URL("./fixtures/plan-graph-asma-8371.json", import.meta.url), "utf8")); }
@@ -74,11 +95,32 @@ function rootGraph(count: number): PlanGraphData {
 function setup(patch: Partial<PlanGraphProps> = {}) {
   const props: PlanGraphProps = { graph: sample(), hostId: "host-a", store: createPlanGraphStore(), theme, ...patch };
   const render = () => {
-    hooks.render();
-    const wrapper = PlanGraph(props) as ReactElement<PlanGraphProps, (props: PlanGraphProps) => ReactNode>;
-    return wrapper.type(wrapper.props);
+    let tree: ReactNode = null;
+    let iterations = 0;
+    do {
+      hooks.render();
+      const wrapper = PlanGraph(props) as ReactElement<PlanGraphProps, (props: PlanGraphProps) => ReactNode>;
+      tree = wrapper.type(wrapper.props);
+      if (++iterations > 15) throw new Error("Graph layout effects did not settle");
+    } while (hooks.flushEffects());
+    return tree;
   };
   return { props, render, key: planGraphViewKey(props.hostId, props.graph) };
+}
+
+function settleCanvas(tree: ReactNode) {
+  const envelope = style(find(tree, "plan-graph-scroll-envelope"));
+  emit(find(tree, "plan-graph-canvas-scroll"), "onContentSizeChange", 0, envelope.height);
+  emit(walk(tree).find((element) => element.props.horizontal)!, "onContentSizeChange", envelope.width, envelope.height);
+}
+
+function canvasRefs(tree: ReactNode) {
+  const scrollTo = vi.fn();
+  for (const element of walk(tree)) {
+    const ref = element.props.ref as { current: unknown } | undefined;
+    if (ref) ref.current = { scrollTo };
+  }
+  return scrollTo;
 }
 
 describe("native PlanGraph events (mocked host primitives, not device qualification)", () => {
@@ -209,7 +251,7 @@ describe("native PlanGraph events (mocked host primitives, not device qualificat
     expect(props.store.read(key).selected).toBe("TASK-002");
     emit(find(render(), "plan-node-TASK-003"), "onPress");
     expect(props.store.read(key).selected).toBe("TASK-003");
-    expect(content(render())).toContain("Zoom is unavailable");
+    expect(content(render())).toContain("Wave list is unscaled");
     emit(find(render(), "Show graph canvas"), "onPress");
     expect(find(render(), "plan-graph-canvas")).toBeDefined();
   });
@@ -322,6 +364,7 @@ describe("native PlanGraph events (mocked host primitives, not device qualificat
       { wave: 1, tasks: [selected.id] },
     ];
     const { render, props, key } = setup({ graph: planGraphSchema.parse(graph), compact: true });
+    emit(find(render(), "plan-graph-canvas-scroll"), "onLayout", { nativeEvent: { layout: { width: 400, height: 500 } } });
     props.store.update(key, { x: 175, y: 10000 });
     emit(find(render(), "plan-node-TASK-099"), "onPress");
     emit(find(render(), "Fit as wave list"), "onPress");
@@ -376,12 +419,188 @@ describe("native PlanGraph events (mocked host primitives, not device qualificat
     }
     emit(find(render(), "plan-node-TASK-005"), "onPress");
     emit(find(render(), "Centre selected task"), "onPress");
+    const envelope = style(find(render(), "plan-graph-scroll-envelope"));
+    emit(find(render(), "plan-graph-canvas-scroll"), "onContentSizeChange", 800, envelope.height);
+    emit(walk(render()).find((element) => element.props.horizontal)!, "onContentSizeChange", envelope.width, envelope.height);
     expect(scrollTo).toHaveBeenCalledTimes(2);
     expect(props.store.read(key).x).toBeGreaterThan(0);
     const saved = props.store.read(key);
     hooks.reset();
     expect(content(find(render(), "plan-graph-details"))).toContain("TASK-005");
     expect(props.store.read(key)).toEqual(saved);
+  });
+
+  it("zooms about the viewport centre in quarter steps with scaled scroll envelopes and unscaled controls", () => {
+    const { render, props, key } = setup({ compact: true });
+    props.store.update(key, { x: 200, y: 1000 });
+    emit(find(render(), "Zoom in"), "onPress");
+    expect(props.store.read(key)).toMatchObject({ scale: 1.25, x: 350, y: 1312.5 });
+    expect(style(find(render(), "plan-graph-canvas"))).toMatchObject({ transformOrigin: "left top", transform: [{ scale: 1.25 }] });
+    expect(style(find(render(), "plan-graph-scroll-envelope"))).toMatchObject({ width: 1500, height: 3740 });
+    expect(content(find(render(), "plan-graph-zoom-status"))).toContain("125%");
+    expect(style(find(render(), "Zoom in"))).toMatchObject({ minWidth: 44, minHeight: 44 });
+    expect(style(find(render(), "Zoom in")).transform).toBeUndefined();
+    emit(find(render(), "Zoom out"), "onPress");
+    expect(props.store.read(key)).toMatchObject({ scale: 1, x: 200, y: 1000 });
+    for (let index = 0; index < 8; index += 1) emit(find(render(), "Zoom in"), "onPress");
+    expect(props.store.read(key).scale).toBe(2);
+    expect(find(render(), "Zoom in").props.disabled).toBe(true);
+    for (let index = 0; index < 10; index += 1) emit(find(render(), "Zoom out"), "onPress");
+    expect(props.store.read(key).scale).toBe(0.5);
+    expect(find(render(), "Zoom out").props.disabled).toBe(true);
+    expect(Number(style(find(render(), "plan-node-TASK-001")).minHeight) * 0.5).toBeGreaterThanOrEqual(44);
+  });
+
+  it("waits for both new content extents and rejects stale scroll/size callbacks across zoom and reset", () => {
+    const { render, props, key } = setup();
+    props.store.update(key, { x: 200, y: 1000 });
+    const oldVertical = find(render(), "plan-graph-canvas-scroll");
+    const oldHorizontal = walk(render()).find((element) => element.props.horizontal)!;
+    emit(find(render(), "Zoom in"), "onPress");
+    const tree = render(); const scrollTo = canvasRefs(tree);
+    emit(oldVertical, "onScroll", { nativeEvent: { contentOffset: { y: 0 } } });
+    emit(oldHorizontal, "onScroll", { nativeEvent: { contentOffset: { x: 0 } } });
+    emit(find(tree, "plan-graph-canvas-scroll"), "onScroll", { nativeEvent: { contentOffset: { y: 0 } } });
+    expect(props.store.read(key)).toMatchObject({ x: 350, y: 1312.5 });
+    emit(find(tree, "plan-graph-canvas-scroll"), "onContentSizeChange", 800, 2992);
+    emit(oldHorizontal, "onContentSizeChange", 1500, 3740);
+    expect(scrollTo).not.toHaveBeenCalled();
+    emit(find(tree, "plan-graph-canvas-scroll"), "onContentSizeChange", 800, 3740);
+    expect(scrollTo).not.toHaveBeenCalled();
+    emit(walk(tree).find((element) => element.props.horizontal)!, "onContentSizeChange", 1500, 3740);
+    expect(scrollTo.mock.calls).toEqual([[{ x: 350, animated: false }], [{ y: 1312.5, animated: false }]]);
+    emit(find(render(), "Reset zoom to 100%"), "onPress"); render();
+    emit(oldVertical, "onScroll", { nativeEvent: { contentOffset: { y: 0 } } });
+    expect(props.store.read(key)).toMatchObject({ scale: 1, x: 200, y: 1000 });
+  });
+
+  it("retires callbacks even when a viewport resize returns to identical geometry", () => {
+    const { render, props, key } = setup();
+    props.store.update(key, { y: 1000 });
+    const retired = find(render(), "plan-graph-canvas-scroll");
+    emit(retired, "onLayout", { nativeEvent: { layout: { width: 700, height: 500 } } });
+    emit(find(render(), "plan-graph-canvas-scroll"), "onLayout", { nativeEvent: { layout: { width: 800, height: 500 } } });
+    render();
+    emit(retired, "onScroll", { nativeEvent: { contentOffset: { y: 0 } } });
+    expect(props.store.read(key).y).toBe(1000);
+  });
+
+  it("scopes zoom to host/revision and retires unmounted scroll handlers", () => {
+    const { render, props, key } = setup();
+    props.store.update(key, { x: 200, y: 1000 });
+    emit(find(render(), "Zoom in"), "onPress");
+    const retired = find(render(), "plan-graph-canvas-scroll");
+    const saved = props.store.read(key);
+    props.hostId = "host-b"; hooks.reset();
+    expect(content(find(render(), "plan-graph-zoom-status"))).toContain("100%");
+    emit(retired, "onScroll", { nativeEvent: { contentOffset: { y: 0 } } });
+    expect(props.store.read(key)).toEqual(saved);
+    props.hostId = "host-a"; props.graph = { ...props.graph, graph_sha256: "f".repeat(64) }; hooks.reset();
+    expect(content(find(render(), "plan-graph-zoom-status"))).toContain("100%");
+    expect(props.store.read(key).scale).toBe(1.25);
+  });
+
+  it("resets around intentional selection, preserving temporary interaction, sourced details and canonical actions", () => {
+    const openJira = vi.fn();
+    const { render, props, key } = setup({ sourceActions: { jira: openJira } });
+    const canonical = JSON.stringify(props.graph);
+    props.sourcedStates = { viewKey: key, nodes: { "TASK-005": { label: "Captured state", source: "Independent read", observedAt: "2026-10-19T10:00:00Z" } } };
+    emit(find(render(), "plan-node-TASK-005"), "onPress");
+    emit(find(render(), "plan-node-TASK-003"), "onFocus");
+    emit(find(render(), "plan-node-TASK-002"), "onHoverIn");
+    emit(find(render(), "Zoom in"), "onPress");
+    emit(find(render(), "Reset zoom to 100%"), "onPress");
+    expect(props.store.read(key)).toMatchObject({ scale: 1, x: 400, y: 0, selected: "TASK-005" });
+    expect(content(find(render(), "plan-graph-details"))).toContain("TASK-002");
+    emit(find(render(), "plan-node-TASK-002"), "onHoverOut");
+    emit(find(render(), "plan-node-TASK-003"), "onBlur");
+    expect(content(find(render(), "plan-graph-details"))).toContain("Captured state · Independent read");
+    emit(find(render(), "Open ASMA-8376"), "onPress");
+    expect(openJira).toHaveBeenCalledWith({ kind: "jira", jira: "ASMA-8376" });
+    expect(JSON.stringify(props.graph)).toBe(canonical);
+  });
+
+  it("applies true Fit graph separately from the unscaled wave-list alternate", () => {
+    const { render, props, key } = setup({ graph: rootGraph(1) });
+    emit(find(render(), "plan-graph-canvas-scroll"), "onLayout", { nativeEvent: { layout: { width: 225, height: 174 } } });
+    emit(find(render(), "Fit graph"), "onPress");
+    expect(props.store.read(key)).toMatchObject({ scale: 0.75, x: 0, y: 0, fit: true, alternate: false });
+    expect(content(find(render(), "plan-graph-zoom-status"))).toContain("Full graph fits");
+    emit(find(render(), "Fit as wave list"), "onPress");
+    expect(props.store.read(key).scale).toBe(0.75);
+    expect(find(render(), "Zoom in").props.disabled).toBe(true);
+    expect(find(render(), "Fit graph").props.disabled).toBe(true);
+    expect(style(find(render(), "plan-node-TASK-000")).transform).toBeUndefined();
+    expect(content(render())).toContain("Wave list is unscaled");
+  });
+
+  it("reports a constrained 50% fit, leaves scroll available and recomputes fit after viewport and intrinsic reflow", () => {
+    const { render, props, key } = setup();
+    emit(find(render(), "Fit graph"), "onPress");
+    expect(props.store.read(key)).toMatchObject({ scale: 0.5, fit: true });
+    expect(content(find(render(), "plan-graph-zoom-status"))).toContain("Constrained fit at 50%");
+    expect(style(find(render(), "plan-graph-scroll-envelope")).height).toBe(1496);
+    emit(find(render(), "plan-graph-canvas-scroll"), "onLayout", { nativeEvent: { layout: { width: 1200, height: 2992 } } });
+    render();
+    expect(props.store.read(key).scale).toBe(1);
+    expect(content(find(render(), "plan-graph-zoom-status"))).toContain("Full graph fits");
+    emit(find(render(), "plan-node-TASK-001"), "onLayout", { nativeEvent: { layout: { height: 400 } } });
+    render();
+    expect(props.store.read(key).scale).toBe(0.5);
+    expect(content(find(render(), "plan-graph-zoom-status"))).toContain("Constrained fit");
+    emit(find(render(), "plan-graph-canvas-scroll"), "onScrollBeginDrag");
+    emit(find(render(), "plan-graph-canvas-scroll"), "onScroll", { nativeEvent: { contentOffset: { y: 200 } } });
+    expect(props.store.read(key)).toMatchObject({ y: 200, fit: false });
+  });
+
+  it("preserves canvas camera and list scrolling independently through paging and open/return", () => {
+    const { render, props, key } = setup({ graph: rootGraph(100) });
+    props.store.update(key, { y: 10000 });
+    emit(find(render(), "Zoom out"), "onPress");
+    const camera = { scale: props.store.read(key).scale, x: props.store.read(key).x, y: props.store.read(key).y };
+    emit(find(render(), "Fit as wave list"), "onPress");
+    emit(find(render(), "Next tasks page"), "onPress");
+    emit(find(render(), "plan-graph-list-scroll"), "onScroll", { nativeEvent: { contentOffset: { y: 450 } } });
+    emit(find(render(), "Show graph canvas"), "onPress");
+    expect(props.store.read(key)).toMatchObject({ ...camera, listY: 450, page: 1 });
+    hooks.reset();
+    expect(style(find(render(), "plan-graph-canvas")).transform).toEqual([{ scale: 0.75 }]);
+    expect(props.store.read(key)).toMatchObject(camera);
+    emit(find(render(), "Fit as wave list"), "onPress");
+    expect(find(render(), "plan-graph-list-scroll").props.contentOffset).toEqual({ x: 0, y: 450 });
+  });
+
+  it("keeps minimum-size controls, scaled hit areas and unscaled text measurement/tap guards in compact mode", () => {
+    const { render, props, key } = setup({ compact: true, textScale: 2 });
+    emit(find(render(), "Zoom out"), "onPress"); emit(find(render(), "Zoom out"), "onPress");
+    emit(find(render(), "plan-node-TASK-001"), "onLayout", { nativeEvent: { layout: { height: 400 } } });
+    expect(style(find(render(), "plan-node-TASK-001")).minHeight).toBe(400);
+    expect(style(find(render(), "plan-graph-canvas")).transform).toEqual([{ scale: 0.5 }]);
+    expect(walk(render()).filter((element) => element.props.accessibilityRole === "button").every((element) => Number(style(element).minHeight) >= 44)).toBe(true);
+    emit(find(render(), "plan-node-TASK-001"), "onPressIn", { nativeEvent: { pageX: 10, pageY: 10 } });
+    emit(find(render(), "plan-node-TASK-001"), "onTouchMove", { nativeEvent: { pageX: 20, pageY: 10 } });
+    emit(find(render(), "plan-node-TASK-001"), "onPress");
+    expect(props.store.read(key).selected).toBeNull();
+  });
+
+  it("re-centres the reset selection after intrinsic expansion and ignores retired bounds callbacks", () => {
+    const { render, props, key } = setup();
+    emit(find(render(), "plan-node-TASK-022"), "onPress");
+    emit(find(render(), "Reset zoom to 100%"), "onPress");
+    expect(props.store.read(key).y).toBe(2492);
+    const old = find(render(), "plan-graph-canvas-scroll");
+    emit(find(render(), "plan-node-TASK-022"), "onLayout", { nativeEvent: { layout: { height: 400 } } }); render();
+    emit(old, "onScroll", { nativeEvent: { contentOffset: { y: 0 } } });
+    expect(props.store.read(key).y).toBe(6332);
+    const tree = render(); const scrollTo = canvasRefs(tree); settleCanvas(tree);
+    expect(scrollTo).toHaveBeenLastCalledWith({ y: 6332, animated: false });
+  });
+
+  it.each([249, 250, 251])("preserves the large-graph policy at %s nodes", (count) => {
+    const { render } = setup({ graph: rootGraph(count) });
+    expect(find(render(), "Zoom in").props.disabled).toBe(count > 250);
+    const cards = walk(render()).filter((element) => String(element.props.testID).startsWith("plan-node-"));
+    expect(cards).toHaveLength(count > 250 ? 40 : count);
   });
 
   it("separates host and revision state explicitly, retaining each prior view", () => {

@@ -5,6 +5,52 @@ export const COLUMN_PITCH = 300;
 export const ROW_GAP = 24;
 export const HEADER_HEIGHT = 48;
 export const MIN_TOUCH_TARGET = 44;
+export const MIN_GRAPH_SCALE = 0.5;
+export const MAX_GRAPH_SCALE = 2;
+export const GRAPH_SCALE_STEP = 0.25;
+
+export type GraphSize = { width: number; height: number };
+export type GraphPoint = { x: number; y: number };
+export type PlanGraphCamera = GraphPoint & { scale: number };
+
+const extent = (value: number) => Number.isFinite(value) ? Math.max(0, value) : 0;
+export function clampGraphScale(scale: number): number {
+  return Math.max(MIN_GRAPH_SCALE, Math.min(MAX_GRAPH_SCALE, Number.isFinite(scale) ? scale : 1));
+}
+
+/** Transforms do not change native layout: this envelope owns the scroll extents. */
+export function graphScrollEnvelope(bounds: GraphSize, viewport: GraphSize, scale: number): GraphSize {
+  return {
+    width: Math.max(extent(viewport.width), extent(bounds.width) * clampGraphScale(scale)),
+    height: Math.max(extent(viewport.height), extent(bounds.height) * clampGraphScale(scale)),
+  };
+}
+
+export function cameraAtGraphPoint(scale: number, point: GraphPoint, bounds: GraphSize, viewport: GraphSize): PlanGraphCamera {
+  const actualScale = clampGraphScale(scale);
+  const envelope = graphScrollEnvelope(bounds, viewport, actualScale);
+  return {
+    scale: actualScale,
+    x: Math.max(0, Math.min(envelope.width - extent(viewport.width), actualScale * extent(point.x) - extent(viewport.width) / 2)),
+    y: Math.max(0, Math.min(envelope.height - extent(viewport.height), actualScale * extent(point.y) - extent(viewport.height) / 2)),
+  };
+}
+
+/** U = sG - O. Keep the viewport-centre logical point fixed, except at clamped boundaries. */
+export function zoomPlanGraph(camera: PlanGraphCamera, scale: number, bounds: GraphSize, viewport: GraphSize): PlanGraphCamera {
+  const previousScale = clampGraphScale(camera.scale);
+  return cameraAtGraphPoint(scale, {
+    x: (extent(camera.x) + extent(viewport.width) / 2) / previousScale,
+    y: (extent(camera.y) + extent(viewport.height) / 2) / previousScale,
+  }, bounds, viewport);
+}
+
+export function fitPlanGraph(camera: PlanGraphCamera, bounds: GraphSize, viewport: GraphSize): PlanGraphCamera & { constrained: boolean } {
+  const measurable = [bounds.width, bounds.height, viewport.width, viewport.height].every((value) => Number.isFinite(value) && value > 0);
+  const fit = measurable ? Math.min(MAX_GRAPH_SCALE, viewport.width / bounds.width, viewport.height / bounds.height) : 0;
+  if (fit < MIN_GRAPH_SCALE) return { ...zoomPlanGraph(camera, MIN_GRAPH_SCALE, bounds, viewport), constrained: true };
+  return { scale: fit, x: 0, y: 0, constrained: false };
+}
 
 const compareIds = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 
