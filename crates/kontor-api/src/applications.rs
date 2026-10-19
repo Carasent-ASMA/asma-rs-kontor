@@ -51,6 +51,7 @@ use kontor_core::id::{
     TeamRunId, Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId,
 };
 use kontor_core::naming::AiShortName;
+use kontor_core::repository::TopologyRepository;
 use kontor_core::selector::{EpicSelector, TaskSelector};
 use kontor_core::spec::{
     CodeCategory, CodeLifecycle, EpicPresence, HoldLiftCondition, RoleSegment, ShareabilityClass,
@@ -12544,12 +12545,41 @@ pub async fn completion(
         None
     };
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    // The selector below reads the addressed project's Jira bindings, and the
+    // store tells a missing key from an unconfirmed one from a task-kind one.
+    // A seat credential carries no project scope of its own, so membership is
+    // decided first: a seat of another project learns nothing by trying keys.
+    require_scoped_seat_membership(&state, project_id, caller)?;
     let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     Ok(Json(
         state
             .applications()
             .completion(project_id, epic_id, reader)?,
     ))
+}
+
+/// Refuse a scoped seat that is not a seat of the project a route addresses.
+///
+/// Only the bearer's persistent seat identity is known here; the path project
+/// has to vouch for it before anything reads that project's data.
+fn require_scoped_seat_membership(
+    state: &ApiState,
+    project_id: ProjectId,
+    caller: Caller,
+) -> Result<(), ApiError> {
+    let Some(seat_binding_id) = caller.seat() else {
+        return Ok(());
+    };
+    let seat = state
+        .with_store(|store| store.get_seat_binding(project_id, seat_binding_id))
+        .map_err(|error| ApiError::from_repository(state.realm_id(), &error))?;
+    if seat.is_none() {
+        return Err(state.refuse(
+            ApiErrorCode::Forbidden,
+            "the scoped seat is not a seat in this project",
+        ));
+    }
+    Ok(())
 }
 
 /// Advance one epic's completion.
