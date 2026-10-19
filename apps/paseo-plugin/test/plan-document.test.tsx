@@ -1,7 +1,7 @@
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 vi.mock("react-native", () => ({ ScrollView: "ScrollView", Text: "Text", View: "View" }));
-import { FormattedPlanBlock, headingAnchor, planBlocks } from "../client/plan-document";
+import { FormattedPlanBlock, headingAnchor, planBlocks, tableColumnWidths } from "../client/plan-document";
 import { resolvePlanLink, safeHttpsUrl } from "../client/plan-links";
 import { sessionEntry } from "./session-fixtures";
 import type { ReadSourceSummary } from "../shared/read-sources";
@@ -21,6 +21,25 @@ describe("native read-only Plan presentation", () => {
     expect(blocks[0]).toMatchObject({ line: 0, text: "Title", level: 1 });
     expect(blocks[3]?.rows).toEqual([["Name", "Value"], ["item", "a|b"]]);
     expect(blocks[4]?.text).toBe("## not a heading"); expect(headingAnchor("Review decision")).toBe("review-decision");
+  });
+  it("keeps YAML front matter as one exact block and only at the start", () => {
+    const blocks = planBlocks("---\ngoal: x\nstatus: 'In progress'\n---\n# Title\n\nBody\n\n---\nnot: front matter");
+    expect(blocks.map((block) => [block.kind, block.line])).toEqual([["code", 0], ["heading", 4], ["paragraph", 6], ["paragraph", 8]]);
+    expect(blocks[0]).toMatchObject({ text: "goal: x\nstatus: 'In progress'", frontMatter: true });
+    expect(blocks.slice(1).some((block) => block.frontMatter)).toBe(false);
+    const folded = FormattedPlanBlock({ block: blocks[0]!, colors: {} as Parameters<typeof FormattedPlanBlock>[0]["colors"], query: "", onLink: vi.fn() }) as Element;
+    expect(folded.props).toMatchObject({ label: "Front matter · 2 lines", small: true });
+    expect(planBlocks("---\nno closing").map((block) => block.kind)).toEqual(["paragraph"]);
+  });
+  it("sizes table columns by content so ids stay narrow and prose wraps less, as in the prototype", () => {
+    const prose = "Each outcome includes its implementation, tests and documentation, and is a separate release boundary.";
+    expect(tableColumnWidths([["ID", "Jira", "Outcome"], ["KN-03", "ASMA-8542", prose], ["KN-4"]])).toEqual([64, 79, 360]);
+    expect(tableColumnWidths([])).toEqual([]);
+    const block = planBlocks(`| ID | Outcome |\n| --- | --- |\n| KN-03 | ${prose} |`)[0]!;
+    const cells = elements(FormattedPlanBlock({ block, colors: {} as Parameters<typeof FormattedPlanBlock>[0]["colors"], query: "", onLink: vi.fn() }))
+      .filter((node) => typeof (node.props.style as { width?: unknown } | undefined)?.width === "number");
+    expect(cells.map((cell) => (cell.props.style as { width: number }).width)).toEqual([64, 360, 64, 360]);
+    expect(cells.every((cell) => (cell.props.style as { borderBottomWidth?: number; borderWidth?: number }).borderBottomWidth === 1 && (cell.props.style as { borderWidth?: number }).borderWidth === undefined)).toBe(true);
   });
   it("provides link accessibility/actions and selectable native text, with no HTML or execution surface", () => {
     const onLink = vi.fn(); const colors = {} as Parameters<typeof FormattedPlanBlock>[0]["colors"];

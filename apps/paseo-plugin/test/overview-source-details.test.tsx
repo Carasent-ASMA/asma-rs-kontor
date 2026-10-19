@@ -18,6 +18,7 @@ const plan: SourceRead = { ...read, source: { ...read.source, id: "plan", title:
 function elements(node: ReactNode): ReactElement<Record<string, unknown>>[] {
   if (Array.isArray(node)) return node.flatMap(elements);
   if (!isValidElement<Record<string, unknown>>(node)) return [];
+  if (typeof node.type === "function" && node.type !== ReadOnlyPage) return [node, ...elements((node.type as (props: any) => ReactNode)(node.props))];
   return [node, ...elements(node.props.children as ReactNode)];
 }
 function text(node: ReactNode): string {
@@ -28,24 +29,47 @@ function text(node: ReactNode): string {
   return text(node.props.children as ReactNode);
 }
 function overview(reads: Record<string, SourceRead>, extra: Partial<Props> = {}) {
-  const props: Props = { tab: "Overview", contextLabel: "Selected plan", colors: {} as Props["colors"], entries: [sessionEntry("idle", { status: "idle", labels: { epic: "ASMA-8539" } })], directory: { entries: [], status: "ready", live: false, lastUpdatedAt: 1, error: null, staleReason: null, pages: 1, includeArchived: false }, sources: Object.values(reads).map((value) => value.source), reads, sourceId: "plan", sourceError: null, query: "", setQuery: vi.fn(), onSource: vi.fn(), onOpen: vi.fn(), onTab: vi.fn(), onEpicTab: vi.fn(), initialOffset: 0, onScroll: vi.fn(), initialDocumentOffset: 0, onDocumentScroll: vi.fn() };
+  const props: Props = { tab: "Overview", contextLabel: "Selected plan", colors: {} as Props["colors"], entries: [sessionEntry("idle", { status: "idle", labels: { epic: "ASMA-8539" } })], directory: { entries: [], status: "ready", live: false, lastUpdatedAt: 1, error: null, staleReason: null, pages: 1, includeArchived: false }, sources: Object.values(reads).map((value) => value.source), reads, sourceId: "plan", sourceError: null, query: "", setQuery: vi.fn(), onSource: vi.fn(), onOpen: vi.fn(), onTab: vi.fn(), onEpicTab: vi.fn(), initialOffset: 0, onScroll: vi.fn() };
   Object.assign(props, extra);
   const outer = ReadOnlyPage(props);
   const child = elements(outer).find((element) => element.props.tab === "Overview")!;
   return (child.type as (props: Props) => ReactNode)(child.props as Props);
 }
+const tile = (tree: ReactNode, label: string) => elements(tree).find((node) => node.props.accessibilityRole === "button" && String(node.props.accessibilityLabel).startsWith(`${label}: `))!;
 beforeEach(() => { model.open = false; });
 describe("compact Overview source evidence", () => {
-  it("opens source-bound Graph and uses observation filters with explicit epic/session units", () => {
-    const onEpicTab = vi.fn(); const setQuery = vi.fn();
-    const tree = overview({ plan, jira: read }, { onEpicTab, setQuery });
-    const action = elements(tree).find((node) => node.props.label === "Graph")!;
-    (action.props.onPress as () => void)(); expect(onEpicTab).toHaveBeenCalledWith("Graph", "ASMA-8539", "plan");
-    const filter = elements(tree).find((node) => node.props.label === "Needs input")!;
-    (filter.props.onPress as () => void)(); expect(setQuery).toHaveBeenCalledWith("needs-input");
-    expect(text(tree)).toContain("1/1 epics · 1 shown sessions");
-    expect(text(overview({ plan }, { query: "needs-input" }))).toContain("0/1 epics · 0 shown sessions");
-    expect(text(tree)).toContain("Unresolved decisions: Unknown"); expect(text(tree)).not.toContain("0 recorded open");
+  it("presents the six prototype filters, keeps unsupported ones Unknown and stores the choice in the route query", () => {
+    const setQuery = vi.fn(); const tree = overview({ plan, jira: read }, { setQuery, scoped: true });
+    expect(["Epics", "In progress", "Needs attention", "Needs your decision", "Completed epics", "Delivered"].map((label) => String(tile(tree, label).props.accessibilityLabel)))
+      .toEqual(["Epics: 1. All work", "In progress: 0. Epics with running sessions", "Needs attention: 0. Native attention, input or error", "Needs your decision: Not captured. Decision records unavailable", "Completed epics: 0. Recorded epic lifecycle", "Delivered: Unknown. Delivery confirmation not captured"]);
+    (tile(tree, "Needs your decision").props.onPress as () => void)(); expect(setQuery).toHaveBeenCalledWith("decisions");
+    (tile(tree, "Epics").props.onPress as () => void)(); expect(setQuery).toHaveBeenLastCalledWith("");
+    expect(text(tree)).toContain("1 of 1 shown");
+    const review = overview({ plan, jira: read }, { query: "review", scoped: true });
+    expect(text(review)).toContain("0 of 1 shown"); expect(text(review)).toContain("No epics in this group.");
+    expect(tile(review, "Needs attention").props.accessibilityState).toEqual({ selected: true });
+    const delivered = text(overview({ plan, jira: read }, { query: "delivered", scoped: true }));
+    expect(delivered).toContain("1 of 1 shown"); expect(delivered).toContain("Recorded pull requests and checks do not establish delivery");
+  });
+  it("opens the epic's exact plan and views from a compact row with prototype identity, signals and coverage", () => {
+    const onEpicTab = vi.fn(); const onSource = vi.fn();
+    const tree = overview({ plan, jira: read }, { onEpicTab, onSource, scoped: true });
+    const visible = text(tree);
+    expect(visible).toContain("ASMA-8539 · Selected plan"); expect(visible).toContain("Captured plan available");
+    expect(visible).toContain("1 session · 0 running · 0 native attention · 0 needs input · 0 errors");
+    expect(visible).toContain("Decisions: Not captured · Delivery: Not captured");
+    expect(visible).toContain("Epic · Groomed"); expect(visible).toContain("Jira, observed 2026-10-18");
+    expect(visible).toContain("0 / 3 captured tasks done"); expect(visible).toContain("3 Jira records · observed 2026-10-18 · full backlog coverage not established");
+    const row = elements(tree).find((node) => String(node.props.accessibilityLabel).startsWith("ASMA-8539 · Selected plan. Captured plan available"))!;
+    (row.props.onPress as () => void)(); expect(onEpicTab).toHaveBeenLastCalledWith("Plan", "ASMA-8539", "plan");
+    for (const [label, tab] of [["Tasks", "Board"], ["Graph", "Graph"], ["Plan", "Plan"]] as const) {
+      (elements(tree).find((node) => node.props.accessibilityLabel === `${label}: ASMA-8539 · Selected plan`)!.props.onPress as () => void)();
+      expect(onEpicTab).toHaveBeenLastCalledWith(tab, "ASMA-8539", "plan");
+    }
+    (elements(tree).find((node) => node.props.accessibilityLabel === "Sessions: ASMA-8539 · Selected plan")!.props.onPress as () => void)();
+    expect(onEpicTab).toHaveBeenLastCalledWith("Sessions", "ASMA-8539", null);
+    expect(onSource).not.toHaveBeenCalled();
+    expect(visible).not.toMatch(/Current completion|Epic · (Completed|Done)|Delivered: [0-9]/);
   });
   it("keeps source state and original observation visible, expanding technical details only on request", () => {
     const render = () => SourceDetails({ read, colors: {} as Props["colors"] });
@@ -54,31 +78,55 @@ describe("compact Overview source evidence", () => {
     expect(visible).toContain("Observed 2026-10-18T17:00+00:00 · not live");
     for (const value of [read.source.path, read.revision!, history.provenance.path, history.provenance.sha256, read.readAt]) expect(visible).not.toContain(value);
     const action = elements(closed).find((element) => element.props.label === "Source details")!;
+    expect(action.props.expanded).toBe(false);
     (action.props.onPress as () => void)();
     const opened = text(render());
     for (const value of [read.source.path, read.revision!, history.provenance.path, history.provenance.sha256, read.readAt]) expect(opened).toContain(value);
     expect(opened).toContain("Neither count establishes complete inventory");
+    expect(elements(render()).find((element) => element.props.label === "Source details")!.props.expanded).toBe(true);
   });
   it("marks a missing historical source unavailable without substituting the read time for observation time", () => {
     const visible = text(SourceDetails({ read: { ...read, status: "unavailable", jiraHistory: null, diagnostics: ["/unavailable/source.json"] }, colors: {} as Props["colors"] }));
     expect(visible).toContain("unavailable"); expect(visible).toContain("Observed Unknown · not live");
     expect(visible).not.toContain(read.readAt); expect(visible).not.toContain("/unavailable/source.json");
   });
-  it("shows the historical workflow and 3/10 coverage without presenting current completion", () => {
-    const tree = overview({ plan, jira: read }); const visible = text(tree);
-    expect(visible).toContain("Jira workflow: Groomed · historical, observed 2026-10-18T17:00+00:00");
-    expect(visible).toContain("Observed done 0/10 · other observed 3/10 · Unknown 7/10 · plan coverage 3/10");
-    expect(visible).toContain("Current completion: Unknown");
-    expect(visible).toContain("kontord is not enabled"); expect(visible).not.toContain("kontord not connected");
-    expect(elements(tree).some((element) => element.props.label === "Open plan")).toBe(true);
-    expect(elements(tree).some((element) => element.props.label === "Sessions")).toBe(true);
-    expect(elements(tree).filter((element) => String(element.props.label).startsWith("Open plan:")).length).toBe(0);
+  it("puts sources, coverage and the kontord state in one disclosure with expanded semantics", () => {
+    const closed = overview({ plan, jira: read }, { scoped: true });
+    const toggle = elements(closed).find((node) => String(node.props.accessibilityLabel).startsWith("Sources and coverage"))!;
+    expect(toggle.props.accessibilityLabel).toBe("Sources and coverage · Jira observed 2026-10-18, not live");
+    expect(toggle.props.accessibilityState).toEqual({ expanded: false });
+    expect(text(closed)).toContain("available without kontord"); expect(text(closed)).not.toContain("kontord is not enabled");
+    expect(text(closed)).not.toContain(read.source.path);
+    model.open = true;
+    const opened = text(overview({ plan, jira: read }, { scoped: true }));
+    expect(opened).toContain("Governed scheduler and gates: kontord is not enabled.");
+    expect(opened).toContain("full backlog coverage is not established");
+    expect(opened).toContain("Historical Jira · ready · Historical Jira snapshot");
   });
   it("retains native content when Jira is unavailable and never treats idle as task completion", () => {
-    const visible = text(overview({ plan }));
-    expect(visible).toContain("0 running"); expect(visible).toContain("1 idle"); expect(visible).toContain("0 closed");
-    expect(visible).toContain("plan coverage 0/10 · 10 tasks Unknown");
-    expect(visible).toContain("Jira workflow: Unknown");
-    expect(visible).toContain("Historical Jira: not connected to a configured status source");
+    const visible = text(overview({ plan }, { scoped: true }));
+    expect(visible).toContain("Sessions in this scope: 1 session · 0 running");
+    expect(visible).toContain("Epic status unknown"); expect(visible).toContain("Progress unavailable");
+    expect(visible).toContain("Jira records not captured");
+    expect(elements(overview({ plan }, { scoped: true })).some((node) => node.props.accessibilityLabel === "Sources and coverage · Jira not connected")).toBe(true);
+  });
+  it("lists the historical selection's epics only in an unscoped portfolio and keeps ad-hoc sessions as inventory", () => {
+    const entries = [sessionEntry("idle", { status: "idle", labels: { epic: "ASMA-8539" } }), sessionEntry("loose", { status: "running" })];
+    const tree = overview({ plan, jira: read }, { entries, contextLabel: undefined });
+    const visible = text(tree);
+    expect(visible).toContain("All projects"); expect(visible).toContain("3 of 3 shown");
+    expect(visible).toContain("Host sessions: 2 sessions · 1 running"); expect(visible).toContain("1 without an epic stay in Sessions.");
+    expect(visible).not.toContain("Unassigned / ad-hoc");
+    const phone = text(overview({ plan, jira: read }, { entries, contextLabel: undefined, compact: true }));
+    expect(phone).toContain("Global overview · available without kontord"); expect(phone).toContain("Last inventory read "); // Host status lives only in the top-bar Native pill.
+    expect(phone).not.toContain("Live"); expect(phone).not.toContain("Not live"); expect(visible).not.toContain("Live host subscription"); expect(visible).not.toContain("Not live");
+    expect(phone).toContain("2 sessions · 1 running · 0 attention · 0 input · 0 errors · 1 without an epic");
+    expect(phone).not.toContain("Native sessions come from this host"); expect(phone).not.toContain("Host sessions:");
+    expect(visible).toContain("ASMA-8190"); expect(visible).toContain("Plan not captured · captured tasks remain available");
+    expect(visible).toContain("13 / 17 captured tasks done");
+    const inspect = elements(tree).find((node) => String(node.props.accessibilityLabel).startsWith("ASMA-8190. Plan not captured"))!;
+    const onEpicTab = vi.fn(); const again = overview({ plan, jira: read }, { entries, onEpicTab });
+    (elements(again).find((node) => node.props.accessibilityLabel === inspect.props.accessibilityLabel)!.props.onPress as () => void)();
+    expect(onEpicTab).toHaveBeenCalledWith("Board", "ASMA-8190", null);
   });
 });

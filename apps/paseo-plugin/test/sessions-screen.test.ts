@@ -138,7 +138,7 @@ describe("Kontor filters affordance", () => {
     expect(element.props.testID).toBe(FILTERS_TOGGLE_TEST_ID);
     expect(element.props.accessibilityRole).toBe("button");
     expect(element.props.accessibilityState).toEqual({ expanded: false });
-    expect(element.props.accessibilityLabel).toBe("Filters");
+    expect(element.props.accessibilityLabel).toBe("Filters and view");
     expect(styleOf(element).minHeight).toBeGreaterThanOrEqual(
       FILTERS_TOUCH_TARGET,
     );
@@ -185,12 +185,10 @@ describe("Kontor filters affordance", () => {
     expect(collectText(element)).toContain("Clear filters");
   });
 
-  it("keeps one slim host/state row with Search and Filters actions", () => {
+  it("keeps one slim host row with Search and Filters actions and leaves the host state to the top bar", () => {
     const opened: string[] = [];
     const element = SlimToolbar({
       hostLabel: "srv_tWq3jTzpOlc9",
-      statusLabel: "Stale",
-      statusColor: colors.statusWarning,
       activeCount: 2,
       colors,
       compact: true,
@@ -200,8 +198,7 @@ describe("Kontor filters affordance", () => {
 
     const text = collectText(element);
     expect(element.props.testID).toBe("sessions-slim-toolbar");
-    expect(text).toContain("srv_tWq3jTzpOlc9");
-    expect(text).toContain("Stale");
+    expect(text).toBe("srv_tWq3jTzpOlc9");
     expect(text).not.toContain("Kontor");
 
     const search = findByTestID(element, "sessions-slim-search");
@@ -262,7 +259,7 @@ describe("Kontor filters affordance", () => {
     const saved = patchSessionView("host-a", {
       query: "ASMA-8540",
       status: "running",
-      attentionOnly: true,
+      shortcut: "Adam",
       includeArchived: true,
       advancedOpen: true,
       scrollOffset: 240,

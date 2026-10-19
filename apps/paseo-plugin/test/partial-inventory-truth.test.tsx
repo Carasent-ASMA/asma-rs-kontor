@@ -21,7 +21,7 @@ function text(node: ReactNode): string {
   return text(node.props.children as ReactNode);
 }
 function overview(state: DirectoryState): string {
-  const props: Parameters<typeof ReadOnlyPage>[0] = { tab: "Overview", colors: {} as Parameters<typeof ReadOnlyPage>[0]["colors"], entries: [], directory: state, sources: [], reads: {}, sourceId: null, sourceError: null, query: "", setQuery: () => {}, onSource: () => {}, onOpen: () => {}, onTab: () => {}, onEpicTab: () => {}, initialOffset: 0, onScroll: () => {}, initialDocumentOffset: 0, onDocumentScroll: () => {} };
+  const props: Parameters<typeof ReadOnlyPage>[0] = { tab: "Overview", colors: {} as Parameters<typeof ReadOnlyPage>[0]["colors"], entries: [], directory: state, sources: [], reads: {}, sourceId: null, sourceError: null, query: "", setQuery: () => {}, onSource: () => {}, onOpen: () => {}, onTab: () => {}, onEpicTab: () => {}, initialOffset: 0, onScroll: () => {} };
   return text(ReadOnlyPage(props));
 }
 function pill(state: DirectoryState): string {

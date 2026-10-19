@@ -28,7 +28,7 @@ function recordRead(tab: Tab, url?: string, status: SourceRead["status"] = "read
 }
 function render(tab: Tab, reads: readonly SourceRead[], extra: Partial<Props> = {}) {
   const open = vi.fn();
-  const props: Props = { tab, colors: {} as Props["colors"], entries: [], directory: { entries: [], status: "ready", live: false, lastUpdatedAt: null, error: null, staleReason: null, pages: 1, includeArchived: false }, sources: reads.map((read) => read.source), reads: Object.fromEntries(reads.map((read) => [read.source.id, read])), sourceId: null, sourceError: null, query: "", setQuery: vi.fn(), onSource: vi.fn(), onOpen: vi.fn(), onTab: vi.fn(), onEpicTab: vi.fn(), initialOffset: 0, onScroll: vi.fn(), initialDocumentOffset: 0, onDocumentScroll: vi.fn(), onExternalLink: open, ...extra };
+  const props: Props = { tab, colors: {} as Props["colors"], entries: [], directory: { entries: [], status: "ready", live: false, lastUpdatedAt: null, error: null, staleReason: null, pages: 1, includeArchived: false }, sources: reads.map((read) => read.source), reads: Object.fromEntries(reads.map((read) => [read.source.id, read])), sourceId: null, sourceError: null, query: "", setQuery: vi.fn(), onSource: vi.fn(), onOpen: vi.fn(), onTab: vi.fn(), onEpicTab: vi.fn(), initialOffset: 0, onScroll: vi.fn(), onExternalLink: open, ...extra };
   const nodes = elements(ReadOnlyPage(props));
   const visible = nodes.filter((node) => node.type === "Text").map((node) => text(node.props.children as ReactNode)).join("\n");
   const links = nodes.filter((node) => node.type === "Pressable" && /^Open (decision source|evidence):/.test(String(node.props.accessibilityLabel)));

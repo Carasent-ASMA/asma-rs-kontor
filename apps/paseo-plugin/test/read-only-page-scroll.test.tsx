@@ -1,8 +1,8 @@
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { fileURLToPath, URL } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-const model = vi.hoisted(() => ({ open: false }));
-vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useMemo: (factory: () => unknown) => factory(), useRef: (current: unknown) => ({ current }), useState: (initial: unknown) => typeof initial === "number" ? [initial, vi.fn()] : [model.open, (next: boolean) => { model.open = next; }] }));
+const model = vi.hoisted(() => ({ view: null as unknown }));
+vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useMemo: (factory: () => unknown) => factory(), useRef: (current: unknown) => ({ current }), useState: (initial: unknown) => [initial, vi.fn()] }));
 vi.mock("react-native", () => ({ ScrollView: "ScrollView", Pressable: "Pressable", Text: "Text", View: "View" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput", Icon: "Icon" }));
 import { ReadOnlyPage } from "../client/read-only-pages";
@@ -10,6 +10,10 @@ import { goBack, navigate, readRouteView, writeRouteView } from "../client/navig
 import { sourceCatalog } from "../server/read-sources";
 import { createTeamsSourceAdapter } from "../server/teams-source-adapter";
 import type { TeamsSourceSnapshot } from "../shared/teams-source-snapshot";
+import { DEFAULT_TEAMS_VIEW, type TeamsView } from "../client/teams-source-page";
+// The disclosure state lives in the saved Teams view; configured sources start open here.
+const view = () => model.view as TeamsView;
+const bindingsOpen = () => view().sources.authoring?.bindings ?? false;
 const catalog = sourceCatalog(JSON.stringify([{ id: "authoring", title: "Authoring", kind: "teams", path: fileURLToPath(new URL("./fixtures/teams-source/authoring-fleet.yml", import.meta.url)), expectedSha256: "f7ddfff7a0db716e3356d43fe209c9c73f4fe51866de5ebbc26f641968fbea54" }]));
 let snapshot: TeamsSourceSnapshot;
 type Props = Parameters<typeof ReadOnlyPage>[0];
@@ -23,7 +27,7 @@ function expand(node: ReactNode): Element[] {
 function mount(hostId: string) {
   const route = navigate(hostId, { tab: "AI teams & sessions", projectId: "project-a", sourceId: "plan-a", sourceRevision: "sha-a" });
   const saved = readRouteView(hostId, route);
-  const props: Props = { tab: route.tab, teamsSources: catalog.sources, teamsSnapshots: { authoring: snapshot }, teamsAvailable: true, colors: {} as Props["colors"], entries: [], directory: { entries: [], status: "ready", live: false, lastUpdatedAt: null, error: null, staleReason: null, pages: 1, includeArchived: false }, sources: [], reads: {}, sourceId: route.sourceId, sourceError: null, query: "", setQuery: vi.fn(), onSource: vi.fn(), onOpen: vi.fn(), onTab: vi.fn(), onEpicTab: vi.fn(), initialOffset: saved.offset, onScroll: (offset) => writeRouteView(hostId, route, { offset }), initialDocumentOffset: 0, onDocumentScroll: vi.fn() };
+  const props: Props = { tab: route.tab, teamsSources: catalog.sources, teamsSnapshots: { authoring: snapshot }, teamsAvailable: true, colors: {} as Props["colors"], entries: [], directory: { entries: [], status: "ready", live: false, lastUpdatedAt: null, error: null, staleReason: null, pages: 1, includeArchived: false }, sources: [], reads: {}, sourceId: route.sourceId, sourceError: null, query: "", setQuery: vi.fn(), onSource: vi.fn(), onOpen: vi.fn(), onTab: vi.fn(), onEpicTab: vi.fn(), teamsView: view(), onTeamsView: (next) => { model.view = next; }, initialOffset: saved.offset, onScroll: (offset) => writeRouteView(hostId, route, { offset })};
   const page = ReadOnlyPage(props);
   const scrollTo = vi.fn(); (page.props.ref as { current: unknown }).current = { scrollTo };
   const call = (key: string, ...args: unknown[]) => (page.props[key] as (...args: unknown[]) => void)?.(...args);
@@ -33,13 +37,14 @@ function mount(hostId: string) {
     scroll: (y: number) => call("onScroll", { nativeEvent: { contentOffset: { y } } }),
     drag: () => call("onScrollBeginDrag"),
     toggle: () => {
-      const action = expand(page).find((element) => element.props.accessibilityLabel === "Configured bindings (38)")!;
+      // Re-render for the current view; the outer scroller keeps its first instance.
+      const action = expand(ReadOnlyPage({ ...props, teamsView: view() })).find((element) => element.props.accessibilityLabel === "Configured bindings (38)")!;
       expect(action).toBeDefined(); (action.props.onPress as () => void)();
     },
   };
 }
 beforeEach(async () => {
-  model.open = false;
+  model.view = { ...DEFAULT_TEAMS_VIEW, configured: true };
   snapshot = await createTeamsSourceAdapter(catalog, { authoring: "fleet-authoring" }).read({ sourceId: "authoring" });
   expect(snapshot.status).toBe("ready");
 });
@@ -50,8 +55,8 @@ describe("outer read-only page disclosure scrolling (callback interaction, not n
     const screen = mount(hostId); screen.layout(); screen.size(3000); screen.scroll(initial); screen.scrollTo.mockClear();
     if (drag) screen.drag();
     screen.scroll(800); expect(readRouteView(hostId).offset).toBe(800);
-    screen.toggle(); expect(model.open).toBe(true); screen.size(4500);
-    screen.toggle(); expect(model.open).toBe(false); screen.size(3000);
+    screen.toggle(); expect(bindingsOpen()).toBe(true); screen.size(4500);
+    screen.toggle(); expect(bindingsOpen()).toBe(false); screen.size(3000);
     expect(screen.scrollTo).not.toHaveBeenCalled();
     expect(readRouteView(hostId).offset).toBe(800);
     navigate(hostId, { tab: "Overview" }); goBack(hostId);

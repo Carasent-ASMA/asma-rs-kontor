@@ -1,7 +1,7 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import { readFileSync } from "node:fs";
 import { URL } from "node:url";
-import type { ReactElement, ReactNode } from "react";
+import { createElement, type ReactElement, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { planGraphSchema, type PlanGraphData } from "../client/plan-graph/contract";
 
@@ -114,6 +114,16 @@ function settleCanvas(tree: ReactNode) {
   emit(walk(tree).find((element) => element.props.horizontal)!, "onContentSizeChange", envelope.width, envelope.height);
 }
 
+/** Secondary controls sit behind the retained More disclosure (GRAPH-01). */
+function openMore(render: () => ReactNode) {
+  const toggle = find(render(), "More graph controls");
+  if (!(toggle.props.accessibilityState as { expanded?: boolean }).expanded) emit(toggle, "onPress");
+}
+function openDetails(render: () => ReactNode) {
+  const toggle = find(render(), "Source details");
+  if (!(toggle.props.accessibilityState as { expanded?: boolean }).expanded) emit(toggle, "onPress");
+}
+
 function canvasRefs(tree: ReactNode) {
   const scrollTo = vi.fn();
   for (const element of walk(tree)) {
@@ -135,14 +145,18 @@ describe("native PlanGraph events (mocked host primitives, not device qualificat
     expect([...cards, ...edges].every((element) => style(element).opacity === 1)).toBe(true);
     expect(props.store.read(key).selected).toBeNull();
     expect(content(tree)).toContain("Status not supplied");
-    expect(content(tree)).toContain("Host host-a");
-    expect(content(tree)).toContain("c8d1abadfe73");
+    expect(content(tree)).not.toContain("Host host-a");
+    expect(content(tree)).not.toContain("c8d1abadfe73");
+    openDetails(render);
+    expect(content(find(render(), "plan-graph-source-details"))).toContain("Host host-a");
+    expect(content(find(render(), "plan-graph-source-details"))).toContain("c8d1abadfe73");
     expect(content(tree)).not.toMatch(/ready to start|frontier|serializes.with|governance|planned.start|capacity|In Development/i);
     expect(walk(tree).filter((node) => node.props.accessibilityRole === "button").every((node) => Number(style(node).minHeight) >= 44)).toBe(true);
   });
 
   it("prioritizes hover over focus over selection; temporary exit restores intentional selection", () => {
     const { render, props, key } = setup();
+    openMore(render);
     emit(find(render(), "plan-node-TASK-002"), "onPress");
     expect(props.store.read(key).selected).toBe("TASK-002");
     emit(find(render(), "plan-node-TASK-003"), "onFocus");
@@ -228,6 +242,7 @@ describe("native PlanGraph events (mocked host primitives, not device qualificat
 
   it("uses focus/activation and explicit task controls for keyboard and accessibility navigation", () => {
     const { props, render, key } = setup();
+    openMore(render);
     emit(find(render(), "Next task"), "onPress");
     expect(props.store.read(key).selected).toBe("TASK-001");
     emit(find(render(), "Next task"), "onPress");
@@ -243,6 +258,7 @@ describe("native PlanGraph events (mocked host primitives, not device qualificat
 
   it("keeps compact native graph interactive and supplies a selectable, directed wave-list alternate", () => {
     const { render, props, key } = setup({ compact: true, textScale: 2 });
+    openMore(render);
     expect(find(render(), "plan-graph-canvas")).toBeDefined();
     expect(Number(style(find(render(), "plan-node-TASK-002")).minHeight)).toBe(320);
     emit(find(render(), "plan-node-TASK-002"), "onPress");
@@ -267,6 +283,7 @@ describe("native PlanGraph events (mocked host primitives, not device qualificat
     graph.waves = [0, 1, 2, 3].map((wave) => ({ wave, tasks: graph.nodes.filter((node) => node.wave === wave).map((node) => node.id) }));
     graph.external_fences = [];
     const { render } = setup({ graph });
+    openMore(render);
     emit(find(render(), "plan-node-TASK-003"), "onPress");
     const expected = graph.edges.map((edge) => {
       const element = find(render(), `plan-edge-${edge.from}-${edge.to}`);
@@ -292,6 +309,7 @@ describe("native PlanGraph events (mocked host primitives, not device qualificat
   it("uses the active card foreground for prerequisite text in a monochrome alternate", () => {
     const monochrome: PluginTheme = { colors: { ...theme.colors, foreground: "#ffffff", surface1: "#111111", accent: "#ffffff", accentForeground: "#000000" } };
     const { render } = setup({ theme: monochrome });
+    openMore(render);
     emit(find(render(), "Fit as wave list"), "onPress");
     emit(find(render(), "plan-node-TASK-003"), "onPress");
     const card = find(render(), "plan-node-TASK-003");
@@ -306,6 +324,7 @@ describe("native PlanGraph events (mocked host primitives, not device qualificat
 
   it("preserves independent canvas and list offsets across Fit, paging, delayed scroll events and return", () => {
     const { render, props, key } = setup({ graph: rootGraph(100) });
+    openMore(render);
     const scrollEvent = (y: number) => ({ nativeEvent: { contentOffset: { x: 0, y } } });
     const canvas = walk(render()).find((element) => element.props.onScroll && !element.props.horizontal)!;
     emit(canvas, "onScroll", scrollEvent(10000));
@@ -336,6 +355,7 @@ describe("native PlanGraph events (mocked host primitives, not device qualificat
 
   it("opens Fit on the intentional selection's page and uses measured row position to reveal it", () => {
     const { render, props, key } = setup({ graph: rootGraph(100) });
+    openMore(render);
     const scrollTo = vi.fn();
     for (const element of walk(render())) {
       const ref = element.props.ref as { current: unknown } | undefined;
@@ -364,6 +384,7 @@ describe("native PlanGraph events (mocked host primitives, not device qualificat
       { wave: 1, tasks: [selected.id] },
     ];
     const { render, props, key } = setup({ graph: planGraphSchema.parse(graph), compact: true });
+    openMore(render);
     emit(find(render(), "plan-graph-canvas-scroll"), "onLayout", { nativeEvent: { layout: { width: 400, height: 500 } } });
     props.store.update(key, { x: 175, y: 10000 });
     emit(find(render(), "plan-node-TASK-099"), "onPress");
@@ -389,6 +410,7 @@ describe("native PlanGraph events (mocked host primitives, not device qualificat
 
   it.each(["drag", "clear", "selection", "page", "canvas"])("stops Fit reflow tracking after explicit %s intent", (intent) => {
     const { render, props, key } = setup({ graph: rootGraph(100), compact: true });
+    openMore(render);
     emit(find(render(), "plan-node-TASK-099"), "onPress");
     emit(find(render(), "Fit as wave list"), "onPress");
     const scrollTo = vi.fn();
@@ -412,6 +434,7 @@ describe("native PlanGraph events (mocked host primitives, not device qualificat
 
   it("centres a selected task through native scroll refs and preserves selection/offset on return", () => {
     const { render, props, key } = setup();
+    openMore(render);
     const scrollTo = vi.fn();
     for (const element of walk(render())) {
       const ref = element.props.ref as { current: unknown } | undefined;
@@ -453,6 +476,7 @@ describe("native PlanGraph events (mocked host primitives, not device qualificat
 
   it("waits for both new content extents and rejects stale scroll/size callbacks across zoom and reset", () => {
     const { render, props, key } = setup();
+    openMore(render);
     props.store.update(key, { x: 200, y: 1000 });
     const oldVertical = find(render(), "plan-graph-canvas-scroll");
     const oldHorizontal = walk(render()).find((element) => element.props.horizontal)!;
@@ -503,6 +527,7 @@ describe("native PlanGraph events (mocked host primitives, not device qualificat
   it("resets around intentional selection, preserving temporary interaction, sourced details and canonical actions", () => {
     const openJira = vi.fn();
     const { render, props, key } = setup({ sourceActions: { jira: openJira } });
+    openMore(render);
     const canonical = JSON.stringify(props.graph);
     props.sourcedStates = { viewKey: key, nodes: { "TASK-005": { label: "Captured state", source: "Independent read", observedAt: "2026-10-19T10:00:00Z" } } };
     emit(find(render(), "plan-node-TASK-005"), "onPress");
@@ -522,6 +547,7 @@ describe("native PlanGraph events (mocked host primitives, not device qualificat
 
   it("applies true Fit graph separately from the unscaled wave-list alternate", () => {
     const { render, props, key } = setup({ graph: rootGraph(1) });
+    openMore(render);
     emit(find(render(), "plan-graph-canvas-scroll"), "onLayout", { nativeEvent: { layout: { width: 225, height: 174 } } });
     emit(find(render(), "Fit graph"), "onPress");
     expect(props.store.read(key)).toMatchObject({ scale: 0.75, x: 0, y: 0, fit: true, alternate: false });
@@ -555,6 +581,7 @@ describe("native PlanGraph events (mocked host primitives, not device qualificat
 
   it("preserves canvas camera and list scrolling independently through paging and open/return", () => {
     const { render, props, key } = setup({ graph: rootGraph(100) });
+    openMore(render);
     props.store.update(key, { y: 10000 });
     emit(find(render(), "Zoom out"), "onPress");
     const camera = { scale: props.store.read(key).scale, x: props.store.read(key).x, y: props.store.read(key).y };
@@ -585,6 +612,7 @@ describe("native PlanGraph events (mocked host primitives, not device qualificat
 
   it("re-centres the reset selection after intrinsic expansion and ignores retired bounds callbacks", () => {
     const { render, props, key } = setup();
+    openMore(render);
     emit(find(render(), "plan-node-TASK-022"), "onPress");
     emit(find(render(), "Reset zoom to 100%"), "onPress");
     expect(props.store.read(key).y).toBe(2492);
@@ -607,9 +635,12 @@ describe("native PlanGraph events (mocked host primitives, not device qualificat
     const { render, props, key } = setup();
     emit(find(render(), "plan-node-TASK-002"), "onPress");
     props.hostId = "host-b"; hooks.reset();
+    expect(content(render())).not.toContain("Host host-b");
+    openDetails(render);
     expect(content(render())).toContain("Host host-b");
     expect(props.store.read(planGraphViewKey(props.hostId, props.graph)).selected).toBeNull();
     props.hostId = "host-a"; props.graph = { ...props.graph, source_sha256: "f".repeat(64) }; hooks.reset();
+    openDetails(render);
     expect(content(render())).toContain("source ffffffffffff");
     expect(props.store.read(planGraphViewKey(props.hostId, props.graph)).selected).toBeNull();
     expect(props.store.read(key).selected).toBe("TASK-002");
@@ -634,6 +665,211 @@ describe("native PlanGraph events (mocked host primitives, not device qualificat
     emit(node, "onPress");
     expect(props.store.read(key).selected).not.toBeNull();
     expect(find(render(), "plan-graph-details")).toBeDefined();
+  });
+});
+
+describe("graph density and disclosure semantics (GRAPH-01, A11Y-01)", () => {
+  beforeEach(() => hooks.reset());
+  const isButton = (node: Element) => node.props.accessibilityRole === "button";
+  const labelOf = (node: Element) => node.props.accessibilityLabel;
+  const SECONDARY = ["Clear graph highlight", "Previous task", "Next task", "Centre selected task", "Reset zoom to 100%", "Fit as wave list"];
+
+  it("shows one graph title with only zoom out, Fit and zoom in grouped beside it, plus More and Source details", () => {
+    const { render } = setup();
+    const tree = render();
+    expect(walk(tree).filter((node) => node.props.accessibilityRole === "header").map(content)).toEqual(["Plan dependencies"]);
+    const group = find(tree, "Graph zoom");
+    expect(group.props.role).toBe("group");
+    expect(walk(group).filter(isButton).map(labelOf)).toEqual(["Zoom out", "Fit graph", "Zoom in"]);
+    expect(walk(tree).filter((node) => isButton(node) && !String(node.props.testID).startsWith("plan-node-")).map(labelOf))
+      .toEqual(["Zoom out", "Fit graph", "Zoom in", "More graph controls", "Source details"]);
+  });
+
+  it("hides secondary selection and wave controls until More is expanded and retains that disclosure with the view", () => {
+    const { render, props, key } = setup();
+    const visible = () => SECONDARY.filter((label) => walk(render()).some((node) => labelOf(node) === label));
+    expect(visible()).toEqual([]);
+    expect(find(render(), "More graph controls").props.accessibilityState).toEqual({ disabled: false, expanded: false });
+    emit(find(render(), "More graph controls"), "onPress");
+    expect(find(render(), "More graph controls").props.accessibilityState).toEqual({ disabled: false, expanded: true });
+    expect(walk(find(render(), "plan-graph-more-controls")).filter(isButton).map(labelOf)).toEqual(SECONDARY);
+    hooks.reset();
+    expect(visible()).toEqual(SECONDARY);
+    expect(props.store.read(key).controls).toBe(true);
+    emit(find(render(), "More graph controls"), "onPress");
+    expect(visible()).toEqual([]);
+  });
+
+  it("keeps host, hashes, instructions and shell provenance inside one Source details disclosure", () => {
+    const { render, props } = setup({ details: createElement("Text", null, "Shell provenance read 2026-10-19T00:00:00Z") });
+    const hidden = ["Host host-a", props.graph.source_sha256, props.graph.graph_sha256, "Scroll to pan", "Shell provenance", "Status requires a separate source observation"];
+    const closed = content(render());
+    expect(hidden.filter((text) => closed.includes(text))).toEqual([]);
+    const toggles = walk(render()).filter((node) => labelOf(node) === "Source details");
+    expect(toggles).toHaveLength(1);
+    expect(toggles[0]!.props.accessibilityState).toEqual({ disabled: false, expanded: false });
+    emit(toggles[0]!, "onPress");
+    expect(find(render(), "Source details").props.accessibilityState).toEqual({ disabled: false, expanded: true });
+    const panel = find(render(), "plan-graph-source-details");
+    expect(hidden.filter((text) => !content(panel).includes(text))).toEqual([]);
+    expect(style(panel)).toMatchObject({ maxHeight: 260, flexGrow: 0 });
+    expect(content(panel)).not.toMatch(/pinch|gesture/i);
+  });
+
+  it("exposes expanded state on every disclosure trigger and on no plain control", () => {
+    const { render } = setup();
+    openMore(render); openDetails(render);
+    const disclosures = walk(render()).filter((node) => isButton(node) && "expanded" in (node.props.accessibilityState as object));
+    expect(disclosures.map(labelOf)).toEqual(["More graph controls", "Source details"]);
+    expect(disclosures.every((node) => (node.props.accessibilityState as { expanded: boolean }).expanded)).toBe(true);
+  });
+
+  it("gives the viewport the remaining height and bounds the inspector only while a task is active", () => {
+    const { render } = setup({ compact: true });
+    expect(style(find(render(), "plan-graph-canvas-scroll")).flex).toBe(1);
+    expect(walk(render()).some((node) => labelOf(node) === "Task details")).toBe(false);
+    emit(find(render(), "plan-node-TASK-002"), "onPress");
+    const inspector = find(render(), "Task details");
+    // Shrinkable down to zero: the inspector yields before the canvas floor does.
+    expect(style(inspector)).toMatchObject({ maxHeight: 200, flexGrow: 0, flexShrink: 1, minHeight: 0 });
+    expect(content(inspector)).toContain("External fences:");
+    expect(content(inspector)).not.toContain(sample().source_sha256);
+  });
+
+  it("keeps the selection hint beside Source details on wide layouts only until a task is active", () => {
+    const { render } = setup();
+    const hint = "No task is selected automatically";
+    const outside = () => content(walkOutside(render(), (node) => node.props.testID === "plan-graph-source-details").filter((node) => node.type === "Text").map((node) => node.props.children));
+    expect(outside()).toContain(hint);
+    emit(find(render(), "plan-node-TASK-002"), "onPress");
+    expect(outside()).not.toContain(hint);
+  });
+});
+
+/** Elements outside every excluded subtree; an excluded element is skipped with its descendants. */
+function walkOutside(node: unknown, exclude: (element: Element) => boolean): Element[] {
+  if (Array.isArray(node)) return node.flatMap((child) => walkOutside(child, exclude));
+  if (!node || typeof node !== "object" || !("props" in node)) return [];
+  const element = node as Element;
+  return exclude(element) ? [] : [element, ...walkOutside(element.props.children, exclude)];
+}
+/** Root-first ancestors of the first matching element, or null when it is absent. */
+function ancestorsOf(node: unknown, match: (element: Element) => boolean): Element[] | null {
+  if (Array.isArray(node)) {
+    for (const child of node) { const path = ancestorsOf(child, match); if (path) return path; }
+    return null;
+  }
+  if (!node || typeof node !== "object" || !("props" in node)) return null;
+  const element = node as Element;
+  if (match(element)) return [];
+  const path = ancestorsOf(element.props.children, match);
+  return path ? [element, ...path] : null;
+}
+
+describe("compact graph-first layout (iPhone 115a regression)", () => {
+  beforeEach(() => hooks.reset());
+  const isViewport = (element: Element) => element.props.testID === "plan-graph-canvas-scroll" || element.props.testID === "plan-graph-list-scroll";
+  const layoutRoot = (render: () => ReactNode, height: number) => { emit(find(render(), "plan-graph"), "onLayout", { nativeEvent: { layout: { width: 390, height } } }); };
+
+  it.each([false, true])("mounts the canvas and the wave list as direct children of the bounded flex:1 root, never inside a ScrollView or FlatList (compact %s)", (compact) => {
+    const { render } = setup({ compact });
+    openMore(render); openDetails(render);
+    emit(find(render(), "plan-node-TASK-002"), "onPress");
+    for (const mode of ["canvas", "list"]) {
+      const tree = render();
+      const path = ancestorsOf(tree, isViewport)!;
+      expect(path).not.toBeNull();
+      expect(path.map((element) => element.type)).toEqual(["View"]);
+      expect(path[0]!.props.testID).toBe("plan-graph");
+      expect(style(path[0]!)).toMatchObject({ flex: 1 });
+      expect(find(tree, mode === "canvas" ? "plan-graph-canvas-scroll" : "plan-graph-list-scroll")).toBeDefined();
+      if (mode === "canvas") emit(find(render(), "Fit as wave list"), "onPress");
+    }
+  });
+
+  it("gives the compact canvas an explicit floor of max(320, 55% of the measured graph page)", () => {
+    const { render } = setup({ compact: true });
+    const floor = () => style(walk(render()).find(isViewport)!).minHeight;
+    expect(floor()).toBe(320);
+    // 390x844 iPhone: about 664px remain under the 51px context row and above the bottom tabs.
+    layoutRoot(render, 664);
+    expect(floor()).toBe(365);
+    expect(Number(floor()) / 664).toBeGreaterThan(0.5);
+    // Opening every panel keeps the floor; the panels are shrinkable and yield instead.
+    openMore(render); openDetails(render);
+    emit(find(render(), "plan-node-TASK-002"), "onPress");
+    expect(floor()).toBe(365);
+    for (const id of ["Task details", "plan-graph-source-details"]) expect(style(find(render(), id))).toMatchObject({ flexShrink: 1, minHeight: 0 });
+    emit(find(render(), "Fit as wave list"), "onPress");
+    expect(floor()).toBe(365);
+    layoutRoot(render, Number.NaN);
+    expect(floor()).toBe(365);
+    layoutRoot(render, Number.POSITIVE_INFINITY);
+    expect(floor()).toBe(320);
+    layoutRoot(render, 800);
+    expect(floor()).toBe(440);
+    layoutRoot(render, 300);
+    expect(floor()).toBe(320);
+  });
+
+  it("keeps a smaller explicit canvas floor on wide layouts", () => {
+    const { render } = setup();
+    expect(style(find(render(), "plan-graph-canvas-scroll")).minHeight).toBe(240);
+    layoutRoot(render, 1000);
+    expect(style(find(render(), "plan-graph-canvas-scroll")).minHeight).toBe(550);
+  });
+
+  it("renders one compact title row: the title, zoom out, Fit, zoom in and More, and no other text", () => {
+    const { render } = setup({ compact: true });
+    const row = find(render(), "plan-graph-title-row");
+    expect(style(row)).toMatchObject({ flexDirection: "row", flexWrap: "nowrap" });
+    expect(walk(row).filter((node) => node.props.accessibilityRole === "button").map((node) => node.props.accessibilityLabel))
+      .toEqual(["Zoom out", "Fit graph", "Zoom in", "More graph controls"]);
+    const texts = walkOutside(row, (node) => node.props.accessibilityRole === "button").filter((node) => node.type === "Text");
+    expect(texts.map((node) => [node.props.accessibilityRole, node.props.numberOfLines, content(node)])).toEqual([["header", 1, "Plan dependencies"]]);
+  });
+
+  it("renders no instruction, hash, host, summary or read-time text outside Source details on compact", () => {
+    const graph = sample();
+    const observedAt = "2026-10-18T17:00+00:00";
+    const { render, props } = setup({
+      graph, compact: true,
+      details: createElement("Text", null, "Shell provenance read 2026-10-19T00:00:00Z"),
+      sourcedStates: { viewKey: planGraphViewKey("host-a", graph), nodes: { "TASK-001": { label: "Closed (historical)", source: "Historical Jira", observedAt } } },
+    });
+    const hidden = ["Host host-a", graph.source_sha256.slice(0, 12), graph.graph_sha256.slice(0, 12), "Scroll to pan", "Keyboard:",
+      "No task is selected automatically", "depth, not readiness", "Status requires a separate source observation", "Sourced states",
+      observedAt, "Shell provenance", "2026-10-19T00:00:00Z", graph.source];
+    const inPanel = (element: Element) => element.props.testID === "plan-graph-source-details";
+    const outside = () => content(walkOutside(render(), inPanel).filter((node) => node.type === "Text").map((node) => node.props.children));
+    expect(hidden.filter((text) => outside().includes(text))).toEqual([]);
+    openDetails(render);
+    expect(hidden.filter((text) => outside().includes(text))).toEqual([]);
+    expect(hidden.filter((text) => !content(find(render(), "plan-graph-source-details")).includes(text))).toEqual([]);
+    expect(props.store.read(planGraphViewKey("host-a", graph)).details).toBe(true);
+  });
+
+  it("keeps compact text outside the canvas to the title, button captions and a one-line zoom status", () => {
+    const { render } = setup({ compact: true });
+    const chrome = (tree: ReactNode) => walkOutside(tree, (node) => isViewport(node) || node.props.testID === "plan-graph-source-details"
+      || node.props.accessibilityRole === "button").filter((node) => node.type === "Text");
+    const zoom = find(render(), "plan-graph-zoom-status");
+    expect(zoom.props.numberOfLines).toBe(1);
+    expect(chrome(render()).map((node) => node.props.testID ?? node.props.accessibilityRole)).toEqual(["header", "plan-graph-zoom-status"]);
+    openDetails(render);
+    expect(chrome(render()).map((node) => node.props.testID ?? node.props.accessibilityRole)).toEqual(["header", "plan-graph-zoom-status"]);
+  });
+
+  it("moves the large-graph note into Source details on compact", () => {
+    const { render } = setup({ graph: rootGraph(251), compact: true });
+    const note = "Large graph: paged wave list";
+    expect(content(render())).not.toContain(note);
+    openDetails(render);
+    expect(content(walkOutside(render(), (node) => node.props.testID === "plan-graph-source-details").filter((node) => node.type === "Text").map((node) => node.props.children))).not.toContain(note);
+    expect(content(find(render(), "plan-graph-source-details"))).toContain(note);
+    hooks.reset();
+    const wide = setup({ graph: rootGraph(251) });
+    expect(content(wide.render())).toContain(note);
   });
 });
 

@@ -1,4 +1,6 @@
-// QA1's frozen-c835 reproduction, ported unchanged except the local fixture catalog.
+// QA1's frozen-c835 reproduction, ported unchanged except the local fixture catalog and
+// the Teams view store: configured sources now open from a saved TeamsView, so the
+// disclosure state lives there instead of in Disclosure-local state.
 // Native layout is not observed: this harness drives real disclosure callbacks
 // and explicitly supplies content-size events plus a range-clamping scroll model.
 import { fileURLToPath, URL } from 'node:url';
@@ -20,7 +22,7 @@ vi.mock('react', async (original) => ({ ...await original<typeof import('react')
 vi.mock('react-native', () => ({ ScrollView: 'ScrollView', View: 'View', Text: 'Text', Pressable: 'Pressable' }));
 vi.mock('@getpaseo/plugin/client/react-native', () => ({ TextInput: 'TextInput', Icon: 'Icon' }));
 import { ReadOnlyPage } from '../client/read-only-pages';
-import { TeamsSourcePage } from '../client/teams-source-page';
+import { DEFAULT_TEAMS_SOURCE_VIEW, DEFAULT_TEAMS_VIEW, TeamsSourcePage, type TeamsView } from '../client/teams-source-page';
 import { goBack, navigate, readRouteView, writeRouteView } from '../client/navigation-state';
 type Props = Parameters<typeof ReadOnlyPage>[0];
 type Element = ReactElement<Record<string, unknown>>;
@@ -31,6 +33,7 @@ const catalog = sourceCatalog(JSON.stringify([
   ['templates', 'mvp-team-pack.json', 'd4b0965db9be03de42cf9aec25f0dd3c43c9c0493d6b2378b6fb8e4d82f8ee5d'],
 ].map(([id, filename, expectedSha256]) => ({ id, title: id, kind: 'teams', path: fileURLToPath(new URL(`./fixtures/teams-source/${filename}`, import.meta.url)), expectedSha256 }))));
 let snapshots: Record<string, TeamsSourceSnapshot>;
+const views = new Map<string, TeamsView>();
 beforeAll(async () => {
   const adapter = createTeamsSourceAdapter(catalog, teamsSourceBindings(catalog.sources).formats);
   snapshots = Object.fromEntries(await Promise.all(catalog.sources.map(async (source) => [source.id, await adapter.read({ sourceId: source.id })])));
@@ -44,7 +47,7 @@ function disclosures(node: ReactNode): Element[] {
   if (Array.isArray(node)) return node.flatMap(disclosures);
   if (!isValidElement<Record<string, unknown>>(node)) return [];
   if (typeof node.type === 'function') {
-    if (node.type.name === 'Disclosure') return [node];
+    if (node.type.name === 'Disclosure') return [node, ...disclosures(node.props.children as ReactNode)];
     return disclosures((node.type as (props: object) => ReactNode)(node.props));
   }
   return disclosures(node.props.children as ReactNode);
@@ -56,7 +59,8 @@ function mount(hostId: string) {
     directory: { entries: [], status: 'ready', live: false, lastUpdatedAt: 1, error: null, staleReason: null, pages: 1, includeArchived: false },
     sources: catalog.sources, reads: {}, sourceId: null, sourceError: null, query: '', setQuery() {}, onSource() {}, onOpen() {}, onTab() {}, onEpicTab() {},
     teamsSources: catalog.sources, teamsSnapshots: snapshots, teamsAvailable: true,
-    initialOffset: initial, onScroll: (offset) => writeRouteView(hostId, route, { offset }), initialDocumentOffset: 0, onDocumentScroll() {},
+    initialOffset: initial, onScroll: (offset) => writeRouteView(hostId, route, { offset }),
+    teamsView: views.get(hostId) ?? { ...DEFAULT_TEAMS_VIEW, configured: true }, onTeamsView: (view) => views.set(hostId, view),
   };
   const outer = ReadOnlyPage(props);
   let current = 0, height = 2400;
@@ -64,17 +68,24 @@ function mount(hostId: string) {
   const emitScroll = (y: number) => { current = Math.max(0, Math.min(y, Math.max(0, height - viewport))); (outer.props.onScroll as (event: object) => void)({ nativeEvent: { contentOffset: { y: current } } }); };
   const scrollTo = vi.fn(({ y }: { y: number }) => emitScroll(y));
   (outer.props.ref as { current: unknown }).current = { scrollTo };
-  const teams = elements(outer).find((element) => element.type === TeamsSourcePage)!;
-  const teamTree = TeamsSourcePage(teams.props as Parameters<typeof TeamsSourcePage>[0]);
-  const chain = disclosures(teamTree).find((element) => element.props.label === 'Source details')!;
-  expect(chain).toBeDefined();
+  // Re-render only the Teams page for each toggle; the outer scroller keeps its first instance.
+  const chain = () => {
+    const teams = elements(ReadOnlyPage({ ...props, teamsView: views.get(hostId) ?? props.teamsView })).find((element) => element.type === TeamsSourcePage)!;
+    const found = disclosures(TeamsSourcePage(teams.props as Parameters<typeof TeamsSourcePage>[0])).find((element) => element.props.label === 'Source details')!;
+    expect(found).toBeDefined(); return found;
+  };
+  chain();
   function renderDisclosure() {
     hooks.active = hostId + ':authoring-source-details';
-    return (chain.type as (props: object) => ReactNode)(chain.props);
+    const disclosure = chain();
+    return (disclosure.type as (props: object) => ReactNode)(disclosure.props);
   }
   return { initial, scrollTo, current: () => current, scroll: emitScroll,
     size(next: number) { height = next; (outer.props.onContentSizeChange as (width: number, height: number) => void)(400, next); },
-    setOpen(value: boolean) { hooks.states.set(hostId + ':authoring-source-details', value); },
+    setOpen(value: boolean) {
+      const view = views.get(hostId) ?? props.teamsView!;
+      views.set(hostId, { ...view, sources: { ...view.sources, authoring: { ...DEFAULT_TEAMS_SOURCE_VIEW, ...view.sources.authoring, details: value } } });
+    },
     toggle() {
       const before = renderDisclosure();
       const button = elements(before).find((element) => element.props.accessibilityLabel === 'Source details')!;

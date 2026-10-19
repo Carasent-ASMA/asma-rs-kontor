@@ -1,6 +1,6 @@
 import type { OrganizationGroup, OrganizationRow } from "./session-organization";
 import { sessionKey } from "./session-organization";
-export function rowKey(row: OrganizationRow): string { return row.kind === "group" ? row.group.key : sessionKey(row.entry.id); }
+export function rowKey(row: OrganizationRow): string { return row.kind === "group" ? row.group.key : row.kind === "empty" ? `${row.parentKey}/empty` : sessionKey(row.entry.id); }
 export function siblingKeys(groups: readonly OrganizationGroup[], parentKey: string): string[] {
   if (parentKey === "root") return groups.map((group) => group.key);
   for (const group of groups) {

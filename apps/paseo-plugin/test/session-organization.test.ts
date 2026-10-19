@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { DirectoryEntry } from "../client/session-directory";
 import {
+  aggregateState,
+  aggregateSummary,
   buildOrganizationTree,
+  defaultGroupExpanded,
   filterOrganizationTree,
+  inEpicScope,
+  isDeskWork,
+  workspaceMappingKey,
   flattenOrganizationTree,
   isFavoriteSession,
   OTHER_WORKSTREAM,
@@ -487,9 +493,127 @@ describe("session organization hierarchy", () => {
       failed: 1,
       running: 1,
       attention: 1,
-      done: 1,
-      other: 1,
+      initializing: 1,
+      idle: 0,
+      closed: 1,
       native: { initializing: 1, idle: 1, running: 1, error: 2, closed: 1 },
     });
+    expect(aggregateState(tree[0]!.aggregate)).toBe("needs_input");
+    expect(aggregateSummary(tree[0]!.aggregate)).toBe(
+      "1 needs input · 1 error · 1 running · 1 attention · 1 starting · 1 closed",
+    );
+  });
+});
+
+describe("session organization parity", () => {
+  it("partitions Role groups by native placement and display scope", () => {
+    const tree = buildOrganizationTree({
+      entries: [
+        entry("a1", { title: "SWE • one", workspaceId: "w1", workspaceName: "TSW • one", labels: { epic: "ASMA-1" } }),
+        entry("a2", { title: "SWE • two", workspaceId: "w1", workspaceName: "TSW • one", labels: { epic: "ASMA-1" } }),
+        entry("b1", { title: "SWE • three", workspaceId: "w2", workspaceName: "TSW • two", labels: { epic: "ASMA-1" } }),
+        entry("b2", { title: "SWE • four", workspaceId: "w2", workspaceName: "TSW • two", labels: { epic: "ASMA-1" } }),
+        entry("c1", { title: "QA • lonely", workspaceId: "w2", workspaceName: "TSW • two", labels: { epic: "ASMA-1" } }),
+      ],
+      grouping: "role",
+    });
+    const roles = allGroups(tree).filter((group) => group.kind === "role");
+    expect(roles.map((group) => group.sessions.map((session) => session.id))).toEqual([["a1", "a2"], ["b1", "b2"]]);
+    expect(new Set(roles.map((group) => group.key)).size).toBe(2);
+    expect(roles.every((group) => group.parentKey === "roles")).toBe(true);
+    expect(roles.map((group) => group.detail)).toEqual([
+      "Other work · ASMA-1 · TSW • one",
+      "Other work · ASMA-1 · TSW • two",
+    ]);
+    expect(tree[0]!.sessions.map((session) => session.id)).toEqual(["c1"]);
+  });
+
+  it("opens workstreams and desks but not epics or workspaces on a first visit, and lets saved or forced state win", () => {
+    const tree = buildOrganizationTree({
+      entries: [entry("a", { workspaceId: "w1", workspaceName: "Main", labels: { epic: "ASMA-1" } })],
+    });
+    const keys = (rows: ReturnType<typeof flattenOrganizationTree>) =>
+      rows.map((row) => (row.kind === "group" ? `${row.group.kind}:${row.expanded}` : row.kind));
+    expect(keys(flattenOrganizationTree(tree, {}, false, defaultGroupExpanded))).toEqual(["workstream:true", "epic:false"]);
+    const epic = findGroup(tree, (group) => group.kind === "epic");
+    expect(keys(flattenOrganizationTree(tree, { [epic.key]: true }, false, defaultGroupExpanded))).toEqual([
+      "workstream:true", "epic:true", "workspace:false",
+    ]);
+    expect(keys(flattenOrganizationTree(tree, { [tree[0]!.key]: false }, true, defaultGroupExpanded))).toEqual([
+      "workstream:true", "epic:true", "workspace:true", "session",
+    ]);
+    expect(defaultGroupExpanded({ ...tree[0]!, kind: "project", label: "DESK • adam" })).toBe(true);
+    expect(defaultGroupExpanded({ ...tree[0]!, kind: "project", label: "asma-rs-kontor" })).toBe(false);
+  });
+
+  it("recomputes counts and the priority state from the visible sessions after filtering", () => {
+    const tree = buildOrganizationTree({
+      entries: [
+        entry("run", { status: "running", workspaceId: "w1", workspaceName: "Main" }),
+        entry("idle", { status: "idle", workspaceId: "w1", workspaceName: "Main" }),
+        entry("failed", { status: "error", workspaceId: "w1", workspaceName: "Main" }),
+      ],
+    });
+    const filtered = filterOrganizationTree(tree, (session) => session.status === "idle");
+    const workspace = findGroup(filtered, (group) => group.kind === "workspace");
+    expect(workspace.aggregate).toMatchObject({ total: 1, idle: 1, running: 0, failed: 0 });
+    expect(aggregateState(workspace.aggregate)).toBe("idle");
+    expect([workspace.unitVisible, workspace.unitTotal]).toEqual([1, 3]);
+    expect(aggregateState(findGroup(tree, (group) => group.kind === "workspace").aggregate)).toBe("failed");
+  });
+
+  it("counts workspaces, not sessions, on a workspace-kind group", () => {
+    const tree = buildOrganizationTree({
+      entries: [
+        entry("a", { workspaceId: "w1", workspaceName: "TSW • one" }),
+        entry("b", { workspaceId: "w1", workspaceName: "TSW • one" }),
+        entry("c", { workspaceId: "w2", workspaceName: "TSW • two" }),
+      ],
+    });
+    const kind = findGroup(tree, (group) => group.kind === "workspace-kind");
+    expect([kind.label, kind.unit, kind.unitTotal, kind.totalCount]).toEqual(["TSW", "workspaces", 2, 3]);
+    const filtered = findGroup(
+      filterOrganizationTree(tree, (session) => session.id === "c"),
+      (group) => group.kind === "workspace-kind",
+    );
+    expect([filtered.unitVisible, filtered.unitTotal]).toEqual([1, 2]);
+  });
+
+  it("groups Desks & workspaces by native project with desk projects first and an empty workspace row", () => {
+    const tree = buildOrganizationTree({
+      entries: [
+        entry("k", { projectKey: "p-kontor", projectName: "asma-rs-kontor", workspaceId: "w1", workspaceName: "TSW • one" }),
+        entry("d", { projectKey: "p-desk", projectName: "DESK • adam", workspaceId: "w2", workspaceName: "Adam" }),
+      ],
+      grouping: "placement",
+      workspaces: [{ id: "w3", name: "main", projectKey: "p-kontor", projectName: "asma-rs-kontor" }],
+    });
+    expect(tree.map((group) => [group.kind, group.label, group.detail])).toEqual([
+      ["project", "DESK • adam", "1 workspace"],
+      ["project", "asma-rs-kontor", "2 workspaces"],
+    ]);
+    const empty = findGroup(tree, (group) => group.label === "main");
+    const rows = flattenOrganizationTree(tree, { [empty.parentKey!]: true, [empty.key]: true }, false, defaultGroupExpanded);
+    expect(flattenOrganizationTree(tree, {}, false, defaultGroupExpanded).some((row) => row.kind === "empty")).toBe(false);
+    expect(rows.find((row) => row.kind === "empty")).toEqual({ kind: "empty", depth: empty.depth + 1, parentKey: empty.key });
+  });
+
+  it("matches an epic scope through display mappings and recognizes desk work", () => {
+    const mapped = entry("m", { workspaceId: "w1", labels: { epic: "ASMA-1" } });
+    const mappings = {
+      [workspaceMappingKey("w1")]: { workstream: "Adam", epic: "asma-9" },
+    };
+    expect(inEpicScope(mapped, mappings, "ASMA-9")).toBe(true);
+    expect(inEpicScope(mapped, mappings, "ASMA-1")).toBe(false);
+    expect(inEpicScope(mapped, undefined, "asma-1")).toBe(true);
+    expect(isDeskWork(mapped, mappings)).toBe(true);
+    expect(isDeskWork(mapped, undefined)).toBe(false);
+    expect(isDeskWork(entry("label", { labels: { desk: "Kontor desk" } }), undefined)).toBe(true);
+    expect(isDeskWork(entry("label", { labels: { desk: "Kontor desk" } }), { [workspaceMappingKey("w1")]: {} })).toBe(true);
+    expect(
+      isDeskWork(entry("mapped", { workspaceId: "w1", labels: { desk: "QA" } }), {
+        [workspaceMappingKey("w1")]: { workstream: "Billing" },
+      }),
+    ).toBe(false);
   });
 });

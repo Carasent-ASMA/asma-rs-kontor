@@ -4,7 +4,7 @@ import { useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type 
 import { Pressable, Text, View } from "react-native";
 import { planSourceActions, type PlanGraphData, type PlanSourceAction, type SourcedPlanState } from "./contract";
 import {
-  cameraAtGraphPoint, clampGraphScale, edgeEmphasis, edgeSegments, fitPlanGraph, graphScrollEnvelope,
+  cameraAtGraphPoint, canvasMinHeight, clampGraphScale, edgeEmphasis, edgeSegments, fitPlanGraph, graphScrollEnvelope,
   GRAPH_SCALE_STEP, layoutPlanGraph, MAX_GRAPH_SCALE, MIN_GRAPH_SCALE, MIN_TOUCH_TARGET,
   nodeEmphasis, tracePlanGraph, zoomPlanGraph, type GraphPoint, type PlanGraphCamera,
 } from "./layout";
@@ -21,6 +21,9 @@ export type PlanGraphViewState = {
   scale?: number;
   fit?: boolean;
   cameraRevision?: number;
+  /** Secondary-controls and Source details disclosures, retained with the camera. */
+  controls?: boolean;
+  details?: boolean;
 };
 const INITIAL_VIEW: PlanGraphViewState = { selected: null, alternate: false, page: 0, x: 0, y: 0, listY: 0 };
 export const LARGE_GRAPH_THRESHOLD = 250;
@@ -81,6 +84,8 @@ export type PlanGraphProps = {
   sourcedStates?: { viewKey: string; nodes: Readonly<Record<string, SourcedPlanState>> };
   /** Only callbacks actually supplied by the shell become visible source actions. */
   sourceActions?: Partial<Record<PlanSourceAction["kind"], (action: PlanSourceAction) => void>>;
+  /** Shell provenance, rendered only inside the graph's single Source details disclosure. */
+  details?: ReactNode;
 };
 
 /** Native component; the shell owns fetching, source validation, routing, and store lifetime. */
@@ -88,13 +93,15 @@ export function PlanGraph(props: PlanGraphProps) {
   return <PlanGraphView key={planGraphViewKey(props.hostId, props.graph)} {...props} />;
 }
 
-function PlanGraphView({ graph, hostId, theme, store, compact = false, textScale = 1, sourcedStates, sourceActions }: PlanGraphProps) {
+function PlanGraphView({ graph, hostId, theme, store, compact = false, textScale = 1, sourcedStates, sourceActions, details }: PlanGraphProps) {
   const key = planGraphViewKey(hostId, graph);
   const view = useSyncExternalStore(store.subscribe, () => store.read(key));
   const [hovered, setHovered] = useState<string | null>(null);
   const [focused, setFocused] = useState<string | null>(null);
   const [measuredHeight, setMeasuredHeight] = useState(160);
   const [viewport, setViewport] = useState({ width: 800, height: 500 });
+  // The graph page height bounds the canvas floor; 0 until the native layout reports it.
+  const [pageHeight, setPageHeight] = useState(0);
   const horizontal = useRef<ComponentRef<typeof ScrollView>>(null);
   const vertical = useRef<ComponentRef<typeof ScrollView>>(null);
   // Keep the Fit anchor through intrinsic reflow; explicit navigation releases it.
@@ -153,13 +160,19 @@ function PlanGraphView({ graph, hostId, theme, store, compact = false, textScale
     return value;
   };
   const label = (value: ReactNode, muted = false) => <Text style={{ color: muted ? colors.foregroundMuted : colors.foreground }}>{value}</Text>;
-  const control = (title: string, onPress: () => void, disabled = false, caption = title) => (
-    <Pressable focusable accessibilityRole="button" accessibilityLabel={title} accessibilityState={{ disabled }} disabled={disabled}
-      onPress={onPress} style={{ minWidth: MIN_TOUCH_TARGET, minHeight: MIN_TOUCH_TARGET, padding: 12,
-        justifyContent: "center", borderWidth: 1, borderColor: colors.border, borderRadius: 8 }}>
+  const small = (value: ReactNode) => <Text selectable style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 18 }}>{value}</Text>;
+  /** `expanded` marks a disclosure trigger; plain controls omit it. */
+  const control = (title: string, onPress: () => void, disabled = false, caption = title, expanded?: boolean) => (
+    <Pressable focusable accessibilityRole="button" accessibilityLabel={title} accessibilityState={{ disabled, ...(expanded === undefined ? {} : { expanded }) }} disabled={disabled}
+      onPress={onPress} style={{ minWidth: MIN_TOUCH_TARGET, minHeight: MIN_TOUCH_TARGET, paddingHorizontal: compact ? 8 : 12,
+        justifyContent: "center", alignItems: "center", borderWidth: 1, borderColor: colors.border, borderRadius: 8, opacity: disabled ? 0.5 : 1 }}>
       {label(caption)}
     </Pressable>
   );
+  const disclosure = (title: string, caption: string, field: "controls" | "details") => {
+    const open = view[field] === true;
+    return control(title, () => store.update(key, { [field]: !open }), false, `${open ? "▾" : "▸"} ${caption}`, open);
+  };
   function clear() {
     fittedListTask.current = null;
     if (typeof canvasAnchor.current === "object" && canvasAnchor.current && "task" in canvasAnchor.current) canvasAnchor.current = null;
@@ -305,29 +318,54 @@ function PlanGraphView({ graph, hostId, theme, store, compact = false, textScale
     </Pressable>;
   }
   const actions = selectedNode ? planSourceActions(graph, selectedNode).filter((action) => sourceActions?.[action.kind]) : [];
-  return <View style={{ flex: 1, minHeight: 300, gap: compact ? 8 : 12, padding: compact ? 8 : 16, backgroundColor: colors.surface0 }}>
-    {label(`Plan graph · ${graph.epic.jira ?? "Epic Jira not supplied"}`)}
-    {label(`Host ${hostId} · source ${graph.source_sha256.slice(0, 12)} · graph ${graph.graph_sha256.slice(0, 12)}`, true)}
-    {label("Waves show dependency depth. Status requires a separate source observation.", true)}
-    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-      {control("Clear graph highlight", clear)}
-      {control("Previous task", () => navigate(-1), !graph.nodes.length)}
-      {control("Next task", () => navigate(1), !graph.nodes.length)}
-      {control("Centre selected task", () => centre(view.selected), !view.selected || alternate)}
-      {control("Zoom out", () => changeScale(-GRAPH_SCALE_STEP), alternate || scale <= MIN_GRAPH_SCALE, "−")}
-      {control("Zoom in", () => changeScale(GRAPH_SCALE_STEP), alternate || scale >= MAX_GRAPH_SCALE, "+")}
-      {control("Reset zoom to 100%", resetScale, alternate, "100% Reset")}
-      {control("Fit graph", fitGraph, alternate)}
-      {control(alternate ? "Show graph canvas" : "Fit as wave list", toggleAlternate, isLarge)}
+  function sourcedSummary() {
+    const observed = graph.nodes.flatMap((node) => observation(node.id) ?? []);
+    if (!observed.length) return "Sourced states: not supplied by this export";
+    return `Sourced states: ${observed.length}/${graph.nodes.length} tasks · observed ${[...new Set(observed.map((state) => state.observedAt))].join(" / ")}`;
+  }
+  const summary = `${graph.epic.jira ?? "Epic Jira not supplied"} · ${graph.nodes.length} tasks · ${graph.edges.length} dependencies · depth, not readiness`;
+  const largeNote = "Large graph: paged wave list. Every canonical task and dependency remains available.";
+  const hint = "Select, hover or focus a task for details. No task is selected automatically.";
+  const zoomStatus = <Text testID="plan-graph-zoom-status" accessibilityLiveRegion="polite" {...(compact ? { numberOfLines: 1 } : {})}
+    style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 18, ...(compact ? { flexShrink: 1 } : {}) }}>
+    {`Canvas zoom ${Math.round(scale * 10000) / 100}%${fitStatus}${alternate ? ". Wave list is unscaled." : ""}`}
+  </Text>;
+  // Compact is graph-first: one title row, then the canvas. Summary, hint and the large-graph
+  // note move into Source details; the one-line zoom status sits beside its toggle.
+  return <View testID="plan-graph" style={{ flex: 1, minHeight: 300, gap: 8, padding: compact ? 8 : 12, backgroundColor: colors.surface0 }}
+    onLayout={({ nativeEvent }) => {
+      // Non-finite heights fall back to the fixed floor in canvasMinHeight.
+      const height = nativeEvent.layout.height;
+      if (Math.abs(height - pageHeight) > 1) setPageHeight(height);
+    }}>
+    <View testID="plan-graph-title-row" style={{ flexDirection: "row", flexWrap: compact ? "nowrap" : "wrap", alignItems: "center", gap: compact ? 6 : 8 }}>
+      <View style={{ flexGrow: 1, flexShrink: 1, flexBasis: compact ? 0 : 240, minWidth: 0, gap: 2 }}>
+        <Text accessibilityRole="header" {...(compact ? { numberOfLines: 1 } : {})} style={{ color: colors.foreground, fontSize: 15, fontWeight: "600" }}>Plan dependencies</Text>
+        {compact ? null : small(summary)}
+        {compact ? null : zoomStatus}
+      </View>
+      <View style={{ flexDirection: "row", gap: 6 }}>
+        <View role="group" accessibilityLabel="Graph zoom" style={{ flexDirection: "row", gap: 6 }}>
+          {control("Zoom out", () => changeScale(-GRAPH_SCALE_STEP), alternate || scale <= MIN_GRAPH_SCALE, "−")}
+          {control("Fit graph", fitGraph, alternate, "Fit")}
+          {control("Zoom in", () => changeScale(GRAPH_SCALE_STEP), alternate || scale >= MAX_GRAPH_SCALE, "+")}
+        </View>
+        {disclosure("More graph controls", "More", "controls")}
+      </View>
     </View>
-    <Text testID="plan-graph-zoom-status" accessibilityLiveRegion="polite" style={{ color: colors.foreground }}>
-      {`Canvas zoom ${Math.round(scale * 10000) / 100}%${fitStatus}${alternate ? ". Wave list is unscaled." : ""}`}
-    </Text>
-    {label(isLarge ? "Large graph: paged wave list. Every canonical task and dependency remains available." : "Scroll to pan. Use − / + to zoom, 100% Reset, Fit graph, or Fit as wave list. Keyboard: Tab between controls, activate to select.", true)}
+    {view.controls ? <View testID="plan-graph-more-controls" role="group" accessibilityLabel="Secondary graph controls" style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+      {control("Clear graph highlight", clear, false, "Clear highlight")}
+      {control("Previous task", () => navigate(-1), !graph.nodes.length, "Previous")}
+      {control("Next task", () => navigate(1), !graph.nodes.length, "Next")}
+      {control("Centre selected task", () => centre(view.selected), !view.selected || alternate, "Centre selected")}
+      {control("Reset zoom to 100%", resetScale, alternate, "100%")}
+      {control(alternate ? "Show graph canvas" : "Fit as wave list", toggleAlternate, isLarge, alternate ? "Graph canvas" : "Wave list")}
+    </View> : null}
+    {isLarge && !compact ? small(largeNote) : null}
     <ScrollView key={alternate ? `list-${page}-${cameraRevision}` : frame.key} ref={vertical} nestedScrollEnabled
       testID={alternate ? "plan-graph-list-scroll" : "plan-graph-canvas-scroll"}
       contentOffset={{ x: 0, y: alternate ? view.listY : view.y }}
-      style={{ flex: 1 }} onLayout={({ nativeEvent }) => {
+      style={{ flex: 1, minHeight: canvasMinHeight(compact, pageHeight) }} onLayout={({ nativeEvent }) => {
         if (!isCurrentScrollView()) return;
         const { width, height } = nativeEvent.layout;
         if (width > 0 && height > 0 && (width !== viewport.width || height !== viewport.height)) {
@@ -393,15 +431,15 @@ function PlanGraphView({ graph, hostId, theme, store, compact = false, textScale
         </View>
       </ScrollView>}
     </ScrollView>
-    <ScrollView style={{ maxHeight: compact ? 220 : 320 }} accessibilityLabel="Task details">
-      {selectedNode ? <View testID="plan-graph-details" style={{ gap: 8, padding: 12, backgroundColor: colors.surface1 }}>
+    {selectedNode ? <ScrollView style={{ maxHeight: compact ? 200 : 280, flexGrow: 0, flexShrink: 1, minHeight: 0 }} accessibilityLabel="Task details">
+      <View testID="plan-graph-details" style={{ gap: 8, padding: 12, backgroundColor: colors.surface1 }}>
         {label(`${selectedNode.id} · ${selectedNode.title}`)}
         {label(`Phase: ${selectedNode.phase}`)}
         {label(`Direct prerequisites: ${selectedNode.depends_on.join(", ") || "None"}`)}
         {label(`Direct dependents: ${graph.edges.filter((edge) => edge.from === selectedNode.id).map((edge) => edge.to).join(", ") || "None"}`)}
         {label(`Confirmed Jira: ${selectedNode.jira ?? "Not supplied"}`)}
         {label(observation(selectedNode.id) ? `Sourced state: ${observation(selectedNode.id)!.label} · ${observation(selectedNode.id)!.source} · observed ${observation(selectedNode.id)!.observedAt}` : "Sourced state: not supplied by this export")}
-        {label(`Plan source: ${graph.source} · ${graph.source_sha256}`)}
+        {label(`Plan source: ${graph.source}`)}
         {label("External fences:")}
         {graph.external_fences.filter((fence) => fence.task === selectedNode.id).map((fence, index) => <View key={index}>
           {label(`${fence.prerequisite} · Owner: ${fence.owner} · Lift condition: ${fence.lift_condition}`)}
@@ -410,7 +448,25 @@ function PlanGraphView({ graph, hostId, theme, store, compact = false, textScale
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
           {actions.map((action) => <View key={action.kind}>{control(action.kind === "jira" ? `Open ${action.jira}` : "Open exact plan source", () => sourceActions?.[action.kind]?.(action))}</View>)}
         </View>
-      </View> : label("Select, hover or focus a task for details. No task is selected automatically.", true)}
-    </ScrollView>
+      </View>
+    </ScrollView> : null}
+    <View style={{ flexDirection: "row", flexWrap: compact ? "nowrap" : "wrap", alignItems: "center", gap: 8 }}>
+      <View style={{ flexGrow: 1, flexShrink: 1, flexBasis: compact ? 0 : 140, minWidth: 0 }}>{compact ? zoomStatus : selectedNode ? null : small(hint)}</View>
+      {disclosure("Source details", "Source details", "details")}
+    </View>
+    {view.details ? <ScrollView testID="plan-graph-source-details" accessibilityLabel="Graph source details" style={{ maxHeight: compact ? 200 : 260, flexGrow: 0, flexShrink: 1, minHeight: 0 }}>
+      <View style={{ gap: 4 }}>
+        {compact ? small(summary) : null}
+        {compact && isLarge ? small(largeNote) : null}
+        {compact ? small(hint) : null}
+        {small(`Host ${hostId} · source ${graph.source_sha256.slice(0, 12)} · graph ${graph.graph_sha256.slice(0, 12)}`)}
+        {small(`Plan source: ${graph.source}`)}
+        {small(`Source SHA-256 ${graph.source_sha256} · canonical graph SHA-256 ${graph.graph_sha256}`)}
+        {small(sourcedSummary())}
+        {small("Waves show dependency depth. Status requires a separate source observation.")}
+        {small(isLarge ? "Use the paged wave list; zoom and Fit apply only to the canvas." : "Scroll to pan. Use − / + to zoom and Fit to fit; More has 100%, task navigation and the wave list. Keyboard: Tab between controls, activate to select.")}
+        {details}
+      </View>
+    </ScrollView> : null}
   </View>;
 }

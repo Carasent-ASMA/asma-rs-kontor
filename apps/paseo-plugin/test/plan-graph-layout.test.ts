@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { URL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { planGraphSchema, type PlanGraphData } from "../client/plan-graph/contract";
-import { CARD_WIDTH, COLUMN_PITCH, edgeEmphasis, edgeSegments, layoutPlanGraph, nodeEmphasis, tracePlanGraph } from "../client/plan-graph/layout";
+import { canvasMinHeight, CARD_WIDTH, COLUMN_PITCH, edgeEmphasis, edgeSegments, layoutPlanGraph, nodeEmphasis, tracePlanGraph } from "../client/plan-graph/layout";
 
 const sample = (): PlanGraphData => JSON.parse(readFileSync(new URL("./fixtures/plan-graph-asma-8371.json", import.meta.url), "utf8"));
 
@@ -18,6 +18,18 @@ export function diamondGraph(): PlanGraphData {
   graph.external_fences = [];
   return planGraphSchema.parse(graph);
 }
+
+describe("canvas floor", () => {
+  it("never lets the canvas collapse and keeps the majority of a measured page", () => {
+    expect([0, Number.NaN, -50, Number.POSITIVE_INFINITY, 500].map((height) => canvasMinHeight(true, height))).toEqual([320, 320, 320, 320, 320]);
+    expect([0, Number.NaN, 300].map((height) => canvasMinHeight(false, height))).toEqual([240, 240, 240]);
+    // 390x844 with the 51px context row and the bottom tab bar leaves roughly 620-680px.
+    for (const height of [620, 664, 680, 1000]) {
+      expect(canvasMinHeight(true, height)).toBe(Math.round(height * 0.55));
+      expect(canvasMinHeight(true, height) / height).toBeGreaterThan(0.5);
+    }
+  });
+});
 
 describe("deterministic native plan layout and directed traces", () => {
   it("lays out every canonical node, with depth columns and stable ID ordering", () => {

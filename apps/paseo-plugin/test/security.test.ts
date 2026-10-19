@@ -43,13 +43,18 @@ describe("no Kontor write credential", () => {
 });
 
 const clientFiles = [
+  "../client/anchored-menu.tsx",
   "../client/graph-page.tsx",
   "../client/kontor-screen.tsx",
   "../client/native-freshness.tsx",
   "../client/navigation-state.ts",
+  "../client/organization-row.tsx",
+  "../client/overview-page.tsx",
+  "../client/page-controls.tsx",
   "../client/page-data.ts",
   "../client/plan-document.tsx",
   "../client/plan-links.ts",
+  "../client/plan-reader.tsx",
   "../client/read-only-pages.tsx",
   "../client/source-details.tsx",
   "../client/teams-binding-detail.tsx",
@@ -59,6 +64,7 @@ const clientFiles = [
   "../client/return-control.ts",
   "../client/session-actions.ts",
   "../client/session-directory.ts",
+  "../client/session-organization.ts",
   "../client/session-view-store.ts",
   "../client/session-view.ts",
   "../client/sessions-screen.tsx",

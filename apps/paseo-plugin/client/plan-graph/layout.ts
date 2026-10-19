@@ -8,6 +8,9 @@ export const MIN_TOUCH_TARGET = 44;
 export const MIN_GRAPH_SCALE = 0.5;
 export const MAX_GRAPH_SCALE = 2;
 export const GRAPH_SCALE_STEP = 0.25;
+export const COMPACT_CANVAS_MIN_HEIGHT = 320;
+export const CANVAS_MIN_HEIGHT = 240;
+export const CANVAS_PAGE_SHARE = 0.55;
 
 export type GraphSize = { width: number; height: number };
 export type GraphPoint = { x: number; y: number };
@@ -16,6 +19,14 @@ export type PlanGraphCamera = GraphPoint & { scale: number };
 const extent = (value: number) => Number.isFinite(value) ? Math.max(0, value) : 0;
 export function clampGraphScale(scale: number): number {
   return Math.max(MIN_GRAPH_SCALE, Math.min(MAX_GRAPH_SCALE, Number.isFinite(scale) ? scale : 1));
+}
+
+/**
+ * Explicit canvas floor. A content-sized native ancestor cannot collapse it, and it keeps the
+ * majority of the measured graph page, so panels shrink before the canvas does.
+ */
+export function canvasMinHeight(compact: boolean, pageHeight: number): number {
+  return Math.max(compact ? COMPACT_CANVAS_MIN_HEIGHT : CANVAS_MIN_HEIGHT, Math.round(extent(pageHeight) * CANVAS_PAGE_SHARE));
 }
 
 /** Transforms do not change native layout: this envelope owns the scroll extents. */

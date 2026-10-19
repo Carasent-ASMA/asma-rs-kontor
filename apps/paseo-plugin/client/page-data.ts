@@ -11,21 +11,6 @@ export function confirmedEpic(entry: DirectoryEntry): string | null {
   }
   return null;
 }
-export function overviewRows(entries: readonly DirectoryEntry[], reads: readonly SourceRead[]) {
-  const keys = new Set(entries.map(confirmedEpic).filter((key): key is string => key !== null));
-  for (const read of reads) {
-    const key = read.graph?.epic.jira ?? read.source.epic;
-    if (key && /^ASMA-\d+$/.test(key)) keys.add(key);
-  }
-  const rows = [...keys].sort().map((key) => ({ key, entries: entries.filter((entry) => confirmedEpic(entry) === key),
-    reads: reads.filter((read) => (read.graph?.epic.jira ?? read.source.epic) === key) }));
-  for (const read of reads) if (read.source.kind === "plan" && !(read.graph?.epic.jira ?? read.source.epic)) {
-    rows.push({ key: `No epic linked · ${read.source.title}`, entries: [], reads: [read] });
-  }
-  const unassigned = entries.filter((entry) => confirmedEpic(entry) === null);
-  if (unassigned.length) rows.push({ key: "Unassigned / ad-hoc", entries: unassigned, reads: [] });
-  return rows;
-}
 export function nativeSummary(entries: readonly DirectoryEntry[]) {
   return { total: entries.length, running: entries.filter((entry) => entry.status === "running").length,
     idle: entries.filter((entry) => entry.status === "idle").length,
@@ -34,7 +19,6 @@ export function nativeSummary(entries: readonly DirectoryEntry[]) {
     needsInput: entries.filter((entry) => entry.needsInput).length,
     errors: entries.filter((entry) => entry.status === "error").length };
 }
-export type OverviewFilter = "all" | "attention" | "needs-input" | "decisions";
 export function recordedDecisions(reads: readonly SourceRead[]) {
   const sources = reads.filter((read) => read.source.kind === "decisions");
   const ready = sources.filter((read) => read.status === "ready" && read.records !== null);
@@ -42,13 +26,57 @@ export function recordedDecisions(reads: readonly SourceRead[]) {
     unknown: ready.length ? ready.reduce((sum, read) => sum + read.records!.decisions.filter((record) => record.state === "unknown").length, 0) : null,
     captured: ready.length, configured: sources.length, complete: sources.length > 0 && ready.length === sources.length };
 }
-export function filteredOverviewRows(entries: readonly DirectoryEntry[], reads: readonly SourceRead[], filter: OverviewFilter) {
-  return overviewRows(entries, reads).filter((row) => {
-    if (filter === "attention") return inboxEntries(row.entries).length > 0;
-    if (filter === "needs-input") return row.entries.some((entry) => entry.needsInput);
-    if (filter === "decisions") { const decisions = recordedDecisions(row.reads); return !decisions.complete || (decisions.open ?? 0) > 0 || (decisions.unknown ?? 0) > 0; }
-    return true;
+export type PortfolioFilter = "all" | "active" | "review" | "decisions" | "completed" | "delivered";
+/** One Overview row: an epic with its exact plans, native sessions and dated historical records, or a plan with no epic. */
+export type PortfolioRow = {
+  id: string; epicKey: string | null; title: string; plans: SourceRead[]; sessions: ReturnType<typeof nativeSummary>;
+  lifecycle: { status: string; done: boolean; observedAt: string } | null;
+  tasks: { total: number; done: number; excluded: number; observedAt: string } | null;
+  decisions: number | null; delivery: number | null;
+};
+const WONT_DO = /^won[’']?t do$/i;
+const sourceEpic = (read: SourceRead) => read.graph?.epic.jira ?? read.source.epic;
+/**
+ * Epics come from confirmed session labels and source metadata; the historical Jira selection adds
+ * its epics only to an unscoped portfolio. Sessions without an epic stay in the inventory count.
+ */
+export function portfolioRows(entries: readonly DirectoryEntry[], reads: readonly SourceRead[], unscoped: boolean): PortfolioRow[] {
+  const keys = new Set(entries.map(confirmedEpic).filter((key): key is string => key !== null));
+  for (const read of reads) {
+    const key = read.source.kind === "jira" ? null : sourceEpic(read);
+    if (key && /^ASMA-\d+$/.test(key)) keys.add(key);
+    if (unscoped && read.status === "ready") for (const epic of read.jiraHistory?.epics ?? []) keys.add(epic.key);
+  }
+  const rows = [...keys].sort().map((key): PortfolioRow => {
+    const own = reads.filter((read) => read.source.kind !== "jira" && sourceEpic(read) === key);
+    const plans = own.filter((read) => read.source.kind === "plan");
+    const history = historicalJiraIssue(key, null, reads);
+    const children = history ? reads.find((read) => read.source.id === history.observations[0]!.sourceId)?.jiraHistory?.epics.find((epic) => epic.key === key)?.children ?? null : null;
+    const counted = children?.filter((child) => !WONT_DO.test(child.status)) ?? [];
+    const decisions = recordedDecisions(own);
+    const delivery = own.filter((read) => read.source.kind === "delivery" && read.status === "ready" && read.records);
+    const observedAt = history?.observations.map((value) => value.observedAt).join(" / ") ?? "";
+    return { id: key, epicKey: key, title: plans.length === 1 ? `${key} · ${plans[0]!.source.title}` : key, plans,
+      sessions: nativeSummary(entries.filter((entry) => confirmedEpic(entry) === key)),
+      lifecycle: history ? { status: history.issue.status, done: history.issue.cat === "done", observedAt } : null,
+      tasks: children ? { total: counted.length, done: counted.filter((child) => child.cat === "done").length, excluded: children.length - counted.length, observedAt } : null,
+      decisions: decisions.complete ? decisions.open : null,
+      delivery: delivery.length ? delivery.reduce((sum, read) => sum + read.records!.delivery.length, 0) : null };
   });
+  for (const read of reads) if (read.source.kind === "plan" && !sourceEpic(read)) {
+    rows.push({ id: `plan:${read.source.id}`, epicKey: null, title: read.source.title, plans: [read], sessions: nativeSummary([]), lifecycle: null, tasks: null, decisions: null, delivery: null });
+  }
+  return rows;
+}
+/** Decisions and delivery without a captured record stay in their filters as Unknown, as in the prototype. */
+export function portfolioFilter(row: PortfolioRow, filter: PortfolioFilter): boolean {
+  if (filter === "active") return row.sessions.running > 0;
+  if (filter === "review") return row.sessions.attention + row.sessions.needsInput + row.sessions.errors > 0;
+  if (filter === "decisions") return row.decisions === null || row.decisions > 0;
+  if (filter === "completed") return row.lifecycle?.done === true;
+  // Delivery confirmation is never inferred from recorded pull requests or checks.
+  if (filter === "delivered") return true;
+  return true;
 }
 export function inboxEntries(entries: readonly DirectoryEntry[]): DirectoryEntry[] {
   return entries.filter((entry) => entry.needsInput || entry.status === "error" || entry.requiresAttention || entry.attentionReason !== null);

@@ -16,7 +16,7 @@ describe("host-scoped session view state", () => {
     patchSessionView("host-a", {
       query: "ASMA-8540",
       status: "running",
-      attentionOnly: true,
+      shortcut: "Adam",
       includeArchived: true,
       advancedOpen: true,
       scrollOffset: 240,
@@ -26,7 +26,7 @@ describe("host-scoped session view state", () => {
       ...DEFAULT_SESSION_FILTERS,
       query: "ASMA-8540",
       status: "running",
-      attentionOnly: true,
+      shortcut: "Adam",
       includeArchived: true,
       advancedOpen: true,
       scrollOffset: 240,
