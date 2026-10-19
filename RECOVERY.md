@@ -175,9 +175,10 @@ cannot widen what a line may contain.
 ## Deploy into a launchd job
 
 `scripts/kontor-deploy.py` is the one deploy script for a daemon that runs as a
-launchd job. It names the job only by explicit arguments: `--label`, `--domain`
-and `--plist` have no default. It reads the daemon path, state root and port
-from the plist's `ProgramArguments`.
+launchd job. It names the job only by explicit arguments: `--label` and
+`--domain` have no default, and `--plist` has no default but is required for
+`bootstrap` and `replace`. It reads the daemon path, state root and port from
+the plist's `ProgramArguments`.
 
 ```sh
 python3 scripts/kontor-deploy.py --label <label> --domain gui/<uid> --plist <plist> \
@@ -189,7 +190,9 @@ the realm into the backup directory with the installed daemon, installs the
 candidates, bootstraps the job and waits until `realm-get` returns the named
 realm. If a step fails after the bootout, it restores the old binaries,
 bootstraps the old job and writes `rollback.json`. It does not restore the
-database; restore the snapshot as above. `bootout` and `bootstrap` run one step.
+database; restore the snapshot as above. `bootout` needs only `--label` and
+`--domain`, so it can stop a job whose plist is missing or truncated; without a
+readable plist it skips the port wait. `bootstrap` runs one step.
 
 Before it starts any process, the script refuses (exit 3):
 

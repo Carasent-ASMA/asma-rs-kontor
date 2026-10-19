@@ -179,6 +179,7 @@ class ProductionJobGuardTest(WorldTest):
                 self.world.plist(PRODUCTION_LABEL),
                 None,
                 self.world.host(recorder, REAL_UID),
+                "bootout",
             )
         self.assertEqual(refusal.exception.code, "production_undeclared")
         self.assertEqual(recorder.calls, [])
@@ -317,10 +318,10 @@ class ProductionJobGuardTest(WorldTest):
 
 
 class ExplicitTargetTest(WorldTest):
-    def test_label_domain_and_plist_have_no_default(self) -> None:
+    def test_label_and_domain_have_no_default(self) -> None:
         plist = str(self.world.plist(DISPOSABLE_LABEL))
         given = {"--label": DISPOSABLE_LABEL, "--domain": DISPOSABLE_DOMAIN, "--plist": plist}
-        for missing in given:
+        for missing in ("--label", "--domain"):
             with self.subTest(missing=missing):
                 recorder = Recorder()
                 argv = [
@@ -333,6 +334,62 @@ class ExplicitTargetTest(WorldTest):
                     run_main([*argv, "bootout"], self.world.host(recorder, DISPOSABLE_UID))
                 self.assertEqual(usage.exception.code, 2)
                 self.assertEqual(recorder.calls, [])
+
+    def test_bootstrap_and_replace_still_need_a_plist(self) -> None:
+        target = ["--label", DISPOSABLE_LABEL, "--domain", DISPOSABLE_DOMAIN]
+        for command in ("bootstrap", "replace"):
+            with self.subTest(command=command):
+                recorder = Recorder()
+                argv = [*target, *command_argv(command, self.world)]
+                with self.assertRaises(SystemExit) as usage:
+                    run_main(argv, self.world.host(recorder, DISPOSABLE_UID))
+                self.assertEqual(usage.exception.code, 2)
+                self.assertEqual(recorder.calls, [])
+
+    def test_bootout_needs_no_plist(self) -> None:
+        recorder = Recorder()
+        argv = ["--label", DISPOSABLE_LABEL, "--domain", DISPOSABLE_DOMAIN, "bootout"]
+        self.assertEqual(run_main(argv, self.world.host(recorder, DISPOSABLE_UID)), 0)
+        self.assertEqual(
+            recorder.launchctl(),
+            [["launchctl", "bootout", f"{DISPOSABLE_DOMAIN}/{DISPOSABLE_LABEL}"]],
+        )
+        self.assertEqual([call for call in recorder.calls if call[0] == "lsof"], [])
+
+    def test_bootout_stops_the_job_when_the_plist_is_corrupt(self) -> None:
+        plist = self.world.agents / f"{DISPOSABLE_LABEL}.plist"
+        plist.write_bytes(b"not a plist")
+        recorder = Recorder()
+        argv = [
+            "--label", DISPOSABLE_LABEL,
+            "--domain", DISPOSABLE_DOMAIN,
+            "--plist", str(plist),
+            "bootout",
+        ]
+        self.assertEqual(run_main(argv, self.world.host(recorder, DISPOSABLE_UID)), 0)
+        self.assertEqual(
+            recorder.launchctl(),
+            [["launchctl", "bootout", f"{DISPOSABLE_DOMAIN}/{DISPOSABLE_LABEL}"]],
+        )
+        self.assertEqual([call for call in recorder.calls if call[0] == "lsof"], [])
+
+    def test_a_declared_production_bootout_survives_a_broken_plist(self) -> None:
+        canonical = self.world.plist(PRODUCTION_LABEL)
+        canonical.write_bytes(b"not a plist")
+        recorder = Recorder()
+        argv = [
+            "--label", PRODUCTION_LABEL,
+            "--domain", REAL_GUI_DOMAIN,
+            "--plist", str(canonical),
+            "--production-deploy", "ASMA-8506",
+            "bootout",
+        ]
+        self.assertEqual(run_main(argv, self.world.host(recorder, REAL_UID)), 0)
+        self.assertEqual(
+            recorder.launchctl(),
+            [["launchctl", "bootout", f"{REAL_GUI_DOMAIN}/{PRODUCTION_LABEL}"]],
+        )
+        self.assertEqual([call for call in recorder.calls if call[0] == "lsof"], [])
 
     def test_commands_address_only_the_named_job(self) -> None:
         plist = self.world.plist(DISPOSABLE_LABEL)

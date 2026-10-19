@@ -7,9 +7,10 @@ production label and the real ``gui/<uid>`` domain. A test harness copied that
 pattern, booted out the production job and bootstrapped its own plist under the
 production label (gap G-01).
 
-``--label``, ``--domain`` and ``--plist`` are required. None has a default, an
-environment fallback or a value read from a file. Every command passes the
-target guard (``resolve_job``) before it starts any process:
+``--label`` and ``--domain`` are required, and ``--plist`` is required except
+for ``bootout``. None has a default, an environment fallback or a value read
+from a file. Every command passes the target guard (``resolve_job``) before it
+starts any process:
 
 * the production label ``com.asma.kontor.daemon`` is refused unless
   ``--production-deploy <JIRA-KEY>`` declares the deploy;
@@ -25,7 +26,9 @@ target guard (``resolve_job``) before it starts any process:
 
 Commands:
 
-  bootout    stop the job, then wait until its port no longer listens
+  bootout    stop the job, then wait until its port no longer listens; works
+             without --plist and with an unreadable plist, because it needs
+             only the label and domain
   bootstrap  start the job from --plist
   replace    the deploy: back up the installed binaries, stop the job,
              snapshot the realm with the installed daemon, install the
@@ -121,10 +124,10 @@ class Job:
 
     label: str
     domain: str
-    plist: Path
-    daemon: Path
-    state_root: Path
-    port: int
+    plist: Path | None
+    daemon: Path | None
+    state_root: Path | None
+    port: int | None
 
     @property
     def service(self) -> str:
@@ -132,11 +135,17 @@ class Job:
 
     @property
     def install_dir(self) -> Path:
+        assert self.daemon is not None
         return self.daemon.parent
 
 
 def resolve_job(
-    label: str, domain: str, plist: Path, production_deploy: str | None, host: Host
+    label: str,
+    domain: str,
+    plist: Path | None,
+    production_deploy: str | None,
+    host: Host,
+    command: str,
 ) -> Job:
     """The target guard: name the job, or refuse before any process starts."""
     if not LABEL_PATTERN.fullmatch(label):
@@ -161,7 +170,7 @@ def resolve_job(
                 f"the production job lives in gui/{host.uid}, not {domain}",
             )
         canonical = host.home / "Library" / "LaunchAgents" / f"{PRODUCTION_LABEL}.plist"
-        if plist.resolve() != canonical.resolve():
+        if plist is not None and plist.resolve() != canonical.resolve():
             raise Refused(
                 "production_plist",
                 f"the production job is bootstrapped only from {canonical}, not {plist}",
@@ -172,14 +181,23 @@ def resolve_job(
             f"--production-deploy declares a production deploy, but {label} is not "
             f"{PRODUCTION_LABEL}",
         )
-    data, document = _read_plist(plist)
+    if plist is None:
+        if command != "bootout":
+            raise Refused("plist_required", f"{command} needs --plist")
+        return Job(label, domain, None, None, None, None)
+    try:
+        data, document = _read_plist(plist)
+        daemon, state_root, port = _program(document, plist)
+    except Refused:
+        if command == "bootout":
+            return Job(label, domain, None, None, None, None)
+        raise
     if document.get("Label") != label:
         raise Refused(
             "plist_label_mismatch",
             f"{plist} registers {document.get('Label')!r}; launchctl would act on "
             f"that label, not {label!r}",
         )
-    daemon, state_root, port = _program(document, plist)
     if label.casefold() != PRODUCTION_LABEL:
         canonical = host.home / "Library" / "LaunchAgents" / f"{PRODUCTION_LABEL}.plist"
         if canonical.is_file():
@@ -195,6 +213,8 @@ def resolve_job(
                     f"{plist} runs {daemon} with state root {state_root}, which is the "
                     "production install; only --production-deploy may address it",
                 )
+    if command == "bootout":
+        return Job(label, domain, None, None, None, port)
     snapshot = _snapshot_plist(data, label)
     return Job(label, domain, snapshot, daemon, state_root, port)
 
@@ -271,6 +291,8 @@ def stop_job(job: Job, host: Host) -> None:
 
 
 def wait_port_free(job: Job, host: Host) -> None:
+    if job.port is None:
+        return
     for _ in range(POLL_ATTEMPTS):
         listening = host.run(["lsof", "-nP", f"-iTCP:{job.port}", "-sTCP:LISTEN", "-t"])
         if not listening.stdout.strip():
@@ -285,11 +307,13 @@ def bootout(job: Job, host: Host) -> None:
 
 
 def bootstrap(job: Job, host: Host) -> None:
+    assert job.plist is not None
     launchctl(host, "bootstrap", job.domain, str(job.plist))
 
 
 def snapshot(job: Job, host: Host, into: Path) -> Path:
     """A verified realm snapshot taken by the installed daemon (RECOVERY.md)."""
+    assert job.daemon is not None and job.state_root is not None
     result = host.run(
         [str(job.daemon), "--state-root", str(job.state_root), "snapshot", "--into", str(into)]
     )
@@ -304,6 +328,7 @@ def snapshot(job: Job, host: Host, into: Path) -> Path:
 
 def read_back(job: Job, host: Host, realm_id: str) -> dict:
     """Wait until the started daemon answers realm-get for the expected realm."""
+    assert job.state_root is not None
     kontor = job.install_dir / "kontor"
     for _ in range(POLL_ATTEMPTS):
         result = host.run([str(kontor), "realm-get", "--state-root", str(job.state_root)])
@@ -489,7 +514,9 @@ def parse_arguments(argv: Sequence[str] | None) -> argparse.Namespace:
         "--domain", required=True, help="the job's launchd domain: gui/<uid> or user/<uid>"
     )
     parser.add_argument(
-        "--plist", required=True, type=Path, help="the job's plist; its Label must be --label"
+        "--plist",
+        type=Path,
+        help="the job's plist; required unless the command is bootout",
     )
     parser.add_argument(
         "--production-deploy",
@@ -515,7 +542,10 @@ def parse_arguments(argv: Sequence[str] | None) -> argparse.Namespace:
     deploy.add_argument(
         "--realm-id", required=True, help="the realm the restarted daemon must read back"
     )
-    return parser.parse_args(argv)
+    arguments = parser.parse_args(argv)
+    if arguments.plist is None and arguments.command != "bootout":
+        parser.error("--plist is required unless the command is bootout")
+    return arguments
 
 
 def main(argv: Sequence[str] | None = None, host: Host | None = None) -> int:
@@ -523,7 +553,12 @@ def main(argv: Sequence[str] | None = None, host: Host | None = None) -> int:
     host = host or real_host()
     try:
         job = resolve_job(
-            arguments.label, arguments.domain, arguments.plist, arguments.production_deploy, host
+            arguments.label,
+            arguments.domain,
+            arguments.plist,
+            arguments.production_deploy,
+            host,
+            arguments.command,
         )
     except Refused as refusal:
         print(f"kontor-deploy: refused {refusal}", file=sys.stderr)
@@ -547,7 +582,8 @@ def main(argv: Sequence[str] | None = None, host: Host | None = None) -> int:
         print(f"kontor-deploy: failed: {error}", file=sys.stderr)
         return EXIT_FAILED
     finally:
-        shutil.rmtree(job.plist.parent, ignore_errors=True)
+        if job.plist is not None:
+            shutil.rmtree(job.plist.parent, ignore_errors=True)
     return 0
 
 
