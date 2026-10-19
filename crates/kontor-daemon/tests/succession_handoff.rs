@@ -33,6 +33,13 @@ use secrecy::SecretString;
 
 const CREDENTIAL_CANARY: &str = "INTERNAL-CREDENTIAL-CANARY-4829";
 
+/// A synthetic JWT with no `Bearer` prefix.
+///
+/// This is the shape of a seat's own account credential, such as the Codex
+/// OAuth token in `CODEX_HOME/auth.json`. It is not one of the Realm tier
+/// secrets, so only a shape rule can keep it out of the handoff.
+const ACCOUNT_JWT_CANARY: &str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJzeW50aGV0aWMtc2VhdCIsImV4cCI6NDEwMjQ0NDgwMH0.c3ludGhldGljLXNpZ25hdHVyZQ";
+
 #[derive(Clone)]
 enum Reply {
     Summary(String),
@@ -182,6 +189,35 @@ fn timeline(
     .expect("one exact contiguous binding timeline")
 }
 
+fn timeline_quoting_account_jwt(
+    runtime_binding_id: RuntimeBindingId,
+    native: &NativeRuntimeIdentity,
+) -> BindingMessageTimeline {
+    BindingMessageTimeline::project(
+        runtime_binding_id,
+        native.clone(),
+        [
+            event(
+                runtime_binding_id,
+                native,
+                SessionEventKind::Message,
+                1,
+                &format!(
+                    "The predecessor quoted the account token {ACCOUNT_JWT_CANARY}. It must not be summarized."
+                ),
+            ),
+            event(
+                runtime_binding_id,
+                native,
+                SessionEventKind::Message,
+                2,
+                "The successor must continue from the accepted checkpoint",
+            ),
+        ],
+    )
+    .expect("one exact contiguous binding timeline")
+}
+
 fn policy() -> SuccessionRedactionPolicy {
     SuccessionRedactionPolicy::new(
         ContentHash::of(b"succession-redaction-policy-v1"),
@@ -312,6 +348,52 @@ async fn transport_receives_only_redacted_messages_and_summary_readback_is_exact
         }
         outcome => panic!("expected a content-bearing summary handoff, got {outcome:?}"),
     }
+    assert_no_source_or_compaction(&handoff);
+}
+
+#[tokio::test]
+async fn a_bare_account_jwt_never_crosses_the_summarizer_boundary() {
+    // The policy carries only the Realm tier secret, exactly like production:
+    // the seat's own account JWT is not in the masking set and has no `Bearer`
+    // prefix, so its shape alone must keep it out of the outbound request and
+    // the persisted handoff.
+    let binding_id = RuntimeBindingId::generate();
+    let native = native_identity();
+    let transport = RecordingTransport::returning("Keep the accepted checkpoint");
+
+    let handoff = produce_succession_handoff(
+        request(
+            binding_id,
+            native.clone(),
+            Some(timeline_quoting_account_jwt(binding_id, &native)),
+            Some(model_rung()),
+        ),
+        &policy(),
+        &transport,
+    )
+    .await;
+
+    let calls = transport.calls();
+    assert_eq!(calls.len(), 1);
+    let outbound_json = serde_json::to_string(&calls[0].2).expect("serializable outbound request");
+    assert!(
+        !outbound_json.contains(ACCOUNT_JWT_CANARY),
+        "the seat account JWT crossed the summarizer boundary"
+    );
+    assert!(outbound_json.contains(REDACTED_SUCCESSION_CONTENT));
+    drop(calls);
+
+    assert!(matches!(
+        handoff.outcome,
+        SuccessionHandoffOutcome::Summary { .. }
+    ));
+    let canonical = handoff
+        .canonicalize()
+        .expect("a handoff is valid canonical evidence");
+    assert!(
+        !canonical.json().contains(ACCOUNT_JWT_CANARY),
+        "the seat account JWT reached the persisted handoff"
+    );
     assert_no_source_or_compaction(&handoff);
 }
 
