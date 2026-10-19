@@ -1,7 +1,10 @@
 # Durable desks in kontord
 
-> Status: ASMA-8450 (TASK-001 of ASMA-8449) candidate. Describes what the desk
-> contract supports at this revision, how a desk-capable Team Definition is
+> Status: ASMA-8450 (TASK-001 of ASMA-8449), merged in PR #295 (`733807cc`,
+> 2026-10-11); PR #299 (`813135fd`, ASMA-8454) made a fresh ensure atomic and
+> PR #300 (`0971674d`) added seat MCP composition in the desk directory. Merged
+> is not deployed: see the [router](../index.md). Describes what the desk
+> contract supports at `0971674d`, how a desk-capable Team Definition is
 > selected, and how to roll that selection back. Naming rules are in
 > [`docs/NATIVE_NAMING.md`](../../docs/NATIVE_NAMING.md#durable-desks-asma-8450).
 
@@ -12,8 +15,9 @@ A desk is a native project that belongs to a Kontor project, not to an epic:
 stores it as one `desks` row (schema 131) and two topology nodes with no epic
 and no task:
 
-- the row is written first and plans both node ids, so a retry reconciles the
-  same nodes rather than placing a second desk;
+- the row plans both node ids. A fresh desk's row and both nodes are written
+  in one transaction, so a refused node leaves no row (PR #299); a retry of an
+  existing desk reconciles the same nodes rather than placing a second desk;
 - the row pins the exact Team Definition revision (id, version, canonical
   hash) that was selected when the desk was first ensured;
 - the row is immutable and permanent (database triggers refuse UPDATE and
@@ -36,7 +40,10 @@ root's own revision does not declare.
 The same operations are served by the MCP topology tools and the CLI generated
 from them. Receipts name the project (`ensure_project` for ensure and
 materialize, `observe_seat` for drift). A replay with the same idempotency key
-returns the original receipt and performs no native effect.
+returns the original receipt and performs no native effect. The CLI prints the
+daemon's refusal body unchanged and exits 3 for `placement_blocked` and
+`ensure_mismatch` (PR #299); the full map is in the
+[qualification runbook](../operations/2026-10-11-15-28-runbook-durable-desk-qualification.md#supported-operator-operations).
 
 ## Support limits
 
@@ -71,7 +78,13 @@ returns the original receipt and performs no native effect.
   Binding an occupant to an epic or a pull request is a later task of
   ASMA-8449.
 - **Working directory.** Both of a desk's natives use
-  `<runtime root>/<project id>/desk-<desk node id>`.
+  `<runtime root>/<project id>/desk-<desk node id>`, a plain directory rather
+  than a Git checkout. When seat MCP composition is configured, a Claude hosted
+  seat placed there gets `.mcp.json` and `.claude/settings.local.json` merged
+  into that directory, with the originals kept in a private daemon-owned
+  journal for rollback and recovery (PR #300). A healthy replay of the same
+  native only finishes a pending publication and validates the files; a
+  missing or differing required entry is refused without repairing them.
 - **Backup.** Export generation 14 carries the `desks` records; older
   generations cannot represent a database that holds desks and are refused for
   one. An import records desk rows as lineage, as it does other topology

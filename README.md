@@ -1,6 +1,6 @@
 # ASMA Kontor
 
-> Implementation counts and delivery claims are stamped to `082b63ad` (2026-09-05). See the [canonical implementation inventory](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/reference/2026-09-05-11-36-reference-kontor-implementation-inventory.md). Registry membership, MCP advertising and credential authorization are distinct.
+> Implementation counts and merge claims are stamped to `0971674d` (PR #300, 2026-10-11) and were checked against that source. Merged is not qualified, deployed or enabled for a realm: those claims belong to the [canonical implementation inventory](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/reference/2026-09-05-11-36-reference-kontor-implementation-inventory.md), which stays the authority for qualification and deployment and is stamped to its own inspected revision. Registry membership, MCP advertising and credential authorization are distinct.
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license-intent)
 
@@ -109,26 +109,66 @@ The current repository includes:
 - immutable project-scoped **epic backlog codes** with deterministic
   collision expansion and manual overrides, plus display-only item codes such
   as `KOP-8001` derived from confirmed Jira numeric identities;
+- **confirmed-Jira-key naming**: Jira keys resolved by immutable issue
+  identity, Team Definition tokens that render the confirmed key itself, and
+  consultation titles Kontor renders from a semantic topic, refusing a
+  duplicate; a missing or ambiguous binding fails closed before any native
+  effect (PRs #198, #215, #216, #279; see [Native naming](docs/NATIVE_NAMING.md));
+- **publication identity**: one branch grammar shared with the ASMA CLI,
+  recorded `publication:preview` / `:attest` decisions that cannot be updated
+  or deleted, and an optional GitHub App gateway that posts the
+  `asma/publication-identity` check and squash-merges only the judged head
+  (PRs #192, #193, #195, #265, #280; see [Native naming](docs/NATIVE_NAMING.md)
+  and [Configuration](docs/CONFIGURATION.md));
+- epic-independent **durable desks** (`DESK • ADAM`, `DESK • PR REVIEW`) with
+  declared desk seats, desk-hosted epic and ad-hoc Adams, and one Adam tab plus
+  review room per pull request, available once a desk-capable Team Definition
+  is selected (PRs #295–#300, `733807cc`…`0971674d`; see the
+  [durable desks reference](_docs/reference/2026-10-10-23-55-reference-kontord-durable-desks.md)
+  and its siblings);
 - a deterministic **standard role catalogue** (56 roles across 9 segments) with
   typed role-code seat selection and optional display labels;
 - **Project Core Teams**, quick ad-hoc sessions and preview/apply promotion of an
   ad-hoc session into a real epic with a durable handoff;
 - read-only **Advisors** and **Committees** with frozen inputs, independent
-  findings, preserved dissent and typed aggregate verdicts;
+  findings, preserved dissent and typed aggregate verdicts, plus governed
+  **planning pairs**: two read-only members on distinct vendors, one sealed
+  findings round and at most one clarification (PR #292, `4097afb8`; see
+  [Consultation lifecycle](docs/CONSULTATION_LIFECYCLE.md) and the gap below);
 - configurable **epic Completion Profiles** that compile integration, independent
   verdict, bounded remediation and six closeout receipts into ordinary task,
   team and gate machinery;
 - deterministic default-allow scheduling, collision-safe leases, guardrail
   evidence and bounded parked-work recovery;
-- native connectors for Jira and for live provider-quota observation, with
-  routing by admissible account and rung;
+- explicit recovery operations for interrupted or uncertain work, such as
+  turn-correlation challenges, gate-rejection and workflow-phase recovery, task
+  worktree claim repair, TeamRun admission adoption and never-bound
+  launch-intent supersession (PRs #199, #217, #239, #241, #245, #262), and a
+  durable ledger that completes a Core Team leadership-seat succession exactly
+  once (PR #290, `1d7a71dd`);
+- **live fleet routing**: an owner-only `fleet.yml` re-read at every placement
+  (PR #271, `7ffd650d`), or one activated, content-addressed fleet policy that
+  the daemon and the CLI's daemon-free `fleet-policy-resolve` read through the
+  same code (PR #292, `4097afb8`; see [Configuration](docs/CONFIGURATION.md));
+- **experience memory**: approved, typed experiences with bounded lexical
+  recall frozen into delivery prompts, and an opt-in Cognee projection
+  transport (PR #291, `abe990ac`; see [Configuration](docs/CONFIGURATION.md)
+  and the gap below);
+- native connectors for Jira, including issue bodies with typed content
+  conflicts, and for live provider-quota observation, with routing by
+  admissible account and rung;
 - non-secret provider-account profiles with one credential home per account;
 - an authenticated loopback daemon with a versioned HTTP/SSE API and checked-in
   OpenAPI contract;
-- one capability catalogue — 166 registry operations, 165 advertised at admin MCP scope in the 2026-09-05 snapshot — exposed through the stdio MCP server and
-  a `kontor` CLI *generated from the same registry*, with credential tiers and
-  narrow serve profiles;
-- a responsive React operator console and Tauri desktop shell.
+- one capability catalogue — 230 registry entries at `0971674d`, 228 of them
+  listable at admin MCP scope by source computation rather than live tool
+  discovery, because one entry is a local CLI operation with no `/v1` route and
+  one entry is kept off `tools/list` to save every seat's context but stays
+  callable by name — exposed through the stdio MCP server and a `kontor` CLI
+  *generated from the same registry*, with credential tiers and narrow serve
+  profiles;
+- a responsive React operator console and Tauri desktop shell, including a
+  Tokenomics development-preview view (PR #293, `a65ea46b`).
 
 ### What is not built
 
@@ -139,8 +179,10 @@ admits its absence:
 | --- | --- |
 | Calendar admission | `kontor-calendar` implements windows, holiday import and drain with tests, and is reached by **no** route and **no** tool. Every project resolves to `unrestricted`. |
 | Post-delivery profile packs | The seed manifest declares 17 work-profile categories; **four** ship (`code`, `ux-ui-layout`, `research`, `docs`). Operations, incident response, maintenance, compliance and retirement are declared, not implemented. |
-| KON-OP-21 release verification | KON-OP-21 is implemented and merged through PR #170 (`080e2db3`, 2026-09-05), included in the inspected release `082b63ad`. Local contract coverage is recorded; independent qualification, coherent fleet deployment and realm enablement require their own receipts and are not certified by this documentation refresh. |
-| Launch-time quota waiting | The account-before-rung resolver computes `Wait` / `NeedsHuman`, but delivery launch still needs a model rung and preserves the adapter's typed refusal path instead of parking until the computed reset. |
+| KON-OP-21 qualification and enablement | Evidence-bound mid-run quota succession and the resident bounded supervisor are merged through PR #164 (`3d7c6043`, 2026-09-04) with local contract coverage. This repository records no independent qualification, fleet deployment or realm-enablement receipt for them, and automatic succession stays off until a realm opts in through `supervision.yml` (below). |
+| Planning pairs through Paseo | The protocol, operations and shared allocator are merged (PR #292, `4097afb8`), but the Paseo adapter refuses every member route before any native effect, because no provider route acknowledges the closed tool restriction a member requires. A pair cannot launch through the production runtime. |
+| Live Cognee projection | The Cognee transport (PR #291, `abe990ac`) is qualified against synthetic fixtures only. Ordinary daemon startup composes no Cognee client and refuses a `memory-cognee.json` with `enabled: true`; recall uses the bounded lexical path. |
+| Launch-time quota waiting | The account-before-rung resolver computes `Wait` / `NeedsHuman`, but delivery launch still needs a model rung, so it refuses `Wait` and `NeedsHuman` with a typed `ProviderHeadroom` missing-evidence refusal before any native effect instead of parking until the computed reset. |
 | Automatic stale-evidence rejection | Post-freeze product drift that invalidates a completion bundle is currently caught by a reviewer, not by the state machine. |
 | Unified mission-control dashboard | Individual console views do not yet provide one joined dependency graph, running/waiting/blocked/stale state, next eligible work, prepared operator decisions and delivery evidence. |
 | Remote access and federation | Loopback only. Multi-realm switching, remote bind, pairing and TLS are unbuilt security designs, not hidden flags. |
@@ -223,7 +265,9 @@ cargo run -p kontor-daemon -- --state-root /tmp/kontor-demo
 In another terminal, use the same state root. One command is one tool is one
 `/v1` operation: the command tree is generated from the MCP registry, so `kontor
 epic-apply` and the `kontor_epic_apply` tool are the same operation with the same
-arguments. The process holds exactly one credential tier and defaults to
+arguments. The one exception, `fleet-policy-resolve`, runs inside the CLI
+against the state root with no daemon and no `/v1` route, and MCP does not list
+it. The process holds exactly one credential tier and defaults to
 `observer`, so a command that mutates has to ask:
 
 ```sh
@@ -257,7 +301,7 @@ document is schema v2, `watchdog.enabled` is `true`, and
 With no policy, with schema v1, or with a disabled watchdog, automatic
 succession does not start and Kontor invents no cadence or capacity. See
 [Configuration](docs/CONFIGURATION.md).
-This path is merged at `080e2db3` (PR #170, 2026-09-05). Independent audit, live-runtime verification and per-realm enablement require separate receipts.
+This path is merged at `3d7c6043` (PR #164, 2026-09-04). Independent audit, live-runtime verification and per-realm enablement require separate receipts.
 
 For frontend development:
 
@@ -272,7 +316,9 @@ For the native Kontor desktop app:
 pnpm --filter kontor-desktop tauri dev
 ```
 
-Tokenomics is available from the connection screen and the navigation rail.
+Tokenomics is available from the connection screen, the navigation rail and
+`?view=tokenomics`, and needs no realm connection; it was merged as a
+development preview in PR #293 (`a65ea46b`, 2026-10-04).
 The initial UI uses the existing report renderer and fetches its generated data
 separately. Start `asma report dashboard --port 8791` from the ASMA workspace
 in another terminal before opening Tokenomics. The console's development proxy
@@ -291,15 +337,19 @@ interface” development shortcut.
 | `crates/kontor-store` | SQLite durability, migrations, events, receipts and queries |
 | `crates/kontor-runtime*` | Shared runtime contract; production Paseo adapter; hermetic AO and Codex adapters |
 | `crates/kontor-context` | Context Pack resolution, redaction and handoff |
+| `crates/kontor-memory-cognee` | Opt-in, bounded Cognee transport for derived experience-memory projections |
 | `crates/kontor-accounts` | Non-secret account profiles and launch routing |
 | `crates/kontor-fleet` | The one fleet policy parser, validator and route resolver, shared by both orchestration modes |
+| `crates/kontor-fleet-activation` | Read-only, daemon-free reader of one activated fleet policy bundle, shared by the daemon and the CLI |
 | `crates/kontor-teams`, `kontor-profiles` | Versioned teams, seats, workflows and seed packs |
 | `crates/kontor-scheduler`, `kontor-policy`, `kontor-calendar` | Admission, leases, guardrails, epic-completion compilation and (unexposed) time policy |
 | `crates/kontor-jira`, `kontor-intake` | Native Jira connector and durable event intake |
-| `crates/kontor-api`, `kontor-daemon` | Authenticated loopback contract and composition root |
+| `crates/kontor-api`, `kontor-daemon` | Authenticated loopback contract and composition root, including the optional GitHub App publication gateway |
 | `crates/kontor-cli`, `kontor-mcp` | One tool registry; the MCP server serves it and the CLI is generated from it |
 | `apps/console`, `apps/desktop` | Responsive console and Tauri shell |
+| `apps/paseo-plugin` | Paseo host plugin: observer-authority `kontor-observer` MCP server, session and creation hooks, and workspace placement guard |
 | `tests/contract`, `tests/e2e` | Cross-adapter contracts and full-system proof |
+| `scripts/` | `test-lanes.py` and its `test-timings.json`, `verify-tree.py`, and the durable desk qualification runner |
 
 ## Development and contribution
 
@@ -308,11 +358,15 @@ read [Architecture](ARCHITECTURE.md); security findings follow
 [Security](SECURITY.md), and participation follows the
 [Code of Conduct](CODE_OF_CONDUCT.md).
 
-Kontor deliberately does not run CI in GitHub Actions. Verification runs
-locally against the exact candidate commit before merge and its results are
-recorded in the pull request or owning delivery evidence. This is an explicit,
-reversible repository policy; re-enabling GitHub-hosted CI requires an explicit
-decision and documentation change. See the
+Kontor deliberately does not run build or test CI in GitHub Actions. Its one
+workflow, `asma/publication-branch-title` (PR #198, hardened in PR #280), checks
+only a pull request's base, branch name and title key and builds nothing. A
+`dependabot/` branch opened by `dependabot[bot]` is accepted as
+`bot_branch_exempt`; the base and head-sha checks still run.
+Verification runs locally against the exact candidate commit before merge and
+its results are recorded in the pull request or owning delivery evidence. This
+is an explicit, reversible repository policy; re-enabling GitHub-hosted CI
+requires an explicit decision and documentation change. See the
 [local verification policy](_docs/architecture/2026-09-01-13-25-architecture-kontor-local-verification-policy.md).
 
 The required local gates are:
@@ -330,8 +384,20 @@ pnpm -r test
 pnpm audit --prod
 ```
 
-`scripts/verify-tree.py` additionally proves that a staged or committed export
-works without hidden working-tree state and that `Cargo.lock` is reproducible.
+`python3 scripts/verify-tree.py --mode archive` (or `--mode staged`) additionally
+proves that a committed or staged export passes those gates without hidden
+working-tree state, and that the committed `Cargo.lock` satisfies every manifest
+under `--locked`. It runs every gate above except `verify:api`.
+
+For the inner loop, `python3 scripts/test-lanes.py --lane fast` runs formatting
+plus clippy and tests for the quick packages a change affects, and the console
+checks it touches; it exits `3`, naming the lane still required, when the
+change reaches a slow package or a workspace build or tooling file.
+`--lane heavy` runs the slow packages' tests and the console typecheck and
+tests, and writes a compact JSON receipt under `target/test-lanes/`;
+`--lane full` runs `verify-tree.py --mode inplace`.
+`scripts/test-timings.json` decides which packages are slow. Lanes shorten
+development; they do not replace the gate set before merge.
 
 ## License intent
 
@@ -380,11 +446,13 @@ evidence nobody will read.
 
 Because the run id keys off the commit, running the pilot on a tree whose HEAD
 has moved writes a *new* `docs/evidence/KON-MVP-18/<run-id>/` directory rather
-than rewriting the committed one. That is deliberate — evidence belongs to the
+than rewriting a committed one. That is deliberate — evidence belongs to the
 tree that produced it, and the retained bundle's `commit` field names that tree
 — but it does mean a run after an unrelated commit leaves an untracked
-directory. Retain it only if it is the acceptance record you mean to publish;
-otherwise delete it.
+directory. Delete it and never commit it. The bundles already under
+`docs/evidence/KON-MVP-18/` are historical records that ASMA-8511 is removing,
+and new run bundles stay out of the tree until ASMA-8511 moves this output (see
+`CONTRIBUTING.md`).
 
 Verifying the installed harnesses is a separate, opt-in question:
 
@@ -398,9 +466,9 @@ harness works".
 
 ## Dependency policy (CON-007)
 
-Paseo, Agent Orchestrator and Codex are separate installations; their code and
-licenses are not included here. Public release remains subject
-to the reviews listed in [Provenance](PROVENANCE.md).
+Paseo, Agent Orchestrator, Codex and the optional Cognee service are separate
+installations; their code and licenses are not included here. Publication
+follows the note in [Provenance](PROVENANCE.md).
 
 ## Backup, restore, export and security
 
@@ -412,14 +480,18 @@ kontor-daemon --state-root <dir> export --out f    # versioned, redacted, determ
 kontor-daemon --state-root <dir> restore --snapshot f   # same realm only, realm stopped
 kontor-daemon --state-root <dir> import --from f --project <id>   # a *different* realm
 kill -HUP <pid>                                    # rotate a serving realm's credentials
+kontor-daemon --state-root <abs dir> install-jira-credential --alias <a>   # stdin, realm stopped
 ```
 
-Snapshot and export are safe while the realm serves; restore, import and the
-stopped-realm rotation take the state root's exclusive lock. A restore never
-overwrites a *different* initialized realm, and a restored realm keeps
-scheduling shut until it has reconciled.
+Snapshot and export are safe while the realm serves; restore, import, the
+stopped-realm rotation and the Jira credential install take the state root's
+exclusive lock. A restore never overwrites a *different* initialized realm, and
+a restored realm keeps scheduling shut until it has reconciled. Snapshot and
+restore accept only a database at the running build's exact schema, so rolling
+back an upgrade is a stopped-realm restore with the old build, not a binary
+swap; see [Upgrade and binary rollback](RECOVERY.md#upgrade-and-binary-rollback).
 
-## License and provenance
+## FAQ
 
 ### Is Kontor itself an agent runtime?
 
@@ -433,9 +505,6 @@ policy, scheduling, reconciliation and evidence above them.
 
 ### Does Kontor replace AgentsRoom, Jira or GitHub?
 
-GitHub remains the repository, pull-request, check and release system. Kontor
-uses those observations as delivery evidence.
-
 Jira remains the external workflow system; Kontor converges to it through a
 native connector and never edits its store. Jira issue keys remain their native
 full values, such as `ASMA-8001`; Kontor does not attempt to create keys like
@@ -446,10 +515,11 @@ for example `KOP`. Omission derives a candidate from title initials and expands
 unused title characters until it is unique; an operator may instead supply a
 manual code. Once Jira readback confirms `ASMA-8001` for the epic and
 `ASMA-7869` for a task, item codes are `KOP-8001` and `KOP-7869`. Those item
-codes are projections, not tracker identities. The shipped topology-v4
-centered-dot rendering is historical implementation behavior; the approved
-current contract puts all hierarchy and naming in pinned Team Definition JSON
-and recommends `ESW • KOP-8001` and `TSW • KOP-7869`. See
+codes are projections, not tracker identities. Native hierarchy and names come
+from the pinned Team Definition JSON; topology-v4 centered-dot names are
+historical. The recommended definition renders `ESW • KOP-8001` and
+`TSW • KOP-7869`, and a definition may instead render the confirmed key itself
+through `EPIC_JIRA_KEY`, `TASK_JIRA_KEY` or `SCOPE_JIRA_KEY`. See
 [`docs/NATIVE_NAMING.md`](docs/NATIVE_NAMING.md). A
 missing, malformed or ambiguous confirmed Jira binding blocks placement rather
 than falling back to a title, UUID or imported short code. Existing native
@@ -468,7 +538,9 @@ configuration guide's [Jira reconciliation](docs/CONFIGURATION.md#jira-reconcili
 section.
 
 GitHub remains the repository, pull-request, check and release system. Kontor
-uses those facts as delivery evidence; it does not become a source host.
+uses those facts as delivery evidence; it does not become a source host. With
+the optional GitHub App configured, Kontor also posts its publication-identity
+check and squash-merges a judged head through that App identity.
 
 AgentsRoom is being replaced per project, per subject. Write authority for a
 project's `memory` and its `backlog` is a fact about `(project_id, subject)`: a

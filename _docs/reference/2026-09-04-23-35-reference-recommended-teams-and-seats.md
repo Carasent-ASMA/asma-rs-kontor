@@ -19,7 +19,8 @@ policy is currently enforced.
 
 | Shipped control | Remaining design policy |
 | --- | --- |
-| Immutable team/profile pins, declared slots, explicit provider/model routes, durable quota observations, account-before-rung routing, evidence and verdict gates | Automatic enforcement of every four-rung budget/platform constraint, calibration gate, vision attestation and post-activation canary rule described below |
+| Immutable team/profile pins, declared slots, explicit provider/model routes, durable quota observations, account-before-rung routing, evidence and verdict gates | Automatic enforcement of every four-rung budget/platform constraint, calibration receipts, vision attestation and the post-activation canary rule described below |
+| Since PR #271 (`7ffd650d`), live `fleet.yml` routing for delivery, Committee and Advisor seats, and since PR #292 (`4097afb8`) an activated fleet policy: per-placement chain resolution, vendor-keyed reviewer diversity, `rules.independent_of`, and per-seat `calibration_required` / `vision_required` rules over operator-declared `calibrated` / `vision` model flags | A declared flag is an operator assertion, not a calibration receipt or vision attestation; the validator does not require four rungs or three platforms |
 | Configured committee templates and read-only consultation authority | The illustrative fleet size, role mixes and context targets recommended here |
 
 Changing a live selection requires a new supported definition and explicit
@@ -282,6 +283,9 @@ A **chain** is the ordered fallback list for one seat; one entry is a
 **rung** (rung 1 … rung 4). The chain is a proposed policy representation. Kontor routes the stored
 provider/account/model candidates deterministically; the full four-budget,
 three-platform grammar below is a recommendation, not a shipped universal validator.
+A live fleet chain (see [CONFIGURATION.md](../../docs/CONFIGURATION.md)) is checked
+structurally only: 1 to 16 steps, one failure domain per step, no domain in two
+steps, no repeated model and at most 64 flattened routes.
 
 1. **Rung 1 is the designed best fit, not the best model.** Score candidates
    on §1 and place by *capability-fit × budget elasticity*: scarce frontier
@@ -327,9 +331,12 @@ three-platform grammar below is a recommendation, not a shipped universal valida
 ## 5. Configurability contract
 
 - **Chains, teams, committees, advisors, completion profiles are versioned
-  data.** Changing a selected model requires a new immutable definition and an
-  admission receipt. A previously unsupported model also requires a reviewed
-  catalog/validator change in the current implementation.
+  data.** Changing a template's selected model requires a new immutable
+  definition and an admission receipt. For a seat that a live `fleet.yml` or an
+  activated fleet policy binds, an edit or activation changes the route at the
+  next placement instead, and a model the current fleet lists is admissible
+  without a catalog change; `/v1/catalog` still lists only the compiled routes.
+  A model outside both still requires a reviewed catalog/validator change.
 - **What IS code** are the safety invariants the data cannot override: one
   non-terminal session per role slot, proposal ≠ authority, verdict gates,
   frozen-evidence hashing, and the guardrail that no advisor, committee or

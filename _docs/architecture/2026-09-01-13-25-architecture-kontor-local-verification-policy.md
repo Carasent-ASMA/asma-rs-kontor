@@ -26,6 +26,16 @@ deployment and release procedures.
 - **DEC-001:** The `asma-rs-kontor` repository does not run CI in GitHub
   Actions. It has no workflow triggered by pushes, pull requests, schedules or
   manual dispatch for build, test, lint, audit or verification gates.
+
+  > **Clarification (2026-10-17, checked at `0971674d`):** since PR #198
+  > (`840da1b2`, 2026-09-06), hardened in PR #280 (`8acdbd17`), the repository
+  > carries one GitHub Actions workflow,
+  > [`publication-branch-title.yml`](../../.github/workflows/publication-branch-title.yml).
+  > It runs on `pull_request_target` and checks only the pull request's branch
+  > name, title key and base against the publication identity rules.
+  > It builds, tests, lints and audits nothing and replaces
+  > none of the local gates below. This document records no separate decision
+  > for it.
 - **DEC-002:** The implementing or integrating seat runs the complete applicable
   gate set locally against the exact candidate commit before merge. The command
   results are recorded in the pull request or owning durable delivery evidence.
