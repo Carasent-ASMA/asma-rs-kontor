@@ -42,4 +42,30 @@ BEGIN
     SELECT RAISE(ABORT, 'a provider-marker completion is never released');
 END;
 
+-- The phase between the durable claim and durable completion. A key whose
+-- write started but never completed is ambiguous from the document alone: the
+-- marker can be present because the write never landed, or because an operator
+-- restored it for a new outage after the write landed. Refusing to repeat the
+-- write while the marker is present keeps the restored marker, and a fresh
+-- preview and key are the supported way forward. A marker already absent still
+-- recovers, because that is the durable effect the key names.
+CREATE TABLE provider_marker_write_starts (
+    idempotency_key TEXT NOT NULL PRIMARY KEY
+                          CHECK (length(idempotency_key) BETWEEN 1 AND 256),
+    started_at      TEXT NOT NULL
+                          CHECK (started_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*Z')
+) STRICT;
+
+CREATE TRIGGER provider_marker_write_starts_are_immutable
+BEFORE UPDATE ON provider_marker_write_starts
+BEGIN
+    SELECT RAISE(ABORT, 'a provider-marker write start is never rewritten');
+END;
+
+CREATE TRIGGER provider_marker_write_starts_are_permanent
+BEFORE DELETE ON provider_marker_write_starts
+BEGIN
+    SELECT RAISE(ABORT, 'a provider-marker write start is never released');
+END;
+
 PRAGMA user_version = 136;

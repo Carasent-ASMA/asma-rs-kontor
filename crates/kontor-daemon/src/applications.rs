@@ -21606,6 +21606,23 @@ impl Services {
                 revision,
             });
         }
+        // A first attempt that started writing but never recorded completion is
+        // not repeated while the marker still stands: the operator may have
+        // restored it for a new outage after that write landed, and the
+        // document alone cannot tell the two states apart.
+        if state
+            .with_store(|store| store.provider_marker_write_started(key.as_str()))
+            .map_err(|error| self.refuse(&error))?
+        {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "a previous attempt started writing this correction and did not complete it",
+                )
+                .advising(
+                    "read the marker again with the preview and apply with a fresh key; a restored marker may belong to a new outage",
+                ));
+        }
         if revision != request.expected_revision {
             return Err(changed_since());
         }
@@ -26890,6 +26907,14 @@ impl ApplicationOperations for Services {
         }
         let (outcome, changed, revision_after) = match plan.updated {
             Some(updated) => {
+                // Record that the write is starting before the document moves,
+                // so a completion lost after the rename can never make a later
+                // retry remove a marker an operator restored for a new outage.
+                state
+                    .with_store(|store| {
+                        store.record_provider_marker_write_start(key.as_str(), kontor_api::now())
+                    })
+                    .map_err(|error| self.refuse(&error))?;
                 crate::provider_marker::write(&path, &bytes, &updated)
                     .map_err(|error| self.provider_marker_error(error))?;
                 let written = ContentHash::of(&updated);

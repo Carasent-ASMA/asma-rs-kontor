@@ -13667,6 +13667,75 @@ impl SqliteStore {
             })
             .transpose()
     }
+
+    /// Record that the provider-marker correction claimed under `key` is about
+    /// to replace the settings document.
+    ///
+    /// The phase separates "the write never started" from "the write started
+    /// and its completion was lost". A retry may finish the first state, but
+    /// when the marker is present in the second it cannot tell a write that
+    /// never landed from a marker an operator restored for a new outage, so it
+    /// must ask for a fresh preview and key instead of writing again. The phase
+    /// is only recorded for a key already bound to this operation.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when no provider-marker claim
+    /// exists for the key, and backend failures otherwise.
+    pub fn record_provider_marker_write_start(
+        &self,
+        key: &str,
+        started_at: Timestamp,
+    ) -> RepositoryResult<Applied> {
+        let transaction = self.begin()?;
+        let owner: Option<String> = transaction
+            .query_row(
+                "SELECT operation FROM realm_idempotency_bindings
+                 WHERE idempotency_key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        if owner.as_deref() != Some("clear_provider_marker") {
+            return Err(conflict(
+                "idempotency key",
+                "no provider-marker claim exists for this key",
+            ));
+        }
+        let inserted = transaction
+            .execute(
+                "INSERT INTO provider_marker_write_starts (idempotency_key, started_at)
+                 VALUES (?1, ?2)
+                 ON CONFLICT (idempotency_key) DO NOTHING",
+                params![key, text(started_at)],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(if inserted == 0 {
+            Applied::Unchanged
+        } else {
+            Applied::Created
+        })
+    }
+
+    /// Whether the correction claimed under `key` started replacing the
+    /// settings document.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn provider_marker_write_started(&self, key: &str) -> RepositoryResult<bool> {
+        let exists: Option<i64> = self
+            .connection
+            .query_row(
+                "SELECT 1 FROM provider_marker_write_starts
+                 WHERE idempotency_key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        Ok(exists.is_some())
+    }
 }
 
 // ---------------------------------------------------------------------------
