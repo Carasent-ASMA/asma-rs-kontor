@@ -225,23 +225,31 @@ pub struct PaseoSetting {
     /// The non-secret host key bindings are made against.
     pub host_key: String,
     /// The Kontor mini-project this plane serves.
-    pub mini_project_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mini_project_id: Option<String>,
     /// The Jira epic the mini-project is tracked as.
-    pub jira_epic_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jira_epic_key: Option<String>,
     /// The compact epic title.
-    pub mini_project_short_title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mini_project_short_title: Option<String>,
     /// The Kontor plan item.
-    pub plan_item_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_item_key: Option<String>,
     /// The Jira issue for this ticket.
-    pub jira_issue_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jira_issue_key: Option<String>,
     /// The runtime-neutral short ticket code.
-    pub ticket_short_code: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket_short_code: Option<String>,
     /// Canonical visible role names for the declared role slots.
+    #[serde(default)]
     pub seat_display_roles: BTreeMap<String, PaseoSeatDisplaySetting>,
     /// The repository root registered as the epic's Paseo project.
     pub project_root_cwd: String,
     /// The filesystem-canonical task worktree.
-    pub canonical_worktree_cwd: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_worktree_cwd: Option<String>,
     /// The posture seats on this plane get when their role slot declares none.
     ///
     /// Subordinate to the role slot: a team template that declared an autonomy
@@ -268,7 +276,8 @@ pub struct PaseoSetting {
     /// Legacy native caller id retained so existing runtime files remain
     /// readable. Kontor-created agents are top-level in their attested
     /// workspace; this host-global value is never sent to Paseo.
-    pub orchestrator_agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orchestrator_agent_id: Option<String>,
     /// The most sessions Kontor holds open on this plane at once.
     pub max_concurrent_sessions: u32,
     /// Provider keys temporarily excluded by an operational outage decision.
@@ -545,12 +554,94 @@ fn compose_paseo(
             ))
         })
         .collect::<Result<BTreeMap<_, _>, FleetError>>()?;
-    // This value selects the one durable epic that receives the legacy display
-    // overrides below. Keeping it as a merely-open external id lets a Jira key
-    // compose successfully and then fail inside admission the first time the
-    // adapter compares it with an actual Kontor epic id.
-    let mini_project_id =
-        MiniProjectId::parse(&setting.mini_project_id).map_err(|_| refuse("mini_project_id"))?;
+    let legacy_fields = [
+        setting.mini_project_id.as_deref(),
+        setting.jira_epic_key.as_deref(),
+        setting.mini_project_short_title.as_deref(),
+        setting.plan_item_key.as_deref(),
+        setting.jira_issue_key.as_deref(),
+        setting.ticket_short_code.as_deref(),
+        setting.canonical_worktree_cwd.as_deref(),
+        setting.orchestrator_agent_id.as_deref(),
+    ];
+    let has_legacy = legacy_fields.iter().any(Option::is_some);
+    if has_legacy && legacy_fields.iter().any(Option::is_none) {
+        return Err(refuse("legacy epic scope must be complete or absent"));
+    }
+    if !has_legacy && (!setting.task_scopes.is_empty() || !setting.seat_display_roles.is_empty()) {
+        return Err(refuse(
+            "legacy task/display scopes require an explicit legacy epic",
+        ));
+    }
+    let project_root_cwd =
+        WorkspaceRoot::parse(&setting.project_root_cwd).map_err(|_| refuse("project_root_cwd"))?;
+    let mini_project_id = setting
+        .mini_project_id
+        .as_deref()
+        .map(MiniProjectId::parse)
+        .transpose()
+        .map_err(|_| refuse("mini_project_id"))?
+        .map(|id| ExternalId::parse(&id.to_string()))
+        .transpose()
+        .map_err(|_| refuse("mini_project_id"))?;
+    let scope = if has_legacy {
+        Some(PaseoExecutionScope {
+            jira_epic_key: ExternalId::parse(
+                setting
+                    .jira_epic_key
+                    .as_deref()
+                    .expect("complete legacy scope"),
+            )
+            .map_err(|_| refuse("jira_epic_key"))?,
+            mini_project_short_title: ExternalName::parse(
+                setting
+                    .mini_project_short_title
+                    .as_deref()
+                    .expect("complete legacy scope"),
+            )
+            .map_err(|_| refuse("mini_project_short_title"))?,
+            plan_item_key: ExternalId::parse(
+                setting
+                    .plan_item_key
+                    .as_deref()
+                    .expect("complete legacy scope"),
+            )
+            .map_err(|_| refuse("plan_item_key"))?,
+            jira_issue_key: ExternalId::parse(
+                setting
+                    .jira_issue_key
+                    .as_deref()
+                    .expect("complete legacy scope"),
+            )
+            .map_err(|_| refuse("jira_issue_key"))?,
+            ticket_short_code: ExternalId::parse(
+                setting
+                    .ticket_short_code
+                    .as_deref()
+                    .expect("complete legacy scope"),
+            )
+            .map_err(|_| refuse("ticket_short_code"))?,
+            seat_display_roles,
+            project_root_cwd: project_root_cwd.clone(),
+            canonical_worktree_cwd: WorkspaceRoot::parse(
+                setting
+                    .canonical_worktree_cwd
+                    .as_deref()
+                    .expect("complete legacy scope"),
+            )
+            .map_err(|_| refuse("canonical_worktree_cwd"))?,
+            task_scopes,
+            orchestrator_agent_id: ExternalId::parse(
+                setting
+                    .orchestrator_agent_id
+                    .as_deref()
+                    .expect("complete legacy scope"),
+            )
+            .map_err(|_| refuse("orchestrator_agent_id"))?,
+        })
+    } else {
+        None
+    };
     for fallback in setting.provider_fallbacks.values() {
         fallback
             .validate()
@@ -562,28 +653,9 @@ fn compose_paseo(
     let config = PaseoConfig {
         runtime_kind: runtime_kind.clone(),
         host_key: host_key.clone(),
-        mini_project_id: ExternalId::parse(&mini_project_id.to_string())
-            .map_err(|_| refuse("mini_project_id"))?,
-        scope: PaseoExecutionScope {
-            jira_epic_key: ExternalId::parse(&setting.jira_epic_key)
-                .map_err(|_| refuse("jira_epic_key"))?,
-            mini_project_short_title: ExternalName::parse(&setting.mini_project_short_title)
-                .map_err(|_| refuse("mini_project_short_title"))?,
-            plan_item_key: ExternalId::parse(&setting.plan_item_key)
-                .map_err(|_| refuse("plan_item_key"))?,
-            jira_issue_key: ExternalId::parse(&setting.jira_issue_key)
-                .map_err(|_| refuse("jira_issue_key"))?,
-            ticket_short_code: ExternalId::parse(&setting.ticket_short_code)
-                .map_err(|_| refuse("ticket_short_code"))?,
-            seat_display_roles,
-            project_root_cwd: WorkspaceRoot::parse(&setting.project_root_cwd)
-                .map_err(|_| refuse("project_root_cwd"))?,
-            canonical_worktree_cwd: WorkspaceRoot::parse(&setting.canonical_worktree_cwd)
-                .map_err(|_| refuse("canonical_worktree_cwd"))?,
-            task_scopes,
-            orchestrator_agent_id: ExternalId::parse(&setting.orchestrator_agent_id)
-                .map_err(|_| refuse("orchestrator_agent_id"))?,
-        },
+        mini_project_id,
+        scope,
+        project_root_cwd,
         max_concurrent_sessions: setting.max_concurrent_sessions,
         unavailable_providers: setting.unavailable_providers.clone(),
         provider_selects_account: setting.provider_selects_account,
@@ -625,12 +697,12 @@ mod tests {
         RuntimeSetting::Paseo(PaseoSetting {
             runtime_kind: runtime_kind.to_owned(),
             host_key: "paseo-host".to_owned(),
-            mini_project_id: "01890000-0000-7000-8000-000000000001".to_owned(),
-            jira_epic_key: "ASMA-1".to_owned(),
-            mini_project_short_title: "Epic".to_owned(),
-            plan_item_key: "KON-MVP-15".to_owned(),
-            jira_issue_key: "ASMA-7759".to_owned(),
-            ticket_short_code: "KON-15".to_owned(),
+            mini_project_id: Some("01890000-0000-7000-8000-000000000001".to_owned()),
+            jira_epic_key: Some("ASMA-1".to_owned()),
+            mini_project_short_title: Some("Epic".to_owned()),
+            plan_item_key: Some("KON-MVP-15".to_owned()),
+            jira_issue_key: Some("ASMA-7759".to_owned()),
+            ticket_short_code: Some("KON-15".to_owned()),
             seat_display_roles: BTreeMap::from([(
                 "implement".to_owned(),
                 PaseoSeatDisplaySetting {
@@ -639,11 +711,11 @@ mod tests {
                 },
             )]),
             project_root_cwd: "/w/epic".to_owned(),
-            canonical_worktree_cwd: "/w/task".to_owned(),
+            canonical_worktree_cwd: Some("/w/task".to_owned()),
             permission_posture: None,
             task_scopes: BTreeMap::new(),
             adopted_containers: BTreeMap::new(),
-            orchestrator_agent_id: "agent-1".to_owned(),
+            orchestrator_agent_id: Some("agent-1".to_owned()),
             max_concurrent_sessions: 2,
             unavailable_providers: BTreeSet::new(),
             provider_selects_account: false,
@@ -679,6 +751,61 @@ mod tests {
                 .next()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn a_cold_start_plane_needs_no_uncreated_epic_or_jira_identity() {
+        let document = serde_json::json!({
+            "schema_version": 5,
+            "runtimes": [{
+                "family": "paseo",
+                "runtime_kind": "paseo.agent",
+                "host_key": "fresh-fixture-host",
+                "project_root_cwd": "/w/fresh-fixture",
+                "max_concurrent_sessions": 32,
+                "provider_selects_account": true,
+                "executable": "paseo",
+                "host_target": "127.0.0.1:7867",
+                "endpoint": "ws://127.0.0.1:7867/ws",
+                "client_id": "fresh-fixture",
+                "timeout_seconds": 30
+            }]
+        });
+        let settings: RuntimeSettings = serde_json::from_value(document.clone())
+            .expect("a fresh plane does not invent future epic/task/Jira identities");
+        let registry = build_registry(&settings, None).expect("the neutral plane composes");
+        let adapter = registry
+            .get(&RuntimeKindKey::parse("paseo.agent").expect("runtime key"))
+            .expect("the real Paseo adapter is registered");
+        assert!(
+            adapter
+                .configured_execution_scope(
+                    MiniProjectId::parse("01890000-0000-7000-8000-000000000001").expect("epic"),
+                    None,
+                )
+                .is_none(),
+            "configuration cannot manufacture a durable epic scope"
+        );
+        let legacy = serde_json::to_value(paseo("paseo.agent")).expect("legacy fixture");
+        for field in [
+            "mini_project_id",
+            "jira_epic_key",
+            "mini_project_short_title",
+            "plan_item_key",
+            "jira_issue_key",
+            "ticket_short_code",
+            "canonical_worktree_cwd",
+            "orchestrator_agent_id",
+            "seat_display_roles",
+        ] {
+            let mut partial = document.clone();
+            partial["runtimes"][0][field] = legacy[field].clone();
+            let parsed: RuntimeSettings = serde_json::from_value(partial).expect("field shape");
+            assert!(
+                build_registry(&parsed, None).is_err(),
+                "partial legacy field {field} must not license a neutral launch"
+            );
+        }
     }
 
     #[tokio::test]
@@ -769,7 +896,7 @@ mod tests {
             runtimes: vec![RuntimeSetting::Paseo(PaseoSetting {
                 // A value that is refused, and that is spelled like something no
                 // log line should ever repeat.
-                canonical_worktree_cwd: "relative/hunter2".to_owned(),
+                canonical_worktree_cwd: Some("relative/hunter2".to_owned()),
                 ..match paseo("paseo.agent") {
                     RuntimeSetting::Paseo(setting) => setting,
                 }
@@ -798,7 +925,7 @@ mod tests {
     #[test]
     fn a_paseo_plane_refuses_a_jira_key_as_its_kontor_epic_identity() {
         let RuntimeSetting::Paseo(mut setting) = paseo("paseo.agent");
-        setting.mini_project_id = "ASMA-7869".to_owned();
+        setting.mini_project_id = Some("ASMA-7869".to_owned());
         let settings = RuntimeSettings {
             schema_version: RUNTIMES_SCHEMA,
             runtimes: vec![RuntimeSetting::Paseo(setting)],
@@ -877,12 +1004,12 @@ mod tests {
         let setting = PaseoSetting {
             runtime_kind: "paseo.agent".to_owned(),
             host_key: "paseo-host".to_owned(),
-            mini_project_id: "01890000-0000-7000-8000-000000000001".to_owned(),
-            jira_epic_key: "ASMA-1".to_owned(),
-            mini_project_short_title: "Epic".to_owned(),
-            plan_item_key: "KON-MVP-15".to_owned(),
-            jira_issue_key: "ASMA-7759".to_owned(),
-            ticket_short_code: "KON-15".to_owned(),
+            mini_project_id: Some("01890000-0000-7000-8000-000000000001".to_owned()),
+            jira_epic_key: Some("ASMA-1".to_owned()),
+            mini_project_short_title: Some("Epic".to_owned()),
+            plan_item_key: Some("KON-MVP-15".to_owned()),
+            jira_issue_key: Some("ASMA-7759".to_owned()),
+            ticket_short_code: Some("KON-15".to_owned()),
             seat_display_roles: BTreeMap::from([(
                 "implement".to_owned(),
                 PaseoSeatDisplaySetting {
@@ -891,11 +1018,11 @@ mod tests {
                 },
             )]),
             project_root_cwd: "/w/epic".to_owned(),
-            canonical_worktree_cwd: "/w/task".to_owned(),
+            canonical_worktree_cwd: Some("/w/task".to_owned()),
             permission_posture: None,
             task_scopes: BTreeMap::new(),
             adopted_containers: BTreeMap::new(),
-            orchestrator_agent_id: "agent-1".to_owned(),
+            orchestrator_agent_id: Some("agent-1".to_owned()),
             max_concurrent_sessions: 2,
             unavailable_providers: BTreeSet::new(),
             provider_selects_account: false,

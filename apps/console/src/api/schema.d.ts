@@ -5252,6 +5252,8 @@ export interface components {
              * @description Current reopening generation.
              */
             generation: number;
+            /** @description Explicit historical gaps and committed current-source packets; never producer artifacts. */
+            historical_evidence: unknown[];
             /** @description Initial and remediation integration bodies, including repository/module/root/PR outcomes. */
             integrations: components["schemas"]["IntegrationRecordDto"][];
             /** @description Current phase, without round verdicts or deliberation. */
@@ -5641,6 +5643,17 @@ export interface components {
         };
         /** @description One operator-asserted completion fact, tagged by the phase it answers. */
         CompletionEvidenceDto: {
+            /** @description Acknowledges unavailable provenance without judging acceptance. */
+            disposition: components["schemas"]["HistoricalEvidenceDispositionDto"];
+            /** @description Immutable current-source verification packet the final Committee must discuss. */
+            packet: components["schemas"]["HistoricalEvidencePacketDto"];
+            /** @enum {string} */
+            phase: "historical_evidence";
+            /** @description Why historical producer provenance is unavailable; no claim of original authorship. */
+            reason: string;
+            /** @description Exact Done tasks and currently missing historical artifact keys. */
+            tasks: components["schemas"]["HistoricalTaskEvidenceDto"][];
+        } | {
             /** @description The immutable Committee run whose stored result completion consumes. */
             committee_run_id: string;
             /** @enum {string} */
@@ -5771,6 +5784,8 @@ export interface components {
              * @description Current reopening era.
              */
             generation: number;
+            /** @description Append-only operator dispositions, including exact packet bodies and historical gaps. */
+            historical_evidence: unknown[];
             /** @description Initial and remediation integration results, oldest first. */
             integrations: components["schemas"]["IntegrationRecordDto"][];
             needs_human?: null | components["schemas"]["NeedsHumanDto"];
@@ -7991,6 +8006,41 @@ export interface components {
              * @description The persisted schema generation.
              */
             schema_version: number;
+        };
+        /**
+         * @description Explicit historical provenance disposition; cannot assert an acceptance pass.
+         * @enum {string}
+         */
+        HistoricalEvidenceDispositionDto: "provenance_unavailable";
+        /** @description Immutable committed verification packet in this project's registered Git root. */
+        HistoricalEvidencePacketDto: {
+            /** @description Full commit id; mutable refs are refused. */
+            commit: string;
+            /** @description Relative UTF-8 packet path. */
+            path: string;
+            /** @description SHA-256 of the committed packet, at most 64 KiB. */
+            sha256: string;
+        };
+        /** @description Exact task/workflow fence for unavailable historical producer provenance. */
+        HistoricalTaskEvidenceDto: {
+            /** @description Nonempty distinct declared keys still lacking producer/closure evidence. */
+            artifact_keys: string[];
+            /**
+             * Format: int64
+             * @description Exact Done revision.
+             */
+            expected_task_revision: number;
+            /**
+             * Format: int64
+             * @description Exact active workflow revision.
+             */
+            expected_workflow_revision: number;
+            /** @description Task in this epic, already natively Done. */
+            task_id: string;
+            /** @description Exact frozen workflow definition digest. */
+            workflow_hash: string;
+            /** @description Exact active workflow identity. */
+            workflow_id: string;
         };
         /** @description Runtime acknowledgement for a persistent Core Team seat message. */
         HostedSeatMessageDto: {

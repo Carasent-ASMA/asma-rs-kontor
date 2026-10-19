@@ -203,6 +203,7 @@ impl Services {
                             .iter()
                             .map(|record| serde_json::json!(record))
                             .collect(),
+                        historical_evidence: projected.historical_evidence,
                         phase: projected.phase,
                         blockers: projected.blockers,
                         integrations,
@@ -250,7 +251,9 @@ impl Services {
 }
 
 /// Resolve only a server-recorded immutable locator, never a caller's arbitrary path or ref.
-async fn read_registered_git_blob(locator: &serde_json::Value) -> Result<Vec<u8>, &'static str> {
+pub(super) async fn read_registered_git_blob(
+    locator: &serde_json::Value,
+) -> Result<Vec<u8>, &'static str> {
     use std::path::{Component, Path};
     let field = |key| {
         locator[key]

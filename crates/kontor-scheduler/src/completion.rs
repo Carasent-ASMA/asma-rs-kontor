@@ -498,6 +498,71 @@ pub const fn recorded_era(stamp: &Option<EraStamp>) -> u32 {
     }
 }
 
+/// One exact historical producer-evidence gap explicitly dispositioned for completion only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HistoricalTaskEvidence {
+    /// Exact task whose existing Done verdict is retained.
+    pub task_id: kontor_core::id::TaskId,
+    /// Native Done revision, invalidated by any task change.
+    pub expected_task_revision: AggregateRevision,
+    /// Exact active workflow identity.
+    pub workflow_id: kontor_core::id::TaskWorkflowId,
+    /// Exact active workflow revision.
+    pub expected_workflow_revision: AggregateRevision,
+    /// Frozen workflow definition digest.
+    pub workflow_hash: ContentHash,
+    /// Missing historical keys; these remain absent producer artifacts.
+    pub artifact_keys: BTreeSet<ExternalName>,
+}
+
+/// The only permitted completion-only provenance disposition; never an acceptance verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoricalEvidenceDisposition {
+    /// Historical producer provenance is explicitly unavailable.
+    ProvenanceUnavailable,
+}
+
+/// The only authority that may record a historical disposition.
+///
+/// A closed type rather than a compared string: a record naming any other
+/// authority does not deserialize, so no transition has to recognize a name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoricalEvidenceAuthority {
+    /// The server-authenticated admin tier.
+    Admin,
+}
+
+/// Immutable operator disposition and committed current-source verification packet.
+/// This is never producer evidence and cannot satisfy a delivery gate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoricalCompletionEvidence {
+    /// Explicitly unavailable provenance, never an acceptance pass.
+    pub disposition: HistoricalEvidenceDisposition,
+    /// Canonical command digest, visible to the final Committee.
+    pub evidence_hash: ContentHash,
+    /// Only this completion era may consume the disposition.
+    pub generation: u32,
+    /// Explicit account of why historical producer provenance is unavailable.
+    pub reason: String,
+    /// Server-authenticated authority, always admin for this operation.
+    pub recorded_by: HistoricalEvidenceAuthority,
+    /// Immutable repository location of the verified packet.
+    pub git_dir: String,
+    /// Full commit containing the packet.
+    pub commit: String,
+    /// Repository-relative packet path.
+    pub path: String,
+    /// Verified SHA-256 of the exact packet bytes.
+    pub sha256: ContentHash,
+    /// Verified UTF-8 packet, visible to the final independent Committee.
+    pub packet: String,
+    /// Exact obligations whose historical provenance is unavailable.
+    pub tasks: Vec<HistoricalTaskEvidence>,
+}
+
 /// Durable completion-run state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompletionState {
@@ -511,6 +576,9 @@ pub struct CompletionState {
     pub ticket_requirements: Vec<TicketRequirement>,
     /// Current ticket evidence.
     pub ticket_evidence: Vec<TicketEvidence>,
+    /// Append-only completion-only dispositions; historical missing claims remain visible.
+    #[serde(default)]
+    pub historical_evidence: Vec<HistoricalCompletionEvidence>,
     /// Initial and remediation integration results.
     pub integrations: Vec<IntegrationRecord>,
     /// Immutable Committee rounds.
@@ -570,6 +638,7 @@ pub fn start(
         phase: CompletionPhase::Tickets,
         ticket_requirements,
         ticket_evidence: Vec::new(),
+        historical_evidence: Vec::new(),
         integrations: Vec::new(),
         rounds: Vec::new(),
         remediations: Vec::new(),
@@ -599,6 +668,13 @@ pub enum SignalDelivery {
 pub enum CompletionObservation {
     /// Current durable evidence for every ticket.
     TicketsClosed(Vec<TicketEvidence>),
+    /// Admin-authorized unavailable-provenance disposition and hash-verified packet.
+    HistoricalEvidenceRecorded {
+        /// Separate, append-only authority; never producer attribution.
+        record: HistoricalCompletionEvidence,
+        /// Current genuine ticket evidence, retained without synthetic artifact keys.
+        evidence: Vec<TicketEvidence>,
+    },
     /// Initial integration TeamRun completed.
     IntegrationCompleted(IntegrationRecord),
     /// Committee verdict and independent-finding path.
@@ -814,8 +890,68 @@ pub fn advance(
                 )
             })?;
         }
+        (
+            CompletionObservation::HistoricalEvidenceRecorded { record, evidence },
+            CompletionPhase::Tickets,
+        ) => {
+            if record.generation != current.generation
+                || record.tasks.is_empty()
+                || current
+                    .historical_evidence
+                    .iter()
+                    .any(|old| old.evidence_hash == record.evidence_hash)
+            {
+                return Err(DomainError::invalid(
+                    "completion historical evidence",
+                    "the disposition is empty, duplicated or belongs to another era",
+                ));
+            }
+            let present = completion_ticket_evidence(current, evidence);
+            let mut seen_tasks = BTreeSet::new();
+            for task in &record.tasks {
+                let requirement = current
+                    .ticket_requirements
+                    .iter()
+                    .find(|item| item.task_id == task.task_id)
+                    .ok_or_else(|| {
+                        DomainError::invalid(
+                            "completion historical evidence",
+                            "the task is not part of the frozen completion contract",
+                        )
+                    })?;
+                if !seen_tasks.insert(task.task_id)
+                    || task.artifact_keys.is_empty()
+                    || !task.artifact_keys.is_subset(&requirement.evidence)
+                    || present
+                        .iter()
+                        .find(|actual| actual.task_id == task.task_id)
+                        .is_none_or(|actual| !task.artifact_keys.is_disjoint(&actual.evidence))
+                {
+                    return Err(DomainError::invalid(
+                        "completion historical evidence",
+                        "the disposition must name declared missing artifact keys",
+                    ));
+                }
+            }
+            next.historical_evidence.push(record.clone());
+            next.ticket_evidence.clone_from(evidence);
+            if ticket_gate_blockers(
+                &next.ticket_requirements,
+                &completion_ticket_evidence(&next, evidence),
+            )?
+            .is_empty()
+            {
+                next.phase = CompletionPhase::Integration;
+                commands.push(CompletionCommand::StartIntegration {
+                    team: compiled.profile.integration_team.clone(),
+                });
+            }
+        }
         (CompletionObservation::TicketsClosed(evidence), CompletionPhase::Tickets) => {
-            let blockers = ticket_gate_blockers(&current.ticket_requirements, evidence)?;
+            let blockers = ticket_gate_blockers(
+                &current.ticket_requirements,
+                &completion_ticket_evidence(current, evidence),
+            )?;
             if !blockers.is_empty() {
                 return Err(DomainError::MissingEvidence {
                     subject: "completion ticket gate",
@@ -1047,13 +1183,43 @@ pub enum CompletionBlocker {
     OpenQuestion(OpenQuestionBlocker),
 }
 
+/// Derive completion-only allowances without mutating the retained producer evidence.
+/// The application must revalidate the task/workflow pins before consuming these records.
+#[must_use]
+pub fn completion_ticket_evidence(
+    state: &CompletionState,
+    evidence: &[TicketEvidence],
+) -> Vec<TicketEvidence> {
+    let mut effective = evidence.to_vec();
+    for record in state
+        .historical_evidence
+        .iter()
+        .filter(|record| record.generation == state.generation)
+    {
+        for disposition in &record.tasks {
+            if let Some(ticket) = effective
+                .iter_mut()
+                .find(|ticket| ticket.task_id == disposition.task_id)
+            {
+                ticket
+                    .evidence
+                    .extend(disposition.artifact_keys.iter().cloned());
+            }
+        }
+    }
+    effective
+}
+
 /// Stable typed blockers for the read projection.
 ///
 /// # Errors
 /// Only if persisted ticket declarations/evidence violate their uniqueness
 /// contract.
 pub fn blockers(state: &CompletionState) -> DomainResult<Vec<CompletionBlocker>> {
-    let outstanding = ticket_gate_blockers(&state.ticket_requirements, &state.ticket_evidence)?;
+    let outstanding = ticket_gate_blockers(
+        &state.ticket_requirements,
+        &completion_ticket_evidence(state, &state.ticket_evidence),
+    )?;
     if !outstanding.is_empty() {
         return Ok(outstanding
             .into_iter()
@@ -1332,6 +1498,7 @@ const fn phase_name(phase: CompletionPhase) -> &'static str {
 const fn observation_name(observation: &CompletionObservation) -> &'static str {
     match observation {
         CompletionObservation::TicketsClosed(_) => "tickets_closed",
+        CompletionObservation::HistoricalEvidenceRecorded { .. } => "historical_evidence_recorded",
         CompletionObservation::TicketWorkReopened { .. } => "ticket_work_reopened",
         CompletionObservation::IntegrationCompleted(_) => "integration_completed",
         CompletionObservation::VerdictRecorded { .. } => "verdict_recorded",
