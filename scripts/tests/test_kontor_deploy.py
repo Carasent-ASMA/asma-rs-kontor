@@ -814,6 +814,33 @@ class ProductionJobGuardTest(WorldTest):
             )
         self.assertEqual(refusal.exception.code, "production_target_unreadable")
 
+    def test_a_failed_loaded_production_print_is_refused(self) -> None:
+        failures = {
+            "timeout": subprocess.TimeoutExpired(["launchctl"], deploy.DEFAULT_TIMEOUT),
+            "missing launchctl": OSError("launchctl is missing"),
+        }
+        for case, failure in failures.items():
+            with self.subTest(failure=case):
+                def answer(argv: list[str]) -> subprocess.CompletedProcess[str]:
+                    if argv[:2] == ["launchctl", "print"]:
+                        raise failure
+                    return done()
+
+                recorder = Recorder(answer)
+                with self.assertRaises(deploy.Refused) as refusal:
+                    deploy.resolve_job(
+                        DISPOSABLE_LABEL,
+                        DISPOSABLE_DOMAIN,
+                        self.world.plist(DISPOSABLE_LABEL),
+                        None,
+                        self.world.host(recorder, DISPOSABLE_UID),
+                        "bootstrap",
+                    )
+                self.assertEqual(
+                    refusal.exception.code, "production_target_unreadable"
+                )
+                self.assertEqual(recorder.launchctl(), [])
+
     def test_a_production_deploy_cannot_be_declared_for_another_label(self) -> None:
         recorder = Recorder()
         argv = [
@@ -1069,7 +1096,12 @@ class ReplaceTest(WorldTest):
                 self.snapshot_daemon = Path(argv[0]).read_bytes()
                 snapshot = Path(argv[argv.index("--into") + 1]) / "kontor-realm.db"
                 snapshot.write_bytes(b"snapshot\n")
-                return done(0, f"{snapshot}\n")
+                return done(
+                    0,
+                    f"{snapshot}\n"
+                    "2026-10-19T00:00:00.000000Z  INFO kontor_daemon: "
+                    "snapshot complete kept=1 pruned=0\n",
+                )
             if argv[:2] == [str(self.world.bin / "kontor"), "realm-get"]:
                 body = {"status": readback_status, "body": {"realm_id": readback_realm}}
                 return done(0, json.dumps(body))
@@ -1158,7 +1190,12 @@ class ReplaceTest(WorldTest):
                 roots.append(argv[argv.index("--state-root") + 1])
                 snapshot = Path(argv[argv.index("--into") + 1]) / "kontor-realm.db"
                 snapshot.write_bytes(b"snapshot\n")
-                return done(0, f"{snapshot}\n")
+                return done(
+                    0,
+                    f"{snapshot}\n"
+                    "2026-10-19T00:00:00.000000Z  INFO kontor_daemon: "
+                    "snapshot complete kept=1 pruned=0\n",
+                )
             if argv[:2] == [str(self.world.bin / "kontor"), "realm-get"]:
                 roots.append(argv[argv.index("--state-root") + 1])
                 body = {"status": 200, "body": {"realm_id": REALM_ID}}
@@ -1257,6 +1294,67 @@ class ReplaceTest(WorldTest):
         recorder = Recorder(self.answer())
         self.assertEqual(self.replace(recorder), deploy.EXIT_FAILED)
         self.assertEqual(recorder.launchctl(), [])
+
+    def production_replace(
+        self, recorder: Recorder, expected: list[str]
+    ) -> int:
+        argv = [
+            "--label", PRODUCTION_LABEL,
+            "--domain", DISPOSABLE_DOMAIN,
+            "--plist", str(self.world.plist(PRODUCTION_LABEL)),
+            "--production-deploy", "ASMA-8506",
+            *command_argv("replace", self.world),
+            *[
+                part
+                for value in expected
+                for part in ("--expected-sha256", value)
+            ],
+        ]
+        return run_main(argv, self.world.host(recorder, DISPOSABLE_UID))
+
+    def test_a_declared_production_replace_needs_expected_hashes(self) -> None:
+        recorder = Recorder(self.answer())
+        self.assertEqual(self.production_replace(recorder, []), deploy.EXIT_FAILED)
+        self.assertEqual(recorder.launchctl(), [])
+        self.assertFalse(self.world.backup.exists())
+
+    def test_a_declared_production_replace_refuses_unexpected_candidate_bytes(self) -> None:
+        recorder = Recorder(self.answer())
+        wrong = [f"{name}={'0' * 64}" for name in deploy.BINARIES]
+        self.assertEqual(self.production_replace(recorder, wrong), deploy.EXIT_FAILED)
+        self.assertEqual(recorder.launchctl(), [])
+        self.assertFalse(self.world.backup.exists())
+
+    def test_a_declared_production_replace_pins_the_candidate_hashes(self) -> None:
+        expected = {name: deploy.digest(self.world.candidates / name) for name in deploy.BINARIES}
+        recorder = Recorder(self.answer())
+        code = self.production_replace(
+            recorder, [f"{name}={checksum}" for name, checksum in expected.items()]
+        )
+        self.assertEqual(code, 0)
+        receipt = json.loads((self.world.backup / "deployment.json").read_text())
+        self.assertEqual(receipt["productionDeploy"], "ASMA-8506")
+        self.assertEqual(receipt["binarySha256After"], expected)
+        for name in deploy.BINARIES:
+            self.assertEqual((self.world.bin / name).read_bytes(), f"new {name}\n".encode())
+
+    def test_the_realm_get_wait_is_configurable(self) -> None:
+        recorder = Recorder(self.answer(readback_status=503))
+        argv = [
+            "--label", DISPOSABLE_LABEL,
+            "--domain", DISPOSABLE_DOMAIN,
+            "--plist", str(self.world.plist(DISPOSABLE_LABEL)),
+            "--wait", "1",
+            *command_argv("replace", self.world),
+        ]
+        code = run_main(argv, self.world.host(recorder, DISPOSABLE_UID, wait=1.0))
+        self.assertEqual(code, deploy.EXIT_FAILED)
+        polls = [
+            call
+            for call in recorder.calls
+            if call[:2] == [str(self.world.bin / "kontor"), "realm-get"]
+        ]
+        self.assertEqual(len(polls), 2)
 
 
 if __name__ == "__main__":
