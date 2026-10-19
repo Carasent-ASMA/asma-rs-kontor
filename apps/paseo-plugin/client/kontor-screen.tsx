@@ -119,6 +119,7 @@ function HostScreen(props: PluginScreenProps) {
     else if (link.kind === "url") void Linking.openURL(link.url).catch(() => toast.error("This device could not open the source link."));
     else toast.error(link.reason);
   };
+  const conversationReturn = route.originAgentId && props.navigation ? <Action label="Return to conversation" colors={colors} disabled={!directory.state.entries.some((entry) => entry.id === route.originAgentId)} onPress={() => { const entry = directory.state.entries.find((candidate) => candidate.id === route.originAgentId); if (entry) open(entry); }} /> : null;
   const navigationItems = <>
       {primary.map((tab) => <Action key={tab} tab stacked={layout.compact} colors={colors} icon={ICONS[tab]} label={tab} selected={route.tab === tab} onPress={() => visitContext({ tab })} />)}
       <Action tab stacked={layout.compact} colors={colors} icon="Ellipsis" label="More" selected={!primary.includes(route.tab)} onPress={() => setSheet("more")} />
@@ -148,8 +149,9 @@ function HostScreen(props: PluginScreenProps) {
       <Action label="‹ Back" colors={colors} disabled={hostNavigation(host.id).back.length === 0} onPress={() => { const next = goBack(host.id); setRoute({ ...next }); setQuery(readRouteView(host.id, next).query); }} />
       <View style={{ flex: 1, minWidth: 0, borderWidth: 1, borderColor: colors.border, borderRadius: 7 }}><Action label={`${selectedPlan && scopedEpic ? `${scopedEpic} · ` : ""}${route.sourceId ? selectedPlan?.title ?? "Source unavailable" : projectLabel} ▾`} accessibilityLabel={`Project context: ${scopedEpic ?? projectLabel}, ${selectedPlan?.title ?? "choose plan"}`} colors={colors} onPress={() => setSheet("context")} /></View>
       <NativeFreshnessPill state={directory.state} hostOnline={hostStatus === "online"} colors={colors} />
-      {route.originAgentId && props.navigation ? <Action label="Return to conversation" colors={colors} disabled={!directory.state.entries.some((entry) => entry.id === route.originAgentId)} onPress={() => { const entry = directory.state.entries.find((candidate) => candidate.id === route.originAgentId); if (entry) open(entry); }} /> : null}
+      {!layout.compact ? conversationReturn : null}
     </View>
+    {layout.compact && conversationReturn ? <View testID="kontor-conversation-return-row" style={{ minHeight: 44, flexDirection: "row", justifyContent: "flex-end" }}>{conversationReturn}</View> : null}
     {!layout.compact ? navigation : null}
     <View style={{ flex: 1 }}>{page}</View>
     {layout.compact ? navigation : null}

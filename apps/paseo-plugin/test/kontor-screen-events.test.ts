@@ -60,6 +60,16 @@ function mount(compact: boolean, initial?: Partial<KontorRoute>) {
   };
 }
 describe("Kontor shell native actions", () => {
+  it("reserves the compact context/freshness row while keeping conversation return accessible", () => {
+    const compact = mount(true, { tab: "Plan", originAgentId: "native" });
+    const row = compact.elements().find((node) => node.props.testID === "kontor-context-row")!;
+    expect(elements(row).some((node) => node.props.label === "Return to conversation")).toBe(false);
+    expect(compact.action("Return to conversation").props.disabled).toBe(false);
+    expect(compact.elements().some((node) => node.props.testID === "kontor-conversation-return-row")).toBe(true);
+    const desktop = mount(false, { tab: "Plan", originAgentId: "native" });
+    const wideRow = desktop.elements().find((node) => node.props.testID === "kontor-context-row")!;
+    expect(elements(wideRow).some((node) => node.props.label === "Return to conversation")).toBe(true);
+  });
   it("resolves epic → Graph/Plan only for an exact unique catalog plan, and preserves Back", () => {
     model.sources = [{ id: "explicit", title: "Chosen source", kind: "plan", path: "/plans/explicit.md", projectId: null, epic: "ASMA-1", workstream: null, revisionKind: "working copy" }];
     const screen = mount(true); screen.click("All projects ▾"); screen.click("ASMA-1"); screen.click("More"); screen.click("Graph");
