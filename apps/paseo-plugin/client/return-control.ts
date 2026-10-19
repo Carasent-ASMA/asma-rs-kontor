@@ -171,6 +171,11 @@ export function contributeReturnControl(
     }
   }
 
+  function clearPendingUpdates(): void {
+    pendingUpdates.length = 0;
+    pendingOverflow = false;
+  }
+
   function flushPendingUpdates(): void {
     const pending = pendingUpdates.splice(0);
     for (const update of pending) {
@@ -249,6 +254,9 @@ export function contributeReturnControl(
       void subscription.release().catch(() => undefined);
       subscription = null;
     }
+    // Buffered updates belong to the released connection. A fresh snapshot
+    // must not replay them over a newer reconciled inventory.
+    clearPendingUpdates();
   }
 
   function scheduleObservationRetry(): void {
@@ -292,6 +300,7 @@ export function contributeReturnControl(
             if (snapshots === 1) {
               return;
             }
+            clearPendingUpdates();
             void walkDirectory();
           },
           update: (message) => {

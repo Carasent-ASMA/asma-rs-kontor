@@ -165,9 +165,11 @@ Observed on this workstation:
   acceptance wording, the bounded return-control walk retry, single-flight
   subscriptions, abortable directory walks, a bounded update buffer and the
   archive-scope error handling. Those changes do not alter the accepted
-  desktop/iPhone UI path; no new device pass is claimed for them. This candidate still does not claim
-  saved-view restoration or full B1, and KN-03 does not substitute for the KN-01
-  checks. The procedure and evidence checklist are recorded below.
+  desktop/iPhone UI path; no new device pass is claimed for them. The
+  code-only follow-up `364f5e83` adds the partial-read labeling and host-switch
+  view restoration with focused unit tests; it also has no new device pass. This
+  candidate still does not claim saved-view restoration or full B1, and KN-03
+  does not substitute for the KN-01 checks. The procedure and evidence checklist are recorded below.
 
 ### Desktop and iPhone acceptance procedure
 
