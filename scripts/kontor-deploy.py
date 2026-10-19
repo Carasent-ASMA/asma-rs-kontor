@@ -14,15 +14,17 @@ changes any job:
 
 * the production label ``com.asma.kontor.daemon`` is refused unless
   ``--production-deploy <JIRA-KEY>`` declares the deploy;
-* a declared production deploy must name this user's ``gui/<uid>`` domain and
-  this user's ``~/Library/LaunchAgents/com.asma.kontor.daemon.plist``;
+* a declared production deploy must name the ``gui/<uid>`` domain of the user
+  whose home holds ``~/Library/LaunchAgents/com.asma.kontor.daemon.plist``;
 * ``--production-deploy`` with any other label is refused;
 * a non-production ``bootstrap`` or ``replace`` whose daemon or state root is
   the production one, or that uses the production port, is refused even under
   another label, because its install would overwrite the production binaries or
   take their port; the guard compares every source it can read: the canonical
   production plist, the target recorded by the last declared production deploy,
-  and the loaded production job read with ``launchctl print``;
+  and the loaded production job read with ``launchctl print``. An unreadable
+  canonical plist is skipped, while a loaded job whose print cannot be parsed
+  is refused;
 * a relative ``--state-root`` is resolved against the plist's
   ``WorkingDirectory``, or ``/`` when it has none, so the snapshot and read-back
   address the state root launchd serves;
@@ -45,8 +47,10 @@ Commands:
              restores it per RECOVERY.md.
 
 The daemon binary, state root and port come from the plist's
-``ProgramArguments``; ``kontor`` and ``kontor-mcp`` are installed beside the
-daemon.
+``ProgramArguments``; a missing ``--port`` uses the daemon default 7717, and
+``kontor`` and ``kontor-mcp`` are installed beside the daemon. ``--timeout``
+caps each subprocess (default 120 s) and ``--wait`` bounds the port and
+realm-get polls (default 15 s).
 
 Exit codes: 0 done, 1 failed (after any rollback), 2 usage, 3 refused by the
 target guard (no launchctl mutation was attempted).
@@ -78,11 +82,13 @@ from xml.parsers.expat import ExpatError
 
 PRODUCTION_LABEL = "com.asma.kontor.daemon"
 DEPLOY_TARGET_RELATIVE = Path(".local") / "state" / "kontor" / "deploy-target.json"
+DEFAULT_PORT = 7717
+DEFAULT_TIMEOUT = 120.0
+DEFAULT_WAIT = 15.0
 BINARIES = ("kontor-daemon", "kontor", "kontor-mcp")
 LABEL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9.-]*")
 DOMAIN_PATTERN = re.compile(r"(gui|user)/[0-9]+")
 DEPLOY_PATTERN = re.compile(r"[A-Z][A-Z0-9]*-[1-9][0-9]*")
-POLL_ATTEMPTS = 30
 POLL_INTERVAL = 0.5
 
 EXIT_FAILED = 1
@@ -99,16 +105,36 @@ class Host:
     home: Path
     run: Runner
     sleep: Callable[[float], None]
+    homes: dict[int, Path] | None = None
+    wait: float = DEFAULT_WAIT
+
+    def home_for(self, uid: int) -> Path:
+        if uid == self.uid:
+            return self.home
+        if self.homes is not None and uid in self.homes:
+            return self.homes[uid]
+        try:
+            return Path(pwd.getpwuid(uid).pw_dir)
+        except KeyError as error:
+            raise Refused("domain_uid", f"uid {uid} has no password entry") from error
 
 
-def real_host() -> Host:
+def real_host(timeout: float = DEFAULT_TIMEOUT, wait: float = DEFAULT_WAIT) -> Host:
     """This user, read from the password database rather than ``$HOME``."""
     uid = os.getuid()
-    return Host(uid=uid, home=Path(pwd.getpwuid(uid).pw_dir), run=_run, sleep=time.sleep)
+    return Host(
+        uid=uid,
+        home=Path(pwd.getpwuid(uid).pw_dir),
+        run=lambda argv: _run(argv, timeout),
+        sleep=time.sleep,
+        wait=wait,
+    )
 
 
-def _run(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(list(argv), capture_output=True, text=True, timeout=120)
+def _run(
+    argv: Sequence[str], timeout: float = DEFAULT_TIMEOUT
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(list(argv), capture_output=True, text=True, timeout=timeout)
 
 
 class Refused(Exception):
@@ -169,6 +195,8 @@ def resolve_job(
         raise Refused("label_invalid", f"{label!r} is not a launchd label")
     if not DOMAIN_PATTERN.fullmatch(domain):
         raise Refused("domain_invalid", f"{domain!r} is not gui/<uid> or user/<uid>")
+    domain_uid = int(domain.split("/", 1)[1])
+    production_home = host.home_for(domain_uid)
     if label.casefold() == PRODUCTION_LABEL:
         if production_deploy is None:
             raise Refused(
@@ -181,12 +209,14 @@ def resolve_job(
                 "production_deploy_invalid",
                 f"{production_deploy!r} is not the Jira key of the declared deploy",
             )
-        if domain != f"gui/{host.uid}":
+        if domain != f"gui/{domain_uid}":
             raise Refused(
                 "production_domain",
-                f"the production job lives in gui/{host.uid}, not {domain}",
+                f"the production job lives in gui/{domain_uid}, not {domain}",
             )
-        canonical = host.home / "Library" / "LaunchAgents" / f"{PRODUCTION_LABEL}.plist"
+        canonical = (
+            production_home / "Library" / "LaunchAgents" / f"{PRODUCTION_LABEL}.plist"
+        )
         if plist is not None and plist.resolve() != canonical.resolve():
             raise Refused(
                 "production_plist",
@@ -217,23 +247,25 @@ def resolve_job(
         )
     if label.casefold() == PRODUCTION_LABEL:
         if command != "bootout":
-            _record_production_target(host, daemon, state_root, port)
+            _record_production_target(production_home, daemon, state_root, port)
     elif command != "bootout":
-        canonical = host.home / "Library" / "LaunchAgents" / f"{PRODUCTION_LABEL}.plist"
+        canonical = (
+            production_home / "Library" / "LaunchAgents" / f"{PRODUCTION_LABEL}.plist"
+        )
         targets: list[ProductionTarget] = []
         if canonical.is_file():
             try:
                 targets.append(_job_target(_read_plist(canonical)[1], canonical))
             except Refused:
                 pass
-        recorded = _recorded_production_target(host)
+        recorded = _recorded_production_target(production_home)
         if recorded is not None:
             targets.append(recorded)
-        loaded = _loaded_production_target(host)
+        loaded = _loaded_production_target(host, domain_uid)
         if loaded is not None:
             targets.append(loaded)
         for target in targets:
-            target_port = target.port if target.port is not None else 7717
+            target_port = target.port if target.port is not None else DEFAULT_PORT
             if (
                 _same_path(daemon, target.daemon)
                 or _same_path(state_root, target.state_root)
@@ -276,14 +308,14 @@ def _snapshot_plist(data: bytes, label: str) -> Path:
     return snapshot
 
 
-def _production_target_path(host: Host) -> Path:
-    return host.home / DEPLOY_TARGET_RELATIVE
+def _production_target_path(home: Path) -> Path:
+    return home / DEPLOY_TARGET_RELATIVE
 
 
 def _record_production_target(
-    host: Host, daemon: Path, state_root: Path, port: int
+    home: Path, daemon: Path, state_root: Path, port: int
 ) -> None:
-    path = _production_target_path(host)
+    path = _production_target_path(home)
     try:
         path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
         _write_json(
@@ -296,9 +328,9 @@ def _record_production_target(
         ) from error
 
 
-def _recorded_production_target(host: Host) -> ProductionTarget | None:
+def _recorded_production_target(home: Path) -> ProductionTarget | None:
     try:
-        document = json.loads(_production_target_path(host).read_text())
+        document = json.loads(_production_target_path(home).read_text())
     except (OSError, ValueError):
         return None
     if not isinstance(document, dict):
@@ -317,13 +349,21 @@ def _recorded_production_target(host: Host) -> ProductionTarget | None:
     return ProductionTarget(Path(daemon), Path(state_root), port_value)
 
 
-def _loaded_production_target(host: Host) -> ProductionTarget | None:
+def _loaded_production_target(host: Host, domain_uid: int) -> ProductionTarget | None:
+    service = f"gui/{domain_uid}/{PRODUCTION_LABEL}"
     try:
-        result = host.run(["launchctl", "print", f"gui/{host.uid}/{PRODUCTION_LABEL}"])
+        result = host.run(["launchctl", "print", service])
     except (OSError, subprocess.SubprocessError):
         return None
     if result.returncode != 0:
         return None
+
+    def unreadable() -> Refused:
+        return Refused(
+            "production_target_unreadable",
+            f"launchctl print {service} did not report a readable production job",
+        )
+
     arguments: list[str] = []
     working_directory: str | None = None
     in_arguments = False
@@ -341,16 +381,16 @@ def _loaded_production_target(host: Host) -> ProductionTarget | None:
         elif line.startswith("working directory = "):
             working_directory = line.split("=", 1)[1].strip().strip('"')
     if not arguments:
-        return None
+        raise unreadable()
     daemon = Path(arguments[0])
     state_root = _option(arguments, "--state-root")
     if not daemon.is_absolute() or daemon.name != "kontor-daemon" or state_root is None:
-        return None
+        raise unreadable()
     state_root_path = Path(state_root)
     if not state_root_path.is_absolute():
         base = Path(working_directory) if working_directory else Path("/")
         if not base.is_absolute():
-            return None
+            raise unreadable()
         state_root_path = (base / state_root_path).resolve()
     port = _option(arguments, "--port")
     port_value = int(port) if port is not None and port.isdigit() else None
@@ -405,9 +445,11 @@ def _job_target(document: dict, plist: Path) -> ProductionTarget:
 
 def _program(document: dict, plist: Path) -> tuple[Path, Path, int]:
     target = _job_target(document, plist)
-    if target.port is None:
-        raise Refused("plist_program", f"{plist} must pass --port: the deploy waits on it")
-    return target.daemon, target.state_root, target.port
+    return (
+        target.daemon,
+        target.state_root,
+        target.port if target.port is not None else DEFAULT_PORT,
+    )
 
 
 def _option(arguments: list[str], name: str) -> str | None:
@@ -433,10 +475,14 @@ def stop_job(job: Job, host: Host) -> None:
     launchctl(host, "bootout", job.service)
 
 
+def _poll_attempts(host: Host) -> int:
+    return max(1, int(host.wait / POLL_INTERVAL))
+
+
 def wait_port_free(job: Job, host: Host) -> None:
     if job.port is None:
         return
-    for _ in range(POLL_ATTEMPTS):
+    for _ in range(_poll_attempts(host)):
         listening = host.run(["lsof", "-nP", f"-iTCP:{job.port}", "-sTCP:LISTEN", "-t"])
         if not listening.stdout.strip():
             return
@@ -473,7 +519,7 @@ def read_back(job: Job, host: Host, realm_id: str) -> dict:
     """Wait until the started daemon answers realm-get for the expected realm."""
     assert job.state_root is not None
     kontor = job.install_dir / "kontor"
-    for _ in range(POLL_ATTEMPTS):
+    for _ in range(_poll_attempts(host)):
         result = host.run([str(kontor), "realm-get", "--state-root", str(job.state_root)])
         if result.returncode == 0:
             try:
@@ -666,6 +712,21 @@ def parse_arguments(argv: Sequence[str] | None) -> argparse.Namespace:
         metavar="JIRA-KEY",
         help=f"declare a production deploy of {PRODUCTION_LABEL} under this Jira key",
     )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT,
+        help=f"seconds to cap each subprocess (default {DEFAULT_TIMEOUT:g})",
+    )
+    parser.add_argument(
+        "--wait",
+        type=float,
+        default=DEFAULT_WAIT,
+        help=(
+            "seconds to wait for the port to free and for realm-get to answer "
+            f"(default {DEFAULT_WAIT:g})"
+        ),
+    )
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("bootout", help="stop the job")
     commands.add_parser("bootstrap", help="start the job")
@@ -688,12 +749,16 @@ def parse_arguments(argv: Sequence[str] | None) -> argparse.Namespace:
     arguments = parser.parse_args(argv)
     if arguments.plist is None and arguments.command != "bootout":
         parser.error("--plist is required unless the command is bootout")
+    if arguments.timeout <= 0:
+        parser.error("--timeout must be positive")
+    if arguments.wait < 0:
+        parser.error("--wait must not be negative")
     return arguments
 
 
 def main(argv: Sequence[str] | None = None, host: Host | None = None) -> int:
     arguments = parse_arguments(argv)
-    host = host or real_host()
+    host = host or real_host(arguments.timeout, arguments.wait)
     try:
         job = resolve_job(
             arguments.label,

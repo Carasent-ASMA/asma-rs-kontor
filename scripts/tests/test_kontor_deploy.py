@@ -78,10 +78,12 @@ class Recorder:
 
     def __init__(self, answer=None) -> None:
         self.calls: list[list[str]] = []
-        self.answer = answer or (lambda argv: done())
+        self.answer = answer
 
     def run(self, argv):
         self.calls.append(list(argv))
+        if self.answer is None:
+            return done(1) if list(argv)[:2] == ["launchctl", "print"] else done()
         return self.answer(list(argv))
 
     def launchctl(self) -> list[list[str]]:
@@ -137,8 +139,21 @@ class World:
         path.write_bytes(plistlib.dumps(document))
         return path
 
-    def host(self, recorder: Recorder, uid: int) -> deploy.Host:
-        return deploy.Host(uid=uid, home=self.home, run=recorder.run, sleep=lambda seconds: None)
+    def host(
+        self,
+        recorder: Recorder,
+        uid: int,
+        homes: dict[int, Path] | None = None,
+        wait: float = deploy.DEFAULT_WAIT,
+    ) -> deploy.Host:
+        return deploy.Host(
+            uid=uid,
+            home=self.home,
+            run=recorder.run,
+            sleep=lambda seconds: None,
+            homes=homes,
+            wait=wait,
+        )
 
     def installed(self) -> dict[str, object]:
         """Every file and link under bin, by content or target."""
@@ -673,6 +688,132 @@ class ProductionJobGuardTest(WorldTest):
         self.assertEqual(refusal.exception.code, "production_target")
         self.assertEqual(len(recorder.prints()), 1)
 
+    def test_a_production_deploy_accepts_the_default_port(self) -> None:
+        canonical = self.world.plist(PRODUCTION_LABEL, port=None)
+        recorder = Recorder()
+        argv = [
+            "--label", PRODUCTION_LABEL,
+            "--domain", DISPOSABLE_DOMAIN,
+            "--plist", str(canonical),
+            "--production-deploy", "ASMA-8506",
+            "bootstrap",
+        ]
+        self.assertEqual(run_main(argv, self.world.host(recorder, DISPOSABLE_UID)), 0)
+        self.assertEqual(len(recorder.launchctl()), 1)
+        job = deploy.resolve_job(
+            PRODUCTION_LABEL,
+            DISPOSABLE_DOMAIN,
+            canonical,
+            "ASMA-8506",
+            self.world.host(Recorder(), DISPOSABLE_UID),
+            "bootstrap",
+        )
+        self.assertEqual(job.port, deploy.DEFAULT_PORT)
+
+    def test_the_guard_reads_the_domain_users_home(self) -> None:
+        target_home = self.world.home / "target-home"
+        (target_home / "Library" / "LaunchAgents").mkdir(parents=True)
+        canonical = (
+            target_home
+            / "Library"
+            / "LaunchAgents"
+            / f"{PRODUCTION_LABEL}.plist"
+        )
+        canonical.write_bytes(
+            plistlib.dumps(
+                {
+                    "Label": PRODUCTION_LABEL,
+                    "ProgramArguments": [
+                        str(self.world.bin / "kontor-daemon"),
+                        "--state-root",
+                        str(self.world.state),
+                        "--port",
+                        "47717",
+                    ],
+                }
+            )
+        )
+        root_home = self.world.home / "root-home"
+        root_home.mkdir()
+        recorder = Recorder()
+        host = deploy.Host(
+            uid=0,
+            home=root_home,
+            run=recorder.run,
+            sleep=lambda seconds: None,
+            homes={REAL_UID: target_home},
+        )
+        argv = [
+            "--label", DISPOSABLE_LABEL,
+            "--domain", f"gui/{REAL_UID}",
+            "--plist", str(self.world.plist(DISPOSABLE_LABEL)),
+            "bootstrap",
+        ]
+        self.assertEqual(run_main(argv, host), deploy.EXIT_REFUSED)
+        self.assertEqual(recorder.launchctl(), [])
+
+    def test_a_declared_production_deploy_uses_the_domain_users_home(self) -> None:
+        target_home = self.world.home / "target-home"
+        (target_home / "Library" / "LaunchAgents").mkdir(parents=True)
+        canonical = (
+            target_home
+            / "Library"
+            / "LaunchAgents"
+            / f"{PRODUCTION_LABEL}.plist"
+        )
+        canonical.write_bytes(
+            plistlib.dumps(
+                {
+                    "Label": PRODUCTION_LABEL,
+                    "ProgramArguments": [
+                        str(self.world.bin / "kontor-daemon"),
+                        "--state-root",
+                        str(self.world.state),
+                        "--port",
+                        "47717",
+                    ],
+                }
+            )
+        )
+        root_home = self.world.home / "root-home"
+        root_home.mkdir()
+        recorder = Recorder()
+        host = deploy.Host(
+            uid=0,
+            home=root_home,
+            run=recorder.run,
+            sleep=lambda seconds: None,
+            homes={REAL_UID: target_home},
+        )
+        argv = [
+            "--label", PRODUCTION_LABEL,
+            "--domain", f"gui/{REAL_UID}",
+            "--plist", str(canonical),
+            "--production-deploy", "ASMA-8506",
+            "bootstrap",
+        ]
+        self.assertEqual(run_main(argv, host), 0)
+        self.assertTrue((target_home / deploy.DEPLOY_TARGET_RELATIVE).is_file())
+        self.assertFalse((root_home / deploy.DEPLOY_TARGET_RELATIVE).exists())
+
+    def test_an_unparseable_loaded_production_job_is_refused(self) -> None:
+        def answer(argv: list[str]) -> subprocess.CompletedProcess[str]:
+            if argv[:2] == ["launchctl", "print"]:
+                return done(0, "garbage\n")
+            return done()
+
+        recorder = Recorder(answer)
+        with self.assertRaises(deploy.Refused) as refusal:
+            deploy.resolve_job(
+                DISPOSABLE_LABEL,
+                DISPOSABLE_DOMAIN,
+                self.world.plist(DISPOSABLE_LABEL),
+                None,
+                self.world.host(recorder, DISPOSABLE_UID),
+                "bootstrap",
+            )
+        self.assertEqual(refusal.exception.code, "production_target_unreadable")
+
     def test_a_production_deploy_cannot_be_declared_for_another_label(self) -> None:
         recorder = Recorder()
         argv = [
@@ -842,6 +983,8 @@ class ExplicitTargetTest(WorldTest):
         submitted: list[tuple[Path, bytes]] = []
 
         def answer(argv: list[str]) -> subprocess.CompletedProcess[str]:
+            if argv[:2] == ["launchctl", "print"]:
+                return done(1)
             if argv[0] == "launchctl" and argv[1] == "bootstrap":
                 submitted.append((Path(argv[3]), Path(argv[3]).read_bytes()))
             return done(1) if argv[0] == "lsof" else done()
@@ -865,6 +1008,48 @@ class ExplicitTargetTest(WorldTest):
         self.assertEqual(code, deploy.EXIT_FAILED)
         self.assertIn(["lsof", "-nP", "-iTCP:47717", "-sTCP:LISTEN", "-t"], recorder.calls)
 
+    def test_the_timeout_and_wait_are_explicit_options(self) -> None:
+        arguments = deploy.parse_arguments(
+            [
+                "--label", DISPOSABLE_LABEL,
+                "--domain", DISPOSABLE_DOMAIN,
+                "--timeout", "300",
+                "--wait", "60",
+                "bootout",
+            ]
+        )
+        self.assertEqual(arguments.timeout, 300.0)
+        self.assertEqual(arguments.wait, 60.0)
+
+    def test_the_port_wait_is_configurable(self) -> None:
+        plist = self.world.plist(DISPOSABLE_LABEL)
+        recorder = Recorder(lambda argv: done(0, "4242\n") if argv[0] == "lsof" else done())
+        host = self.world.host(recorder, DISPOSABLE_UID, wait=1.0)
+        argv = [
+            "--label", DISPOSABLE_LABEL,
+            "--domain", DISPOSABLE_DOMAIN,
+            "--plist", str(plist),
+            "--wait", "1",
+            "bootout",
+        ]
+        self.assertEqual(run_main(argv, host), deploy.EXIT_FAILED)
+        self.assertEqual(len([call for call in recorder.calls if call[0] == "lsof"]), 2)
+
+    def test_real_host_passes_the_timeout(self) -> None:
+        calls: list[float] = []
+        original = deploy._run
+
+        def fake_run(argv, timeout):
+            calls.append(timeout)
+            return done()
+
+        deploy._run = fake_run
+        self.addCleanup(setattr, deploy, "_run", original)
+        host = _real_host(300, 60)
+        host.run(["true"])
+        self.assertEqual(calls, [300])
+        self.assertEqual(host.wait, 60)
+
 
 class ReplaceTest(WorldTest):
     def answer(self, readback_status: int = 200, readback_realm: str = REALM_ID):
@@ -872,6 +1057,8 @@ class ReplaceTest(WorldTest):
         self.bootstrap_plist: tuple[Path, bytes] | None = None
 
         def answer(argv: list[str]) -> subprocess.CompletedProcess[str]:
+            if argv[:2] == ["launchctl", "print"]:
+                return done(1)
             if argv[0] == "launchctl":
                 if argv[1] == "bootstrap":
                     self.bootstrap_plist = (Path(argv[3]), Path(argv[3]).read_bytes())
@@ -961,6 +1148,8 @@ class ReplaceTest(WorldTest):
         roots: list[str] = []
 
         def answer(argv: list[str]) -> subprocess.CompletedProcess[str]:
+            if argv[:2] == ["launchctl", "print"]:
+                return done(1)
             if argv[0] == "launchctl":
                 return done()
             if argv[0] == "lsof":
@@ -1046,6 +1235,8 @@ class ReplaceTest(WorldTest):
         before = self.world.installed()
 
         def answer(argv: list[str]) -> subprocess.CompletedProcess[str]:
+            if argv[:2] == ["launchctl", "print"]:
+                return done(1)
             if argv[0] == "launchctl":
                 return done()
             if argv[0] == "lsof":
