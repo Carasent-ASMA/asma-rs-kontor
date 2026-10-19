@@ -4,7 +4,7 @@ import type { PluginTheme } from "@getpaseo/plugin";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 export type Colors = PluginTheme["colors"];
 /** Wide tabs follow the prototype's compact left-grouped strip; stacked tabs are the compact bottom bar. */
-export function Action({ label, accessibilityLabel, onPress, colors, icon, stacked = false, tab = false, selected = false, disabled = false, expanded, trailing, small = false, ref }: {
+export function Action({ label, accessibilityLabel, onPress, colors, icon, stacked = false, tab = false, selected: selectedProp, disabled = false, expanded, trailing, small = false, ref }: {
   label: string; onPress: () => void; colors: Colors; selected?: boolean; disabled?: boolean;
   icon?: string;
   stacked?: boolean; tab?: boolean;
@@ -13,9 +13,13 @@ export function Action({ label, accessibilityLabel, onPress, colors, icon, stack
   expanded?: boolean; trailing?: string; small?: boolean;
   ref?: Ref<View>;
 }) {
+  const selected = selectedProp ?? false;
+  // Web reads state from ARIA: a tab is selected, and a button given `selected` is a toggle. A menu
+  // button already says it is expanded, and its label names the current view.
+  const aria = tab ? { "aria-selected": selected } : selectedProp === undefined || expanded !== undefined ? {} : { "aria-pressed": selectedProp };
   const strip = !stacked && (tab || trailing !== undefined);
   const compactButton = small && !stacked && !strip;
-  return <Pressable ref={ref} accessibilityRole={tab ? "tab" : "button"} accessibilityLabel={accessibilityLabel ?? label} accessibilityState={{ selected, disabled, ...(expanded === undefined ? {} : { expanded }) }}
+  return <Pressable ref={ref} accessibilityRole={tab ? "tab" : "button"} accessibilityLabel={accessibilityLabel ?? label} accessibilityState={{ selected, disabled, ...(expanded === undefined ? {} : { expanded }) }} aria-expanded={expanded} {...aria}
     disabled={disabled} onPress={onPress} style={strip ? { minHeight: 32, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 5, justifyContent: "center", flexDirection: "row", alignItems: "center", gap: 4,
       backgroundColor: selected ? colors.surface2 : undefined, opacity: disabled ? 0.5 : 1 } : compactButton ? { minHeight: 30, minWidth: 30, paddingHorizontal: 9, justifyContent: "center", flexDirection: "row", alignItems: "center", gap: 5,
       borderRadius: 6, borderWidth: 1, borderColor: colors.border, backgroundColor: selected ? colors.surface2 : undefined, opacity: disabled ? 0.5 : 1 } : { minHeight: stacked ? 48 : 44, minWidth: 44, flex: stacked ? 1 : undefined, paddingHorizontal: stacked ? 2 : 10, justifyContent: "center",
@@ -33,12 +37,17 @@ export function Card({ title, children, colors }: { title: string; children: Rea
     <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: 15, fontWeight: "600" }}>{title}</Text>{children}
   </View>;
 }
-/** Disclosure with expanded semantics; pass open/onToggle to keep its state in a view store. */
-export function Disclosure({ label, colors, children, open, onToggle, small = false }: { label: string; colors: Colors; children: ReactNode; open?: boolean; onToggle?: (open: boolean) => void; small?: boolean }) {
+/** True where a finger is the primary pointer: native apps, and web on phones and tablets. A mouse keeps the denser rows. */
+export const COARSE_POINTER = (() => {
+  const matchMedia = (globalThis as { matchMedia?: (query: string) => { matches: boolean } }).matchMedia;
+  return typeof matchMedia !== "function" || matchMedia("(pointer: coarse)").matches;
+})();
+/** Disclosure with expanded semantics; pass open/onToggle to keep its state in a view store. Touch gets a 44pt row. */
+export function Disclosure({ label, accessibilityLabel, colors, children, open, onToggle, small = false }: { label: string; accessibilityLabel?: string; colors: Colors; children: ReactNode; open?: boolean; onToggle?: (open: boolean) => void; small?: boolean }) {
   const [local, setLocal] = useState(false);
   const expanded = open ?? local;
   return <View>
-    <Pressable accessibilityRole="button" accessibilityState={{ expanded }} accessibilityLabel={label} onPress={() => { setLocal(!expanded); onToggle?.(!expanded); }} style={{ minHeight: small ? 30 : 36, justifyContent: "center", alignSelf: "flex-start" }}>
+    <Pressable accessibilityRole="button" accessibilityState={{ expanded }} aria-expanded={expanded} accessibilityLabel={accessibilityLabel ?? label} onPress={() => { setLocal(!expanded); onToggle?.(!expanded); }} style={{ minHeight: COARSE_POINTER ? 44 : small ? 30 : 36, minWidth: 44, justifyContent: "center", alignSelf: "flex-start" }}>
       <Text style={{ color: small ? colors.foregroundMuted : colors.accent, fontSize: small ? 12 : 13 }}>{expanded ? "▾" : "▸"} {label}</Text>
     </Pressable>
     {expanded ? children : null}

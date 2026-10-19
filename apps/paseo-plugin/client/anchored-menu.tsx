@@ -89,7 +89,7 @@ export function AnchoredMenu({ anchor, root, rootSize, placement, onClose, color
 export function MenuItem({ label, detail, accessibilityLabel, selected = false, onPress, colors, tall = false, indent = 0 }: {
   label: string; detail?: string | null; accessibilityLabel?: string; selected?: boolean; onPress: () => void; colors: Colors; tall?: boolean; indent?: number;
 }) {
-  return <Pressable role="menuitem" accessibilityLabel={accessibilityLabel ?? (detail ? `${label}, ${detail}` : label)} accessibilityState={{ selected }} onPress={onPress}
+  return <Pressable role="menuitem" accessibilityLabel={accessibilityLabel ?? (detail ? `${label}, ${detail}` : label)} accessibilityState={{ selected }} aria-current={selected || undefined} onPress={onPress}
     style={({ pressed, hovered, focused }: { pressed: boolean; hovered?: boolean; focused?: boolean }) => ({ minHeight: tall ? 44 : 32, paddingLeft: 10 + 12 * indent, paddingRight: 10, paddingVertical: 6, borderRadius: 5, justifyContent: "center",
       backgroundColor: pressed || hovered || focused ? colors.surface2 : selected ? colors.surface2 : undefined })}>
     <MenuItemText label={label} detail={detail} selected={selected} colors={colors} tall={tall} />

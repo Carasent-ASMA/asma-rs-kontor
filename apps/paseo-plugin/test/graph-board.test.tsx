@@ -56,6 +56,8 @@ const taskRows = (data: BoardItem[]) => data.flatMap((item) => item.kind === "ta
 /** The compact row's outer element: the row button (plan task) or the grouped row (captured Jira). */
 const outer = (row: Element) => expand(row);
 const label = (row: Element) => String(outer(row).props.accessibilityLabel);
+/** The row's full description: the compact row button, or the wide row's detail column. */
+const rowLabel = (row: Element) => String(elements(row).find((element) => element.props.accessible === true)!.props.accessibilityLabel);
 const issueButtons = (row: Element) => elements(row).filter((element) => element.type === "Pressable" && String(element.props.accessibilityLabel).startsWith("Open issue"));
 const metaOf = (row: Element) => text(elements(row).find((element) => element.type === "Text" && element.props.numberOfLines === 1 && element.props.style && (element.props.style as { flex?: number }).flex === 1));
 const day = captureDay(history.generated);
@@ -69,7 +71,9 @@ describe("Board without a valid canonical graph (BOARD-01)", () => {
     expect(data[0]).toMatchObject({ kind: "section", title: `Captured Jira tasks · ${children.length}` });
     expect((data[0] as { note: string }).note).toContain("Plan declaration and dependencies: unavailable");
     const first = row(jiraRows(data)[0]!);
-    expect(text(first)).toContain(`${children[0]!.key} · Title unavailable in the captured Jira projection`);
+    expect(text(first)).toContain(`${children[0]!.key} · title not captured`);
+    expect(text(first)).not.toContain("projection");
+    expect(label(first)).toContain(`${children[0]!.key}: title unavailable in the captured Jira projection.`);
     expect(metaOf(first)).toBe(`${children[0]!.status} (${children[0]!.cat}) · captured ${day}`);
     expect(label(first)).toContain(`${children[0]!.status} (${children[0]!.cat}), captured ${history.generated} from Historical Jira`);
     expect(label(first)).toContain("Plan declaration and dependencies unavailable");
@@ -82,19 +86,30 @@ describe("Board without a valid canonical graph (BOARD-01)", () => {
     expect(opened).toContain("Current completion and readiness: Unknown");
     expect(opened).toContain("Plan declaration and dependencies: unavailable without a valid canonical plan graph.");
     model.evidence = false;
+    // Wide shows the same short row and header; the exact capture, source, declaration and notes move with it.
     const wide = mount({ epicKey: "ASMA-8371", compact: false });
-    expect(text(wide.row(jiraRows(wide.data)[0]!))).toContain(`${children[0]!.status} (${children[0]!.cat}) · captured ${history.generated} · Historical Jira`);
-    expect(text(wide.row(jiraRows(wide.data)[0]!))).toContain("Plan declaration and dependencies unavailable");
-    expect(text(wide.header)).toContain("No plan selected. Plan declarations and dependencies are unavailable.");
-    expect(text(wide.header)).toContain("Current completion and readiness: Unknown");
+    const wideRow = wide.row(jiraRows(wide.data)[0]!);
+    expect(text(wideRow)).toContain(`${children[0]!.status} (${children[0]!.cat}) · captured ${day}`);
+    expect(text(wideRow)).not.toContain(history.generated);
+    expect(text(wideRow)).not.toContain("Plan declaration and dependencies unavailable");
+    expect(rowLabel(wideRow)).toContain(`${children[0]!.status} (${children[0]!.cat}), captured ${history.generated} from Historical Jira`);
+    expect(rowLabel(wideRow)).toContain("Plan declaration and dependencies unavailable");
+    expect(text(wide.header)).not.toContain("No plan selected.");
+    expect(text(wide.header)).not.toContain("Current completion and readiness");
+    expect(elements(wide.header).find((element) => element.props.testID === "board-meta")!.props.accessibilityLabel).toContain("Current completion and readiness: Unknown");
+    model.evidence = true;
+    const wideNotes = text(elements(mount({ epicKey: "ASMA-8371", compact: false }).header).find((element) => element.props.testID === "board-source-notes"));
+    expect(wideNotes).toContain("No plan selected. Plan declarations and dependencies are unavailable.");
+    expect(wideNotes).toContain("Jira states are dated historical captures. Current completion and readiness: Unknown.");
   });
 
   it.each([true, false])("never invents a title: no plan title appears on captured rows, even for keys a plan declares (compact %s)", (compact) => {
     const { data, row } = mount({ selectedId: "plan", reads: [{ ...plan, revision: "f".repeat(64) }, jira], compact });
     expect(jiraRows(data).map((item) => item.record.key)).toEqual(expect.arrayContaining(graph.nodes.map((node) => node.jira)));
-    const rendered = jiraRows(data).map((item) => `${text(row(item))}\n${compact ? label(row(item)) : ""}`).join("\n");
+    const rendered = jiraRows(data).map((item) => `${text(row(item))}\n${rowLabel(row(item))}`).join("\n");
     expect(graph.nodes.filter((node) => rendered.includes(node.title)).map((node) => node.id)).toEqual([]);
-    expect(jiraRows(data).every((item) => text(row(item)).includes("Title unavailable in the captured Jira projection"))).toBe(true);
+    expect(jiraRows(data).every((item) => text(row(item)).includes(`${item.record.key} · title not captured`))).toBe(true);
+    expect(jiraRows(data).every((item) => rowLabel(row(item)).includes("title unavailable in the captured Jira projection"))).toBe(true);
   });
 
   it("offers exactly one Open issue action per captured row, bound to the exact key, and no plan action", () => {
@@ -121,9 +136,10 @@ describe("Board without a valid canonical graph (BOARD-01)", () => {
     expect(data.some((item) => item.kind === "task")).toBe(false);
     expect(actions(header).map((button) => button.props.label)).toEqual(["Open source plan", "Source details"]);
     expect(text(header)).toContain("no plan graph");
-    expect(text(mount({ selectedId: "plan", reads: [stale, jira], compact: false }).header)).toContain("No valid exact-source canonical graph available");
+    expect(text(mount({ selectedId: "plan", reads: [stale, jira], compact: false }).header)).not.toContain("No valid exact-source canonical graph available");
     model.evidence = true;
     expect(text(mount({ selectedId: "plan", reads: [stale, jira] }).header)).toContain("No valid exact-source canonical graph available");
+    expect(text(mount({ selectedId: "plan", reads: [stale, jira], compact: false }).header)).toContain("No valid exact-source canonical graph available");
     expect(text(row(jiraRows(data)[0]!))).not.toContain(graph.nodes[0]!.title);
   });
 
@@ -165,7 +181,8 @@ describe("Board without a valid canonical graph (BOARD-01)", () => {
     // Agreeing captures from both sources keep one status with both capture days.
     expect(metaOf(row(jiraRows(data)[1]!))).toBe(`${children[1]!.status} (${children[1]!.cat}) · captured ${day} / 19 Oct`);
     const wide = mount({ epicKey: "ASMA-8371", reads: [jira, later], compact: false });
-    expect(text(wide.row(jiraRows(wide.data)[0]!))).toContain("In Development (indeterminate) · captured 2026-10-19T08:00+00:00 · Later capture");
+    expect(text(wide.row(jiraRows(wide.data)[0]!))).toContain(`Captures disagree: ${children[0]!.status} (${children[0]!.cat}) ${day} / In Development (indeterminate) 19 Oct`);
+    expect(rowLabel(wide.row(jiraRows(wide.data)[0]!))).toContain("In Development (indeterminate), captured 2026-10-19T08:00+00:00 from Later capture");
     expect(jiraRows(data)).toHaveLength(children.length);
   });
 
@@ -196,7 +213,7 @@ describe("Board with a valid canonical graph", () => {
     expect(section.title).toBe(`Captured Jira tasks not declared in this plan · ${undeclared.length}`);
     expect(section.note).toContain("Children of ASMA-8371");
     const last = row(jiraRows(data).at(-1)!);
-    expect(text(last)).toContain("ASMA-83720 · Title unavailable in the captured Jira projection");
+    expect(text(last)).toContain("ASMA-83720 · title not captured");
     expect(metaOf(last)).toBe(`To Do (new) · captured ${day}`);
     expect(label(last)).toContain("Not declared in this plan revision");
     const task = row(data[1]!);
@@ -205,9 +222,14 @@ describe("Board with a valid canonical graph", () => {
     expect(metaOf(row(data[3]!))).toBe(`TASK-003 · Closed (done) · captured ${day} · Phase 2 · after TASK-001`);
     expect(label(task)).toContain(`Closed (done), captured ${history.generated} from Historical Jira`);
     const wide = mount({ selectedId: "plan", reads: [plan, withExtra], epicKey: "ASMA-1", compact: false });
-    expect(text(wide.row(jiraRows(wide.data).at(-1)!))).toContain("Not declared in this plan revision");
-    expect(text(wide.row(wide.data[1]!))).toContain(`Closed (done) · captured ${history.generated} · Historical Jira`);
-    expect(text(wide.row(wide.data[1]!))).toContain("TASK-001 · Phase 1 · depth 0 · prerequisites none declared");
+    expect(text(wide.row(jiraRows(wide.data).at(-1)!))).not.toContain("Not declared in this plan revision");
+    expect(rowLabel(wide.row(jiraRows(wide.data).at(-1)!))).toContain("Not declared in this plan revision");
+    const wideTask = wide.row(wide.data[1]!);
+    expect(text(wideTask)).toContain(`TASK-001 · Closed (done) · captured ${day} · Phase 1`);
+    expect(text(wideTask)).not.toContain("depth");
+    expect(text(wideTask)).not.toContain(history.generated);
+    expect(rowLabel(wideTask)).toContain(`Closed (done), captured ${history.generated} from Historical Jira`);
+    expect(rowLabel(wideTask)).toContain("Phase 1, dependency depth 0. No prerequisites declared.");
   });
 
   it("opens each task in the plan from the whole compact row with its exact canonical task id, never a Jira key or title", () => {
@@ -284,6 +306,18 @@ describe("compact Board density (iPhone 390x844)", () => {
     expect(text(notes)).toContain("Jira states are dated historical captures. Current completion and readiness: Unknown.");
     expect(text(notes)).toContain("Plan tasks · 19: Canonical declarations in this exact plan revision.");
     expect(text(notes)).toContain("Captured Jira tasks not declared in this plan");
+  });
+
+  it("keeps the wide header to the same title and meta line, with the plan and epic in the title's label", () => {
+    const { header, data, row } = mount({ selectedId: "plan", reads: [plan, jira], compact: false });
+    const heading = elements(header).find((element) => element.props.accessibilityRole === "header")!;
+    expect(text(heading)).toBe("Board");
+    expect(heading.props.accessibilityLabel).toBe(`Board · ${graph.epic.jira} · Plan`);
+    expect(text(elements(header).find((element) => element.props.testID === "board-meta"))).toBe(`${children.length} Jira · ${graph.nodes.length} plan tasks · captured ${day}`);
+    expect(text(header)).not.toContain("Jira states are dated historical captures");
+    const section = row(data[0]!);
+    expect(text(section)).toBe((data[0] as { title: string }).title);
+    expect(elements(section).find((element) => element.props.accessibilityRole === "header")!.props.accessibilityHint).toBe((data[0] as { note: string }).note);
   });
 
   it("keeps section rows to one line on compact, with the note as the hint", () => {

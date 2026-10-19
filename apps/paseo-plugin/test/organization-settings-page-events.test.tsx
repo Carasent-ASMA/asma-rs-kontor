@@ -8,7 +8,7 @@ const model = vi.hoisted(() => ({ slots: [] as unknown[], cursor: 0,
   },
 }));
 vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useState: <T,>(initial: T) => model.useState(initial) }));
-vi.mock("react-native", () => ({ ScrollView: "ScrollView", View: "View" }));
+vi.mock("react-native", () => ({ ScrollView: "ScrollView", View: "View", Text: "Text" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput", Icon: "Icon" }));
 import { OrganizationSettingsPage } from "../client/organization-settings-page";
 import { DEFAULT_ORGANIZATION_SETTINGS, organizationSettingsSchema, type OrganizationSettings } from "../shared/organization";
@@ -102,7 +102,8 @@ describe("Settings page draft callbacks", () => {
     expect(screen.save).toHaveBeenCalledTimes(1);
 
     screen.click("Save preferences"); await screen.settle();
-    expect(screen.text()).toContain("Preferences saved on this host."); expect(screen.text()).toContain("Saved revision rev-c");
+    expect(screen.text()).toContain("Preferences saved on this host."); expect(screen.text()).not.toContain("Saved revision");
+    expect(screen.input("Saved revision rev-c. Grouping role · appearance dark · 1 conversation with explicit plan links · 2 display mappings")).toBeDefined();
     expect(screen.text()).not.toContain("Editing revision"); expect(screen.text()).not.toContain("Save failed:");
     expect(screen.save).toHaveBeenCalledTimes(2); expect(screen.save.mock.calls[1]![1]).toBe("rev-b");
     expect(await screen.save.mock.results[1]!.value).toBe(true);

@@ -245,6 +245,23 @@ export function activeFilterParts(input: {
   ].filter((part): part is string => part !== null);
 }
 
+/**
+ * On web a mouse or touch press also focuses the control it presses. Browsers mark only keyboard
+ * focus as :focus-visible, so a focus without it came from a press. Native focus is keyboard-only.
+ */
+export function pressFocus(event: unknown): boolean {
+  const target = (event as { target?: { matches?: (selector: string) => boolean } } | undefined)?.target;
+  if (typeof target?.matches !== "function") return false;
+  try {
+    return !target.matches(":focus-visible");
+  } catch {
+    return false;
+  }
+}
+
+/** Prefix of the failure note kontor-screen passes as workspaceNote. */
+const WORKSPACE_LIST_ERROR = "Workspace list unavailable";
+
 function updatedLabel(timestamp: number | null): string {
   if (timestamp === null) {
     return "not read yet";
@@ -392,6 +409,7 @@ export function FiltersButton({
       disabled={disabled}
       accessibilityRole="button"
       accessibilityState={{ expanded }}
+      aria-expanded={expanded}
       accessibilityLabel={filtersAccessibilityLabel(activeCount)}
       accessibilityHint={expanded ? "Collapses filter options" : "Expands filter options"}
       hitSlop={4}
@@ -541,6 +559,7 @@ export function SlimActionButton({
       accessibilityLabel={accessibilityLabel}
       accessibilityHint={accessibilityHint}
       accessibilityState={expanded === undefined ? undefined : { expanded }}
+      aria-expanded={expanded}
       hitSlop={4}
       onPress={onPress}
       style={{
@@ -796,6 +815,7 @@ function FilterChip({
       disabled={disabled}
       accessibilityRole={checkbox ? "checkbox" : "button"}
       accessibilityState={checkbox ? { checked: active, disabled } : { selected: active, disabled }}
+      {...(checkbox ? { "aria-checked": active } : { "aria-pressed": active })}
       accessibilityLabel={count === undefined ? label : `${label}, ${count}`}
       onBlur={onBlur}
       onFocus={onFocus}
@@ -863,6 +883,7 @@ function ToggleRow({
       disabled={disabled}
       accessibilityRole="switch"
       accessibilityState={{ checked }}
+      aria-checked={checked}
       accessibilityLabel={label}
       accessibilityHint={description}
       onBlur={onBlur}
@@ -1248,8 +1269,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     filterPinnedUntilRef.current = Date.now() + 1_500;
   }, []);
 
-  const handleToolbarControlFocus = useCallback(() => {
-    toolbarControlFocusedRef.current = true;
+  const handleToolbarControlFocus = useCallback((event?: unknown) => {
+    // Keyboard focus keeps the toolbar until it moves on; a pressed chip only gets the short interaction pin.
+    toolbarControlFocusedRef.current = !pressFocus(event);
     pinFilterInteraction();
   }, [pinFilterInteraction]);
 
@@ -1554,6 +1576,14 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   }, [compact, rowSignature]);
   const shown = useMemo(() => visibleSessions(filtered), [filtered]);
   const workspaceCount = new Set(shown.map((entry) => entry.workspaceId ?? entry.workspaceName ?? entry.cwd)).size;
+  // The full count and read statement; Filters shows it, the visible count line only when it adds something.
+  const sessionCount = `${shown.length === scoped.length ? `${scoped.length}` : `${shown.length} of ${scoped.length}`} session${scoped.length === 1 ? "" : "s"}`;
+  const inventoryRead = state.lastUpdatedAt === null
+    ? "not read yet"
+    : state.inventoryComplete
+      ? `complete inventory read ${updatedLabel(state.lastUpdatedAt)}`
+      : `partial inventory read ${updatedLabel(state.lastUpdatedAt)}`;
+  const countSummary = `${sessionCount} · ${workspaceCount} workspace${workspaceCount === 1 ? "" : "s"} · ${inventoryRead}`;
   const setExpansion = (patch: Readonly<Record<string, boolean>>) => {
     const local = patchLocalExpansion(host.id, patch);
     setExpansionRevision((revision) => revision + 1);
@@ -1819,6 +1849,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             <Action small={!compact} colors={colors} label="↑ Move up" accessibilityLabel="Move selected row up" disabled={!arrangeEnabled || orderSelection === null} onPress={() => moveSelection(-1)} />
             <Action small={!compact} colors={colors} label="↓ Move down" accessibilityLabel="Move selected row down" disabled={!arrangeEnabled || orderSelection === null} onPress={() => moveSelection(1)} />
           </View> : null}
+          <Text testID="sessions-options-count" style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 18 }}>{countSummary}{workspaceNote ? `. ${workspaceNote}.` : ""}</Text>
           <Disclosure small label="Legend" colors={colors}>
             <Text style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 18 }}>
               Icons mark a workstream, epic, workspace or native project. {Object.entries(WORKSPACE_KINDS).map(([code, meaning]) => `${code} · ${meaning}`).join("  ")}. Repeated title prefixes group siblings for display only; they do not establish an authorized role.
@@ -1942,14 +1973,11 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     : state.status === "error"
       ? "No sessions could be read from this host."
       : "No sessions in this host's scope.";
-  const countLine = state.entries.length === 0 ? null : (
-    <Text testID="sessions-count" accessibilityRole="text" style={{ color: colors.foregroundMuted, fontSize: 11, paddingHorizontal: 4, paddingBottom: 8 }}>
-      {shown.length === scoped.length ? `${scoped.length}` : `${shown.length} of ${scoped.length}`} session{scoped.length === 1 ? "" : "s"} · {workspaceCount} workspace{workspaceCount === 1 ? "" : "s"} ·{" "}
-      {state.lastUpdatedAt === null
-        ? "not read yet"
-        : state.inventoryComplete
-          ? `complete inventory read ${updatedLabel(state.lastUpdatedAt)}`
-          : `partial inventory read ${updatedLabel(state.lastUpdatedAt)}`}
+  // Shown only when narrowed or when the read is partial or missing; group rows already carry the
+  // counts. The workspace count stays in the label and, with the complete read, in Filters.
+  const countLine = state.entries.length === 0 || (shown.length === scoped.length && state.inventoryComplete && state.lastUpdatedAt !== null) ? null : (
+    <Text testID="sessions-count" accessibilityRole="text" accessibilityLabel={countSummary} style={{ color: colors.foregroundMuted, fontSize: 11, paddingHorizontal: 4, paddingBottom: 8 }}>
+      {sessionCount}{state.inventoryComplete && state.lastUpdatedAt !== null ? "" : ` · ${inventoryRead}`}
     </Text>
   );
   // An element, not a component, so the search input keeps its focus across renders.
@@ -2047,13 +2075,13 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           </View>
         }
         ListFooterComponent={
-          state.entries.length === 0 ? null : (
+          // Only a workspace list failure stays below the list; the routine read note is in Filters.
+          state.entries.length === 0 || !workspaceNote?.startsWith(WORKSPACE_LIST_ERROR) ? null : (
             <Text
               testID="sessions-footer"
               style={{ color: colors.foregroundMuted, fontSize: 11, paddingVertical: 12, paddingHorizontal: 4 }}
             >
-              Select a session to open its existing Paseo conversation. Placement stays unchanged.
-              {workspaceNote ? ` ${workspaceNote}.` : ""}
+              {workspaceNote}.
             </Text>
           )
         }

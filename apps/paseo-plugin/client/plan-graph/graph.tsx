@@ -86,6 +86,8 @@ export type PlanGraphProps = {
   sourceActions?: Partial<Record<PlanSourceAction["kind"], (action: PlanSourceAction) => void>>;
   /** Shell provenance, rendered only inside the graph's single Source details disclosure. */
   details?: ReactNode;
+  /** Copies text to this client's clipboard; offered only when the shell supplies it. */
+  onCopy?: (text: string, what: string) => void;
 };
 
 /** Native component; the shell owns fetching, source validation, routing, and store lifetime. */
@@ -93,7 +95,7 @@ export function PlanGraph(props: PlanGraphProps) {
   return <PlanGraphView key={planGraphViewKey(props.hostId, props.graph)} {...props} />;
 }
 
-function PlanGraphView({ graph, hostId, theme, store, compact = false, textScale = 1, sourcedStates, sourceActions, details }: PlanGraphProps) {
+function PlanGraphView({ graph, hostId, theme, store, compact = false, textScale = 1, sourcedStates, sourceActions, details, onCopy }: PlanGraphProps) {
   const key = planGraphViewKey(hostId, graph);
   const view = useSyncExternalStore(store.subscribe, () => store.read(key));
   const [hovered, setHovered] = useState<string | null>(null);
@@ -163,7 +165,7 @@ function PlanGraphView({ graph, hostId, theme, store, compact = false, textScale
   const small = (value: ReactNode) => <Text selectable style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 18 }}>{value}</Text>;
   /** `expanded` marks a disclosure trigger; plain controls omit it. */
   const control = (title: string, onPress: () => void, disabled = false, caption = title, expanded?: boolean) => (
-    <Pressable focusable accessibilityRole="button" accessibilityLabel={title} accessibilityState={{ disabled, ...(expanded === undefined ? {} : { expanded }) }} disabled={disabled}
+    <Pressable focusable accessibilityRole="button" accessibilityLabel={title} accessibilityState={{ disabled, ...(expanded === undefined ? {} : { expanded }) }} aria-expanded={expanded} disabled={disabled}
       onPress={onPress} style={{ minWidth: MIN_TOUCH_TARGET, minHeight: MIN_TOUCH_TARGET, paddingHorizontal: compact ? 8 : 12,
         justifyContent: "center", alignItems: "center", borderWidth: 1, borderColor: colors.border, borderRadius: 8, opacity: disabled ? 0.5 : 1 }}>
       {label(caption)}
@@ -290,6 +292,7 @@ function PlanGraphView({ graph, hostId, theme, store, compact = false, textScale
       accessibilityLabel={`${node.id}: ${node.title}. ${state ? `${state.label}, source ${state.source}, observed ${state.observedAt}` : "Status not supplied"}. ${node.phase}. Wave ${node.wave}, dependency depth.`}
       accessibilityHint="Activate for direct prerequisites, dependents and source details"
       accessibilityState={{ selected: node.id === view.selected }}
+      aria-pressed={node.id === view.selected}
       accessibilityActions={[{ name: "activate", label: "Select task" }, { name: "escape", label: "Clear graph highlight" }]}
       onAccessibilityAction={({ nativeEvent }) => {
         if (nativeEvent.actionName === "escape") clear();
@@ -312,7 +315,7 @@ function PlanGraphView({ graph, hostId, theme, store, compact = false, textScale
         borderColor: emphasis === "full" || emphasis === "dim" ? colors.border : colors.accent,
         backgroundColor: highlighted ? colors.accent : colors.surface1, opacity: emphasis === "dim" ? 0.35 : 1 }}>
       <Text style={{ color: foreground, fontWeight: "700" }}>{node.id} · {node.title}</Text>
-      <Text style={{ color: foreground }}>{node.phase} · Depth {node.wave}</Text>
+      <Text style={{ color: foreground }}>{node.phase}</Text>
       <Text style={{ color: foreground }}>{state?.label ?? "Status not supplied"}</Text>
       {inList && <Text style={{ color: foreground }}>{`Prerequisites: ${node.depends_on.join(", ") || "None"}`}</Text>}
     </Pressable>;
@@ -324,14 +327,18 @@ function PlanGraphView({ graph, hostId, theme, store, compact = false, textScale
     return `Sourced states: ${observed.length}/${graph.nodes.length} tasks · observed ${[...new Set(observed.map((state) => state.observedAt))].join(" / ")}`;
   }
   const summary = `${graph.epic.jira ?? "Epic Jira not supplied"} · ${graph.nodes.length} tasks · ${graph.edges.length} dependencies · depth, not readiness`;
+  const counts = `${graph.nodes.length} tasks · ${graph.edges.length} dependencies`;
   const largeNote = "Large graph: paged wave list. Every canonical task and dependency remains available.";
   const hint = "Select, hover or focus a task for details. No task is selected automatically.";
-  const zoomStatus = <Text testID="plan-graph-zoom-status" accessibilityLiveRegion="polite" {...(compact ? { numberOfLines: 1 } : {})}
+  const zoom = `Canvas zoom ${Math.round(scale * 10000) / 100}%${fitStatus}${alternate ? ". Wave list is unscaled." : ""}`;
+  // The untouched default camera says nothing; any camera action shows (and announces) the status.
+  const untouched = cameraRevision === 0 && scale === 1 && !fitStatus && !alternate;
+  const zoomStatus = <Text testID="plan-graph-zoom-status" accessibilityLiveRegion="polite" accessibilityLabel={zoom} {...(compact ? { numberOfLines: 1 } : {})}
     style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 18, ...(compact ? { flexShrink: 1 } : {}) }}>
-    {`Canvas zoom ${Math.round(scale * 10000) / 100}%${fitStatus}${alternate ? ". Wave list is unscaled." : ""}`}
+    {untouched ? "" : zoom}
   </Text>;
-  // Compact is graph-first: one title row, then the canvas. Summary, hint and the large-graph
-  // note move into Source details; the one-line zoom status sits beside its toggle.
+  // Graph-first: one title row, then the canvas. The epic, the depth note, the hint and (compact)
+  // the large-graph note are in Source details; the zoom status sits beside its toggle.
   return <View testID="plan-graph" style={{ flex: 1, minHeight: 300, gap: 8, padding: compact ? 8 : 12, backgroundColor: colors.surface0 }}
     onLayout={({ nativeEvent }) => {
       // Non-finite heights fall back to the fixed floor in canvasMinHeight.
@@ -341,8 +348,7 @@ function PlanGraphView({ graph, hostId, theme, store, compact = false, textScale
     <View testID="plan-graph-title-row" style={{ flexDirection: "row", flexWrap: compact ? "nowrap" : "wrap", alignItems: "center", gap: compact ? 6 : 8 }}>
       <View style={{ flexGrow: 1, flexShrink: 1, flexBasis: compact ? 0 : 240, minWidth: 0, gap: 2 }}>
         <Text accessibilityRole="header" {...(compact ? { numberOfLines: 1 } : {})} style={{ color: colors.foreground, fontSize: 15, fontWeight: "600" }}>Plan dependencies</Text>
-        {compact ? null : small(summary)}
-        {compact ? null : zoomStatus}
+        {compact ? null : <Text selectable accessibilityLabel={summary} style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 18 }}>{counts}</Text>}
       </View>
       <View style={{ flexDirection: "row", gap: 6 }}>
         <View role="group" accessibilityLabel="Graph zoom" style={{ flexDirection: "row", gap: 6 }}>
@@ -360,6 +366,7 @@ function PlanGraphView({ graph, hostId, theme, store, compact = false, textScale
       {control("Centre selected task", () => centre(view.selected), !view.selected || alternate, "Centre selected")}
       {control("Reset zoom to 100%", resetScale, alternate, "100%")}
       {control(alternate ? "Show graph canvas" : "Fit as wave list", toggleAlternate, isLarge, alternate ? "Graph canvas" : "Wave list")}
+      {onCopy ? control("Copy the canonical graph JSON", () => onCopy(JSON.stringify(graph, null, 2), "Graph JSON"), false, "Copy JSON") : null}
     </View> : null}
     {isLarge && !compact ? small(largeNote) : null}
     <ScrollView key={alternate ? `list-${page}-${cameraRevision}` : frame.key} ref={vertical} nestedScrollEnabled
@@ -394,7 +401,7 @@ function PlanGraphView({ graph, hostId, theme, store, compact = false, textScale
             store.update(key, { listY: y });
             vertical.current?.scrollTo({ y, animated: false });
           }}>
-          {label(`Wave ${item.node.wave} · dependency depth`)}
+          {label(`Depth ${item.node.wave}`)}
           {card(item, true)}
           {graph.edges.filter((edge) => edge.from === item.node.id).map((edge) => {
             const { color, opacity } = edgeAppearance(edge);
@@ -411,7 +418,7 @@ function PlanGraphView({ graph, hostId, theme, store, compact = false, textScale
         <View testID="plan-graph-canvas" style={{ position: "absolute", left: 0, top: 0, width: layout.width, height: layout.height,
           transformOrigin: "left top", transform: [{ scale }] }}>
           {layout.columns.map((column) => <View key={column.wave} style={{ position: "absolute", left: column.x, width: 220 }}>
-            {label(`Wave ${column.wave} · depth`)}
+            {label(`Depth ${column.wave}`)}
           </View>)}
           {graph.edges.map((edge, index) => {
             const from = positions.get(edge.from)!;
@@ -451,14 +458,14 @@ function PlanGraphView({ graph, hostId, theme, store, compact = false, textScale
       </View>
     </ScrollView> : null}
     <View style={{ flexDirection: "row", flexWrap: compact ? "nowrap" : "wrap", alignItems: "center", gap: 8 }}>
-      <View style={{ flexGrow: 1, flexShrink: 1, flexBasis: compact ? 0 : 140, minWidth: 0 }}>{compact ? zoomStatus : selectedNode ? null : small(hint)}</View>
+      <View style={{ flexGrow: 1, flexShrink: 1, flexBasis: compact ? 0 : 140, minWidth: 0 }}>{zoomStatus}</View>
       {disclosure("Source details", "Source details", "details")}
     </View>
     {view.details ? <ScrollView testID="plan-graph-source-details" accessibilityLabel="Graph source details" style={{ maxHeight: compact ? 200 : 260, flexGrow: 0, flexShrink: 1, minHeight: 0 }}>
       <View style={{ gap: 4 }}>
-        {compact ? small(summary) : null}
+        {small(summary)}
         {compact && isLarge ? small(largeNote) : null}
-        {compact ? small(hint) : null}
+        {small(hint)}
         {small(`Host ${hostId} · source ${graph.source_sha256.slice(0, 12)} · graph ${graph.graph_sha256.slice(0, 12)}`)}
         {small(`Plan source: ${graph.source}`)}
         {small(`Source SHA-256 ${graph.source_sha256} · canonical graph SHA-256 ${graph.graph_sha256}`)}

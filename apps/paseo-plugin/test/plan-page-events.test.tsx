@@ -81,6 +81,14 @@ describe("Plan reader controls", () => {
     const onGraph = vi.fn(); const screen = mount(TABLE, { onGraph });
     screen.press("Dependency graph"); expect(onGraph).toHaveBeenCalledTimes(1);
   });
+  it("copies the exact captured Markdown only when the host wires copying", () => {
+    expect(mount(TABLE).find((node) => node.props.label === "Copy Markdown")).toBeUndefined();
+    // The file's own trailing newline is part of the exact source.
+    const exact = `${TABLE}\n`;
+    const onCopy = vi.fn(); const screen = mount(exact, { onCopy });
+    screen.press("Copy the exact Markdown source");
+    expect(onCopy).toHaveBeenCalledExactlyOnceWith(exact, "Plan Markdown");
+  });
 });
 describe("graph task target", () => {
   const target = (taskId: string, revision: string | null = "hash"): PlanView => ({ mode: "formatted", target: { taskId, revision }, revealed: false });

@@ -49,6 +49,20 @@ function text(node: ReactNode): string {
   if (typeof node.type === 'function') return text((node.type as (props: object) => ReactNode)(node.props));
   return text(node.props.children as ReactNode);
 }
+function labels(node: ReactNode): string[] {
+  if (Array.isArray(node)) return node.flatMap(labels);
+  if (!isValidElement<Record<string, unknown>>(node)) return [];
+  if (typeof node.type === 'function') return labels((node.type as (props: object) => ReactNode)(node.props));
+  const own = typeof node.props.accessibilityLabel === 'string' ? [node.props.accessibilityLabel] : [];
+  return [...own, ...labels(node.props.children as ReactNode)];
+}
+function settingsLabels() {
+  const props: PluginScreenProps = { host: { id: 'qa-settings-host', label: 'QA' }, params: {}, layout: { compact: true, platform: 'ios' }, theme: { colors: {} } as PluginScreenProps['theme'] };
+  navigate(props.host.id, { tab: 'Settings' });
+  const outer = KontorScreen(props);
+  const page = elements((outer.type as (props: PluginScreenProps) => ReactNode)(outer.props as PluginScreenProps)).find((element) => element.type === OrganizationSettingsPage)!;
+  return labels(OrganizationSettingsPage(page.props as Parameters<typeof OrganizationSettingsPage>[0])).join('\n');
+}
 function settingsText() {
   const props: PluginScreenProps = { host: { id: 'qa-settings-host', label: 'QA' }, params: {}, layout: { compact: true, platform: 'ios' }, theme: { colors: {} } as PluginScreenProps['theme'] };
   navigate(props.host.id, { tab: 'Settings' });
@@ -74,15 +88,22 @@ describe('QA Settings must display actual Teams source state', () => {
     expect(actual).toContain('operator unavailable: source-read failure');
   });
   it('forwards all four real ready states and read times without inventing observed time or activation', () => {
-    const actual = settingsText();
+    // One visible line per source; the state, read time, observed time and activation are in its label and Source details.
+    const actual = settingsText(); const label = settingsLabels();
     for (const [id, snapshot] of Object.entries(snapshots)) {
-      expect(actual).toContain(`${id} · ready`); expect(actual).not.toContain(`${id} · Not read`);
-      expect(actual).toContain(snapshot.configurationState); expect(actual).toContain(snapshot.readAt);
+      expect(label).toContain(`${id} · ready · ${snapshot.configurationState}. Read ${snapshot.readAt} · observed time Unknown · activation: not-attested`);
+      expect(actual).not.toContain(`${id} · Not read`); expect(actual).not.toContain(snapshot.readAt);
       expect(actual).not.toContain(snapshot.source.path); expect(actual).not.toContain(snapshot.sha256);
     }
-    expect(actual.match(/observed time Unknown/g)).toHaveLength(4);
-    expect(actual.match(/activation: not-attested/g)).toHaveLength(4);
-    expect(actual).not.toContain('retained snapshot stale'); expect(actual).toContain('kontord is not enabled');
+    expect(actual).not.toContain('retained snapshot stale'); expect(actual).not.toContain('kontord is not enabled');
+    model.details = true;
+    const expanded = settingsText();
+    expect(expanded).toContain('kontord is not enabled');
+    for (const [id, snapshot] of Object.entries(snapshots)) {
+      expect(expanded).toContain(`${id} · ready · ${snapshot.configurationState}`); expect(expanded).toContain(snapshot.readAt);
+    }
+    expect(expanded.match(/observed time Unknown/g)).toHaveLength(4);
+    expect(expanded.match(/activation: not-attested/g)).toHaveLength(4);
   });
   it.each(['partial', 'unavailable'] as const)('shows the actual %s snapshot and expandable provenance/diagnostics', (status) => {
     model.snapshots = { ...snapshots, operator: { ...snapshots.operator!, status, data: status === 'unavailable' ? null : snapshots.operator!.data, diagnostics: [{ code: 'read-probe', pointer: '/chains/probe', message: 'Definition unavailable in this snapshot' }] } };

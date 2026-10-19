@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ScrollView, View } from "react-native";
+import { ScrollView, Text, View } from "react-native";
 import { TextInput } from "@getpaseo/plugin/client/react-native";
 import type { OrganizationSettings } from "../shared/organization";
 import type { ReadSourceSummary, SourceRead } from "../shared/read-sources";
@@ -9,12 +9,23 @@ import type { DirectoryEntry } from "./session-directory";
 import type { OrganizationSettingsState } from "./use-organization-settings";
 import { SourceDetails } from "./source-details";
 import { TeamsSnapshotDetails } from "./teams-source-page";
-import { Action, Card, Copy, type Colors } from "./page-controls";
+import { Action, Card, Copy, Disclosure, type Colors } from "./page-controls";
 import { rebaseOrganizationDraft, setDisplayMappingField } from "./organization-draft";
+import { captureDay } from "./graph-page";
+import { shortDates } from "./page-data";
 import type { OrganizationWorkspace } from "./session-organization";
 
 const SOURCE_GROUPS: ReadonlyArray<readonly [ReadSourceSummary["kind"], string]> = [["plan", "Plans"], ["jira", "Jira history"], ["delivery", "Delivery records"], ["decisions", "Decision records"], ["teams", "Teams configuration"]];
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
+const CATALOG_NOTE = "Read-only. Sources are configured on the server; no path, title or renamed ID is inferred. Governed scheduler, gates and team activation: kontord is not enabled. Console owns policy and administration.";
+/** One visible line per configured source: short title, status only when not ready, and a capture cue for Jira. */
+function sourceSummary(read: SourceRead, colors: Colors) {
+  const title = shortDates(read.source.title);
+  const day = read.source.kind === "jira" ? captureDay(read.jiraHistory?.generated ?? "Unknown") : null;
+  const parts = [title, read.status === "ready" ? null : read.status, day && !title.includes(day) ? `captured ${day}` : null];
+  const full = `${read.source.title} · ${read.status} · ${read.source.kind === "jira" ? "Historical Jira snapshot" : read.source.revisionKind}. ${read.source.kind === "jira" ? `Observed ${read.jiraHistory?.generated ?? "Unknown"} · not live` : `Read ${read.readAt}`}`;
+  return <Text selectable accessibilityLabel={full} style={{ color: colors.foreground, fontSize: 13, lineHeight: 20 }}>{parts.filter(Boolean).join(" · ")}</Text>;
+}
 export function OrganizationSettingsPage({ state, colors, entries, workspaces, sources, reads, sourceError, teamsSnapshots = {}, teamsErrors = {}, sourcesAvailable = false, refresh, onOpenTeams }: {
   state: OrganizationSettingsState; colors: Colors; entries: readonly DirectoryEntry[];
   sources: readonly ReadSourceSummary[]; sourceError: string | null; refresh: () => void;
@@ -41,12 +52,18 @@ export function OrganizationSettingsPage({ state, colors, entries, workspaces, s
   };
   return <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: 12, paddingBottom: 32, gap: 12, width: "100%", maxWidth: 820, alignSelf: "center" }}>
     <Card title="Presentation and associations" colors={colors}>
-      <Copy colors={colors} muted small>Shared by every client of this host. Changes apply only after Save.</Copy>
-      <Copy colors={colors}>{state.status === "loading" ? "Reading saved preferences…" : state.status === "ready" ? `Saved revision ${state.revision.length > 16 ? `${state.revision.slice(0, 12)}…` : state.revision}` : state.status === "invalid" ? `Saved preferences are invalid and not applied: ${state.error}` : `Preferences unavailable: ${state.error}`}{state.saving ? " · Saving…" : ""}</Copy>
-      {state.status === "ready" && !draft ? <View style={{ gap: 2 }}>
-        <Copy colors={colors} muted small>Grouping {state.values.grouping} · appearance {state.values.appearance}</Copy>
-        <Copy colors={colors} muted small>{plural(Object.values(state.values.planAssociations).filter((ids) => ids.length).length, "conversation")} with explicit plan links · {plural(Object.keys(state.values.displayMappings).length, "display mapping")}</Copy>
-      </View> : null}
+      <Copy colors={colors} muted small>Shared by every client of this host.{draft ? " Changes apply only after Save." : ""}</Copy>
+      {/* Saved and not editing: the revision is in the summary's label; any other state is shown. */}
+      {state.status === "ready" && !draft && !state.saving ? null : <Copy colors={colors}>{state.status === "loading" ? "Reading saved preferences…" : state.status === "ready" ? `Saved revision ${state.revision.length > 16 ? `${state.revision.slice(0, 12)}…` : state.revision}` : state.status === "invalid" ? `Saved preferences are invalid and not applied: ${state.error}` : `Preferences unavailable: ${state.error}`}{state.saving ? " · Saving…" : ""}</Copy>}
+      {state.status === "ready" && !draft ? (() => {
+        const linked = Object.values(state.values.planAssociations).filter((ids) => ids.length).length;
+        const mapped = Object.keys(state.values.displayMappings).length;
+        const counts = [linked ? `${plural(linked, "conversation")} with explicit plan links` : null, mapped ? plural(mapped, "display mapping") : null].filter(Boolean).join(" · ");
+        return <View testID="settings-saved-summary" accessible accessibilityLabel={`Saved revision ${state.revision.length > 16 ? `${state.revision.slice(0, 12)}…` : state.revision}. Grouping ${state.values.grouping} · appearance ${state.values.appearance} · ${plural(linked, "conversation")} with explicit plan links · ${plural(mapped, "display mapping")}`} style={{ gap: 2 }}>
+          <Copy colors={colors} muted small>Grouping {state.values.grouping} · appearance {state.values.appearance}</Copy>
+          {counts ? <Copy colors={colors} muted small>{counts}</Copy> : null}
+        </View>;
+      })() : null}
       {state.saveError ? <Copy colors={colors}>Save failed: {state.saveError}. Your draft is retained. Reload saved values, then review or discard the draft before retrying.</Copy> : null}
       {message ? <Copy colors={colors}>{message}</Copy> : null}
       <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
@@ -88,20 +105,25 @@ export function OrganizationSettingsPage({ state, colors, entries, workspaces, s
       </> : null}
     </Card>
     <Card title="Configured sources" colors={colors}>
-      <Copy colors={colors} muted small>Read-only. Sources are configured on the server; no path, title or renamed ID is inferred.</Copy>
-      <Copy colors={colors}>{sourceError ?? (reading ? "Reading configured sources…" : "Read-only source catalog available.")}</Copy>
+      <View testID="settings-catalog-note"><Disclosure small label="Read-only · configured on the server" colors={colors}><Copy colors={colors} muted small>{CATALOG_NOTE}</Copy></Disclosure></View>
+      {sourceError || reading ? <Copy colors={colors}>{sourceError ?? "Reading configured sources…"}</Copy> : null}
       {!sources.length && sourcesAvailable ? <Copy colors={colors}>No sources are configured on this host.</Copy> : null}
       {SOURCE_GROUPS.filter(([kind]) => sources.some((source) => source.kind === kind)).map(([kind, heading]) => <View key={kind} style={{ gap: 6 }}>
         <Copy colors={colors} muted small>{heading} ({sources.filter((source) => source.kind === kind).length})</Copy>
         {sources.filter((source) => source.kind === kind).map((source) => {
-          if (!teamsFormats[source.id]) return reads[source.id] ? <SourceDetails key={source.id} read={reads[source.id]!} colors={colors} /> : <Copy key={source.id} colors={colors}>{source.title} · Not read · observed time Unknown</Copy>;
+          if (!teamsFormats[source.id]) return reads[source.id] ? <SourceDetails key={source.id} read={reads[source.id]!} colors={colors} summary={sourceSummary(reads[source.id]!, colors)} /> : <Copy key={source.id} colors={colors}>{source.title} · Not read · observed time Unknown</Copy>;
           const snapshot = teamsSnapshots[source.id];
           const error = teamsErrors[source.id];
+          const status = snapshot?.status ?? (error ? "unavailable" : "Not read");
+          const stale = snapshot && (!sourcesAvailable || error) ? " · retained snapshot stale" : "";
+          // One line per source; the configuration state, read time, observed time and activation are in Source details and the label.
+          const state = `${snapshot?.configurationState ?? teamsFormats[source.id]}`;
+          const times = `Read ${snapshot?.readAt ?? "Not captured"} · observed time Unknown · activation: ${snapshot?.activation ?? "not-attested"}`;
           return <View key={source.id} style={{ gap: 2 }}>
-            <Copy colors={colors}>{source.title} · {snapshot?.status ?? (error ? "unavailable" : "Not read")}{snapshot && (!sourcesAvailable || error) ? " · retained snapshot stale" : ""} · {snapshot?.configurationState ?? teamsFormats[source.id]}</Copy>
-            <Copy colors={colors} muted small>Read {snapshot?.readAt ?? "Not captured"} · observed time Unknown · activation: {snapshot?.activation ?? "not-attested"}</Copy>
+            <Text selectable accessibilityLabel={`${source.title} · ${status}${stale} · ${state}. ${times}`} style={{ color: colors.foreground, fontSize: 13, lineHeight: 20 }}>{source.title}{status === "ready" && !stale ? "" : ` · ${status}`}{stale}</Text>
+            {snapshot ? null : <Copy colors={colors} muted small>{times}</Copy>}
             {error ? <Copy colors={colors}>Adapter request failed: {error}</Copy> : null}
-            {snapshot ? <TeamsSnapshotDetails snapshot={snapshot} colors={colors} /> : null}
+            {snapshot ? <TeamsSnapshotDetails snapshot={snapshot} colors={colors} notes={<><Copy colors={colors}>{source.title} · {status}{stale} · {state}</Copy><Copy colors={colors}>{times}</Copy></>} /> : null}
           </View>;
         })}
       </View>)}
@@ -109,7 +131,6 @@ export function OrganizationSettingsPage({ state, colors, entries, workspaces, s
         <Action colors={colors} label="Refresh source reads" onPress={refresh} />
         {onOpenTeams ? <Action colors={colors} label="Browse configured teams & templates" onPress={onOpenTeams} /> : null}
       </View>
-      <Copy colors={colors} muted small>Governed scheduler, gates and team activation: kontord is not enabled. Console owns policy and administration.</Copy>
     </Card>
   </ScrollView>;
 }

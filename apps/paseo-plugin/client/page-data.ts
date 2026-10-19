@@ -4,6 +4,21 @@ export function jiraIssueUrl(key: string): string | null {
   return /^ASMA-[1-9]\d*$/.test(key) ? `https://carasent.atlassian.net/browse/${key}` : null;
 }
 
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const ISO_STAMP = /\b(\d{4})-(\d{2})-(\d{2})(?:T[\d:.]+(?:Z|[+-]\d{2}:?\d{2})?)?\b/g;
+/** Visible text only: ISO stamps become their own calendar day ("19 Oct"); exact values stay in details and labels. */
+export function shortDates(text: string): string {
+  return text.replace(ISO_STAMP, (stamp, _year: string, month: string, day: string) => MONTHS[Number(month) - 1] ? `${Number(day)} ${MONTHS[Number(month) - 1]}` : stamp);
+}
+/** A plugin read time as local "22:52" on the reading day, otherwise the local day ("18 Oct"); unparseable values stay as given. */
+export function readTime(value: string | number, now: number = Date.now()): string {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return String(value);
+  const today = new Date(now);
+  if (date.toDateString() === today.toDateString()) return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  return `${date.getDate()} ${MONTHS[date.getMonth()]}`;
+}
+
 export function confirmedEpic(entry: DirectoryEntry): string | null {
   for (const key of ["epic", "jira.epic", "origin.epic"]) {
     const value = entry.labels[key]?.trim();

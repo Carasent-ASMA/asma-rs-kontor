@@ -1,4 +1,4 @@
-import { isValidElement, type ReactNode } from "react";
+import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useMemo: (f: () => unknown) => f(), useRef: (current: unknown) => ({ current }), useState: (initial: unknown) => [initial, () => {}] }));
 vi.mock("react-native", () => ({ ScrollView: "ScrollView", Text: "Text", View: "View", Pressable: "Pressable" }));
@@ -20,9 +20,25 @@ function text(node: ReactNode): string {
   if (typeof node.type === "function") return text((node.type as (p: Record<string, unknown>) => ReactNode)(node.props));
   return text(node.props.children as ReactNode);
 }
-function overview(state: DirectoryState): string {
+function elements(node: ReactNode): ReactElement<Record<string, unknown>>[] {
+  if (Array.isArray(node)) return node.flatMap(elements);
+  if (!isValidElement<Record<string, unknown>>(node)) return [];
+  if (typeof node.type === "function") return [node, ...elements((node.type as (p: Record<string, unknown>) => ReactNode)(node.props))];
+  return [node, ...elements(node.props.children as ReactNode)];
+}
+/** The Overview primary surface (closed), its Sources and coverage disclosure content, and the meta line's label. */
+function overviewParts(state: DirectoryState) {
   const props: Parameters<typeof ReadOnlyPage>[0] = { tab: "Overview", colors: {} as Parameters<typeof ReadOnlyPage>[0]["colors"], entries: [], directory: state, sources: [], reads: {}, sourceId: null, sourceError: null, query: "", setQuery: () => {}, onSource: () => {}, onOpen: () => {}, onTab: () => {}, onEpicTab: () => {}, initialOffset: 0, onScroll: () => {} };
-  return text(ReadOnlyPage(props));
+  const tree = ReadOnlyPage(props);
+  const all = elements(tree);
+  const sources = all.find((node) => String(node.props.label).startsWith("Sources and coverage"))!;
+  const meta = all.find((node) => node.props.testID === "overview-meta")!;
+  return { visible: text(tree), details: text(sources.props.children as ReactNode), label: String(meta.props.accessibilityLabel) };
+}
+// The exact read statement moved behind Sources and coverage and into the meta line's label.
+function overview(state: DirectoryState): string {
+  const { visible, details, label } = overviewParts(state);
+  return `${visible}\n${details}\n${label}`;
 }
 function pill(state: DirectoryState): string {
   return NativeFreshnessPill({ state, hostStatus: "online", colors: {} as Parameters<typeof NativeFreshnessPill>[0]["colors"] }).props.accessibilityLabel;
@@ -43,6 +59,22 @@ describe("prepared integration partial inventory contract: actual display consum
   });
   it("Overview may label an explicitly complete capture complete", () => {
     expect(overview(directory(true))).toMatch(/last complete read.*2026-10-19T14:00:00.000Z/i);
+  });
+});
+
+describe("Overview primary surface keeps the read statement in Sources and coverage", () => {
+  it.each([true, false, undefined])("moves the exact read time out of the visible header (completeness=%s)", (flag) => {
+    const parts = overviewParts(directory(flag));
+    expect(parts.visible).not.toContain("2026-10-19T14:00:00.000Z");
+    expect(parts.visible).not.toMatch(/last (complete|partial|inventory) read/i);
+    expect(parts.details).toContain("2026-10-19T14:00:00.000Z");
+    expect(parts.label).toContain("2026-10-19T14:00:00.000Z");
+  });
+  it("keeps a short visible cue for every read that is not complete", () => {
+    expect(overviewParts(directory(false)).visible).toContain("partial inventory · read ");
+    expect(overviewParts(directory(undefined)).visible).toContain("inventory completeness Unknown · read ");
+    expect(overviewParts({ ...directory(true), lastUpdatedAt: null }).visible).toContain("inventory not read yet");
+    expect(overviewParts(directory(true)).visible).not.toMatch(/partial|completeness|not read yet/i);
   });
 });
 

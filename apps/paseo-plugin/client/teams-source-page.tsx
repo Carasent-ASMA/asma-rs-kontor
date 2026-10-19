@@ -35,8 +35,10 @@ function restoreTeamsView(view: TeamsView | undefined, sources: readonly ReadSou
   }
   return { ...saved, sources: restored };
 }
-export function TeamsSnapshotDetails({ snapshot, colors, open, onToggle }: { snapshot: TeamsSourceSnapshot; colors: Colors; open?: boolean; onToggle?: (open: boolean) => void }) {
+/** `notes` are the caller's moved summary lines, shown first when expanded. */
+export function TeamsSnapshotDetails({ snapshot, colors, open, onToggle, notes }: { snapshot: TeamsSourceSnapshot; colors: Colors; open?: boolean; onToggle?: (open: boolean) => void; notes?: ReactNode }) {
   return <Disclosure label="Source details" colors={colors} open={open} onToggle={onToggle}>
+    {notes}
     <Copy colors={colors}>{snapshot.source.path} · {snapshot.format}</Copy>
     <Copy colors={colors}>SHA-256 {snapshot.sha256 ?? "Unknown"} · file modified {snapshot.modifiedAt ?? "Unknown"}</Copy>
     {snapshot.data?.kind === "roster" ? <Copy colors={colors}>Role catalog hash {snapshot.data.roleCatalog.content_hash}</Copy> : null}
@@ -95,6 +97,8 @@ function SnapshotData({ snapshot, metadata, view, onView, filter, colors }: Sour
     <TemplateRoleCards key={snapshot.source.id} data={data} filter={filter} view={view.templates} onView={(templates) => onView({ templates })} colors={colors} />
   </>;
 }
+/** Shown with the native observations; the context session list carries it in its header label. */
+export const TEAMS_SESSIONS_NOTE = "Native sessions and labels are observations, not activated configured teams. Planned or governed assignment: Unknown.";
 function sourceProblem(snapshot: TeamsSourceSnapshot | undefined, error: string | undefined, available: boolean): string | null {
   if (!snapshot) return error ? `adapter request failed: ${error}` : "not read · observed state Unknown";
   if (snapshot.status === "ready" && !error) return null;
@@ -128,15 +132,21 @@ export function TeamsSourcePage({ sources, snapshots = {}, errors = {}, bindingD
     ...configured.flatMap((source) => { const problem = sourceProblem(snapshots[source.id], errors[source.id], available); return problem ? [{ id: source.id, text: `${source.title} · ${bindings.formats[source.id]}: ${problem}` }] : []; }),
     ...records.flatMap((source) => { const read = reads[source.id]; return !read || read.status !== "ready" ? [{ id: source.id, text: `${source.title} · JSON record source: ${read ? read.status : "unavailable or not read"}` }] : []; }),
   ];
+  // How native sessions relate to configuration: inside the configuration disclosure when there is one, otherwise shown.
+  const observations = <View testID="teams-observations" style={{ gap: 4 }}>
+    <Copy colors={colors} muted small>{TEAMS_SESSIONS_NOTE}</Copy>
+    <Copy colors={colors} muted small>Native observations: {composed.observedSessions.length} sessions · observed {observedAt} · native effort: Not supplied. No configuration-to-session assignment is inferred. Governed fleet: kontord is not enabled.</Copy>
+  </View>;
   return <>
     {children}
-    <Copy colors={colors} muted small>Native observations: {composed.observedSessions.length} sessions · observed {observedAt} · native effort: Not supplied. No configuration-to-session assignment is inferred. Governed fleet: kontord is not enabled.</Copy>
+    {sources.length ? null : observations}
     <View testID="teams-configuration" style={{ gap: 6, paddingTop: 10, borderTopWidth: 1, borderColor: colors.border }}>
       {!available ? <Copy colors={colors}>Teams source service unavailable or not read. Retained snapshots are stale.</Copy> : null}
       {!configured.length ? <Copy colors={colors}>No authorized Teams adapter IDs configured. No paths or renamed IDs inferred.</Copy> : null}
       {diagnostics.length ? <Disclosure label={`Teams adapter mapping diagnostics (${diagnostics.length})`} colors={colors} open={current.diagnostics} onToggle={(open) => emit({ ...current, diagnostics: open })}>{diagnostics.map((message, index) => <Copy key={index} colors={colors}>{message}</Copy>)}</Disclosure> : null}
       {sources.length ? <Disclosure label={`Configured teams & templates (${sources.length} ${sources.length === 1 ? "source" : "sources"})`} colors={colors} open={current.configured} onToggle={(open) => emit({ ...current, configured: open })}>
         <View style={{ gap: 10, paddingTop: 4 }}>
+          {observations}
           <Copy colors={colors} muted small>Host configuration snapshots, separate from the native sessions above. Activation, eligibility and account/model availability are not attested.</Copy>
           <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
             <TextInput accessibilityLabel="Filter configured teams, roles and templates" placeholder="Filter by template, group or role name" value={current.filter} onChangeText={setFilter}

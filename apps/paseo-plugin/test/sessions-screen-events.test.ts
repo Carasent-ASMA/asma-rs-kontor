@@ -218,6 +218,8 @@ vi.mock("react-native", () => ({
       stop: () => undefined,
     }),
   },
+  // Group rows create a drag responder; the row tests below only read what the row draws.
+  PanResponder: { create: () => ({ panHandlers: {} }) },
   Pressable: "Pressable",
   Text: "Text",
   View: "View",
@@ -233,6 +235,7 @@ vi.mock("@getpaseo/plugin/client", () => ({
 
 vi.mock("@getpaseo/plugin/client/react-native", () => ({
   FlatList: "FlatList",
+  Icon: "Icon",
   TextInput: "TextInput",
   useToast: () => ({ show: () => undefined, error: () => undefined }),
 }));
@@ -251,6 +254,7 @@ import {
   COMPACT_SCROLL_SLACK,
   compactToolbarOpen,
   FILTER_SUMMARY_TEST_ID,
+  FiltersButton,
   HIDE_FILTERS_TEST_ID,
   SCOPE_SUMMARY_TEST_ID,
   SessionsScreen,
@@ -438,6 +442,59 @@ describe("SessionsScreen toolbar events", () => {
     vi.useRealTimers();
   });
 
+  it("shows the count line only when narrowed or not complete, and keeps the full count and read in Filters", () => {
+    const list = () => findByTestID(harness.current(), "sessions-list");
+    const header = () => list().props.ListHeaderComponent;
+    renderScreen();
+    expect(testIDs(header())).not.toContain("sessions-count");
+    expect(textOf(findByTestID(harness.current(), "sessions-options-count"))).toMatch(/^1 session · 1 workspace · complete inventory read /);
+    expect(list().props.ListFooterComponent).toBeNull();
+    const search = (query: string) => { (findByTestID(harness.current(), "sessions-search").props.onChangeText as (query: string) => void)(query); harness.flush(); };
+    search("no such session");
+    expect(textOf(findByTestID(header(), "sessions-count"))).toBe("0 of 1 session");
+    expect(findByTestID(header(), "sessions-count").props.accessibilityLabel).toMatch(/^0 of 1 session · 0 workspaces · complete inventory read /);
+    search("session-a");
+    expect(testIDs(header())).not.toContain("sessions-count");
+    directory.state = { ...directory.state as object, inventoryComplete: false };
+    renderScreen();
+    expect(textOf(findByTestID(header(), "sessions-count"))).toMatch(/^1 session · partial inventory read /);
+    directory.state = { ...directory.state as object, inventoryComplete: true, lastUpdatedAt: null };
+    renderScreen();
+    expect(textOf(findByTestID(header(), "sessions-count"))).toBe("1 session · not read yet");
+  });
+
+  it("shows No sessions without a 0 beside it, and keeps non-zero group counts", () => {
+    patchSessionView("host-a", { query: "" });
+    harness.render(() => SessionsScreen({
+      host: { id: "host-a", label: "srv_host-a" }, layout: { compact: true, platform: "ios" },
+      navigation: { openAgent: () => undefined, openBrowser: () => undefined, openWorkspace: () => undefined },
+      theme: { colors } as PluginTheme, params: {}, workspaces: [{ id: "w-empty", name: "Empty desk", projectKey: null, projectName: null }],
+    } as PluginScreenProps));
+    const renderItem = findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike;
+    const rendered = (row: GroupRow) => { const view = renderItem({ item: row }) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike }; return view.type(view.props); };
+    const counts = (tree: ElementLike) => walk(tree).filter((element) => (element.props.style as { fontVariant?: string[] } | undefined)?.fontVariant?.includes("tabular-nums")).map(textOf);
+    const empty = groupRows().find((row) => row.group.unitTotal === 0)!;
+    expect(walk(rendered(empty)).some((element) => (element as { type?: unknown }).type === StateBadge && element.props.state === null)).toBe(true);
+    expect(counts(rendered(empty))).toEqual([]);
+    expect(String(walk(rendered(empty)).find((element) => element.props.accessibilityRole === "button")!.props.accessibilityLabel)).toContain(", 0 sessions.");
+    const full = groupRows().find((row) => row.group.unitTotal > 0)!;
+    expect(counts(rendered(full))).toEqual([String(full.group.unitTotal)]);
+  });
+
+  it("keeps the workspace read note in Filters and shows only a workspace list failure under the list", () => {
+    const render = (workspaceNote: string) => harness.render(() => SessionsScreen({
+      host: { id: "host-a", label: "srv_host-a" }, layout: { compact: true, platform: "ios" },
+      navigation: { openAgent: () => undefined, openBrowser: () => undefined, openWorkspace: () => undefined },
+      theme: { colors } as PluginTheme, params: {}, workspaceNote,
+    } as PluginScreenProps));
+    let tree = render("Empty workspaces from the workspace list read 10:00:00");
+    expect(findByTestID(tree, "sessions-list").props.ListFooterComponent).toBeNull();
+    expect(textOf(findByTestID(tree, "sessions-options-count"))).toContain(". Empty workspaces from the workspace list read 10:00:00.");
+    tree = render("Workspace list unavailable: rejected");
+    expect(textOf(findByTestID(tree, "sessions-list").props.ListFooterComponent)).toBe("Workspace list unavailable: rejected.");
+    expect(textOf(findByTestID(tree, "sessions-list").props.ListFooterComponent)).not.toContain("Select a session");
+  });
+
   it("restores the selected view when the screen host changes without remounting", () => {
     patchSessionView("host-a", {
       query: "host-a query",
@@ -558,8 +615,8 @@ describe("SessionsScreen toolbar events", () => {
     expect(onIncludeArchived).toHaveBeenCalledWith(false);
     const list = findByTestID(harness.current(), "sessions-list");
     const count = JSON.stringify(findByTestID(list.props.ListHeaderComponent, "sessions-count").props.children);
-    expect(count).toContain('"1"'); expect(count).not.toContain("3");
-    expect(count).toContain("session"); expect(count).toContain("partial inventory read");
+    expect(count).toContain('"1 session"'); expect(count).not.toContain("3");
+    expect(count).toContain("partial inventory read");
     const banner = findByTestID(harness.current(), "sessions-source-banner");
     expect(banner.props.message).toContain("Inventory read attempt");
     expect(banner.props.message).not.toContain("Last complete read");
@@ -900,6 +957,7 @@ describe("SessionsScreen compact toolbar", () => {
     expect(textOf(host)).toBe("srv_host-a");
     expect(findByTestID(tree, "sessions-slim-search").props.accessibilityState).toEqual({ expanded: false });
     expect(findByTestID(tree, "sessions-slim-filters").props.accessibilityState).toEqual({ expanded: false });
+    expect([findByTestID(tree, "sessions-slim-search").props["aria-expanded"], findByTestID(tree, "sessions-slim-filters").props["aria-expanded"]]).toEqual([false, false]);
     expect(compactToolbarOpen(readSessionView("host-a"))).toBe(false);
   });
 
@@ -914,6 +972,7 @@ describe("SessionsScreen compact toolbar", () => {
     vi.advanceTimersByTime(0);
     expect(focus).toHaveBeenCalledOnce();
     expect(findByTestID(screen(), "sessions-slim-search").props.accessibilityState).toEqual({ expanded: true });
+    expect(findByTestID(screen(), "sessions-slim-search").props["aria-expanded"]).toBe(true);
     const hide = findByTestID(screen(), HIDE_FILTERS_TEST_ID);
     expect(textOf(hide)).toBe("Hide filters");
     expect(hide.props.accessibilityLabel).toBe("Hide filters");
@@ -985,6 +1044,54 @@ describe("SessionsScreen compact toolbar", () => {
     // With focus gone, the next deliberate scroll closes it.
     scroll(120 + COMPACT_COLLAPSE_DISTANCE, 300, 500);
     expect(fullToolbarShown()).toBe(false);
+  });
+
+  it("on web keeps the toolbar for keyboard focus but not for a chip focused by a click or tap", () => {
+    patchSessionView("host-a", toolbarOpenPatch(true));
+    renderScreen();
+    const chip = () => findByTestID(harness.current(), "sessions-filter-idle");
+    // The browser marks keyboard focus as :focus-visible; a pointer press focuses without it.
+    const focus = (visible: boolean) => (chip().props.onFocus as (event: unknown) => void)({ target: { matches: (selector: string) => selector === ":focus-visible" && visible } });
+    focus(true);
+    vi.advanceTimersByTime(2_000);
+    scroll(120, 300, 500);
+    expect(fullToolbarShown()).toBe(true);
+    (chip().props.onBlur as () => void)();
+
+    focus(false);
+    // Only the short interaction pin holds; once it lapses, a deliberate scroll closes the toolbar.
+    vi.advanceTimersByTime(2_000);
+    scroll(120 + COMPACT_COLLAPSE_DISTANCE, 300, 500);
+    expect(fullToolbarShown()).toBe(false);
+  });
+
+  it("tells a web screen reader which chips are on, which workstreams are checked, what is open and which sessions are favorites", () => {
+    const organization = {
+      state: { status: "ready", values: { ...DEFAULT_ORGANIZATION_SETTINGS, favorites: ["session-a"] }, revision: "revision-a", saving: false, saveError: null, save: async () => true, reload: async () => {}, reset: async () => {} },
+      save: async () => true,
+    } as unknown as NonNullable<Parameters<typeof SessionsScreen>[0]["organization"]>;
+    directory.state = { ...(directory.state as object), entries: [sessionEntry("session-a", { labels: { workstream: "Adapter" } }), sessionEntry("session-b", { labels: { workstream: "Board" } })] };
+    patchSessionView("host-a", { ...toolbarOpenPatch(true), advancedOpen: true, status: "idle", streams: ["adapter"] });
+    renderScreen(organization);
+    // React Native Web drops accessibilityState, so the state reaches the DOM only as ARIA.
+    const host = (element: ElementLike & { readonly type?: unknown }) => (element.type as (props: unknown) => ElementLike)(element.props).props;
+    const tree = harness.current();
+    expect([host(findByTestID(tree, "sessions-filter-idle"))["aria-pressed"], host(findByTestID(tree, "sessions-filter-all"))["aria-pressed"]]).toEqual([true, false]);
+    const streams = walk(tree).filter((element) => element.props.checkbox === true).map((element) => [element.props.label, host(element)["aria-checked"], host(element)["aria-pressed"]]);
+    expect(streams).toEqual([["Adapter", true, undefined], ["Board", false, undefined]]);
+    expect(host(findByTestID(tree, "sessions-advanced-archived"))["aria-checked"]).toBe(false);
+    expect(host(walk(tree).find((element) => (element as { type?: unknown }).type === FiltersButton)!)["aria-expanded"]).toBe(true);
+
+    patchSessionView("host-a", { status: "all", streams: null });
+    renderScreen(organization);
+    const renderItem = findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike;
+    const drawn = (row: unknown) => { const view = renderItem({ item: row }) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike }; return view.type(view.props); };
+    const group = groupRows()[0]!;
+    const opened = (expanded: boolean) => walk(drawn({ ...group, expanded })).find((element) => element.props.accessibilityRole === "button")!.props["aria-expanded"];
+    expect([opened(true), opened(false)]).toEqual([true, false]);
+    // A session row as the list draws it under an opened group.
+    const star = (id: string) => walk(drawn({ kind: "session", entry: sessionEntry(id, {}), depth: 1, parentKey: group.group.key })).find((element) => /^(Un)?favorite /i.test(String(element.props.accessibilityLabel)))!.props["aria-pressed"];
+    expect([star("session-a"), star("session-b")]).toEqual([true, false]);
   });
 
   it("keeps the toolbar for a native screen reader but not for React Native Web's always-on report", async () => {
@@ -1091,8 +1198,9 @@ describe("SessionsScreen compact toolbar", () => {
     const list = findByTestID(root, "sessions-list");
     const header = list.props.ListHeaderComponent as ElementLike;
     const ids = testIDs(header);
-    expect(ids).toEqual(expect.arrayContaining(["sessions-full-toolbar-slot", "sessions-full-toolbar", "sessions-heading", "sessions-search", "sessions-filter-all", "sessions-count"]));
-    expect(ids.indexOf("sessions-full-toolbar-slot")).toBeLessThan(ids.indexOf("sessions-count"));
+    expect(ids).toEqual(expect.arrayContaining(["sessions-full-toolbar-slot", "sessions-full-toolbar", "sessions-heading", "sessions-search", "sessions-filter-all"]));
+    // A complete, unfiltered read has no count line; the group rows carry the counts.
+    expect(ids).not.toContain("sessions-count");
     // Its gap is list content too, so closing removes exactly the compensated height.
     expect(findByTestID(header, "sessions-full-toolbar-slot").props.style).toContainEqual({ paddingBottom: TOOLBAR_LAYOUT_GAP });
     // After typing, the first tap on a chip applies it rather than only dismissing the keyboard.
@@ -1203,7 +1311,7 @@ describe("SessionsScreen compact toolbar", () => {
     // The full toolbar stays above the list, outside its scroll content.
     const root = harness.current() as ElementLike;
     expect((root.props.children as unknown[]).some((child) => (child as ElementLike | null)?.props?.testID === "sessions-full-toolbar-slot")).toBe(true);
-    expect(testIDs(findByTestID(root, "sessions-list").props.ListHeaderComponent)).toEqual(["sessions-count"]);
+    expect(findByTestID(root, "sessions-list").props.ListHeaderComponent).toBeNull();
     // Wide session rows keep the title and the right-hand state column.
     const leaf = renderSessionLeaf();
     expect(testIDs(leaf)).not.toContain("sessions-row-meta");

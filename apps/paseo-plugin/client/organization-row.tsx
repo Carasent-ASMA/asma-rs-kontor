@@ -92,7 +92,7 @@ export function OrganizationRowView({ row, colors, compact, children, disabled, 
       <Guides depth={row.depth} compact={compact} colors={colors} />
       {handle}
       <View style={{ flex: 1, minWidth: 0 }}>{children}</View>
-      <Pressable accessibilityRole="button" accessibilityLabel={`${favorite ? "Unfavorite" : "Favorite"} ${label}`} accessibilityState={{ selected: favorite, disabled }} disabled={disabled} onPress={onFavorite}
+      <Pressable accessibilityRole="button" accessibilityLabel={`${favorite ? "Unfavorite" : "Favorite"} ${label}`} accessibilityState={{ selected: favorite, disabled }} aria-pressed={favorite} disabled={disabled} onPress={onFavorite}
         style={{ width: compact ? 44 : 30, height: compact ? 44 : 30, alignItems: "center", justifyContent: "center", opacity: disabled ? 0.4 : 1 }}>
         <Text style={{ color: favorite ? colors.statusWarning : colors.foregroundMuted, fontSize: compact ? 18 : 16 }}>{favorite ? "★" : "☆"}</Text>
       </Pressable>
@@ -108,7 +108,7 @@ export function OrganizationRowView({ row, colors, compact, children, disabled, 
     <Guides depth={row.depth} compact={compact} colors={colors} />
     <View style={{ flexDirection: "row", alignItems: "center" }}>
       {handle}
-      <Pressable accessibilityRole="button" accessibilityState={{ expanded: row.expanded }}
+      <Pressable accessibilityRole="button" accessibilityState={{ expanded: row.expanded }} aria-expanded={row.expanded}
         accessibilityLabel={`${KIND_NAMES[group.kind]} ${label}${meaning ? ` (${meaning})` : ""}${group.detail ? `, ${group.detail}` : ""}, ${groupCount(group)} ${group.unit}. ${aggregateSummary(group.aggregate)}. ${nativeCounts(group.aggregate)}`}
         onPress={onToggle}
         style={({ pressed, hovered, focused }: { pressed: boolean; hovered?: boolean; focused?: boolean }) => ({ flex: 1, minWidth: 0, minHeight: height, flexDirection: "row", alignItems: "center", gap: compact ? 5 : 8, paddingHorizontal: 8, borderRadius: 6, backgroundColor: pressed || hovered || focused ? colors.surface2 : undefined })}>
@@ -118,7 +118,9 @@ export function OrganizationRowView({ row, colors, compact, children, disabled, 
         {group.detail && !compact ? <Text numberOfLines={1} style={{ flexShrink: 2, color: colors.foregroundMuted, fontSize: 11 }}>{group.detail}</Text> : null}
         <View style={{ flex: 1 }} />
         <StateBadge state={state} colors={colors} compact={compact} />
-        <Text style={{ minWidth: compact ? 22 : 28, textAlign: "center", color: colors.foregroundMuted, fontSize: 11, fontVariant: ["tabular-nums"] }}>{groupCount(group)}</Text>
+        {/* "No sessions" already says zero; the empty slot keeps the count column aligned. */}
+        {state === null && groupCount(group) === "0" ? <View style={{ minWidth: compact ? 22 : 28 }} />
+          : <Text style={{ minWidth: compact ? 22 : 28, textAlign: "center", color: colors.foregroundMuted, fontSize: 11, fontVariant: ["tabular-nums"] }}>{groupCount(group)}</Text>}
       </Pressable>
     </View>
     {row.expanded && actions ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, paddingLeft: compact ? 22 : 34, paddingBottom: 6 }}>{actions}</View> : null}

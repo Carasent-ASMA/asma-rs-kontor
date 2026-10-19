@@ -67,8 +67,8 @@ describe("AI teams & sessions leads with the project context (TEAMS-01)", () => 
     const screen = mount();
     const text = screen.text();
     expect(text.indexOf(CONTEXT)).toBe(0);
-    expect(text.indexOf("Native observations: 1 sessions")).toBeGreaterThan(0);
-    expect(text.indexOf("Native observations: 1 sessions")).toBeLessThan(text.indexOf(configured()));
+    // The observation statements open with the configuration, before its snapshots; they are not on the collapsed page.
+    expect(text).not.toContain("Native observations"); expect(text).not.toContain("Planned or governed assignment");
     expect(text).not.toContain("Source state:"); expect(text).not.toContain("Fleet schema");
     expect(screen.labels().some((label) => label.startsWith("Roles: ") || label.startsWith("Template: "))).toBe(false);
     expect(screen.expanded(configured())).toBe(false);
@@ -80,6 +80,14 @@ describe("AI teams & sessions leads with the project context (TEAMS-01)", () => 
     expect(screen.labels()).toContain(`Roles: ${groupKey(fleet.bindings[0]!)}`);
     expect(screen.labels()).toContain(`Template: ${templates.templates[0]!.id} v${templates.templates[0]!.version}`);
     expect(screen.text()).toContain("No configuration-to-session assignment is inferred");
+    const opened = screen.text();
+    expect(opened.indexOf(configured())).toBeLessThan(opened.indexOf("Native observations: 1 sessions · observed 2026-10-18T10:00:00Z"));
+    expect(opened.indexOf("Native sessions and labels are observations, not activated configured teams. Planned or governed assignment: Unknown.")).toBeLessThan(opened.indexOf("Host configuration snapshots"));
+    expect(opened).toContain("Governed fleet: kontord is not enabled.");
+  });
+  it("keeps the observation statements visible when no configured source gives them a disclosure", () => {
+    const text = mount({ sources: [] }).text();
+    expect(text).toContain("Native observations: 1 sessions"); expect(text).toContain("Planned or governed assignment: Unknown.");
   });
   it("shows a failed source as a visible one-line error while configuration stays collapsed", () => {
     const { operator: _failed, ...rest } = snapshots;

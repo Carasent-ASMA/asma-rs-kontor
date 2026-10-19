@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type Ref } from "react";
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { useHosts } from "@getpaseo/plugin/client";
-import { Icon, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
+import { copyText, Icon, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { KeyboardAvoidingView, Linking, Pressable, SafeAreaView, ScrollView, Text, View } from "react-native";
 import { DEFAULT_ORGANIZATION_SETTINGS } from "../shared/organization";
 import { SessionsScreen } from "./sessions-screen";
@@ -130,6 +130,10 @@ function HostScreen(props: PluginScreenProps) {
     if (!url) { toast.error("This source link is not a valid HTTPS URL without credentials."); return; }
     void Linking.openURL(url).catch(() => toast.error("This device could not open the source link."));
   };
+  // No file export exists in the plugin SDK; copying is the export, and a refusal says so.
+  const copy = (text: string, what: string) => {
+    void copyText(text).then(() => toast.show(`${what} copied`), () => toast.error(`${what} not copied: the clipboard is unavailable or denied on this device.`));
+  };
   const openDocumentLink = (target: string) => {
     if (!selectedPlan) { toast.error("The selected plan source is unavailable."); return; }
     const linkedSources = associationIds ? sourceState.sources.filter((source) => associationIds.includes(source.id)) : sourceState.sources;
@@ -190,14 +194,14 @@ function HostScreen(props: PluginScreenProps) {
     onOpenTeams={() => visit({ tab: "AI teams & sessions", ...tabScope(host.id, "AI teams & sessions") }, undefined, (next) => writePageView(host.id, next, { ...readPageView(host.id, next, DEFAULT_TEAMS_VIEW), configured: true }))} />;
   else if (route.tab === "Board" || route.tab === "Graph") page = <GraphPage key={routeViewKey(route)} mode={route.tab} hostId={host.id} theme={{ ...props.theme, colors }} compact={layout.compact} sources={sources} selectedId={route.sourceId} reads={reads} available={sourceState.available} error={sourceState.error} epicKey={scopedEpic} onBoard={() => visit({ tab: "Board" })}
     initialOffset={readRouteView(host.id, route).offset} onScroll={(offset) => writeRouteView(host.id, route, { offset })}
-    onChooseSource={() => toggle("context")}
+    onChooseSource={() => toggle("context")} onCopy={copy}
     onSelect={selectSource} onPlan={(sourceId, taskId) => {
       const revision = sourceState.reads[sourceId]?.revision ?? null;
       // A task link carries the exact declaration to reveal, never a search query.
       visit({ tab: "Plan", sourceId, sourceRevision: revision, originAgentId: route.originAgentId }, "", taskId ? (next) => writePageView(host.id, next, { ...readPageView(host.id, next, DEFAULT_PLAN_VIEW), target: { taskId, revision }, revealed: false }) : undefined);
     }}
     onIssue={(key) => { const url = jiraIssueUrl(key); if (url) void Linking.openURL(url).catch(() => toast.error("This device could not open the verified Jira link.")); }} />;
-  else page = <ReadOnlyPage key={routeViewKey(route)} compact={layout.compact} onChooseSource={() => toggle("context")} onDocumentLink={openDocumentLink} onExternalLink={openExternalLink} contextLabel={route.sourceId ? selectedPlan?.title ?? "Source unavailable" : projectLabel} tab={route.tab} colors={colors} entries={entries} directory={directory.state} sources={sources} reads={reads} sourceId={route.sourceId}
+  else page = <ReadOnlyPage key={routeViewKey(route)} compact={layout.compact} onChooseSource={() => toggle("context")} onDocumentLink={openDocumentLink} onCopy={copy} onExternalLink={openExternalLink} contextLabel={route.sourceId ? selectedPlan?.title ?? "Source unavailable" : projectLabel} tab={route.tab} colors={colors} entries={entries} directory={directory.state} sources={sources} reads={reads} sourceId={route.sourceId}
     teamsSources={sourceState.sources.filter((source) => source.kind === "teams")} teamsJsonReads={Object.fromEntries(Object.entries(sourceState.reads).filter(([, read]) => read.source.kind === "teams"))}
     teamsSnapshots={sourceState.teamsSnapshots} teamsErrors={sourceState.teamsErrors} teamsBindingDiagnostics={sourceState.teamsBindingDiagnostics} teamsAvailable={sourceState.available}
     sourceError={sourceState.error} query={query} setQuery={setSearch} onSource={(sourceId) => selectSource(sourceId, "Plan")} onOpen={open} onTab={(tab) => visit({ tab, originAgentId: null })}

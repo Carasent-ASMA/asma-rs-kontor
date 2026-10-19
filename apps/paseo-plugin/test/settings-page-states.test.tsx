@@ -67,11 +67,20 @@ describe("Settings source catalog states", () => {
     expect(reading).toContain("Reading configured sources…");
     expect(reading).not.toContain("No sources are configured on this host."); expect(reading).not.toContain("Read-only source catalog available.");
     const empty = mount().text();
-    expect(empty).toContain("Read-only source catalog available."); expect(empty).toContain("No sources are configured on this host.");
+    expect(empty).not.toContain("Read-only source catalog available."); expect(empty).toContain("No sources are configured on this host.");
     const offline = mount({ sourcesAvailable: false, sourceError: OFFLINE }).text();
     expect(offline).toContain(OFFLINE);
     expect(offline).not.toContain("No sources are configured on this host."); expect(offline).not.toContain("Reading configured sources…");
-    for (const text of [reading, empty, offline]) expect(text).toContain("Governed scheduler, gates and team activation: kontord is not enabled.");
+    // The catalog statement and the kontord line are one short disclosure, visible once opened.
+    for (const overrides of [{ sourcesAvailable: false }, {}, { sourcesAvailable: false, sourceError: OFFLINE }]) {
+      const screen = mount(overrides);
+      const note = screen.nodes().find((node) => node.props.testID === "settings-catalog-note")!;
+      expect(visible(note)).toBe("▸ Read-only · configured on the server");
+      expect(screen.text()).not.toContain("kontord");
+      screen.press("Read-only · configured on the server");
+      expect(screen.text()).toContain("no path, title or renamed ID is inferred.");
+      expect(screen.text()).toContain("Governed scheduler, gates and team activation: kontord is not enabled. Console owns policy and administration.");
+    }
   });
   it("groups sources by kind in compact rows and keeps provenance and diagnostics behind details", () => {
     const operator = { ...snapshots.operator!, status: "partial" as const, diagnostics: [{ code: "read-probe", pointer: "/chains/probe", message: "Definition unavailable in this snapshot" }] };
@@ -81,12 +90,14 @@ describe("Settings source catalog states", () => {
     expect(headings.map((heading) => text.indexOf(heading))).toEqual(headings.map((heading) => text.indexOf(heading)).toSorted((a, b) => a - b));
     expect(headings.every((heading) => text.includes(heading))).toBe(true);
     expect(text).not.toContain("Jira history ("); expect(text).not.toContain("Delivery records (");
-    expect(text).toContain("roadmap title · ready"); expect(text).toContain("adr-log title · Not read · observed time Unknown");
-    expect(text).toContain("operator · partial");
+    expect(text).toContain("roadmap title"); expect(text).not.toContain("roadmap title · ready"); expect(text).not.toContain(planRead.readAt);
+    expect(screen.labels()).toContain(`roadmap title · ready · approved revision. Read ${planRead.readAt}`);
+    expect(text).toContain("adr-log title · Not read · observed time Unknown");
+    expect(text).toContain("operator · partial"); expect(text).not.toContain("authoring · ready");
     for (const hidden of [plan.path, "plan diagnostic hidden until details", snapshots.operator!.source.path, "Definition unavailable in this snapshot"]) expect(text).not.toContain(hidden);
     expect(screen.find("Source details: roadmap title").props.accessibilityState).toMatchObject({ expanded: false });
     screen.press("Source details: roadmap title");
-    expect(screen.text()).toContain(plan.path); expect(screen.find("Source details: roadmap title").props.accessibilityState).toMatchObject({ expanded: true });
+    expect(screen.text()).toContain(plan.path); expect(screen.text()).toContain(`Read ${planRead.readAt}`); expect(screen.find("Source details: roadmap title").props.accessibilityState).toMatchObject({ expanded: true });
     const teamDetails = () => screen.nodes().filter((node) => node.props.accessibilityLabel === "Source details");
     expect(teamDetails().map((node) => (node.props.accessibilityState as { expanded: boolean }).expanded)).toEqual([false, false, false, false]);
     (teamDetails()[1]!.props.onPress as () => void)();
@@ -117,13 +128,19 @@ describe("Settings presentation states", () => {
   it("summarizes saved values in compact rows until a draft is opened, without saving anything", () => {
     const ready = state("ready");
     const screen = mount({ state: ready });
-    expect(screen.text()).toContain("Saved revision rev-a");
+    // Not editing: the revision is in the summary's label, not on the page.
+    expect(screen.text()).not.toContain("Saved revision");
+    expect(screen.labels()).toContain("Saved revision rev-a. Grouping hierarchy · appearance system · 1 conversation with explicit plan links · 2 display mappings");
     const hashed = mount({ state: { ...ready, revision: "b079931e8f788330f264a50cfa7948a9fd1e87aebd41172a73ff9fdf6ed547db" } as typeof ready });
-    expect(hashed.text()).toContain("Saved revision b079931e8f78…"); expect(hashed.text()).not.toContain("2a73ff9f");
+    expect(hashed.labels().some((label) => label.startsWith("Saved revision b079931e8f78…. Grouping"))).toBe(true); expect(hashed.labels().join(" ")).not.toContain("2a73ff9f");
+    expect(hashed.text()).not.toContain("b079931e8f78");
+    expect(mount({ state: state("ready", { values: DEFAULT_ORGANIZATION_SETTINGS } as Partial<Props["state"]>) }).text()).not.toMatch(/0 (conversations|display mappings)/);
     expect(screen.text()).toContain("Grouping hierarchy · appearance system");
     expect(screen.text()).toContain("1 conversation with explicit plan links · 2 display mappings");
+    expect(screen.text()).not.toContain("Changes apply only after Save.");
     screen.press("Edit presentation");
     expect(screen.text()).toContain("Editing revision rev-a"); expect(screen.text()).not.toContain("Grouping hierarchy · appearance system");
+    expect(screen.text()).toContain("Saved revision rev-a"); expect(screen.text()).toContain("Shared by every client of this host. Changes apply only after Save.");
     expect(ready.save).not.toHaveBeenCalled(); expect(ready.reset).not.toHaveBeenCalled();
   });
   it("names empty choices in the editor instead of rendering blank lists", () => {

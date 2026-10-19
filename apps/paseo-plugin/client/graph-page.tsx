@@ -62,7 +62,7 @@ export type BoardItem =
   | { kind: "task"; id: string; node: GraphNode }
   | { kind: "jira"; id: string; record: CapturedJiraRecord };
 
-export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, reads, available, error, epicKey, onPlan, onIssue, initialOffset = 0, onScroll, onChooseSource, onBoard }: {
+export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, reads, available, error, epicKey, onPlan, onIssue, initialOffset = 0, onScroll, onChooseSource, onBoard, onCopy }: {
   mode: "Board" | "Graph"; hostId: string; theme: PluginTheme; compact: boolean;
   sources: readonly ReadSourceSummary[]; selectedId: string | null; reads: Readonly<Record<string, SourceRead>>;
   available: boolean; error: string | null; onSelect: (sourceId: string) => void;
@@ -72,6 +72,8 @@ export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, r
   onIssue: (key: string) => void;
   initialOffset?: number; onScroll?: (offset: number) => void;
   onChooseSource?: () => void;
+  /** Copies text to this client's clipboard; Graph offers it for the canonical graph. */
+  onCopy?: (text: string, what: string) => void;
   /** Opens Board for the same context; offered when Graph has no valid canonical graph. */
   onBoard?: () => void;
 }) {
@@ -107,7 +109,7 @@ export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, r
 
   if (mode === "Graph" && valid && read) return <View style={{ flex: 1 }}>
     {error || !available ? <View style={{ paddingHorizontal: 12, paddingTop: 8 }}>{notices}</View> : null}
-    <PlanGraph graph={valid} hostId={hostId} theme={theme} store={store} compact={compact}
+    <PlanGraph graph={valid} hostId={hostId} theme={theme} store={store} compact={compact} onCopy={onCopy}
       sourcedStates={evidence.size ? { viewKey: planGraphViewKey(hostId, valid), nodes: historicalStates } : undefined}
       sourceActions={{ plan: (action) => { if (action.kind === "plan" && action.source === valid.source && action.source_sha256 === read.revision && valid.nodes.some((node) => node.id === action.taskId)) onPlan(read.source.id, action.taskId); },
         jira: (action) => { if (action.kind === "jira" && valid.nodes.some((node) => node.jira === action.jira)) onIssue(action.jira); } }}
@@ -160,13 +162,14 @@ export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, r
   const days = captureDays(captureTimes);
   const notes = [sourceNote, !read && plans.length > 1 ? "Several explicitly linked plans; select an exact source." : null, jiraNote];
   const noteCopy = (values: readonly (string | null)[]) => values.map((value, index) => value ? <Copy key={index} colors={colors}>{value}</Copy> : null);
+  // The context picker already shows the plan and epic; the full title stays in the header's label.
   const title = `Board${epic ? ` · ${epic}` : ""}${read ? ` · ${read.source.title}` : ""}`;
-  // Compact is list-first: one title line and one meta line. The truth statement and the notes
+  // List-first at every width: one title line and one meta line. The truth statement and the notes
   // stay reachable in Source details (and in the meta line's label); empty states keep their notes.
   let jiraCount = "Jira not captured";
   if (captured.found) jiraCount = captured.records.length ? `${captured.records.length} Jira` : "no Jira children captured";
-  const header = compact ? <View style={{ paddingHorizontal: 8, paddingVertical: 8, gap: 4 }}>
-    <Text accessibilityRole="header" numberOfLines={1} style={{ color: colors.foreground, fontWeight: "600", fontSize: 15 }}>{title}</Text>
+  const header = <View style={{ paddingHorizontal: compact ? 8 : 12, paddingVertical: compact ? 8 : 10, gap: 4 }}>
+    <Text accessibilityRole="header" accessibilityLabel={title} numberOfLines={1} style={{ color: colors.foreground, fontWeight: "600", fontSize: 15 }}>Board</Text>
     {notices}
     <Text testID="board-meta" numberOfLines={1} accessibilityLabel={`Read-only capture. ${captured.records.length} captured Jira tasks. ${valid ? `${valid.nodes.length} plan tasks` : "Plan graph unavailable"}.${captureTimes.length ? ` Captured ${captureTimes.join(" / ")}.` : ""} ${truth}`}
       style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 16 }}>
@@ -180,14 +183,6 @@ export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, r
       {items.flatMap((item) => item.kind === "section" ? [<Copy key={item.id} colors={colors} small muted>{`${item.title}: ${item.note}`}</Copy>] : [])}
       {details}
     </View> : null}
-  </View> : <View style={{ padding: 12, gap: 6 }}>
-    <Text accessibilityRole="header" style={{ color: colors.foreground, fontWeight: "600", fontSize: 15 }}>{title}</Text>
-    {notices}
-    <Copy colors={colors} small muted>Read-only capture · {captured.records.length} captured Jira tasks · {valid ? `${valid.nodes.length} plan tasks` : "plan graph unavailable"}{captureTimes.length ? ` · captured ${captureTimes.join(" / ")}` : ""}</Copy>
-    <Copy colors={colors} small muted>{truth}</Copy>
-    {noteCopy(notes)}
-    {actions}
-    {evidenceOpen ? details : null}
   </View>;
   const planSource = read?.source.id;
   return <FlatList ref={list} data={items} keyExtractor={(item) => item.id} initialNumToRender={20} windowSize={7}
@@ -204,19 +199,18 @@ export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, r
     }} scrollEventThrottle={100}
     contentContainerStyle={{ paddingBottom: 24 }} ListHeaderComponent={header} renderItem={({ item }) => {
       if (item.kind === "section") return <View style={{ paddingHorizontal: compact ? 8 : 12, paddingTop: compact ? 8 : 10, paddingBottom: compact ? 4 : 6, gap: 2 }}>
-        <Text accessibilityRole="header" numberOfLines={compact ? 1 : undefined} accessibilityHint={compact ? item.note : undefined} style={{ color: colors.foreground, fontWeight: "600", fontSize: 13 }}>{item.title}</Text>
-        {compact ? null : <Copy colors={colors} small muted>{item.note}</Copy>}
+        <Text accessibilityRole="header" numberOfLines={compact ? 1 : undefined} accessibilityHint={item.note} style={{ color: colors.foreground, fontWeight: "600", fontSize: 13 }}>{item.title}</Text>
       </View>;
       if (item.kind === "jira") {
         const key = item.record.key;
         const state = capturedState(item.record.observations);
         const declaration = valid ? "Not declared in this plan revision" : "Plan declaration and dependencies unavailable";
+        // The section header says whether rows are declared; exact capture times, sources and the declaration stay in the label.
+        const rowTitle = <>{key}<Text style={{ fontWeight: "400", color: colors.foregroundMuted }}> · title not captured</Text></>;
+        const description = `${key}: title unavailable in the captured Jira projection. ${state.full}. ${declaration}.`;
         if (compact) return <CompactBoardRow testID={`board-jira-${key}`} colors={colors} tone={state.tone} meta={state.short}
-          title={<>{key}<Text style={{ fontWeight: "400", color: colors.foregroundMuted }}> · Title unavailable in the captured Jira projection</Text></>}
-          label={`${key}: title unavailable in the captured Jira projection. ${state.full}. ${declaration}.`} issue={{ key, open: () => onIssue(key) }} />;
-        return <BoardRow testID={`board-jira-${key}`} colors={colors}
-          title={<>{key}<Text style={{ fontWeight: "400", color: colors.foregroundMuted }}> · Title unavailable in the captured Jira projection</Text></>}
-          lines={[...item.record.observations.map((value) => `${value.status} (${value.cat}) · captured ${value.observedAt} · ${value.sourceTitle}`), declaration]}
+          title={rowTitle} label={description} issue={{ key, open: () => onIssue(key) }} />;
+        return <BoardRow testID={`board-jira-${key}`} colors={colors} title={rowTitle} lines={[state.short]} label={description}
           actions={<Action colors={colors} small label="Open issue" accessibilityLabel={`Open issue ${key}`} onPress={() => onIssue(key)} />} />;
       }
       const { node } = item;
@@ -224,21 +218,17 @@ export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, r
       const evidenceValue = evidence.get(node.id);
       const openPlan = () => onPlan(planSource, node.id);
       const issueKey = node.jira;
-      if (compact) {
-        let state = { short: "Unknown · no Jira key", full: "No Jira binding declared, status Unknown", tone: "unknown" as Tone };
-        if (evidenceValue) state = capturedState(evidenceValue.observations.map((value) => ({ status: evidenceValue.issue.status, cat: evidenceValue.issue.cat, observedAt: value.observedAt, sourceId: value.sourceId, sourceTitle: value.sourceTitle })));
-        else if (issueKey) state = { short: "Unknown · no consistent capture", full: `Jira ${issueKey}: no consistent captured record, status Unknown`, tone: "unknown" };
-        const after = node.depends_on.length ? ` · after ${node.depends_on.join(", ")}` : "";
-        return <CompactBoardRow testID={`board-task-${node.id}`} colors={colors} tone={state.tone} title={`${issueKey ?? node.id} · ${node.title}`}
-          meta={`${node.id} · ${state.short} · ${node.phase}${after}`} onPress={openPlan}
-          label={`Open plan task ${node.id}: ${node.title}. ${state.full}. ${node.phase}, dependency depth ${node.wave}. ${node.depends_on.length ? `After ${node.depends_on.join(", ")}` : "No prerequisites declared"}.${issueKey ? ` Jira ${issueKey}.` : ""}`}
-          issue={issueKey ? { key: issueKey, open: () => onIssue(issueKey) } : undefined} />;
-      }
-      let jira = ["No Jira binding declared · status Unknown"];
-      if (evidenceValue) jira = evidenceValue.observations.map((value) => `${evidenceValue.issue.status} (${evidenceValue.issue.cat}) · captured ${value.observedAt} · ${value.sourceTitle}`);
-      else if (issueKey) jira = [`Jira ${issueKey}: no consistent captured record · status Unknown`];
-      return <BoardRow testID={`board-task-${node.id}`} colors={colors} title={`${issueKey ?? node.id} · ${node.title}`}
-        lines={[`${node.id} · ${node.phase} · depth ${node.wave} · prerequisites ${node.depends_on.join(", ") || "none declared"}`, ...jira]}
+      let state = { short: "Unknown · no Jira key", full: "No Jira binding declared, status Unknown", tone: "unknown" as Tone };
+      if (evidenceValue) state = capturedState(evidenceValue.observations.map((value) => ({ status: evidenceValue.issue.status, cat: evidenceValue.issue.cat, observedAt: value.observedAt, sourceId: value.sourceId, sourceTitle: value.sourceTitle })));
+      else if (issueKey) state = { short: "Unknown · no consistent capture", full: `Jira ${issueKey}: no consistent captured record, status Unknown`, tone: "unknown" };
+      const after = node.depends_on.length ? ` · after ${node.depends_on.join(", ")}` : "";
+      const meta = `${node.id} · ${state.short} · ${node.phase}${after}`;
+      // Depth, an empty prerequisite list and the exact capture stay in the label.
+      const description = `${node.id}: ${node.title}. ${state.full}. ${node.phase}, dependency depth ${node.wave}. ${node.depends_on.length ? `After ${node.depends_on.join(", ")}` : "No prerequisites declared"}.${issueKey ? ` Jira ${issueKey}.` : ""}`;
+      if (compact) return <CompactBoardRow testID={`board-task-${node.id}`} colors={colors} tone={state.tone} title={`${issueKey ?? node.id} · ${node.title}`}
+        meta={meta} onPress={openPlan} label={`Open plan task ${description}`}
+        issue={issueKey ? { key: issueKey, open: () => onIssue(issueKey) } : undefined} />;
+      return <BoardRow testID={`board-task-${node.id}`} colors={colors} title={`${issueKey ?? node.id} · ${node.title}`} lines={[meta]} label={description}
         actions={<>
           <Action colors={colors} small label="Open in plan" accessibilityLabel={`Open plan task ${node.id}`} onPress={openPlan} />
           {issueKey ? <Action colors={colors} small label="Open issue" accessibilityLabel={`Open issue ${issueKey}`} onPress={() => onIssue(issueKey)} /> : null}
@@ -246,11 +236,11 @@ export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, r
     }} />;
 }
 
-/** Wide Board row: full detail lines with the actions beside them. */
-function BoardRow({ testID, title, lines, actions, colors }: { testID: string; title: ReactNode; lines: readonly string[]; actions: ReactNode; colors: Colors }) {
+/** Wide Board row: the compact meta line with the actions beside them; `label` reads the full detail. */
+function BoardRow({ testID, title, lines, label, actions, colors }: { testID: string; title: ReactNode; lines: readonly string[]; label: string; actions: ReactNode; colors: Colors }) {
   return <View testID={testID} style={{ marginHorizontal: 12, marginBottom: 6, paddingHorizontal: 10, paddingVertical: 8, gap: 8, borderWidth: 1, borderColor: colors.border, borderRadius: 8, backgroundColor: colors.surface1,
     flexDirection: "row", alignItems: "center" }}>
-    <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+    <View accessible accessibilityLabel={label} style={{ flex: 1, minWidth: 0, gap: 2 }}>
       <Text selectable numberOfLines={2} style={{ color: colors.foreground, fontWeight: "600", fontSize: 13 }}>{title}</Text>
       {lines.map((line, index) => <Copy key={index} colors={colors} small muted>{line}</Copy>)}
     </View>

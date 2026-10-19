@@ -20,6 +20,7 @@ vi.mock("../client/use-organization-settings", () => ({ useOrganizationSettings:
 import { KontorScreen } from "../client/kontor-screen";
 import { NativeFreshnessPill } from "../client/native-freshness";
 import { ReadOnlyPage } from "../client/read-only-pages";
+import { readTime } from "../client/page-data";
 import { navigate } from "../client/navigation-state";
 import { DEFAULT_ORGANIZATION_SETTINGS } from "../shared/organization";
 const delivery: SourceRead = { source: { id: "delivery", title: "Captured delivery", kind: "delivery", path: "/configured/delivery.json", projectId: null, epic: null, workstream: null, revisionKind: "working copy" }, status: "ready", revision: "a".repeat(64), readAt: "2026-10-19T10:00:00Z", modifiedAt: null, graph: null, content: null, diagnostics: [], records: { teams: [], decisions: [], delivery: [{ id: "retained-check", title: "Retained delivery record", kind: "check", state: "captured", recordedAt: "2026-10-18T17:00:00Z" }] } };
@@ -67,7 +68,8 @@ describe("actual source hook and native indicator agree on SDK host status", () 
       if (status !== "offline") expect(disconnected.visible).not.toContain("Paseo host offline");
       expect(disconnected.page.props.reads).toEqual(retained);
       expect(disconnected.visible).toContain(tab === "Delivery" ? "Retained delivery record" : "Retained decision record");
-      expect(disconnected.visible).toContain(delivery.readAt);
+      // The retained read time stays visible as a short cue; the exact time is in the meta label and Source details.
+      expect(disconnected.visible).toContain(`read ${readTime(delivery.readAt)}`);
       expect(model.queryOptions).toMatchObject({ queryKey: ["kontor-read-sources", "source-host"], enabled: false, refetchInterval: false, retry: false, staleTime: 0 });
       model.status = "online";
       expect(screen(tab).page.props.sourceError).toBeNull();

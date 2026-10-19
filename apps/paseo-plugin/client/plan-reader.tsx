@@ -7,6 +7,7 @@ import { AnchoredMenu, MenuItem } from "./anchored-menu";
 import { SourceDetails } from "./source-details";
 import { Action, Copy, type Colors } from "./page-controls";
 import { FormattedPlanBlock, headingAnchor, planBlocks, tableRowAt, taskDeclaration } from "./plan-document";
+import { readTime } from "./page-data";
 
 /** Reader state kept per route: the mode, and a task declaration to reveal once in this exact revision. */
 export type PlanView = { mode: "formatted" | "source"; target: { taskId: string; revision: string | null } | null; revealed: boolean };
@@ -15,6 +16,8 @@ type Props = {
   colors: Colors; compact?: boolean; sources: readonly ReadSourceSummary[]; reads: Readonly<Record<string, SourceRead>>; sourceId: string | null;
   entries: readonly DirectoryEntry[]; sourceError: string | null; query: string; setQuery: (query: string) => void;
   onChooseSource?: () => void; onDocumentLink?: (target: string) => void; onGraph?: () => void;
+  /** Copies text to this client's clipboard; offered only when the host supplies it. */
+  onCopy?: (text: string, what: string) => void;
   initialOffset: number; onScroll: (offset: number) => void; view?: PlanView; onView?: (view: PlanView) => void;
 };
 const short = (value: string | null) => value ? value.slice(0, 12) : "Unknown";
@@ -99,16 +102,22 @@ export function PlanReader(props: Props) {
     } else if (props.onDocumentLink) props.onDocumentLink(target);
     else setLinkMessage("Link navigation is unavailable on this host.");
   };
+  const several = props.sources.filter((source) => source.kind === "plan").length > 1;
+  // Empty state: one sentence and one action; the full explanation stays in its label.
   if (!selected) return <ScrollView contentContainerStyle={{ padding: 12, gap: 10 }}>
     <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: 20, fontWeight: "600" }}>Plan</Text>
     {props.sourceError ? <Copy colors={colors}>{props.sourceError}</Copy> : null}
-    <Copy colors={colors}>{props.sources.filter((source) => source.kind === "plan").length > 1 ? "Several explicitly linked plans. Choose an exact source." : "No plan linked. Select a configured plan in the top context picker."} Conversation prose and titles do not create links.</Copy>
+    <Text selectable testID="plan-empty" accessibilityLabel={`${several ? "Several explicitly linked plans. Choose an exact source." : "No plan linked. Select a configured plan in the top context picker."} Conversation prose and titles do not create links.`}
+      style={{ color: colors.foreground, fontSize: 13, lineHeight: 20 }}>{several ? "Several plans are linked here." : "No plan linked."}</Text>
     {props.onChooseSource ? <View style={{ alignSelf: "flex-start" }}><Action label="Choose plan" colors={colors} onPress={props.onChooseSource} /></View> : null}
   </ScrollView>;
   const key = selected.graph?.epic.jira ?? selected.source.epic;
   const lines = content?.split("\n") ?? [];
   const matches = needle ? blocks.filter((block) => block.text.toLocaleLowerCase().includes(needle)).length : 0;
   const width = { maxWidth: 900, width: "100%" as const, alignSelf: "center" as const };
+  const tasks = selected.graph ? `${selected.graph.nodes.length} plan tasks` : "task graph unavailable";
+  const linked = `${props.entries.length} linked session${props.entries.length === 1 ? "" : "s"}`;
+  const notInferred = "A captured document, not a live plan revision. Approval, execution and lifecycle are not inferred from its text.";
   const status = view.target ? declaration
     ? `${view.target.taskId} · declared at source line ${declaration.line + 1}${view.target.revision && view.target.revision !== selected.revision ? ` · linked from revision ${short(view.target.revision)}, now ${short(selected.revision)}` : ""}`
     : `${view.target.taskId} is not declared in this exact source revision (${short(selected.revision)}).` : null;
@@ -129,12 +138,18 @@ export function PlanReader(props: Props) {
         }
         props.onScroll(y);
       }} scrollEventThrottle={100}>
-      <View style={{ ...width, gap: 5, paddingTop: 12, paddingBottom: 6 }}>
+      {/* One title and one meta line; the source kind, exact read time and the not-inferred statement are in Source details. */}
+      <View style={{ ...width, gap: 4, paddingTop: 12, paddingBottom: 6 }}>
         {props.sourceError ? <Copy colors={colors}>{props.sourceError}</Copy> : null}
         <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: props.compact ? 19 : 22, fontWeight: "600" }}>{key ? `${key} · ${selected.source.title}` : selected.source.title}</Text>
-        <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Read-only {selected.source.revisionKind} · {selected.graph ? `${selected.graph.nodes.length} plan tasks` : "task graph unavailable"} · {props.entries.length} linked session{props.entries.length === 1 ? "" : "s"}</Text>
-        <SourceDetails read={selected} colors={colors} />
-        <Copy colors={colors} muted small>A captured document, not a live plan revision. Approval, execution and lifecycle are not inferred from its text.</Copy>
+        <SourceDetails read={selected} colors={colors}
+          summary={<Text testID="plan-meta" accessibilityLabel={`Read-only ${selected.source.revisionKind} · ${tasks} · ${linked}. Read ${selected.readAt}. ${notInferred}`} style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 18 }}>
+            {["Captured document", tasks, props.entries.length ? linked : null, `read ${readTime(selected.readAt)}`].filter(Boolean).join(" · ")}
+          </Text>}
+          notes={<>
+            <Copy colors={colors} muted small>Read-only {selected.source.revisionKind} · {tasks} · {linked}</Copy>
+            <Copy colors={colors} muted small>{notInferred}</Copy>
+          </>} />
       </View>
       <View testID="plan-reader-bar" onLayout={(event) => { geometry.current.bar = event.nativeEvent.layout.height; reveal(); }} style={{ backgroundColor: colors.surface0, borderBottomWidth: 1, borderColor: colors.border, marginHorizontal: -12, paddingHorizontal: 12, paddingVertical: 6 }}>
         <View style={{ ...width, flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
@@ -149,6 +164,7 @@ export function PlanReader(props: Props) {
             {needle ? <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>{matches} match{matches === 1 ? "" : "es"}</Text> : null}
           </View>
           {props.onGraph ? <Action small={!props.compact} label="Dependency graph" colors={colors} onPress={props.onGraph} /> : null}
+          {props.onCopy && content !== null ? <Action small={!props.compact} label="Copy Markdown" accessibilityLabel="Copy the exact Markdown source" colors={colors} onPress={() => props.onCopy!(content, "Plan Markdown")} /> : null}
         </View>
         {status ? <View style={{ ...width, flexDirection: "row", alignItems: "center", gap: 8, paddingTop: 4 }}>
           <Text accessibilityRole="text" testID="plan-target-status" style={{ flex: 1, color: declaration ? colors.foreground : colors.statusWarning, fontSize: 12 }}>{status}</Text>

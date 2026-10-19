@@ -366,6 +366,7 @@ describe("native PlanGraph events (mocked host primitives, not device qualificat
     emit(find(render(), "Fit as wave list"), "onPress");
     expect(content(render())).toContain("Page 3 of 3");
     expect(find(render(), "plan-node-TASK-099").props.accessibilityState).toEqual({ selected: true });
+    expect(find(render(), "plan-node-TASK-099").props["aria-pressed"]).toBe(true);
     emit(find(render(), "plan-list-row-TASK-099"), "onLayout", { nativeEvent: { layout: { y: 3900 } } });
     expect(scrollTo).toHaveBeenLastCalledWith({ y: 3900, animated: false });
     expect(props.store.read(key)).toMatchObject({ selected: "TASK-099", page: 2, listY: 3900, y: 10000 });
@@ -516,11 +517,12 @@ describe("native PlanGraph events (mocked host primitives, not device qualificat
     const retired = find(render(), "plan-graph-canvas-scroll");
     const saved = props.store.read(key);
     props.hostId = "host-b"; hooks.reset();
-    expect(content(find(render(), "plan-graph-zoom-status"))).toContain("100%");
+    expect(find(render(), "plan-graph-zoom-status").props.accessibilityLabel).toContain("100%");
+    expect(content(find(render(), "plan-graph-zoom-status"))).toBe("");
     emit(retired, "onScroll", { nativeEvent: { contentOffset: { y: 0 } } });
     expect(props.store.read(key)).toEqual(saved);
     props.hostId = "host-a"; props.graph = { ...props.graph, graph_sha256: "f".repeat(64) }; hooks.reset();
-    expect(content(find(render(), "plan-graph-zoom-status"))).toContain("100%");
+    expect(find(render(), "plan-graph-zoom-status").props.accessibilityLabel).toContain("100%");
     expect(props.store.read(key).scale).toBe(1.25);
   });
 
@@ -690,14 +692,26 @@ describe("graph density and disclosure semantics (GRAPH-01, A11Y-01)", () => {
     const visible = () => SECONDARY.filter((label) => walk(render()).some((node) => labelOf(node) === label));
     expect(visible()).toEqual([]);
     expect(find(render(), "More graph controls").props.accessibilityState).toEqual({ disabled: false, expanded: false });
+    expect(find(render(), "More graph controls").props["aria-expanded"]).toBe(false);
     emit(find(render(), "More graph controls"), "onPress");
     expect(find(render(), "More graph controls").props.accessibilityState).toEqual({ disabled: false, expanded: true });
+    expect(find(render(), "More graph controls").props["aria-expanded"]).toBe(true);
     expect(walk(find(render(), "plan-graph-more-controls")).filter(isButton).map(labelOf)).toEqual(SECONDARY);
     hooks.reset();
     expect(visible()).toEqual(SECONDARY);
     expect(props.store.read(key).controls).toBe(true);
     emit(find(render(), "More graph controls"), "onPress");
     expect(visible()).toEqual([]);
+  });
+
+  it("offers Copy JSON under More only when the shell wires copying, and copies the canonical graph", () => {
+    const onCopy = vi.fn();
+    const { render, props } = setup({ onCopy });
+    emit(find(render(), "More graph controls"), "onPress");
+    expect(walk(find(render(), "plan-graph-more-controls")).filter(isButton).map(labelOf)).toEqual([...SECONDARY, "Copy the canonical graph JSON"]);
+    emit(find(render(), "Copy the canonical graph JSON"), "onPress");
+    expect(onCopy).toHaveBeenCalledExactlyOnceWith(JSON.stringify(props.graph, null, 2), "Graph JSON");
+    expect(JSON.parse(onCopy.mock.calls[0]![0] as string)).toEqual(props.graph);
   });
 
   it("keeps host, hashes, instructions and shell provenance inside one Source details disclosure", () => {
@@ -736,13 +750,28 @@ describe("graph density and disclosure semantics (GRAPH-01, A11Y-01)", () => {
     expect(content(inspector)).not.toContain(sample().source_sha256);
   });
 
-  it("keeps the selection hint beside Source details on wide layouts only until a task is active", () => {
+  it("keeps wide text outside Source details to the counts, with the epic, depth note and hint inside it", () => {
     const { render } = setup();
-    const hint = "No task is selected automatically";
+    const moved = ["No task is selected automatically", "depth, not readiness", "ASMA-8371", "Canvas zoom"];
     const outside = () => content(walkOutside(render(), (node) => node.props.testID === "plan-graph-source-details").filter((node) => node.type === "Text").map((node) => node.props.children));
-    expect(outside()).toContain(hint);
-    emit(find(render(), "plan-node-TASK-002"), "onPress");
-    expect(outside()).not.toContain(hint);
+    expect(outside()).toContain("19 tasks · 4 dependencies");
+    expect(moved.filter((text) => outside().includes(text))).toEqual([]);
+    const counts = walk(render()).find((node) => node.type === "Text" && node.props.children === "19 tasks · 4 dependencies")!;
+    expect(counts.props.accessibilityLabel).toBe("ASMA-8371 · 19 tasks · 4 dependencies · depth, not readiness");
+    openDetails(render);
+    expect(moved.slice(0, 3).filter((text) => !content(find(render(), "plan-graph-source-details")).includes(text))).toEqual([]);
+  });
+
+  it("shows no zoom status for the untouched camera, then shows and announces every camera change, including back to 100%", () => {
+    const { render } = setup();
+    const status = () => find(render(), "plan-graph-zoom-status");
+    expect(content(status())).toBe("");
+    expect(status().props.accessibilityLabel).toBe("Canvas zoom 100%");
+    expect(status().props.accessibilityLiveRegion).toBe("polite");
+    emit(find(render(), "Zoom in"), "onPress");
+    expect(content(status())).toBe("Canvas zoom 125%");
+    emit(find(render(), "Zoom out"), "onPress");
+    expect(content(status())).toBe("Canvas zoom 100%");
   });
 });
 

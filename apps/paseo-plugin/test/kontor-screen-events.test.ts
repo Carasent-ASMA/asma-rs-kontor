@@ -9,7 +9,7 @@ import { Linking } from "react-native";
 
 const model = vi.hoisted(() => ({
   slots: [] as unknown[], cursor: 0, entries: [] as DirectoryEntry[], sources: [] as ReadSourceSummary[], reads: {} as Record<string, SourceRead>, values: {} as object,
-  hosts: [] as PluginHostSummary[], toastError: vi.fn(), updates: 0,
+  hosts: [] as PluginHostSummary[], toastError: vi.fn(), toastShow: vi.fn(), copyText: vi.fn(async (_text: string) => {}), updates: 0,
   useState<T>(initial: T | (() => T)): [T, (next: T | ((previous: T) => T)) => void] {
     const index = this.cursor++;
     if (!(index in this.slots)) this.slots[index] = typeof initial === "function" ? (initial as () => T)() : initial;
@@ -28,7 +28,8 @@ vi.mock("react-native", () => ({
 }));
 vi.mock("@getpaseo/plugin/client", () => ({ useHosts: () => model.hosts }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({
-  Modal: Object.assign(() => null, { Content: () => null }), ScrollView: "ScrollView", FlatList: "FlatList", TextInput: "TextInput", Icon: "Icon", useToast: () => ({ error: model.toastError }),
+  Modal: Object.assign(() => null, { Content: () => null }), ScrollView: "ScrollView", FlatList: "FlatList", TextInput: "TextInput", Icon: "Icon", useToast: () => ({ error: model.toastError, show: model.toastShow }),
+  copyText: (text: string) => model.copyText(text),
 }));
 vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: () => ({ state: { entries: model.entries, status: "ready", live: false, lastUpdatedAt: 1, error: null, staleReason: null, pages: 1, includeArchived: false }, refresh: () => {} }) }));
 vi.mock("../client/use-organization-settings", () => ({ useOrganizationSettings: () => ({ state: { status: "ready", values: model.values, saving: false, saveError: null }, save: async () => true }) }));
@@ -147,6 +148,18 @@ describe("Kontor shell native actions", () => {
     vi.mocked(Linking.openURL).mockRejectedValueOnce(new Error("No opener"));
     open("https://example.com/evidence"); await Promise.resolve();
     expect(model.toastError).toHaveBeenLastCalledWith("This device could not open the source link.");
+  });
+  it.each(["Plan", "Graph"] as const)("copies %s exports to the clipboard and says when this device refuses", async (tab) => {
+    const screen = mount(true, { tab });
+    const page = screen.elements().find((node) => typeof node.props.onCopy === "function")!;
+    const copy = page.props.onCopy as (text: string, what: string) => void;
+    copy("exact text", `${tab} export`); await Promise.resolve(); await Promise.resolve();
+    expect(model.copyText).toHaveBeenCalledExactlyOnceWith("exact text");
+    expect(model.toastShow).toHaveBeenCalledExactlyOnceWith(`${tab} export copied`); expect(model.toastError).not.toHaveBeenCalled();
+    model.copyText.mockRejectedValueOnce(new Error("denied"));
+    copy("exact text", `${tab} export`); await Promise.resolve(); await Promise.resolve();
+    expect(model.toastError).toHaveBeenCalledExactlyOnceWith(`${tab} export not copied: the clipboard is unavailable or denied on this device.`);
+    expect(model.toastShow).toHaveBeenCalledTimes(1);
   });
   it("reserves the compact context/freshness row while keeping conversation return accessible", () => {
     const compact = mount(true, { tab: "Plan", originAgentId: "native" });
