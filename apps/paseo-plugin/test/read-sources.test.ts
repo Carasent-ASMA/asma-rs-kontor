@@ -54,6 +54,13 @@ describe("configured read sources", () => {
     await rm(source.path); expect((await readConfiguredSource(source, exporter)).status).toBe("unavailable");
     expect(exporter).not.toHaveBeenCalled();
   });
+  it("does not present a changed working copy as an approved revision", async () => {
+    const { source } = await fixture();
+    expect(sourceCatalog(JSON.stringify([{ ...source, revisionKind: "approved revision" }])).sources).toEqual([]);
+    const result = await readConfiguredSource({ ...source, revisionKind: "approved revision", expectedSha256: "f".repeat(64) });
+    expect(result.status).toBe("unavailable"); expect(result.content).toBeNull(); expect(result.graph).toBeNull();
+    expect(result.diagnostics.join()).toContain("Configured revision mismatch");
+  });
   it("reads actual configured team chains without presenting an observed assignment", async () => {
     const { source } = await fixture(JSON.stringify({ teams: [{ id: "review", title: "Review", roles: [{ role: "AUD", chain: ["provider/model/high"] }] }] }));
     const result = await readConfiguredSource({ ...source, kind: "teams" });

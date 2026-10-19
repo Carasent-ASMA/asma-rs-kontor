@@ -1,0 +1,257 @@
+{
+  "schema_version": 1,
+  "source": "/Users/igor/.local/state/kontor/paseo-direct/ASMA-8539/evidence/2026-10-19-active-plan-migration/parent-review/table-row-corrections/approved/_docs/ai-orchestration/plans/2026-10-06-22-41-plan-pr-review-desk-and-lean-seat-rules.md",
+  "source_sha256": "c8d1abadfe7321fe6e95919ebf0a185bea31f39965b751b7c6dc58c17f2d89bc",
+  "graph_sha256": "98c2f6de65df5b5ed410dbde8e5ae307a9eea95a113e6cfa8b5148320364c7f5",
+  "epic": {
+    "jira": "ASMA-8371",
+    "kontor_id": null
+  },
+  "nodes": [
+    {
+      "id": "TASK-001",
+      "title": "Publish lean seat and Adam rules",
+      "phase": "Phase 1",
+      "jira": "ASMA-8372",
+      "kontor_id": null,
+      "depends_on": [],
+      "wave": 0
+    },
+    {
+      "id": "TASK-002",
+      "title": "Approve model chains for new seats",
+      "phase": "Phase 1",
+      "jira": "ASMA-8373",
+      "kontor_id": null,
+      "depends_on": [],
+      "wave": 0
+    },
+    {
+      "id": "TASK-003",
+      "title": "Write the PR review skill and seat cards",
+      "phase": "Phase 2",
+      "jira": "ASMA-8374",
+      "kontor_id": null,
+      "depends_on": [
+        "TASK-001"
+      ],
+      "wave": 1
+    },
+    {
+      "id": "TASK-004",
+      "title": "Create the desk projects, watchdog and pilot",
+      "phase": "Phase 2",
+      "jira": "ASMA-8375",
+      "kontor_id": null,
+      "depends_on": [
+        "TASK-002",
+        "TASK-003"
+      ],
+      "wave": 2
+    },
+    {
+      "id": "TASK-005",
+      "title": "Free OpenRouter fallbacks",
+      "phase": "Phase 2",
+      "jira": "ASMA-8376",
+      "kontor_id": null,
+      "depends_on": [
+        "TASK-004"
+      ],
+      "wave": 3
+    },
+    {
+      "id": "TASK-006",
+      "title": "Add the workflow plan field",
+      "phase": "Phase 1",
+      "jira": "ASMA-8377",
+      "kontor_id": null,
+      "depends_on": [],
+      "wave": 0
+    },
+    {
+      "id": "TASK-007",
+      "title": "Fix no-wait modes and checkout retry",
+      "phase": "Phase 1",
+      "jira": "ASMA-8378",
+      "kontor_id": null,
+      "depends_on": [],
+      "wave": 0
+    },
+    {
+      "id": "TASK-008",
+      "title": "Wake a stalled PR Adam",
+      "phase": "Phase 1",
+      "jira": "ASMA-8379",
+      "kontor_id": null,
+      "depends_on": [],
+      "wave": 0
+    },
+    {
+      "id": "TASK-009",
+      "title": "Add the desk fix PR",
+      "phase": "Phase 1",
+      "jira": "ASMA-8380",
+      "kontor_id": null,
+      "depends_on": [],
+      "wave": 0
+    },
+    {
+      "id": "TASK-010",
+      "title": "Add draft PR creation and still-needed checks",
+      "phase": "Phase 1",
+      "jira": "ASMA-8381",
+      "kontor_id": null,
+      "depends_on": [],
+      "wave": 0
+    },
+    {
+      "id": "TASK-011",
+      "title": "Fix same-repository still-needed matching",
+      "phase": "Phase 1",
+      "jira": "ASMA-8384",
+      "kontor_id": null,
+      "depends_on": [],
+      "wave": 0
+    },
+    {
+      "id": "TASK-012",
+      "title": "Isolate seat package and hook installation",
+      "phase": "Phase 1",
+      "jira": "ASMA-8387",
+      "kontor_id": null,
+      "depends_on": [],
+      "wave": 0
+    },
+    {
+      "id": "TASK-013",
+      "title": "Make commit pushes branch-exact",
+      "phase": "Phase 1",
+      "jira": "ASMA-8390",
+      "kontor_id": null,
+      "depends_on": [],
+      "wave": 0
+    },
+    {
+      "id": "TASK-015",
+      "title": "Add the shared merge check and merge command",
+      "phase": "Phase 1",
+      "jira": "ASMA-8395",
+      "kontor_id": null,
+      "depends_on": [],
+      "wave": 0
+    },
+    {
+      "id": "TASK-018",
+      "title": "Add seat generations for finish reports",
+      "phase": "Phase 1",
+      "jira": "ASMA-8404",
+      "kontor_id": null,
+      "depends_on": [],
+      "wave": 0
+    },
+    {
+      "id": "TASK-019",
+      "title": "Make the desk leaner and cards complete",
+      "phase": "Phase 1",
+      "jira": "ASMA-8408",
+      "kontor_id": null,
+      "depends_on": [],
+      "wave": 0
+    },
+    {
+      "id": "TASK-020",
+      "title": "Clean the shared skills",
+      "phase": "Phase 1",
+      "jira": "ASMA-8409",
+      "kontor_id": null,
+      "depends_on": [],
+      "wave": 0
+    },
+    {
+      "id": "TASK-021",
+      "title": "Retire and restore desk sessions",
+      "phase": "Phase 1",
+      "jira": "ASMA-8407",
+      "kontor_id": null,
+      "depends_on": [],
+      "wave": 0
+    },
+    {
+      "id": "TASK-022",
+      "title": "Share the key-mismatch path",
+      "phase": "Phase 1",
+      "jira": "ASMA-8405",
+      "kontor_id": null,
+      "depends_on": [],
+      "wave": 0
+    }
+  ],
+  "edges": [
+    {
+      "from": "TASK-001",
+      "to": "TASK-003"
+    },
+    {
+      "from": "TASK-002",
+      "to": "TASK-004"
+    },
+    {
+      "from": "TASK-003",
+      "to": "TASK-004"
+    },
+    {
+      "from": "TASK-004",
+      "to": "TASK-005"
+    }
+  ],
+  "waves": [
+    {
+      "wave": 0,
+      "tasks": [
+        "TASK-001",
+        "TASK-002",
+        "TASK-006",
+        "TASK-007",
+        "TASK-008",
+        "TASK-009",
+        "TASK-010",
+        "TASK-011",
+        "TASK-012",
+        "TASK-013",
+        "TASK-015",
+        "TASK-018",
+        "TASK-019",
+        "TASK-020",
+        "TASK-021",
+        "TASK-022"
+      ]
+    },
+    {
+      "wave": 1,
+      "tasks": [
+        "TASK-003"
+      ]
+    },
+    {
+      "wave": 2,
+      "tasks": [
+        "TASK-004"
+      ]
+    },
+    {
+      "wave": 3,
+      "tasks": [
+        "TASK-005"
+      ]
+    }
+  ],
+  "external_fences": [
+    {
+      "task": "TASK-002",
+      "prerequisite": "Igor's approval of the advisor's model-chain proposal",
+      "owner": "Igor",
+      "lift_condition": "Igor approves the proposed four-rung chains and bindings and they are written to the fleet source."
+    }
+  ]
+}

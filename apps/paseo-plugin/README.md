@@ -84,19 +84,127 @@ The screen is a React Native plugin screen. It does not replace Paseo's native
 sidebar, footer, tab strip, session room or composer, and it does not embed the
 workshop HTML or depend on DOM, SVG, WebView or canvas imports.
 
+## Organization and read-only pages
+
+The plugin body has Sessions, Overview, Plan, Board and More on compact clients.
+Desktop also exposes Graph and Delivery directly. More contains the remaining
+destinations, including Inbox, Search and Settings. The compact context picker
+offers All projects, observed native projects and confirmed epic keys. Overview
+always covers All projects. Plan queries and positions are scoped to the host,
+project, epic, exact source identity and revision. Organization placement uses
+explicit display mapping, then desk, then workstream. Back retains the previous query, position and session
+filters; the native **← Kontor** control returns to the last host-local view.
+
+Sessions supports Hierarchy, Role and Flat views. Repeated workspace-kind and
+session-role prefixes before the first `•` become groups within their original
+parent. Unclassified sessions and empty native workspaces remain visible.
+Favorites, expansion, sibling order, appearance and explicit display mappings are
+stored in one native host settings document (`organization`, schema version 1).
+The reorder handle accepts vertical sibling moves and opens accessible Move up /
+Move down controls. Native desktop/touch behavior still needs device qualification.
+Neither operation changes native placement, titles or ownership.
+
+Settings saves use the loaded host revision. Conflicts retain the draft; reload
+saved values and use **Reapply local changes to latest saved values** to review a
+combined draft before saving again. Unedited fields and independent favorites,
+mapping fields and associations are retained. Invalid stored preferences are
+reported and preserved until an explicit reset. These are host-shared values,
+not per-user settings.
+
+Plan, Board and Graph read only configured plan sources. A Plan page renders the
+actual Markdown, headings and search, with path, SHA-256, read time and revision
+kind. Board and Graph require a fresh `asma plan export` of that exact source.
+The file hash is checked before and after export. Export/schema/source failures
+stay visible; no ASCII, Mermaid, prose extraction or cached graph index is used.
+Dependency depth is not readiness or task status. Graph integrates the separately authored
+ASMA-8548 component without editing its owned files: nodes start visible; native scrolling, selection,
+dependency navigation, centre-selected and the wave-list alternate are available.
+Zoom is unavailable. Device, keyboard and text-scale qualification remains open.
+
+Overview separates native runtime/attention from task progress, lifecycle,
+decisions and delivery. The canonical export supplies task declarations but no
+completion numerator, so progress remains Unknown. Decisions require actual
+structured records; missing decision data is not zero. Inbox opens native
+sessions without answering or dismissing items. Activity is a partial snapshot
+of session update times. Search covers available names, configured plan text and
+canonical tasks, with no private transcript indexing. Delivery, Decisions and
+configured team definitions/chains show their own source and coverage, or an
+explicit unavailable state. Governed scheduler/gate data says **kontord not
+connected**. None of these direct reads requires `kontord`.
+
+### Host-side source catalog
+
+`KONTOR_PLUGIN_READ_SOURCES` is a JSON array configured in the plugin server's
+environment. Each entry has a unique `id`, `title`, `kind` (`plan`, `teams`,
+`delivery` or `decisions`) and absolute `path`. Optional fields are `workstream`,
+confirmed `epic`, native `projectId`, `revisionKind` and `expectedSha256`.
+`revisionKind` defaults to `working copy`; `saved draft` permits a plan without an
+epic key. `approved revision` requires an exact `expectedSha256`. A mismatched
+hash is unavailable rather than being presented as an approved working copy.
+
+Example catalog entry (replace the illustrative path with a configured source):
+
+```json
+[{"id":"example-plan","title":"Example plan","kind":"plan","path":"/srv/plans/example.md","revisionKind":"saved draft"}]
+```
+
+The host must have the supported `asma plan export` command. Optionally set
+`KONTOR_PLUGIN_ASMA_WORKSPACE` to the absolute host-side ASMA workspace containing
+the validator. Otherwise the installed CLI resolves its normal workspace. The
+documentation file's directory is not assumed to contain the validator. Reads
+are bounded to 2 MiB; each export has a 15-second timeout. Invalid configuration,
+missing files and exporter diagnostics identify the specific source.
+
+Non-plan sources are explicit JSON records, not inferred text/YAML:
+
+```json
+{"teams":[{"id":"example","title":"Configured example","roles":[{"role":"SWE","chain":["provider/model"]}]}]}
+```
+
+Decision records use `decisions: [{id, title, state}]`, where state is `open`,
+`closed` or `unknown`; optional fields are `owner`, `detail` and `url`. Delivery
+records use `delivery: [{id, title, kind, state}]`, where kind is `pull request`,
+`check` or `release`; optional fields are `url` and `recordedAt`. Record content
+is shown as recorded, with source revision and read time. No network adapter,
+credential, mutation, Connect action or native Workspaces replacement is added.
+
+In Settings, explicitly link one or more configured plan IDs to a native
+conversation and save. The host-scoped **Open plan** composer pill uses only this
+association, not a title, epic-key guess or conversation prose. One link opens
+the exact source; multiple links open a chooser. The view retains a return action
+to the originating conversation. Associations are reconciled every 15 seconds;
+source and empty-workspace snapshots refresh every 30 seconds. A source-service
+failure marks retained data/preferences unavailable or stale and disables editing.
+
+### Offline qualification without installation
+
+`scripts/host-qualification.mjs` calls the installed host compiler and settings
+store directly. It writes bundles/evidence to the chosen output directory and
+settings only to a disposable temporary directory. It never connects to a daemon,
+installs a plugin or creates native sessions. On macOS, run it with the installed
+Paseo Electron helper in `ELECTRON_RUN_AS_NODE=1` mode, supplying the absolute plan
+path, evidence directory and Paseo Resources directory. It checks both entries,
+Hermes HBC96, real host revision conflicts, reload/restart persistence, invalid
+stored-data preservation, unchanged floor hook registrations and the exact plan
+export. Native devices, paired-client transport, pointer/touch reorder, keyboard,
+text scaling and full installed-host UI behavior remain separate QA gates.
+
 ## Client authority boundary
 
 The navigator borrows the selected host's connection through
 `getPaseoClient(hostId)`. It receives no Kontor credential, reads no realm
 state, and calls no `kontord` API. Client code only reads the native agent
-directory, manages its own display state and calls the host's
-`navigation.openAgent`. It has no prompt, interrupt, permission, schedule,
-workspace-write or workflow-write call. The server hooks are unchanged.
+and workspace directories, manages its own display state and calls the host's
+`navigation.openAgent`. Verified canonical ASMA issue bindings can open their Jira
+page in the device browser. It has no prompt, interrupt, permission, schedule,
+workspace-write or workflow-write call. The floor hooks retain their behavior.
+The added server handlers accept only configured source IDs and expose bounded,
+read-only source data and host-local presentation associations.
 
 Search, filters and scroll offset are in-memory view state for the current
 client session. They are navigation preferences, not workflow state, and they
-grant no authority. Saved organization, drag order and cross-client preference
-merging remain KN-02 work.
+grant no authority. Organization values use the host settings API described above;
+they never authorize a filesystem path or a workflow action.
 
 ## Capability findings (2026-10-18)
 

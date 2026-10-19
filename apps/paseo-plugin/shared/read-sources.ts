@@ -5,6 +5,7 @@ export const sourceSummarySchema = z.object({
   id: z.string(), title: z.string(), kind: z.enum(["plan", "teams", "delivery", "decisions"]),
   path: z.string(), workstream: z.string().nullable(), epic: z.string().nullable(),
   projectId: z.string().nullable(), revisionKind: z.enum(["saved draft", "working copy", "approved revision"]),
+  expectedSha256: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(),
 });
 export const canonicalGraphSchema = z.object({
   schema_version: z.literal(1), source: z.string(), source_sha256: z.string().regex(/^[a-f0-9]{64}$/),
@@ -37,7 +38,7 @@ export const listReadSources = defineRpc({ name: "sources.list", input: z.object
 export const readSource = defineRpc({ name: "sources.read", input: z.object({ sourceId: z.string().min(1).max(128) }).strict(),
   output: sourceReadSchema });
 export const readPlanAssociations = defineRpc({ name: "sources.associations", input: z.object({}).strict(),
-  output: z.object({ status: z.enum(["ready", "invalid"]), associations: z.record(z.string(), z.array(z.string())),
+  output: z.object({ status: z.enum(["ready", "invalid", "unavailable"]), associations: z.record(z.string(), z.array(z.string())),
     sources: z.array(sourceSummarySchema), error: z.string().nullable() }) });
 export type ReadSourceSummary = z.infer<typeof sourceSummarySchema>;
 export type SourceRead = z.infer<typeof sourceReadSchema>;

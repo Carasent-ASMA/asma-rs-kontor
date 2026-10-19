@@ -4,7 +4,7 @@ import { TextInput } from "@getpaseo/plugin/client/react-native";
 import type { DirectoryEntry, DirectoryState } from "./session-directory";
 import type { ReadSourceSummary, SourceRead } from "../shared/read-sources";
 import type { Destination } from "./navigation-state";
-import { inboxEntries, nativeSummary, overviewRows, searchRecords } from "./page-data";
+import { confirmedEpic, inboxEntries, nativeSummary, overviewRows, searchRecords } from "./page-data";
 import { Action, Card, Copy, type Colors } from "./page-controls";
 
 type PageProps = {
@@ -12,6 +12,7 @@ type PageProps = {
   sources: readonly ReadSourceSummary[]; reads: Readonly<Record<string, SourceRead>>; sourceId: string | null;
   sourceError: string | null; query: string; setQuery: (query: string) => void;
   onSource: (id: string) => void; onOpen: (entry: DirectoryEntry) => void; onTab: (tab: Destination) => void;
+  onEpicTab: (tab: "Board" | "Sessions", epicKey: string | null, sourceId: string | null) => void;
   initialOffset: number; onScroll: (offset: number) => void;
 };
 function SourceStamp({ read, colors }: { read: SourceRead; colors: Colors }) {
@@ -26,6 +27,7 @@ function NativeRows({ entries, colors, onOpen }: Pick<PageProps, "entries" | "co
   return <>{entries.map((entry) => <View key={entry.id} style={{ borderBottomWidth: 1, borderColor: colors.border }}>
     <Action label={entry.title} colors={colors} onPress={() => onOpen(entry)} />
     <Copy colors={colors} muted>{entry.status} · {entry.needsInput ? "Needs input" : entry.attentionReason ?? "No native attention reason"} · {entry.workspaceName ?? "Unassigned workspace"}</Copy>
+    <Copy colors={colors} muted>Observed labels: role {entry.labels.role ?? "Unknown"} · epic {confirmedEpic(entry) ?? "Unassigned"} · workstream {entry.labels.workstream ?? entry.labels.desk ?? "Unknown"}</Copy>
   </View>)}</>;
 }
 function Overview(props: PageProps) {
@@ -44,18 +46,20 @@ function Overview(props: PageProps) {
       const counts = nativeSummary(row.entries);
       const plans = row.reads.filter((read) => read.source.kind === "plan");
       const decisions = row.reads.filter((read) => read.source.kind === "decisions" && read.status === "ready");
+      const configuredDecisions = row.reads.filter((read) => read.source.kind === "decisions");
+      const openDecisions = decisions.reduce((sum, read) => sum + (read.records?.decisions.filter((decision) => decision.state === "open").length ?? 0), 0);
       const tasks = plans.reduce((sum, read) => sum + (read.graph?.nodes.length ?? 0), 0);
       return <Card key={row.key} colors={colors} title={row.key}>
         <Copy colors={colors}>Lifecycle: Unknown · Runtime: {counts.running} running / {counts.idle} idle / {counts.closed} closed</Copy>
         <Copy colors={colors}>Native attention: {counts.attention} · Needs input: {counts.needsInput}</Copy>
         <Copy colors={colors}>Task progress: Unknown / {tasks || "Unknown"} · completion not captured by canonical export · coverage: {plans.filter((read) => read.graph).length}/{plans.length} plan sources</Copy>
-        <Copy colors={colors}>Unresolved decisions: {decisions.length ? decisions.reduce((sum, read) => sum + (read.records?.decisions.filter((decision) => decision.state === "open").length ?? 0), 0) : "Unknown — decision source not connected"}</Copy>
-        <Copy colors={colors}>Needs decision: {decisions.length ? "See recorded decisions" : "Unknown"} · Delivery: Unknown</Copy>
+        <Copy colors={colors}>Unresolved decisions: {decisions.length ? `${openDecisions} recorded open · coverage ${decisions.length}/${configuredDecisions.length} configured sources` : "Unknown — decision source not connected"}</Copy>
+        <Copy colors={colors}>Needs decision: {decisions.length ? `${openDecisions} recorded open; see Decisions` : "Unknown"} · Delivery: Unknown</Copy>
         {plans.map((read) => <View key={read.source.id}><SourceStamp read={read} colors={colors} /><Action colors={colors} label={`Open plan: ${read.source.title}`} onPress={() => onSource(read.source.id)} /></View>)}
         {!plans.length ? <Copy colors={colors} muted>No plan linked</Copy> : null}
         <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
-          <Action label="Tasks" colors={colors} onPress={() => props.onTab("Board")} />
-          <Action label="Sessions" colors={colors} onPress={() => props.onTab("Sessions")} />
+          {plans.length ? <Action label="Tasks" colors={colors} onPress={() => props.onEpicTab("Board", /^ASMA-\d+$/.test(row.key) ? row.key : null, plans.length === 1 ? plans[0]!.source.id : null)} /> : null}
+          <Action label={/^ASMA-\d+$/.test(row.key) ? "Sessions" : "All sessions"} colors={colors} onPress={() => props.onEpicTab("Sessions", /^ASMA-\d+$/.test(row.key) ? row.key : null, null)} />
         </View>
         <NativeRows entries={row.entries.slice(0, 3)} colors={colors} onOpen={onOpen} />
       </Card>;
@@ -63,7 +67,8 @@ function Overview(props: PageProps) {
   </>;
 }
 function Plan(props: PageProps) {
-  const selected = props.sourceId ? props.reads[props.sourceId] : undefined;
+  const candidate = props.sourceId ? props.reads[props.sourceId] : undefined;
+  const selected = candidate?.source.kind === "plan" ? candidate : undefined;
   const offsets = useRef<Record<number, number>>({});
   const scroller = useRef<ScrollView | null>(null);
   const lines = useMemo(() => selected?.content?.split("\n") ?? [], [selected?.content]);

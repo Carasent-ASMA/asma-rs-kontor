@@ -1,5 +1,8 @@
 import type { DirectoryEntry } from "./session-directory";
 import type { SourceRead } from "../shared/read-sources";
+export function jiraIssueUrl(key: string): string | null {
+  return /^ASMA-[1-9]\d*$/.test(key) ? `https://carasent.atlassian.net/browse/${key}` : null;
+}
 
 export function confirmedEpic(entry: DirectoryEntry): string | null {
   for (const key of ["epic", "jira.epic", "origin.epic"]) {

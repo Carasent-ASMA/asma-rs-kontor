@@ -33,7 +33,7 @@ export const organizationSettingsSchema = z.object({
   displayMappings: z.record(mappingKeySchema, displayMappingSchema).default({}),
   // Host-local native conversation -> configured source IDs. No filesystem paths.
   planAssociations: z.record(z.string().min(1), z.array(z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/))).default({}),
-});
+}).strict();
 
 export type OrganizationSettings = z.infer<typeof organizationSettingsSchema>;
 

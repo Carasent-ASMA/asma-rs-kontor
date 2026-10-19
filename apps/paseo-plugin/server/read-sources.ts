@@ -16,7 +16,7 @@ const entrySchema = sourceSummarySchema.extend({
   workstream: z.string().nullable().default(null), epic: z.string().regex(/^ASMA-\d+$/).nullable().default(null),
   projectId: z.string().nullable().default(null), revisionKind: z.enum(["saved draft", "working copy", "approved revision"]).default("working copy"),
   path: z.string().refine(isAbsolute, "Source path must be absolute"),
-}).strict();
+}).strict().refine((entry) => entry.revisionKind !== "approved revision" || entry.expectedSha256 != null, "An approved revision requires an expected SHA-256");
 export type SourceCatalog = { sources: ReadSourceSummary[]; diagnostics: string[] };
 export function sourceCatalog(raw = process.env.KONTOR_PLUGIN_READ_SOURCES): SourceCatalog {
   if (!raw?.trim()) return { sources: [], diagnostics: ["No read sources configured on this host."] };
@@ -42,8 +42,12 @@ async function boundedRead(path: string): Promise<string> {
 }
 export type ExportPlan = (path: string) => Promise<string>;
 const exportPlan: ExportPlan = async (path) => {
+  const workspace = process.env.KONTOR_PLUGIN_ASMA_WORKSPACE?.trim();
+  if (workspace && !isAbsolute(workspace)) throw new Error("KONTOR_PLUGIN_ASMA_WORKSPACE must be an absolute host-side path");
   const result = await execute("asma", ["plan", "export", path], {
-    cwd: dirname(path), timeout: 15_000, maxBuffer: MAX_BYTES, encoding: "utf8",
+    // A documentation checkout need not contain the installed plan validator.
+    // Use the host's configured ASMA workspace, never a client-selected cwd.
+    cwd: workspace || undefined, timeout: 15_000, maxBuffer: MAX_BYTES, encoding: "utf8",
   });
   return result.stdout;
 };
@@ -57,6 +61,7 @@ export async function readConfiguredSource(source: ReadSourceSummary, exporter: 
     const content = await boundedRead(path);
     const revision = sha256(content);
     result.revision = revision;
+    if (source.expectedSha256 && source.expectedSha256 !== revision) throw new Error(`Configured revision mismatch: expected ${source.expectedSha256}, read ${revision}`);
     result.modifiedAt = (await stat(path)).mtime.toISOString();
     if (source.kind !== "plan") {
       const raw: unknown = JSON.parse(content);
@@ -79,13 +84,17 @@ export async function readConfiguredSource(source: ReadSourceSummary, exporter: 
     result.status = "ready";
   } catch (error) {
     result.diagnostics.push(`${source.id} (${source.path}): ${error instanceof Error ? error.message : String(error)}`);
+    if (error && typeof error === "object" && "stdout" in error && typeof error.stdout === "string" && error.stdout.trim()) result.diagnostics.push(error.stdout.trim().slice(0, 4096));
   }
   return result;
 }
 export function contributeReadSources(server: PluginServerContext, settings: PluginSettings<typeof organizationSettingsSchema>): () => void {
   const catalog = sourceCatalog();
-  let current = settings.read();
-  const stop = settings.subscribe((state) => { current = Promise.resolve(state); });
+  let latest: Awaited<ReturnType<typeof settings.read>> | null = null;
+  let readError: string | null = null;
+  let stopped = false;
+  const firstRead = settings.read().then((state) => { if (latest === null && !stopped) latest = state; }, (error: unknown) => { readError = error instanceof Error ? error.message : String(error); });
+  const stop = settings.subscribe((state) => { latest = state; readError = null; });
   server.handle(listReadSources, () => catalog);
   server.handle(readSource, ({ sourceId }) => {
     const source = catalog.sources.find((entry) => entry.id === sourceId);
@@ -93,9 +102,10 @@ export function contributeReadSources(server: PluginServerContext, settings: Plu
     return readConfiguredSource(source);
   });
   server.handle(readPlanAssociations, async () => {
-    const state = await current;
-    return { status: state.status, associations: state.status === "ready" ? state.values.planAssociations : {},
-      sources: catalog.sources.filter((entry) => entry.kind === "plan"), error: state.status === "invalid" ? state.error : null };
+    await firstRead;
+    const state = latest;
+    return { status: state?.status ?? ("unavailable" as const), associations: state?.status === "ready" ? state.values.planAssociations : {},
+      sources: catalog.sources.filter((entry) => entry.kind === "plan"), error: state?.status === "invalid" ? state.error : readError };
   });
-  return () => { void stop(); };
+  return () => { stopped = true; void stop(); };
 }
