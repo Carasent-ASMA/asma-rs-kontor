@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { jiraHistorySchema, type CanonicalGraph, type SourceRead } from "../shared/read-sources";
 const model = vi.hoisted(() => ({ open: false }));
 vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useState: () => [model.open, (value: boolean) => { model.open = value; }], useRef: (current: unknown) => ({ current }), useMemo: (factory: () => unknown) => factory() }));
-vi.mock("react-native", () => ({ ScrollView: "ScrollView", Text: "Text", View: "View" }));
+vi.mock("react-native", () => ({ ScrollView: "ScrollView", Text: "Text", View: "View", Pressable: "Pressable" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput", Icon: "Icon" }));
 import { SourceDetails } from "../client/source-details";
 import { ReadOnlyPage } from "../client/read-only-pages";
@@ -24,6 +24,7 @@ function text(node: ReactNode): string {
   if (typeof node === "string" || typeof node === "number") return String(node);
   if (Array.isArray(node)) return node.map(text).join("");
   if (!isValidElement<Record<string, unknown>>(node)) return "";
+  if (typeof node.type === "function") return text((node.type as (props: any) => ReactNode)(node.props));
   return text(node.props.children as ReactNode);
 }
 function overview(reads: Record<string, SourceRead>) {
@@ -54,7 +55,7 @@ describe("compact Overview source evidence", () => {
   it("shows the historical workflow and 3/10 coverage without presenting current completion", () => {
     const tree = overview({ plan, jira: read }); const visible = text(tree);
     expect(visible).toContain("Jira workflow: Groomed · historical, observed 2026-10-18T17:00+00:00");
-    expect(visible).toContain("Historical Jira done 0 of 3 matched tasks · plan coverage 3/10 · 7 tasks Unknown");
+    expect(visible).toContain("Observed done 0/10 · other observed 3/10 · Unknown 7/10 · plan coverage 3/10");
     expect(visible).toContain("Current completion: Unknown");
     expect(visible).toContain("kontord is not enabled"); expect(visible).not.toContain("kontord not connected");
     expect(elements(tree).some((element) => element.props.label === "Open plan")).toBe(true);
@@ -63,7 +64,7 @@ describe("compact Overview source evidence", () => {
   });
   it("retains native content when Jira is unavailable and never treats idle as task completion", () => {
     const visible = text(overview({ plan }));
-    expect(visible).toContain("0 running / 1 idle / 0 closed");
+    expect(visible).toContain("0 running"); expect(visible).toContain("1 idle"); expect(visible).toContain("0 closed");
     expect(visible).toContain("plan coverage 0/10 · 10 tasks Unknown");
     expect(visible).toContain("Jira workflow: Unknown");
     expect(visible).toContain("Historical Jira: not connected to a configured status source");

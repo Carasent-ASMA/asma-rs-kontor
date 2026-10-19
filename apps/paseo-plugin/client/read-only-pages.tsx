@@ -4,7 +4,8 @@ import { TextInput } from "@getpaseo/plugin/client/react-native";
 import type { DirectoryEntry, DirectoryState } from "./session-directory";
 import type { ReadSourceSummary, SourceRead } from "../shared/read-sources";
 import type { Destination } from "./navigation-state";
-import { historicalJiraIssue, historicalPlanProgress, confirmedEpic, inboxEntries, nativeSummary, overviewRows, searchRecords } from "./page-data";
+import { historicalJiraIssue, confirmedEpic, inboxEntries, nativeSummary, overviewRows, searchRecords } from "./page-data";
+import { NativeSummaryIndicators, PlanTaskStatus } from "./overview-status";
 import type { TeamsSourceSnapshot } from "../shared/teams-source-snapshot";
 import { TeamsSourcePage } from "./teams-source-page";
 import { SourceDetails } from "./source-details";
@@ -35,8 +36,7 @@ function Overview(props: PageProps) {
   const total = nativeSummary(props.entries);
   return <>
     <Card colors={colors} title={props.contextLabel ?? "All projects"}>
-      <Copy colors={colors}>{total.total} native sessions · {total.running} running · {total.idle} idle · {total.closed} closed</Copy>
-      <Copy colors={colors}>{total.attention} native attention · {total.needsInput} needs input · {total.errors} native errors</Copy>
+      <NativeSummaryIndicators counts={total} colors={colors} />
       <Copy colors={colors} muted>Inventory: {directory.status} · {directory.live ? "Live (reconciled subscription)" : "Not Live"} · last complete read {directory.lastUpdatedAt ? new Date(directory.lastUpdatedAt).toISOString() : "Unknown"}</Copy>
       <Copy colors={colors}>Lifecycle: Unknown · Delivered work: Unknown</Copy>
       <Copy colors={colors}>Governed scheduler / gates: kontord is not enabled</Copy>
@@ -51,13 +51,10 @@ function Overview(props: PageProps) {
       const openDecisions = decisions.reduce((sum, read) => sum + (read.records?.decisions.filter((decision) => decision.state === "open").length ?? 0), 0);
       const workflow = historicalJiraIssue(row.key, null, reads);
       return <Card key={row.key} colors={colors} title={row.key}>
-        <Copy colors={colors}>Lifecycle: Unknown · Runtime: {counts.running} running / {counts.idle} idle / {counts.closed} closed</Copy>
-        <Copy colors={colors}>Native attention: {counts.attention} · Needs input: {counts.needsInput}</Copy>
+        <Copy colors={colors}>Lifecycle: Unknown · Native runtime snapshot</Copy>
+        <NativeSummaryIndicators counts={counts} colors={colors} />
         <Copy colors={colors}>Jira workflow: {workflow ? `${workflow.issue.status} · historical, observed ${workflow.observations.map((value) => value.observedAt).join(" / ")}` : "Unknown"}. Current completion: Unknown.</Copy>
-        {plans.map((read) => {
-          const progress = read.graph ? historicalPlanProgress(read.graph, reads) : null;
-          return <Copy key={read.source.id} colors={colors}>{read.source.title}: {progress ? `Historical Jira done ${progress.done} of ${progress.known} matched tasks · plan coverage ${progress.known}/${progress.total} · ${progress.unknown} tasks Unknown` : "Task coverage Unknown — canonical export unavailable"}. Capture coverage is not complete Jira inventory or current completion.</Copy>;
-        })}
+        {plans.map((read) => <PlanTaskStatus key={read.source.id} plan={read} reads={reads} colors={colors} />)}
         <Copy colors={colors}>Unresolved decisions: {decisions.length ? `${openDecisions} recorded open · coverage ${decisions.length}/${configuredDecisions.length} configured sources` : "Unknown — decision source not connected"}</Copy>
         <Copy colors={colors}>Needs decision: {decisions.length ? `${openDecisions} recorded open; see Decisions` : "Unknown"} · Delivery: Unknown</Copy>
         {plans.length === 1 ? <><SourceDetails read={plans[0]!} colors={colors} /><Action colors={colors} label="Open plan" onPress={() => onSource(plans[0]!.source.id)} /></> : plans.length > 1 ? <Copy colors={colors}>Choose a plan in the top context picker.</Copy> : null}
