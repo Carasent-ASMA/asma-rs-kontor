@@ -25431,6 +25431,124 @@ async fn a_runtime_observed_terminal_run_closes_its_stranded_team_on_abandon_rep
     );
 }
 
+/// A team stopped by a declared slot that never produced a terminal run is not
+/// repaired by replaying `runtime:settle`.
+///
+/// `settle_team` only certifies an envelope whose every declared slot is
+/// accounted for, so this shape stays pending however often the settlement
+/// replay is asked. `runtime:abandon` of the never-bound run is the route that
+/// makes that slot terminal and closes the envelope.
+#[tokio::test]
+async fn a_settlement_replay_leaves_a_never_bound_slot_pending_until_abandoned() {
+    let seeded = alpha_with_one_unbound_slot("missing-slot-replay").await;
+    let UnboundWorld {
+        world,
+        project,
+        team_run,
+        seats,
+        ..
+    } = &seeded;
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let team_run_id = TeamRunId::parse(team_run).expect("a team run id");
+
+    // Every seat the runtime accepted ends. The refused slot has no terminal
+    // run, so the envelope cannot certify yet.
+    for (index, seat) in seats.iter().enumerate() {
+        let agent_run = seat["agent_run_id"].as_str().expect("a run id");
+        finish_natively(world, agent_run).await;
+        let settled = Call::post(
+            format!("/v1/projects/{project}/agent-runs/{agent_run}/runtime:settle"),
+            &serde_json::json!({}),
+        )
+        .signed_as(world, "operator")
+        .with_key(format!("missing-slot-settle-{index}"))
+        .send(world)
+        .await;
+        assert_eq!(settled.status, 200, "{}", settled.body);
+        assert!(
+            settled.json()["team_run_closed"].is_null(),
+            "the declared slot with no terminal run keeps the team open: {}",
+            settled.body
+        );
+        assert!(
+            !settled.json()["team_pending"].is_null(),
+            "the settlement says why the team cannot close: {}",
+            settled.body
+        );
+    }
+
+    // Replaying that settlement retries the closure, but the shape is still
+    // incomplete, so it stays pending instead of closing or claiming success.
+    let first = seats[0]["agent_run_id"].as_str().expect("a run id");
+    let replayed = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{first}/runtime:settle"),
+        &serde_json::json!({}),
+    )
+    .signed_as(world, "operator")
+    .with_key("missing-slot-settle-replay")
+    .send(world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert!(
+        replayed.json()["team_run_closed"].is_null(),
+        "a settlement replay does not repair a declared slot that never ran: {}",
+        replayed.body
+    );
+    assert!(
+        !replayed.json()["team_pending"].is_null(),
+        "the replay reports the same lift condition: {}",
+        replayed.body
+    );
+
+    // The never-bound run is the route: abandoning it accounts for its declared
+    // slot, and the envelope closes once every slot is terminal.
+    let unbound = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run_id))
+        .expect("the seats are readable")
+        .into_iter()
+        .find(|seat| seat.native_id.is_none())
+        .expect("the refused launch left its durable unbound run");
+    let unbound_run = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_agent_run(project_id, unbound.agent_run_id))
+        .expect("the unbound run reads")
+        .expect("the unbound run exists");
+    let abandoned = Call::post(
+        format!(
+            "/v1/projects/{project}/agent-runs/{}/runtime:abandon",
+            unbound.agent_run_id
+        ),
+        &serde_json::json!({
+            "expected_revision": unbound_run.revision.get(),
+            "reason": "The refused launch never bound a session, so this declared slot has no terminal run"
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("missing-slot-abandon")
+    .send(world)
+    .await;
+    assert_eq!(abandoned.status, 200, "{}", abandoned.body);
+    assert_eq!(
+        abandoned.json()["team_run_closed"],
+        serde_json::json!(team_run),
+        "{}",
+        abandoned.body
+    );
+    let closed = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(project_id, team_run_id)
+            .expect("the team reads")
+            .expect("the team exists")
+    });
+    assert!(
+        closed.lifecycle.is_terminal(),
+        "the declared slot is accounted for and the envelope closes"
+    );
+}
+
 /// The refusal that made the 2026-08-22 incident unrecoverable, and its cure.
 ///
 /// A seat that hits a usage limit is **still reachable** — it answers, it just

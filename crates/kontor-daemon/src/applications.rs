@@ -37718,11 +37718,16 @@ impl ApplicationOperations for Services {
                 kontor_core::state::TerminalEvidenceSource::OperatorAbandon { .. } => None,
             };
             // Closing the run commits before the team is settled, so a team
-            // closure that failed — behind a Team Definition migration fence, or
-            // on a declared slot that never ran — leaves an envelope with no live
-            // child. The run is immutable now, and this replay is the only path
-            // back to it: retry the closure, which is idempotent, instead of
-            // reporting the stranded envelope forever.
+            // closure that failed behind a Team Definition migration fence
+            // leaves an envelope with no live child. The run is immutable now,
+            // and this replay is the only path back to it: retry the closure,
+            // which is idempotent, instead of reporting the stranded envelope
+            // forever.
+            //
+            // A declared slot that never produced a terminal run is not repaired
+            // here: `settle_team` answers pending for that shape however often
+            // it is asked. The `runtime:abandon` route on that slot's run is
+            // what makes every declared slot terminal and closes the envelope.
             let (team_run_closed, team_pending) = self.settle_team(project_id, &run, now)?;
             // A first settlement that failed after closing the run never reached
             // the release below, so the snapshot would stay held for a session
