@@ -158,10 +158,12 @@ Observed on this workstation:
   `srv_tWq3jTzpOlc9`): "mobile check passed" and "desktop checked looks ok too".
   The acceptance covers the device test as performed and does not assert that
   every subcase below was individually instrumented or observed. The later
-  `d5d59533` head adds the two refresh/dispose guards, their regression tests,
-  the acceptance wording and the bounded return-control walk retry. Those are
-  code-only reliability changes and do not change the accepted desktop/iPhone
-  UI path; no new device pass is claimed for them. This candidate still does not claim
+  lifecycle hardening through `edf8de21` (`#353` and `#354`) adds the two
+  refresh/dispose guards, their regression tests, the acceptance wording, the
+  bounded return-control walk retry, single-flight subscriptions, abortable
+  directory walks and a bounded update buffer. Those are code-only reliability
+  changes and do not change the accepted desktop/iPhone UI path; no new device
+  pass is claimed for them. This candidate still does not claim
   saved-view restoration or full B1, and KN-03 does not substitute for the KN-01
   checks. The procedure and evidence checklist are recorded below.
 

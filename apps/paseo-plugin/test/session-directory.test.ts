@@ -647,6 +647,40 @@ describe("SessionDirectory", () => {
     await directory.dispose();
   });
 
+  it("re-walks when an overflowed refresh walk fails once", async () => {
+    const fake = fakeDirectory([[entry("agent-a")]]);
+    let latest = emptyDirectoryState();
+    const directory = new SessionDirectory({
+      client: () => fake.client,
+      includeArchived: false,
+      onChange: (state) => {
+        latest = state;
+      },
+    });
+
+    await directory.start();
+    fake.failNext();
+    const refreshing = directory.refresh();
+    for (let index = 0; index < 257; index += 1) {
+      fake.emitUpdate({
+        kind: "upsert",
+        agent: {
+          ...entry("agent-a").agent,
+          title: `Session agent-a ${index}`,
+          updatedAt: `2026-10-18T10:${String(index % 60).padStart(2, "0")}:00.000Z`,
+        },
+      } as PaseoAgentUpdate);
+    }
+    await refreshing;
+
+    expect(
+      fake.listCalls.filter((call) => call.subscribe === undefined).length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(latest.status).toBe("ready");
+
+    await directory.dispose();
+  });
+
   it("keeps the previous rows but marks them stale when a refresh fails", async () => {
     const fake = fakeDirectory([[entry("agent-a")]]);
     let latest = emptyDirectoryState();
@@ -969,6 +1003,29 @@ describe("SessionDirectory", () => {
     await directory.setIncludeArchived(true);
     expect(latest.includeArchived).toBe(true);
     expect(latest.entries.map((item) => item.id).sort()).toEqual(["agent-a", "agent-b"]);
+
+    await directory.dispose();
+  });
+
+  it("shows an error, not a spinner, when the archive scope changes offline", async () => {
+    const fake = fakeDirectory([[entry("agent-a")]]);
+    let latest = emptyDirectoryState();
+    const directory = new SessionDirectory({
+      client: () => fake.client,
+      includeArchived: false,
+      onChange: (state) => {
+        latest = state;
+      },
+    });
+
+    await directory.start();
+    directory.markHostOffline();
+    await directory.setIncludeArchived(true);
+
+    expect(latest.includeArchived).toBe(true);
+    expect(latest.status).toBe("error");
+    expect(latest.error).toMatch(/offline/);
+    expect(latest.entries).toHaveLength(0);
 
     await directory.dispose();
   });
