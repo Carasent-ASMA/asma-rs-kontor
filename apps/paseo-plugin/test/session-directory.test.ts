@@ -1042,6 +1042,8 @@ describe("SessionDirectory", () => {
     });
 
     await directory.start();
+    const previousPages = latest.pages;
+    const previousReadAt = latest.lastUpdatedAt;
     const subscribe = fake.holdNextSubscribe();
     const changing = directory.setIncludeArchived(true);
     await subscribe.started;
@@ -1053,6 +1055,8 @@ describe("SessionDirectory", () => {
     expect(latest.status).toBe("stale");
     expect(latest.entries).toHaveLength(1);
     expect(latest.error).toMatch(/daemon unavailable/);
+    expect(latest.pages).toBe(previousPages);
+    expect(latest.lastUpdatedAt).toBe(previousReadAt);
 
     await directory.dispose();
   });

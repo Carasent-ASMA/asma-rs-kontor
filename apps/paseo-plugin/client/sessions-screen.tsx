@@ -1507,8 +1507,10 @@ export function SessionsScreen({ host, layout, navigation, theme }: PluginScreen
           state.entries.length === 0 ? null : (
             <View style={{ paddingVertical: 12, alignItems: "center" }}>
               <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>
-                {visible.length} of {state.entries.length} shown · complete inventory read{" "}
-                {updatedLabel(state.lastUpdatedAt)}
+                {visible.length} of {state.entries.length} shown ·{" "}
+                {state.lastUpdatedAt === null
+                  ? "not read yet"
+                  : `complete inventory read ${updatedLabel(state.lastUpdatedAt)}`}
               </Text>
             </View>
           )
