@@ -40007,12 +40007,15 @@ impl Services {
     /// Compose the summarizer for one handoff from the deployment's configured
     /// data.
     ///
-    /// The seat's exact declared chain — the fleet binding or frozen template
-    /// chain in force — is walked through the same account-before-rung headroom
-    /// resolution every launch uses, so a summary can never be dispatched onto
-    /// the account that just refused. The task's account pin is read exactly as
-    /// the successor placement reads it: the summary is the same task's
-    /// redacted transcript, so it must follow the same operator choice.
+    /// The seat's declared chain — the fleet binding or frozen template chain
+    /// in force — is walked through the account-before-rung headroom resolution,
+    /// so the summary takes a headroom-admissible route from that chain and can
+    /// never be dispatched onto the account that just refused. That is the walk
+    /// a template-chain launch uses; a fleet-bound launch places its seat
+    /// through the fleet resolver's own selection, so the summary may take a
+    /// different route from the same fleet chain. The task's account pin is read
+    /// exactly as the successor placement reads it: the summary is the same
+    /// task's redacted transcript, so it must follow the same operator choice.
     ///
     /// No declaration is an ordinary unconfigured realm, not an error: it
     /// composes as unplaceable and the handoff keeps the typed degraded path.
