@@ -35,8 +35,8 @@ development and test tooling.
 
 ## Separately installed runtimes
 
-Kontor orchestrates Paseo, Agent Orchestrator and Codex sessions and delegates
-fleet/Jira operations to the `asma` CLI. These are separate installations with
+Kontor orchestrates Paseo, Agent Orchestrator and Codex sessions; the `asma`
+CLI calls Kontor's publication endpoints. These are separate installations with
 their own licenses and are never distributed from this repository.
 
 ## License texts

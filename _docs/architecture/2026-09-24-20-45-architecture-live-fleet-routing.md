@@ -1,7 +1,7 @@
 # Live Fleet Routing Instead of Frozen Template Routes
 
 > **Date:** 2026-09-24 20:45
-> **Status:** 🟢 Approved
+> **Status:** 🟢 Approved. Implemented in PR #271 (`7ffd650d`, 2026-09-25). PR #292 (`4097afb8`, ASMA-8280, merged 2026-10-04) adds an activated fleet policy above this file; see [Implementation notes](#implementation-notes-2026-10-17).
 > **Category:** architecture
 > **Scope:** `asma-rs-kontor` model routing for delivery, Committee and Advisor seats; the live Kontor state root `<state-root>/fleet.yml`; the asma-modules plan `2026-09-24-07-30-plan-kontor-live-fleet-configuration.md`
 > **Summary:** Every seat placement resolves its model route from one owner-only `fleet.yml` in the live state root, read at placement time, instead of from the route frozen into a published template revision. Editing that file changes the next placement with no rebuild, restart or template republish; an invalid edit keeps the last valid version. This supersedes template-snapshot immutability **for routing only**.
@@ -177,6 +177,31 @@ the need to.
   `openrouter` domains (both on the `opencode` account) fail independently.
 - **DEF-007:** Retention for `fleet-decisions/` and `fleet-history/`.
 
+## Implementation notes (2026-10-17)
+
+Checked against `master` at `0971674d`. The decisions above are unchanged as
+recorded; this section notes what later merged.
+
+- PR #271 (`7ffd650d`) implements this decision.
+- PR #292 (`4097afb8`, ASMA-8280) adds an activated fleet policy. While the
+  owner-only `<state-root>/fleet-activation.json` exists, placement reads only
+  the published policy it names and never reads `fleet.yml`; a record or policy
+  that fails verification refuses every placement that resolves a fleet
+  binding rather than falling back. Deleting the record returns the realm to
+  the `fleet.yml` behaviour above. The admin operations are
+  `kontor_fleet_policy_get`, `_preview`, `_publish` and `_activate`, plus the
+  orchestration-bundle operations; their idempotency keys are bound by schema
+  v125 and v126. DEC-009's "no migration, no new MCP tool" remains true of the
+  `fleet.yml` reader itself; the activation layer adds both.
+- DEF-001 is partly met by `kontor_fleet_policy_get` (`GET /v1/fleet/policy`),
+  which reports which source decides routing. There is no `kontor_fleet_get`,
+  no database table for fleet decisions and no console editing.
+- DEF-005 is partly met: a schema-version-2 policy binds epic leadership seats
+  as `leadership/<core-team-revision-hash>/<role-slot-id>`. `core/<role_code>`
+  keys are still rejected.
+
+Operator detail is in [`docs/CONFIGURATION.md`](../../docs/CONFIGURATION.md).
+
 ## References
 
 - [`docs/CONFIGURATION.md`](../../docs/CONFIGURATION.md) — operator guide for the
@@ -185,7 +210,7 @@ the need to.
   example, also the first live file.
 - [Plan: Kontor Live Fleet Configuration Implementation Plan](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/plans/2026-09-24-07-30-plan-kontor-live-fleet-configuration.md) —
   the binding implementation plan and its decisions DEC-001…DEC-017.
-- [`docs/QUOTA-FALLBACK-PLAN.md`](../QUOTA-FALLBACK-PLAN.md) — how quota evidence
+- [`docs/QUOTA-FALLBACK-PLAN.md`](../../docs/QUOTA-FALLBACK-PLAN.md) — how quota evidence
   and takeover interact with a declared chain.
 - [PR #267](https://github.com/Carasent-ASMA/asma-rs-kontor/pull/267) — the
   bridge commands this decision makes unnecessary for ordinary routing.

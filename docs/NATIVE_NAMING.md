@@ -1,6 +1,8 @@
 # Native naming
 
 > Status: approved and implemented contract. The 2026-09-02 KBI migration is verified live; other epics retain historical pins until their own explicit upgrade. See the [governing migration receipt](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/architecture/2026-09-01-03-39-architecture-kontor-configuration-driven-native-naming.md#8-implementation-and-live-migration-receipt): deployed `1a4320f7`, migration `01a062dd-b092-7593-b64e-c385d2eb7c07`, nine preserved native identities.
+>
+> Source verified at `0971674d` (2026-10-11): branch grammar, publication attestation, confirmed Jira-key tokens, consultation naming and the four durable-desk sections. Each later section names the PR and merge commit it describes. Merged is not deployed or selected: a realm uses a desk-capable or Jira-key Team Definition only after its own recorded selection.
 
 Kontor must render native hierarchy and names deterministically from one
 immutable, versioned Team Definition JSON revision pinned by the run. The Team
@@ -88,7 +90,11 @@ Rules, in the order they apply:
    an ASMA catalog module shape, the task slug must equal the confirmed Jira key
    in lowercase, the module checkout must exist, and its actual Git branch must
    be canonical and carry that key. Paths outside `.worktrees/` imply no branch
-   and stay runtime-owned.
+   and stay runtime-owned. At workspace preparation the Paseo adapter checks a
+   catalog checkout again: for a task scope both the slug and the actual branch
+   must carry that task's confirmed key, and the epic key cannot stand in; an
+   epic-level scope keeps its epic-or-task binding (ASMA-8114, #287
+   `e8c8e7cf`).
 2. **Derivation.** A task that declares no worktree is placed on
    `.worktrees/feat/<TASK-KEY>-<slug(task title)>` when it links a Jira key,
    else on the epic key with the epic title. The task key is preferred because
@@ -122,17 +128,43 @@ repository, base branch, head branch, head commit and, where one exists, the
 pull-request number and title. Kontor resolves the branch key to the epic whose
 confirmed Jira key it is, or to a task whose confirmed link it is, and judges:
 
+- the repository is in the project's approved publication scope
+  (`repository_mismatch`);
 - the head branch parses and carries the epic key or that task's key
-  (`branch_binding_mismatch`, `binding_unconfirmed`, or a grammar code such as
-  `branch_shape_invalid`);
+  (`branch_binding_mismatch`, `binding_unconfirmed`, `binding_ambiguous` when
+  the key resolves to more than one confirmed subject, or a grammar code such
+  as `branch_shape_invalid`);
 - the base branch is the default branch (`base_branch_not_default`);
 - a title, when given, leads with the same canonical key as the branch and one
   space. Epic work uses the epic branch; child work uses that task's own branch
-  (`pr_title_key_missing`, `pr_title_key_mismatch`).
+  (`pr_title_key_missing`, `pr_title_key_mismatch`). A pull-request number
+  without a title is `pr_title_key_missing`.
 
 Accepted and refused decisions are both recorded, idempotently per caller key,
-and are readable by observers. A refused decision is evidence that the rail
-held. A malformed commit identity is a malformed request, not a decision.
+and are readable by observers. Each decision carries the policy revision it was
+judged under; `kontor_core::publication::POLICY_REVISION` is 4 at this revision
+(repository scope, ambiguity and the missing-title rule arrived with #239,
+`e3a0c6c8`). Schema v119 makes the ledger append-only: triggers refuse update
+and delete of a recorded attestation (ASMA-8102, #265, `835c5815`). A refused
+decision is evidence that the rail held. A malformed commit identity is a
+malformed request, not a decision.
+
+Two forge-side checks sit beside the attestation. The GitHub App gateway
+(#195, `e4bb5fbd`) posts the `asma/publication-identity` check run and performs
+head-bound merges once `config/github-app.json` is installed; see
+[CONFIGURATION.md](CONFIGURATION.md#github-app-for-publication-identity-asma-8101).
+The `asma/publication-branch-title` workflow (#280, `8acdbd17`) runs on
+`pull_request_target`, fetches its checker from the exact workflow revision and
+executes nothing from the pull-request head. It judges only the branch shape,
+the title's leading key (or `Release v<version>` for a release branch) and the
+`master` base. One exception: a `dependabot/` branch opened by `dependabot[bot]`
+is accepted as `bot_branch_exempt`, and the base and head-sha checks still run.
+Unlike the generic grammar above, its checker
+(`.github/scripts/publication_branch_title.py`) fixes the project key to
+`ASMA`, so `<type>/ASMA-<number>-<slug>` is the only keyed form it accepts
+(`branch_project_mismatch` otherwise). It does not contact Jira and is not
+binding proof. Both checks report check runs; whether a repository ruleset
+requires either is GitHub configuration, not recorded in this repository.
 
 ## Legacy-import code correction
 
@@ -162,6 +194,18 @@ The literal separator is space + U+2022 BULLET + space: ` • `.
 | ASW | `ASW • <SCOPE_ITEM_CODE> • <TOPIC>` | `ASW • KOP-8001 • Jira recovery` |
 | task CSW | `CSW • <TASK_ITEM_CODE> • <TOPIC>` | `CSW • KOP-7869 • Naming contract` |
 | epic CSW | `CSW • <EPIC_ITEM_CODE> • <TOPIC>` | `CSW • KOP-8001 • Release readiness` |
+
+### Confirmed Jira-key tokens
+
+A template may use `EPIC_JIRA_KEY`, `TASK_JIRA_KEY` and `SCOPE_JIRA_KEY` in
+place of the item-code tokens (#216, `f78d041e`). They render only from an
+exact confirmed, project-scoped Jira binding resolved with its immutable Jira
+issue id (schema v95, #215, `6355b850`); a missing, ambiguous or foreign
+subject refuses the render rather than falling back to an item code. The
+bundled Team Definitions v1 and v7 still render item codes. The Jira-key
+successors (`asma-operational-v4` to `v6`) exist only as prepared Team
+Definition documents, status `prepared-not-published`; a realm's selection of
+one is not recorded here.
 
 ### Native-root creation invariant
 
@@ -194,9 +238,22 @@ confirmed Jira binding and pinned Team Definition, derives a semantic identity
 from the scope, family,
 pinned profile/template revision, topic and explicit re-review provenance, and
 renders the complete container title itself. The invocation response returns
-that title as `container_name`. A second invocation with the same semantic
-identity is refused even under a new idempotency key, and a unique database
-index closes concurrent races.
+that title as `container_name`. A topic that contains the separator, the
+subject's Jira key or derived item code, or the container prefix is refused
+(`consultation_topic_contains_separator`,
+`consultation_topic_repeats_scope_code`,
+`consultation_topic_repeats_container_prefix`); the derived item code stays
+forbidden even when the template renders a Jira key (#287, `e8c8e7cf`). A
+second invocation with the same semantic identity is refused even under a new
+idempotency key, and a unique database index closes concurrent races. The
+sequential pre-check and a concurrent loser receive the same
+`idempotency_conflict` refusal, `consultation_semantic_duplicate`, located at
+the surviving run (#287).
+
+Settled consultation runs recorded before semantic identity, without subject or
+topic, still read back: the response omits `container_name` instead of
+refusing with 409. Native effects on such a run stay strict (#279,
+`173d399b`).
 
 A pre-enforcement Committee topic that begins with redundant server-owned
 scope material may be repaired once through
@@ -327,6 +384,13 @@ The complete canonical fixture is
 
 ## Durable desks (ASMA-8450)
 
+> Merged: #295 (`733807cc`), with qualification repairs in #299 (`813135fd`)
+> and hosted desk MCP composition in #300 (`0971674d`). The
+> [qualification report](../_docs/reports/2026-10-11-16-00-report-asma-8454-desk-qualification.md)
+> is a frozen source candidate; Independent Review and released-build readback
+> are pending, and no realm's desk selection is recorded here. Operations are
+> in [Durable desks in kontord](../_docs/reference/2026-10-10-23-55-reference-kontord-durable-desks.md).
+
 A durable desk is a native project that belongs to the Kontor project rather
 than to any epic: `DESK • ADAM` and `DESK • PR REVIEW`, each with one `ADAM`
 workspace inside it. A desk has no Jira epic, no backlog code and no task, so
@@ -378,6 +442,8 @@ desk's nodes (`placement_blocked`), so no epic closeout path can retire one.
 
 ## Durable desk seats (ASMA-8451)
 
+> Merged: #296 (`430975a3`). Qualification as for desks above.
+
 A long-lived seat of a desk is titled from its declaration, never chosen
 freely. The template is the fixed sequence `ROLE_CODE`, `TOPIC`, joined by
 the separator of the Team Definition revision the desk pinned:
@@ -401,6 +467,9 @@ Declaring, reporting and reconciling these seats is described in
 [Durable desk seats in kontord](../_docs/reference/2026-10-11-02-20-reference-kontord-durable-desk-seats.md).
 
 ## Desk Adams (ASMA-8452)
+
+> Merged: #297 (`b3db4adf`). Qualification as for desks above. Neither bundled
+> Team Definition (v1, v7) declares `desk_leadership`.
 
 A Team Definition that declares `desk_leadership` leads its epics from a desk:
 each epic, and each ad-hoc topic, gets a subject node directly below the
@@ -433,6 +502,9 @@ The operations, handoff and support limits are in
 
 ## PR reviews (ASMA-8453)
 
+> Merged: #298 (`e376f405`). Qualification as for desks above. Neither bundled
+> Team Definition (v1, v7) declares `pr_review`.
+
 A Team Definition that declares `pr_review` gives each pull request on its PR
 desk an Adam tab in the desk's workspace and a review room below the desk. Two
 tokens name them:
@@ -448,9 +520,9 @@ tokens name them:
 | room workspace | `PREFIX`, `SCOPE_JIRA_KEY`, `PULL_REQUEST` | `RSW • ASMA-8449 • asma-rs-kontor#101` |
 | room seats | `SLOT_DISPLAY_NAME` | `REV A`, `REV B`, `JUDGE` |
 
-- Only the declared Adam and room kinds may render `PULL_REQUEST`, and only
-  the Adam's seat template may render `SCOPE_JIRA_KEY`. Validation refuses any
-  other container that tries.
+- Only the declared Adam and room kinds may render `PULL_REQUEST`, and among
+  seat templates only the Adam's may render `SCOPE_JIRA_KEY` (the room's own
+  title may too). Validation refuses any other container that tries.
 - Before rendering `SCOPE_JIRA_KEY`, the daemon re-reads the confirmed key of
   the review's epic or task. If it no longer equals the recorded key, the
   render is refused (`placement_blocked`).
