@@ -32581,18 +32581,60 @@ impl ApplicationOperations for Services {
                 applied_at: now,
             })
             .collect::<Vec<_>>();
+        // A re-import may declare a new worktree for an existing task, the same
+        // way a re-apply can. A container recovery freezes the claims it plans
+        // against and builds a native at those directories, so that claim write
+        // must not land between the freeze and the binding: take the same native
+        // lifecycle lock the recovery holds. Only an import that actually moves
+        // a claim takes it — a queued writer refuses all new native work until
+        // its turn, and an import that creates its whole graph writes no claim a
+        // recovery could have frozen.
+        //
+        // The claim decision and the write share one store hold, so no other
+        // writer can move a claim between them. A decision that does move a
+        // claim releases that hold, takes the lifecycle lock, and retries the
+        // write under it; that retry sees every claim the wait made durable.
+        let write = |store: &SqliteStore| {
+            store.import_backlog(&BacklogImport {
+                project_id,
+                expected_authority_revision: request.export.expected_authority_revision,
+                source: request.export.source.as_str(),
+                import_hash: document.hash(),
+                canonical_manifest: document.json(),
+                epics: &applications,
+            })
+        };
         let applied = state
             .with_store(|store| {
-                store.import_backlog(&BacklogImport {
-                    project_id,
-                    expected_authority_revision: request.export.expected_authority_revision,
-                    source: request.export.source.as_str(),
-                    import_hash: document.hash(),
-                    canonical_manifest: document.json(),
-                    epics: &applications,
-                })
+                let moves_claim = applications.iter().try_fold(
+                    false,
+                    |moves, application| -> Result<bool, RepositoryError> {
+                        if moves {
+                            return Ok(true);
+                        }
+                        self.apply_epic_moves_worktree_claim(
+                            store,
+                            project_id,
+                            &application.name,
+                            application.tasks,
+                        )
+                    },
+                )?;
+                if moves_claim {
+                    return Ok(None);
+                }
+                write(store).map(Some)
             })
             .map_err(|error| self.refuse_authority(&error))?;
+        let applied = match applied {
+            Some(applied) => applied,
+            None => {
+                let _native_lifecycle = self.native_lifecycle_change().await?;
+                state
+                    .with_store(write)
+                    .map_err(|error| self.refuse_authority(&error))?
+            }
+        };
         Ok(BacklogImportAppliedDto {
             realm_id: state.realm_id(),
             project_id,
@@ -44611,16 +44653,18 @@ impl Services {
         Ok((self.epic_tracker_key(project_id, existing.id)?, title))
     }
 
-    /// Whether this apply would move an existing task's worktree claim.
+    /// Whether this epic application would move an existing task's worktree
+    /// claim.
     ///
-    /// The caller holds the store, so this decision and the write it guards see
-    /// the same claims. A container recovery freezes the claims it plans
-    /// against, builds a native at those directories, and only then binds it.
-    /// The one epic write that can land inside that window is a claim write, so
-    /// only it has to hold the native lifecycle lock. A new epic, a task this
-    /// apply creates, and an identical re-apply write no claim and must not
-    /// wait behind native work: a queued writer refuses every new native
-    /// operation in the realm until it gets its turn.
+    /// Both `epics:apply` and `backlog/import:apply` reach `upsert_worktree`
+    /// through this rule. The caller holds the store, so this decision and the
+    /// write it guards see the same claims. A container recovery freezes the
+    /// claims it plans against, builds a native at those directories, and only
+    /// then binds it. The one graph write that can land inside that window is a
+    /// claim write, so only it has to hold the native lifecycle lock. A new
+    /// epic, a task this application creates, and an identical re-apply write no
+    /// claim and must not wait behind native work: a queued writer refuses every
+    /// new native operation in the realm until it gets its turn.
     fn apply_epic_moves_worktree_claim(
         &self,
         store: &SqliteStore,
