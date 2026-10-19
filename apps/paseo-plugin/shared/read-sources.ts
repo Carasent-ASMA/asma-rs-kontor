@@ -2,7 +2,7 @@ import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 
 export const sourceSummarySchema = z.object({
-  id: z.string(), title: z.string(), kind: z.enum(["plan", "teams", "delivery", "decisions"]),
+  id: z.string(), title: z.string(), kind: z.enum(["plan", "teams", "delivery", "decisions", "jira"]),
   path: z.string(), workstream: z.string().nullable(), epic: z.string().nullable(),
   projectId: z.string().nullable(), revisionKind: z.enum(["saved draft", "working copy", "approved revision"]),
   expectedSha256: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(),
@@ -27,11 +27,33 @@ export const recordsSchema = z.object({
   teams: z.array(teamSchema).default([]), decisions: z.array(decisionSchema).default([]),
   delivery: z.array(deliverySchema).default([]),
 }).strict();
+const jiraKey = z.string().regex(/^ASMA-[1-9]\d*$/);
+export const jiraIssueSchema = z.object({ key: jiraKey, status: z.string().min(1).max(160), cat: z.enum(["new", "indeterminate", "done"]) }).strict();
+export const jiraEpicSchema = jiraIssueSchema.extend({ children: z.array(jiraIssueSchema).max(2000) }).strict();
+/** Bounded field projection of the existing historical source, never a live feed. */
+export const jiraHistorySchema = z.object({
+  schema: z.literal("consumption/data@2"),
+  generated: z.string().refine((value) => Number.isFinite(Date.parse(value)), "Invalid observation time"),
+  provenance: z.object({ path: z.string().min(1).max(4096), sha256: z.string().regex(/^[a-f0-9]{64}$/), capturedEpics: z.number().int().nonnegative().max(2000) }).strict(),
+  selection: z.array(jiraKey).min(1).max(64),
+  epics: z.array(jiraEpicSchema).max(64),
+}).strict().superRefine((value, context) => {
+  const keys = new Set<string>();
+  for (const epic of value.epics) {
+    if (!value.selection.includes(epic.key)) context.addIssue({ code: "custom", message: "Epic outside projection selection" });
+    for (const issue of [epic, ...epic.children]) {
+      if (keys.has(issue.key)) context.addIssue({ code: "custom", message: `Ambiguous duplicate Jira key ${issue.key}` });
+      keys.add(issue.key);
+    }
+  }
+});
+export type JiraHistory = z.infer<typeof jiraHistorySchema>;
+export type JiraIssue = z.infer<typeof jiraIssueSchema>;
 export const sourceReadSchema = z.object({
   source: sourceSummarySchema, status: z.enum(["ready", "partial", "unavailable"]),
   revision: z.string().nullable(), readAt: z.string(), modifiedAt: z.string().nullable(),
   content: z.string().nullable(), graph: canonicalGraphSchema.nullable(), records: recordsSchema.nullable(),
-  diagnostics: z.array(z.string()),
+  diagnostics: z.array(z.string()), jiraHistory: jiraHistorySchema.nullable().optional(),
 });
 export const listReadSources = defineRpc({ name: "sources.list", input: z.object({}).strict(),
   output: z.object({ sources: z.array(sourceSummarySchema), diagnostics: z.array(z.string()) }) });

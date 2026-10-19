@@ -10,7 +10,7 @@ import { useReadSources } from "./use-read-sources";
 import { useSessionDirectory } from "./use-session-directory";
 import { readSessionView } from "./session-view-store";
 import { DESTINATIONS, goBack, hostNavigation, navigate, readRouteView, refreshSourceRevision, routeViewKey, sessionScopeKey, writeRouteView, type Destination, type KontorRoute } from "./navigation-state";
-import { Action, Copy, type Colors } from "./page-controls";
+import { Action, type Colors } from "./page-controls";
 import { ReadOnlyPage } from "./read-only-pages";
 import { OrganizationSettingsPage } from "./organization-settings-page";
 import { openSessionById } from "./session-actions";
@@ -70,13 +70,25 @@ function HostScreen(props: PluginScreenProps) {
     for (const workspace of workspaces.entries) names.set(workspace.projectId, workspace.projectCustomName ?? workspace.projectDisplayName);
     return [...names];
   }, [directory.state.entries, workspaces.entries]);
-  const entries = useMemo(() => directory.state.entries.filter((entry) => (route.projectId === null || entry.projectKey === route.projectId) && (route.epicKey === null || confirmedEpic(entry) === route.epicKey)), [directory.state.entries, route.projectId, route.epicKey]);
-  const sourcesInContext = sourceState.sources.filter((source) => (route.projectId === null || source.projectId === route.projectId) && (route.epicKey === null || (sourceState.reads[source.id]?.graph?.epic.jira ?? source.epic) === route.epicKey));
-  const associationIds = route.originAgentId ? linkedPlans(saved.planAssociations, route.originAgentId, new Set(sourcesInContext.map((source) => source.id))) : null;
+  const selectedPlan = route.sourceId ? sourceState.sources.find((source) => source.id === route.sourceId && source.kind === "plan") : undefined;
+  const scopedEpic = selectedPlan ? sourceState.reads[selectedPlan.id]?.graph?.epic.jira ?? selectedPlan.epic : route.epicKey;
+  const entries = useMemo(() => directory.state.entries.filter((entry) => (route.projectId === null || entry.projectKey === route.projectId) && (scopedEpic === null || confirmedEpic(entry) === scopedEpic) && !(route.tab === "Overview" && route.sourceId && !scopedEpic)), [directory.state.entries, route.projectId, scopedEpic, route.tab, route.sourceId]);
+  const sourcesInContext = sourceState.sources.filter((source) => source.kind === "jira"
+    ? source.projectId === null || route.projectId === null || source.projectId === route.projectId
+    : (route.projectId === null || source.projectId === route.projectId) && (scopedEpic === null || (sourceState.reads[source.id]?.graph?.epic.jira ?? source.epic) === scopedEpic) && (route.tab !== "Overview" || route.sourceId === null || source.id === route.sourceId || (source.kind !== "plan" && scopedEpic !== null)));
+  const associationIds = route.originAgentId ? linkedPlans(saved.planAssociations, route.originAgentId, new Set(sourceState.sources.filter((source) => source.kind === "plan").map((source) => source.id))) : null;
   const sources = route.tab === "Plan" && associationIds ? sourcesInContext.filter((source) => associationIds.includes(source.id)) : sourcesInContext;
   const reads = Object.fromEntries(Object.entries(sourceState.reads).filter(([id]) => sources.some((source) => source.id === id)));
   const epics = [...new Set([...directory.state.entries.map(confirmedEpic), ...sourceState.sources.map((source) => sourceState.reads[source.id]?.graph?.epic.jira ?? source.epic)].filter((key): key is string => key !== null))].sort();
   const projectLabel = route.epicKey ?? (route.projectId === null ? "All projects" : projects.find(([id]) => id === route.projectId)?.[1] ?? "Project unavailable");
+  const pickerPlans = sourceState.sources.filter((source) => source.kind === "plan" && !(route.tab === "Plan" && associationIds && !associationIds.includes(source.id)));
+  const selectSource = (sourceId: string, tab?: Destination) => {
+    const source = sourceState.sources.find((candidate) => candidate.id === sourceId && candidate.kind === "plan");
+    if (!source) return;
+    visit({ ...(tab ? { tab } : {}), sourceId, sourceRevision: sourceState.reads[sourceId]?.revision ?? null,
+      projectId: source.projectId, epicKey: sourceState.reads[sourceId]?.graph?.epic.jira ?? source.epic,
+      originAgentId: route.tab === "Plan" ? route.originAgentId : null });
+  };
   const primary = layout.compact ? PRIMARY_MOBILE : PRIMARY_DESKTOP;
   const setSearch = (value: string) => { writeRouteView(host.id, route, { query: value, offset: 0 }); setQuery(value); };
   const open = (entry: (typeof entries)[number]) => {
@@ -96,10 +108,10 @@ function HostScreen(props: PluginScreenProps) {
     workspaceNote={workspaces.error ?? `Workspace snapshot: ${workspaces.readAt ?? "Reading…"}`} />;
   else if (route.tab === "Settings") page = <OrganizationSettingsPage colors={colors} state={presentation.state} entries={directory.state.entries} workspaces={workspaces.entries.map((workspace) => ({ id: workspace.id, name: workspace.title ?? workspace.name }))} sources={sourceState.sources} reads={sourceState.reads} sourceError={sourceState.error} refresh={() => { void sourceState.refresh(); }} />;
   else if (route.tab === "Board" || route.tab === "Graph") page = <GraphPage mode={route.tab} hostId={host.id} theme={{ ...props.theme, colors }} compact={layout.compact} sources={sources} selectedId={route.sourceId} reads={reads} available={sourceState.available} error={sourceState.error}
-    onSelect={(sourceId) => visit({ sourceId, sourceRevision: sourceState.reads[sourceId]?.revision ?? null, originAgentId: null })} onPlan={(sourceId, taskId) => visit({ tab: "Plan", sourceId, sourceRevision: sourceState.reads[sourceId]?.revision ?? null, originAgentId: null }, taskId ?? "")}
+    onSelect={selectSource} onPlan={(sourceId, taskId) => visit({ tab: "Plan", sourceId, sourceRevision: sourceState.reads[sourceId]?.revision ?? null, originAgentId: null }, taskId ?? "")}
     onIssue={(key) => { const url = jiraIssueUrl(key); if (url) void Linking.openURL(url).catch(() => toast.error("This device could not open the verified Jira link.")); }} />;
-  else page = <ReadOnlyPage key={routeViewKey(route)} tab={route.tab} colors={colors} entries={entries} directory={directory.state} sources={sources} reads={reads} sourceId={route.sourceId}
-    sourceError={sourceState.error} query={query} setQuery={setSearch} onSource={(sourceId) => visit({ tab: "Plan", sourceId, sourceRevision: sourceState.reads[sourceId]?.revision ?? null, originAgentId: route.tab === "Plan" ? route.originAgentId : null })} onOpen={open} onTab={(tab) => visit({ tab, originAgentId: null })}
+  else page = <ReadOnlyPage key={routeViewKey(route)} contextLabel={route.sourceId ? selectedPlan?.title ?? "Source unavailable" : projectLabel} tab={route.tab} colors={colors} entries={entries} directory={directory.state} sources={sources} reads={reads} sourceId={route.sourceId}
+    sourceError={sourceState.error} query={query} setQuery={setSearch} onSource={(sourceId) => selectSource(sourceId, "Plan")} onOpen={open} onTab={(tab) => visit({ tab, originAgentId: null })}
     onEpicTab={(tab, epicKey, sourceId) => visit({ tab, epicKey, sourceId, sourceRevision: sourceId ? sourceState.reads[sourceId]?.revision ?? null : null, originAgentId: null })}
     initialDocumentOffset={readRouteView(host.id, route).documentOffset} onDocumentScroll={(documentOffset) => { writeRouteView(host.id, route, { documentOffset }); }}
     initialOffset={readRouteView(host.id, route).offset} onScroll={(offset) => { writeRouteView(host.id, route, { offset }); }} />;
@@ -107,7 +119,7 @@ function HostScreen(props: PluginScreenProps) {
     {!layout.compact ? navigation : null}
     <View style={{ flexDirection: "row", alignItems: "center", borderBottomWidth: 1, borderColor: colors.border, minHeight: 44 }}>
       <Action label="‹ Back" colors={colors} disabled={hostNavigation(host.id).back.length === 0} onPress={() => { const next = goBack(host.id); setRoute({ ...next }); setQuery(readRouteView(host.id, next).query); }} />
-      <View style={{ flex: 1, minWidth: 0 }}><Action label={`${projectLabel}${route.sourceId ? ` › ${sourceState.sources.find((source) => source.id === route.sourceId)?.title ?? "Source unavailable"}` : ""} ▾`} colors={colors} onPress={() => setSheet("context")} /></View>
+      <View style={{ flex: 1, minWidth: 0 }}><Action label={`${route.sourceId ? selectedPlan?.title ?? "Source unavailable" : projectLabel} ▾`} colors={colors} onPress={() => setSheet("context")} /></View>
       {route.originAgentId && props.navigation ? <Action label="Return to conversation" colors={colors} disabled={!directory.state.entries.some((entry) => entry.id === route.originAgentId)} onPress={() => { const entry = directory.state.entries.find((candidate) => candidate.id === route.originAgentId); if (entry) open(entry); }} /> : null}
     </View>
     <View style={{ flex: 1 }}>{page}</View>
@@ -116,10 +128,10 @@ function HostScreen(props: PluginScreenProps) {
       <Modal.Content scrollable={false} contentContainerStyle={{ padding: 12, gap: 8 }}>
           <ScrollView keyboardShouldPersistTaps="handled" style={{ flex: 1 }}>
             {sheet === "more" ? DESTINATIONS.filter((tab) => !primary.includes(tab)).map((tab) => <Action key={tab} label={tab} colors={colors} selected={route.tab === tab} onPress={() => visit({ tab })} />) : <>
-              {route.tab === "Overview" ? <Copy colors={colors}>Overview always shows All projects. Choose another destination to scope its records.</Copy> : null}
-              <Action colors={colors} label="All projects" selected={route.projectId === null && route.epicKey === null} onPress={() => visit({ projectId: null, epicKey: null, sourceId: null, originAgentId: null })} />
-              {projects.map(([id, name]) => <Action key={id} colors={colors} label={name} disabled={route.tab === "Overview"} selected={route.projectId === id} onPress={() => visit({ projectId: id, epicKey: null, sourceId: null, originAgentId: null })} />)}
-              {epics.map((epicKey) => <Action key={epicKey} colors={colors} label={epicKey} disabled={route.tab === "Overview"} selected={route.epicKey === epicKey} onPress={() => visit({ projectId: null, epicKey, sourceId: null, originAgentId: null })} />)}
+              <Action colors={colors} label="All projects" accessibilityLabel="All projects, clear selection" selected={route.projectId === null && route.epicKey === null && route.sourceId === null} onPress={() => visit({ projectId: null, epicKey: null, sourceId: null, originAgentId: null })} />
+              {projects.map(([id, name]) => <Action key={id} colors={colors} label={name} selected={route.projectId === id} onPress={() => visit({ projectId: id, epicKey: null, sourceId: null, originAgentId: null })} />)}
+              {epics.map((epicKey) => <Action key={epicKey} colors={colors} label={epicKey} selected={route.epicKey === epicKey} onPress={() => visit({ projectId: null, epicKey, sourceId: null, originAgentId: null })} />)}
+              {pickerPlans.map((source) => <Action key={`source:${source.id}`} colors={colors} label={`Plan: ${source.title}`} selected={route.sourceId === source.id} onPress={() => selectSource(source.id)} />)}
             </>}
           </ScrollView>
           <Action label="Close" colors={colors} onPress={() => setSheet(null)} />

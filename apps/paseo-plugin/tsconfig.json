@@ -16,5 +16,5 @@
     "forceConsistentCasingInFileNames": true,
     "types": ["node", "react"]
   },
-  "include": ["index.server.ts", "index.client.tsx", "client", "shared", "server", "test"]
+  "include": ["index.server.ts", "index.client.tsx", "client", "shared", "server", "test", "scripts/export-jira-history.ts"]
 }

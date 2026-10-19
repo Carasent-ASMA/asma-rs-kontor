@@ -4,11 +4,12 @@ import { TextInput } from "@getpaseo/plugin/client/react-native";
 import type { DirectoryEntry, DirectoryState } from "./session-directory";
 import type { ReadSourceSummary, SourceRead } from "../shared/read-sources";
 import type { Destination } from "./navigation-state";
-import { confirmedEpic, inboxEntries, nativeSummary, overviewRows, searchRecords } from "./page-data";
+import { historicalJiraIssue, historicalPlanProgress, confirmedEpic, inboxEntries, nativeSummary, overviewRows, searchRecords } from "./page-data";
+import { SourceDetails } from "./source-details";
 import { Action, Card, Copy, type Colors } from "./page-controls";
 
 type PageProps = {
-  tab: Destination; colors: Colors; entries: readonly DirectoryEntry[]; directory: DirectoryState;
+  contextLabel?: string; tab: Destination; colors: Colors; entries: readonly DirectoryEntry[]; directory: DirectoryState;
   sources: readonly ReadSourceSummary[]; reads: Readonly<Record<string, SourceRead>>; sourceId: string | null;
   sourceError: string | null; query: string; setQuery: (query: string) => void;
   onSource: (id: string) => void; onOpen: (entry: DirectoryEntry) => void; onTab: (tab: Destination) => void;
@@ -16,14 +17,6 @@ type PageProps = {
   initialDocumentOffset: number; onDocumentScroll: (offset: number) => void;
   initialOffset: number; onScroll: (offset: number) => void;
 };
-function SourceStamp({ read, colors }: { read: SourceRead; colors: Colors }) {
-  return <View style={{ gap: 2 }}>
-    <Copy colors={colors} muted>{read.source.title} · {read.status} · {read.source.revisionKind}</Copy>
-    <Copy colors={colors} muted>{read.source.path}</Copy>
-    <Copy colors={colors} muted>SHA-256 {read.revision ?? "Unknown"} · read {read.readAt} · modified {read.modifiedAt ?? "Unknown"}</Copy>
-    {read.diagnostics.map((diagnostic, index) => <Copy key={index} colors={colors}>{diagnostic}</Copy>)}
-  </View>;
-}
 function NativeRows({ entries, colors, onOpen }: Pick<PageProps, "entries" | "colors" | "onOpen">) {
   return <>{entries.map((entry) => <View key={entry.id} style={{ borderBottomWidth: 1, borderColor: colors.border }}>
     <Action label={entry.title} colors={colors} onPress={() => onOpen(entry)} />
@@ -36,12 +29,14 @@ function Overview(props: PageProps) {
   const reads = Object.values(props.reads);
   const total = nativeSummary(props.entries);
   return <>
-    <Card colors={colors} title="All projects">
+    <Card colors={colors} title={props.contextLabel ?? "All projects"}>
       <Copy colors={colors}>{total.total} native sessions · {total.running} running · {total.idle} idle · {total.closed} closed</Copy>
       <Copy colors={colors}>{total.attention} native attention · {total.needsInput} needs input · {total.errors} native errors</Copy>
       <Copy colors={colors} muted>Inventory: {directory.status} · {directory.live ? "Live (reconciled subscription)" : "Not Live"} · last complete read {directory.lastUpdatedAt ? new Date(directory.lastUpdatedAt).toISOString() : "Unknown"}</Copy>
       <Copy colors={colors}>Lifecycle: Unknown · Delivered work: Unknown</Copy>
-      <Copy colors={colors}>Governed scheduler / gates: kontord not connected</Copy>
+      <Copy colors={colors}>Governed scheduler / gates: kontord is not enabled</Copy>
+      {reads.filter((read) => read.source.kind === "jira").map((read) => <SourceDetails key={read.source.id} read={read} colors={colors} />)}
+      {!reads.some((read) => read.jiraHistory) ? <Copy colors={colors}>Historical Jira: not connected to a configured status source.</Copy> : null}
     </Card>
     {overviewRows(props.entries, reads).map((row) => {
       const counts = nativeSummary(row.entries);
@@ -49,14 +44,18 @@ function Overview(props: PageProps) {
       const decisions = row.reads.filter((read) => read.source.kind === "decisions" && read.status === "ready");
       const configuredDecisions = row.reads.filter((read) => read.source.kind === "decisions");
       const openDecisions = decisions.reduce((sum, read) => sum + (read.records?.decisions.filter((decision) => decision.state === "open").length ?? 0), 0);
-      const tasks = plans.reduce((sum, read) => sum + (read.graph?.nodes.length ?? 0), 0);
+      const workflow = historicalJiraIssue(row.key, null, reads);
       return <Card key={row.key} colors={colors} title={row.key}>
         <Copy colors={colors}>Lifecycle: Unknown · Runtime: {counts.running} running / {counts.idle} idle / {counts.closed} closed</Copy>
         <Copy colors={colors}>Native attention: {counts.attention} · Needs input: {counts.needsInput}</Copy>
-        <Copy colors={colors}>Task progress: Unknown / {tasks || "Unknown"} · completion not captured by canonical export · coverage: {plans.filter((read) => read.graph).length}/{plans.length} plan sources</Copy>
+        <Copy colors={colors}>Jira workflow: {workflow ? `${workflow.issue.status} · historical, observed ${workflow.observations.map((value) => value.observedAt).join(" / ")}` : "Unknown"}. Current completion: Unknown.</Copy>
+        {plans.map((read) => {
+          const progress = read.graph ? historicalPlanProgress(read.graph, reads) : null;
+          return <Copy key={read.source.id} colors={colors}>{read.source.title}: {progress ? `Historical Jira done ${progress.done} of ${progress.known} matched tasks · plan coverage ${progress.known}/${progress.total} · ${progress.unknown} tasks Unknown` : "Task coverage Unknown — canonical export unavailable"}. Capture coverage is not complete Jira inventory or current completion.</Copy>;
+        })}
         <Copy colors={colors}>Unresolved decisions: {decisions.length ? `${openDecisions} recorded open · coverage ${decisions.length}/${configuredDecisions.length} configured sources` : "Unknown — decision source not connected"}</Copy>
         <Copy colors={colors}>Needs decision: {decisions.length ? `${openDecisions} recorded open; see Decisions` : "Unknown"} · Delivery: Unknown</Copy>
-        {plans.map((read) => <View key={read.source.id}><SourceStamp read={read} colors={colors} /><Action colors={colors} label={`Open plan: ${read.source.title}`} onPress={() => onSource(read.source.id)} /></View>)}
+        {plans.length === 1 ? <><SourceDetails read={plans[0]!} colors={colors} /><Action colors={colors} label="Open plan" onPress={() => onSource(plans[0]!.source.id)} /></> : plans.length > 1 ? <Copy colors={colors}>Choose a plan in the top context picker.</Copy> : null}
         {!plans.length ? <Copy colors={colors} muted>No plan linked</Copy> : null}
         <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
           {plans.length ? <Action label="Tasks" colors={colors} onPress={() => props.onEpicTab("Board", /^ASMA-\d+$/.test(row.key) ? row.key : null, plans.length === 1 ? plans[0]!.source.id : null)} /> : null}
@@ -91,9 +90,8 @@ function Plan(props: PageProps) {
   const headings = lines.flatMap((line, index) => /^#{1,6}\s+/.test(line) ? [{ label: line.replace(/^#+\s+/, ""), index }] : []);
   const needle = props.query.trim().toLocaleLowerCase();
   return <>
-    {props.sources.filter((source) => source.kind === "plan").map((source) => <Action key={source.id} colors={props.colors} label={`${source.title} · ${source.epic ?? "draft / no epic key"}`} selected={source.id === props.sourceId} onPress={() => props.onSource(source.id)} />)}
-    {!selected ? <Copy colors={props.colors}>No plan linked. Select an explicit configured source; conversation prose and titles do not create links.</Copy> : <>
-      <SourceStamp read={selected} colors={props.colors} />
+    {!selected ? <Copy colors={props.colors}>No plan linked. Select a configured plan in the top context picker. Conversation prose and titles do not create links.</Copy> : <>
+      <SourceDetails read={selected} colors={props.colors} />
       <Copy colors={props.colors} muted>Document content is read-only. Approval and lifecycle are not inferred from prose.</Copy>
       <TextInput accessibilityLabel="Search this plan" placeholder="Search this plan" value={props.query} onChangeText={props.setQuery} style={{ color: props.colors.foreground, minHeight: 44, padding: 10, borderWidth: 1, borderColor: props.colors.border }} />
       <View style={{ flexDirection: "row", flexWrap: "wrap" }}>{headings.filter((heading) => !needle || heading.label.toLocaleLowerCase().includes(needle)).map((heading) => <Action key={heading.index} label={heading.label} colors={props.colors} onPress={() => scrollToHeading(heading.index)} />)}</View>
@@ -127,14 +125,14 @@ function RecordPage(props: PageProps) {
   return <>
     {!reads.length ? <Copy colors={props.colors}>{props.tab}: not connected to a configured {kind} source.</Copy> : null}
     {reads.map((read) => <Card key={read.source.id} title={read.source.title} colors={props.colors}>
-      <SourceStamp read={read} colors={props.colors} />
+      <SourceDetails read={read} colors={props.colors} />
       {kind === "delivery" ? read.records?.delivery.map((record) => <Copy key={record.id} colors={props.colors}>{record.kind} · {record.title} · recorded state: {record.state} · {record.recordedAt ?? "time Unknown"} {record.url ?? ""}</Copy>) : null}
       {kind === "decisions" ? read.records?.decisions.map((record) => <Copy key={record.id} colors={props.colors}>{record.id} · {record.title} · {record.state} · owner: {record.owner ?? "Unknown"} {record.detail ?? ""} {record.url ?? ""}</Copy>) : null}
       {kind === "teams" ? read.records?.teams.map((team) => <View key={team.id}><Copy colors={props.colors}>Configured definition: {team.title} ({team.id})</Copy>{team.roles.map((role, index) => <Copy key={index} colors={props.colors} muted>{role.role} · configured chain: {role.chain.join(" → ") || "Not captured"}</Copy>)}</View>) : null}
       {read.status === "ready" && read.records?.[kind].length === 0 ? <Copy colors={props.colors}>No records in this source.</Copy> : null}
     </Card>)}
     {kind === "teams" ? <Card colors={props.colors} title="Observed native sessions">
-      <Copy colors={props.colors}>Observed sessions and labels are separate from configured team definitions. Planned/governed assignment: Unknown. Governed fleet: kontord not connected.</Copy>
+      <Copy colors={props.colors}>Observed sessions and labels are separate from configured team definitions. Planned/governed assignment: Unknown. Governed fleet: kontord is not enabled.</Copy>
       <NativeRows {...props} />
     </Card> : null}
   </>;

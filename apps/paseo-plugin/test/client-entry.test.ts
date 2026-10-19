@@ -57,6 +57,7 @@ type CommandContribution = {
   id: string;
   title: string;
   context: "global";
+  icon: string;
   onSelect: (context: { openScreen: (input: unknown) => void }) => void;
 };
 
@@ -105,11 +106,14 @@ describe("Kontor client entry", () => {
     expect(sidebar.id).toBe(SESSIONS_SIDEBAR_ID);
     expect(sidebar.title).toBe("Kontor");
     expect(typeof sidebar.Component).toBe("function");
+    const row = (sidebar.Component as (props: object) => { props: { icon: string } })({});
+    expect(row.props.icon).toBe("Building2");
 
     const command = calls[2]!.value as CommandContribution;
     expect(command.id).toBe(SESSIONS_COMMAND_ID);
     expect(command.title).toBe("Open Kontor");
     expect(command.context).toBe("global");
+    expect(command.icon).toBe("Building2");
     const opened: unknown[] = [];
     command.onSelect({ openScreen: (input) => opened.push(input) });
     expect(opened).toEqual([{ screenId: SESSIONS_SCREEN_ID }]);

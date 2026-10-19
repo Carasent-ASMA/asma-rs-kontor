@@ -16,9 +16,7 @@ export function navigate(hostId: string, patch: Partial<KontorRoute>): KontorRou
   const state = hostNavigation(hostId);
   const next = { ...state.route, ...patch };
   if (patch.sourceId !== undefined && patch.sourceId !== state.route.sourceId && patch.sourceRevision === undefined) next.sourceRevision = null;
-  // Overview always represents the entire selected host.
   if (next.sourceId === null) next.sourceRevision = null;
-  if (next.tab === "Overview") { next.projectId = null; next.epicKey = null; next.sourceId = null; next.sourceRevision = null; next.originAgentId = null; }
   if (JSON.stringify(next) !== JSON.stringify(state.route)) {
     state.back = [...state.back.slice(-39), { route: state.route, query: state.queries[routeViewKey(state.route)] ?? "", offset: state.offsets[routeViewKey(state.route)] ?? 0, documentOffset: state.documentOffsets[routeViewKey(state.route)] ?? 0, sessions: { ...readSessionView(sessionScopeKey(hostId, state.route)) } }];
     state.route = next;

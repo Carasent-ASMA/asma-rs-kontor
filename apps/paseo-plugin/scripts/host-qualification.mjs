@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const [planPath, outputPath, resources] = process.argv.slice(2);
+const [planPath, outputPath, resources, jiraPath] = process.argv.slice(2);
 assert.ok(planPath && outputPath && resources, "Usage: host-qualification.mjs <canonical-plan> <evidence-dir> <Paseo Resources>");
 const pluginRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const hostRoot = join(resources, "app.asar/node_modules/@getpaseo/server");
@@ -27,7 +27,9 @@ let cleanup;
 try {
   await mkdir(output, { recursive: true });
   const expectedSourceHash = hash(await readFile(planPath));
-  process.env.KONTOR_PLUGIN_READ_SOURCES = JSON.stringify([{ id: "qualification-plan", title: "Qualification plan", kind: "plan", path: resolve(planPath), expectedSha256: expectedSourceHash }]);
+  const catalog = [{ id: "qualification-plan", title: "Qualification plan", kind: "plan", path: resolve(planPath), expectedSha256: expectedSourceHash }];
+  if (jiraPath) catalog.push({ id: "qualification-jira", title: "Historical Jira", kind: "jira", path: resolve(jiraPath), expectedSha256: hash(await readFile(jiraPath)) });
+  process.env.KONTOR_PLUGIN_READ_SOURCES = JSON.stringify(catalog);
   const compiled = await compilePlugin({ client: join(pluginRoot, "index.client.tsx"), server: join(pluginRoot, "index.server.ts") });
   assert.ok(compiled.clientBundle && compiled.serverBundle);
   const clientPath = join(output, "client.js");
@@ -103,6 +105,20 @@ try {
   assert.equal(source.status, "ready", source.diagnostics.join("\n"));
   assert.equal(source.revision, expectedSourceHash);
   assert.equal(source.graph.source_sha256, expectedSourceHash);
+  let historicalJira = null;
+  if (jiraPath) {
+    const projectedBytes = await readFile(jiraPath);
+    const projected = JSON.parse(projectedBytes);
+    const historical = await handlers.get("sources.read")({ sourceId: "qualification-jira" });
+    assert.equal(historical.status, "ready", historical.diagnostics.join("\n"));
+    assert.equal(historical.jiraHistory.generated, projected.generated);
+    assert.equal(historical.content, null);
+    assert.ok(projectedBytes.length <= 2 * 1024 * 1024);
+    historicalJira = { schema: historical.jiraHistory.schema, observedAt: historical.jiraHistory.generated,
+      readAt: historical.readAt, projectionBytes: projectedBytes.length, originalSha256: historical.jiraHistory.provenance.sha256,
+      capturedEpics: historical.jiraHistory.provenance.capturedEpics,
+      selected: historical.jiraHistory.epics.map((epic) => ({ key: epic.key, capturedChildren: epic.children.length })), status: historical.status };
+  }
   stopNotices();
   const report = { hostVersion: JSON.parse(await readFile(join(hostRoot, "package.json"), "utf8")).version,
     installation: "none; offline compiler and disposable settings store only", hooks,
@@ -110,6 +126,7 @@ try {
     serverBytes: Buffer.byteLength(compiled.serverBundle), serverSha256: hash(compiled.serverBundle),
     hermesExit: 0, bytecodeVersion: 96, bytecodeBytes: bytecode.length, bytecodeSha256: hash(bytecode), bytecodeSourcePath: clientPath,
     settings: { twoClientConflict: conflict.status, reloadPreservesUnrelatedChanges: true, rootOrderPreserved: true, bothMappingClearsSaved: true, restartPersistence: true, invalidStoredDataPreserved: true, successfulNotifications: notices.length, changes: changes.length },
+    historicalJira,
     plan: { path: resolve(planPath), sourceSha256: expectedSourceHash, graphSha256: source.graph.graph_sha256, nodes: source.graph.nodes.length, edges: source.graph.edges.length, status: source.status },
   };
   await writeFile(join(output, "qualification.json"), JSON.stringify(report, null, 2) + "\n");

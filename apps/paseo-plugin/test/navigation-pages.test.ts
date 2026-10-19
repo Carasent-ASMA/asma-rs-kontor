@@ -6,10 +6,13 @@ import { sessionEntry } from "./session-fixtures";
 import { patchSessionView, readSessionView } from "../client/session-view-store";
 
 describe("read-only navigation and data truth", () => {
-  it("keeps per-host context and back routes; Overview is always global", () => {
+  it("keeps host-scoped context through Overview and supports explicit All projects clearing", () => {
     navigate("one", { projectId: "project", tab: "Plan", sourceId: "source" });
     navigate("one", { tab: "Overview" });
+    expect(hostNavigation("one").route).toMatchObject({ projectId: "project", sourceId: "source", tab: "Overview" });
+    navigate("one", { projectId: null, epicKey: null, sourceId: null });
     expect(hostNavigation("one").route.projectId).toBeNull();
+    goBack("one");
     expect(goBack("one")).toMatchObject({ projectId: "project", tab: "Plan", sourceId: "source" });
     expect(hostNavigation("two").route.projectId).toBeNull();
   });

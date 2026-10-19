@@ -89,8 +89,8 @@ workshop HTML or depend on DOM, SVG, WebView or canvas imports.
 The plugin body has Sessions, Overview, Plan, Board and More on compact clients.
 Desktop also exposes Graph and Delivery directly. More contains the remaining
 destinations, including Inbox, Search and Settings. The compact context picker
-offers All projects, observed native projects and confirmed epic keys. Overview
-always covers All projects. Plan queries and positions are scoped to the host,
+offers All projects, observed native projects, confirmed epic keys and configured
+plans. The same picker scopes Overview; All projects clears the selection. Plan queries and positions are scoped to the host,
 project, epic, exact source identity and revision. Organization placement uses
 explicit display mapping, then desk, then workstream. Back retains the previous query, position and session
 filters; the native **← Kontor** control returns to the last host-local view.
@@ -112,8 +112,8 @@ reported and preserved until an explicit reset. These are host-shared values,
 not per-user settings.
 
 Plan, Board and Graph read only configured plan sources. A Plan page renders the
-actual Markdown, headings and search, with path, SHA-256, read time and revision
-kind. Board and Graph require a fresh `asma plan export` of that exact source.
+actual Markdown, headings and search. Source state and time stay visible; the
+expandable **Source details** holds paths, full SHA-256 and diagnostics. Board and Graph require a fresh `asma plan export` of that exact source.
 The file hash is checked before and after export. Export/schema/source failures
 stay visible; no ASCII, Mermaid, prose extraction or cached graph index is used.
 Dependency depth is not readiness or task status. Graph integrates the separately authored
@@ -123,20 +123,21 @@ Zoom is unavailable. Device, keyboard and text-scale qualification remains open.
 
 Overview separates native runtime/attention from task progress, lifecycle,
 decisions and delivery. The canonical export supplies task declarations but no
-completion numerator, so progress remains Unknown. Decisions require actual
+completion numerator. A configured historical Jira projection may supply captured
+status/category counts for exact task and parent keys; current completion stays
+Unknown. Missing or conflicting observations remain Unknown. Decisions require actual
 structured records; missing decision data is not zero. Inbox opens native
 sessions without answering or dismissing items. Activity is a partial snapshot
 of session update times. Search covers available names, configured plan text and
 canonical tasks, with no private transcript indexing. Delivery, Decisions and
 configured team definitions/chains show their own source and coverage, or an
-explicit unavailable state. Governed scheduler/gate data says **kontord not
-connected**. None of these direct reads requires `kontord`.
+explicit unavailable state. Governed scheduler/gate data says **kontord is not enabled**. None of these direct reads requires `kontord`.
 
 ### Host-side source catalog
 
 `KONTOR_PLUGIN_READ_SOURCES` is a JSON array configured in the plugin server's
 environment. Each entry has a unique `id`, `title`, `kind` (`plan`, `teams`,
-`delivery` or `decisions`) and absolute `path`. Optional fields are `workstream`,
+`delivery`, `decisions` or `jira`) and absolute `path`. Optional fields are `workstream`,
 confirmed `epic`, native `projectId`, `revisionKind` and `expectedSha256`.
 `revisionKind` defaults to `working copy`; `saved draft` permits a plan without an
 epic key. `approved revision` requires an exact `expectedSha256`. A mismatched
@@ -175,6 +176,32 @@ the exact source; multiple links open a chooser. The view retains a return actio
 to the originating conversation. Associations are reconciled every 15 seconds;
 source and empty-workspace snapshots refresh every 30 seconds. A source-service
 failure marks retained data/preferences unavailable or stale and disables editing.
+
+### Historical Jira field projection
+
+The `jira` source reads a bounded projection of the existing Tokenomics
+`consumption/data@2` epics/children. It does not read the full account/usage payload
+or contact Jira. Export only explicitly selected epic keys from an already
+captured file, then configure that output as a read-only catalog entry:
+
+```bash
+bun apps/paseo-plugin/scripts/export-jira-history.ts /srv/captures/consumption-data.json ASMA-8539 > /srv/exports/jira-history.json
+```
+
+```json
+[{"id":"jira-history","title":"Historical Jira","kind":"jira","path":"/srv/exports/jira-history.json","revisionKind":"working copy"}]
+```
+
+This explicit offline exporter is separate from the consumption pipeline and
+writes only the bounded JSON to stdout. The plugin retains its 2 MiB read cap.
+The projection retains the original observation time, source hash and selected
+keys; reading it later never makes it live. Exact parent/issue keys supply
+historical workflow observations in Overview, Board and Graph. The numerator is
+captured Jira `done` categories; the coverage denominator is all tasks in each
+canonical plan, including missing/unbound tasks. Neither capture coverage nor a
+known-child count establishes complete Jira inventory, current completion,
+readiness, delivery or epic acceptance. The source's total captured epic count
+is provenance, not a completeness promise. Conflicting observations stay Unknown.
 
 ### Offline qualification without installation
 

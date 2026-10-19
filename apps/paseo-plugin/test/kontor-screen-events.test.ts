@@ -59,18 +59,22 @@ function mount(compact: boolean, initial?: Partial<KontorRoute>) {
 describe("Kontor shell native actions", () => {
   it("keeps the native conversation and its association boundary while choosing a linked plan", () => {
     model.values = { ...DEFAULT_ORGANIZATION_SETTINGS, planAssociations: { native: ["linked-a", "linked-b"] } };
-    model.sources = ["linked-a", "linked-b", "unrelated"].map((id) => ({ id, title: id, kind: "plan", workstream: null, epic: null, projectId: null, path: `/configured/${id}.md`, revisionKind: "working copy" }));
+    model.sources = ["linked-a", "linked-b", "unrelated"].map((id, index) => ({ id, title: id, kind: "plan", workstream: null, epic: `ASMA-${index + 1}`, projectId: `project-${index + 1}`, path: `/configured/${id}.md`, revisionKind: "working copy" }));
     const screen = mount(true, { tab: "Plan", originAgentId: "native" });
     const page = () => screen.elements().find((element) => typeof element.props.onSource === "function")!;
     expect((page().props.sources as ReadSourceSummary[]).map((source) => source.id)).toEqual(["linked-a", "linked-b"]);
     (page().props.onSource as (id: string) => void)("linked-b"); screen.render();
     expect(hostNavigation(screen.props.host.id).route).toMatchObject({ sourceId: "linked-b", originAgentId: "native" });
     expect(screen.action("Return to conversation").props.disabled).toBe(false);
-    expect((page().props.sources as ReadSourceSummary[]).map((source) => source.id)).toEqual(["linked-a", "linked-b"]);
-    screen.click("Return to conversation");
+    expect((page().props.sources as ReadSourceSummary[]).map((source) => source.id)).toEqual(["linked-b"]);
+    screen.click("linked-b ▾");
+    expect(screen.action("Plan: linked-a")).toBeDefined(); expect(screen.action("Plan: linked-b")).toBeDefined();
+    expect(screen.elements().some((element) => element.props.label === "Plan: unrelated")).toBe(false);
+    screen.click("Close"); screen.click("Return to conversation");
     expect(screen.props.navigation?.openAgent).toHaveBeenCalled();
   });
   it("wires the inner document position independently from the outer Plan page through Back", () => {
+    model.sources = ["plan-a", "plan-b"].map((id) => ({ id, title: id, kind: "plan", path: `/configured/${id}.md`, workstream: null, epic: null, projectId: null, revisionKind: "working copy" }));
     const screen = mount(true, { tab: "Plan", sourceId: "plan-a", sourceRevision: "sha-a" });
     const page = () => screen.elements().find((element) => typeof element.props.onDocumentScroll === "function")!;
     (page().props.onDocumentScroll as (offset: number) => void)(900);
@@ -81,6 +85,21 @@ describe("Kontor shell native actions", () => {
     (page().props.onSource as (id: string) => void)("plan-b"); screen.render();
     expect(page().props.initialDocumentOffset).toBe(0);
     screen.click("‹ Back"); expect(page().props.initialDocumentOffset).toBe(900);
+  });
+  it("selects an exact plan in the compact Overview context picker and isolates hosts", () => {
+    model.entries = [sessionEntry("one", { projectKey: "p-one", labels: { epic: "ASMA-1" } }), sessionEntry("two", { projectKey: "p-two", labels: { epic: "ASMA-2" } })];
+    model.sources = [{ id: "source-one", title: "First plan", kind: "plan", path: "/configured/one.md", projectId: "p-one", epic: "ASMA-1", workstream: null, revisionKind: "working copy" }, { id: "source-two", title: "Second plan", kind: "plan", path: "/configured/two.md", projectId: "p-two", epic: "ASMA-2", workstream: null, revisionKind: "working copy" }];
+    model.sources.push({ id: "decisions-one", title: "Recorded decisions", kind: "decisions", path: "/configured/decisions.json", projectId: "p-one", epic: "ASMA-1", workstream: null, revisionKind: "working copy" });
+    const screen = mount(true); screen.click("Overview"); screen.click("All projects ▾"); screen.click("Plan: First plan");
+    const page = () => screen.elements().find((element) => typeof element.props.onDocumentScroll === "function")!;
+    expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab: "Overview", sourceId: "source-one", projectId: "p-one", epicKey: "ASMA-1" });
+    expect((page().props.entries as DirectoryEntry[]).map((entry) => entry.id)).toEqual(["one"]);
+    expect((page().props.sources as ReadSourceSummary[]).map((source) => source.id)).toEqual(["source-one", "decisions-one"]);
+    expect(screen.action("First plan ▾")).toBeDefined();
+    expect(hostNavigation("independent-overview-host").route.sourceId).toBeNull();
+    screen.click("First plan ▾"); screen.click("All projects");
+    expect((page().props.entries as DirectoryEntry[]).map((entry) => entry.id)).toEqual(["one", "two"]);
+    expect(screen.elements().filter((element) => element.props.tab === true)[0]?.props.icon).toBe("List");
   });
   it("reaches every destination on compact layouts through four tabs and More", () => {
     const screen = mount(true);
@@ -99,12 +118,14 @@ describe("Kontor shell native actions", () => {
     screen.click("Graph"); expect(hostNavigation(screen.props.host.id).route.tab).toBe("Graph");
     screen.click("More"); screen.click("Inbox"); expect(screen.action("More").props.selected).toBe(true);
   });
-  it("filters by confirmed epic context, returns with Back, and keeps Overview global", () => {
+  it("filters Overview by confirmed context, returns with Back, and clears to All projects", () => {
     const screen = mount(true);
     screen.click("All projects ▾"); screen.click("ASMA-1");
     expect(hostNavigation(screen.props.host.id).route.epicKey).toBe("ASMA-1");
     screen.click("‹ Back"); expect(hostNavigation(screen.props.host.id).route.epicKey).toBeNull();
     screen.click("All projects ▾"); screen.click("ASMA-1"); screen.click("Overview");
-    expect(hostNavigation(screen.props.host.id).route).toMatchObject({ projectId: null, epicKey: null, tab: "Overview" });
+    expect(hostNavigation(screen.props.host.id).route).toMatchObject({ projectId: null, epicKey: "ASMA-1", tab: "Overview" });
+    screen.click("ASMA-1 ▾"); screen.click("All projects");
+    expect(hostNavigation(screen.props.host.id).route).toMatchObject({ projectId: null, epicKey: null, sourceId: null, tab: "Overview" });
   });
 });

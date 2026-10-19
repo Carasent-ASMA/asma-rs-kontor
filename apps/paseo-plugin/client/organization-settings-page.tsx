@@ -5,6 +5,7 @@ import type { OrganizationSettings } from "../shared/organization";
 import type { ReadSourceSummary, SourceRead } from "../shared/read-sources";
 import type { DirectoryEntry } from "./session-directory";
 import type { OrganizationSettingsState } from "./use-organization-settings";
+import { SourceDetails } from "./source-details";
 import { Action, Card, Copy, type Colors } from "./page-controls";
 import { rebaseOrganizationDraft, setDisplayMappingField } from "./organization-draft";
 import type { OrganizationWorkspace } from "./session-organization";
@@ -67,12 +68,9 @@ export function OrganizationSettingsPage({ state, colors, entries, workspaces, s
     </Card>
     <Card title="Configured source status" colors={colors}>
       <Copy colors={colors}>{sourceError ?? "Read-only source catalog available."}</Copy>
-      {sources.map((source) => <View key={source.id}><Copy colors={colors}>{source.id} · {source.title} · {source.kind} · {source.path}</Copy>
-        <Copy colors={colors} muted>{reads[source.id]?.status ?? "Not read"} · read {reads[source.id]?.readAt ?? "Unknown"} · revision {reads[source.id]?.revision ?? "Unknown"}</Copy>
-        {reads[source.id]?.diagnostics.map((diagnostic, index) => <Copy key={index} colors={colors}>{diagnostic}</Copy>)}
-      </View>)}
+      {sources.map((source) => reads[source.id] ? <SourceDetails key={source.id} read={reads[source.id]!} colors={colors} /> : <Copy key={source.id} colors={colors}>{source.title} · Not read · observed time Unknown</Copy>)}
       <Action colors={colors} label="Refresh source reads" onPress={refresh} />
-      <Copy colors={colors}>Governed scheduler/gates: kontord not connected. Console owns policy and administration.</Copy>
+      <Copy colors={colors}>Governed scheduler/gates: kontord is not enabled. Console owns policy and administration.</Copy>
     </Card>
   </ScrollView>;
 }

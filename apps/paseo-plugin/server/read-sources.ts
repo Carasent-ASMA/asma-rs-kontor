@@ -5,7 +5,7 @@ import { dirname, isAbsolute } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
 import type { PluginServerContext, PluginSettings } from "@getpaseo/plugin/server";
-import { canonicalGraphSchema, listReadSources, readPlanAssociations, readSource, recordsSchema,
+import { canonicalGraphSchema, jiraHistorySchema, listReadSources, readPlanAssociations, readSource, recordsSchema,
   sourceSummarySchema, type ReadSourceSummary, type SourceRead } from "../shared/read-sources";
 import type { organizationSettingsSchema } from "../shared/organization";
 
@@ -63,6 +63,13 @@ export async function readConfiguredSource(source: ReadSourceSummary, exporter: 
     result.revision = revision;
     if (source.expectedSha256 && source.expectedSha256 !== revision) throw new Error(`Configured revision mismatch: expected ${source.expectedSha256}, read ${revision}`);
     result.modifiedAt = (await stat(path)).mtime.toISOString();
+    if (source.kind === "jira") {
+      const history = jiraHistorySchema.parse(JSON.parse(content));
+      if (source.epic !== null && !history.epics.some((epic) => epic.key === source.epic)) throw new Error("Configured epic is absent from historical Jira projection");
+      result.jiraHistory = history;
+      result.status = "ready";
+      return result;
+    }
     if (source.kind !== "plan") {
       const raw: unknown = JSON.parse(content);
       if (typeof raw !== "object" || raw === null || !(source.kind in raw)) throw new Error(`Expected a ${source.kind} records document`);

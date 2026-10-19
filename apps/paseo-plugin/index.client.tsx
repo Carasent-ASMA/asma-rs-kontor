@@ -17,7 +17,7 @@ function SessionsSidebarItem({
 }: PluginSidebarItemProps) {
   return (
     <SidebarRow
-      icon="List"
+      icon="Building2"
       label="Kontor"
       active={currentScreen?.screenId === SESSIONS_SCREEN_ID}
       onPress={() => openScreen({ screenId: SESSIONS_SCREEN_ID })}
@@ -40,7 +40,7 @@ export default function contribute(client: PluginClientContext): () => void {
     client.addCommandCenterItem({
       id: SESSIONS_COMMAND_ID,
       title: "Open Kontor",
-      icon: "List",
+      icon: "Building2",
       keywords: ["sessions", "agents", "navigator", "kontor"],
       context: "global",
       onSelect({ openScreen }) {
