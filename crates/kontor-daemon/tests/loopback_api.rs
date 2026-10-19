@@ -26131,6 +26131,124 @@ async fn a_configured_governed_summarizer_produces_the_persisted_handoff_summary
     assert!(!prompt.as_str().contains("trailing tool call"));
 }
 
+/// A credential rotation during the predecessor transcript fetch still masks the
+/// bearer the transcript was recorded with.
+///
+/// The redaction set is snapshotted before the history await, so the generation
+/// that could have been quoted is the one that masks the outbound request and
+/// the persisted handoff. Reading the set after the await would only know the
+/// rotated generation and let the previous bearer through.
+#[tokio::test]
+async fn a_credential_rotation_during_the_transcript_fetch_still_redacts_the_previous_bearer() {
+    let summary_text = "Continue from the accepted checkpoint and keep the watcher armed";
+    let summarizer = Arc::new(GovernedSummarizerFake::new(summary_text));
+    let world = World::open_empty_with_succession_summarizer(summarizer.clone()).await;
+    world.daemon.reconcile().await;
+    let previous_operator = secret(&world, "operator");
+    let CodexAliasEpic { project, seats, .. } = codex_alias_epic(&world, false, true).await;
+    let project_id = ProjectId::parse(&project).expect("project id");
+    let predecessor_id =
+        AgentRunId::parse(seats[0]["agent_run_id"].as_str().expect("predecessor id"))
+            .expect("canonical predecessor id");
+    let predecessor = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("predecessor reads")
+            .expect("predecessor exists")
+    });
+    let binding = predecessor
+        .binding
+        .as_ref()
+        .expect("predecessor binding")
+        .clone();
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(binding.id)
+        .expect("the process holds the exact predecessor binding");
+    let now = kontor_api::now();
+    world
+        .fake
+        .observe_uncorrelated_user_message(
+            &held,
+            &format!(
+                "The accepted checkpoint is the schema v1 handoff; the operator credential is X{previous_operator}"
+            ),
+            now,
+        )
+        .expect("one predecessor message is recorded");
+    world
+        .fake
+        .observe_blocked_refusal(
+            &held,
+            "[System Error] You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Jan 1st, 2099 12:00 AM.",
+            now,
+        )
+        .expect("the native session reaches a quota refusal");
+
+    let history = world.fake.pause_next_history();
+    let route = format!("/v1/projects/{project}/agent-runs/{predecessor_id}/successors:recover");
+    let recovery = Call::post_raw(&route, "")
+        .signed_as(&world, "admin")
+        .with_key("rotated-summary-recovery")
+        .send(&world);
+    let rotate = async {
+        history.entered().await;
+        world
+            .daemon
+            .rotate_credentials()
+            .expect("the realm rotates while the transcript is in flight");
+        history.release();
+    };
+    let (recovered, ()) = tokio::join!(recovery, rotate);
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    assert_eq!(recovered.json()["state"], "confirmed");
+
+    let rotated_operator = secret(&world, "operator");
+    assert_ne!(
+        rotated_operator, previous_operator,
+        "the rotation mints a new operator bearer"
+    );
+
+    let key = IdempotencyKey::parse("rotated-summary-recovery").expect("idempotency key");
+    let attempt = world.daemon.state().with_store(|store| {
+        store
+            .succession_attempt_by_key(&key)
+            .expect("attempt reads")
+            .expect("attempt exists")
+    });
+    let handoff = attempt.handoff.clone().expect("handoff is durable");
+
+    let calls = summarizer.calls();
+    assert_eq!(calls.len(), 1, "exactly one governed dispatch is executed");
+    let (_, _, outbound) = &calls[0];
+    let outbound_json = serde_json::to_string(outbound).expect("serializable outbound request");
+    assert!(
+        outbound_json.contains("accepted checkpoint"),
+        "the predecessor message crosses the boundary"
+    );
+    assert!(
+        !outbound_json.contains(&previous_operator),
+        "the outbound request never carries the bearer the transcript quoted"
+    );
+    assert!(
+        !outbound_json.contains(&rotated_operator),
+        "the outbound request never carries the rotated bearer either"
+    );
+    let canonical = handoff
+        .canonicalize()
+        .expect("the handoff readback validates");
+    assert!(
+        !canonical.json().contains(&previous_operator),
+        "the persisted handoff never carries the bearer the transcript quoted"
+    );
+    assert!(
+        !canonical.json().contains(&rotated_operator),
+        "the persisted handoff never carries the rotated bearer either"
+    );
+}
+
 /// Ordinary startup composes the summarizer from the configured runtime.
 ///
 /// This is the executable's path: `succession-summarizer.json` names a

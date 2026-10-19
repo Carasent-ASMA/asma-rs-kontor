@@ -905,6 +905,8 @@ struct FakeState {
     readback_only: bool,
     pause_hosted_retire_once: Option<FakeNativePause>,
     pause_send_once: Option<FakeNativePause>,
+    /// Holds the next timeline read before it consults the recorded events.
+    pause_history_once: Option<FakeNativePause>,
     /// Holds the next hosted launch before it is recorded or mints anything.
     pause_hosted_launch_once: Option<FakeNativePause>,
     /// What each live hosted native is doing, when a test said; idle otherwise.
@@ -1629,6 +1631,7 @@ impl ScriptedFakeRuntime {
                 readback_only: false,
                 pause_hosted_retire_once: None,
                 pause_send_once: None,
+                pause_history_once: None,
                 pause_hosted_launch_once: None,
                 hosted_activity: BTreeMap::new(),
                 extra_hosted_carriers: BTreeMap::new(),
@@ -2622,6 +2625,18 @@ impl ScriptedFakeRuntime {
     pub fn pause_next_send(&self) -> FakeNativePause {
         let pause = FakeNativePause::default();
         self.lock().pause_send_once = Some(pause.clone());
+        pause
+    }
+
+    /// Hold the next timeline read before it consults the recorded events.
+    ///
+    /// The fetched transcript is exactly what a caller derives content from, so
+    /// a test can interleave a credential rotation with the read and prove the
+    /// masking set covers the generation that could have been quoted in it.
+    #[must_use]
+    pub fn pause_next_history(&self) -> FakeNativePause {
+        let pause = FakeNativePause::default();
+        self.lock().pause_history_once = Some(pause.clone());
         pause
     }
 
@@ -5830,6 +5845,10 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
     }
 
     async fn history(&self, request: &HistoryRequest) -> RuntimeResult<HistoryPage> {
+        let pause = { self.lock().pause_history_once.take() };
+        if let Some(pause) = pause {
+            pause.pause().await;
+        }
         self.stall().await;
         let mut state = self.lock();
         let declared = state.capabilities.clone();
