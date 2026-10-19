@@ -4,15 +4,15 @@
 The repository is public. This check refuses three kinds of content in it:
 
   home_path      an absolute path into a user's home directory, /Users/<name>
-                 or /home/<name>, also in its JSON-escaped form and inside .gz
-                 files. Users named in SYNTHETIC_HOME_USERS are allowed.
+                 or /home/<name>, also in its JSON-escaped form and inside gzip
+                 data (a .gz name or the gzip magic bytes). Users named in
+                 SYNTHETIC_HOME_USERS are allowed.
   run_receipt    a run receipt or deployment record under an evidence root.
                  Receipts stay with the realm that produced them; a document
                  cites them by path and SHA-256 instead.
   account_alias  a provider-account alias that names whose login it is (a
                  claude, codex, cursor or opencode alias ending in -personal
-                 or -work) outside the named code exemption
-                 ALIAS_CODE_EXEMPTION.
+                 or -work) in any file not listed in ALIAS_CODE_EXEMPTION.
 
 Licence and attribution files (LICENCE_AND_ATTRIBUTION) are not scanned.
 
@@ -60,13 +60,70 @@ LICENCE_AND_ATTRIBUTION = frozenset(
 # Home directories of made-up users in synthetic fixtures and examples.
 SYNTHETIC_HOME_USERS = frozenset({"me", "operator", "someone", "test"})
 
-# Code paths that may still name provider-account aliases. The compiled route
-# catalog, the Teams-editor provider catalog, the bundled team pack and the
-# committee preset name them, and so do their tests, seeds and the generated
-# contract. Making those catalogs config-driven and dropping this exemption is
-# an open KR-30 gap (ASMA-8511, review 2026-10-24). Evidence, documentation,
-# plans and configuration examples get no exemption.
-ALIAS_CODE_EXEMPTION = ("apps/", "crates/")
+# The files that still name provider-account aliases, each by its exact path,
+# pending a host decision (ASMA-8511, KR-30 gap, review 2026-10-24). The
+# deployment registers these aliases as its runtime provider ids, so the
+# compiled route catalog and the Teams-editor provider catalog
+# (kontor-daemon/src/applications.rs), the bundled team pack and committee
+# preset, the generated contract and the Tokenomics store labels name them, and
+# so do the doc comments and tests that follow those catalogs. Any other file
+# is refused, a new one under crates/ or apps/ included. Every entry must still
+# name an alias (the repository test checks it), so the list only shrinks.
+ALIAS_CODE_EXEMPTION = frozenset(
+    {
+        "apps/console/public/tokenomics/index.html",
+        "apps/console/src/api/schema.d.ts",
+        "apps/console/src/views/ProjectView.test.tsx",
+        "crates/kontor-accounts/src/pin.rs",
+        "crates/kontor-accounts/src/signals.rs",
+        "crates/kontor-accounts/tests/quota_classification.rs",
+        "crates/kontor-api/contract/openapi.json",
+        "crates/kontor-api/src/applications.rs",
+        "crates/kontor-cli/src/commands.rs",
+        "crates/kontor-cli/tests/fleet_bundle.rs",
+        "crates/kontor-cli/tests/local_resolve.rs",
+        "crates/kontor-core/src/tpm_lineage.rs",
+        "crates/kontor-core/tests/planning_pair.rs",
+        "crates/kontor-daemon/src/applications.rs",
+        "crates/kontor-daemon/src/fleet.rs",
+        "crates/kontor-daemon/src/orchestration.rs",
+        "crates/kontor-daemon/src/provider_config.rs",
+        "crates/kontor-daemon/src/quota_observation.rs",
+        "crates/kontor-daemon/src/runtimes.rs",
+        "crates/kontor-daemon/src/usage.rs",
+        "crates/kontor-daemon/tests/account_pinning.rs",
+        "crates/kontor-daemon/tests/harness/mod.rs",
+        "crates/kontor-daemon/tests/loopback/committee_evidence.rs",
+        "crates/kontor-daemon/tests/loopback/desk_adams.rs",
+        "crates/kontor-daemon/tests/loopback/planning_pair.rs",
+        "crates/kontor-daemon/tests/loopback/provider_refresh.rs",
+        "crates/kontor-daemon/tests/loopback_api.rs",
+        "crates/kontor-daemon/tests/mcp_journey.rs",
+        "crates/kontor-daemon/tests/quota_observation.rs",
+        "crates/kontor-fleet-activation/src/tests.rs",
+        "crates/kontor-fleet/src/tests.rs",
+        "crates/kontor-profiles/fixtures/consultation-presets.json",
+        "crates/kontor-profiles/tests/consultation_presets.rs",
+        "crates/kontor-runtime-paseo/src/adapter.rs",
+        "crates/kontor-runtime-paseo/src/client.rs",
+        "crates/kontor-runtime-paseo/src/posture.rs",
+        "crates/kontor-runtime-paseo/src/seat_mcp.rs",
+        "crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs",
+        "crates/kontor-runtime-paseo/src/wire.rs",
+        "crates/kontor-runtime-paseo/tests/contract.rs",
+        "crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs",
+        "crates/kontor-runtime/src/planning_pair.rs",
+        "crates/kontor-runtime/src/planning_pair/context/tests.rs",
+        "crates/kontor-runtime/src/provenance.rs",
+        "crates/kontor-store/tests/advisor_multi_seat_advice.rs",
+        "crates/kontor-store/tests/event_replay.rs",
+        "crates/kontor-store/tests/native_capacity.rs",
+        "crates/kontor-store/tests/planning_pair_store.rs",
+        "crates/kontor-store/tests/schema_v1.rs",
+        "crates/kontor-teams/fixtures/mvp-team-pack.json",
+        "crates/kontor-teams/tests/team_contract.rs",
+    }
+)
 
 EVIDENCE_ROOTS = ("docs/evidence/", "_docs/reports/evidence/", "evidence/")
 
@@ -188,9 +245,9 @@ def file_refusals(path: str, content: bytes) -> list[Refusal]:
             )
         )
 
-    aliases_refused = not path.startswith(ALIAS_CODE_EXEMPTION)
+    aliases_refused = path not in ALIAS_CODE_EXEMPTION
     refusals += _content_refusals(path, "", content, aliases_refused=aliases_refused)
-    if path.endswith(".gz"):
+    if path.endswith(".gz") or content[:2] == b"\x1f\x8b":
         try:
             inflated = gzip.decompress(content)
         except (OSError, EOFError, zlib.error):
@@ -227,7 +284,11 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    print(f"public tree: {scanned} files, no home path, run receipt or account alias")
+    print(
+        f"public tree: {scanned} files, no home path or run receipt, and no "
+        f"account alias outside the {len(ALIAS_CODE_EXEMPTION)} files of "
+        "ALIAS_CODE_EXEMPTION"
+    )
     return 0
 
 

@@ -71,11 +71,25 @@ class HomePathTests(unittest.TestCase):
         self.assertEqual(refusals[0].line, 2)
         self.assertIn("inside the gzip data", refusals[0].detail)
 
+    def test_reads_gzip_data_by_its_magic_bytes(self) -> None:
+        packed = gzip.compress(f"{MAC_HOME}/.kontor\n".encode())
+        for path in ("docs/evidence/X/bundle.tgz", "docs/evidence/X/blob"):
+            with self.subTest(path=path):
+                refusals = public_tree.file_refusals(path, packed)
+                self.assertEqual([r.code for r in refusals], [public_tree.CODE_HOME_PATH])
+                self.assertIn("inside the gzip data", refusals[0].detail)
+
     def test_refuses_a_home_path_in_code_paths(self) -> None:
-        self.assertEqual(
-            codes("crates/kontor-core/src/lib.rs", f'const P: &str = "{MAC_HOME}";'),
-            [public_tree.CODE_HOME_PATH],
-        )
+        # Also in a file the alias exemption lists: it exempts aliases only.
+        for path in (
+            "crates/kontor-core/src/lib.rs",
+            "crates/kontor-daemon/src/applications.rs",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(
+                    codes(path, f'const P: &str = "{MAC_HOME}";'),
+                    [public_tree.CODE_HOME_PATH],
+                )
 
     def test_allows_synthetic_home_users(self) -> None:
         # Named here rather than read from the set, so dropping one fails.
@@ -157,22 +171,22 @@ class AccountAliasTests(unittest.TestCase):
             codes("docs/evidence/X/log.gz", packed), [public_tree.CODE_ACCOUNT_ALIAS]
         )
 
-    def test_the_code_exemption_covers_crates_and_apps_only(self) -> None:
-        self.assertEqual(public_tree.ALIAS_CODE_EXEMPTION, ("apps/", "crates/"))
+    def test_the_code_exemption_lists_exact_files(self) -> None:
         exempt = [
             "crates/kontor-daemon/src/applications.rs",
             "crates/kontor-teams/fixtures/mvp-team-pack.json",
             "crates/kontor-api/contract/openapi.json",
-            "apps/console/src/state/teams.ts",
+            "apps/console/public/tokenomics/index.html",
         ]
         for path in exempt:
             with self.subTest(path=path):
                 self.assertEqual(codes(path, f'"{WORK_ALIAS}"'), [])
         not_exempt = [
-            "docs/crates/notes.md",
-            "cratesx/a.rs",
-            "appsx/a.ts",
-            "scripts/crates/a.py",
+            "crates/kontor-daemon/src/new_module.rs",
+            "crates/kontor-daemon/src/applications.rs.orig",
+            "crates/kontor-daemon/src",
+            "apps/console/src/state/teams.ts",
+            "docs/crates/kontor-daemon/src/applications.rs",
         ]
         for path in not_exempt:
             with self.subTest(path=path):
@@ -247,6 +261,12 @@ class TreeTests(unittest.TestCase):
             out.getvalue().splitlines()[0].split(": ")[:2],
             ["docs/a.md:2", public_tree.CODE_ACCOUNT_ALIAS],
         )
+
+    def test_every_exempt_file_still_names_an_alias(self) -> None:
+        for path in sorted(public_tree.ALIAS_CODE_EXEMPTION):
+            with self.subTest(path=path):
+                content = (REPO_ROOT / path).read_bytes()
+                self.assertIsNotNone(public_tree._ACCOUNT_ALIAS_RE.search(content))
 
     def test_the_repository_tree_passes(self) -> None:
         scanned, refusals = public_tree.tree_refusals(REPO_ROOT)
