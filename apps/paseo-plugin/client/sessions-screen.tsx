@@ -66,8 +66,8 @@ import {
 import { useSessionDirectory } from "./use-session-directory";
 import { DEFAULT_ORGANIZATION_SETTINGS, type OrganizationSettings } from "../shared/organization";
 import type { useOrganizationSettings } from "./use-organization-settings";
-import { buildOrganizationTree, filterOrganizationTree, flattenOrganizationTree, workstreamRank, type OrganizationRow, type OrganizationWorkspace } from "./session-organization";
-import { rowKey, siblingKeys, reorderedSiblings } from "./organization-order";
+import { buildOrganizationTree, filterOrganizationTree, flattenOrganizationTree, organizationScope, workstreamRank, type OrganizationRow, type OrganizationWorkspace } from "./session-organization";
+import { rowKey, siblingKeys, reorderSavedSiblingOrder } from "./organization-order";
 import { OrganizationRowView } from "./organization-row";
 
 type ThemeColors = PluginTheme["colors"];
@@ -159,6 +159,7 @@ type SessionRowProps = {
   readonly rowHeight: number;
   readonly onPress: (entry: DirectoryEntry) => void;
   readonly displayTitle?: string;
+  readonly displayContext?: string;
 };
 
 const SessionRow = memo(function SessionRow({
@@ -168,6 +169,7 @@ const SessionRow = memo(function SessionRow({
   rowHeight,
   onPress,
   displayTitle,
+  displayContext,
 }: SessionRowProps) {
   const attention = attentionLabel(entry);
   const archived = archivedLabel(entry);
@@ -176,7 +178,7 @@ const SessionRow = memo(function SessionRow({
     entry.projectName && entry.projectName !== entry.workspaceName
       ? entry.projectName
       : null;
-  const detail = project ? `${context} · ${project}` : context;
+  const detail = displayContext ?? (project ? `${context} · ${project}` : context);
   const accessibilityLabel = [
     entry.title,
     `Native ID ${entry.id}`,
@@ -757,14 +759,15 @@ type SessionsScreenProps = PluginScreenProps & {
   workspaces?: readonly OrganizationWorkspace[];
   workspaceNote?: string;
   epicKey?: string | null;
+  viewScope?: string;
 };
-export function SessionsScreen({ host, layout, navigation, theme, directory, organization, projectId = null, onIncludeArchived, workspaces, workspaceNote, epicKey = null }: SessionsScreenProps) {
+export function SessionsScreen({ host, layout, navigation, theme, directory, organization, projectId = null, onIncludeArchived, workspaces, workspaceNote, epicKey = null, viewScope = host.id }: SessionsScreenProps) {
   const colors = theme.colors;
   const compact = layout.compact;
   const hosts = useHosts();
   const hostSummary = hosts.find((candidate) => candidate.serverId === host.id);
   const hostOnline = hostSummary?.status === "online";
-  const [view, setView] = useState<SessionViewState>(() => readSessionView(host.id));
+  const [view, setView] = useState<SessionViewState>(() => readSessionView(viewScope));
   const localDirectory = useSessionDirectory({
     hostId: host.id,
     hostStatus: hostSummary?.status ?? "offline",
@@ -773,8 +776,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   });
   const { state, refresh } = directory ?? localDirectory;
   const preferences = organization?.state.status === "ready" ? organization.state.values : DEFAULT_ORGANIZATION_SETTINGS;
-  const [favoritesOnly, setFavoritesOnly] = useState(false);
-  const [shortcut, setShortcut] = useState<string | null>(null);
+  const favoritesOnly = view.favoritesOnly ?? false;
+  const shortcut = view.shortcut ?? null;
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const editsDisabled = !hostOnline || organization?.state.status !== "ready" || organization.state.saving;
   useEffect(() => { onIncludeArchived?.(view.includeArchived); }, [view.includeArchived, onIncludeArchived]);
@@ -789,7 +792,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const restoredRef = useRef(false);
   const rowHeight = compact ? 64 : 68;
   const [toolbarCollapsed, setToolbarCollapsed] = useState(
-    () => initialToolbarVisibility(readSessionView(host.id).scrollOffset) === "collapsed",
+    () => initialToolbarVisibility(readSessionView(viewScope).scrollOffset) === "collapsed",
   );
   const toolbarCollapsedRef = useRef(toolbarCollapsed);
   toolbarCollapsedRef.current = toolbarCollapsed;
@@ -805,7 +808,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const toolbarOpacity = toolbarOpacityRef.current;
   const expandedToolbarHeightRef = useRef(0);
   const slimHeightRef = useRef(FILTERS_TOUCH_TARGET);
-  const scrollOffsetRef = useRef(readSessionView(host.id).scrollOffset);
+  const scrollOffsetRef = useRef(readSessionView(viewScope).scrollOffset);
   const lastScrollOffsetRef = useRef(scrollOffsetRef.current);
   const maxScrollOffsetRef = useRef(0);
   const scrollAccumulatorRef = useRef<ScrollAccumulator>(EMPTY_SCROLL_ACCUMULATOR);
@@ -843,9 +846,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
 
   const updateView = useCallback(
     (patch: Partial<SessionViewState>) => {
-      setView(patchSessionView(host.id, patch));
+      setView(patchSessionView(viewScope, patch));
     },
-    [host.id],
+    [viewScope],
   );
 
   const setToolbarVisibility = useCallback((next: ToolbarVisibility) => {
@@ -882,9 +885,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     programmaticUntilRef.current = Date.now() + 250;
     scrollOffsetRef.current = target;
     lastScrollOffsetRef.current = target;
-    writeScrollOffset(host.id, target);
+    writeScrollOffset(viewScope, target);
     listRef.current?.scrollToOffset({ offset: target, animated: false });
-  }, [host.id, toolbarCollapsed]);
+  }, [viewScope, toolbarCollapsed]);
 
   useEffect(() => {
     let mounted = true;
@@ -1046,14 +1049,16 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       status: "all",
       attentionOnly: false,
       includeArchived: false,
+      favoritesOnly: false,
+      shortcut: null,
       scrollOffset: 0,
     });
   }, [pinFilterInteraction, updateView]);
 
   const handleClearAll = useCallback(() => {
     pinFilterInteraction();
-    setView(resetSessionView(host.id));
-  }, [host.id, pinFilterInteraction]);
+    setView(resetSessionView(viewScope));
+  }, [viewScope, pinFilterInteraction]);
 
   const handleScrollBeginDrag = useCallback(() => {
     filterPinnedUntilRef.current = 0;
@@ -1077,7 +1082,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         ? Math.min(maxOffset, Math.max(0, offset))
         : offset;
       scrollOffsetRef.current = visibleOffset;
-      writeScrollOffset(host.id, visibleOffset);
+      writeScrollOffset(viewScope, visibleOffset);
 
       const suppressed = Date.now() < programmaticUntilRef.current;
       if (suppressed || outOfRange) {
@@ -1114,7 +1119,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         setToolbarVisibility(next);
       }
     },
-    [compact, host.id, setToolbarVisibility],
+    [compact, viewScope, setToolbarVisibility],
   );
 
   const visible = useMemo(
@@ -1137,22 +1142,32 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   );
   const tree = useMemo(() => buildOrganizationTree({ entries: state.entries.filter((entry) => (projectId === null || entry.projectKey === projectId) && (epicKey === null || [entry.labels.epic, entry.labels["jira.epic"], entry.labels["origin.epic"]].includes(epicKey))), ...preferences, workspaces }), [state.entries, projectId, epicKey, preferences, workspaces]);
   const visibleIds = useMemo(() => new Set(visible.map((entry) => entry.id)), [visible]);
-  const rows = useMemo(() => flattenOrganizationTree(filterOrganizationTree(tree, (entry) => visibleIds.has(entry.id) && (!favoritesOnly || preferences.favorites.includes(entry.id)) && (shortcut === null || (shortcut === "Other work" ? !entry.labels.workstream && !entry.labels.desk : (entry.labels.workstream ?? entry.labels.desk)?.toLocaleLowerCase() === shortcut.toLocaleLowerCase())), (group) => !favoritesOnly && shortcut === null && view.status === "all" && !view.attentionOnly && group.label.toLocaleLowerCase().includes(view.query.trim().toLocaleLowerCase())), preferences.expandedGroups, view.query.trim().length > 0), [tree, visibleIds, favoritesOnly, preferences, shortcut, view]);
+  const rows = useMemo(() => {
+    const eligible = new Set(filterDirectoryEntries(state.entries, { ...view, query: "" }).map((entry) => entry.id));
+    const organizationMatches = (entry: DirectoryEntry) => (!favoritesOnly || preferences.favorites.includes(entry.id)) && (shortcut === null || organizationScope(entry, preferences.displayMappings).workstream.toLocaleLowerCase() === shortcut.toLocaleLowerCase());
+    const tokens = view.query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+    const filtered = filterOrganizationTree(tree, (entry) => visibleIds.has(entry.id) && organizationMatches(entry),
+      (group) => tokens.length ? tokens.every((token) => group.label.toLocaleLowerCase().includes(token)) : !favoritesOnly && shortcut === null && view.status === "all" && !view.attentionOnly && group.kind === "workspace",
+      (entry) => eligible.has(entry.id) && organizationMatches(entry));
+    return flattenOrganizationTree(filtered, preferences.expandedGroups, tokens.length > 0);
+  }, [tree, state.entries, visibleIds, favoritesOnly, preferences, shortcut, view]);
   const moveRow = (row: OrganizationRow, distance: number) => {
     const parent = row.kind === "group" ? row.group.parentKey ?? "root" : row.parentKey;
     const peers = siblingKeys(tree, parent).filter((key) => (row.kind === "session") === key.startsWith("session:"));
     const movable = parent === "root" && row.kind === "group" ? peers.filter((key) => workstreamRank(tree.find((group) => group.key === key)?.label ?? "") === workstreamRank(row.group.label)) : peers;
-    savePreference({ siblingOrder: { ...preferences.siblingOrder, [parent]: reorderedSiblings(movable, rowKey(row), distance) } });
+    savePreference({ siblingOrder: { ...preferences.siblingOrder, [parent]: reorderSavedSiblingOrder(preferences.siblingOrder[parent] ?? [], siblingKeys(tree, parent), movable, rowKey(row), distance) } });
   };
 
-  const activeCount = activeFilterCount(view);
+  const activeCount = activeFilterCount(view) + Number(favoritesOnly) + Number(shortcut !== null);
+  const hasOrganizationFilter = favoritesOnly || shortcut !== null;
+  const shownCount = rows.filter((row) => row.kind === "session").length;
 
   useEffect(() => {
     if (restoredRef.current || state.entries.length === 0) {
       return;
     }
     restoredRef.current = true;
-    const offset = readSessionView(host.id).scrollOffset;
+    const offset = readSessionView(viewScope).scrollOffset;
     if (offset <= 0) {
       return;
     }
@@ -1164,7 +1179,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       listRef.current?.scrollToOffset({ offset, animated: false });
     }, 0);
     return () => clearTimeout(timer);
-  }, [host.id, state.entries.length]);
+  }, [viewScope, state.entries.length]);
 
   const label = stateLabel({
     hostOnline,
@@ -1245,8 +1260,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       {saveMessage || organization?.state.saveError ? <Text accessibilityRole="alert" style={{ color: colors.statusWarning, fontSize: 12 }}>{saveMessage ?? organization?.state.saveError}</Text> : null}
       {organization ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
         {(["hierarchy", "role", "flat"] as const).map((grouping) => <FilterChip key={grouping} label={grouping === "hierarchy" ? "Hierarchy" : grouping === "role" ? "Role" : "Flat"} active={preferences.grouping === grouping} colors={colors} disabled={toolbarCollapsed || editsDisabled} onFocus={handleToolbarControlFocus} onBlur={handleToolbarControlBlur} onPress={() => savePreference({ grouping })} />)}
-        <FilterChip label="Favorites" active={favoritesOnly} colors={colors} disabled={toolbarCollapsed} onPress={() => setFavoritesOnly(!favoritesOnly)} />
-        {["PR Review", "Adam", "Other work"].map((label) => <FilterChip key={label} label={label} active={shortcut === label} colors={colors} disabled={toolbarCollapsed} onPress={() => setShortcut(shortcut === label ? null : label)} />)}
+        <FilterChip label="Favorites" active={favoritesOnly} colors={colors} disabled={toolbarCollapsed} onFocus={handleToolbarControlFocus} onBlur={handleToolbarControlBlur} onPress={() => updateView({ favoritesOnly: !favoritesOnly, scrollOffset: 0 })} />
+        {["PR Review", "Adam", "Other work"].map((label) => <FilterChip key={label} label={label} active={shortcut === label} colors={colors} disabled={toolbarCollapsed} onFocus={handleToolbarControlFocus} onBlur={handleToolbarControlBlur} onPress={() => updateView({ shortcut: shortcut === label ? null : label, scrollOffset: 0 })} />)}
       </View> : null}
 
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
@@ -1472,7 +1487,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     );
   }
 
-  const emptyMessage = hasActiveView(view)
+  const emptyMessage = hasActiveView(view) || hasOrganizationFilter
     ? "No sessions match the current search and filters."
     : state.status === "error"
       ? "No sessions could be read from this host."
@@ -1515,6 +1530,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             onMove={(distance) => moveRow(item, distance)} onFavorite={() => { if (item.kind === "session") savePreference({ favorites: preferences.favorites.includes(item.entry.id) ? preferences.favorites.filter((id) => id !== item.entry.id) : [...preferences.favorites, item.entry.id] }); }}>
           {item.kind === "session" ? <SessionRow
             entry={item.entry}
+            displayContext={preferences.grouping === "role" ? `${organizationScope(item.entry, preferences.displayMappings).workstream} · ${organizationScope(item.entry, preferences.displayMappings).epic} · ${item.entry.workspaceName ?? "Unassigned workspace"}` : undefined}
             displayTitle={item.parentKey.includes("/role:") || item.parentKey.startsWith("roles/role:") ? item.entry.title.slice(item.entry.title.indexOf("•") + 1).trim() : undefined}
             colors={colors}
             compact={compact}
@@ -1529,7 +1545,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 8, padding: 20 }}
           >
             <Text style={{ color: colors.foreground, fontSize: 14 }}>{emptyMessage}</Text>
-            {hasActiveView(view) ? (
+            {hasActiveView(view) || hasOrganizationFilter ? (
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Clear search and filters"
@@ -1558,7 +1574,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           state.entries.length === 0 ? null : (
             <View style={{ paddingVertical: 12, alignItems: "center" }}>
               <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>
-                {visible.length} of {state.entries.length} shown ·{" "}
+                {shownCount} of {state.entries.length} session rows visible ·{" "}
                 {state.lastUpdatedAt === null
                   ? "not read yet"
                   : `complete inventory read ${updatedLabel(state.lastUpdatedAt)}`}

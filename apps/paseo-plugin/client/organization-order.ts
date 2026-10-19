@@ -18,3 +18,11 @@ export function reorderedSiblings(keys: readonly string[], key: string, distance
   result.splice(Math.max(0, Math.min(keys.length - 1, index + Math.trunc(distance))), 0, key);
   return result;
 }
+/** Replace only movable slots; never save a rank partition as the whole order. */
+export function reorderSavedSiblingOrder(saved: readonly string[], siblings: readonly string[], movable: readonly string[], key: string, distance: number): string[] {
+  const full = [...new Set([...saved, ...siblings])];
+  const allowed = new Set(movable);
+  const next = reorderedSiblings(full.filter((id) => allowed.has(id)), key, distance);
+  let index = 0;
+  return full.map((id) => allowed.has(id) ? next[index++]! : id);
+}

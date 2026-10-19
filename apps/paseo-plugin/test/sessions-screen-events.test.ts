@@ -243,6 +243,7 @@ import {
   readSessionView,
 } from "../client/session-view-store";
 import { TOOLBAR_LAYOUT_GAP } from "../client/toolbar-visibility";
+import { DEFAULT_ORGANIZATION_SETTINGS } from "../shared/organization";
 import { sessionEntry } from "./session-fixtures";
 
 const colors = {
@@ -299,7 +300,7 @@ function scrollEvent(
   } as NativeSyntheticEvent<NativeScrollEvent>;
 }
 
-function renderScreen() {
+function renderScreen(organization?: Parameters<typeof SessionsScreen>[0]["organization"]) {
   const navigation = {
     openAgent: () => undefined,
     openBrowser: () => undefined,
@@ -312,6 +313,7 @@ function renderScreen() {
       navigation,
       theme: { colors } as PluginTheme,
       params: {},
+      organization,
     } as PluginScreenProps),
   );
   const list = findByTestID(tree, "sessions-list");
@@ -413,6 +415,22 @@ describe("SessionsScreen toolbar events", () => {
       advancedOpen: saved.advancedOpen,
       scrollOffset: 1389 + (220 + TOOLBAR_LAYOUT_GAP),
     });
+  });
+
+  it("retains Favorites and desk shortcuts across a screen remount", () => {
+    const organization = {
+      state: { status: "ready", values: { ...DEFAULT_ORGANIZATION_SETTINGS, favorites: ["session-a"] }, revision: "revision-a", saving: false, saveError: null, save: async () => true, reload: async () => {}, reset: async () => true },
+      save: async () => true,
+    } as NonNullable<Parameters<typeof SessionsScreen>[0]["organization"]>;
+    directory.state = { ...(directory.state as object), entries: [sessionEntry("session-a", { labels: { desk: "Adam" } })] };
+    renderScreen(organization);
+    const chip = (label: string) => walk(harness.current()).find((element) => element.props.label === label)!;
+    (chip("Favorites").props.onPress as () => void)(); harness.flush();
+    (chip("Adam").props.onPress as () => void)(); harness.flush();
+    expect(readSessionView("host-a")).toMatchObject({ favoritesOnly: true, shortcut: "Adam" });
+    harness.reset(); renderScreen(organization);
+    expect(chip("Favorites").props.active).toBe(true);
+    expect(chip("Adam").props.active).toBe(true);
   });
 
   it("ignores a collapsed bottom bounce and its return while preserving top reveal", () => {

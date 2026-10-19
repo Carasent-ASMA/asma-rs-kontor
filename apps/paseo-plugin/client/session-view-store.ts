@@ -5,6 +5,8 @@ import {
 
 export type SessionViewState = SessionFilters & {
   readonly scrollOffset: number;
+  readonly favoritesOnly?: boolean;
+  readonly shortcut?: string | null;
 };
 
 const views = new Map<string, SessionViewState>();

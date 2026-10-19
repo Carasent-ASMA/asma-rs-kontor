@@ -21,6 +21,7 @@ export type OrganizationAggregate = {
   readonly attention: number;
   readonly done: number;
   readonly other: number;
+  readonly native: Readonly<Record<DirectoryEntry["status"], number>>;
 };
 
 export type OrganizationGroup = {
@@ -50,7 +51,9 @@ export type OrganizationInput = {
   readonly siblingOrder?: Readonly<Record<string, readonly string[]>>;
   readonly displayMappings?: Readonly<Record<string, OrganizationDisplayMapping>>;
   readonly expandedGroups?: Readonly<Record<string, boolean>>;
+  readonly workspaces?: readonly OrganizationWorkspace[];
 };
+export type OrganizationWorkspace = { readonly id: string; readonly name: string; readonly projectKey?: string | null; readonly projectName?: string | null };
 
 export type OrganizationRow =
   | {
@@ -77,7 +80,7 @@ function clean(value: string | null | undefined): string | null {
 }
 
 function segment(value: string): string {
-  return encodeURIComponent(value.trim().toLocaleLowerCase()) || "unknown";
+  return encodeURIComponent(value.trim()) || "unknown";
 }
 
 export function sessionKey(id: string): string {
@@ -138,14 +141,14 @@ function mappedValue(
   return null;
 }
 
-function scopeOf(
+export function organizationScope(
   entry: DirectoryEntry,
   mappings: OrganizationInput["displayMappings"],
 ): { readonly workstream: string; readonly epic: string } {
   const workstream =
     mappedValue(mappings, entry, "workstream") ??
-    clean(entry.labels.workstream) ??
     clean(entry.labels.desk) ??
+    clean(entry.labels.workstream) ??
     OTHER_WORKSTREAM;
   const epic =
     mappedValue(mappings, entry, "epic") ??
@@ -187,7 +190,9 @@ function aggregateValues(entries: readonly DirectoryEntry[]): OrganizationAggreg
   let attention = 0;
   let done = 0;
   let other = 0;
+  const native = { initializing: 0, idle: 0, running: 0, error: 0, closed: 0 };
   for (const entry of entries) {
+    native[entry.status] += 1;
     if (entry.needsInput) {
       needsInput += 1;
     } else if (entry.status === "error" || entry.attentionReason === "error") {
@@ -210,6 +215,7 @@ function aggregateValues(entries: readonly DirectoryEntry[]): OrganizationAggreg
     attention,
     done,
     other,
+    native,
   };
 }
 
@@ -279,20 +285,26 @@ function sortGroups(
     if (leftOrder !== undefined || rightOrder !== undefined) {
       return (leftOrder ?? Number.MAX_SAFE_INTEGER) - (rightOrder ?? Number.MAX_SAFE_INTEGER);
     }
+    if (parentKey === "root") {
+      const defaults = ["pr review", "pr-review", "adam", "qa"];
+      const leftDefault = defaults.indexOf(left.label.toLocaleLowerCase());
+      const rightDefault = defaults.indexOf(right.label.toLocaleLowerCase());
+      if (leftDefault >= 0 && rightDefault >= 0) return leftDefault - rightDefault;
+    }
     return left.label.localeCompare(right.label);
   });
 }
 
-function workstreamRank(label: string): number {
+export function workstreamRank(label: string): number {
   const normalized = label.trim().toLocaleLowerCase();
   if (normalized === "pr review" || normalized === "pr-review") {
     return 0;
   }
   if (normalized === "adam") {
-    return 1;
+    return 0;
   }
   if (normalized === "qa") {
-    return 2;
+    return 0;
   }
   if (normalized === OTHER_WORKSTREAM.toLocaleLowerCase()) {
     return 100;
@@ -360,8 +372,10 @@ function buildWorkspaceGroups(input: {
   readonly depth: number;
   readonly siblingOrder: OrganizationInput["siblingOrder"];
   readonly nativeOrder: ReadonlyMap<string, number>;
+  readonly emptyWorkspaces?: readonly OrganizationWorkspace[];
 }): OrganizationGroup[] {
   const byWorkspace = new Map<string, { label: string; entries: DirectoryEntry[] }>();
+  for (const workspace of input.emptyWorkspaces ?? []) byWorkspace.set(`id:${workspace.id}`, { label: workspace.name, entries: [] });
   for (const entry of input.entries) {
     const workspace = workspaceOf(entry);
     const existing = byWorkspace.get(workspace.key);
@@ -404,8 +418,11 @@ function buildEpicGroup(input: {
   readonly depth: number;
   readonly siblingOrder: OrganizationInput["siblingOrder"];
   readonly nativeOrder: ReadonlyMap<string, number>;
+  readonly emptyWorkspaces?: readonly OrganizationWorkspace[];
+  readonly projectKey?: string;
+  readonly displayLabel?: string;
 }): OrganizationGroup {
-  const epicKey = `${input.workstreamKey}/epic:${segment(input.epic)}`;
+  const epicKey = `${input.workstreamKey}/project:${segment(input.projectKey ?? "unknown")}/epic:${segment(normalizedPrefix(input.epic))}`;
   const workspaces = new Map<
     string,
     { label: string; prefix: string | null; entries: DirectoryEntry[] }
@@ -424,6 +441,7 @@ function buildEpicGroup(input: {
     }
   }
   const prefixCounts = new Map<string, number>();
+  for (const workspace of input.emptyWorkspaces ?? []) workspaces.set(`id:${workspace.id}`, { label: workspace.name, prefix: workspaceKindPrefix(workspace.name), entries: [] });
   for (const workspace of workspaces.values()) {
     if (workspace.prefix !== null) {
       const key = normalizedPrefix(workspace.prefix);
@@ -432,10 +450,12 @@ function buildEpicGroup(input: {
   }
   const kindGroups = new Map<
     string,
-    { label: string; entries: DirectoryEntry[] }
+    { label: string; entries: DirectoryEntry[]; emptyWorkspaces: OrganizationWorkspace[] }
   >();
   const direct: DirectoryEntry[] = [];
-  for (const workspace of workspaces.values()) {
+  const directEmpty: OrganizationWorkspace[] = [];
+  const empties = new Map((input.emptyWorkspaces ?? []).map((workspace) => [`id:${workspace.id}`, workspace]));
+  for (const [workspaceKey, workspace] of workspaces) {
     if (
       workspace.prefix !== null &&
       (prefixCounts.get(normalizedPrefix(workspace.prefix)) ?? 0) >= 2
@@ -444,14 +464,17 @@ function buildEpicGroup(input: {
       const existing = kindGroups.get(key);
       if (existing) {
         existing.entries.push(...workspace.entries);
+        if (!workspace.entries.length && empties.has(workspaceKey)) existing.emptyWorkspaces.push(empties.get(workspaceKey)!);
       } else {
         kindGroups.set(key, {
           label: workspace.prefix,
           entries: [...workspace.entries],
+          emptyWorkspaces: !workspace.entries.length && empties.has(workspaceKey) ? [empties.get(workspaceKey)!] : [],
         });
       }
     } else {
       direct.push(...workspace.entries);
+      if (!workspace.entries.length && empties.has(workspaceKey)) directEmpty.push(empties.get(workspaceKey)!);
     }
   }
   const groups: OrganizationGroup[] = [];
@@ -473,6 +496,7 @@ function buildEpicGroup(input: {
           depth: input.depth + 2,
           siblingOrder: input.siblingOrder,
           nativeOrder: input.nativeOrder,
+          emptyWorkspaces: value.emptyWorkspaces,
         }),
       }),
     );
@@ -484,12 +508,13 @@ function buildEpicGroup(input: {
       depth: input.depth + 1,
       siblingOrder: input.siblingOrder,
       nativeOrder: input.nativeOrder,
+      emptyWorkspaces: directEmpty,
     }),
   );
   return group({
     key: epicKey,
     kind: "epic",
-    label: input.epic,
+    label: input.displayLabel ?? input.epic,
     shortCode: null,
     parentKey: input.workstreamKey,
     depth: input.depth,
@@ -505,33 +530,51 @@ function buildHierarchy(input: {
   readonly siblingOrder: OrganizationInput["siblingOrder"];
   readonly displayMappings: OrganizationInput["displayMappings"];
   readonly nativeOrder: ReadonlyMap<string, number>;
+  readonly workspaces?: readonly OrganizationWorkspace[];
 }): OrganizationGroup[] {
   const workstreams = new Map<
     string,
     {
       label: string;
-      epics: Map<string, { label: string; entries: DirectoryEntry[] }>;
+      epics: Map<string, { label: string; projectKey: string; projectName: string; entries: DirectoryEntry[]; emptyWorkspaces?: OrganizationWorkspace[] }>;
     }
   >();
   for (const entry of input.entries) {
-    const scope = scopeOf(entry, input.displayMappings);
+    const scope = organizationScope(entry, input.displayMappings);
     const workstreamKey = normalizedPrefix(scope.workstream);
     let workstream = workstreams.get(workstreamKey);
     if (!workstream) {
       workstream = { label: scope.workstream, epics: new Map() };
       workstreams.set(workstreamKey, workstream);
     }
-    const epicKey = normalizedPrefix(scope.epic);
+    const projectKey = entry.projectKey ?? `unknown:${entry.workspaceId ?? entry.cwd ?? entry.id}`;
+    const epicKey = JSON.stringify([projectKey, normalizedPrefix(scope.epic)]);
     const epic = workstream.epics.get(epicKey);
     if (epic) {
       epic.entries.push(entry);
     } else {
-      workstream.epics.set(epicKey, { label: scope.epic, entries: [entry] });
+      workstream.epics.set(epicKey, { label: scope.epic, projectKey, projectName: entry.projectName ?? "Project unknown", entries: [entry] });
     }
   }
   const groups: OrganizationGroup[] = [];
+  const occupied = new Set(input.entries.map((entry) => entry.workspaceId));
+  for (const workspace of input.workspaces ?? []) {
+    if (occupied.has(workspace.id)) continue;
+    const mapping = input.displayMappings?.[workspaceMappingKey(workspace.id)];
+    const stream = mapping?.workstream ?? OTHER_WORKSTREAM;
+    const epic = mapping?.epic ?? UNASSIGNED_EPIC;
+    const streamKey = normalizedPrefix(stream);
+    let parent = workstreams.get(streamKey);
+    if (!parent) { parent = { label: stream, epics: new Map() }; workstreams.set(streamKey, parent); }
+    const projectKey = workspace.projectKey ?? `unknown:${workspace.id}`;
+    const epicKey = JSON.stringify([projectKey, normalizedPrefix(epic)]);
+    let target = parent.epics.get(epicKey);
+    if (!target) { target = { label: epic, projectKey, projectName: workspace.projectName ?? "Project unknown", entries: [], emptyWorkspaces: [] }; parent.epics.set(epicKey, target); }
+    target.emptyWorkspaces = [...(target.emptyWorkspaces ?? []), workspace];
+  }
   for (const [key, workstream] of workstreams) {
     const workstreamKey = `workstream:${key}`;
+    const multipleProjects = new Set([...workstream.epics.values()].map((epic) => epic.projectKey)).size > 1;
     const epics = [...workstream.epics.values()].map((epic) =>
       buildEpicGroup({
         entries: epic.entries,
@@ -540,6 +583,9 @@ function buildHierarchy(input: {
         depth: 1,
         siblingOrder: input.siblingOrder,
         nativeOrder: input.nativeOrder,
+        emptyWorkspaces: epic.emptyWorkspaces,
+        projectKey: epic.projectKey,
+        displayLabel: multipleProjects ? `${epic.label} · ${epic.projectName}` : epic.label,
       }),
     );
     groups.push(
@@ -635,20 +681,25 @@ export function buildOrganizationTree(input: OrganizationInput): OrganizationGro
     siblingOrder: input.siblingOrder,
     displayMappings: input.displayMappings,
     nativeOrder,
+    workspaces: input.workspaces,
   });
 }
 
 function filterGroup(
   current: OrganizationGroup,
   predicate: (entry: DirectoryEntry) => boolean,
+  matchesGroup: (group: OrganizationGroup) => boolean,
+  matchesDescendant: (entry: DirectoryEntry) => boolean,
+  ancestorMatched = false,
 ): OrganizationGroup | null {
-  const sessions = current.sessions.filter(predicate);
+  const matched = ancestorMatched || matchesGroup(current);
+  const sessions = current.sessions.filter(matched ? matchesDescendant : predicate);
   const groups = current.groups
-    .map((child) => filterGroup(child, predicate))
+    .map((child) => filterGroup(child, predicate, matchesGroup, matchesDescendant, matched))
     .filter((child): child is OrganizationGroup => child !== null);
   const visibleCount =
     sessions.length + groups.reduce((count, child) => count + child.visibleCount, 0);
-  if (visibleCount === 0) {
+  if (visibleCount === 0 && groups.length === 0 && !(current.kind === "workspace" && current.totalCount === 0 && matched)) {
     return null;
   }
   return { ...current, sessions, groups, visibleCount };
@@ -657,9 +708,11 @@ function filterGroup(
 export function filterOrganizationTree(
   groups: readonly OrganizationGroup[],
   predicate: (entry: DirectoryEntry) => boolean,
+  matchesGroup: (group: OrganizationGroup) => boolean = () => false,
+  matchesDescendant: (entry: DirectoryEntry) => boolean = () => true,
 ): OrganizationGroup[] {
   return groups
-    .map((group) => filterGroup(group, predicate))
+    .map((group) => filterGroup(group, predicate, matchesGroup, matchesDescendant))
     .filter((group): group is OrganizationGroup => group !== null);
 }
 

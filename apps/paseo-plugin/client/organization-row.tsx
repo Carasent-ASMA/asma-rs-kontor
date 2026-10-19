@@ -1,5 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { Modal, PanResponder, Pressable, Text, View } from "react-native";
+import { PanResponder, Pressable, Text, View } from "react-native";
+import { Modal } from "@getpaseo/plugin/client/react-native";
 import type { OrganizationRow } from "./session-organization";
 import { Action, Copy, type Colors } from "./page-controls";
 export function OrganizationRowView({ row, colors, height, children, disabled, favorite, onFavorite, onToggle, onMove }: {
@@ -16,22 +17,22 @@ export function OrganizationRowView({ row, colors, height, children, disabled, f
     onPanResponderTerminationRequest: () => false,
   }), [disabled, height, onMove]);
   return <View style={{ height, flexDirection: "row", alignItems: "center", paddingLeft: Math.min(row.depth, 3) * 10, borderBottomWidth: 1, borderColor: colors.border }}>
-    <View style={{ flex: 1, minWidth: 0 }}>{row.kind === "session" ? children : <Pressable accessibilityRole="button" accessibilityState={{ expanded: row.expanded }} accessibilityLabel={`${label}, ${row.group.visibleCount} of ${row.group.totalCount} sessions`} onPress={onToggle} style={{ height, justifyContent: "center", paddingHorizontal: 8 }}>
+    <View style={{ flex: 1, minWidth: 0 }}>{row.kind === "session" ? children : <Pressable accessibilityRole="button" disabled={disabled} accessibilityState={{ expanded: row.expanded, disabled }} accessibilityLabel={`${label}, ${row.group.visibleCount} of ${row.group.totalCount} sessions. Native counts: ${row.group.aggregate.native.initializing} initializing, ${row.group.aggregate.native.idle} idle, ${row.group.aggregate.native.running} running, ${row.group.aggregate.native.error} errors, ${row.group.aggregate.native.closed} closed. ${row.group.aggregate.needsInput} need input.`} onPress={onToggle} style={{ height, justifyContent: "center", paddingHorizontal: 8 }}>
       <Text numberOfLines={1} style={{ color: colors.foreground, fontSize: 13, fontWeight: "600" }}>{row.expanded ? "⌄" : "›"} {displayLabel} · {row.group.visibleCount === row.group.totalCount ? row.group.totalCount : `${row.group.visibleCount} of ${row.group.totalCount}`}</Text>
-      <Text numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 10 }}>{row.group.aggregate.running} running · {row.group.aggregate.needsInput} input · {row.group.aggregate.failed} errors · {row.group.aggregate.attention} attention · {row.group.aggregate.done} closed</Text>
+      <Text numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 10 }}>{row.group.aggregate.native.running} run · {row.group.aggregate.native.idle} idle · {row.group.aggregate.native.initializing} init · {row.group.aggregate.native.error} err · {row.group.aggregate.native.closed} closed · {row.group.aggregate.needsInput} input</Text>
     </Pressable>}</View>
-    {row.kind === "session" ? <Action colors={colors} label={favorite ? "★" : "☆"} selected={favorite} disabled={disabled} onPress={onFavorite} /> : null}
+    {row.kind === "session" ? <Action colors={colors} label={favorite ? "★" : "☆"} accessibilityLabel={`${favorite ? "Remove favorite" : "Favorite"}: ${label}`} selected={favorite} disabled={disabled} onPress={onFavorite} /> : null}
     <View {...responder.panHandlers} accessible accessibilityRole="adjustable" accessibilityLabel={`Reorder ${label}; drag vertically among siblings or use move controls`} accessibilityActions={[{ name: "increment", label: "Move down" }, { name: "decrement", label: "Move up" }, { name: "activate", label: "Move controls" }]}
       accessibilityState={{ disabled }} onAccessibilityAction={(event) => { if (disabled) return; if (event.nativeEvent.actionName === "increment") onMove(1); else if (event.nativeEvent.actionName === "decrement") onMove(-1); else setMenu(true); }} style={{ minWidth: 44, height: 44, justifyContent: "center", alignItems: "center", opacity: disabled ? 0.4 : 1 }}>
       <Pressable accessibilityRole="button" accessibilityLabel={`Move ${label}`} disabled={disabled} onPress={() => setMenu(true)} style={{ minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" }}><Text style={{ color: colors.foregroundMuted }}>↕</Text></Pressable>
     </View>
-    <Modal visible={menu} transparent onRequestClose={() => setMenu(false)}>
-      <View accessibilityViewIsModal style={{ flex: 1, justifyContent: "center", padding: 24, backgroundColor: "#00000066" }}><View style={{ backgroundColor: colors.surface0, padding: 16, borderRadius: 12 }}>
+    <Modal title="Sibling order" open={menu} onOpenChange={setMenu}>
+      <Modal.Content>
         <Copy colors={colors}>{label} — sibling order only</Copy>
         <Action colors={colors} label="Move up" disabled={disabled} onPress={() => { onMove(-1); setMenu(false); }} />
         <Action colors={colors} label="Move down" disabled={disabled} onPress={() => { onMove(1); setMenu(false); }} />
         <Action colors={colors} label="Close" onPress={() => setMenu(false)} />
-      </View></View>
+      </Modal.Content>
     </Modal>
   </View>;
 }

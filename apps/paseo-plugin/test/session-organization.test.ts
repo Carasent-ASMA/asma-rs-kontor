@@ -11,6 +11,7 @@ import {
   UNASSIGNED_WORKSPACE,
   workspaceKindPrefix,
   sessionRolePrefix,
+  organizationScope,
   type OrganizationGroup,
 } from "../client/session-organization";
 import { sessionEntry } from "./session-fixtures";
@@ -27,6 +28,8 @@ function entry(
     attentionReason?: DirectoryEntry["attentionReason"];
     pendingPermissionCount?: number;
     cwd?: string;
+    projectKey?: string;
+    projectName?: string;
   } = {},
 ): DirectoryEntry {
   return sessionEntry(id, {
@@ -39,6 +42,8 @@ function entry(
     attentionReason: input.attentionReason,
     pendingPermissionCount: input.pendingPermissionCount,
     cwd: input.cwd,
+    projectKey: input.projectKey,
+    projectName: input.projectName,
   });
 }
 
@@ -112,6 +117,43 @@ function fixtureTree() {
 }
 
 describe("session organization hierarchy", () => {
+  it("uses the authoritative Mapping → desk → workstream precedence", () => {
+    const native = entry("desk", { labels: { desk: "PR Review", workstream: "kontor" } });
+    expect(organizationScope(native, {}).workstream).toBe("PR Review");
+    expect(organizationScope(native, { "session:desk": { workstream: "Explicit mapping" } }).workstream).toBe("Explicit mapping");
+    expect(organizationScope(entry("stream", { labels: { workstream: "kontor" } }), {}).workstream).toBe("kontor");
+  });
+  it("keeps unassigned workspace-kind siblings inside their native project boundary", () => {
+    const tree = buildOrganizationTree({ entries: [entry("one", { projectKey: "A", projectName: "Project A", workspaceId: "a", workspaceName: "TSW • A" }), entry("two", { projectKey: "B", projectName: "Project B", workspaceId: "b", workspaceName: "TSW • B" })] });
+    expect(allGroups(tree).filter((group) => group.kind === "workspace-kind")).toHaveLength(0);
+    expect(allGroups(tree).filter((group) => group.kind === "epic").map((group) => group.label)).toEqual(["Unassigned · Project A", "Unassigned · Project B"]);
+    expect(new Set(sessionIds(flattenOrganizationTree(tree)))).toEqual(new Set(["one", "two"]));
+  });
+  it("retains a discovered empty workspace with zero native sessions", () => {
+    const tree = buildOrganizationTree({ entries: [], workspaces: [{ id: "empty", name: "TSW • empty", projectKey: "project" }] });
+    const rows = flattenOrganizationTree(filterOrganizationTree(tree, () => true, () => true));
+    expect(rows.some((row) => row.kind === "group" && row.group.kind === "workspace" && row.group.label === "TSW • empty" && row.group.totalCount === 0)).toBe(true);
+  });
+  it("searches saved group labels and keeps independent native-state filters", () => {
+    const entries = [entry("run", { status: "running" }), entry("idle", { status: "idle" })];
+    const tree = buildOrganizationTree({ entries, displayMappings: { "session:run": { workstream: "Clinical delivery" }, "session:idle": { workstream: "Clinical delivery" } } });
+    const matches = (group: OrganizationGroup) => group.label === "Clinical delivery";
+    expect(sessionIds(flattenOrganizationTree(filterOrganizationTree(tree, () => false, matches), {}, true))).toEqual(expect.arrayContaining(["run", "idle"]));
+    expect(sessionIds(flattenOrganizationTree(filterOrganizationTree(tree, () => false, matches, (row) => row.status === "running"), {}, true))).toEqual(["run"]);
+  });
+  it("keeps all 500 native IDs exactly once with duplicate names and empty native workspaces", () => {
+    const entries = Array.from({ length: 500 }, (_, index) => entry(`Native-${index}`, {
+      title: index % 2 ? "SWE • duplicate" : "QA • duplicate", workspaceId: `workspace-${index % 20}`,
+      workspaceName: `TSW • ${index % 20}`, labels: { epic: "ASMA-1", workstream: "Adam" },
+    }));
+    const tree = buildOrganizationTree({ entries, workspaces: [{ id: "empty-A", name: "TSW • same title" }, { id: "empty-a", name: "TSW • same title" }] });
+    const rows = flattenOrganizationTree(filterOrganizationTree(tree, () => true, () => true));
+    expect(new Set(sessionIds(rows)).size).toBe(500);
+    expect(sessionIds(rows)).toHaveLength(500);
+    const empty = allGroups(tree).filter((group) => group.kind === "workspace" && group.totalCount === 0);
+    expect(empty).toHaveLength(2); expect(empty[0]?.key).not.toBe(empty[1]?.key);
+    expect(rows.filter((row) => row.kind === "group" && row.group.totalCount === 0).length).toBeGreaterThanOrEqual(2);
+  });
   it("keeps durable workstreams first and keeps unassigned work visible", () => {
     const tree = fixtureTree();
     expect(tree.map((group) => group.label)).toEqual([
@@ -447,6 +489,7 @@ describe("session organization hierarchy", () => {
       attention: 1,
       done: 1,
       other: 1,
+      native: { initializing: 1, idle: 1, running: 1, error: 2, closed: 1 },
     });
   });
 });
