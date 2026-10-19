@@ -37496,13 +37496,12 @@ impl ApplicationOperations for Services {
             let (mut team_run_closed, mut team_pending) =
                 self.team_closure_state(project_id, &run)?;
             // The first abandonment may have happened while sibling runs were
-            // still live. Once they have all ended, replaying that same operator
-            // decision must converge the team too; otherwise the immutable
-            // abandoned run can never be acted on again and the task stays in
-            // flight forever. Runtime-observed terminal runs carry no abandon
-            // receipt and therefore never enter this operator-only fallback.
+            // still live. Once they have all ended, replaying that same decision
+            // must converge the team too; otherwise the immutable terminal run
+            // can never be acted on again and the task stays in flight forever.
+            // It does not matter how the siblings ended: a runtime observation
+            // is as final as an operator abandon.
             if team_run_closed.is_none()
-                && receipt_id.is_some()
                 && let Some(abandoned) = self.abandon_team_run(key, project_id, &run, now)?
             {
                 team_run_closed = Some(abandoned);
@@ -37711,7 +37710,13 @@ impl ApplicationOperations for Services {
                 }
                 kontor_core::state::TerminalEvidenceSource::OperatorAbandon { .. } => None,
             };
-            let (team_run_closed, team_pending) = self.team_closure_state(project_id, &run)?;
+            // Closing the run commits before the team is settled, so a team
+            // closure that failed — behind a Team Definition migration fence, or
+            // on a declared slot that never ran — leaves an envelope with no live
+            // child. The run is immutable now, and this replay is the only path
+            // back to it: retry the closure, which is idempotent, instead of
+            // reporting the stranded envelope forever.
+            let (team_run_closed, team_pending) = self.settle_team(project_id, &run, now)?;
             return Ok(RuntimeSettlementDto {
                 realm_id,
                 agent_run_id: agent_run_id.to_string(),
