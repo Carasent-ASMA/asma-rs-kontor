@@ -37726,8 +37726,9 @@ impl ApplicationOperations for Services {
             //
             // A declared slot that never produced a terminal run is not repaired
             // here: `settle_team` answers pending for that shape however often
-            // it is asked. The `runtime:abandon` route on that slot's run is
-            // what makes every declared slot terminal and closes the envelope.
+            // it is asked. The `runtime:abandon` route is what accounts for that
+            // slot and lets the envelope close: it abandons a never-bound run,
+            // or, once every existing run has ended, closes the envelope itself.
             let (team_run_closed, team_pending) = self.settle_team(project_id, &run, now)?;
             // A first settlement that failed after closing the run never reached
             // the release below, so the snapshot would stay held for a session
