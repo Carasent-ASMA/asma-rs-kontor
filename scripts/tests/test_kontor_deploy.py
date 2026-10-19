@@ -1069,7 +1069,12 @@ class ReplaceTest(WorldTest):
                 self.snapshot_daemon = Path(argv[0]).read_bytes()
                 snapshot = Path(argv[argv.index("--into") + 1]) / "kontor-realm.db"
                 snapshot.write_bytes(b"snapshot\n")
-                return done(0, f"{snapshot}\n")
+                return done(
+                    0,
+                    f"{snapshot}\n"
+                    "2026-10-19T00:00:00.000000Z  INFO kontor_daemon: "
+                    "snapshot complete kept=1 pruned=0\n",
+                )
             if argv[:2] == [str(self.world.bin / "kontor"), "realm-get"]:
                 body = {"status": readback_status, "body": {"realm_id": readback_realm}}
                 return done(0, json.dumps(body))
@@ -1158,7 +1163,12 @@ class ReplaceTest(WorldTest):
                 roots.append(argv[argv.index("--state-root") + 1])
                 snapshot = Path(argv[argv.index("--into") + 1]) / "kontor-realm.db"
                 snapshot.write_bytes(b"snapshot\n")
-                return done(0, f"{snapshot}\n")
+                return done(
+                    0,
+                    f"{snapshot}\n"
+                    "2026-10-19T00:00:00.000000Z  INFO kontor_daemon: "
+                    "snapshot complete kept=1 pruned=0\n",
+                )
             if argv[:2] == [str(self.world.bin / "kontor"), "realm-get"]:
                 roots.append(argv[argv.index("--state-root") + 1])
                 body = {"status": 200, "body": {"realm_id": REALM_ID}}

@@ -506,13 +506,14 @@ def snapshot(job: Job, host: Host, into: Path) -> Path:
     result = host.run(
         [str(job.daemon), "--state-root", str(job.state_root), "snapshot", "--into", str(into)]
     )
-    lines = result.stdout.strip().splitlines()
-    if result.returncode != 0 or not lines or not Path(lines[-1]).is_file():
+    printed = [Path(line.strip()) for line in result.stdout.splitlines()]
+    path = next((candidate for candidate in reversed(printed) if candidate.is_file()), None)
+    if result.returncode != 0 or path is None:
         raise Failed(
             f"the snapshot of {job.state_root} failed (exit {result.returncode}): "
             f"{result.stderr.strip()}"
         )
-    return Path(lines[-1])
+    return path
 
 
 def read_back(job: Job, host: Host, realm_id: str) -> dict:
