@@ -160,11 +160,16 @@ and the test made a fresh random key for each run. That test existed only on
 
 ## Related clean-up in the same task
 
-ASMA-8511 also removed run receipts, the owner's home path and
-provider-account aliases from the public tree, and `scripts/public_tree.py`
-now refuses them. None of these is a secret, so none needs revoking. The
-evidence README records the clean-up:
-[`docs/evidence/README.md`](../../docs/evidence/README.md).
+ASMA-8511 also removed run receipts and the owner's home path from the public
+tree. It removed provider-account aliases from evidence, documentation, plans
+and configuration examples, but not from code: 51 files under `crates/` and
+`apps/` still name them, listed one by one in `ALIAS_CODE_EXEMPTION`. These
+are the route and provider catalogs, the bundled team pack and committee
+preset, the generated contract, the Tokenomics labels, and the doc comments and
+tests that follow them. Renaming them waits on a host decision, an open KR-30
+gap. `scripts/public_tree.py` now refuses all three kinds anywhere else. None
+of these is a secret, so none needs revoking. The evidence README records the
+clean-up: [`docs/evidence/README.md`](../../docs/evidence/README.md).
 
 ## Rerunning
 
