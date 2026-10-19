@@ -1325,6 +1325,15 @@ class ReplaceTest(WorldTest):
         self.assertEqual(recorder.launchctl(), [])
         self.assertFalse(self.world.backup.exists())
 
+    def test_a_declared_production_replace_refuses_one_wrong_candidate_hash(self) -> None:
+        expected = {name: deploy.digest(self.world.candidates / name) for name in deploy.BINARIES}
+        values = [f"{name}={checksum}" for name, checksum in expected.items()]
+        values[0] = f"{deploy.BINARIES[0]}={'0' * 64}"
+        recorder = Recorder(self.answer())
+        self.assertEqual(self.production_replace(recorder, values), deploy.EXIT_FAILED)
+        self.assertEqual(recorder.launchctl(), [])
+        self.assertFalse(self.world.backup.exists())
+
     def test_a_declared_production_replace_pins_the_candidate_hashes(self) -> None:
         expected = {name: deploy.digest(self.world.candidates / name) for name in deploy.BINARIES}
         recorder = Recorder(self.answer())
@@ -1337,6 +1346,27 @@ class ReplaceTest(WorldTest):
         self.assertEqual(receipt["binarySha256After"], expected)
         for name in deploy.BINARIES:
             self.assertEqual((self.world.bin / name).read_bytes(), f"new {name}\n".encode())
+
+    def test_replace_reads_back_the_started_endpoint(self) -> None:
+        (self.world.state / "endpoint.json").write_text(
+            json.dumps({"schema_version": 1, "base_url": "http://127.0.0.1:7717"})
+        )
+        plain = self.answer()
+        polls: list[list[str]] = []
+
+        def answer(argv: list[str]) -> subprocess.CompletedProcess[str]:
+            if argv[:2] == [str(self.world.bin / "kontor"), "realm-get"]:
+                polls.append(argv)
+            return plain(argv)
+
+        recorder = Recorder(answer)
+        self.assertEqual(self.replace(recorder), 0)
+        self.assertTrue(polls)
+        for argv in polls:
+            self.assertEqual(
+                argv[argv.index("--base-url") + 1],
+                "http://127.0.0.1:47717",
+            )
 
     def test_the_realm_get_wait_is_configurable(self) -> None:
         recorder = Recorder(self.answer(readback_status=503))

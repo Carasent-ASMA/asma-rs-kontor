@@ -45,8 +45,9 @@ Commands:
              after the stop restores the old binaries and restarts the job.
              The database is not restored: the snapshot in --backup-dir
              restores it per RECOVERY.md. A declared production replace
-             needs ``--expected-sha256`` for each candidate and compares
-             them before the job is stopped.
+             needs ``--expected-sha256`` for each candidate, from the build
+             or release that produced it, and compares them before the job
+             is stopped.
 
 The daemon binary, state root and port come from the plist's
 ``ProgramArguments``; a missing ``--port`` uses the daemon default 7717, and
@@ -523,10 +524,20 @@ def snapshot(job: Job, host: Host, into: Path) -> Path:
 
 def read_back(job: Job, host: Host, realm_id: str) -> dict:
     """Wait until the started daemon answers realm-get for the expected realm."""
-    assert job.state_root is not None
+    assert job.state_root is not None and job.port is not None
     kontor = job.install_dir / "kontor"
+    base_url = f"http://127.0.0.1:{job.port}"
     for _ in range(_poll_attempts(host)):
-        result = host.run([str(kontor), "realm-get", "--state-root", str(job.state_root)])
+        result = host.run(
+            [
+                str(kontor),
+                "realm-get",
+                "--state-root",
+                str(job.state_root),
+                "--base-url",
+                base_url,
+            ]
+        )
         if result.returncode == 0:
             try:
                 answer = json.loads(result.stdout)
@@ -772,8 +783,9 @@ def parse_arguments(argv: Sequence[str] | None) -> argparse.Namespace:
         default=[],
         metavar="NAME=SHA256",
         help=(
-            "expected SHA-256 of a candidate binary, repeatable; a declared "
-            "production replace needs one for each binary"
+            "expected SHA-256 of a candidate binary, repeatable, from the build "
+            "or release that produced it; a declared production replace needs "
+            "one for each of kontor-daemon, kontor and kontor-mcp"
         ),
     )
     arguments = parser.parse_args(argv)

@@ -291,6 +291,25 @@ python3 scripts/kontor-deploy.py --label <label> --domain gui/<uid> --plist <pli
   replace --candidates <dir> --backup-dir <new dir> --realm-id <realm>
 ```
 
+A deploy of the production label is declared with
+`--production-deploy <JIRA-KEY>` and must pin each candidate:
+
+```sh
+python3 scripts/kontor-deploy.py --label com.asma.kontor.daemon --domain gui/<uid> \
+  --plist ~/Library/LaunchAgents/com.asma.kontor.daemon.plist \
+  --production-deploy <JIRA-KEY> replace --candidates <dir> --backup-dir <new dir> \
+  --realm-id <realm> \
+  --expected-sha256 kontor-daemon=<sha256> \
+  --expected-sha256 kontor=<sha256> \
+  --expected-sha256 kontor-mcp=<sha256>
+```
+
+Take the hashes from the build or release that produced the candidates (for
+example its `SHA256SUMS` or CI digest output), not by hashing the files in
+`--candidates`: hashing the copies would pin whatever bytes are present and
+defeat the check. The script compares every candidate before it stops the job;
+a missing or mismatched hash fails the deploy with the old job still running.
+
 `replace` backs up the installed binaries and boots the job out. It snapshots
 the realm into the backup directory with the installed daemon, installs the
 candidates, bootstraps the job and waits until `realm-get` returns the named
