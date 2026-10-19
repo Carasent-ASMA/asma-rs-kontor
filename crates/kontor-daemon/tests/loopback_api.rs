@@ -52000,6 +52000,15 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
             "options": ["First answer", "Second answer"]
         }
     });
+    let foreign_remediation = serde_json::json!({
+        "expected_revision": 1,
+        "action": {
+            "action": "lsa_proposal",
+            "round": 1,
+            "failed_round_evidence": ContentHash::of(b"foreign-probe-evidence").as_str(),
+            "proposal": ContentHash::of(b"foreign-probe-proposal").as_str()
+        }
+    });
     let foreign_seat = |actor: SeatBindingId| {
         world
             .daemon
@@ -52013,6 +52022,7 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
         key: &str,
         token: String,
         question: &serde_json::Value,
+        remediation: &serde_json::Value,
     ) {
         let listed = Call::get(format!("/v1/projects/{project}/epics/{key}/open-questions"))
             .with_token(token.clone())
@@ -52038,6 +52048,20 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
             recorded.body
         );
         assert_eq!(recorded.code(), "forbidden");
+        let remediated = Call::post(
+            format!("/v1/projects/{project}/epics/{key}/completion:remediate"),
+            remediation,
+        )
+        .with_token(token)
+        .with_key(format!("foreign-remediate-{key}"))
+        .send(world)
+        .await;
+        assert_eq!(
+            remediated.status, 403,
+            "a seat of another project must not remediate its completion: {}",
+            remediated.body
+        );
+        assert_eq!(remediated.code(), "forbidden");
     }
     for actor in [lsa, tpm] {
         for key in [absent_key.as_str(), foreign_epic_key.as_str()] {
@@ -52057,6 +52081,7 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
                 key,
                 foreign_seat(actor),
                 &foreign_question,
+                &foreign_remediation,
             )
             .await;
         }
@@ -52086,6 +52111,7 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
                 key,
                 foreign_seat(actor),
                 &foreign_question,
+                &foreign_remediation,
             )
             .await;
         }
