@@ -139,30 +139,22 @@ function RecordPage(props: PageProps) {
 }
 export function ReadOnlyPage(props: PageProps) {
   const scroller = useRef<ScrollView | null>(null);
-  const position = useRef({ restoring: props.initialOffset > 0, target: Math.max(0, props.initialOffset), requested: null as number | null, height: null as number | null, viewport: null as number | null });
-  const restorePage = () => {
-    const state = position.current;
-    if (!state.restoring || state.height === null || state.viewport === null) return;
-    const target = Math.min(state.target, Math.max(0, state.height - state.viewport));
-    if (state.requested === target) return;
-    state.requested = target;
-    scroller.current?.scrollTo({ y: target, animated: false });
-  };
+  const pendingRestore = useRef(props.initialOffset > 0);
   const results = useMemo(() => searchRecords(props.entries, Object.values(props.reads), props.query), [props.entries, props.reads, props.query]);
   return <ScrollView ref={scroller}
-    onLayout={(event) => { position.current.viewport = event.nativeEvent.layout.height; restorePage(); }}
-    onContentSizeChange={(_width, height) => { position.current.height = height; restorePage(); }}
-    onScrollBeginDrag={() => { position.current.restoring = false; }}
+    onContentSizeChange={(_width, height) => {
+      if (!pendingRestore.current || height <= 0) return;
+      // Restore once per entry; the host clamps to its actual range. Release
+      // before scrollTo so its onScroll callback persists the reachable offset.
+      pendingRestore.current = false;
+      scroller.current?.scrollTo({ y: Math.max(0, props.initialOffset), animated: false });
+    }}
+    onScrollBeginDrag={() => { pendingRestore.current = false; }}
     onScroll={(event) => {
       const y = Math.max(0, event.nativeEvent.contentOffset.y);
-      const state = position.current;
-      if (state.restoring) {
-        // Match only pending restoration callbacks, including a measured clamp.
-        // Wheel/web offsets differing from that request release restoration too.
-        if (state.requested === null) return;
-        if (Math.abs(y - state.requested) <= 1 && state.requested < state.target) return;
-        state.restoring = false;
-      }
+      if (pendingRestore.current && y === 0) return;
+      // Wheel/web scrolling may arrive without a begin-drag callback.
+      pendingRestore.current = false;
       props.onScroll(y);
     }} scrollEventThrottle={100} keyboardShouldPersistTaps="handled"
     contentContainerStyle={{ padding: 12, paddingBottom: 28, gap: 12 }}>

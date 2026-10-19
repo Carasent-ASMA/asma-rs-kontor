@@ -58,16 +58,19 @@ describe("outer read-only page disclosure scrolling (callback interaction, not n
     const returned = mount(hostId); returned.layout(); returned.size(3000);
     expect(returned.scrollTo).toHaveBeenLastCalledWith({ y: 800, animated: false });
   });
-  it("clamps initial/re-entry restoration, waits for measurement and restores the reachable saved target", () => {
+  it("restores once after positive content measurement and saves the host-clamped outer offset", () => {
     const hostId = "outer-clamp-grow"; const first = mount(hostId);
-    first.scroll(900); const screen = mount(hostId); screen.scroll(0); screen.size(1000);
-    expect(screen.scrollTo).not.toHaveBeenCalled(); screen.layout();
-    expect(screen.scrollTo).toHaveBeenLastCalledWith({ y: 360, animated: false }); screen.scroll(360);
-    expect(readRouteView(hostId).offset).toBe(900);
-    screen.size(3000); screen.scroll(900); screen.size(4000);
-    expect(screen.scrollTo.mock.calls).toEqual([[{ y: 360, animated: false }], [{ y: 900, animated: false }]]);
+    first.scroll(900); const screen = mount(hostId); screen.scroll(0); screen.size(0);
+    expect(screen.scrollTo).not.toHaveBeenCalled(); screen.size(1000);
+    expect(screen.scrollTo).toHaveBeenLastCalledWith({ y: 900, animated: false }); screen.scroll(360);
+    expect(readRouteView(hostId).offset).toBe(360);
+    screen.size(3000); screen.size(4000);
+    expect(screen.scrollTo.mock.calls).toEqual([[{ y: 900, animated: false }]]);
+    navigate(hostId, { tab: "Overview" }); goBack(hostId);
+    const returned = mount(hostId); returned.size(1000);
+    expect(returned.scrollTo).toHaveBeenLastCalledWith({ y: 360, animated: false });
     screen.scroll(800); screen.size(5000);
-    expect(screen.scrollTo).toHaveBeenCalledTimes(2); expect(readRouteView(hostId).offset).toBe(800);
+    expect(screen.scrollTo).toHaveBeenCalledTimes(1); expect(readRouteView(hostId).offset).toBe(800);
   });
   it("releases a clamped restoration for wheel scrolling without a drag callback and retains scope", () => {
     const hostId = "outer-clamp-wheel"; mount(hostId).scroll(900);
