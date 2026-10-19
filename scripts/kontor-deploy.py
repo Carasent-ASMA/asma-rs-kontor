@@ -16,6 +16,8 @@ target guard (``resolve_job``) before it starts any process:
 * a declared production deploy must name this user's ``gui/<uid>`` domain and
   this user's ``~/Library/LaunchAgents/com.asma.kontor.daemon.plist``;
 * ``--production-deploy`` with any other label is refused;
+* a job whose daemon or state root is the production one is refused even under
+  another label, because its install would overwrite the production binaries;
 * the plist's ``Label`` must equal ``--label``, because ``launchctl bootstrap``
   registers the label written in the plist, not the one on the command line.
 
@@ -172,6 +174,21 @@ def resolve_job(
             f"that label, not {label!r}",
         )
     daemon, state_root, port = _program(document, plist)
+    if label.casefold() != PRODUCTION_LABEL:
+        canonical = host.home / "Library" / "LaunchAgents" / f"{PRODUCTION_LABEL}.plist"
+        if canonical.is_file():
+            production_daemon, production_state_root, _ = _program(
+                _read_plist(canonical), canonical
+            )
+            if (
+                daemon.resolve() == production_daemon.resolve()
+                or state_root.resolve() == production_state_root.resolve()
+            ):
+                raise Refused(
+                    "production_target",
+                    f"{plist} runs {daemon} with state root {state_root}, which is the "
+                    "production install; only --production-deploy may address it",
+                )
     return Job(label, domain, plist, daemon, state_root, port)
 
 

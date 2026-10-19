@@ -252,6 +252,37 @@ class ProductionJobGuardTest(WorldTest):
         )
         self.assertEqual(recorder.calls, [])
 
+    def test_a_disposable_label_cannot_address_the_production_install(self) -> None:
+        production = self.world.plist(PRODUCTION_LABEL)
+        base = plistlib.loads(production.read_bytes())
+        base["Label"] = DISPOSABLE_LABEL
+        program = list(base["ProgramArguments"])
+        daemon_alias = self.world.state / "kontor-daemon"
+        daemon_alias.symlink_to(self.world.bin / "kontor-daemon")
+        state_alias = self.world.state / "state-alias"
+        state_alias.symlink_to(self.world.state)
+        symlinked_state = list(program)
+        symlinked_state[program.index("--state-root") + 1] = str(state_alias)
+        cases = {
+            "copied production plist": base,
+            "symlinked daemon": {**base, "ProgramArguments": [str(daemon_alias), *program[1:]]},
+            "symlinked state root": {**base, "ProgramArguments": symlinked_state},
+        }
+        for case, document in cases.items():
+            with self.subTest(case=case):
+                plist = self.world.agents / f"{DISPOSABLE_LABEL}-{case.replace(' ', '-')}.plist"
+                plist.write_bytes(plistlib.dumps(document))
+                recorder = Recorder()
+                argv = [
+                    "--label", DISPOSABLE_LABEL,
+                    "--domain", DISPOSABLE_DOMAIN,
+                    "--plist", str(plist),
+                    "bootout",
+                ]
+                code = run_main(argv, self.world.host(recorder, DISPOSABLE_UID))
+                self.assertEqual(code, deploy.EXIT_REFUSED)
+                self.assertEqual(recorder.calls, [])
+
     def test_a_production_deploy_cannot_be_declared_for_another_label(self) -> None:
         recorder = Recorder()
         argv = [
