@@ -104,6 +104,7 @@ function fakeDirectory(initialPages: AgentDirectoryPage[][]) {
     readonly release: () => void;
   };
   const heldPages: HeldPage[] = [];
+  const heldSubscribes: HeldPage[] = [];
   let released = false;
   let failure: "none" | "next" | "always" = "none";
   let subscribeFailure = false;
@@ -129,6 +130,11 @@ function fakeDirectory(initialPages: AgentDirectoryPage[][]) {
     if (options.subscribe) {
       if (subscribeFailure) {
         throw new Error("subscription unavailable");
+      }
+      if (heldSubscribes.length > 0) {
+        const held = heldSubscribes.shift() as HeldPage;
+        held.markStarted();
+        await held.gate;
       }
       const first = visible[0] ?? [];
       const snapshot: PaseoAgentListResult & { subscriptionId: string } = {
@@ -212,6 +218,30 @@ function fakeDirectory(initialPages: AgentDirectoryPage[][]) {
         },
       };
       heldPages.push(held);
+      return { started, release: held.release };
+    },
+    holdNextSubscribe() {
+      let markStarted!: () => void;
+      let releaseGate!: () => void;
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
+      });
+      const gate = new Promise<void>((resolve) => {
+        releaseGate = resolve;
+      });
+      const held: HeldPage = {
+        started,
+        markStarted,
+        gate,
+        release: () => {
+          const index = heldSubscribes.indexOf(held);
+          if (index >= 0) {
+            heldSubscribes.splice(index, 1);
+          }
+          releaseGate();
+        },
+      };
+      heldSubscribes.push(held);
       return { started, release: held.release };
     },
     setPageInfo(
@@ -966,5 +996,55 @@ describe("SessionDirectory", () => {
     expect(latest.entries).toHaveLength(0);
 
     await directory.dispose();
+  });
+
+  it("serializes a second refresh while the first waits for the re-subscribe", async () => {
+    const fake = fakeDirectory([[entry("agent-a")]]);
+    let latest = emptyDirectoryState();
+    const directory = new SessionDirectory({
+      client: () => fake.client,
+      includeArchived: false,
+      onChange: (state) => {
+        latest = state;
+      },
+    });
+
+    await directory.start();
+    fake.emitError(new Error("live updates stopped"));
+    fake.listCalls.length = 0;
+    const subscribe = fake.holdNextSubscribe();
+    const first = directory.refresh();
+    await subscribe.started;
+    const second = directory.refresh();
+    const page = fake.holdNextPage();
+    subscribe.release();
+    await page.started;
+    const third = directory.refresh();
+
+    expect(fake.listCalls.filter((call) => call.subscribe === undefined)).toHaveLength(1);
+
+    page.release();
+    await Promise.all([first, second, third]);
+    expect(latest.entries.map((item) => item.id)).toContain("agent-a");
+
+    await directory.dispose();
+  });
+
+  it("does not walk after dispose while the subscription is pending", async () => {
+    const fake = fakeDirectory([[entry("agent-a")]]);
+    const directory = new SessionDirectory({
+      client: () => fake.client,
+      includeArchived: false,
+      onChange: () => undefined,
+    });
+
+    const subscribe = fake.holdNextSubscribe();
+    const starting = directory.start();
+    await subscribe.started;
+    await directory.dispose();
+    subscribe.release();
+    await starting;
+
+    expect(fake.listCalls.filter((call) => call.subscribe === undefined)).toHaveLength(0);
   });
 });

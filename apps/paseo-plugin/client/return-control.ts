@@ -66,6 +66,8 @@ export function contributeReturnControl(
   let observing = false;
   let walking = false;
   let walkQueued = false;
+  let walkRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let walkRetryDelay = initialRetryDelay;
   let unsubscribe: (() => void) | null = null;
   let subscription: OwnedSubscription<PaseoAgentListResult> | null = null;
 
@@ -189,10 +191,13 @@ export function contributeReturnControl(
         reconcile(collected.entries);
         flushPendingUpdates();
       } while (walkQueued && !stopped);
+      clearWalkRetryTimer();
+      walkRetryDelay = initialRetryDelay;
     } catch (error) {
       if (!stopped) {
         flushPendingUpdates();
         console.error("Kontor return control could not walk the agent directory", error);
+        scheduleWalkRetry();
       }
     } finally {
       walking = false;
@@ -204,6 +209,25 @@ export function contributeReturnControl(
       clearTimeout(retryTimer);
       retryTimer = null;
     }
+  }
+
+  function clearWalkRetryTimer(): void {
+    if (walkRetryTimer !== null) {
+      clearTimeout(walkRetryTimer);
+      walkRetryTimer = null;
+    }
+  }
+
+  function scheduleWalkRetry(): void {
+    if (stopped || subscription === null || walkRetryTimer !== null) {
+      return;
+    }
+    const delay = walkRetryDelay;
+    walkRetryDelay = Math.min(Math.max(walkRetryDelay * 2, 1), maxRetryDelay);
+    walkRetryTimer = setTimeout(() => {
+      walkRetryTimer = null;
+      void walkDirectory();
+    }, delay);
   }
 
   function releaseObservation(): void {
@@ -295,6 +319,7 @@ export function contributeReturnControl(
     stopped = true;
     lifetime.abort();
     clearRetryTimer();
+    clearWalkRetryTimer();
     releaseObservation();
     pendingUpdates.length = 0;
     removeAll();

@@ -362,6 +362,32 @@ describe("Kontor return control", () => {
     stop();
   });
 
+  it("retries a failed directory walk while the subscription is healthy", async () => {
+    const fake = fakeClient([readyAgent("agent-a", "wks-a")]);
+    collectDirectory
+      .mockRejectedValueOnce(new Error("transient walk failure"))
+      .mockResolvedValueOnce({
+        entries: [
+          sessionEntry("agent-a", { workspaceId: "wks-a" }),
+          sessionEntry("agent-b", { workspaceId: "wks-b" }),
+        ],
+        pages: 1,
+      });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const stop = contributeReturnControl(fake.client, "sessions", { retryDelayMs: 20 });
+    await vi.waitFor(() => expect(fake.observers).toHaveLength(1), { interval: 5 });
+    await vi.waitFor(() => expect(fake.pillFor("agent-b")).toBeDefined(), { interval: 5 });
+
+    expect(collectDirectory).toHaveBeenCalledTimes(2);
+    expect(errorSpy).toHaveBeenCalledWith(
+      "Kontor return control could not walk the agent directory",
+      expect.any(Error),
+    );
+
+    stop();
+  });
+
   it("does not retry observation after cleanup", async () => {
     const fake = fakeClient([], [], { failFirstObservation: true });
     collectDirectory.mockResolvedValue({ entries: [], pages: 1 });
