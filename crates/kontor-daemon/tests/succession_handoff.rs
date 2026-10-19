@@ -40,7 +40,7 @@ enum Reply {
 }
 
 struct RecordingTransport {
-    calls: Mutex<Vec<(ModelRung, SuccessionSummaryRequest)>>,
+    calls: Mutex<Vec<(ModelRung, AccountProfileId, SuccessionSummaryRequest)>>,
     reply: Reply,
 }
 
@@ -59,7 +59,10 @@ impl RecordingTransport {
         }
     }
 
-    fn calls(&self) -> std::sync::MutexGuard<'_, Vec<(ModelRung, SuccessionSummaryRequest)>> {
+    fn calls(
+        &self,
+    ) -> std::sync::MutexGuard<'_, Vec<(ModelRung, AccountProfileId, SuccessionSummaryRequest)>>
+    {
         self.calls.lock().expect("recording transport lock")
     }
 }
@@ -69,12 +72,14 @@ impl SuccessionSummarizerTransport for RecordingTransport {
     async fn summarize(
         &self,
         model_rung: &ModelRung,
+        account: AccountProfileId,
         request: &SuccessionSummaryRequest,
     ) -> Result<SuccessionSummaryResponse, SuccessionSummarizerError> {
-        self.calls
-            .lock()
-            .expect("recording transport lock")
-            .push((model_rung.clone(), request.clone()));
+        self.calls.lock().expect("recording transport lock").push((
+            model_rung.clone(),
+            account,
+            request.clone(),
+        ));
         match &self.reply {
             Reply::Summary(summary) => Ok(SuccessionSummaryResponse::new(summary.clone())),
             Reply::Rejected => Err(SuccessionSummarizerError::Rejected),
@@ -90,6 +95,7 @@ impl SuccessionSummarizerTransport for HangingTransport {
     async fn summarize(
         &self,
         _model_rung: &ModelRung,
+        _account: AccountProfileId,
         _request: &SuccessionSummaryRequest,
     ) -> Result<SuccessionSummaryResponse, SuccessionSummarizerError> {
         std::future::pending().await
@@ -189,6 +195,7 @@ fn request(
     timeline: Option<BindingMessageTimeline>,
     summarizer_model_rung: Option<ModelRung>,
 ) -> SuccessionHandoffRequest {
+    let summarizer_account = summarizer_model_rung.as_ref().map(|_| summarizer_account());
     SuccessionHandoffRequest {
         attempt_id: SuccessionAttemptId::generate(),
         predecessor_agent_run_id: AgentRunId::generate(),
@@ -196,6 +203,7 @@ fn request(
         predecessor_native_identity: native,
         timeline,
         summarizer_model_rung,
+        summarizer_account,
         produced_at: at(),
     }
 }
@@ -237,8 +245,13 @@ async fn transport_receives_only_redacted_messages_and_summary_readback_is_exact
 
     let calls = transport.calls();
     assert_eq!(calls.len(), 1);
-    let (dispatched_route, outbound) = &calls[0];
+    let (dispatched_route, dispatched_account, outbound) = &calls[0];
     assert_eq!(dispatched_route, &route);
+    assert_eq!(
+        *dispatched_account,
+        summarizer_account(),
+        "the admitted account crosses the transport with the route"
+    );
     assert_eq!(
         outbound.timeline(),
         SuccessionTimelineRange {
@@ -545,6 +558,11 @@ async fn governed_summarizer_dispatches_the_admitted_declared_rung_over_the_reda
         Some(&declared[0]),
         "the walk must bind the exact declared rung it admitted"
     );
+    assert_eq!(
+        summarizer.admitted_account(),
+        Some(summarizer_account()),
+        "the walk must bind the exact account it admitted with that rung"
+    );
 
     let handoff = produce_succession_handoff(
         request(
@@ -560,8 +578,13 @@ async fn governed_summarizer_dispatches_the_admitted_declared_rung_over_the_reda
 
     let calls = transport.calls();
     assert_eq!(calls.len(), 1);
-    let (dispatched_route, outbound) = &calls[0];
+    let (dispatched_route, dispatched_account, outbound) = &calls[0];
     assert_eq!(dispatched_route, &declared[0]);
+    assert_eq!(
+        *dispatched_account,
+        summarizer_account(),
+        "the runtime is asked to execute the summary as the admitted account"
+    );
     assert_eq!(
         outbound.timeline(),
         SuccessionTimelineRange {

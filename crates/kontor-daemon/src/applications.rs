@@ -40168,6 +40168,10 @@ impl Services {
                 // The exact route the declared-chain walk admitted. `None` is
                 // an explicit unplaceable decision and never an implicit route.
                 summarizer_model_rung: summarizer.admitted_rung().cloned(),
+                // The account the walk admitted with that route, so the
+                // runtime executes the summary as it instead of the ambient
+                // account.
+                summarizer_account: summarizer.admitted_account(),
                 produced_at,
             },
             &redaction,
