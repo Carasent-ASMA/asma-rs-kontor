@@ -264,6 +264,7 @@ function filterOptions(includeArchived: boolean): NonNullable<PaseoAgentListOpti
 export async function collectDirectory(
   client: DirectoryClient,
   includeArchived: boolean,
+  signal?: AbortSignal,
 ): Promise<CollectedDirectory> {
   const entries = new Map<string, DirectoryEntry>();
   const seenCursors = new Set<string>();
@@ -271,6 +272,9 @@ export async function collectDirectory(
   let pages = 0;
 
   for (;;) {
+    if (signal?.aborted) {
+      throw new Error("Directory walk aborted.");
+    }
     const result = await client.agents.list({
       filter: filterOptions(includeArchived),
       sort: AGENT_SORT,
@@ -360,6 +364,11 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
   let pendingUpdates: PendingUpdate[] = [];
   let pendingOverflow = false;
   let hostOnline = false;
+  let subscriptionAttempt: {
+    readonly generation: number;
+    readonly promise: Promise<void>;
+  } | null = null;
+  const directoryAbort = new AbortController();
 
   function getState(): DirectoryState {
     return {
@@ -454,7 +463,11 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     const runEpoch = readEpoch;
     let collected: CollectedDirectory;
     try {
-      collected = await collectDirectory(options.client(), includeArchived);
+      collected = await collectDirectory(
+        options.client(),
+        includeArchived,
+        directoryAbort.signal,
+      );
     } catch (refreshError) {
       if (runGeneration !== generation || runEpoch !== readEpoch || disposed) {
         return;
@@ -492,6 +505,26 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
   }
 
   async function openSubscription(expectedGeneration: number): Promise<void> {
+    if (disposed || expectedGeneration !== generation) {
+      return;
+    }
+    const inFlight = subscriptionAttempt;
+    if (inFlight && inFlight.generation === expectedGeneration) {
+      await inFlight.promise;
+      return;
+    }
+    const promise = openSubscriptionOnce(expectedGeneration);
+    subscriptionAttempt = { generation: expectedGeneration, promise };
+    try {
+      await promise;
+    } finally {
+      if (subscriptionAttempt?.promise === promise) {
+        subscriptionAttempt = null;
+      }
+    }
+  }
+
+  async function openSubscriptionOnce(expectedGeneration: number): Promise<void> {
     if (disposed || expectedGeneration !== generation) {
       return;
     }
@@ -710,6 +743,7 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       return;
     }
     disposed = true;
+    directoryAbort.abort();
     generation += 1;
     live = false;
     subscriptionActive = false;
