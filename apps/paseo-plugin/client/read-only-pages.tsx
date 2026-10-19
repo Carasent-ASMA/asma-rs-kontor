@@ -13,6 +13,7 @@ type PageProps = {
   sourceError: string | null; query: string; setQuery: (query: string) => void;
   onSource: (id: string) => void; onOpen: (entry: DirectoryEntry) => void; onTab: (tab: Destination) => void;
   onEpicTab: (tab: "Board" | "Sessions", epicKey: string | null, sourceId: string | null) => void;
+  initialDocumentOffset: number; onDocumentScroll: (offset: number) => void;
   initialOffset: number; onScroll: (offset: number) => void;
 };
 function SourceStamp({ read, colors }: { read: SourceRead; colors: Colors }) {
@@ -71,6 +72,21 @@ function Plan(props: PageProps) {
   const selected = candidate?.source.kind === "plan" ? candidate : undefined;
   const offsets = useRef<Record<number, number>>({});
   const scroller = useRef<ScrollView | null>(null);
+  const position = useRef({ restoring: props.initialDocumentOffset > 0, target: props.initialDocumentOffset, requested: null as number | null, height: null as number | null, viewport: null as number | null });
+  const restoreDocument = () => {
+    const state = position.current;
+    if (!state.restoring || state.height === null || state.viewport === null) return;
+    const target = Math.min(state.target, Math.max(0, state.height - state.viewport));
+    if (state.requested === target) return;
+    state.requested = target;
+    scroller.current?.scrollTo({ y: target, animated: false });
+  };
+  const scrollToHeading = (index: number) => {
+    position.current.restoring = false;
+    const y = offsets.current[index] ?? 0;
+    props.onDocumentScroll(y);
+    scroller.current?.scrollTo({ y, animated: true });
+  };
   const lines = useMemo(() => selected?.content?.split("\n") ?? [], [selected?.content]);
   const headings = lines.flatMap((line, index) => /^#{1,6}\s+/.test(line) ? [{ label: line.replace(/^#+\s+/, ""), index }] : []);
   const needle = props.query.trim().toLocaleLowerCase();
@@ -80,9 +96,22 @@ function Plan(props: PageProps) {
       <SourceStamp read={selected} colors={props.colors} />
       <Copy colors={props.colors} muted>Document content is read-only. Approval and lifecycle are not inferred from prose.</Copy>
       <TextInput accessibilityLabel="Search this plan" placeholder="Search this plan" value={props.query} onChangeText={props.setQuery} style={{ color: props.colors.foreground, minHeight: 44, padding: 10, borderWidth: 1, borderColor: props.colors.border }} />
-      <View style={{ flexDirection: "row", flexWrap: "wrap" }}>{headings.filter((heading) => !needle || heading.label.toLocaleLowerCase().includes(needle)).map((heading) => <Action key={heading.index} label={heading.label} colors={props.colors} onPress={() => scroller.current?.scrollTo({ y: offsets.current[heading.index] ?? 0, animated: true })} />)}</View>
+      <View style={{ flexDirection: "row", flexWrap: "wrap" }}>{headings.filter((heading) => !needle || heading.label.toLocaleLowerCase().includes(needle)).map((heading) => <Action key={heading.index} label={heading.label} colors={props.colors} onPress={() => scrollToHeading(heading.index)} />)}</View>
       {selected.content === null ? <Copy colors={props.colors}>This configured plan is unavailable.</Copy> :
-        <ScrollView ref={scroller} style={{ minHeight: 280, maxHeight: 640 }} nestedScrollEnabled>
+        <ScrollView testID="plan-document" ref={scroller} style={{ minHeight: 280, maxHeight: 640 }} nestedScrollEnabled
+          onLayout={(event) => { position.current.viewport = event.nativeEvent.layout.height; restoreDocument(); }}
+          onContentSizeChange={(_width, height) => { position.current.height = height; restoreDocument(); }}
+          onScrollBeginDrag={() => { position.current.restoring = false; }}
+          onScroll={(event) => {
+            const y = Math.max(0, event.nativeEvent.contentOffset.y);
+            const state = position.current;
+            if (state.restoring) {
+              // Ignore bootstrap/clamped events until the saved position is reachable.
+              if (state.requested === null || Math.abs(y - state.requested) > 1 || state.requested < state.target) return;
+              state.restoring = false;
+            }
+            props.onDocumentScroll(y);
+          }} scrollEventThrottle={100}>
           {lines.map((line, index) => <Text key={index} selectable onLayout={(event) => { offsets.current[index] = event.nativeEvent.layout.y; }}
             style={{ color: props.colors.foreground, fontSize: /^#+\s/.test(line) ? 16 : 13, lineHeight: 21,
               fontWeight: /^#+\s/.test(line) ? "600" : "400", backgroundColor: needle && line.toLocaleLowerCase().includes(needle) ? props.colors.surface2 : undefined }}>{line || " "}</Text>)}

@@ -19,7 +19,7 @@ describe("read-only navigation and data truth", () => {
   });
   it("restores each history entry's query, position and session filters", () => {
     const first = navigate("history", { tab: "Plan", sourceId: "one" });
-    writeRouteView("history", first, { query: "first query", offset: 120 });
+    writeRouteView("history", first, { query: "first query", offset: 120, documentOffset: 900 });
     const sessionKey = sessionScopeKey("history", first);
     patchSessionView(sessionKey, { attentionOnly: true, favoritesOnly: true, scrollOffset: 500 });
     navigate("history", { sourceId: "two" });
@@ -27,21 +27,21 @@ describe("read-only navigation and data truth", () => {
     patchSessionView(sessionKey, { attentionOnly: false, favoritesOnly: false, scrollOffset: 0 });
     goBack("history");
     expect(hostNavigation("history").route.sourceId).toBe("one");
-    expect(readRouteView("history")).toEqual({ query: "first query", offset: 120 });
+    expect(readRouteView("history")).toEqual({ query: "first query", offset: 120, documentOffset: 900 });
     expect(readSessionView(sessionKey)).toMatchObject({ attentionOnly: true, favoritesOnly: true, scrollOffset: 500 });
   });
   it("isolates query and offset by project, source and exact revision", () => {
     const first = navigate("isolation", { tab: "Plan", projectId: "A", sourceId: "plan-A", sourceRevision: "sha-A" });
-    writeRouteView("isolation", first, { query: "plan A text", offset: 700 });
+    writeRouteView("isolation", first, { query: "plan A text", offset: 700, documentOffset: 900 });
     navigate("isolation", { projectId: "B", sourceId: "plan-B", sourceRevision: "sha-B" });
-    expect(readRouteView("isolation")).toEqual({ query: "", offset: 0 });
+    expect(readRouteView("isolation")).toEqual({ query: "", offset: 0, documentOffset: 0 });
     navigate("isolation", { projectId: "B", sourceId: "plan-A", sourceRevision: "sha-A" });
-    expect(readRouteView("isolation")).toEqual({ query: "", offset: 0 });
+    expect(readRouteView("isolation")).toEqual({ query: "", offset: 0, documentOffset: 0 });
     navigate("isolation", { projectId: "A", sourceId: "plan-A", sourceRevision: "sha-A" });
-    expect(readRouteView("isolation")).toEqual({ query: "plan A text", offset: 700 });
+    expect(readRouteView("isolation")).toEqual({ query: "plan A text", offset: 700, documentOffset: 900 });
     refreshSourceRevision("isolation", "sha-A-new");
-    expect(readRouteView("isolation")).toEqual({ query: "", offset: 0 });
-    expect(readRouteView("different-host", first)).toEqual({ query: "", offset: 0 });
+    expect(readRouteView("isolation")).toEqual({ query: "", offset: 0, documentOffset: 0 });
+    expect(readRouteView("different-host", first)).toEqual({ query: "", offset: 0, documentOffset: 0 });
   });
   it("keeps idle/attention separate from completion and governance; only structured confirmed keys form rows", () => {
     const entries = [sessionEntry("one", { status: "idle", requiresAttention: true, labels: { epic: "ASMA-1" } }), sessionEntry("two", { title: "ASMA-1", labels: { epic: "unconfirmed" } })];

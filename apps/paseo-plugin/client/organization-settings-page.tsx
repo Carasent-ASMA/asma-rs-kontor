@@ -6,7 +6,7 @@ import type { ReadSourceSummary, SourceRead } from "../shared/read-sources";
 import type { DirectoryEntry } from "./session-directory";
 import type { OrganizationSettingsState } from "./use-organization-settings";
 import { Action, Card, Copy, type Colors } from "./page-controls";
-import { rebaseOrganizationDraft } from "./organization-draft";
+import { rebaseOrganizationDraft, setDisplayMappingField } from "./organization-draft";
 import type { OrganizationWorkspace } from "./session-organization";
 
 export function OrganizationSettingsPage({ state, colors, entries, workspaces, sources, reads, sourceError, refresh }: {
@@ -53,8 +53,8 @@ export function OrganizationSettingsPage({ state, colors, entries, workspaces, s
           {entries.map((entry) => <Action key={`session:${entry.id}`} colors={colors} label={`Map session: ${entry.title}`} selected={mappingId === `session:${entry.id}`} onPress={() => setMappingId(`session:${entry.id}`)} />)}
         </ScrollView>
         {mappingId ? <>
-          <TextInput accessibilityLabel="Display workstream" placeholder="Display workstream" value={values.displayMappings[mappingId]?.workstream ?? ""} onChangeText={(workstream) => update({ displayMappings: { ...values.displayMappings, [mappingId]: { ...values.displayMappings[mappingId], workstream: workstream.trim() || undefined } } })} style={{ color: colors.foreground, minHeight: 44, borderWidth: 1, borderColor: colors.border, padding: 10 }} />
-          <TextInput accessibilityLabel="Display epic" placeholder="Display epic" value={values.displayMappings[mappingId]?.epic ?? ""} onChangeText={(epic) => update({ displayMappings: { ...values.displayMappings, [mappingId]: { ...values.displayMappings[mappingId], epic: epic.trim() || undefined } } })} style={{ color: colors.foreground, minHeight: 44, borderWidth: 1, borderColor: colors.border, padding: 10 }} />
+          <TextInput accessibilityLabel="Display workstream" placeholder="Display workstream" value={values.displayMappings[mappingId]?.workstream ?? ""} onChangeText={(workstream) => update({ displayMappings: setDisplayMappingField(values.displayMappings, mappingId, "workstream", workstream) })} style={{ color: colors.foreground, minHeight: 44, borderWidth: 1, borderColor: colors.border, padding: 10 }} />
+          <TextInput accessibilityLabel="Display epic" placeholder="Display epic" value={values.displayMappings[mappingId]?.epic ?? ""} onChangeText={(epic) => update({ displayMappings: setDisplayMappingField(values.displayMappings, mappingId, "epic", epic) })} style={{ color: colors.foreground, minHeight: 44, borderWidth: 1, borderColor: colors.border, padding: 10 }} />
         </> : null}
         <View style={{ flexDirection: "row" }}>
           {state.status === "ready" && draft.revision !== state.revision ? <Action colors={colors} label="Reapply local changes to latest saved values" onPress={() => { setDraft({ base: state.values, values: rebaseOrganizationDraft(draft.base, draft.values, state.values), revision: state.revision }); setMessage("Local edits reapplied. Review the draft, then save against the latest revision."); }} /> : null}

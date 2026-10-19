@@ -101,6 +101,7 @@ function HostScreen(props: PluginScreenProps) {
   else page = <ReadOnlyPage key={routeViewKey(route)} tab={route.tab} colors={colors} entries={entries} directory={directory.state} sources={sources} reads={reads} sourceId={route.sourceId}
     sourceError={sourceState.error} query={query} setQuery={setSearch} onSource={(sourceId) => visit({ tab: "Plan", sourceId, sourceRevision: sourceState.reads[sourceId]?.revision ?? null, originAgentId: route.tab === "Plan" ? route.originAgentId : null })} onOpen={open} onTab={(tab) => visit({ tab, originAgentId: null })}
     onEpicTab={(tab, epicKey, sourceId) => visit({ tab, epicKey, sourceId, sourceRevision: sourceId ? sourceState.reads[sourceId]?.revision ?? null : null, originAgentId: null })}
+    initialDocumentOffset={readRouteView(host.id, route).documentOffset} onDocumentScroll={(documentOffset) => { writeRouteView(host.id, route, { documentOffset }); }}
     initialOffset={readRouteView(host.id, route).offset} onScroll={(offset) => { writeRouteView(host.id, route, { offset }); }} />;
   return <SafeAreaView style={{ flex: 1, backgroundColor: colors.surface0 }}><KeyboardAvoidingView behavior={layout.platform === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
     {!layout.compact ? navigation : null}

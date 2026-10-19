@@ -70,6 +70,18 @@ describe("Kontor shell native actions", () => {
     screen.click("Return to conversation");
     expect(screen.props.navigation?.openAgent).toHaveBeenCalled();
   });
+  it("wires the inner document position independently from the outer Plan page through Back", () => {
+    const screen = mount(true, { tab: "Plan", sourceId: "plan-a", sourceRevision: "sha-a" });
+    const page = () => screen.elements().find((element) => typeof element.props.onDocumentScroll === "function")!;
+    (page().props.onDocumentScroll as (offset: number) => void)(900);
+    (page().props.onScroll as (offset: number) => void)(120);
+    screen.click("Overview"); screen.click("‹ Back");
+    expect(page().props.initialDocumentOffset).toBe(900);
+    expect(page().props.initialOffset).toBe(120);
+    (page().props.onSource as (id: string) => void)("plan-b"); screen.render();
+    expect(page().props.initialDocumentOffset).toBe(0);
+    screen.click("‹ Back"); expect(page().props.initialDocumentOffset).toBe(900);
+  });
   it("reaches every destination on compact layouts through four tabs and More", () => {
     const screen = mount(true);
     const primary = screen.elements().filter((element) => element.props.tab === true);

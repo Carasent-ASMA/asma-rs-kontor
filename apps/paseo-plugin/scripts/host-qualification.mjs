@@ -77,12 +77,23 @@ try {
   assert.deepEqual(second.values.favorites, ["native-desktop"]);
   const invalid = await registration.write.handle({ revision: second.revision, values: { ...second.values, grouping: "invalid grouping" } });
   assert.equal(invalid.status, "invalid"); assert.equal(notices.length, 2);
+  const draftPath = join(work, "organization-draft.cjs");
+  execFileSync("bun", ["build", join(pluginRoot, "client/organization-draft.ts"), "--target=node", "--format=cjs", "--outfile", draftPath], { encoding: "utf8" });
+  const { setDisplayMappingField } = pluginRequire(draftPath);
+  const mapped = await registration.write.handle({ revision: second.revision, values: { ...second.values, displayMappings: { "session:native": { workstream: "Adam", epic: "ASMA-1" }, "workspace:other": { workstream: "QA" } } } });
+  assert.equal(mapped.status, "saved");
+  const clearedWorkstream = await registration.write.handle({ revision: mapped.revision, values: { ...mapped.values, displayMappings: setDisplayMappingField(mapped.values.displayMappings, "session:native", "workstream", "") } });
+  assert.equal(clearedWorkstream.status, "saved");
+  assert.deepEqual(clearedWorkstream.values.displayMappings["session:native"], { epic: "ASMA-1" });
+  const clearedEpic = await registration.write.handle({ revision: clearedWorkstream.revision, values: { ...clearedWorkstream.values, displayMappings: setDisplayMappingField(clearedWorkstream.values.displayMappings, "session:native", "epic", "") } });
+  assert.equal(clearedEpic.status, "saved");
+  assert.deepEqual(clearedEpic.values.displayMappings, { "workspace:other": { workstream: "QA" } });
   const associations = await handlers.get("sources.associations")({});
   assert.equal(associations.status, "ready");
   assert.deepEqual(associations.associations, { "native-conversation": ["qualification-plan"] });
   const restart = new PluginSettingsStore(work, () => {});
   const restarted = restart.register(definition);
-  assert.deepEqual((await restarted.read.handle()).values, second.values);
+  assert.deepEqual((await restarted.read.handle()).values, clearedEpic.values);
   const settingsPath = join(work, "organization.json");
   const corrupt = "{ invalid stored JSON";
   await writeFile(settingsPath, corrupt);
@@ -98,7 +109,7 @@ try {
     clientBytes: Buffer.byteLength(compiled.clientBundle), clientSha256: hash(compiled.clientBundle),
     serverBytes: Buffer.byteLength(compiled.serverBundle), serverSha256: hash(compiled.serverBundle),
     hermesExit: 0, bytecodeVersion: 96, bytecodeBytes: bytecode.length, bytecodeSha256: hash(bytecode), bytecodeSourcePath: clientPath,
-    settings: { twoClientConflict: conflict.status, reloadPreservesUnrelatedChanges: true, rootOrderPreserved: true, restartPersistence: true, invalidStoredDataPreserved: true, successfulNotifications: notices.length, changes: changes.length },
+    settings: { twoClientConflict: conflict.status, reloadPreservesUnrelatedChanges: true, rootOrderPreserved: true, bothMappingClearsSaved: true, restartPersistence: true, invalidStoredDataPreserved: true, successfulNotifications: notices.length, changes: changes.length },
     plan: { path: resolve(planPath), sourceSha256: expectedSourceHash, graphSha256: source.graph.graph_sha256, nodes: source.graph.nodes.length, edges: source.graph.edges.length, status: source.status },
   };
   await writeFile(join(output, "qualification.json"), JSON.stringify(report, null, 2) + "\n");

@@ -4,12 +4,12 @@ export const DESTINATIONS = ["Sessions", "Overview", "Plan", "Board", "Graph", "
 export type Destination = (typeof DESTINATIONS)[number];
 export type KontorRoute = { tab: Destination; projectId: string | null; epicKey: string | null; sourceId: string | null; originAgentId: string | null; sourceRevision: string | null };
 export const INITIAL_ROUTE: KontorRoute = { tab: "Sessions", projectId: null, epicKey: null, sourceId: null, originAgentId: null, sourceRevision: null };
-type HistoryEntry = { route: KontorRoute; query: string; offset: number; sessions: SessionViewState };
-type HostNavigation = { route: KontorRoute; back: HistoryEntry[]; queries: Record<string, string>; offsets: Record<string, number> };
+type HistoryEntry = { route: KontorRoute; query: string; offset: number; documentOffset: number; sessions: SessionViewState };
+type HostNavigation = { route: KontorRoute; back: HistoryEntry[]; queries: Record<string, string>; offsets: Record<string, number>; documentOffsets: Record<string, number> };
 const hosts = new Map<string, HostNavigation>();
 export function hostNavigation(hostId: string): HostNavigation {
   let state = hosts.get(hostId);
-  if (!state) { state = { route: { ...INITIAL_ROUTE }, back: [], queries: {}, offsets: {} }; hosts.set(hostId, state); }
+  if (!state) { state = { route: { ...INITIAL_ROUTE }, back: [], queries: {}, offsets: {}, documentOffsets: {} }; hosts.set(hostId, state); }
   return state;
 }
 export function navigate(hostId: string, patch: Partial<KontorRoute>): KontorRoute {
@@ -20,7 +20,7 @@ export function navigate(hostId: string, patch: Partial<KontorRoute>): KontorRou
   if (next.sourceId === null) next.sourceRevision = null;
   if (next.tab === "Overview") { next.projectId = null; next.epicKey = null; next.sourceId = null; next.sourceRevision = null; next.originAgentId = null; }
   if (JSON.stringify(next) !== JSON.stringify(state.route)) {
-    state.back = [...state.back.slice(-39), { route: state.route, query: state.queries[routeViewKey(state.route)] ?? "", offset: state.offsets[routeViewKey(state.route)] ?? 0, sessions: { ...readSessionView(sessionScopeKey(hostId, state.route)) } }];
+    state.back = [...state.back.slice(-39), { route: state.route, query: state.queries[routeViewKey(state.route)] ?? "", offset: state.offsets[routeViewKey(state.route)] ?? 0, documentOffset: state.documentOffsets[routeViewKey(state.route)] ?? 0, sessions: { ...readSessionView(sessionScopeKey(hostId, state.route)) } }];
     state.route = next;
   }
   return state.route;
@@ -32,6 +32,7 @@ export function goBack(hostId: string): KontorRoute {
     state.route = previous.route;
     state.queries[routeViewKey(previous.route)] = previous.query;
     state.offsets[routeViewKey(previous.route)] = previous.offset;
+    state.documentOffsets[routeViewKey(previous.route)] = previous.documentOffset;
     writeSessionView(sessionScopeKey(hostId, previous.route), previous.sessions);
   }
   return state.route;
@@ -49,13 +50,14 @@ export function sessionScopeKey(hostId: string, route: KontorRoute): string {
 export function readRouteView(hostId: string, route = hostNavigation(hostId).route) {
   const state = hostNavigation(hostId);
   const key = routeViewKey(route);
-  return { query: state.queries[key] ?? "", offset: state.offsets[key] ?? 0 };
+  return { query: state.queries[key] ?? "", offset: state.offsets[key] ?? 0, documentOffset: state.documentOffsets[key] ?? 0 };
 }
-export function writeRouteView(hostId: string, route: KontorRoute, patch: { query?: string; offset?: number }): void {
+export function writeRouteView(hostId: string, route: KontorRoute, patch: { query?: string; offset?: number; documentOffset?: number }): void {
   const state = hostNavigation(hostId);
   const key = routeViewKey(route);
   if (patch.query !== undefined) state.queries[key] = patch.query;
   if (patch.offset !== undefined) state.offsets[key] = patch.offset;
+  if (patch.documentOffset !== undefined) state.documentOffsets[key] = patch.documentOffset;
 }
 export function refreshSourceRevision(hostId: string, revision: string | null): KontorRoute {
   const state = hostNavigation(hostId);
