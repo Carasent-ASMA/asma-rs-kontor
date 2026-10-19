@@ -13,7 +13,7 @@ from pathlib import Path
 
 ROOT = Path('/private/tmp/ASMA-8015-mutations-3a35b7c6')
 ROOT.mkdir(exist_ok=False)
-OWNER = Path('$HOME/carasent/asma-modules/.worktrees/asma-8015/asma-rs-kontor')
+OWNER = Path(os.environ['HOME']) / 'carasent/asma-modules/.worktrees/asma-8015/asma-rs-kontor'
 PIN = '3a35b7c6db8ef65e51aaa14c7ba69df9bf1e1c0f'
 TREE = 'ea784274c592100b9154f8c9a1fbd4a297ab7ffc'
 assert subprocess.check_output(['git', 'rev-parse', PIN+'^{tree}'], cwd=OWNER, text=True).strip() == TREE

@@ -31,7 +31,7 @@ COMMANDS = {
     ],
     "03-console": [
         "node",
-        "$HOME/.npm/_npx/f1e70922fc87e24a/node_modules/openapi-typescript/bin/cli.js",
+        os.environ["HOME"] + "/.npm/_npx/f1e70922fc87e24a/node_modules/openapi-typescript/bin/cli.js",
         "crates/kontor-api/contract/openapi.json",
         "-o", "apps/console/src/api/schema.d.ts",
     ],

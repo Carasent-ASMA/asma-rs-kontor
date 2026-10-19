@@ -1,5 +1,5 @@
 import pathlib,subprocess,os,datetime,json,hashlib,sys
-owner=pathlib.Path('$HOME/carasent/asma-modules/.worktrees/asma-8015/asma-rs-kontor')
+owner=pathlib.Path(os.environ['HOME'])/'carasent/asma-modules/.worktrees/asma-8015/asma-rs-kontor'
 pin='e53f19b744b80862b166b613dcb8992bcf371215';root=pathlib.Path('/private/tmp/ASMA-8015-full-gate-e53f19b7');root.mkdir(exist_ok=False)
 assert subprocess.check_output(['git','rev-parse','HEAD'],cwd=owner,text=True).strip()==pin
 assert not subprocess.check_output(['git','status','--porcelain'],cwd=owner)
