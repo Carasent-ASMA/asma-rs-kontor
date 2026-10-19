@@ -12,17 +12,17 @@ import { TeamsSnapshotDetails } from "./teams-source-page";
 import { Action, Card, Copy, Disclosure, type Colors } from "./page-controls";
 import { rebaseOrganizationDraft, setDisplayMappingField } from "./organization-draft";
 import { captureDay } from "./graph-page";
-import { shortDates } from "./page-data";
 import type { OrganizationWorkspace } from "./session-organization";
 
 const SOURCE_GROUPS: ReadonlyArray<readonly [ReadSourceSummary["kind"], string]> = [["plan", "Plans"], ["jira", "Jira history"], ["delivery", "Delivery records"], ["decisions", "Decision records"], ["teams", "Teams configuration"]];
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
 const CATALOG_NOTE = "Read-only. Sources are configured on the server; no path, title or renamed ID is inferred. Governed scheduler, gates and team activation: kontord is not enabled. Console owns policy and administration.";
-/** One visible line per configured source: short title, status only when not ready, and a capture cue for Jira. */
+/** One visible line per configured source: its exact title, status only when not ready, and a capture cue for Jira unless the title names that day. */
 function sourceSummary(read: SourceRead, colors: Colors) {
-  const title = shortDates(read.source.title);
-  const day = read.source.kind === "jira" ? captureDay(read.jiraHistory?.generated ?? "Unknown") : null;
-  const parts = [title, read.status === "ready" ? null : read.status, day && !title.includes(day) ? `captured ${day}` : null];
+  const title = read.source.title;
+  const generated = read.jiraHistory?.generated ?? "Unknown";
+  const day = read.source.kind === "jira" ? captureDay(generated) : null;
+  const parts = [title, read.status === "ready" ? null : read.status, day && !title.includes(day) && !title.includes(generated.slice(0, 10)) ? `captured ${day}` : null];
   const full = `${read.source.title} · ${read.status} · ${read.source.kind === "jira" ? "Historical Jira snapshot" : read.source.revisionKind}. ${read.source.kind === "jira" ? `Observed ${read.jiraHistory?.generated ?? "Unknown"} · not live` : `Read ${read.readAt}`}`;
   return <Text selectable accessibilityLabel={full} style={{ color: colors.foreground, fontSize: 13, lineHeight: 20 }}>{parts.filter(Boolean).join(" · ")}</Text>;
 }

@@ -51,7 +51,7 @@ function Section({ title, titleLabel, detail, colors, children }: { title: strin
     {children}
   </View>;
 }
-/** Visible: the recorded state with short dates; label: the exact recorded state. */
+/** Visible: the recorded state with short dates; the exact recorded state is in the label and in Source details. */
 const recordedLine = (line: string) => [shortDates(line), `recorded state: ${line}`] as const;
 const SEARCH_SCOPE = "Scope: available session and workspace names, configured plan text and canonical task records. No private transcript search.";
 /** A page's scope statement, one tap away where the page has no Source details. */
@@ -89,10 +89,17 @@ function RecordPage(props: PageProps) {
     {reads.map((read) => {
       const records = kind === "delivery" ? read.records?.delivery ?? [] : read.records?.decisions ?? [];
       const count = `${records.length} record${records.length === 1 ? "" : "s"}`;
-      // The exact source title, status, revision kind and read time are in the labels and in Source details;
-      // a zero count is left to "No records in this source." or to the status.
-      return <Section key={read.source.id} title={shortDates(read.source.title)} titleLabel={read.source.title} colors={colors}>
-        <SourceDetails read={read} colors={colors} notes={<Copy colors={colors} muted small>{intro}</Copy>}
+      // The status, revision kind and exact read time are in the meta label and in Source details, which also lists
+      // each delivery record's exact state and recorded time. A zero count is left to "No records in this source."
+      // or to the status.
+      return <Section key={read.source.id} title={read.source.title} colors={colors}>
+        <SourceDetails read={read} colors={colors} notes={<>
+          <Copy colors={colors} muted small>{intro}</Copy>
+          {kind === "delivery" && records.length ? <View testID={`record-exact-${read.source.id}`}>
+            <Copy colors={colors} muted small>Exact recorded values</Copy>
+            {read.records?.delivery.map((record) => <Copy key={record.id} colors={colors} small>{`${record.title} · ${record.state} · recorded ${record.recordedAt ?? "Unknown"}`}</Copy>)}
+          </View> : null}
+        </>}
           summary={<Text testID={`record-meta-${read.source.id}`} accessibilityLabel={`${count} · ${read.status} · ${read.source.revisionKind} · Read ${read.readAt}`} style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 18 }}>
             {[records.length ? count : null, read.status === "ready" ? null : read.status, `read ${readTime(read.readAt)}`].filter(Boolean).join(" · ")}
           </Text>} />
@@ -142,6 +149,7 @@ export function ReadOnlyPage(props: PageProps) {
   // Pages without Source details keep their scope statement one tap away: About this page on Inbox
   // and Search, and the coverage cue's own disclosure on Activity.
   const inboxScope = "Native needs-input, errors and attention in the current inventory. Opening a session uses Paseo’s own controls. Unseen routing is not captured.";
+  const activity = props.tab === "Activity" ? [...props.entries].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)) : [];
   const activityScope = `Partial coverage: current session updatedAt values only, as of ${asOf}. This is not a durable audit log or a transcript history.`;
   return <ScrollView ref={scroller}
     onContentSizeChange={(_width, height) => {
@@ -179,9 +187,12 @@ export function ReadOnlyPage(props: PageProps) {
         </Section>
       </TeamsSourcePage> : null}
       {props.tab === "Activity" ? <>
-        {/* Short partial-coverage cue; the full statement and its read time are inside it. */}
-        <View testID="activity-coverage"><Disclosure small label="Latest update per session · not a full log" colors={colors}><Copy colors={colors} muted small>{activityScope}</Copy></Disclosure></View>
-        <SessionRows entries={[...props.entries].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))} colors={colors} onOpen={props.onOpen}
+        {/* Short partial-coverage cue; the full statement, its read time and each session's exact update time are inside it. */}
+        <View testID="activity-coverage"><Disclosure small label="Latest update per session · not a full log" colors={colors}>
+          <Copy colors={colors} muted small>{activityScope}</Copy>
+          {activity.map((entry) => <Copy key={entry.id} colors={colors} small>{`${entry.title} · updated ${entry.updatedAt}`}</Copy>)}
+        </Disclosure></View>
+        <SessionRows entries={activity} colors={colors} onOpen={props.onOpen}
           detail={(entry) => `${readTime(entry.updatedAt)} · ${entry.status}`} label={(entry) => `updated ${entry.updatedAt}, native ${entry.status}`} />
         {!props.entries.length ? <Copy colors={colors}>No sessions in this context.</Copy> : null}
       </> : null}

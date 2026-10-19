@@ -1,10 +1,11 @@
+import { readFileSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { sourceCatalog } from "../server/read-sources";
 import { createTeamsSourceAdapter } from "../server/teams-source-adapter";
 import { teamsSourceBindings } from "../shared/teams-source-bindings";
-import type { ReadSourceSummary, SourceRead } from "../shared/read-sources";
+import { jiraHistorySchema, type ReadSourceSummary, type SourceRead } from "../shared/read-sources";
 import type { TeamsSourceSnapshot } from "../shared/teams-source-snapshot";
 import { sessionEntry } from "./session-fixtures";
 const hooks = vi.hoisted(() => ({ values: [] as unknown[], cursor: 0 }));
@@ -104,6 +105,18 @@ describe("Settings source catalog states", () => {
     const expanded = screen.text();
     expect(expanded).toContain("read-probe · /chains/probe: Definition unavailable in this snapshot"); expect(expanded).toContain(snapshots.operator!.source.path);
     expect(expanded).not.toContain(snapshots.authoring!.source.path);
+  });
+  it("shows each source title exactly and adds the Jira capture day only when the title does not already name it", () => {
+    const history = jiraHistorySchema.parse(JSON.parse(readFileSync(new URL("./fixtures/jira-history.json", import.meta.url), "utf8")));
+    const titled = (id: string, kind: ReadSourceSummary["kind"], title: string) => ({ ...summary(id, kind), title });
+    const sources = [titled("stamped", "decisions", "ASMA-8539 decisions — captured 2026-10-19T10:59:22.131040+00:00"),
+      titled("jira-short", "jira", "Historical Jira · 18 Oct 2026"), titled("jira-iso", "jira", "Jira export 2026-10-18"), titled("jira-plain", "jira", "Historical Jira")];
+    const reads = Object.fromEntries(sources.map((source) => [source.id, { ...planRead, source, content: null, diagnostics: [], ...(source.kind === "jira" ? { jiraHistory: history } : {}) }]));
+    const screen = mount({ sources, reads });
+    const line = (source: ReadSourceSummary) => visible(screen.find(source.kind === "jira"
+      ? `${source.title} · ready · Historical Jira snapshot. Observed ${history.generated} · not live` : `${source.title} · ready · approved revision. Read ${planRead.readAt}`));
+    expect(sources.map(line)).toEqual([
+      "ASMA-8539 decisions — captured 2026-10-19T10:59:22.131040+00:00", "Historical Jira · 18 Oct 2026", "Jira export 2026-10-18", "Historical Jira · captured 18 Oct"]);
   });
   it("offers the Teams browser only when the host can navigate there", () => {
     expect(mount().labels()).not.toContain("Browse configured teams & templates");

@@ -104,6 +104,30 @@ describe("read-only recorded Delivery and Decisions", () => {
     const page = render(tab, [read]); expect(page.visible).toContain("unavailable");
     expect(page.visible).not.toContain("No records in this source."); expect(page.links).toHaveLength(0);
   });
+  it("shows a stamped source title exactly and lists each delivery record's exact state and recorded time in Source details", () => {
+    const read = recordRead("Delivery");
+    read.source = { ...read.source, title: "ASMA-8539 delivery — captured 2026-10-19T10:59:22.131040+00:00" };
+    read.records!.delivery = [{ id: "check-1", title: "publication-branch-title", kind: "check", state: "Captured COMPLETED: SUCCESS; completed 2026-10-19T06:40:43Z.", recordedAt: "2026-10-19T10:59:22.131040+00:00" }];
+    const page = render("Delivery", [read]);
+    const header = page.nodes.find((node) => node.props.accessibilityRole === "header" && text(node.props.children as ReactNode) === read.source.title);
+    expect(header).toBeDefined(); expect(header!.props.accessibilityLabel).toBeUndefined();
+    expect(page.visible).not.toContain("captured 19 Oct");
+    // The row keeps its short dates; the exact values are one tap away, not only in a label.
+    expect(page.visible).toContain("Captured COMPLETED: SUCCESS; completed 19 Oct. · recorded 19 Oct");
+    expect(page.visible).not.toContain("Exact recorded values"); expect(page.visible).not.toContain("06:40:43Z");
+    model.open = true;
+    const opened = render("Delivery", [read]);
+    model.open = false;
+    const exact = opened.nodes.find((node) => node.props.testID === `record-exact-${read.source.id}`)!;
+    expect(elements(exact).filter((node) => node.type === "Text").map((node) => text(node.props.children as ReactNode))).toEqual([
+      "Exact recorded values", "publication-branch-title · Captured COMPLETED: SUCCESS; completed 2026-10-19T06:40:43Z. · recorded 2026-10-19T10:59:22.131040+00:00"]);
+    const unknown = recordRead("Delivery"); delete unknown.records!.delivery[0]!.recordedAt;
+    model.open = true;
+    const undated = render("Delivery", [unknown]).visible;
+    expect(render("Decisions", [recordRead("Decisions")]).nodes.some((node) => String(node.props.testID).startsWith("record-exact-"))).toBe(false);
+    model.open = false;
+    expect(undated).toContain("Recorded delivery · captured state · recorded Unknown");
+  });
   it("keeps a standalone decision visible and reports when link opening is unavailable", () => {
     const page = render("Decisions", [recordRead("Decisions", "https://example.com/decision")], { onExternalLink: undefined });
     expect(page.visible).toContain("Recorded decision"); expect(page.visible).toContain("Source link opening is unavailable");
@@ -143,18 +167,19 @@ describe("primary surfaces keep moved statements in labels and Source details", 
     const one = render("AI teams & sessions", [], { entries: [sessionEntry("a")] });
     expect(one.visible).toContain("1 session"); expect(one.visible).not.toContain("No sessions in this context.");
   });
-  it("shows a short partial-coverage cue and short times on Activity, with the full statement inside the cue and exact times in labels", () => {
-    const entry = sessionEntry("a");
+  it("shows a short partial-coverage cue and short times on Activity, with the full statement and each exact update time inside the cue", () => {
+    const entry = sessionEntry("a"); const older = sessionEntry("b", { updatedAt: "2026-10-17T08:15:30.250Z" });
     const page = render("Activity", [], { entries: [entry], directory: { entries: [entry], status: "ready", live: true, lastUpdatedAt: Date.parse("2026-10-19T10:00:00Z"), error: null, staleReason: null, pages: 1, includeArchived: false } });
     expect(page.visible).toContain("Latest update per session · not a full log");
     expect(page.visible).toContain(`${readTime(entry.updatedAt)} · ${entry.status}`);
     for (const moved of ["Partial coverage", "audit log", entry.updatedAt, "native "]) expect(page.visible).not.toContain(moved);
     model.open = true;
-    const opened = render("Activity", [], { entries: [entry], directory: { entries: [entry], status: "ready", live: true, lastUpdatedAt: Date.parse("2026-10-19T10:00:00Z"), error: null, staleReason: null, pages: 1, includeArchived: false } });
+    const opened = render("Activity", [], { entries: [older, entry], directory: { entries: [older, entry], status: "ready", live: true, lastUpdatedAt: Date.parse("2026-10-19T10:00:00Z"), error: null, staleReason: null, pages: 1, includeArchived: false } });
     const cue = elements(byId(opened, "activity-coverage")).filter((node) => node.type === "Text").map((node) => text(node.props.children as ReactNode));
     model.open = false;
     expect(cue).toEqual([
-      "▾ Latest update per session · not a full log", "Partial coverage: current session updatedAt values only, as of 2026-10-19T10:00:00.000Z. This is not a durable audit log or a transcript history."]);
+      "▾ Latest update per session · not a full log", "Partial coverage: current session updatedAt values only, as of 2026-10-19T10:00:00.000Z. This is not a durable audit log or a transcript history.",
+      `${entry.title} · updated ${entry.updatedAt}`, `${older.title} · updated 2026-10-17T08:15:30.250Z`]);
     expect(page.labels).toContain(`Open session ${entry.title}, updated ${entry.updatedAt}, native ${entry.status}`);
     expect(render("Activity", []).visible).toContain("No sessions in this context.");
   });
