@@ -32044,6 +32044,32 @@ impl ApplicationOperations for Services {
         request: &RemediateCompletionRequest,
     ) -> Result<CompletionOutcomeDto, ApiError> {
         let state = self.state()?;
+        // Membership before lookup: a seat of another epic must not learn
+        // whether this epic has a completion run, nor how it is staffed.
+        let seat = state
+            .with_store(|store| store.get_seat_binding(project_id, seat_binding_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Forbidden,
+                    "the remediation authority is not a seat in this project",
+                )
+            })?;
+        let node = state
+            .with_store(|store| store.get_topology_node(project_id, seat.topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Forbidden,
+                    "the remediation authority has no owning topology",
+                )
+            })?;
+        if node.mini_project_id != Some(epic_id) {
+            return Err(self.deny(
+                ApiErrorCode::Forbidden,
+                "the remediation authority must be an active seat of this exact epic",
+            ));
+        }
         let epic = self.epic_row(project_id, epic_id)?;
         let now = kontor_api::now();
         let stored = self.require_completion(project_id, epic_id)?;

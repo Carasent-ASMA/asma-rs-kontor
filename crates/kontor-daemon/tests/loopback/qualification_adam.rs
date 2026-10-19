@@ -107,7 +107,9 @@ pub(super) async fn prove_completion_authority(
                 assert_eq!(answer.status, 403, "{}", answer.body);
                 assert_eq!(answer.json()["code"], "forbidden");
                 assert!(
-                    answer.body.contains("authenticated seat is not"),
+                    answer
+                        .body
+                        .contains("must be an active seat of this exact epic"),
                     "{}",
                     answer.body
                 );
