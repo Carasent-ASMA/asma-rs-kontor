@@ -64,6 +64,11 @@ import {
   type ToolbarVisibility,
 } from "./toolbar-visibility";
 import { useSessionDirectory } from "./use-session-directory";
+import { DEFAULT_ORGANIZATION_SETTINGS, type OrganizationSettings } from "../shared/organization";
+import type { useOrganizationSettings } from "./use-organization-settings";
+import { buildOrganizationTree, filterOrganizationTree, flattenOrganizationTree, workstreamRank, type OrganizationRow, type OrganizationWorkspace } from "./session-organization";
+import { rowKey, siblingKeys, reorderedSiblings } from "./organization-order";
+import { OrganizationRowView } from "./organization-row";
 
 type ThemeColors = PluginTheme["colors"];
 
@@ -153,6 +158,7 @@ type SessionRowProps = {
   readonly compact: boolean;
   readonly rowHeight: number;
   readonly onPress: (entry: DirectoryEntry) => void;
+  readonly displayTitle?: string;
 };
 
 const SessionRow = memo(function SessionRow({
@@ -161,6 +167,7 @@ const SessionRow = memo(function SessionRow({
   compact,
   rowHeight,
   onPress,
+  displayTitle,
 }: SessionRowProps) {
   const attention = attentionLabel(entry);
   const archived = archivedLabel(entry);
@@ -217,7 +224,7 @@ const SessionRow = memo(function SessionRow({
           numberOfLines={1}
           style={{ color: colors.foreground, fontSize: compact ? 15 : 14, fontWeight: "600" }}
         >
-          {entry.title}
+          {displayTitle ?? entry.title}
         </Text>
         <Text
           numberOfLines={1}
@@ -742,20 +749,41 @@ function Banner({
   );
 }
 
-export function SessionsScreen({ host, layout, navigation, theme }: PluginScreenProps) {
+type SessionsScreenProps = PluginScreenProps & {
+  directory?: ReturnType<typeof useSessionDirectory>;
+  organization?: ReturnType<typeof useOrganizationSettings>;
+  projectId?: string | null;
+  onIncludeArchived?: (include: boolean) => void;
+  workspaces?: readonly OrganizationWorkspace[];
+  workspaceNote?: string;
+  epicKey?: string | null;
+};
+export function SessionsScreen({ host, layout, navigation, theme, directory, organization, projectId = null, onIncludeArchived, workspaces, workspaceNote, epicKey = null }: SessionsScreenProps) {
   const colors = theme.colors;
   const compact = layout.compact;
   const hosts = useHosts();
   const hostSummary = hosts.find((candidate) => candidate.serverId === host.id);
   const hostOnline = hostSummary?.status === "online";
   const [view, setView] = useState<SessionViewState>(() => readSessionView(host.id));
-  const { state, refresh } = useSessionDirectory({
+  const localDirectory = useSessionDirectory({
     hostId: host.id,
     hostStatus: hostSummary?.status ?? "offline",
     includeArchived: view.includeArchived,
+    enabled: directory === undefined,
   });
+  const { state, refresh } = directory ?? localDirectory;
+  const preferences = organization?.state.status === "ready" ? organization.state.values : DEFAULT_ORGANIZATION_SETTINGS;
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const [shortcut, setShortcut] = useState<string | null>(null);
+  const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const editsDisabled = !hostOnline || organization?.state.status !== "ready" || organization.state.saving;
+  useEffect(() => { onIncludeArchived?.(view.includeArchived); }, [view.includeArchived, onIncludeArchived]);
+  const savePreference = (patch: Partial<OrganizationSettings>) => {
+    if (!organization || editsDisabled) return;
+    void organization.save(patch).then((saved) => setSaveMessage(saved ? null : "Organization was not saved. Reload preferences in Settings and review the conflict; no newer revision was overwritten."));
+  };
   const toast = useToast();
-  const listRef = useRef<NativeFlatList<DirectoryEntry> | null>(null);
+  const listRef = useRef<NativeFlatList<OrganizationRow> | null>(null);
   const entriesRef = useRef(state.entries);
   entriesRef.current = state.entries;
   const restoredRef = useRef(false);
@@ -1107,6 +1135,15 @@ export function SessionsScreen({ host, layout, navigation, theme }: PluginScreen
       view.advancedOpen,
     ],
   );
+  const tree = useMemo(() => buildOrganizationTree({ entries: state.entries.filter((entry) => (projectId === null || entry.projectKey === projectId) && (epicKey === null || [entry.labels.epic, entry.labels["jira.epic"], entry.labels["origin.epic"]].includes(epicKey))), ...preferences, workspaces }), [state.entries, projectId, epicKey, preferences, workspaces]);
+  const visibleIds = useMemo(() => new Set(visible.map((entry) => entry.id)), [visible]);
+  const rows = useMemo(() => flattenOrganizationTree(filterOrganizationTree(tree, (entry) => visibleIds.has(entry.id) && (!favoritesOnly || preferences.favorites.includes(entry.id)) && (shortcut === null || (shortcut === "Other work" ? !entry.labels.workstream && !entry.labels.desk : (entry.labels.workstream ?? entry.labels.desk)?.toLocaleLowerCase() === shortcut.toLocaleLowerCase())), (group) => !favoritesOnly && shortcut === null && view.status === "all" && !view.attentionOnly && group.label.toLocaleLowerCase().includes(view.query.trim().toLocaleLowerCase())), preferences.expandedGroups, view.query.trim().length > 0), [tree, visibleIds, favoritesOnly, preferences, shortcut, view]);
+  const moveRow = (row: OrganizationRow, distance: number) => {
+    const parent = row.kind === "group" ? row.group.parentKey ?? "root" : row.parentKey;
+    const peers = siblingKeys(tree, parent).filter((key) => (row.kind === "session") === key.startsWith("session:"));
+    const movable = parent === "root" && row.kind === "group" ? peers.filter((key) => workstreamRank(tree.find((group) => group.key === key)?.label ?? "") === workstreamRank(row.group.label)) : peers;
+    savePreference({ siblingOrder: { ...preferences.siblingOrder, [parent]: reorderedSiblings(movable, rowKey(row), distance) } });
+  };
 
   const activeCount = activeFilterCount(view);
 
@@ -1202,6 +1239,15 @@ export function SessionsScreen({ host, layout, navigation, theme }: PluginScreen
           onFocus={handleToolbarControlFocus}
         />
       ) : null}
+
+      {organization && organization.state.status !== "ready" ? <Text style={{ color: colors.statusWarning, fontSize: 12 }}>Organization settings {organization.state.status}; saved preferences are unavailable. Native sessions remain visible.</Text> : null}
+      {workspaceNote ? <Text numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 11 }}>{workspaceNote}</Text> : null}
+      {saveMessage || organization?.state.saveError ? <Text accessibilityRole="alert" style={{ color: colors.statusWarning, fontSize: 12 }}>{saveMessage ?? organization?.state.saveError}</Text> : null}
+      {organization ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
+        {(["hierarchy", "role", "flat"] as const).map((grouping) => <FilterChip key={grouping} label={grouping === "hierarchy" ? "Hierarchy" : grouping === "role" ? "Role" : "Flat"} active={preferences.grouping === grouping} colors={colors} disabled={toolbarCollapsed || editsDisabled} onFocus={handleToolbarControlFocus} onBlur={handleToolbarControlBlur} onPress={() => savePreference({ grouping })} />)}
+        <FilterChip label="Favorites" active={favoritesOnly} colors={colors} disabled={toolbarCollapsed} onPress={() => setFavoritesOnly(!favoritesOnly)} />
+        {["PR Review", "Adam", "Other work"].map((label) => <FilterChip key={label} label={label} active={shortcut === label} colors={colors} disabled={toolbarCollapsed} onPress={() => setShortcut(shortcut === label ? null : label)} />)}
+      </View> : null}
 
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
         <TextInput
@@ -1448,8 +1494,8 @@ export function SessionsScreen({ host, layout, navigation, theme }: PluginScreen
       <FlatList
         ref={listRef}
         testID="sessions-list"
-        data={visible}
-        keyExtractor={(item) => item.id}
+        data={rows}
+        keyExtractor={rowKey}
         extraData={colors}
         getItemLayout={(_, index) => ({
           length: rowHeight,
@@ -1462,15 +1508,20 @@ export function SessionsScreen({ host, layout, navigation, theme }: PluginScreen
         onScrollBeginDrag={handleScrollBeginDrag}
         maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
         scrollEventThrottle={16}
-        contentContainerStyle={visible.length === 0 ? { flexGrow: 1 } : undefined}
+        contentContainerStyle={rows.length === 0 ? { flexGrow: 1 } : { paddingBottom: 16 }}
         renderItem={({ item }) => (
-          <SessionRow
-            entry={item}
+          <OrganizationRowView row={item} colors={colors} height={rowHeight} disabled={editsDisabled} favorite={item.kind === "session" && preferences.favorites.includes(item.entry.id)}
+            onToggle={() => { if (item.kind === "group") savePreference({ expandedGroups: { ...preferences.expandedGroups, [item.group.key]: !item.expanded } }); }}
+            onMove={(distance) => moveRow(item, distance)} onFavorite={() => { if (item.kind === "session") savePreference({ favorites: preferences.favorites.includes(item.entry.id) ? preferences.favorites.filter((id) => id !== item.entry.id) : [...preferences.favorites, item.entry.id] }); }}>
+          {item.kind === "session" ? <SessionRow
+            entry={item.entry}
+            displayTitle={item.parentKey.includes("/role:") || item.parentKey.startsWith("roles/role:") ? item.entry.title.slice(item.entry.title.indexOf("•") + 1).trim() : undefined}
             colors={colors}
             compact={compact}
             rowHeight={rowHeight}
             onPress={handleOpen}
-          />
+          /> : null}
+          </OrganizationRowView>
         )}
         ListEmptyComponent={
           <View

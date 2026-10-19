@@ -511,7 +511,7 @@ describe("contribute", () => {
 
     const cleanup = contribute(server, config());
 
-    expect(settings).toEqual(["organization"]);
+    expect(settings).toEqual([]);
     expect(registered).toEqual(["agent.create", "agent.session_open", "workspace.create"]);
     expect(cleanup()).toBeUndefined();
   });

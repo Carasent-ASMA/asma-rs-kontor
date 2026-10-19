@@ -23,6 +23,7 @@ describe("organization settings contract", () => {
       expandedGroups: {},
       siblingOrder: {},
       displayMappings: {},
+      planAssociations: {},
     });
   });
 
