@@ -417,6 +417,13 @@ def _same_path(left: Path, right: Path) -> bool:
 
 def _job_paths(document: dict, plist: Path) -> tuple[Path, Path]:
     """The daemon and state root the job runs, from ProgramArguments."""
+    if document.get("EnableGlobbing") is True:
+        raise Refused(
+            "plist_program",
+            f"{plist} sets EnableGlobbing; launchd rewrites the globbed arguments "
+            "before the job runs, so the guard would compare paths the job "
+            "never runs",
+        )
     arguments = document.get("ProgramArguments")
     if (
         not isinstance(arguments, list)

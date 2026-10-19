@@ -686,6 +686,40 @@ class ProductionJobGuardTest(WorldTest):
                 self.assertEqual(recorder.calls, [])
         self.assertFalse(self.world.backup.exists())
 
+    def test_a_managed_job_refuses_globbed_arguments(self) -> None:
+        # The desk's exploit shape: launchd expands `stat[e]` to `state`, so the
+        # job would run on the production state root while the guard compares
+        # the literal bracket path and finds no overlap.
+        other_bin = self.world.home / "other-bin"
+        other_bin.mkdir()
+        other_daemon = other_bin / "kontor-daemon"
+        other_daemon.write_bytes(b"other daemon\n")
+        self.world.plist(PRODUCTION_LABEL)
+        plist = self.world.plist(
+            DISPOSABLE_LABEL,
+            daemon=other_daemon,
+            state_root=self.world.state.parent / "stat[e]",
+            port=47718,
+        )
+        document = plistlib.loads(plist.read_bytes())
+        document["EnableGlobbing"] = True
+        plist.write_bytes(plistlib.dumps(document))
+        for command in ("bootstrap", "replace"):
+            with self.subTest(command=command):
+                recorder = Recorder()
+                argv = [
+                    "--label", DISPOSABLE_LABEL,
+                    "--domain", DISPOSABLE_DOMAIN,
+                    "--plist", str(plist),
+                    *command_argv(command, self.world),
+                ]
+                self.assertEqual(
+                    run_main(argv, self.world.host(recorder, DISPOSABLE_UID)),
+                    deploy.EXIT_REFUSED,
+                )
+                self.assertEqual(recorder.calls, [])
+        self.assertFalse(self.world.backup.exists())
+
     def test_a_broken_canonical_plist_does_not_block_a_disposable_job(self) -> None:
         canonical = self.world.plist(PRODUCTION_LABEL)
         canonical.write_bytes(b"not a plist")
