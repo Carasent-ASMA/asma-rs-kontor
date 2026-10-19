@@ -727,8 +727,6 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     generation += 1;
     pendingUpdates = [];
     pendingOverflow = false;
-    pages = 0;
-    lastUpdatedAt = null;
     error = null;
     live = false;
     subscriptionActive = false;
@@ -741,6 +739,8 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       return;
     }
     entries.clear();
+    pages = 0;
+    lastUpdatedAt = null;
     status = "error";
     staleReason = null;
     error =
