@@ -236,7 +236,7 @@ function IconButton({ label, icon, colors, onPress }: { label: string; icon: str
 }
 /** Bounded, left-aligned title-only selector; the confirmed Jira key floats on its lower border. */
 function ContextPicker({ label, epicKey, compact, expanded, colors, onPress, ref }: { label: string; epicKey: string | null; compact: boolean; expanded: boolean; colors: Colors; onPress: () => void; ref?: Ref<View> }) {
-  return <Pressable ref={ref} testID="kontor-context-picker" accessibilityRole="button" accessibilityLabel={`Plan / project: ${epicKey ? `${epicKey} · ` : ""}${label}`} accessibilityHint="Choose a plan, epic or project" accessibilityState={{ expanded }} onPress={onPress}
+  return <Pressable ref={ref} testID="kontor-context-picker" accessibilityRole="button" accessibilityLabel={`Plan / project: ${epicKey ? `${epicKey} · ` : ""}${label}`} accessibilityHint="Choose a plan, epic or project" accessibilityState={{ expanded }} aria-expanded={expanded} onPress={onPress}
     style={{ flexGrow: 0, flexShrink: 1, flexBasis: compact ? 180 : 320, minWidth: compact ? 44 : 100, maxWidth: 420, height: 44, justifyContent: "center", paddingLeft: 9, paddingRight: 26 }}>
     <View pointerEvents="none" style={{ position: "absolute", top: 5, bottom: 8, left: 0, right: 0, borderWidth: 1, borderColor: expanded ? colors.accent : colors.border, borderRadius: 6, backgroundColor: colors.surface1 }} />
     <Text numberOfLines={1} ellipsizeMode="tail" style={{ color: colors.foreground, fontSize: 12, lineHeight: 16, fontWeight: "600", marginBottom: 3 }}>{label}</Text>

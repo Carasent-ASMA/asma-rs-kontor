@@ -104,6 +104,8 @@ describe("Kontor shell native actions", () => {
     expect(screen.picker()!.props).toMatchObject({ label: title, epicKey: "ASMA-8539", expanded: false });
     const field = pickerField(screen.picker()!);
     expect(field.props).toMatchObject({ testID: "kontor-context-picker", accessibilityRole: "button", accessibilityLabel: `Plan / project: ASMA-8539 · ${title}`, accessibilityState: { expanded: false } });
+    // React Native Web drops accessibilityState; the web trigger states open or closed through ARIA.
+    expect(field.props["aria-expanded"]).toBe(false);
     expect(field.props.style).toMatchObject({ height: 44, maxWidth: 420 });
     expect(elements(field).find((node) => node.props.numberOfLines === 1)?.props.ellipsizeMode).toBe("tail");
     const key = elements(field).find((node) => node.props.testID === "kontor-context-epic")!;
@@ -111,12 +113,20 @@ describe("Kontor shell native actions", () => {
     expect(key.props.accessible).toBe(false); expect(key.props.pointerEvents).toBe("none");
     screen.openPicker(title);
     expect(screen.picker()!.props.expanded).toBe(true);
+    expect(pickerField(screen.picker()!).props["aria-expanded"]).toBe(true);
     expect(screen.menu()!.props).toMatchObject({ testID: "kontor-context-menu", dialog: true, label: "Choose plan or project" });
     expect(screen.menuItems().find((node) => node.props.label === title)?.props).toMatchObject({ accessibilityLabel: `Plan: ${title}, ASMA-8539`, detail: "ASMA-8539", selected: true });
     screen.choose("All projects");
     expect(screen.menu()).toBeUndefined();
     expect(screen.picker()!.props).toMatchObject({ label: "All projects", epicKey: null, expanded: false });
+    expect(pickerField(screen.picker()!).props["aria-expanded"]).toBe(false);
     expect(pickerField(screen.picker()!).props.accessibilityLabel).toBe("Plan / project: All projects");
+    // Dismissing without a choice (Escape, a tap outside, Android back) closes through onClose.
+    screen.openPicker("All projects");
+    expect(pickerField(screen.picker()!).props["aria-expanded"]).toBe(true);
+    screen.closeMenu();
+    expect(screen.menu()).toBeUndefined();
+    expect(pickerField(screen.picker()!).props["aria-expanded"]).toBe(false);
     expect(elements(pickerField(screen.picker()!)).some((node) => node.props.testID === "kontor-context-epic")).toBe(false);
     expect(screen.elements().find((node) => node.props.testID === "kontor-context-row")?.props.style).toMatchObject({ minHeight: 51 });
   });
