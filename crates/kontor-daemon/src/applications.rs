@@ -40100,6 +40100,13 @@ impl Services {
         let state = self
             .state()
             .expect("succession handoff runs only after service attachment");
+        // Snapshot the Realm's bearer values before the transcript is fetched:
+        // a rotation during that await must not leave the generation the
+        // predecessor could quote out of the masking set.
+        let redaction = SuccessionRedactionPolicy::new(
+            ContentHash::of(b"kontor-succession-redaction-v1"),
+            state.credentials().redaction_secrets(),
+        );
         let timeline = match state
             .sessions()
             .get(attempt.request.predecessor_runtime_binding_id)
@@ -40134,13 +40141,6 @@ impl Services {
             },
             None => None,
         };
-        let redaction = SuccessionRedactionPolicy::new(
-            ContentHash::of(b"kontor-succession-redaction-v1"),
-            // The Realm's own bearer values are resolved from the live
-            // generation, so a transcript that quotes one cannot carry it into
-            // the outbound request or the persisted handoff.
-            state.credentials().redaction_secrets(),
-        );
         // The configured governed transport executes only the route the
         // declared-chain walk admits. Startup composes the runtime selected in
         // `succession-summarizer.json`, and an unconfigured Realm keeps the
