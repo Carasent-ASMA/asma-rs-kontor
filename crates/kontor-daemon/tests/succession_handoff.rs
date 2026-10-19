@@ -284,6 +284,7 @@ async fn transport_receives_only_redacted_messages_and_summary_readback_is_exact
         SuccessionHandoffOutcome::Summary {
             timeline,
             summarizer_model_rung,
+            summarizer_account: stored_account,
             summary,
             summary_hash,
             input_redaction,
@@ -292,6 +293,11 @@ async fn transport_receives_only_redacted_messages_and_summary_readback_is_exact
             assert_eq!(timeline.start_sequence, 1);
             assert_eq!(timeline.end_sequence, 3);
             assert_eq!(summarizer_model_rung, &route);
+            assert_eq!(
+                stored_account,
+                &Some(summarizer_account()),
+                "the handoff binds the account the runtime executed the summary as"
+            );
             assert_eq!(summary.as_str(), expected_summary);
             assert_eq!(summary_hash, &ContentHash::of(expected_summary.as_bytes()));
             assert_eq!(input_redaction.pass, SuccessionRedactionPass::Input);
@@ -617,6 +623,7 @@ async fn governed_summarizer_dispatches_the_admitted_declared_rung_over_the_reda
         SuccessionHandoffOutcome::Summary {
             timeline,
             summarizer_model_rung,
+            summarizer_account: stored_account,
             summary,
             summary_hash,
             input_redaction,
@@ -625,6 +632,11 @@ async fn governed_summarizer_dispatches_the_admitted_declared_rung_over_the_reda
             assert_eq!(timeline.start_sequence, 1);
             assert_eq!(timeline.end_sequence, 7);
             assert_eq!(summarizer_model_rung, &declared[0]);
+            assert_eq!(
+                stored_account,
+                &Some(summarizer_account()),
+                "the handoff binds the account the runtime executed the summary as"
+            );
             assert_eq!(summary.as_str(), expected_summary);
             assert_eq!(summary_hash, &ContentHash::of(expected_summary.as_bytes()));
             assert_eq!(input_redaction.pass, SuccessionRedactionPass::Input);
