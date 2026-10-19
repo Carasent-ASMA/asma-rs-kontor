@@ -3,18 +3,24 @@ import { ScrollView, View } from "react-native";
 import { TextInput } from "@getpaseo/plugin/client/react-native";
 import type { OrganizationSettings } from "../shared/organization";
 import type { ReadSourceSummary, SourceRead } from "../shared/read-sources";
+import type { TeamsSourceSnapshot } from "../shared/teams-source-snapshot";
+import { teamsSourceBindings } from "../shared/teams-source-bindings";
 import type { DirectoryEntry } from "./session-directory";
 import type { OrganizationSettingsState } from "./use-organization-settings";
 import { SourceDetails } from "./source-details";
+import { TeamsSnapshotDetails } from "./teams-source-page";
 import { Action, Card, Copy, type Colors } from "./page-controls";
 import { rebaseOrganizationDraft, setDisplayMappingField } from "./organization-draft";
 import type { OrganizationWorkspace } from "./session-organization";
 
-export function OrganizationSettingsPage({ state, colors, entries, workspaces, sources, reads, sourceError, refresh }: {
+export function OrganizationSettingsPage({ state, colors, entries, workspaces, sources, reads, sourceError, teamsSnapshots = {}, teamsErrors = {}, sourcesAvailable = false, refresh }: {
   state: OrganizationSettingsState; colors: Colors; entries: readonly DirectoryEntry[];
   sources: readonly ReadSourceSummary[]; sourceError: string | null; refresh: () => void;
   workspaces: readonly OrganizationWorkspace[];
   reads: Readonly<Record<string, SourceRead>>;
+  teamsSnapshots?: Readonly<Record<string, TeamsSourceSnapshot>>;
+  teamsErrors?: Readonly<Record<string, string>>;
+  sourcesAvailable?: boolean;
 }) {
   // A draft holds its opening revision across incoming saves from another device.
   const [draft, setDraft] = useState<{ values: OrganizationSettings; base: OrganizationSettings; revision: string } | null>(null);
@@ -22,6 +28,7 @@ export function OrganizationSettingsPage({ state, colors, entries, workspaces, s
   const [mappingId, setMappingId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const values = draft?.values;
+  const teamsFormats = teamsSourceBindings(sources).formats;
   const update = (patch: Partial<OrganizationSettings>) => {
     if (draft) setDraft({ ...draft, values: { ...draft.values, ...patch } });
   };
@@ -68,7 +75,17 @@ export function OrganizationSettingsPage({ state, colors, entries, workspaces, s
     </Card>
     <Card title="Configured source status" colors={colors}>
       <Copy colors={colors}>{sourceError ?? "Read-only source catalog available."}</Copy>
-      {sources.map((source) => reads[source.id] ? <SourceDetails key={source.id} read={reads[source.id]!} colors={colors} /> : <Copy key={source.id} colors={colors}>{source.title} · Not read · observed time Unknown</Copy>)}
+      {sources.map((source) => {
+        if (!teamsFormats[source.id]) return reads[source.id] ? <SourceDetails key={source.id} read={reads[source.id]!} colors={colors} /> : <Copy key={source.id} colors={colors}>{source.title} · Not read · observed time Unknown</Copy>;
+        const snapshot = teamsSnapshots[source.id];
+        const error = teamsErrors[source.id];
+        return <View key={source.id} style={{ gap: 4 }}>
+          <Copy colors={colors}>{source.title} · {snapshot?.status ?? (error ? "unavailable" : "Not read")}{snapshot && (!sourcesAvailable || error) ? " · retained snapshot stale" : ""} · {snapshot?.configurationState ?? teamsFormats[source.id]}</Copy>
+          <Copy colors={colors}>Read {snapshot?.readAt ?? "Not captured"} · observed time Unknown · activation: {snapshot?.activation ?? "not-attested"}</Copy>
+          {error ? <Copy colors={colors}>Adapter request failed: {error}</Copy> : null}
+          {snapshot ? <TeamsSnapshotDetails snapshot={snapshot} colors={colors} /> : null}
+        </View>;
+      })}
       <Action colors={colors} label="Refresh source reads" onPress={refresh} />
       <Copy colors={colors}>Governed scheduler/gates: kontord is not enabled. Console owns policy and administration.</Copy>
     </Card>

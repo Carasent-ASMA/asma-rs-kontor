@@ -12,7 +12,7 @@ function Disclosure({ label, colors, children }: { label: string; colors: Colors
     <Text style={{ color: colors.accent }}>{open ? "⌄" : "›"} {label}</Text>
   </Pressable>{open ? children : null}</View>;
 }
-function SnapshotDetails({ snapshot, colors }: { snapshot: TeamsSourceSnapshot; colors: Colors }) {
+export function TeamsSnapshotDetails({ snapshot, colors }: { snapshot: TeamsSourceSnapshot; colors: Colors }) {
   return <Disclosure label="Source details" colors={colors}>
     <Copy colors={colors}>{snapshot.source.path} · {snapshot.format}</Copy>
     <Copy colors={colors}>SHA-256 {snapshot.sha256 ?? "Unknown"} · file modified {snapshot.modifiedAt ?? "Unknown"}</Copy>
@@ -114,7 +114,7 @@ export function TeamsSourcePage({ sources, snapshots = {}, errors = {}, bindingD
       return <Card key={source.id} title={`${source.title} · ${bindings.formats[source.id]}`} colors={colors}>
         <Copy colors={colors}>Source state: {snapshot?.status ?? "unavailable"}{available ? "" : " · stale"} · {snapshot?.configurationState ?? "Not read"}</Copy>
         <Copy colors={colors}>Read {snapshot?.readAt ?? "Not captured"} · source observation time: Not supplied · activation: {snapshot?.activation ?? "not-attested"}</Copy>
-        {snapshot ? <><SnapshotDetails snapshot={snapshot} colors={colors} /><SnapshotData snapshot={snapshot} colors={colors} /></> : <Disclosure label="Source details" colors={colors}><Copy colors={colors}>{source.path} · {errors[source.id] ?? "Awaiting a successful adapter read; observed state Unknown."}</Copy></Disclosure>}
+        {snapshot ? <><TeamsSnapshotDetails snapshot={snapshot} colors={colors} /><SnapshotData snapshot={snapshot} colors={colors} /></> : <Disclosure label="Source details" colors={colors}><Copy colors={colors}>{source.path} · {errors[source.id] ?? "Awaiting a successful adapter read; observed state Unknown."}</Copy></Disclosure>}
       </Card>;
     })}
     {view.metadata.length ? <Card title="Unresolved configuration metadata" colors={colors}>
