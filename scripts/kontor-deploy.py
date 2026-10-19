@@ -20,7 +20,7 @@ changes any job:
 * a non-production ``bootstrap`` or ``replace`` whose daemon or state root is
   the production one, or that uses the production port, is refused even under
   another label, because its install would overwrite the production binaries or
-  take their port; the guard compares every available source: the canonical
+  take their port; the guard compares every source it can read: the canonical
   production plist, the target recorded by the last declared production deploy,
   and the loaded production job read with ``launchctl print``;
 * a relative ``--state-root`` is resolved against the plist's
@@ -222,7 +222,10 @@ def resolve_job(
         canonical = host.home / "Library" / "LaunchAgents" / f"{PRODUCTION_LABEL}.plist"
         targets: list[ProductionTarget] = []
         if canonical.is_file():
-            targets.append(_job_target(_read_plist(canonical)[1], canonical))
+            try:
+                targets.append(_job_target(_read_plist(canonical)[1], canonical))
+            except Refused:
+                pass
         recorded = _recorded_production_target(host)
         if recorded is not None:
             targets.append(recorded)

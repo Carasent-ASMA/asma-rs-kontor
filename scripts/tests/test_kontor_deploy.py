@@ -120,7 +120,7 @@ class World:
         path: Path | None = None,
         daemon: Path | None = None,
         state_root: Path | str | None = None,
-        port: int | str = 47717,
+        port: int | str | None = 47717,
         working_directory: Path | str | None = None,
     ) -> Path:
         path = path or (self.agents / f"{label}.plist")
@@ -128,9 +128,9 @@ class World:
             str(daemon or (self.bin / "kontor-daemon")),
             "--state-root",
             str(state_root if state_root is not None else self.state),
-            "--port",
-            str(port),
         ]
+        if port is not None:
+            program.extend(["--port", str(port)])
         document = {"Label": label, "ProgramArguments": program}
         if working_directory is not None:
             document["WorkingDirectory"] = str(working_directory)
@@ -586,6 +586,92 @@ class ProductionJobGuardTest(WorldTest):
             deploy.EXIT_REFUSED,
         )
         self.assertEqual(recorder.launchctl(), [])
+
+    def test_a_disposable_job_cannot_take_the_default_production_port(self) -> None:
+        self.world.plist(PRODUCTION_LABEL, port=None)
+        other_bin = self.world.home / "other-bin"
+        other_state = self.world.home / "other-state"
+        other_bin.mkdir()
+        other_state.mkdir()
+        other_daemon = other_bin / "kontor-daemon"
+        other_daemon.write_bytes(b"other daemon\n")
+        disposable = self.world.plist(
+            DISPOSABLE_LABEL,
+            daemon=other_daemon,
+            state_root=other_state,
+            port=7717,
+        )
+        recorder = Recorder()
+        argv = [
+            "--label", DISPOSABLE_LABEL,
+            "--domain", DISPOSABLE_DOMAIN,
+            "--plist", str(disposable),
+            "bootstrap",
+        ]
+        self.assertEqual(
+            run_main(argv, self.world.host(recorder, DISPOSABLE_UID)),
+            deploy.EXIT_REFUSED,
+        )
+        self.assertEqual(recorder.launchctl(), [])
+
+    def test_a_broken_canonical_plist_does_not_block_a_disposable_job(self) -> None:
+        canonical = self.world.plist(PRODUCTION_LABEL)
+        canonical.write_bytes(b"not a plist")
+        plist = self.world.plist(DISPOSABLE_LABEL)
+        recorder = Recorder()
+        argv = [
+            "--label", DISPOSABLE_LABEL,
+            "--domain", DISPOSABLE_DOMAIN,
+            "--plist", str(plist),
+            "bootstrap",
+        ]
+        self.assertEqual(run_main(argv, self.world.host(recorder, DISPOSABLE_UID)), 0)
+        self.assertEqual(len(recorder.launchctl()), 1)
+
+    def test_a_broken_canonical_plist_still_compares_the_loaded_target(self) -> None:
+        canonical = self.world.plist(PRODUCTION_LABEL)
+        canonical.write_bytes(b"not a plist")
+        production_bin = self.world.home / "prod-bin"
+        production_state = self.world.home / "prod-state"
+        production_bin.mkdir()
+        production_state.mkdir()
+        production_daemon = production_bin / "kontor-daemon"
+        production_daemon.write_bytes(b"prod daemon\n")
+        loaded = (
+            f"gui/{DISPOSABLE_UID}/{PRODUCTION_LABEL} = {{\n"
+            f"\tprogram = {production_daemon}\n"
+            "\targuments = {\n"
+            f"\t\t{production_daemon}\n"
+            "\t\t--state-root\n"
+            f"\t\t{production_state}\n"
+            "\t\t--port\n"
+            "\t\t47717\n"
+            "\t}\n"
+            "}\n"
+        )
+
+        def answer(argv: list[str]) -> subprocess.CompletedProcess[str]:
+            if argv[:2] == ["launchctl", "print"]:
+                return done(0, loaded)
+            return done()
+
+        disposable = self.world.plist(
+            DISPOSABLE_LABEL,
+            daemon=production_daemon,
+            state_root=production_state,
+        )
+        recorder = Recorder(answer)
+        with self.assertRaises(deploy.Refused) as refusal:
+            deploy.resolve_job(
+                DISPOSABLE_LABEL,
+                DISPOSABLE_DOMAIN,
+                disposable,
+                None,
+                self.world.host(recorder, DISPOSABLE_UID),
+                "bootstrap",
+            )
+        self.assertEqual(refusal.exception.code, "production_target")
+        self.assertEqual(len(recorder.prints()), 1)
 
     def test_a_production_deploy_cannot_be_declared_for_another_label(self) -> None:
         recorder = Recorder()
