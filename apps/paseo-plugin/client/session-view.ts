@@ -58,7 +58,12 @@ export function matchesQuery(entry: DirectoryEntry, query: string): boolean {
  * permission must be included even when `requiresAttention` is false.
  */
 export function needsAttention(entry: DirectoryEntry): boolean {
-  return entry.needsInput || entry.requiresAttention;
+  return (
+    entry.needsInput ||
+    entry.status === "error" ||
+    entry.requiresAttention ||
+    entry.attentionReason === "error"
+  );
 }
 
 export function matchesFilters(entry: DirectoryEntry, filters: SessionFilters): boolean {
@@ -101,14 +106,15 @@ export function attentionLabel(entry: DirectoryEntry): string | null {
   if (entry.needsInput) {
     return "Needs input";
   }
+  if (entry.status === "error" || entry.attentionReason === "error") {
+    return "Error";
+  }
   if (!entry.requiresAttention) {
     return null;
   }
   switch (entry.attentionReason) {
     case "finished":
       return "Finished";
-    case "error":
-      return "Error";
     case "permission":
       return "Permission";
     default:

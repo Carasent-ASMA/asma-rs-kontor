@@ -99,6 +99,51 @@ describe("session search and filters", () => {
     expect(needsAttention(idle)).toBe(false);
     expect(attentionLabel(pending)).toBe("Needs input");
     expect(attentionLabel(permissionReason)).toBe("Needs input");
+    expect(
+      attentionLabel(
+        sessionEntry("failed", {
+          status: "error",
+          requiresAttention: true,
+          attentionReason: "error",
+        }),
+      ),
+    ).toBe("Error");
+    expect(
+      attentionLabel(
+        sessionEntry("failed-idle", {
+          status: "idle",
+          requiresAttention: false,
+          attentionReason: "error",
+        }),
+      ),
+    ).toBe("Error");
+    expect(
+      needsAttention(
+        sessionEntry("failed-idle", {
+          status: "idle",
+          requiresAttention: false,
+          attentionReason: "error",
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      attentionLabel(
+        sessionEntry("finished", {
+          status: "idle",
+          requiresAttention: true,
+          attentionReason: "finished",
+        }),
+      ),
+    ).toBe("Finished");
+    expect(
+      attentionLabel(
+        sessionEntry("attention", {
+          status: "idle",
+          requiresAttention: true,
+        }),
+      ),
+    ).toBe("Attention");
+    expect(attentionLabel(sessionEntry("closed", { status: "closed" }))).toBeNull();
 
     expect(
       filterDirectoryEntries([pending, permissionReason, idle], {
