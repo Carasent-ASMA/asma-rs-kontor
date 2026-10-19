@@ -1,10 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
-import { useRpc } from "@getpaseo/plugin/client";
+import { useRpc, type PluginHostSummary } from "@getpaseo/plugin/client";
 import { readTeamsSource, type TeamsSourceSnapshot } from "../shared/teams-source-snapshot";
 import { teamsSourceBindings } from "../shared/teams-source-bindings";
 import { listReadSources, readSource, type SourceRead } from "../shared/read-sources";
 
-export function useReadSources(hostId: string, online: boolean) {
+export function useReadSources(hostId: string, hostStatus: PluginHostSummary["status"]) {
+  const online = hostStatus === "online";
   const list = useRpc(listReadSources);
   const read = useRpc(readSource);
   const readTeams = useRpc(readTeamsSource);
@@ -40,7 +41,8 @@ export function useReadSources(hostId: string, online: boolean) {
       return { ...catalog, reads: Object.fromEntries(results), teamsSnapshots, teamsErrors, teamsBindingDiagnostics: bindings.diagnostics };
     },
   });
-  const error = !online ? "Paseo host offline. Configured sources unavailable; retained reads are stale."
+  const hostState = hostStatus === "connecting" ? "reconnecting" : hostStatus;
+  const error = !online ? `Paseo host ${hostState}. Configured sources unavailable; retained reads are stale.`
     : query.isError ? `Configured source service unavailable: ${query.error.message}. Retained reads are stale.`
       : query.data?.diagnostics.join(" ") || null;
   return { teamsSnapshots: query.data?.teamsSnapshots ?? {}, teamsErrors: query.data?.teamsErrors ?? {}, teamsBindingDiagnostics: query.data?.teamsBindingDiagnostics ?? [], sources: query.data?.sources ?? [], reads: query.data?.reads ?? {}, error,

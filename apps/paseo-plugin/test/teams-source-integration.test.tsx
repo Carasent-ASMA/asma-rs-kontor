@@ -80,14 +80,14 @@ describe("A-owned Teams source integration", () => {
     const read = vi.fn(async () => json);
     const teams = vi.fn(async ({ sourceId }: { sourceId: string }) => { if (sourceId === "operator") throw new Error("operator unavailable"); return snapshots[sourceId]!; });
     model.rpc.set("sources.list", list); model.rpc.set("sources.read", read); model.rpc.set("teams.sources.read", teams);
-    useReadSources("host-A", true);
+    useReadSources("host-A", "online");
     expect(model.query.queryKey).toEqual(["kontor-read-sources", "host-A"]);
     const result = await model.query.queryFn({ signal: new AbortController().signal });
     expect(teams.mock.calls.map(([input]) => input).sort((a, b) => a.sourceId.localeCompare(b.sourceId))).toEqual(Object.keys(AUTHORIZED_TEAMS_FORMATS).sort().map((sourceId) => ({ sourceId })));
     expect(read).toHaveBeenCalledExactlyOnceWith({ sourceId: "legacy-json" });
     expect(Object.keys(result.teamsSnapshots)).toHaveLength(3); expect(result.teamsErrors).toEqual({ operator: "operator unavailable" });
     expect(result.reads).toEqual({ "legacy-json": json });
-    useReadSources("host-B", false); expect(model.query.queryKey).toEqual(["kontor-read-sources", "host-B"]); expect(model.query.enabled).toBe(false);
+    useReadSources("host-B", "offline"); expect(model.query.queryKey).toEqual(["kontor-read-sources", "host-B"]); expect(model.query.enabled).toBe(false);
   });
   it("keeps source states and times visible while hiding full paths and hashes behind Source details", () => {
     const text = visible(page());

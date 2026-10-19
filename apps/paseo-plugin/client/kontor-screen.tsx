@@ -46,7 +46,7 @@ function HostScreen(props: PluginScreenProps) {
   const [query, setQuery] = useState(() => readRouteView(host.id, route).query);
   const [includeArchived, setIncludeArchived] = useState(() => readSessionView(sessionScopeKey(host.id, route)).includeArchived);
   const directory = useSessionDirectory({ hostId: host.id, hostStatus, includeArchived });
-  const sourceState = useReadSources(host.id, hostStatus === "online");
+  const sourceState = useReadSources(host.id, hostStatus);
   const workspaces = useWorkspaceDirectory(host.id, hostStatus === "online");
   const presentation = sourceState.error && !sourceState.available
     ? { ...organization, state: { ...organization.state, status: "error" as const, error: "Plugin source service unavailable; organization preferences are not current." } }
