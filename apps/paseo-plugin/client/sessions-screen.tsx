@@ -805,6 +805,7 @@ export function SessionsScreen({ host, layout, navigation, theme }: PluginScreen
     // A live reorder can adjust the list offset. Do not read that as a
     // deliberate scroll and toggle the toolbar. Ordinary status updates that
     // keep the order do not suppress scrolling.
+    scrollAccumulatorRef.current = EMPTY_SCROLL_ACCUMULATOR;
     programmaticUntilRef.current = Math.max(
       programmaticUntilRef.current,
       Date.now() + 150,
@@ -1109,6 +1110,7 @@ export function SessionsScreen({ host, layout, navigation, theme }: PluginScreen
     }
     scrollOffsetRef.current = offset;
     lastScrollOffsetRef.current = offset;
+    scrollAccumulatorRef.current = EMPTY_SCROLL_ACCUMULATOR;
     programmaticUntilRef.current = Date.now() + 300;
     const timer = setTimeout(() => {
       listRef.current?.scrollToOffset({ offset, animated: false });
