@@ -95,8 +95,7 @@ export async function readConfiguredSource(source: ReadSourceSummary, exporter: 
   }
   return result;
 }
-export function contributeReadSources(server: PluginServerContext, settings: PluginSettings<typeof organizationSettingsSchema>): () => void {
-  const catalog = sourceCatalog();
+export function contributeReadSources(server: PluginServerContext, settings: PluginSettings<typeof organizationSettingsSchema>, catalog: SourceCatalog = sourceCatalog()): () => void {
   let latest: Awaited<ReturnType<typeof settings.read>> | null = null;
   let readError: string | null = null;
   let stopped = false;

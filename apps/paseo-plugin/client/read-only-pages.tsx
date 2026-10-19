@@ -5,10 +5,15 @@ import type { DirectoryEntry, DirectoryState } from "./session-directory";
 import type { ReadSourceSummary, SourceRead } from "../shared/read-sources";
 import type { Destination } from "./navigation-state";
 import { historicalJiraIssue, historicalPlanProgress, confirmedEpic, inboxEntries, nativeSummary, overviewRows, searchRecords } from "./page-data";
+import type { TeamsSourceSnapshot } from "../shared/teams-source-snapshot";
+import { TeamsSourcePage } from "./teams-source-page";
 import { SourceDetails } from "./source-details";
 import { Action, Card, Copy, type Colors } from "./page-controls";
 
 type PageProps = {
+  teamsSources?: readonly ReadSourceSummary[]; teamsJsonReads?: Readonly<Record<string, SourceRead>>;
+  teamsSnapshots?: Readonly<Record<string, TeamsSourceSnapshot>>; teamsErrors?: Readonly<Record<string, string>>;
+  teamsBindingDiagnostics?: readonly string[]; teamsAvailable?: boolean;
   contextLabel?: string; tab: Destination; colors: Colors; entries: readonly DirectoryEntry[]; directory: DirectoryState;
   sources: readonly ReadSourceSummary[]; reads: Readonly<Record<string, SourceRead>>; sourceId: string | null;
   sourceError: string | null; query: string; setQuery: (query: string) => void;
@@ -120,7 +125,7 @@ function Plan(props: PageProps) {
   </>;
 }
 function RecordPage(props: PageProps) {
-  const kind = props.tab === "Delivery" ? "delivery" : props.tab === "Decisions" ? "decisions" : "teams";
+  const kind = props.tab === "Delivery" ? "delivery" : "decisions";
   const reads = Object.values(props.reads).filter((read) => read.source.kind === kind);
   return <>
     {!reads.length ? <Copy colors={props.colors}>{props.tab}: not connected to a configured {kind} source.</Copy> : null}
@@ -128,13 +133,8 @@ function RecordPage(props: PageProps) {
       <SourceDetails read={read} colors={props.colors} />
       {kind === "delivery" ? read.records?.delivery.map((record) => <Copy key={record.id} colors={props.colors}>{record.kind} · {record.title} · recorded state: {record.state} · {record.recordedAt ?? "time Unknown"} {record.url ?? ""}</Copy>) : null}
       {kind === "decisions" ? read.records?.decisions.map((record) => <Copy key={record.id} colors={props.colors}>{record.id} · {record.title} · {record.state} · owner: {record.owner ?? "Unknown"} {record.detail ?? ""} {record.url ?? ""}</Copy>) : null}
-      {kind === "teams" ? read.records?.teams.map((team) => <View key={team.id}><Copy colors={props.colors}>Configured definition: {team.title} ({team.id})</Copy>{team.roles.map((role, index) => <Copy key={index} colors={props.colors} muted>{role.role} · configured chain: {role.chain.join(" → ") || "Not captured"}</Copy>)}</View>) : null}
       {read.status === "ready" && read.records?.[kind].length === 0 ? <Copy colors={props.colors}>No records in this source.</Copy> : null}
     </Card>)}
-    {kind === "teams" ? <Card colors={props.colors} title="Observed native sessions">
-      <Copy colors={props.colors}>Observed sessions and labels are separate from configured team definitions. Planned/governed assignment: Unknown. Governed fleet: kontord is not enabled.</Copy>
-      <NativeRows {...props} />
-    </Card> : null}
   </>;
 }
 export function ReadOnlyPage(props: PageProps) {
@@ -149,7 +149,10 @@ export function ReadOnlyPage(props: PageProps) {
     {props.tab === "Overview" ? <Overview {...props} /> : null}
     {props.tab === "Plan" ? <Plan {...props} /> : null}
     {props.tab === "Inbox" ? <><Copy colors={props.colors}>Native needs-input, errors and attention in the current inventory. Opening a session uses Paseo's own controls. Unseen routing is not captured.</Copy><NativeRows {...props} entries={inboxEntries(props.entries)} />{!inboxEntries(props.entries).length ? <Copy colors={props.colors}>No matching native items in this read.</Copy> : null}</> : null}
-    {props.tab === "Delivery" || props.tab === "Decisions" || props.tab === "AI teams & sessions" ? <RecordPage {...props} /> : null}
+    {props.tab === "Delivery" || props.tab === "Decisions" ? <RecordPage {...props} /> : null}
+    {props.tab === "AI teams & sessions" ? <TeamsSourcePage sources={props.teamsSources ?? props.sources.filter((source) => source.kind === "teams")} snapshots={props.teamsSnapshots} errors={props.teamsErrors} bindingDiagnostics={props.teamsBindingDiagnostics} available={props.teamsAvailable ?? false} reads={props.teamsJsonReads ?? props.reads} entries={props.entries} observedAt={props.directory.lastUpdatedAt === null ? "Unknown" : new Date(props.directory.lastUpdatedAt).toISOString()} colors={props.colors}>
+      <Card title="Observed native sessions" colors={props.colors}><Copy colors={props.colors}>Native sessions and labels are observations, not activated configured teams. Planned/governed assignment: Unknown.</Copy><NativeRows {...props} /></Card>
+    </TeamsSourcePage> : null}
     {props.tab === "Activity" ? <><Copy colors={props.colors}>Partial coverage: current session updatedAt values only, as of {props.directory.lastUpdatedAt ? new Date(props.directory.lastUpdatedAt).toISOString() : "Unknown"}. This is not a durable audit log or a transcript history.</Copy>{[...props.entries].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map((entry) => <View key={entry.id}><Action label={entry.title} colors={props.colors} onPress={() => props.onOpen(entry)} /><Copy colors={props.colors} muted>{entry.updatedAt} · native {entry.status}</Copy></View>)}</> : null}
     {props.tab === "Search" ? <><Copy colors={props.colors}>Scope: available session/workspace names, configured plan text and canonical task records. No private transcript search.</Copy><TextInput accessibilityLabel="Search available records" placeholder="Search available records" value={props.query} onChangeText={props.setQuery} style={{ color: props.colors.foreground, padding: 10, minHeight: 44, borderWidth: 1, borderColor: props.colors.border }} /><NativeRows {...props} entries={results.sessions} />{results.plans.map((read) => <Action key={read.source.id} colors={props.colors} label={`Plan: ${read.source.title}`} onPress={() => props.onSource(read.source.id)} />)}{results.tasks.map(({ node, source }) => <Action key={`${source.id}:${node.id}`} colors={props.colors} label={`${node.jira ?? node.id} · ${node.title}`} onPress={() => props.onSource(source.id)} />)}</> : null}
   </ScrollView>;

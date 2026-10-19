@@ -156,7 +156,8 @@ documentation file's directory is not assumed to contain the validator. Reads
 are bounded to 2 MiB; each export has a 15-second timeout. Invalid configuration,
 missing files and exporter diagnostics identify the specific source.
 
-Non-plan sources are explicit JSON records, not inferred text/YAML:
+The existing `sources.read` RPC keeps its explicit JSON-record format (including
+Teams JSON records); it does not infer text/YAML:
 
 ```json
 {"teams":[{"id":"example","title":"Configured example","roles":[{"role":"SWE","chain":["provider/model"]}]}]}
@@ -168,6 +169,46 @@ records use `delivery: [{id, title, kind, state}]`, where kind is `pull request`
 `check` or `release`; optional fields are `url` and `recordedAt`. Record content
 is shown as recorded, with source revision and read time. No network adapter,
 credential, mutation, Connect action or native Workspaces replacement is added.
+
+### Opt-in Teams/chains formats
+
+The read-only `teams.sources.read` RPC uses the same catalog, with these exact
+authorized ID-to-format mappings. Each ID must already exist exactly once as
+`kind: "teams"` with an explicit absolute path; the plugin supplies no paths.
+
+| Catalog ID | Adapter format | Source meaning |
+| --- | --- | --- |
+| `authoring` | `fleet-authoring` | YAML v2 authoring fleet; activation not attested |
+| `operator` | `fleet-operator` | YAML v1 operator-file snapshot; activation not attested |
+| `roster` | `core-roster` | YAML core-team roster and declared role-catalog hash |
+| `templates` | `team-templates` | JSON bundled template defaults; all versions retained |
+
+Missing, duplicate, renamed or wrong-kind IDs disable that mapping and expose
+diagnostics; the plugin never guesses a replacement ID, path or format. Other
+Teams IDs keep the separate JSON-record read path. No additional environment
+variable, dependency or host configuration is introduced. An empty catalog does
+not read a Teams file. Reads are bounded to 2 MiB and honor the existing hash pins
+and approved-revision rules.
+
+Teams shows host configuration separately from native observations in the
+selected context. Each snapshot retains its own ready/partial/unavailable state,
+read time, file hash, provenance and configuration state. A file modification or
+read time is not a source observation time: that time remains **Not supplied**.
+Offline/service failures mark retained snapshots stale. Paths, full hashes,
+provider/account provenance and diagnostics sit under **Source details**; chains,
+template defaults and binding metadata expand separately to keep the page compact.
+Rung order and within-rung alternatives are preserved. Authoring and operator
+fleets are not merged. Exact template ID/slot candidates retain every version;
+no latest version or leadership roster identity is inferred. Activation,
+eligibility, running models and account availability remain unattested, and
+configured bindings are never joined to native sessions by title, role or model.
+Governed fleet controls remain unavailable: **kontord is not enabled**. Direct
+file reads and native sessions remain usable without it.
+
+`test/teams-source-adapter.test.ts` pins the four reviewed source copies and the
+adapter contract. `test/teams-source-integration.test.tsx` covers the opt-in server
+registration, ID-only dispatch, separate JSON format, mapping failures, partial
+and stale reads, collapsed diagnostics, unresolved metadata and native content.
 
 In Settings, explicitly link one or more configured plan IDs to a native
 conversation and save. The host-scoped **Open plan** composer pill uses only this

@@ -10,8 +10,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const [planPath, outputPath, resources, jiraPath] = process.argv.slice(2);
-assert.ok(planPath && outputPath && resources, "Usage: host-qualification.mjs <canonical-plan> <evidence-dir> <Paseo Resources>");
+const [planPath, outputPath, resources, jiraPath, teamsCatalogPath] = process.argv.slice(2);
+assert.ok(planPath && outputPath && resources, "Usage: host-qualification.mjs <canonical-plan> <evidence-dir> <Paseo Resources> [historical-Jira] [isolated-Teams-catalog.json]");
 const pluginRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const hostRoot = join(resources, "app.asar/node_modules/@getpaseo/server");
 const hostPlugins = join(hostRoot, "dist/server/server/plugins");
@@ -29,6 +29,18 @@ try {
   const expectedSourceHash = hash(await readFile(planPath));
   const catalog = [{ id: "qualification-plan", title: "Qualification plan", kind: "plan", path: resolve(planPath), expectedSha256: expectedSourceHash }];
   if (jiraPath) catalog.push({ id: "qualification-jira", title: "Historical Jira", kind: "jira", path: resolve(jiraPath), expectedSha256: hash(await readFile(jiraPath)) });
+  // Explicit local qualification inputs only. This changes this disposable process,
+  // never a running host's catalog or configuration.
+  const teamsCatalog = teamsCatalogPath ? JSON.parse(await readFile(teamsCatalogPath, "utf8")) : [];
+  assert.ok(Array.isArray(teamsCatalog));
+  const authorizedIds = ["authoring", "operator", "roster", "templates"];
+  assert.equal(new Set(teamsCatalog.map((entry) => entry.id)).size, teamsCatalog.length);
+  for (const entry of teamsCatalog) {
+    assert.ok(authorizedIds.includes(entry.id) && entry.kind === "teams");
+    assert.match(entry.expectedSha256, /^[a-f0-9]{64}$/);
+    assert.equal(hash(await readFile(entry.path)), entry.expectedSha256);
+    catalog.push(entry);
+  }
   process.env.KONTOR_PLUGIN_READ_SOURCES = JSON.stringify(catalog);
   const compiled = await compilePlugin({ client: join(pluginRoot, "index.client.tsx"), server: join(pluginRoot, "index.server.ts") });
   assert.ok(compiled.clientBundle && compiled.serverBundle);
@@ -119,6 +131,27 @@ try {
       capturedEpics: historical.jiraHistory.provenance.capturedEpics,
       selected: historical.jiraHistory.epics.map((epic) => ({ key: epic.key, capturedChildren: epic.children.length })), status: historical.status };
   }
+  assert.ok(handlers.has("teams.sources.read"));
+  await assert.rejects(() => handlers.get("teams.sources.read")({ sourceId: "not-configured" }));
+  const teamSnapshots = [];
+  for (const entry of teamsCatalog) {
+    const snapshot = await handlers.get("teams.sources.read")({ sourceId: entry.id });
+    assert.equal(snapshot.status, "ready", JSON.stringify(snapshot.diagnostics));
+    assert.equal(snapshot.sha256, entry.expectedSha256);
+    assert.equal(snapshot.activation, "not-attested");
+    teamSnapshots.push(snapshot);
+  }
+  const compositionPath = join(work, "teams-composition.cjs");
+  execFileSync("bun", ["build", join(pluginRoot, "shared/teams-source-snapshot.ts"), "--target=node", "--format=cjs", "--outfile", compositionPath], { encoding: "utf8" });
+  const { composeTeamsSourceView } = pluginRequire(compositionPath);
+  const teamsView = composeTeamsSourceView(teamSnapshots, []);
+  assert.ok(teamsView.metadata.every((item) => item.state === "unresolved"));
+  const teams = { scope: "isolated read-only qualification catalog; production host catalog not attested",
+    nativeObservedSessions: 0, activation: "not-attested", unknownIdRejected: true,
+    sources: teamSnapshots.map((snapshot) => ({ id: snapshot.source.id, path: snapshot.source.path, format: snapshot.format,
+      status: snapshot.status, sha256: snapshot.sha256, readAt: snapshot.readAt, modifiedAt: snapshot.modifiedAt,
+      sourceObservedAt: null, configurationState: snapshot.configurationState, diagnostics: snapshot.diagnostics })),
+    unresolvedBindings: teamsView.metadata.length, metadata: teamsView.metadata };
   stopNotices();
   const report = { hostVersion: JSON.parse(await readFile(join(hostRoot, "package.json"), "utf8")).version,
     installation: "none; offline compiler and disposable settings store only", hooks,
@@ -126,7 +159,7 @@ try {
     serverBytes: Buffer.byteLength(compiled.serverBundle), serverSha256: hash(compiled.serverBundle),
     hermesExit: 0, bytecodeVersion: 96, bytecodeBytes: bytecode.length, bytecodeSha256: hash(bytecode), bytecodeSourcePath: clientPath,
     settings: { twoClientConflict: conflict.status, reloadPreservesUnrelatedChanges: true, rootOrderPreserved: true, bothMappingClearsSaved: true, restartPersistence: true, invalidStoredDataPreserved: true, successfulNotifications: notices.length, changes: changes.length },
-    historicalJira,
+    historicalJira, teams,
     plan: { path: resolve(planPath), sourceSha256: expectedSourceHash, graphSha256: source.graph.graph_sha256, nodes: source.graph.nodes.length, edges: source.graph.edges.length, status: source.status },
   };
   await writeFile(join(output, "qualification.json"), JSON.stringify(report, null, 2) + "\n");
