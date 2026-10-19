@@ -52173,40 +52173,55 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
         assert_eq!(ungoverned_read.code(), "forbidden");
         assert!(ungoverned_read.json().get("phase").is_none());
     }
-    // A governed epic of this project, with its own control plane and
-    // leadership, exists beside the one the reader leads. Its completion run
-    // has not started.
+    // A second epic of this project is applied, so it has its own control
+    // plane, its own leadership and no completion run.
     let project_read = Call::get(format!("/v1/projects/{project}"))
         .signed_as(world, "observer")
         .send(world)
         .await;
     assert_eq!(project_read.status, 200, "{}", project_read.body);
-    let unmaterialized = Call::post(
+    let second_epic = Call::post(
         format!("/v1/projects/{project}/epics:apply"),
         &epic_body(
             project_read.json()["revision"]
                 .as_u64()
                 .expect("a project revision"),
-            "Unmaterialized epic",
+            "Second epic",
             &first_category(world).await,
-            serde_json::json!([{"title": "A task with no control plane"}]),
+            serde_json::json!([{"title": "A task whose completion has not started"}]),
         ),
     )
     .signed_as(world, "admin")
-    .with_key("op06-unmaterialized-epic")
+    .with_key("op06-second-epic")
     .send(world)
     .await;
-    assert_eq!(unmaterialized.status, 200, "{}", unmaterialized.body);
-    let unmaterialized_epic = unmaterialized.json()["epic_id"]
+    assert_eq!(second_epic.status, 200, "{}", second_epic.body);
+    let second_epic = second_epic.json()["epic_id"]
         .as_str()
         .expect("an epic id")
         .to_owned();
-    // An in-project leadership seat resolves this epic, which exists but never
-    // started completion. The daemon reports that absence, and writes no
-    // receipt for the refused remediation.
+    let second_epic_id = MiniProjectId::parse(&second_epic).expect("an epic id");
+    let second_lsa = world.daemon.state().with_store(|store| {
+        let domain = kontor_profiles::bundled_operational_domain().expect("the bundled domain");
+        let control = store
+            .list_topology_nodes(project_id, Some(second_epic_id))
+            .expect("the second epic's nodes read")
+            .into_iter()
+            .find(|node| node.kind == domain.delivery.control_kind)
+            .expect("the applied epic has a control plane");
+        store
+            .list_seat_bindings(project_id, control.id)
+            .expect("the second epic's seats read")
+            .into_iter()
+            .find(|seat| seat.role.role_code.as_str() == "LSA")
+            .expect("the applied epic has an LSA")
+            .id
+    });
+    // Its own LSA resolves an epic that exists but never started completion.
+    // The daemon reports that absence, and writes no receipt for the refusal.
     let receipts_before_unstarted = read_receipts();
     let unstarted = Call::post(
-        format!("/v1/projects/{project}/epics/{unmaterialized_epic}/completion:remediate"),
+        format!("/v1/projects/{project}/epics/{second_epic}/completion:remediate"),
         &foreign_remediation,
     )
     .with_token(
@@ -52214,7 +52229,7 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
             .daemon
             .state()
             .credentials()
-            .seat_credential_for_generation(lsa, 1),
+            .seat_credential_for_generation(second_lsa, 1),
     )
     .with_key("op06-remediate-unstarted")
     .send(world)
@@ -52226,6 +52241,34 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
     );
     assert_eq!(unstarted.code(), "not_found");
     assert!(unstarted.json().get("receipt_id").is_none());
+    assert_eq!(
+        read_receipts(),
+        receipts_before_unstarted,
+        "a refused remediation writes no receipt"
+    );
+    // A seat of the first epic is refused before the second epic's run is
+    // looked up, so it learns nothing about whether that run exists.
+    let cross_epic_remediate = Call::post(
+        format!("/v1/projects/{project}/epics/{second_epic}/completion:remediate"),
+        &foreign_remediation,
+    )
+    .with_token(
+        world
+            .daemon
+            .state()
+            .credentials()
+            .seat_credential_for_generation(lsa, 1),
+    )
+    .with_key("op06-remediate-cross-epic")
+    .send(world)
+    .await;
+    assert_eq!(
+        cross_epic_remediate.status, 403,
+        "another epic's leadership must not remediate this epic: {}",
+        cross_epic_remediate.body
+    );
+    assert_eq!(cross_epic_remediate.code(), "forbidden");
+    assert!(cross_epic_remediate.json().get("receipt_id").is_none());
     assert_eq!(
         read_receipts(),
         receipts_before_unstarted,
