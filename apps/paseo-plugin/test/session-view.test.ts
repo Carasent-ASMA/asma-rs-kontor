@@ -7,6 +7,7 @@ import {
   filterDirectoryEntries,
   hasActiveView,
   matchesQuery,
+  needsAttention,
   statusFilterLabel,
 } from "../client/session-view";
 import { sessionEntry } from "./session-fixtures";
@@ -78,10 +79,46 @@ describe("session search and filters", () => {
     expect(hasActiveView({ ...DEFAULT_SESSION_FILTERS, query: "x" })).toBe(true);
   });
 
+  it("includes a permission wait in attention even when requiresAttention is false", () => {
+    const pending = sessionEntry("pending", {
+      status: "running",
+      requiresAttention: false,
+      pendingPermissionCount: 1,
+    });
+    const permissionReason = sessionEntry("permission-reason", {
+      status: "running",
+      requiresAttention: false,
+      attentionReason: "permission",
+    });
+    const idle = sessionEntry("idle", { status: "idle" });
+
+    expect(pending.needsInput).toBe(true);
+    expect(permissionReason.needsInput).toBe(true);
+    expect(needsAttention(pending)).toBe(true);
+    expect(needsAttention(permissionReason)).toBe(true);
+    expect(needsAttention(idle)).toBe(false);
+    expect(attentionLabel(pending)).toBe("Needs input");
+    expect(attentionLabel(permissionReason)).toBe("Needs input");
+
+    expect(
+      filterDirectoryEntries([pending, permissionReason, idle], {
+        ...DEFAULT_SESSION_FILTERS,
+        attentionOnly: true,
+      }).map((entry) => entry.id),
+    ).toEqual(["pending", "permission-reason"]);
+
+    expect(
+      filterDirectoryEntries([pending, permissionReason, idle], {
+        ...DEFAULT_SESSION_FILTERS,
+        status: "running",
+      }).map((entry) => entry.id),
+    ).toEqual(["pending", "permission-reason"]);
+  });
+
   it("labels native state and attention without interpreting completion", () => {
     expect(statusFilterLabel("all")).toBe("All");
     expect(statusFilterLabel("initializing")).toBe("Initializing");
-    expect(attentionLabel(entries[0]!)).toBe("Permission");
+    expect(attentionLabel(entries[0]!)).toBe("Needs input");
     expect(attentionLabel(entries[1]!)).toBeNull();
     expect(archivedLabel(entries[0]!)).toBeNull();
     expect(

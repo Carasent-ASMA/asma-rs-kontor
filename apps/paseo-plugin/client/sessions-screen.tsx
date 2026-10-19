@@ -53,6 +53,10 @@ function statusColor(entry: DirectoryEntry, colors: ThemeColors): string {
   return colors[STATUS_COLORS[entry.status]];
 }
 
+function indicatorColor(entry: DirectoryEntry, colors: ThemeColors): string {
+  return entry.needsInput ? colors.statusWarning : statusColor(entry, colors);
+}
+
 function scopeLabel(includeArchived: boolean): string {
   return includeArchived
     ? "All sessions, including archived"
@@ -125,8 +129,12 @@ const SessionRow = memo(function SessionRow({
   const accessibilityLabel = [
     entry.title,
     `Native ID ${entry.id}`,
-    entry.status,
-    attention ? `Needs attention: ${attention}` : null,
+    `Native status ${entry.status}`,
+    entry.needsInput
+      ? "Needs input"
+      : attention
+        ? `Needs attention: ${attention}`
+        : null,
     archived,
     detail,
   ]
@@ -157,7 +165,7 @@ const SessionRow = memo(function SessionRow({
           width: 9,
           height: 9,
           borderRadius: 5,
-          backgroundColor: statusColor(entry, colors),
+          backgroundColor: indicatorColor(entry, colors),
         }}
       />
       <View style={{ flex: 1, minWidth: 0 }}>

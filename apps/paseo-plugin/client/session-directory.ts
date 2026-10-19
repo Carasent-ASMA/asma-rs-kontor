@@ -47,10 +47,15 @@ const AGENT_SORT: NonNullable<PaseoAgentListOptions["sort"]> = [
 export type DirectoryEntry = {
   readonly id: string;
   readonly title: string;
+  /** Raw native lifecycle. Never replaced by the derived needs-input state. */
   readonly status: SessionStatus;
   readonly requiresAttention: boolean;
   readonly attentionReason: AttentionReason | null;
   readonly attentionTimestamp: string | null;
+  /** Native pending permission requests; public `pendingPermissions.length`. */
+  readonly pendingPermissionCount: number;
+  /** Native needs-input parity: permission wait wins over raw lifecycle. */
+  readonly needsInput: boolean;
   readonly archivedAt: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -119,6 +124,21 @@ export function describeDirectoryError(error: unknown): string {
   return "Paseo did not return a usable session directory.";
 }
 
+/**
+ * Installed Paseo 0.11.4 `deriveAgentStateBucket` gives `needs_input` first when
+ * a pending permission exists or the attention reason is permission, regardless
+ * of `requiresAttention` or the raw lifecycle status.
+ */
+export function deriveNeedsInput(input: {
+  readonly pendingPermissionCount?: number | null;
+  readonly attentionReason?: AttentionReason | null;
+}): boolean {
+  return (
+    (input.pendingPermissionCount ?? 0) > 0 ||
+    input.attentionReason === "permission"
+  );
+}
+
 function text(value: string | null | undefined): string | null {
   if (typeof value !== "string") {
     return null;
@@ -162,13 +182,17 @@ export function toDirectoryEntry(
   const projectKey = text(project?.projectKey) ?? previous?.projectKey ?? null;
   const cwd = agent.cwd || previous?.cwd || "";
   const labels = agent.labels ?? {};
+  const pendingPermissionCount = agent.pendingPermissions?.length ?? 0;
+  const attentionReason = agent.attentionReason ?? null;
   return {
     id: agent.id,
     title,
     status: agent.status,
     requiresAttention: agent.requiresAttention === true,
-    attentionReason: agent.attentionReason ?? null,
+    attentionReason,
     attentionTimestamp: agent.attentionTimestamp ?? null,
+    pendingPermissionCount,
+    needsInput: deriveNeedsInput({ pendingPermissionCount, attentionReason }),
     archivedAt: agent.archivedAt ?? null,
     createdAt: agent.createdAt,
     updatedAt: agent.updatedAt,
@@ -190,17 +214,22 @@ function timestampOf(value: string): number {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
-function statusRank(status: SessionStatus): number {
-  if (status === "error") {
+/**
+ * Same order as the installed native `deriveAgentStateBucket` priority:
+ * needs input, failed, running, attention, done. The raw lifecycle remains
+ * untouched; this only chooses display order.
+ */
+function stateBucketRank(entry: DirectoryEntry): number {
+  if (entry.needsInput) {
     return 0;
   }
-  if (status === "running") {
+  if (entry.status === "error" || entry.attentionReason === "error") {
     return 1;
   }
-  if (status === "initializing") {
+  if (entry.status === "running") {
     return 2;
   }
-  if (status === "idle") {
+  if (entry.requiresAttention) {
     return 3;
   }
   return 4;
@@ -208,13 +237,9 @@ function statusRank(status: SessionStatus): number {
 
 /** Display order only. The directory never changes a native session. */
 export function compareDirectoryEntries(left: DirectoryEntry, right: DirectoryEntry): number {
-  const attention = Number(right.requiresAttention) - Number(left.requiresAttention);
-  if (attention !== 0) {
-    return attention;
-  }
-  const status = statusRank(left.status) - statusRank(right.status);
-  if (status !== 0) {
-    return status;
+  const rank = stateBucketRank(left) - stateBucketRank(right);
+  if (rank !== 0) {
+    return rank;
   }
   const updated = timestampOf(right.updatedAt) - timestampOf(left.updatedAt);
   if (updated !== 0) {

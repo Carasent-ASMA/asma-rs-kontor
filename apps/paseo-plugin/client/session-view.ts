@@ -53,11 +53,19 @@ export function matchesQuery(entry: DirectoryEntry, query: string): boolean {
   return tokens.every((token) => entry.searchText.includes(token));
 }
 
+/**
+ * The attention filter follows the native needs-input priority: a pending
+ * permission must be included even when `requiresAttention` is false.
+ */
+export function needsAttention(entry: DirectoryEntry): boolean {
+  return entry.needsInput || entry.requiresAttention;
+}
+
 export function matchesFilters(entry: DirectoryEntry, filters: SessionFilters): boolean {
   if (filters.status !== ALL_STATUS_FILTER && entry.status !== filters.status) {
     return false;
   }
-  if (filters.attentionOnly && !entry.requiresAttention) {
+  if (filters.attentionOnly && !needsAttention(entry)) {
     return false;
   }
   return matchesQuery(entry, filters.query);
@@ -90,6 +98,9 @@ export function hasActiveView(filters: SessionFilters): boolean {
 }
 
 export function attentionLabel(entry: DirectoryEntry): string | null {
+  if (entry.needsInput) {
+    return "Needs input";
+  }
   if (!entry.requiresAttention) {
     return null;
   }

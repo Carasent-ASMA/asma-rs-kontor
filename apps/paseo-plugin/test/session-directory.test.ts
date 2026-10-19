@@ -6,8 +6,10 @@ import type {
 import { describe, expect, it, vi } from "vitest";
 import {
   collectDirectory,
+  deriveNeedsInput,
   emptyDirectoryState,
   SessionDirectory,
+  sortDirectoryEntries,
   toDirectoryEntry,
   type AgentDirectoryPage,
   type DirectoryClient,
@@ -27,6 +29,7 @@ type EntryOverrides = {
   status?: "initializing" | "idle" | "running" | "error" | "closed";
   requiresAttention?: boolean;
   attentionReason?: "finished" | "error" | "permission" | null;
+  pendingPermissions?: readonly unknown[];
   archivedAt?: string | null;
   workspaceName?: string;
   projectName?: string;
@@ -56,7 +59,7 @@ function entry(id: string, overrides: EntryOverrides = {}): AgentDirectoryPage {
       },
       currentModeId: null,
       availableModes: [],
-      pendingPermissions: [],
+      pendingPermissions: overrides.pendingPermissions ?? [],
       persistence: null,
       title: overrides.title ?? `Session ${id}`,
       labels: overrides.labels ?? {},
@@ -315,6 +318,93 @@ describe("SessionDirectory", () => {
     expect(matchesQuery(directoryEntry, "kontor")).toBe(true);
   });
 
+  it("derives native needs-input priority from pending permissions and permission attention", () => {
+    const pending = toDirectoryEntry(
+      entry("pending", {
+        status: "running",
+        requiresAttention: false,
+        pendingPermissions: [{ id: "permission-1" }],
+      }),
+    );
+    expect(pending.status).toBe("running");
+    expect(pending.pendingPermissionCount).toBe(1);
+    expect(pending.needsInput).toBe(true);
+
+    const permissionReason = toDirectoryEntry(
+      entry("permission-reason", {
+        status: "running",
+        requiresAttention: false,
+        attentionReason: "permission",
+      }),
+    );
+    expect(permissionReason.status).toBe("running");
+    expect(permissionReason.pendingPermissionCount).toBe(0);
+    expect(permissionReason.needsInput).toBe(true);
+
+    const failed = toDirectoryEntry(
+      entry("failed", {
+        status: "error",
+        requiresAttention: true,
+        attentionReason: "error",
+      }),
+    );
+    const finished = toDirectoryEntry(
+      entry("finished", {
+        status: "idle",
+        requiresAttention: true,
+        attentionReason: "finished",
+      }),
+    );
+    const idle = toDirectoryEntry(entry("idle", { status: "idle" }));
+    const closed = toDirectoryEntry(entry("closed", { status: "closed" }));
+    const initializing = toDirectoryEntry(
+      entry("initializing", { status: "initializing" }),
+    );
+
+    expect(failed.needsInput).toBe(false);
+    expect(finished.needsInput).toBe(false);
+    expect(idle.needsInput).toBe(false);
+    expect(closed.needsInput).toBe(false);
+    expect(initializing.needsInput).toBe(false);
+    expect(deriveNeedsInput({ pendingPermissionCount: 0, attentionReason: null })).toBe(
+      false,
+    );
+  });
+
+  it("clears needs input from the next snapshot instead of carrying a stale badge", () => {
+    const pending = toDirectoryEntry(
+      entry("agent-a", {
+        status: "running",
+        pendingPermissions: [{ id: "permission-1" }],
+      }),
+    );
+    const resolved = toDirectoryEntry(
+      entry("agent-a", { status: "idle" }),
+      pending,
+    );
+
+    expect(pending.needsInput).toBe(true);
+    expect(resolved.status).toBe("idle");
+    expect(resolved.pendingPermissionCount).toBe(0);
+    expect(resolved.needsInput).toBe(false);
+  });
+
+  it("sorts needs input ahead of failed and other attention states", () => {
+    const entries = [
+      toDirectoryEntry(entry("failed", { status: "error", attentionReason: "error" })),
+      toDirectoryEntry(entry("finished", { status: "idle", requiresAttention: true, attentionReason: "finished" })),
+      toDirectoryEntry(entry("needs-input", { status: "running", pendingPermissions: [{ id: "p" }] })),
+      toDirectoryEntry(entry("idle", { status: "idle" })),
+    ];
+
+    expect(sortDirectoryEntries(entries).map((item) => item.id)).toEqual([
+      "needs-input",
+      "failed",
+      "finished",
+      "idle",
+    ]);
+  });
+
   it("tracks native status and attention separately and keeps duplicate titles distinct", async () => {
     const fake = fakeDirectory([
       [
@@ -360,6 +450,105 @@ describe("SessionDirectory", () => {
 
     await directory.dispose();
     expect(fake.released).toBe(true);
+  });
+
+  it("clears needs input after a permission update resolves or is cancelled", async () => {
+    const fake = fakeDirectory([
+      [
+        entry("agent-a", {
+          status: "running",
+          requiresAttention: false,
+          pendingPermissions: [{ id: "permission-1" }],
+        }),
+      ],
+    ]);
+    let latest = emptyDirectoryState();
+    const directory = new SessionDirectory({
+      client: () => fake.client,
+      includeArchived: false,
+      onChange: (state) => {
+        latest = state;
+      },
+    });
+
+    await directory.start();
+    expect(latest.entries[0]?.needsInput).toBe(true);
+    expect(latest.entries[0]?.status).toBe("running");
+
+    fake.emitUpdate({
+      kind: "upsert",
+      agent: {
+        ...entry("agent-a", { status: "idle" }).agent,
+        pendingPermissions: [],
+        requiresAttention: false,
+        attentionReason: null,
+      },
+    } as PaseoAgentUpdate);
+
+    expect(latest.entries[0]?.status).toBe("idle");
+    expect(latest.entries[0]?.needsInput).toBe(false);
+    expect(latest.entries[0]?.pendingPermissionCount).toBe(0);
+
+    fake.emitUpdate({
+      kind: "upsert",
+      agent: {
+        ...entry("agent-a", { status: "running" }).agent,
+        pendingPermissions: [],
+        requiresAttention: false,
+        attentionReason: "permission",
+      },
+    } as PaseoAgentUpdate);
+    expect(latest.entries[0]?.needsInput).toBe(true);
+
+    fake.emitUpdate({
+      kind: "upsert",
+      agent: {
+        ...entry("agent-a", { status: "idle" }).agent,
+        pendingPermissions: [],
+        requiresAttention: false,
+        attentionReason: null,
+      },
+    } as PaseoAgentUpdate);
+    expect(latest.entries[0]?.needsInput).toBe(false);
+
+    await directory.dispose();
+  });
+
+  it("does not carry a needs-input badge across a reconnect", async () => {
+    const fake = fakeDirectory([
+      [
+        entry("agent-a", {
+          status: "running",
+          requiresAttention: false,
+          pendingPermissions: [{ id: "permission-1" }],
+        }),
+      ],
+    ]);
+    let latest = emptyDirectoryState();
+    const directory = new SessionDirectory({
+      client: () => fake.client,
+      includeArchived: false,
+      onChange: (state) => {
+        latest = state;
+      },
+    });
+
+    await directory.start();
+    expect(latest.entries[0]?.needsInput).toBe(true);
+
+    directory.markHostOffline();
+    expect(latest.status).toBe("stale");
+    expect(latest.entries[0]?.needsInput).toBe(true);
+
+    fake.setPages([[entry("agent-a", { status: "idle" })]]);
+    await directory.reconnect();
+
+    expect(latest.status).toBe("ready");
+    expect(latest.entries[0]?.status).toBe("idle");
+    expect(latest.entries[0]?.needsInput).toBe(false);
+    expect(latest.entries[0]?.pendingPermissionCount).toBe(0);
+
+    await directory.dispose();
   });
 
   it("marks the directory stale on disconnect and reconciles on reconnect", async () => {
