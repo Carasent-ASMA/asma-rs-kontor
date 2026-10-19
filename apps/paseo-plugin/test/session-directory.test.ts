@@ -1030,6 +1030,33 @@ describe("SessionDirectory", () => {
     await directory.dispose();
   });
 
+  it("keeps rows when the online archive-scope re-read fails", async () => {
+    const fake = fakeDirectory([[entry("agent-a")]]);
+    let latest = emptyDirectoryState();
+    const directory = new SessionDirectory({
+      client: () => fake.client,
+      includeArchived: false,
+      onChange: (state) => {
+        latest = state;
+      },
+    });
+
+    await directory.start();
+    const subscribe = fake.holdNextSubscribe();
+    const changing = directory.setIncludeArchived(true);
+    await subscribe.started;
+    fake.failNext();
+    subscribe.release();
+    await changing;
+
+    expect(latest.includeArchived).toBe(true);
+    expect(latest.status).toBe("stale");
+    expect(latest.entries).toHaveLength(1);
+    expect(latest.error).toMatch(/daemon unavailable/);
+
+    await directory.dispose();
+  });
+
   it("does not let an archived update stay in the default scope", async () => {
     const fake = fakeDirectory([[entry("agent-a")]]);
     let latest = emptyDirectoryState();

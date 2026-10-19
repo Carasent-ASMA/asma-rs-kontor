@@ -727,20 +727,20 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     generation += 1;
     pendingUpdates = [];
     pendingOverflow = false;
-    entries.clear();
     pages = 0;
     lastUpdatedAt = null;
-    status = "loading";
-    staleReason = null;
     error = null;
     live = false;
     subscriptionActive = false;
     releaseSubscription();
-    emit();
     if (hostOnline) {
+      status = entries.size > 0 ? "stale" : "loading";
+      staleReason = entries.size > 0 ? "Refreshing the archive scope." : null;
+      emit();
       await connect();
       return;
     }
+    entries.clear();
     status = "error";
     staleReason = null;
     error =
