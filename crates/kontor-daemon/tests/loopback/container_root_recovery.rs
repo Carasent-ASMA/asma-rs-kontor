@@ -958,3 +958,259 @@ async fn a_new_epic_apply_does_not_wait_for_a_container_recovery_in_flight() {
         "the fresh apply wrote no epic before governance refused it"
     );
 }
+
+/// A backlog re-import cannot overtake a recovery that froze the task's claim.
+///
+/// `backlog/import:apply` rewrites the declared worktree of an existing task on
+/// a second export, exactly as `epics:apply` does. If that write could land
+/// between a recovery reading the claim and creating the native at it, the
+/// recovery would successfully bind a directory the claim no longer names.
+/// Import makes the same per-task claim decision and takes the same native
+/// lifecycle lock the recovery holds, so it waits here while the recovery is
+/// held at its create, and writes only after the recovery's result is durable.
+#[tokio::test]
+async fn a_backlog_import_waits_for_a_container_recovery_in_flight() {
+    let world = World::open_empty_with_a_plane().await;
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let created = Call::post(
+        "/v1/projects:ensure",
+        &serde_json::json!({
+            "name": "Backlog import recovery race",
+            "root_path": "/tmp/kontor-backlog-import-recovery-race",
+            "memory_origin": "kontor_native",
+            "backlog_origin": "legacy_pending",
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("backlog-import-race-project")
+    .send(&world)
+    .await;
+    assert_eq!(created.status, 200, "{}", created.body);
+    assert_eq!(created.json()["backlog"]["authority"], "agentsroom");
+    let project = ProjectId::parse(created.json()["project_id"].as_str().expect("a project id"))
+        .expect("a canonical project id");
+    let project_text = project.to_string();
+    register_mvp_delivery_slots(&world, &project_text);
+    let category = first_category(&world).await;
+    let project_revision = created.json()["revision"].as_u64().expect("a revision");
+
+    let claim =
+        std::env::temp_dir().join("kontor-loopback-worktrees/backlog-import-recovery-race/claim-a");
+    std::fs::create_dir_all(claim.join(".git")).expect("the imported claim exists");
+    let first = epic_body(
+        project_revision,
+        "Backlog import recovery race",
+        &category,
+        serde_json::json!([{
+            "title": "Moved container",
+            "module": "_tools/asma-rs-kontor",
+            "worktree": claim.to_str().expect("utf-8"),
+        }]),
+    );
+    let export = serde_json::json!({
+        "source": "agentsroom",
+        "expected_authority_revision": 1,
+        "epics": [first],
+    });
+    let preview = Call::post(
+        format!("/v1/projects/{project}/backlog/import:preview"),
+        &export,
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let imported = Call::post(
+        format!("/v1/projects/{project}/backlog/import:apply"),
+        &serde_json::json!({
+            "export": export,
+            "preview_hash": preview.json()["preview_hash"],
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("backlog-import-race-import")
+    .send(&world)
+    .await;
+    assert_eq!(imported.status, 200, "{}", imported.body);
+
+    let epic = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_mini_projects(project))
+        .expect("epics read")
+        .into_iter()
+        .find(|epic| epic.name.as_str() == "Backlog import recovery race")
+        .expect("the imported epic exists");
+    let task = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_epic_tasks(project, epic.id))
+        .expect("tasks read")
+        .into_iter()
+        .find(|task| task.title.as_str() == "Moved container")
+        .expect("the imported task exists")
+        .id;
+    confirm_test_epic_identity(&world, &project_text, &epic.id.to_string());
+    let revision = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_project(project))
+        .expect("project reads")
+        .expect("project exists")
+        .revision
+        .get();
+    materialize_test_provider_topology(
+        &world,
+        &project_text,
+        revision,
+        &epic.id.to_string(),
+        &task.to_string(),
+        "backlog-import-race",
+    )
+    .await;
+    let node = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_task_topology_node(project, task))
+        .expect("node reads")
+        .expect("the task has a topology node")
+        .id;
+
+    // The binding names a directory the task no longer claims, and the native
+    // is gone, so recovery is a positively vacant recreation at the claim it
+    // freezes.
+    let previous = world.directory.path().join("previous-container-root");
+    std::fs::create_dir(&previous).expect("the previous root exists");
+    let previous = std::fs::canonicalize(&previous).expect("the previous root canonicalizes");
+    let db = rusqlite::Connection::open(world.directory.path().join("kontor.db")).expect("db");
+    db.execute(
+        "UPDATE topology_node_containers SET canonical_cwd=?1, revision=revision+1 WHERE topology_node_id=?2",
+        rusqlite::params![previous.to_str().expect("utf-8"), node.to_string()],
+    )
+    .expect("the stale binding moves");
+    world.fake.forget_container(node);
+
+    let project_revision = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_project(project))
+        .expect("project reads")
+        .expect("project exists")
+        .revision;
+    let recovery_preview = Call::post(
+        format!("/v1/projects/{project}/topology/nodes/{node}/container:recovery-preview"),
+        &serde_json::json!({"expected_revision": project_revision}),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(recovery_preview.status, 200, "{}", recovery_preview.body);
+    assert_eq!(recovery_preview.json()["disposition"], "recreate_absent");
+    assert_eq!(
+        recovery_preview.json()["canonical_cwd"],
+        std::fs::canonicalize(&claim)
+            .expect("the claim canonicalizes")
+            .to_str()
+            .expect("utf-8")
+    );
+
+    // A second export declares a different claim for the same epic and task.
+    let corrected =
+        std::env::temp_dir().join("kontor-loopback-worktrees/backlog-import-recovery-race/claim-b");
+    let second = epic_body(
+        project_revision.get(),
+        "Backlog import recovery race",
+        &category,
+        serde_json::json!([{
+            "title": "Moved container",
+            "module": "_tools/asma-rs-kontor",
+            "worktree": corrected.to_str().expect("utf-8"),
+        }]),
+    );
+    let second_export = serde_json::json!({
+        "source": "agentsroom",
+        "expected_authority_revision": 1,
+        "epics": [second],
+    });
+    let second_preview = Call::post(
+        format!("/v1/projects/{project}/backlog/import:preview"),
+        &second_export,
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(second_preview.status, 200, "{}", second_preview.body);
+    let second_apply = serde_json::json!({
+        "export": second_export,
+        "preview_hash": second_preview.json()["preview_hash"],
+    });
+
+    let pause = world.fake.pause_next_container_create();
+    let recovery = async {
+        Call::post(
+            format!("/v1/projects/{project}/topology/nodes/{node}/container:recovery-apply"),
+            &serde_json::json!({
+                "expected_revision": project_revision,
+                "preview_hash": recovery_preview.json()["preview_hash"],
+            }),
+        )
+        .signed_as(&world, "admin")
+        .with_key("backlog-import-race-recovery")
+        .send(&world)
+        .await
+    };
+    let reimport = async {
+        pause.entered().await;
+        Call::post(
+            format!("/v1/projects/{project}/backlog/import:apply"),
+            &second_apply,
+        )
+        .signed_as(&world, "admin")
+        .with_key("backlog-import-race-reimport")
+        .send(&world)
+        .await
+    };
+    let release = async {
+        pause.entered().await;
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        let held = world
+            .daemon
+            .state()
+            .with_store(|store| store.task_worktree(project, task))
+            .expect("claim reads")
+            .expect("the task still claims its worktree");
+        assert_eq!(
+            held.as_str(),
+            claim.to_str().expect("utf-8"),
+            "the backlog import changed the claim while the recovery held the native lifecycle lock"
+        );
+        pause.release();
+    };
+    let (recovered, reimported, ()) = tokio::join!(recovery, reimport, release);
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    assert_eq!(reimported.status, 200, "{}", reimported.body);
+
+    let bound = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_topology_node_container(project, node))
+        .expect("binding reads")
+        .expect("the node is bound");
+    assert_eq!(
+        bound
+            .canonical_cwd
+            .expect("the replacement names its root")
+            .as_str(),
+        std::fs::canonicalize(&claim)
+            .expect("the claim canonicalizes")
+            .to_str()
+            .expect("utf-8")
+    );
+    let stored = world
+        .daemon
+        .state()
+        .with_store(|store| store.task_worktree(project, task))
+        .expect("claim reads")
+        .expect("the task claims a worktree");
+    assert_eq!(stored.as_str(), corrected.to_str().expect("utf-8"));
+}
