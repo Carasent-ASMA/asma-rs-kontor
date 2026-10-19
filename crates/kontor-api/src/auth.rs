@@ -154,17 +154,21 @@ impl RealmCredentials {
     /// A handoff derived from a transcript must not carry a Realm credential
     /// even when the transcript quotes one. These values are resolved from the
     /// live generation, so a rotation takes effect on the next derived artifact.
-    /// Callers must never persist, log or serialize the returned strings.
+    ///
+    /// The returned values stay in [`SecretString`]s: they are zeroized when
+    /// the vector is dropped and cannot be serialized or printed by accident.
+    /// Callers must never persist, log or serialize them, and must read one
+    /// only where it is substituted out of derived text.
     #[must_use]
-    pub fn redaction_secrets(&self) -> Vec<String> {
+    pub fn redaction_secrets(&self) -> Vec<SecretString> {
         let held = self
             .secrets
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         vec![
-            held.observer.expose_secret().to_owned(),
-            held.operator.expose_secret().to_owned(),
-            held.admin.expose_secret().to_owned(),
+            held.observer.clone(),
+            held.operator.clone(),
+            held.admin.clone(),
         ]
     }
 

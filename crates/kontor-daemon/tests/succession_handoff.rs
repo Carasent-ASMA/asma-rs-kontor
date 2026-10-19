@@ -29,6 +29,7 @@ use kontor_runtime::{
     BindingMessageTimeline, BindingTimelineEvent, SessionEvent, SessionEventKind, TimelinePosition,
 };
 use kontor_scheduler::headroom::{EligibleAccount, HeadroomConfig};
+use secrecy::SecretString;
 
 const CREDENTIAL_CANARY: &str = "INTERNAL-CREDENTIAL-CANARY-4829";
 
@@ -178,7 +179,7 @@ fn timeline(
 fn policy() -> SuccessionRedactionPolicy {
     SuccessionRedactionPolicy::new(
         ContentHash::of(b"succession-redaction-policy-v1"),
-        vec![CREDENTIAL_CANARY.to_owned()],
+        vec![SecretString::from(CREDENTIAL_CANARY)],
     )
 }
 

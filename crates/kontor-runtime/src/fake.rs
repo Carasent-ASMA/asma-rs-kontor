@@ -6112,6 +6112,12 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         Ok(receipt)
     }
 
+    fn supports_succession_summary(&self) -> bool {
+        self.lock()
+            .capabilities
+            .supports(RuntimeCapability::Summarize)
+    }
+
     async fn summarize_succession(
         &self,
         model_rung: &ModelRung,
