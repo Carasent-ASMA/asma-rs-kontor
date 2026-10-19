@@ -473,6 +473,10 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
         return;
       }
       applyPendingUpdates();
+      if (pendingOverflow) {
+        pendingOverflow = false;
+        refreshQueued = true;
+      }
       error = describeDirectoryError(refreshError);
       staleReason = entries.size > 0 ? "Could not refresh the full directory." : null;
       status = entries.size > 0 ? "stale" : "error";
@@ -735,7 +739,13 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     emit();
     if (hostOnline) {
       await connect();
+      return;
     }
+    status = "error";
+    staleReason = null;
+    error =
+      "The archive filter changed while the Paseo host is offline. Reconnect to reload the directory.";
+    emit();
   }
 
   async function dispose(): Promise<void> {
