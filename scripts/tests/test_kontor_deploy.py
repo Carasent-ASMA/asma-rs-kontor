@@ -407,6 +407,45 @@ class ProductionJobGuardTest(WorldTest):
         self.assertEqual(recorder.launchctl(), [])
         self.assertFalse(self.world.backup.exists())
 
+    def test_a_disposable_job_cannot_install_beside_production_binaries(self) -> None:
+        production_bin = self.world.home / "prod-bin"
+        production_state = self.world.home / "prod-state"
+        other_state = self.world.home / "other-state"
+        for directory in (production_bin, production_state, other_state):
+            directory.mkdir()
+        for name in deploy.BINARIES:
+            (production_bin / name).write_bytes(f"prod {name}\n".encode())
+        record = self.world.home / deploy.DEPLOY_TARGET_RELATIVE
+        record.parent.mkdir(parents=True)
+        record.write_text(
+            json.dumps(
+                {
+                    "daemon": str(production_bin / "old-daemon"),
+                    "stateRoot": str(production_state),
+                    "port": 47717,
+                }
+            )
+        )
+        disposable = self.world.plist(
+            DISPOSABLE_LABEL,
+            daemon=production_bin / "kontor-daemon",
+            state_root=other_state,
+            port=47718,
+        )
+        recorder = Recorder()
+        argv = [
+            "--label", DISPOSABLE_LABEL,
+            "--domain", DISPOSABLE_DOMAIN,
+            "--plist", str(disposable),
+            *command_argv("replace", self.world),
+        ]
+        self.assertEqual(
+            run_main(argv, self.world.host(recorder, DISPOSABLE_UID)),
+            deploy.EXIT_REFUSED,
+        )
+        self.assertEqual(recorder.launchctl(), [])
+        self.assertFalse(self.world.backup.exists())
+
     def test_the_loaded_production_job_seeds_the_target_without_a_plist_or_record(
         self,
     ) -> None:
@@ -628,6 +667,24 @@ class ProductionJobGuardTest(WorldTest):
             deploy.EXIT_REFUSED,
         )
         self.assertEqual(recorder.launchctl(), [])
+
+    def test_a_managed_job_refuses_port_zero(self) -> None:
+        plist = self.world.plist(DISPOSABLE_LABEL, port=0)
+        for command in ("bootstrap", "replace"):
+            with self.subTest(command=command):
+                recorder = Recorder()
+                argv = [
+                    "--label", DISPOSABLE_LABEL,
+                    "--domain", DISPOSABLE_DOMAIN,
+                    "--plist", str(plist),
+                    *command_argv(command, self.world),
+                ]
+                self.assertEqual(
+                    run_main(argv, self.world.host(recorder, DISPOSABLE_UID)),
+                    deploy.EXIT_REFUSED,
+                )
+                self.assertEqual(recorder.calls, [])
+        self.assertFalse(self.world.backup.exists())
 
     def test_a_broken_canonical_plist_does_not_block_a_disposable_job(self) -> None:
         canonical = self.world.plist(PRODUCTION_LABEL)
@@ -1328,7 +1385,7 @@ class ReplaceTest(WorldTest):
     def test_a_declared_production_replace_refuses_one_wrong_candidate_hash(self) -> None:
         expected = {name: deploy.digest(self.world.candidates / name) for name in deploy.BINARIES}
         values = [f"{name}={checksum}" for name, checksum in expected.items()]
-        values[0] = f"{deploy.BINARIES[0]}={'0' * 64}"
+        values[-1] = f"{deploy.BINARIES[-1]}={'0' * 64}"
         recorder = Recorder(self.answer())
         self.assertEqual(self.production_replace(recorder, values), deploy.EXIT_FAILED)
         self.assertEqual(recorder.launchctl(), [])

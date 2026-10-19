@@ -163,6 +163,10 @@ class ProductionTarget:
     state_root: Path
     port: int | None
 
+    @property
+    def install_dir(self) -> Path:
+        return self.daemon.parent
+
 
 @dataclass(frozen=True)
 class Job:
@@ -271,14 +275,15 @@ def resolve_job(
             target_port = target.port if target.port is not None else DEFAULT_PORT
             if (
                 _same_path(daemon, target.daemon)
+                or _same_path(daemon.parent, target.install_dir)
                 or _same_path(state_root, target.state_root)
                 or port == target_port
             ):
                 raise Refused(
                     "production_target",
-                    f"{plist} runs {daemon} with state root {state_root} on port {port}, "
-                    "which the production job uses; only --production-deploy may "
-                    "address it",
+                    f"{plist} runs {daemon} with state root {state_root} on port {port} "
+                    f"and installs into {daemon.parent}, which the production job "
+                    "uses; only --production-deploy may address it",
                 )
     if command == "bootout":
         return Job(label, domain, None, None, None, port)
@@ -442,11 +447,13 @@ def _job_target(document: dict, plist: Path) -> ProductionTarget:
     daemon, state_root = _job_paths(document, plist)
     arguments = document.get("ProgramArguments")
     port = _option(arguments, "--port") if isinstance(arguments, list) else None
-    return ProductionTarget(
-        daemon,
-        state_root,
-        int(port) if port is not None and port.isdigit() else None,
-    )
+    port_value = int(port) if port is not None and port.isdigit() else None
+    if port_value == 0:
+        raise Refused(
+            "plist_program",
+            f"{plist} passes --port 0; a managed job needs a fixed non-zero port",
+        )
+    return ProductionTarget(daemon, state_root, port_value)
 
 
 def _program(document: dict, plist: Path) -> tuple[Path, Path, int]:
