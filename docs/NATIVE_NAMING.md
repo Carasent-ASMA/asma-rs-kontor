@@ -204,8 +204,11 @@ issue id (schema v95, #215, `6355b850`); a missing, ambiguous or foreign
 subject refuses the render rather than falling back to an item code. The
 bundled Team Definitions v1 and v7 still render item codes. The Jira-key
 successors (`asma-operational-v4` to `v6`) exist only as prepared Team
-Definition documents, status `prepared-not-published`; a realm's selection of
-one is not recorded here.
+Definition documents, status `prepared-not-published`, in
+`crates/kontor-core/tests/fixtures/team-definition-successors/`. Their
+[manifest](../crates/kontor-core/tests/fixtures/team-definition-successors/MANIFEST.json)
+pins each candidate and its source by canonical hash and lists the token
+substitutions between them. A realm's selection of one is not recorded here.
 
 ### Native-root creation invariant
 

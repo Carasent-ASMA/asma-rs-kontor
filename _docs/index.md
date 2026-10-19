@@ -1,6 +1,6 @@
 # Kontor — Documentation Index
 
-> Canonical implementation-documentation root for the Kontor Rust control plane. Last updated: 2026-10-17 (routing and statuses checked against `master` at `0971674d`, PR #300, 2026-10-11).
+> Canonical implementation-documentation root for the Kontor Rust control plane. Last updated: 2026-10-19 (ASMA-8511 leaked-secret runbook and history-scan report added; routing and statuses checked against `master` at `0971674d`, PR #300, 2026-10-11).
 
 ## Overview
 
@@ -50,6 +50,7 @@ Reports are dated, point-in-time records; their bodies are not rewritten. The St
 
 | Document | Summary | Status | When to Load |
 | --- | --- | --- | --- |
+| [ASMA-8511 full-history secret scan](reports/2026-10-17-18-57-report-asma-8511-full-history-secret-scan.md) | Read-only gitleaks scan of every commit, merge, blob, `.gz` content and Actions run log: no credential found, nothing to revoke | Report: complete. Added by PR #328 (ASMA-8511) | Rerunning the history scan, or classifying a new gitleaks finding against the shapes already seen |
 | [ASMA-8454 desk MCP repair rework](reports/2026-10-11-22-03-report-asma-8454-desk-mcp-rework.md) | AUD B1 retained-directory containment, healthy native read-only replay, 509 focused tests and 23/23 mutants | Report: frozen rework candidate. Later merged in PR #300 (`0971674d`); new-head QA/AUD and completion-committee outcomes not recorded here | Reviewing the merged hosted desk MCP composition or preparing its released rehearsal |
 | [ASMA-8454 hosted desk MCP repair](reports/2026-10-11-21-25-report-asma-8454-desk-seat-mcp-repair.md) | Enabled Claude composition in verified desk directories; atomic publication, rollback/recovery and exact-source mutation evidence. | Historical carrier — AUD B1 rejected at `255d8c93`; superseded by the rework record above | Tracing the original repair source, tests and mutations behind PR #300 |
 | [ASMA-8454 durable desk qualification](reports/2026-10-11-16-00-report-asma-8454-desk-qualification.md) | Integrated four-structure acceptance, two authorized repairs, restore/replay, pinned compatibility, whole-change mutations and coordinator release steps. | Report: frozen source candidate. Later merged in PR #299 (`813135fd`); Independent Review verdict not recorded here | Reviewing the ASMA-8454 source qualification or preparing its released rehearsal |
@@ -64,6 +65,7 @@ Reports are dated, point-in-time records; their bodies are not rewritten. The St
 
 | Document | Summary | Status | When to Load |
 | --- | --- | --- | --- |
+| [Leaked-secret runbook](operations/2026-10-17-18-57-runbook-leaked-secret.md) | Contain, revoke and rotate, prove the revocation, assess, remove from the tree, record. A history rewrite comes last and is the product owner's decision | Added by PR #328 (ASMA-8511) | Responding to a secret found in this repository, its history or its Actions logs, or rerunning the full-history scan |
 | [Durable desk qualification runbook](operations/2026-10-11-15-28-runbook-durable-desk-qualification.md) | Disposable integrated restore/replay, declaration comparison, mutations, CLI refusal exit codes and coordinator release/readback steps. | Merged (PR #299, `813135fd`); release steps 3–8 not recorded here | Reproducing ASMA-8454 or preparing its evidence-gated release |
 
 ### Contracts (root)
