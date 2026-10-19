@@ -1128,6 +1128,10 @@ pub struct Services {
     /// Serializes provider-marker corrections so a plan can never race the write
     /// that commits it, and two corrections cannot interleave their CAS checks.
     provider_marker_guard: tokio::sync::Mutex<()>,
+    /// A black-box test's hold between a provider-marker apply's replay
+    /// pre-check and its durable claim. Absent in every composed daemon unless
+    /// a test installs one.
+    provider_marker_bind_hold: std::sync::Mutex<Option<PlanningPairReceiptHold>>,
 }
 
 /// The realm-scoped operation a provider-marker correction binds its key to.
@@ -1225,6 +1229,7 @@ impl Services {
             memory_cognee: OnceLock::new(),
             state_root,
             provider_marker_guard: tokio::sync::Mutex::new(()),
+            provider_marker_bind_hold: std::sync::Mutex::new(None),
         }))
     }
 
@@ -21545,10 +21550,28 @@ impl Services {
             )
             .advising("read the marker again with the preview and apply with a fresh key")
         };
-        let completed = state
+        let restart_required =
+            !self.running_daemon_answers_available(state, family, &request.provider);
+        // A completed key is answered from its durable row before the document
+        // is read, so removing the addressed setting or the whole file after a
+        // successful correction cannot turn its retry into a revision conflict.
+        if let Some(completion) = state
             .with_store(|store| store.provider_marker_completion(key.as_str()))
             .map_err(|error| self.refuse(&error))?
-            .is_some();
+        {
+            return Ok(ProviderMarkerDto {
+                realm_id: state.realm_id(),
+                runtime_family: family.to_string(),
+                host_key: completion.host_key,
+                provider: request.provider.clone(),
+                outcome: ProviderMarkerOutcomeDto::Replayed,
+                before: completion.before.into_iter().collect(),
+                after: completion.after.into_iter().collect(),
+                changed: false,
+                effects: provider_marker_effects(false, restart_required),
+                revision: completion.written_revision,
+            });
+        }
         let path = crate::runtimes::path_in(&self.state_root);
         let bytes = crate::provider_marker::read(&path)
             .map_err(|error| self.provider_marker_error(error))?
@@ -21556,28 +21579,21 @@ impl Services {
         let plan = crate::provider_marker::plan(&bytes, family.as_str(), &request.provider)
             .map_err(|_| changed_since())?;
         let revision = ContentHash::of(&bytes);
-        let restart_required =
-            !self.running_daemon_answers_available(state, family, &request.provider);
-        if completed {
-            return Ok(ProviderMarkerDto {
-                realm_id: state.realm_id(),
-                runtime_family: family.to_string(),
-                host_key: plan.host_key,
-                provider: request.provider.clone(),
-                outcome: ProviderMarkerOutcomeDto::Replayed,
-                before: plan.before.iter().cloned().collect(),
-                after: plan.before.iter().cloned().collect(),
-                changed: false,
-                effects: provider_marker_effects(false, restart_required),
-                revision,
-            });
-        }
         if !plan.before.contains(&request.provider) {
+            // A first attempt whose rename landed but whose directory flush did
+            // not is recovered here. Make the rename durable before completion
+            // says this key's effect finished, or a power cut could bring the
+            // marked document back under a completed key.
+            crate::provider_marker::sync_parent_directory(&path)
+                .map_err(|error| self.provider_marker_error(error))?;
             state
                 .with_store(|store| {
                     store.record_provider_marker_completion(
                         key.as_str(),
                         &revision,
+                        &plan.host_key,
+                        &plan.before,
+                        &plan.after,
                         kontor_api::now(),
                     )
                 })
@@ -21595,6 +21611,23 @@ impl Services {
                 revision,
             });
         }
+        // A first attempt that started writing but never recorded completion is
+        // not repeated while the marker still stands: the operator may have
+        // restored it for a new outage after that write landed, and the
+        // document alone cannot tell the two states apart.
+        if state
+            .with_store(|store| store.provider_marker_write_started(key.as_str()))
+            .map_err(|error| self.refuse(&error))?
+        {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "a previous attempt started writing this correction and did not complete it",
+                )
+                .advising(
+                    "read the marker again with the preview and apply with a fresh key; a restored marker may belong to a new outage",
+                ));
+        }
         if revision != request.expected_revision {
             return Err(changed_since());
         }
@@ -21604,7 +21637,14 @@ impl Services {
         let written = ContentHash::of(&updated);
         state
             .with_store(|store| {
-                store.record_provider_marker_completion(key.as_str(), &written, kontor_api::now())
+                store.record_provider_marker_completion(
+                    key.as_str(),
+                    &written,
+                    &plan.host_key,
+                    &plan.before,
+                    &plan.after,
+                    kontor_api::now(),
+                )
             })
             .map_err(|error| self.refuse(&error))?;
         Ok(ProviderMarkerDto {
@@ -21698,12 +21738,65 @@ impl Services {
                     "the runtime settings document could not be written",
                 )
                 .advising("check the state root's free disk space and permissions, then retry"),
-            MarkerError::Malformed | MarkerError::Unreadable => self
+            MarkerError::Unreadable => self
+                .deny(
+                    ApiErrorCode::Unavailable,
+                    "the runtime settings document could not be read",
+                )
+                .advising("check the state root's permissions and free disk space, then retry"),
+            MarkerError::Malformed => self
                 .deny(
                     ApiErrorCode::Unavailable,
                     "the runtime settings document could not be read as a fleet description",
                 )
                 .advising("repair the runtime settings document, then retry"),
+        }
+    }
+
+    /// Name a competing claim by another operation as what it is.
+    ///
+    /// The replay pre-check and the durable claim are separate store calls, so
+    /// another operation can bind the key between them. The generic mapping
+    /// would call that a revision conflict and tell the caller to re-read and
+    /// retry, which can never succeed for a key that is permanently bound.
+    fn provider_marker_bind_error(&self, error: &RepositoryError) -> ApiError {
+        if matches!(
+            error,
+            RepositoryError::Conflict {
+                subject: "idempotency key",
+                ..
+            }
+        ) {
+            return self.deny(
+                ApiErrorCode::IdempotencyConflict,
+                "the idempotency key was already used for a different operation",
+            );
+        }
+        self.refuse(error)
+    }
+
+    /// Hold every provider-marker apply between its replay pre-check and its
+    /// durable claim, for a black-box test that must let another operation bind
+    /// the same key in that window.
+    #[doc(hidden)]
+    pub fn hold_provider_marker_bind(&self) -> PlanningPairReceiptHold {
+        let hold = PlanningPairReceiptHold::default();
+        *self
+            .provider_marker_bind_hold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hold.clone());
+        hold
+    }
+
+    /// Wait at an installed bind hold; with none installed, return at once.
+    async fn provider_marker_bind_hold_point(&self) {
+        let hold = self
+            .provider_marker_bind_hold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(hold) = hold {
+            hold.pass().await;
         }
     }
 }
@@ -26809,6 +26902,11 @@ impl ApplicationOperations for Services {
             }
             return self.replayed_provider_marker(state, key, &family, request);
         }
+        // A black-box test can line another operation's claim up between the
+        // pre-check above and the durable claim below, which is the race the
+        // bind's own conflict translation exists for. No composed daemon
+        // installs a hold here.
+        self.provider_marker_bind_hold_point().await;
 
         let path = crate::runtimes::path_in(&self.state_root);
         let bytes = crate::provider_marker::read(&path)
@@ -26858,7 +26956,7 @@ impl ApplicationOperations for Services {
         };
         let applied = state
             .with_store(|store| store.bind_realm_operation(&binding))
-            .map_err(|error| self.refuse(&error))?;
+            .map_err(|error| self.provider_marker_bind_error(&error))?;
         if applied == Applied::Unchanged {
             // A concurrent attempt with this exact request claimed the key
             // between the replay check and the claim; answer from what it left.
@@ -26866,6 +26964,14 @@ impl ApplicationOperations for Services {
         }
         let (outcome, changed, revision_after) = match plan.updated {
             Some(updated) => {
+                // Record that the write is starting before the document moves,
+                // so a completion lost after the rename can never make a later
+                // retry remove a marker an operator restored for a new outage.
+                state
+                    .with_store(|store| {
+                        store.record_provider_marker_write_start(key.as_str(), kontor_api::now())
+                    })
+                    .map_err(|error| self.refuse(&error))?;
                 crate::provider_marker::write(&path, &bytes, &updated)
                     .map_err(|error| self.provider_marker_error(error))?;
                 let written = ContentHash::of(&updated);
@@ -26874,6 +26980,9 @@ impl ApplicationOperations for Services {
                         store.record_provider_marker_completion(
                             key.as_str(),
                             &written,
+                            &plan.host_key,
+                            &plan.before,
+                            &plan.after,
                             kontor_api::now(),
                         )
                     })
@@ -26886,6 +26995,9 @@ impl ApplicationOperations for Services {
                         store.record_provider_marker_completion(
                             key.as_str(),
                             &revision,
+                            &plan.host_key,
+                            &plan.before,
+                            &plan.after,
                             kontor_api::now(),
                         )
                     })

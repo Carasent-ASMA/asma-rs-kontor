@@ -691,6 +691,15 @@ impl Daemon {
         self.applications.hold_planning_pair_recovery_writes()
     }
 
+    /// Hold every provider-marker apply between its replay pre-check and its
+    /// durable claim, for a black-box test that lets another operation bind the
+    /// same key in that window. No composed daemon installs one.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn hold_provider_marker_bind(&self) -> applications::PlanningPairReceiptHold {
+        self.applications.hold_provider_marker_bind()
+    }
+
     /// The concrete Jira reconciliation services owned by this daemon.
     #[must_use]
     pub fn jira_reconciler(&self) -> Arc<applications::Services> {

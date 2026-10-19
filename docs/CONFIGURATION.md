@@ -122,13 +122,16 @@ holds the marker and the provider to remove.
 - **Idempotent replay.** The key is judged before the revision and claimed
   durably before the document is written: a retry of a completed correction
   answers `replayed` without a second write — even when an operator restored
-  the marker after the first success — a retry whose first attempt never wrote
-  finishes the correction at the revision it read, a correction of an
-  already-absent marker answers `already_cleared`, and a key reused for
-  anything else is an `idempotency_conflict`. An unknown family is `not_found`;
-  a malformed document or a non-regular settings file is a typed refusal and is
-  never rewritten. Completion is durable state, not a guess from the current
-  bytes.
+  the marker after the first success — a retry whose first attempt never
+  started the write finishes the correction at the revision it read, a
+  correction of an already-absent marker answers `already_cleared`, and a key
+  reused for anything else is an `idempotency_conflict`. An attempt that
+  started writing but never recorded completion is not repeated while the
+  marker still stands, because it cannot tell a write that never landed from a
+  marker restored for a new outage; its retry is a `revision_conflict` asking
+  for a fresh preview and key. An unknown family is `not_found`; a malformed
+  document or a non-regular settings file is a typed refusal and is never
+  rewritten. Completion is durable state, not a guess from the current bytes.
 
 The correction edits one configuration member. It retires, replaces or relaunches
 nothing, and no seat, run or topology node changes.
