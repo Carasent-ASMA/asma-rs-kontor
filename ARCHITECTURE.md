@@ -676,9 +676,12 @@ The workspace is split by authority rather than by technical layer alone:
 - `kontor-api`, `kontor-daemon`, `kontor-cli`, `kontor-mcp`: one public control
   contract, one tool registry and its transports; the daemon is the composition
   root and hosts the GitHub App publication gateway;
-- `apps/*`: projections over the public API, never independent truth. The
-  console's Tokenomics view only frames separately generated report data and
-  needs no realm connection.
+- `apps/console`, `apps/desktop`: projections over the public API, never
+  independent truth. The console's Tokenomics view only frames separately
+  generated report data and needs no realm connection;
+- `apps/paseo-plugin`: a Paseo host plugin, not an API projection. It adds an
+  observer-authority `kontor-observer` MCP server and placement hooks to Paseo
+  and holds no Kontor write credential.
 
 ## Explicit non-goals for the MVP
 

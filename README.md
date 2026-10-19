@@ -346,6 +346,7 @@ interface” development shortcut.
 | `crates/kontor-api`, `kontor-daemon` | Authenticated loopback contract and composition root, including the optional GitHub App publication gateway |
 | `crates/kontor-cli`, `kontor-mcp` | One tool registry; the MCP server serves it and the CLI is generated from it |
 | `apps/console`, `apps/desktop` | Responsive console and Tauri shell |
+| `apps/paseo-plugin` | Paseo host plugin: observer-authority `kontor-observer` MCP server, session and creation hooks, and workspace placement guard |
 | `tests/contract`, `tests/e2e` | Cross-adapter contracts and full-system proof |
 | `scripts/` | `test-lanes.py` and its `test-timings.json`, `verify-tree.py`, and the durable desk qualification runner |
 
