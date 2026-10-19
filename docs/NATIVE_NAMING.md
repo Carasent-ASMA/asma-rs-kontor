@@ -157,7 +157,9 @@ The `asma/publication-branch-title` workflow (#280, `8acdbd17`) runs on
 `pull_request_target`, fetches its checker from the exact workflow revision and
 executes nothing from the pull-request head. It judges only the branch shape,
 the title's leading key (or `Release v<version>` for a release branch) and the
-`master` base. Unlike the generic grammar above, its checker
+`master` base. One exception: a `dependabot/` branch opened by `dependabot[bot]`
+is accepted as `bot_branch_exempt`, and the base and head-sha checks still run.
+Unlike the generic grammar above, its checker
 (`.github/scripts/publication_branch_title.py`) fixes the project key to
 `ASMA`, so `<type>/ASMA-<number>-<slug>` is the only keyed form it accepts
 (`branch_project_mismatch` otherwise). It does not contact Jira and is not

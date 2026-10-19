@@ -358,7 +358,9 @@ read [Architecture](ARCHITECTURE.md); security findings follow
 
 Kontor deliberately does not run build or test CI in GitHub Actions. Its one
 workflow, `asma/publication-branch-title` (PR #198, hardened in PR #280), checks
-only a pull request's base, branch name and title key and builds nothing.
+only a pull request's base, branch name and title key and builds nothing. A
+`dependabot/` branch opened by `dependabot[bot]` is accepted as
+`bot_branch_exempt`; the base and head-sha checks still run.
 Verification runs locally against the exact candidate commit before merge and
 its results are recorded in the pull request or owning delivery evidence. This
 is an explicit, reversible repository policy; re-enabling GitHub-hosted CI

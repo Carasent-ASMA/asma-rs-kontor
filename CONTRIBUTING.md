@@ -176,8 +176,10 @@ The pull-request title leads with the branch's key and one space
 `Release v<X>.<Y>.<Z>`, and the base is `master`. The
 `asma/publication-branch-title` check
 (`.github/workflows/publication-branch-title.yml`, PR #280) reports any other
-branch, title or base as a failure; it proves shape and key equality only, not
-the Jira binding. Agent and ASMA CLI publications are also attested against
+branch, title or base as a failure, with one exception: a `dependabot/` branch
+opened by `dependabot[bot]` is accepted as `bot_branch_exempt`, and the base and
+head-sha checks still run. It proves shape and key equality only, not the Jira
+binding. Agent and ASMA CLI publications are also attested against
 Kontor's confirmed Jira binding; see
 [Native naming](docs/NATIVE_NAMING.md#publication-attestation).
 
