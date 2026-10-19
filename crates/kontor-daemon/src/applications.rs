@@ -338,8 +338,8 @@ use kontor_teams::{
 };
 
 use crate::succession::{
-    SuccessionHandoffRequest, SuccessionRedactionPolicy, UnavailableSuccessionSummarizer,
-    produce_succession_handoff,
+    GovernedSuccessionSummarizer, SuccessionHandoffRequest, SuccessionRedactionPolicy,
+    SuccessionSummarizerTransport, produce_succession_handoff,
 };
 use crate::succession_supervision::{
     QuotaBlockedSeatIntent, SuccessionCoordinationError, SuccessionCoordinationOutcome,
@@ -1118,6 +1118,15 @@ pub struct Services {
     planning_pair_recovery_hold: std::sync::Mutex<Option<PlanningPairReceiptHold>>,
     /// Optional explicitly composed semantic transport. No credential lookup.
     memory_cognee: OnceLock<kontor_memory_cognee::Client>,
+    /// The governed summarizer transport succession handoffs dispatch through.
+    ///
+    /// The exact route is still decided by the declared-chain headroom walk;
+    /// this is only the implementation that executes an admitted dispatch.
+    /// Startup composes the runtime named in `succession-summarizer.json`, or
+    /// the unavailable fallback when no document exists, so an unconfigured
+    /// Realm keeps its typed degraded handoff and nothing is launched
+    /// implicitly.
+    succession_summarizer: Arc<dyn SuccessionSummarizerTransport>,
 }
 
 struct CompletionCommit<'a> {
@@ -1165,6 +1174,7 @@ impl Services {
         quota_signals: Vec<kontor_accounts::QuotaSignal>,
         github: Option<Arc<crate::github_publication::GithubPublicationGateway>>,
         fleet: Arc<crate::fleet::FleetSource>,
+        succession_summarizer: Arc<dyn SuccessionSummarizerTransport>,
     ) -> Result<Arc<Self>, kontor_core::DomainError> {
         Ok(Arc::new(Self {
             realm_id,
@@ -1188,6 +1198,7 @@ impl Services {
             planning_pair_receipt_hold: std::sync::Mutex::new(None),
             planning_pair_recovery_hold: std::sync::Mutex::new(None),
             memory_cognee: OnceLock::new(),
+            succession_summarizer,
         }))
     }
 
@@ -40043,6 +40054,94 @@ impl Services {
             .map_err(|error| self.refuse(&error))
     }
 
+    /// Compose the summarizer for one handoff from the deployment's configured
+    /// data.
+    ///
+    /// The seat's declared chain — the fleet binding or frozen template chain
+    /// in force — is walked through the account-before-rung headroom resolution,
+    /// so the summary takes a headroom-admissible route from that chain and can
+    /// never be dispatched onto the account that just refused. That is the walk
+    /// a template-chain launch uses; a fleet-bound launch places its seat
+    /// through the fleet resolver's own selection, so the summary may take a
+    /// different route from the same fleet chain. The task's account pin is read
+    /// exactly as the successor placement reads it: the summary is the same
+    /// task's redacted transcript, so it must follow the same operator choice.
+    ///
+    /// No declaration is an ordinary unconfigured realm, not an error: it
+    /// composes as unplaceable and the handoff keeps the typed degraded path.
+    /// Every other failure to decide a route is reported and also degrades —
+    /// a missing summary must never block the replacement.
+    fn governed_succession_summarizer<'a>(
+        &self,
+        attempt: &SuccessionAttempt,
+        now: Timestamp,
+        transport: &'a dyn SuccessionSummarizerTransport,
+    ) -> Result<GovernedSuccessionSummarizer<'a>, ApiError> {
+        let state = self.state()?;
+        let project_id = attempt.request.project_id;
+        // The configured summarizer runtime is the one that will execute the
+        // admitted route, so it is the one whose provider exclusions decide
+        // whether a rung can be placed. An unconfigured transport keeps the
+        // predecessor's family, which is all an unconfigured realm knows.
+        let adapter_kind = transport.runtime_kind().cloned().unwrap_or_else(|| {
+            attempt
+                .request
+                .predecessor_native_identity
+                .runtime_kind
+                .clone()
+        });
+        let adapter = state.runtimes().get(&adapter_kind).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the succession summarizer's runtime adapter is not composed",
+            )
+        })?;
+        let team = state
+            .with_store(|store| store.get_team_run(project_id, attempt.request.team_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the succession team run disappeared before its handoff",
+                )
+            })?;
+        let slot = RoleSlotId::new(attempt.request.role.clone());
+        let Some(declared) = self
+            .declared_delivery_rungs(attempt.request.team_run_id, &team.snapshot, &slot)
+            .map_err(|error| self.refuse_domain(&error))?
+        else {
+            return Ok(GovernedSuccessionSummarizer::unplaceable(transport));
+        };
+        let accounts = self.eligible_accounts(project_id)?;
+        let states = self.admission_quota_states(project_id)?;
+        let task_pin = state
+            .with_store(|store| store.task_account_selection(project_id, attempt.request.task_id))
+            .map_err(|error| self.refuse(&error))?
+            .map(|(account, _)| account);
+        let outlook = QuotaOutlook {
+            states: &states,
+            account: task_pin,
+            accounts: &accounts,
+            headroom: self.headroom_policy(),
+            freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
+            now,
+        };
+        let effective = outlook
+            .effective_rungs(&declared.rungs)
+            .map_err(|error| self.refuse_domain(&error))?;
+        GovernedSuccessionSummarizer::resolve(
+            &effective,
+            &outlook.candidates(&effective),
+            &states,
+            &outlook.headroom,
+            now,
+            outlook.freshness,
+            |provider| adapter.provider_available(provider),
+            transport,
+        )
+        .map_err(|error| self.refuse_domain(&error))
+    }
+
     async fn produce_attempt_handoff(
         &self,
         attempt: &SuccessionAttempt,
@@ -40051,6 +40150,13 @@ impl Services {
         let state = self
             .state()
             .expect("succession handoff runs only after service attachment");
+        // Snapshot the Realm's bearer values before the transcript is fetched:
+        // a rotation during that await must not leave the generation the
+        // predecessor could quote out of the masking set.
+        let redaction = SuccessionRedactionPolicy::new(
+            ContentHash::of(b"kontor-succession-redaction-v1"),
+            state.credentials().redaction_secrets(),
+        );
         let timeline = match state
             .sessions()
             .get(attempt.request.predecessor_runtime_binding_id)
@@ -40085,10 +40191,26 @@ impl Services {
             },
             None => None,
         };
-        let redaction = SuccessionRedactionPolicy::new(
-            ContentHash::of(b"kontor-succession-redaction-v1"),
-            Vec::new(),
-        );
+        // The configured governed transport executes only the route the
+        // declared-chain walk admits. Startup composes the runtime selected in
+        // `succession-summarizer.json`, and an unconfigured Realm keeps the
+        // unavailable fallback, which preserves the typed degraded path. A
+        // handoff with no stable timeline never consults placement at all.
+        let transport = Arc::clone(&self.succession_summarizer);
+        let summarizer = if timeline.is_some() {
+            match self.governed_succession_summarizer(attempt, produced_at, transport.as_ref()) {
+                Ok(summarizer) => summarizer,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "succession.summarizer_placement_unresolved"
+                    );
+                    GovernedSuccessionSummarizer::unplaceable(transport.as_ref())
+                }
+            }
+        } else {
+            GovernedSuccessionSummarizer::unplaceable(transport.as_ref())
+        };
         produce_succession_handoff(
             SuccessionHandoffRequest {
                 attempt_id: attempt.request.id,
@@ -40096,13 +40218,17 @@ impl Services {
                 predecessor_runtime_binding_id: attempt.request.predecessor_runtime_binding_id,
                 predecessor_native_identity: attempt.request.predecessor_native_identity.clone(),
                 timeline,
-                // No governed summarizer transport is configured in the
-                // composition root. Keep the typed degraded path honest.
-                summarizer_model_rung: None,
+                // The exact route the declared-chain walk admitted. `None` is
+                // an explicit unplaceable decision and never an implicit route.
+                summarizer_model_rung: summarizer.admitted_rung().cloned(),
+                // The account the walk admitted with that route, so the
+                // runtime executes the summary as it instead of the ambient
+                // account.
+                summarizer_account: summarizer.admitted_account(),
                 produced_at,
             },
             &redaction,
-            &UnavailableSuccessionSummarizer,
+            &summarizer,
         )
         .await
     }
@@ -46737,6 +46863,7 @@ mod tests {
             Vec::new(),
             None,
             std::sync::Arc::new(crate::fleet::FleetSource::at(directory.path())),
+            std::sync::Arc::new(crate::succession::UnavailableSuccessionSummarizer),
         )
         .expect("services");
         let existing = services.native_activity().expect("existing work started");
@@ -46797,6 +46924,7 @@ mod tests {
             Vec::new(),
             None,
             std::sync::Arc::new(crate::fleet::FleetSource::at(directory.path())),
+            std::sync::Arc::new(crate::succession::UnavailableSuccessionSummarizer),
         )
         .expect("services");
         let existing = services.native_activity().expect("existing work started");
@@ -48788,6 +48916,7 @@ mod coherence {
             Vec::new(),
             None,
             std::sync::Arc::new(crate::fleet::FleetSource::at(home.path())),
+            std::sync::Arc::new(crate::succession::UnavailableSuccessionSummarizer),
         )
         .expect("services compose");
         let state = kontor_api::state::ApiState::new(kontor_api::state::ApiParts {

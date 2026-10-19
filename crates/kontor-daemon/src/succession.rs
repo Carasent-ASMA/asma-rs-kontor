@@ -9,9 +9,11 @@
 
 use async_trait::async_trait;
 use kontor_core::id::{
-    AgentRunId, BoundedText, CanonicalDocument, ContentHash, RuntimeBindingId, SuccessionAttemptId,
-    Timestamp, reject_sensitive_material, reject_sensitive_text,
+    AccountProfileId, AgentRunId, BoundedText, CanonicalDocument, ContentHash, RuntimeBindingId,
+    RuntimeKindKey, SuccessionAttemptId, Timestamp, reject_sensitive_material,
+    reject_sensitive_text,
 };
+use kontor_core::repository::ProviderQuotaState;
 use kontor_core::spec::ModelRung;
 use kontor_core::state::NativeRuntimeIdentity;
 use kontor_core::succession::{
@@ -19,6 +21,8 @@ use kontor_core::succession::{
     SuccessionRedactionPass, SuccessionRedactionReceipt, SuccessionTimelineRange,
 };
 use kontor_runtime::{BindingMessageTimeline, TimelinePosition};
+use kontor_scheduler::headroom::{EligibleAccount, HeadroomConfig, Placement, SeatClass};
+use secrecy::{ExposeSecret, SecretString};
 use serde::Serialize;
 
 /// Stable replacement for content removed by the succession redaction pass.
@@ -32,6 +36,12 @@ pub const MAX_SUCCESSION_SUMMARY_INPUT_BYTES: usize = 256 * 1024;
 
 /// Maximum characters a summarizer may return for one durable handoff.
 pub const MAX_SUCCESSION_SUMMARY_OUTPUT_CHARS: usize = 16 * 1024;
+
+/// How long one governed summary may run before the handoff degrades.
+///
+/// A summary is produced while the realm-wide succession guard is held, so a
+/// stalled provider call must not block every other succession in the realm.
+pub const SUCCESSION_SUMMARY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Exact predecessor and transient timeline inputs for one handoff.
 pub struct SuccessionHandoffRequest {
@@ -49,6 +59,10 @@ pub struct SuccessionHandoffRequest {
     /// Governed route admitted for summarization. `None` is an explicit
     /// unplaceable decision and never causes an implicit seat launch.
     pub summarizer_model_rung: Option<ModelRung>,
+    /// Account admitted together with that route. It is the account the
+    /// runtime must execute the summary as, so the call never falls back to an
+    /// ambient account such as the exhausted predecessor's.
+    pub summarizer_account: Option<AccountProfileId>,
     /// Instant at which the handoff evidence is produced.
     pub produced_at: Timestamp,
 }
@@ -135,19 +149,34 @@ pub enum SuccessionSummarizerError {
 /// Provider-neutral transport port for one governed summarization call.
 ///
 /// The request has already passed input redaction and contains no raw binding,
-/// account, credential, tool, permission or diagnostic material.
+/// account, credential, tool, permission or diagnostic material. The admitted
+/// account travels beside the request rather than inside it: the transport must
+/// execute the summary as that account and must not substitute the ambient one.
 #[async_trait]
 pub trait SuccessionSummarizerTransport: Send + Sync {
-    /// Produce a derived summary from only the redacted message request.
+    /// Produce a derived summary from only the redacted message request, on the
+    /// exact admitted route and account.
     async fn summarize(
         &self,
         model_rung: &ModelRung,
+        account: AccountProfileId,
         request: &SuccessionSummaryRequest,
     ) -> Result<SuccessionSummaryResponse, SuccessionSummarizerError>;
+
+    /// The configured runtime family that executes an admitted route, when this
+    /// transport is backed by one.
+    ///
+    /// Placement uses the answer to ask *that* runtime whether a provider is
+    /// enabled, exactly as a launch on it would. A transport with no runtime of
+    /// its own keeps the predecessor's family, which is the only one an
+    /// unconfigured realm could have observed.
+    fn runtime_kind(&self) -> Option<&RuntimeKindKey> {
+        None
+    }
 }
 
-/// Honest production fallback until a configured summarizer transport is
-/// composed. It launches nothing and always yields a degraded handoff.
+/// Honest fallback for a Realm that configured no summarizer runtime. It
+/// launches nothing and always yields a degraded handoff.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UnavailableSuccessionSummarizer;
 
@@ -156,32 +185,160 @@ impl SuccessionSummarizerTransport for UnavailableSuccessionSummarizer {
     async fn summarize(
         &self,
         _model_rung: &ModelRung,
+        _account: AccountProfileId,
         _request: &SuccessionSummaryRequest,
     ) -> Result<SuccessionSummaryResponse, SuccessionSummarizerError> {
         Err(SuccessionSummarizerError::Unplaceable)
     }
 }
 
+/// Production composition of the governed summarizer seam.
+///
+/// The exact declared [`ModelRung`] a summary runs on is resolved through the
+/// shared headroom walk ([`kontor_scheduler::headroom::resolve`]) before any
+/// dispatch, from the deployment's configured data: the seat's declared chain,
+/// its enabled accounts, their recorded quota states and the effective headroom
+/// policy. The walk is account-before-rung, so the act of summarizing can never
+/// be placed on the account that just refused.
+///
+/// This type launches nothing and falls back to nothing. [`Placement::Wait`]
+/// and [`Placement::NeedsHuman`] compose as unplaceable, and every dispatch is
+/// guarded so only the exact admitted route and account can cross the transport
+/// boundary; a different route is refused rather than retried or re-resolved.
+pub struct GovernedSuccessionSummarizer<'a> {
+    admitted: Option<AdmittedSummaryRoute>,
+    transport: &'a dyn SuccessionSummarizerTransport,
+}
+
+/// The exact route and account one headroom walk admitted.
+struct AdmittedSummaryRoute {
+    rung: ModelRung,
+    account: AccountProfileId,
+}
+
+impl<'a> GovernedSuccessionSummarizer<'a> {
+    /// Resolve one exact declared route through the existing headroom walk.
+    ///
+    /// # Errors
+    /// Returns the domain's refusal for an empty declared chain. A walk that
+    /// admits no route is not an error: it composes as unplaceable so the
+    /// caller keeps the typed degraded handoff.
+    #[allow(clippy::too_many_arguments)]
+    pub fn resolve<F>(
+        declared_rungs: &[ModelRung],
+        accounts: &[EligibleAccount],
+        states: &[ProviderQuotaState],
+        headroom: &HeadroomConfig,
+        now: Timestamp,
+        freshness: jiff::SignedDuration,
+        provider_enabled: F,
+        transport: &'a dyn SuccessionSummarizerTransport,
+    ) -> kontor_core::DomainResult<Self>
+    where
+        F: Fn(&str) -> bool,
+    {
+        let placement = kontor_scheduler::headroom::resolve(
+            declared_rungs,
+            accounts,
+            states,
+            headroom,
+            SeatClass::Delivery,
+            now,
+            freshness,
+            provider_enabled,
+        )?;
+        let admitted = match placement {
+            Placement::Admit { rung, account } => Some(AdmittedSummaryRoute { rung, account }),
+            Placement::Wait { .. } | Placement::NeedsHuman { .. } => None,
+        };
+        Ok(Self {
+            admitted,
+            transport,
+        })
+    }
+
+    /// Compose an explicitly unplaceable decision over one transport.
+    ///
+    /// This is the honest configuration root: no declared summarizer route is
+    /// admitted, so no dispatch happens and the handoff stays degraded.
+    #[must_use]
+    pub const fn unplaceable(transport: &'a dyn SuccessionSummarizerTransport) -> Self {
+        Self {
+            admitted: None,
+            transport,
+        }
+    }
+
+    /// The exact route the walk admitted, when it admitted one.
+    #[must_use]
+    pub fn admitted_rung(&self) -> Option<&ModelRung> {
+        self.admitted.as_ref().map(|admitted| &admitted.rung)
+    }
+
+    /// The exact account the walk admitted with that route, when it admitted one.
+    #[must_use]
+    pub fn admitted_account(&self) -> Option<AccountProfileId> {
+        self.admitted.as_ref().map(|admitted| admitted.account)
+    }
+}
+
+#[async_trait]
+impl SuccessionSummarizerTransport for GovernedSuccessionSummarizer<'_> {
+    async fn summarize(
+        &self,
+        model_rung: &ModelRung,
+        account: AccountProfileId,
+        request: &SuccessionSummaryRequest,
+    ) -> Result<SuccessionSummaryResponse, SuccessionSummarizerError> {
+        match self.admitted.as_ref() {
+            Some(admitted) if admitted.rung == *model_rung && admitted.account == account => {
+                // The succession guard is held across this call. A transport
+                // that never answers must become a typed refusal rather than
+                // holding the realm's other successions behind it.
+                match tokio::time::timeout(
+                    SUCCESSION_SUMMARY_TIMEOUT,
+                    self.transport
+                        .summarize(&admitted.rung, admitted.account, request),
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(_) => Err(SuccessionSummarizerError::Rejected),
+                }
+            }
+            // No admitted route, or a route or account the declared walk did
+            // not admit. Either way nothing is dispatched and no provenance is
+            // invented.
+            _ => Err(SuccessionSummarizerError::Unplaceable),
+        }
+    }
+
+    fn runtime_kind(&self) -> Option<&RuntimeKindKey> {
+        self.transport.runtime_kind()
+    }
+}
+
 /// Transient redaction policy used on both sides of the summarizer boundary.
 ///
 /// `sensitive_literals` are runtime-resolved values such as credential
-/// canaries. They are deliberately held only in memory and are never exposed
-/// through `Debug`, serialization, receipts or errors.
+/// canaries. They are held in [`SecretString`]s so these copies are zeroized on
+/// drop, and they are never exposed through `Debug`, serialization, receipts or
+/// errors. Each value is read only where it is substituted out of text.
 pub struct SuccessionRedactionPolicy {
     policy_hash: ContentHash,
-    sensitive_literals: Vec<String>,
+    sensitive_literals: Vec<SecretString>,
 }
 
 impl SuccessionRedactionPolicy {
     /// Construct one exact policy revision with transient literal values.
     #[must_use]
-    pub fn new(policy_hash: ContentHash, sensitive_literals: Vec<String>) -> Self {
+    pub fn new(policy_hash: ContentHash, sensitive_literals: Vec<SecretString>) -> Self {
         let mut sensitive_literals = sensitive_literals
             .into_iter()
-            .filter(|literal| !literal.is_empty())
+            .filter(|literal| !literal.expose_secret().is_empty())
             .collect::<Vec<_>>();
-        sensitive_literals.sort_by_key(|literal| std::cmp::Reverse(literal.len()));
-        sensitive_literals.dedup();
+        sensitive_literals.sort_by_key(|literal| std::cmp::Reverse(literal.expose_secret().len()));
+        sensitive_literals.dedup_by(|left, right| left.expose_secret() == right.expose_secret());
         Self {
             policy_hash,
             sensitive_literals,
@@ -189,9 +346,9 @@ impl SuccessionRedactionPolicy {
     }
 
     fn redact_text(&self, source: &str) -> String {
-        let mut redacted = source.to_owned();
+        let mut redacted = redact_json_web_tokens(source);
         for literal in &self.sensitive_literals {
-            redacted = redacted.replace(literal, REDACTED_SUCCESSION_CONTENT);
+            redacted = redacted.replace(literal.expose_secret(), REDACTED_SUCCESSION_CONTENT);
         }
         if reject_sensitive_text("succession redaction output", &redacted).is_err() {
             REDACTED_SUCCESSION_CONTENT.to_owned()
@@ -224,6 +381,82 @@ impl SuccessionRedactionPolicy {
     }
 }
 
+/// Replace bare JSON Web Tokens with the redaction placeholder.
+///
+/// The masking set holds the Realm's tier secrets, not the predecessor seat's
+/// own account credential — for example the Codex OAuth JWT inside
+/// `CODEX_HOME/auth.json`. That value carries no `Bearer` prefix and no marker
+/// [`reject_sensitive_text`] knows, so a quoted one would otherwise reach the
+/// summarizer and the persisted handoff. A JWT is exactly three unpadded
+/// base64url segments, and its header begins `eyJ` because the first bytes are
+/// `{"`. Matching that shape removes the token without touching ordinary
+/// dotted text. The rule lives here rather than in the shared persisted-string
+/// scan: that scan also admits runtime evidence, and refusing a whole frame
+/// because it quotes a token would break a live turn rather than mask a copy.
+fn redact_json_web_tokens(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut ranges = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if !is_json_web_token_byte(bytes[index]) {
+            index += 1;
+            continue;
+        }
+        let mut start = index;
+        while index < bytes.len() && is_json_web_token_byte(bytes[index]) {
+            index += 1;
+        }
+        let mut end = index;
+        // A full stop is both a separator and the segment character, so a JWT
+        // at the end of a sentence reads as one run with an empty tail. The
+        // punctuation stays in the text; only the credential is replaced.
+        while start < end && bytes[start] == b'.' {
+            start += 1;
+        }
+        while end > start && bytes[end - 1] == b'.' {
+            end -= 1;
+        }
+        if start < end && is_json_web_token(&source[start..end]) {
+            ranges.push((start, end));
+        }
+    }
+    if ranges.is_empty() {
+        return source.to_owned();
+    }
+    let mut redacted = String::with_capacity(source.len());
+    let mut cursor = 0;
+    for (start, end) in ranges {
+        redacted.push_str(&source[cursor..start]);
+        redacted.push_str(REDACTED_SUCCESSION_CONTENT);
+        cursor = end;
+    }
+    redacted.push_str(&source[cursor..]);
+    redacted
+}
+
+/// The unpadded base64url alphabet plus the segment separator.
+const fn is_json_web_token_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
+}
+
+fn is_json_web_token(candidate: &str) -> bool {
+    let mut segments = candidate.split('.');
+    let (Some(header), Some(payload), Some(signature), None) = (
+        segments.next(),
+        segments.next(),
+        segments.next(),
+        segments.next(),
+    ) else {
+        return false;
+    };
+    header.len() >= 16
+        && payload.len() >= 8
+        && signature.len() >= 16
+        && header
+            .get(..3)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("eyj"))
+}
+
 struct PreparedSummaryInput {
     request: Option<SuccessionSummaryRequest>,
     receipt: SuccessionRedactionReceipt,
@@ -244,6 +477,7 @@ pub async fn produce_succession_handoff(
         predecessor_native_identity,
         timeline,
         summarizer_model_rung,
+        summarizer_account,
         produced_at,
     } = request;
 
@@ -325,7 +559,9 @@ pub async fn produce_succession_handoff(
             ),
         );
     };
-    let Some(summarizer_model_rung) = summarizer_model_rung.filter(|rung| rung.validate().is_ok())
+    let Some((summarizer_model_rung, summarizer_account)) = summarizer_model_rung
+        .filter(|rung| rung.validate().is_ok())
+        .zip(summarizer_account)
     else {
         return degraded(
             SuccessionHandoffDegradedReason::SummarizerUnplaceable,
@@ -337,7 +573,7 @@ pub async fn produce_succession_handoff(
         );
     };
     let response = match transport
-        .summarize(&summarizer_model_rung, summary_request)
+        .summarize(&summarizer_model_rung, summarizer_account, summary_request)
         .await
     {
         Ok(response) => response,
@@ -403,6 +639,7 @@ pub async fn produce_succession_handoff(
         SuccessionHandoffOutcome::Summary {
             timeline: timeline_range,
             summarizer_model_rung,
+            summarizer_account: Some(summarizer_account),
             summary,
             summary_hash,
             input_redaction: prepared.receipt.clone(),

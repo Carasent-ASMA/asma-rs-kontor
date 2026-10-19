@@ -850,6 +850,10 @@ struct FakeState {
     launched_models: BTreeMap<AgentRunId, ModelRung>,
     launched_accounts: BTreeMap<AgentRunId, AccountProfileId>,
     launched_prompts: BTreeMap<AgentRunId, BoundedText>,
+    /// Governed summary answers, in dispatch order.
+    succession_summaries: VecDeque<String>,
+    /// Every governed summary dispatch this runtime was asked to execute.
+    succession_summary_calls: Vec<(ModelRung, AccountProfileId, String)>,
     consultation_routes: BTreeMap<SeatBindingId, ModelRung>,
     consultation_route_provenances: BTreeMap<SeatBindingId, &'static str>,
     retired_consultations: BTreeMap<ExternalId, ConsultationSeatRetireRequest>,
@@ -901,6 +905,8 @@ struct FakeState {
     readback_only: bool,
     pause_hosted_retire_once: Option<FakeNativePause>,
     pause_send_once: Option<FakeNativePause>,
+    /// Holds the next timeline read before it consults the recorded events.
+    pause_history_once: Option<FakeNativePause>,
     /// Holds the next hosted launch before it is recorded or mints anything.
     pause_hosted_launch_once: Option<FakeNativePause>,
     /// What each live hosted native is doing, when a test said; idle otherwise.
@@ -1602,6 +1608,8 @@ impl ScriptedFakeRuntime {
                 launched_models: BTreeMap::new(),
                 launched_accounts: BTreeMap::new(),
                 launched_prompts: BTreeMap::new(),
+                succession_summaries: VecDeque::new(),
+                succession_summary_calls: Vec::new(),
                 consultation_routes: BTreeMap::new(),
                 consultation_route_provenances: BTreeMap::new(),
                 retired_consultations: BTreeMap::new(),
@@ -1623,6 +1631,7 @@ impl ScriptedFakeRuntime {
                 readback_only: false,
                 pause_hosted_retire_once: None,
                 pause_send_once: None,
+                pause_history_once: None,
                 pause_hosted_launch_once: None,
                 hosted_activity: BTreeMap::new(),
                 extra_hosted_carriers: BTreeMap::new(),
@@ -2088,6 +2097,30 @@ impl ScriptedFakeRuntime {
                 .provider_fallbacks
                 .insert(provider.to_owned(), fallback);
         }
+    }
+
+    /// Stage the answers a governed summarizer call receives, in order.
+    ///
+    /// A runtime asked to summarize with nothing staged answers as a transport
+    /// failure, which is the honest shape for "this test did not script the
+    /// call": it never invents a summary a test could mistake for the model's.
+    pub fn answering_succession_summaries_with<I, S>(&self, answers: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.lock()
+            .succession_summaries
+            .extend(answers.into_iter().map(Into::into));
+    }
+
+    /// Every governed summary this runtime was asked to execute.
+    ///
+    /// The route, the admitted account and the already-redacted daemon
+    /// projection are recorded verbatim so a test can prove what crossed the
+    /// transport boundary and which account was asked to execute it.
+    pub fn succession_summary_calls(&self) -> Vec<(ModelRung, AccountProfileId, String)> {
+        self.lock().succession_summary_calls.clone()
     }
 
     /// Model a native runtime that does not deduplicate by client message id.
@@ -2592,6 +2625,18 @@ impl ScriptedFakeRuntime {
     pub fn pause_next_send(&self) -> FakeNativePause {
         let pause = FakeNativePause::default();
         self.lock().pause_send_once = Some(pause.clone());
+        pause
+    }
+
+    /// Hold the next timeline read before it consults the recorded events.
+    ///
+    /// The fetched transcript is exactly what a caller derives content from, so
+    /// a test can interleave a credential rotation with the read and prove the
+    /// masking set covers the generation that could have been quoted in it.
+    #[must_use]
+    pub fn pause_next_history(&self) -> FakeNativePause {
+        let pause = FakeNativePause::default();
+        self.lock().pause_history_once = Some(pause.clone());
         pause
     }
 
@@ -5800,6 +5845,10 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
     }
 
     async fn history(&self, request: &HistoryRequest) -> RuntimeResult<HistoryPage> {
+        let pause = { self.lock().pause_history_once.take() };
+        if let Some(pause) = pause {
+            pause.pause().await;
+        }
         self.stall().await;
         let mut state = self.lock();
         let declared = state.capabilities.clone();
@@ -6081,6 +6130,38 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             (request.content_hash()?, receipt.clone()),
         );
         Ok(receipt)
+    }
+
+    fn supports_succession_summary(&self) -> bool {
+        self.lock()
+            .capabilities
+            .supports(RuntimeCapability::Summarize)
+    }
+
+    async fn summarize_succession(
+        &self,
+        model_rung: &ModelRung,
+        account: AccountProfileId,
+        prompt: &str,
+    ) -> RuntimeResult<String> {
+        let mut state = self.lock();
+        let declared = state.capabilities.clone();
+        // The summary carries an exact admitted account, so it is judged like
+        // any other account-pinned operation: a runtime that cannot prove a
+        // per-run account environment refuses instead of answering as the
+        // ambient account.
+        let mut context = OperationContext::new(RuntimeCapability::Summarize);
+        context.account_pinned = true;
+        preflight(&declared, &context)?;
+        state
+            .succession_summary_calls
+            .push((model_rung.clone(), account, prompt.to_owned()));
+        state
+            .succession_summaries
+            .pop_front()
+            .ok_or(RuntimeError::Transport {
+                rule: "no governed summary answer is staged for this dispatch",
+            })
     }
 }
 
