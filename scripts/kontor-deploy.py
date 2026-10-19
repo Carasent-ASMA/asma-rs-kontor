@@ -18,11 +18,11 @@ changes any job:
   this user's ``~/Library/LaunchAgents/com.asma.kontor.daemon.plist``;
 * ``--production-deploy`` with any other label is refused;
 * a non-production ``bootstrap`` or ``replace`` whose daemon or state root is
-  the production one is refused even under another label, because its install
-  would overwrite the production binaries; when the canonical production plist
-  is missing, the target recorded by the last declared production deploy is
-  used, and when neither exists the loaded production job is read with
-  ``launchctl print``;
+  the production one, or that uses the production port, is refused even under
+  another label, because its install would overwrite the production binaries or
+  take their port; the guard compares every available source: the canonical
+  production plist, the target recorded by the last declared production deploy,
+  and the loaded production job read with ``launchctl print``;
 * a relative ``--state-root`` is resolved against the plist's
   ``WorkingDirectory``, or ``/`` when it has none, so the snapshot and read-back
   address the state root launchd serves;
@@ -127,6 +127,15 @@ ROLLBACK_ERRORS = (Failed, OSError, subprocess.SubprocessError)
 
 
 @dataclass(frozen=True)
+class ProductionTarget:
+    """Where the production job runs, from any source the guard can read."""
+
+    daemon: Path
+    state_root: Path
+    port: int | None
+
+
+@dataclass(frozen=True)
 class Job:
     """One launchd job, as the guard accepted it."""
 
@@ -208,24 +217,30 @@ def resolve_job(
         )
     if label.casefold() == PRODUCTION_LABEL:
         if command != "bootout":
-            _record_production_target(host, daemon, state_root)
+            _record_production_target(host, daemon, state_root, port)
     elif command != "bootout":
         canonical = host.home / "Library" / "LaunchAgents" / f"{PRODUCTION_LABEL}.plist"
+        targets: list[ProductionTarget] = []
         if canonical.is_file():
-            target = _job_paths(_read_plist(canonical)[1], canonical)
-        else:
-            target = _recorded_production_target(host)
-            if target is None:
-                target = _loaded_production_target(host)
-        if target is not None:
-            production_daemon, production_state_root = target
-            if _same_path(daemon, production_daemon) or _same_path(
-                state_root, production_state_root
+            targets.append(_job_target(_read_plist(canonical)[1], canonical))
+        recorded = _recorded_production_target(host)
+        if recorded is not None:
+            targets.append(recorded)
+        loaded = _loaded_production_target(host)
+        if loaded is not None:
+            targets.append(loaded)
+        for target in targets:
+            target_port = target.port if target.port is not None else 7717
+            if (
+                _same_path(daemon, target.daemon)
+                or _same_path(state_root, target.state_root)
+                or port == target_port
             ):
                 raise Refused(
                     "production_target",
-                    f"{plist} runs {daemon} with state root {state_root}, which is the "
-                    "production install; only --production-deploy may address it",
+                    f"{plist} runs {daemon} with state root {state_root} on port {port}, "
+                    "which the production job uses; only --production-deploy may "
+                    "address it",
                 )
     if command == "bootout":
         return Job(label, domain, None, None, None, port)
@@ -262,11 +277,15 @@ def _production_target_path(host: Host) -> Path:
     return host.home / DEPLOY_TARGET_RELATIVE
 
 
-def _record_production_target(host: Host, daemon: Path, state_root: Path) -> None:
+def _record_production_target(
+    host: Host, daemon: Path, state_root: Path, port: int
+) -> None:
     path = _production_target_path(host)
     try:
         path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-        _write_json(path, {"daemon": str(daemon), "stateRoot": str(state_root)})
+        _write_json(
+            path, {"daemon": str(daemon), "stateRoot": str(state_root), "port": port}
+        )
     except OSError as error:
         raise Refused(
             "production_target_record",
@@ -274,7 +293,7 @@ def _record_production_target(host: Host, daemon: Path, state_root: Path) -> Non
         ) from error
 
 
-def _recorded_production_target(host: Host) -> tuple[Path, Path] | None:
+def _recorded_production_target(host: Host) -> ProductionTarget | None:
     try:
         document = json.loads(_production_target_path(host).read_text())
     except (OSError, ValueError):
@@ -285,10 +304,17 @@ def _recorded_production_target(host: Host) -> tuple[Path, Path] | None:
     state_root = document.get("stateRoot")
     if not isinstance(daemon, str) or not isinstance(state_root, str):
         return None
-    return Path(daemon), Path(state_root)
+    port = document.get("port")
+    if isinstance(port, int) and not isinstance(port, bool):
+        port_value = port
+    elif isinstance(port, str) and port.isdigit():
+        port_value = int(port)
+    else:
+        port_value = None
+    return ProductionTarget(Path(daemon), Path(state_root), port_value)
 
 
-def _loaded_production_target(host: Host) -> tuple[Path, Path] | None:
+def _loaded_production_target(host: Host) -> ProductionTarget | None:
     try:
         result = host.run(["launchctl", "print", f"gui/{host.uid}/{PRODUCTION_LABEL}"])
     except (OSError, subprocess.SubprocessError):
@@ -302,7 +328,8 @@ def _loaded_production_target(host: Host) -> tuple[Path, Path] | None:
         line = raw_line.strip()
         if in_arguments:
             if line == "}":
-                break
+                in_arguments = False
+                continue
             if line:
                 arguments.append(line.strip('"'))
             continue
@@ -322,7 +349,9 @@ def _loaded_production_target(host: Host) -> tuple[Path, Path] | None:
         if not base.is_absolute():
             return None
         state_root_path = (base / state_root_path).resolve()
-    return daemon, state_root_path
+    port = _option(arguments, "--port")
+    port_value = int(port) if port is not None and port.isdigit() else None
+    return ProductionTarget(daemon, state_root_path, port_value)
 
 
 def _same_path(left: Path, right: Path) -> bool:
@@ -359,14 +388,23 @@ def _job_paths(document: dict, plist: Path) -> tuple[Path, Path]:
     return daemon, state_root_path
 
 
-def _program(document: dict, plist: Path) -> tuple[Path, Path, int]:
+def _job_target(document: dict, plist: Path) -> ProductionTarget:
     """The daemon, state root and port the job runs, from ProgramArguments."""
     daemon, state_root = _job_paths(document, plist)
     arguments = document.get("ProgramArguments")
     port = _option(arguments, "--port") if isinstance(arguments, list) else None
-    if port is None or not port.isdigit():
+    return ProductionTarget(
+        daemon,
+        state_root,
+        int(port) if port is not None and port.isdigit() else None,
+    )
+
+
+def _program(document: dict, plist: Path) -> tuple[Path, Path, int]:
+    target = _job_target(document, plist)
+    if target.port is None:
         raise Refused("plist_program", f"{plist} must pass --port: the deploy waits on it")
-    return daemon, state_root, int(port)
+    return target.daemon, target.state_root, target.port
 
 
 def _option(arguments: list[str], name: str) -> str | None:

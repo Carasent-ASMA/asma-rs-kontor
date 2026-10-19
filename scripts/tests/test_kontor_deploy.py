@@ -292,8 +292,8 @@ class ProductionJobGuardTest(WorldTest):
         state_alias = self.world.state / "state-alias"
         state_alias.symlink_to(production_state)
 
-        def arguments(daemon: Path, state_root: Path) -> list[str]:
-            return [str(daemon), "--state-root", str(state_root), "--port", "47717"]
+        def arguments(daemon: Path, state_root: Path, port: int = 47718) -> list[str]:
+            return [str(daemon), "--state-root", str(state_root), "--port", str(port)]
 
         cases = {
             "copied production plist": base,
@@ -338,7 +338,7 @@ class ProductionJobGuardTest(WorldTest):
                 ]
                 code = run_main(argv, self.world.host(recorder, DISPOSABLE_UID))
                 self.assertEqual(code, deploy.EXIT_REFUSED)
-                self.assertEqual(recorder.calls, [])
+                self.assertEqual(recorder.launchctl(), [])
 
     def test_a_recorded_production_target_is_refused_when_the_canonical_plist_is_absent(
         self,
@@ -369,6 +369,7 @@ class ProductionJobGuardTest(WorldTest):
             {
                 "daemon": str(production_bin / "kontor-daemon"),
                 "stateRoot": str(production_state),
+                "port": 47717,
             },
         )
         canonical.unlink()
@@ -388,7 +389,7 @@ class ProductionJobGuardTest(WorldTest):
         self.assertEqual(
             run_main(argv, self.world.host(recorder, DISPOSABLE_UID)), deploy.EXIT_REFUSED
         )
-        self.assertEqual(recorder.calls, [])
+        self.assertEqual(recorder.launchctl(), [])
         self.assertFalse(self.world.backup.exists())
 
     def test_the_loaded_production_job_seeds_the_target_without_a_plist_or_record(
@@ -440,6 +441,151 @@ class ProductionJobGuardTest(WorldTest):
         )
         self.assertEqual(recorder.launchctl(), [])
         self.assertFalse(self.world.backup.exists())
+
+    def test_the_loaded_production_job_resolves_a_relative_state_root(self) -> None:
+        production_bin = self.world.home / "prod-bin"
+        production_bin.mkdir()
+        production_daemon = production_bin / "kontor-daemon"
+        production_daemon.write_bytes(b"prod daemon\n")
+        other_bin = self.world.home / "other-bin"
+        other_bin.mkdir()
+        other_daemon = other_bin / "kontor-daemon"
+        other_daemon.write_bytes(b"other daemon\n")
+        workdir = self.world.home / "prod-work"
+        workdir.mkdir()
+        loaded = (
+            f"gui/{DISPOSABLE_UID}/{PRODUCTION_LABEL} = {{\n"
+            f"\tprogram = {production_daemon}\n"
+            "\targuments = {\n"
+            f"\t\t{production_daemon}\n"
+            "\t\t--state-root\n"
+            "\t\tkontor/state\n"
+            "\t\t--port\n"
+            "\t\t47717\n"
+            "\t}\n"
+            f"\tworking directory = {workdir}\n"
+            "}\n"
+        )
+
+        def answer(argv: list[str]) -> subprocess.CompletedProcess[str]:
+            if argv[:2] == ["launchctl", "print"]:
+                return done(0, loaded)
+            return done()
+
+        disposable = self.world.plist(
+            DISPOSABLE_LABEL,
+            daemon=other_daemon,
+            state_root="kontor/state",
+            working_directory=workdir,
+            port=47718,
+        )
+        recorder = Recorder(answer)
+        argv = [
+            "--label", DISPOSABLE_LABEL,
+            "--domain", DISPOSABLE_DOMAIN,
+            "--plist", str(disposable),
+            *command_argv("replace", self.world),
+        ]
+        self.assertEqual(
+            run_main(argv, self.world.host(recorder, DISPOSABLE_UID)),
+            deploy.EXIT_REFUSED,
+        )
+        self.assertEqual(
+            recorder.prints(),
+            [["launchctl", "print", f"gui/{DISPOSABLE_UID}/{PRODUCTION_LABEL}"]],
+        )
+        self.assertEqual(recorder.launchctl(), [])
+        self.assertFalse(self.world.backup.exists())
+
+    def test_a_stale_record_does_not_hide_the_loaded_production_job(self) -> None:
+        old_bin = self.world.home / "old-bin"
+        old_state = self.world.home / "old-state"
+        new_bin = self.world.home / "new-bin"
+        new_state = self.world.home / "new-state"
+        for directory in (old_bin, old_state, new_bin, new_state):
+            directory.mkdir()
+        for name in deploy.BINARIES:
+            (old_bin / name).write_bytes(f"old {name}\n".encode())
+            (new_bin / name).write_bytes(f"new {name}\n".encode())
+        record = self.world.home / deploy.DEPLOY_TARGET_RELATIVE
+        record.parent.mkdir(parents=True)
+        record.write_text(
+            json.dumps(
+                {
+                    "daemon": str(old_bin / "kontor-daemon"),
+                    "stateRoot": str(old_state),
+                    "port": 47717,
+                }
+            )
+        )
+        loaded = (
+            f"gui/{DISPOSABLE_UID}/{PRODUCTION_LABEL} = {{\n"
+            f"\tprogram = {new_bin / 'kontor-daemon'}\n"
+            "\targuments = {\n"
+            f"\t\t{new_bin / 'kontor-daemon'}\n"
+            "\t\t--state-root\n"
+            f"\t\t{new_state}\n"
+            "\t\t--port\n"
+            "\t\t47718\n"
+            "\t}\n"
+            "}\n"
+        )
+
+        def answer(argv: list[str]) -> subprocess.CompletedProcess[str]:
+            if argv[:2] == ["launchctl", "print"]:
+                return done(0, loaded)
+            return done()
+
+        disposable = self.world.plist(
+            DISPOSABLE_LABEL,
+            daemon=new_bin / "kontor-daemon",
+            state_root=new_state,
+            port=47718,
+        )
+        recorder = Recorder(answer)
+        argv = [
+            "--label", DISPOSABLE_LABEL,
+            "--domain", DISPOSABLE_DOMAIN,
+            "--plist", str(disposable),
+            *command_argv("replace", self.world),
+        ]
+        self.assertEqual(
+            run_main(argv, self.world.host(recorder, DISPOSABLE_UID)),
+            deploy.EXIT_REFUSED,
+        )
+        self.assertEqual(
+            recorder.prints(),
+            [["launchctl", "print", f"gui/{DISPOSABLE_UID}/{PRODUCTION_LABEL}"]],
+        )
+        self.assertEqual(recorder.launchctl(), [])
+        self.assertFalse(self.world.backup.exists())
+
+    def test_a_disposable_job_cannot_take_the_production_port(self) -> None:
+        self.world.plist(PRODUCTION_LABEL, port=7717)
+        other_bin = self.world.home / "other-bin"
+        other_state = self.world.home / "other-state"
+        other_bin.mkdir()
+        other_state.mkdir()
+        other_daemon = other_bin / "kontor-daemon"
+        other_daemon.write_bytes(b"other daemon\n")
+        disposable = self.world.plist(
+            DISPOSABLE_LABEL,
+            daemon=other_daemon,
+            state_root=other_state,
+            port=7717,
+        )
+        recorder = Recorder()
+        argv = [
+            "--label", DISPOSABLE_LABEL,
+            "--domain", DISPOSABLE_DOMAIN,
+            "--plist", str(disposable),
+            "bootstrap",
+        ]
+        self.assertEqual(
+            run_main(argv, self.world.host(recorder, DISPOSABLE_UID)),
+            deploy.EXIT_REFUSED,
+        )
+        self.assertEqual(recorder.launchctl(), [])
 
     def test_a_production_deploy_cannot_be_declared_for_another_label(self) -> None:
         recorder = Recorder()

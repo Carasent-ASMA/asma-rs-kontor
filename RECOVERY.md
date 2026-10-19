@@ -203,9 +203,9 @@ Before it changes any launchctl job, the script refuses (exit 3):
   any plist but `~/Library/LaunchAgents/com.asma.kontor.daemon.plist`;
 * `--production-deploy` with any other label;
 * a non-production `bootstrap` or `replace` whose daemon or state root is the
-  production one, using the canonical plist, the target recorded by the last
-  declared production deploy, or the loaded `com.asma.kontor.daemon` job when
-  both are absent;
+  production one, or that uses the production port (7717 when unset), compared
+  against the canonical plist, the recorded target and the loaded
+  `com.asma.kontor.daemon` job;
 * a plist whose `Label` differs from `--label`. `launchctl bootstrap` registers
   the label written in the plist, and that is how a test once replaced the
   production job.
