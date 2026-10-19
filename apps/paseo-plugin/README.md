@@ -153,18 +153,22 @@ Observed on this workstation:
   the fixed bundle compiles with exit 0. Bytecode hashes embed the compilation
   source filename; record each bytecode hash with its compilation path rather
   than as a universal artifact hash.
-- **KN-01 device acceptance is not performed and is not waived.** KN-01 closure
-  requires opening the correct existing session on desktop and actual iPhone,
-  and returning with search, filter and position preserved. This candidate does
-  not claim saved-view restoration or full B1. KN-03 does not substitute for
-  those KN-01 checks. The procedure and evidence checklist are recorded below;
-  the authorized device window is separate.
+- **KN-01 device acceptance (2026-10-19).** Igor accepted the mobile and desktop
+  device checks for this iteration on candidate `e7006612` (test host
+  `srv_tWq3jTzpOlc9`): "mobile check passed" and "desktop checked looks ok too".
+  The acceptance covers the device test as performed and does not assert that
+  every subcase below was individually instrumented or observed. This candidate
+  still does not claim saved-view restoration or full B1, and KN-03 does not
+  substitute for the KN-01 checks. The procedure and evidence checklist are
+  recorded below.
 
-### Desktop and iPhone acceptance procedure (pending)
+### Desktop and iPhone acceptance procedure
 
-This procedure has not been performed for this revision. It runs only in the
-authorized installation/device window; browser screenshots alone do not satisfy
-the desktop or iPhone check.
+The device checks were accepted for revision `e7006612` on 2026-10-19; see the
+acceptance note above. The procedure runs only in the authorized
+installation/device window; browser screenshots alone do not satisfy the desktop
+or iPhone check. Checklist items below stay unchecked unless the device session
+recorded that specific evidence.
 
 Record before starting:
 
@@ -235,7 +239,9 @@ Evidence checklist:
 - [ ] The Filters button has a chevron, active count, 44x44 pt target and a
       separate Clear filters control.
 - [ ] Missing-session and reconnect cases use controlled/disposable data only.
-- [ ] Desktop pass/fail, iPhone pass/fail, tester and timestamp.
+- [x] Desktop pass/fail, iPhone pass/fail, tester and timestamp: desktop pass,
+      iPhone pass, Igor, 2026-10-19 (candidate `e7006612`, test host
+      `srv_tWq3jTzpOlc9`). The remaining items were not individually recorded.
 
 ## Hooks
 
