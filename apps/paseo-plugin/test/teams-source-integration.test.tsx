@@ -10,8 +10,8 @@ import { DEFAULT_ORGANIZATION_SETTINGS } from "../shared/organization";
 import type { SourceRead } from "../shared/read-sources";
 import plugin from "../index.server";
 import { sessionEntry } from "./session-fixtures";
-const model = vi.hoisted(() => ({ open: false, query: null as any, rpc: new Map<string, ReturnType<typeof vi.fn>>() }));
-vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useState: () => [model.open, (value: boolean) => { model.open = value; }] }));
+const model = vi.hoisted(() => ({ open: false, page: 0, query: null as any, rpc: new Map<string, ReturnType<typeof vi.fn>>() }));
+vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useState: (initial: unknown) => typeof initial === "number" ? [model.page, (value: number) => { model.page = value; }] : [model.open, (value: boolean) => { model.open = value; }] }));
 vi.mock("react-native", () => ({ Pressable: "Pressable", Text: "Text", View: "View" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
 vi.mock("@getpaseo/plugin/client", () => ({ useRpc: (contract: { name: string }) => model.rpc.get(contract.name) }));
@@ -24,7 +24,7 @@ const legacy = { ...catalog.sources[0]!, id: "legacy-json", path: "/configured/l
 const colors = {} as Parameters<typeof TeamsSourcePage>[0]["colors"];
 let snapshots: Record<string, TeamsSourceSnapshot>;
 beforeEach(async () => {
-  model.open = false; model.rpc.clear();
+  model.open = false; model.page = 0; model.rpc.clear();
   const adapter = createTeamsSourceAdapter(catalog, teamsSourceBindings(catalog.sources).formats);
   snapshots = Object.fromEntries(await Promise.all(catalog.sources.map(async (source) => [source.id, await adapter.read({ sourceId: source.id })])));
 });
@@ -35,6 +35,12 @@ function visible(node: ReactNode): string {
   if (!isValidElement<Record<string, unknown>>(node)) return "";
   if (typeof node.type === "function") return visible((node.type as (props: any) => ReactNode)(node.props));
   return visible(node.props.children as ReactNode);
+}
+function controls(node: ReactNode): Array<Record<string, unknown>> {
+  if (Array.isArray(node)) return node.flatMap(controls);
+  if (!isValidElement<Record<string, unknown>>(node)) return [];
+  if (typeof node.type === "function") return controls((node.type as (props: any) => ReactNode)(node.props));
+  return [node.props, ...controls(node.props.children as ReactNode)];
 }
 function page(overrides: Partial<Parameters<typeof TeamsSourcePage>[0]> = {}) {
   return TeamsSourcePage({ sources: catalog.sources, snapshots, available: true, reads: {}, entries: [sessionEntry("native-exact")], observedAt: "2026-10-18T10:00:00Z", colors, children: "Native rows retained", ...overrides });
@@ -116,5 +122,55 @@ describe("A-owned Teams source integration", () => {
     expect(text).toContain("No authorized Teams adapter IDs configured"); expect(text).toContain("JSON record source"); expect(text).toContain("Native rows retained");
     expect(text).not.toContain(legacy.path); model.open = true;
     expect(visible(page({ sources: [], snapshots: {} }))).toContain("ID missing from the configured catalog");
+  });
+  it.each([["authoring", 38], ["operator", 36]] as const)("preserves actual hashed 38/36 binding counts with a bounded expandable role view (%s)", (sourceId, expectedCount) => {
+    expect(snapshots.authoring!.sha256).toBe("f7ddfff7a0db716e3356d43fe209c9c73f4fe51866de5ebbc26f641968fbea54");
+    expect(snapshots.operator!.sha256).toBe("e5040c5d74dbc131338b1568d0c0ada499eb31e55bafc512b4b1d883e578d3a3");
+    const collapsed = visible(page());
+    expect(collapsed).toContain("Configured bindings (38)"); expect(collapsed).toContain("Configured bindings (36)");
+    expect(collapsed).not.toContain("declared chainName:");
+    model.open = true;
+    const snapshot = snapshots[sourceId]!;
+    const render = () => page({ sources: [snapshot.source], snapshots: { [sourceId]: snapshot } });
+    let all = ""; const references: string[] = [];
+    for (let index = 0; index < 5; index++) {
+      const tree = render(); const rows = controls(tree).filter((props) => /^(team|leadership|committee|advisor)\//.test(String(props.accessibilityLabel)));
+      expect(rows.length).toBeLessThanOrEqual(8); references.push(...rows.map((props) => String(props.accessibilityLabel)));
+      all += visible(tree);
+      const next = controls(tree).find((props) => props.accessibilityLabel === "Next bindings")!;
+      expect(next.disabled).toBe(index === 4);
+      if (index < 4) (next.onPress as () => void)();
+    }
+    expect(references).toHaveLength(expectedCount); expect(new Set(references).size).toBe(expectedCount);
+    for (const mapping of ["team/pr-review-desk/adam → coordinator", "team/pr-review-desk/rev-a → desk-review-a", "team/pr-review-desk/swe → desk-fixer"]) expect(references).toContain(mapping);
+    expect(all).toContain("groupKind: team · groupId: pr-review-desk · slotId: adam · declared chainName: coordinator");
+    expect(all).toContain("/bindings/team~1pr-review-desk~1adam");
+    expect(all).toContain("known configuration"); expect(all).toContain("unresolved");
+    expect(all).toContain("/rules/independent_of"); expect(all).toContain("team/pr-review-desk/rev-b → team/pr-review-desk/rev-a");
+    expect(all).toContain("vision_required declared"); expect(all).toContain("calibration_required not declared");
+  });
+  it("renders ordered alternatives, selected efforts, provider/accounts and declared model metadata", () => {
+    model.open = true;
+    // Hard-decision bindings are on a later page; inspect all actual source rows.
+    let text = "";
+    for (model.page = 0; model.page < 5; model.page++) text += visible(page());
+    expect(text).toContain("Rung 1 · 2 alternatives");
+    expect(text.indexOf("Alternative 1: fable-5.1@xhigh")).toBeLessThan(text.indexOf("Alternative 2: opus-5.5@xhigh"));
+    expect(text).toContain("selected effort: xhigh");
+    expect(text).toContain("Model alias fable-5.1 · model ID claude-fable-5-1 · vendor anthropic");
+    expect(text).toContain("Domain alias claude · provider claude · account aliases claude-work, claude-personal");
+    expect(text).toContain("supported efforts low, medium, high, xhigh, max, ultracode");
+    expect(text).toContain("calibrated false"); expect(text).toContain("/models/fable-5.1"); expect(text).toContain("/domains/claude");
+    expect(text).toContain("Policy eligibility is not evaluated"); expect(text).toContain("not availability or eligibility");
+    expect(text).toContain("74 binding identities remain unresolved");
+  });
+  it("retains an explicit declared mapping when its chain definition is unavailable", () => {
+    const snapshot = snapshots.authoring!;
+    if (snapshot.data?.kind !== "fleet") throw new Error("Expected actual fleet fixture");
+    const binding = { ...snapshot.data.bindings[0]!, chainName: "missing-definition", chainResolved: false };
+    const partial: TeamsSourceSnapshot = { ...snapshot, status: "partial", data: { ...snapshot.data, bindings: [binding] } };
+    model.open = true; const text = visible(page({ sources: [snapshot.source], snapshots: { authoring: partial } }));
+    expect(text).toContain(`${binding.reference} → missing-definition`); expect(text).toContain("Mapping retained; rungs and model metadata Unknown");
+    expect(text).toContain("Source state: partial");
   });
 });

@@ -3,8 +3,8 @@ import { Pressable, Text, View } from "react-native";
 import type { DirectoryEntry } from "./session-directory";
 import type { ReadSourceSummary, SourceRead } from "../shared/read-sources";
 import { teamsSourceBindings } from "../shared/teams-source-bindings";
-import { composeTeamsSourceView, type TeamsSourceSnapshot } from "../shared/teams-source-snapshot";
-import { Card, Copy, type Colors } from "./page-controls";
+import { composeTeamsSourceView, type TeamsFleetData, type TeamsSourceSnapshot } from "../shared/teams-source-snapshot";
+import { Action, Card, Copy, type Colors } from "./page-controls";
 import { SourceDetails } from "./source-details";
 function Disclosure({ label, colors, children }: { label: string; colors: Colors; children: ReactNode }) {
   const [open, setOpen] = useState(false);
@@ -24,11 +24,56 @@ function SnapshotDetails({ snapshot, colors }: { snapshot: TeamsSourceSnapshot; 
     {snapshot.diagnostics.map((diagnostic, index) => <Copy key={index} colors={colors}>{diagnostic.code} · {diagnostic.pointer}: {diagnostic.message}</Copy>)}
   </Disclosure>;
 }
+function ChainDetails({ chain, colors }: { chain: TeamsFleetData["chains"][number]; colors: Colors }) {
+  return <>
+    <Copy colors={colors}>Source provenance: {chain.provenance.sourceId} · {chain.provenance.pointer}</Copy>
+    <Copy colors={colors}>Rungs keep source order. Alternatives within a rung are alternatives, not serial fallbacks. All provider/account and model fields are declared configuration, not availability or eligibility.</Copy>
+    {chain.rungs.map((rung) => <View key={rung.index} style={{ paddingVertical: 4 }}>
+      <Copy colors={colors}>Rung {rung.index + 1} · {rung.alternatives.length} alternatives</Copy>
+      {rung.alternatives.map((alternative, index) => <View key={index} style={{ paddingLeft: 8 }}>
+        <Copy colors={colors}>Alternative {index + 1}: {alternative.reference} · selected effort: {alternative.selectedEffort ?? "Not supplied"}</Copy>
+        <Copy colors={colors}>Model alias {alternative.modelAlias} · model ID {alternative.model?.id ?? "Unknown"} · vendor {alternative.model?.vendor ?? "Unknown"}</Copy>
+        <Copy colors={colors}>Domain alias {alternative.model?.domain ?? "Unknown"} · provider {alternative.domain?.provider ?? "Unknown"} · account aliases {alternative.domain?.accounts.join(", ") || "Unknown"} · model prefix {alternative.domain?.modelPrefix ?? "Not supplied"}</Copy>
+        <Copy colors={colors}>Declared model metadata: supported efforts {alternative.model?.supportedEfforts?.join(", ") ?? "Not supplied"}; vision {alternative.model ? String(alternative.model.vision) : "Unknown"}; calibrated {alternative.model ? String(alternative.model.calibrated) : "Unknown"}.</Copy>
+        <Copy colors={colors} muted>Source provenance: {alternative.provenance.sourceId} · {alternative.provenance.pointer}{alternative.model ? ` · ${alternative.model.provenance.pointer}` : ""}{alternative.domain ? ` · ${alternative.domain.provenance.pointer}` : ""}</Copy>
+        {alternative.diagnostics.map((diagnostic, issue) => <Copy key={issue} colors={colors}>{diagnostic.code} · {diagnostic.pointer}: {diagnostic.message}</Copy>)}
+      </View>)}
+    </View>)}
+  </>;
+}
+const BINDINGS_PER_PAGE = 8;
+function ConfiguredBindings({ data, colors }: { data: TeamsFleetData; colors: Colors }) {
+  const [page, setPage] = useState(0);
+  const pages = Math.max(1, Math.ceil(data.bindings.length / BINDINGS_PER_PAGE));
+  const current = Math.min(page, pages - 1);
+  const start = current * BINDINGS_PER_PAGE;
+  return <Disclosure label={`Configured bindings (${data.bindings.length})`} colors={colors}>
+    <Copy colors={colors}>Declared group/slot → chain mappings are known configuration. Template ID/version candidates and leadership identities remain separate and unresolved. These mappings do not assign native sessions or attest activation.</Copy>
+    <Copy colors={colors}>Bindings {data.bindings.length ? start + 1 : 0}–{Math.min(start + BINDINGS_PER_PAGE, data.bindings.length)} of {data.bindings.length} · page {current + 1}/{pages}</Copy>
+    <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
+      <Action label="Previous bindings" colors={colors} disabled={current === 0} onPress={() => setPage(current - 1)} />
+      <Action label="Next bindings" colors={colors} disabled={current + 1 >= pages} onPress={() => setPage(current + 1)} />
+    </View>
+    {data.bindings.slice(start, start + BINDINGS_PER_PAGE).map((binding) => {
+      const chain = binding.chainResolved ? data.chains.find((candidate) => candidate.name === binding.chainName) : undefined;
+      const independence = Object.entries(data.rules.independent_of).filter(([from, of]) => from === binding.reference || of === binding.reference);
+      return <Disclosure key={binding.reference} label={`${binding.reference} → ${binding.chainName}`} colors={colors}>
+        <Copy colors={colors}>groupKind: {binding.groupKind} · groupId: {binding.groupId} · slotId: {binding.slotId ?? "Not supplied"} · declared chainName: {binding.chainName}</Copy>
+        <Copy colors={colors}>Binding source provenance: {binding.provenance.sourceId} · {binding.provenance.pointer}</Copy>
+        <Copy colors={colors}>Declared rules for this binding: calibration_required {data.rules.calibration_required.includes(binding.reference) ? "declared" : "not declared"}; vision_required {data.rules.vision_required.includes(binding.reference) ? "declared" : "not declared"}. Policy eligibility is not evaluated.</Copy>
+        <Copy colors={colors} muted>Rule source: {binding.provenance.sourceId} · /rules/calibration_required · /rules/vision_required · /rules/independent_of</Copy>
+        {independence.length ? independence.map(([from, of]) => <Copy key={from} colors={colors}>Declared independent_of: {from} → {of}</Copy>) : <Copy colors={colors}>independent_of: no relationship declared for this binding.</Copy>}
+        {chain ? <ChainDetails chain={chain} colors={colors} /> : <Copy colors={colors}>Declared chain {binding.chainName}: definition unavailable. Mapping retained; rungs and model metadata Unknown.</Copy>}
+      </Disclosure>;
+    })}
+  </Disclosure>;
+}
 function SnapshotData({ snapshot, colors }: { snapshot: TeamsSourceSnapshot; colors: Colors }) {
   const data = snapshot.data;
   if (!data) return <Copy colors={colors}>Configured source unavailable. Other sources and native sessions remain usable.</Copy>;
   if (data.kind === "fleet") return <>
     <Copy colors={colors}>Fleet schema {data.schemaVersion} · {data.chains.length} chains · {data.models.length} model definitions · {data.bindings.length} bindings</Copy>
+    <ConfiguredBindings data={data} colors={colors} />
     <Disclosure label={`Configured chains (${data.chains.length})`} colors={colors}>
       <Copy colors={colors}>Rungs keep source order. Alternatives within a rung are alternatives, not serial fallbacks. Targets are configuration, not running models or availability.</Copy>
       {data.chains.map((chain) => <View key={chain.name} style={{ paddingVertical: 4 }}>
@@ -74,7 +119,7 @@ export function TeamsSourcePage({ sources, snapshots = {}, errors = {}, bindingD
     })}
     {view.metadata.length ? <Card title="Unresolved configuration metadata" colors={colors}>
       <Copy colors={colors}>{view.metadata.length} binding identities remain unresolved. Candidates do not select a template version; roster slots do not establish leadership identities.</Copy>
-      <Disclosure label="Binding details" colors={colors}>{view.metadata.map((metadata) => <View key={`${metadata.sourceId}:${metadata.bindingReference}`}>
+      <Disclosure label="Unresolved template/leadership details" colors={colors}>{view.metadata.map((metadata) => <View key={`${metadata.sourceId}:${metadata.bindingReference}`}>
         <Copy colors={colors}>{metadata.sourceId} · {metadata.bindingReference}: {metadata.state}. {metadata.reason}</Copy>
         {metadata.templateCandidates.map((candidate) => <Copy key={`${candidate.sourceId}:${candidate.templateId}:${candidate.version}:${candidate.slotId}`} colors={colors} muted>Candidate only: {candidate.sourceId} · {candidate.templateId} v{candidate.version} · slot {candidate.slotId}</Copy>)}
       </View>)}</Disclosure>
