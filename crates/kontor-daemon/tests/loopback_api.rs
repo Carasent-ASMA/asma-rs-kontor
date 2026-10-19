@@ -26044,6 +26044,7 @@ async fn a_configured_governed_summarizer_produces_the_persisted_handoff_summary
     let SuccessionHandoffOutcome::Summary {
         timeline,
         summarizer_model_rung,
+        summarizer_account: stored_account,
         summary,
         summary_hash,
         input_redaction,
@@ -26063,6 +26064,11 @@ async fn a_configured_governed_summarizer_produces_the_persisted_handoff_summary
         dispatched_account.to_string(),
         personal,
         "the runtime executes the summary as the account the walk admitted"
+    );
+    assert_eq!(
+        stored_account.as_ref(),
+        Some(dispatched_account),
+        "the persisted provenance binds the account the runtime executed the summary as"
     );
     assert_eq!(
         summarizer_model_rung.provider.0, "codex-personal",
@@ -26215,6 +26221,7 @@ async fn startup_composes_the_configured_runtime_summarizer() {
     let (dispatched_route, dispatched_account, prompt) = &calls[0];
     let SuccessionHandoffOutcome::Summary {
         summarizer_model_rung,
+        summarizer_account: stored_account,
         summary,
         ..
     } = &handoff.outcome
@@ -26232,6 +26239,11 @@ async fn startup_composes_the_configured_runtime_summarizer() {
         dispatched_account.to_string(),
         personal,
         "the runtime executes the summary as the account the walk admitted"
+    );
+    assert_eq!(
+        stored_account.as_ref(),
+        Some(dispatched_account),
+        "the persisted provenance binds the account the runtime executed the summary as"
     );
     assert_eq!(
         summarizer_model_rung.provider.0, "codex-personal",

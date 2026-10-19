@@ -563,6 +563,7 @@ pub async fn produce_succession_handoff(
         SuccessionHandoffOutcome::Summary {
             timeline: timeline_range,
             summarizer_model_rung,
+            summarizer_account: Some(summarizer_account),
             summary,
             summary_hash,
             input_redaction: prepared.receipt.clone(),
