@@ -337,16 +337,30 @@ class ExplicitTargetTest(WorldTest):
     def test_commands_address_only_the_named_job(self) -> None:
         plist = self.world.plist(DISPOSABLE_LABEL)
         target = ["--label", DISPOSABLE_LABEL, "--domain", DISPOSABLE_DOMAIN, "--plist", str(plist)]
-        expected = {
-            "bootout": [["launchctl", "bootout", f"{DISPOSABLE_DOMAIN}/{DISPOSABLE_LABEL}"]],
-            "bootstrap": [["launchctl", "bootstrap", DISPOSABLE_DOMAIN, str(plist)]],
-        }
-        for command, launchctl in expected.items():
-            with self.subTest(command=command):
-                recorder = Recorder(lambda argv: done(1) if argv[0] == "lsof" else done())
-                code = run_main([*target, command], self.world.host(recorder, DISPOSABLE_UID))
-                self.assertEqual(code, 0)
-                self.assertEqual(recorder.launchctl(), launchctl)
+        recorder = Recorder(lambda argv: done(1) if argv[0] == "lsof" else done())
+        self.assertEqual(run_main([*target, "bootout"], self.world.host(recorder, DISPOSABLE_UID)), 0)
+        self.assertEqual(
+            recorder.launchctl(),
+            [["launchctl", "bootout", f"{DISPOSABLE_DOMAIN}/{DISPOSABLE_LABEL}"]],
+        )
+
+        submitted: list[tuple[Path, bytes]] = []
+
+        def answer(argv: list[str]) -> subprocess.CompletedProcess[str]:
+            if argv[0] == "launchctl" and argv[1] == "bootstrap":
+                submitted.append((Path(argv[3]), Path(argv[3]).read_bytes()))
+            return done(1) if argv[0] == "lsof" else done()
+
+        recorder = Recorder(answer)
+        self.assertEqual(
+            run_main([*target, "bootstrap"], self.world.host(recorder, DISPOSABLE_UID)), 0
+        )
+        calls = recorder.launchctl()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][:3], ["launchctl", "bootstrap", DISPOSABLE_DOMAIN])
+        [(submitted_path, submitted_bytes)] = submitted
+        self.assertEqual(plistlib.loads(submitted_bytes)["Label"], DISPOSABLE_LABEL)
+        self.assertNotEqual(submitted_path, plist)
 
     def test_bootout_fails_while_the_port_still_listens(self) -> None:
         plist = self.world.plist(DISPOSABLE_LABEL)
@@ -360,9 +374,12 @@ class ExplicitTargetTest(WorldTest):
 class ReplaceTest(WorldTest):
     def answer(self, readback_status: int = 200, readback_realm: str = REALM_ID):
         self.snapshot_daemon: bytes | None = None
+        self.bootstrap_plist: tuple[Path, bytes] | None = None
 
         def answer(argv: list[str]) -> subprocess.CompletedProcess[str]:
             if argv[0] == "launchctl":
+                if argv[1] == "bootstrap":
+                    self.bootstrap_plist = (Path(argv[3]), Path(argv[3]).read_bytes())
                 return done()
             if argv[0] == "lsof":
                 return done(1)
@@ -391,14 +408,13 @@ class ReplaceTest(WorldTest):
         recorder = Recorder(self.answer())
         self.assertEqual(self.replace(recorder), 0)
         service = f"{DISPOSABLE_DOMAIN}/{DISPOSABLE_LABEL}"
-        plist = str(self.world.agents / f"{DISPOSABLE_LABEL}.plist")
-        self.assertEqual(
-            recorder.launchctl(),
-            [
-                ["launchctl", "bootout", service],
-                ["launchctl", "bootstrap", DISPOSABLE_DOMAIN, plist],
-            ],
-        )
+        original = self.world.agents / f"{DISPOSABLE_LABEL}.plist"
+        bootout, bootstrap = recorder.launchctl()
+        self.assertEqual(bootout, ["launchctl", "bootout", service])
+        self.assertEqual(bootstrap[:3], ["launchctl", "bootstrap", DISPOSABLE_DOMAIN])
+        self.assertNotEqual(Path(bootstrap[3]), original)
+        assert self.bootstrap_plist is not None
+        self.assertEqual(plistlib.loads(self.bootstrap_plist[1])["Label"], DISPOSABLE_LABEL)
         self.assertEqual(self.snapshot_daemon, b"old kontor-daemon\n")
         for name in deploy.BINARIES:
             self.assertEqual((self.world.bin / name).read_bytes(), f"new {name}\n".encode())
@@ -411,6 +427,34 @@ class ReplaceTest(WorldTest):
         self.assertEqual(receipt["readback"]["body"]["realm_id"], REALM_ID)
         old_link = (self.world.backup / "kontor-mcp.old-link").read_text().strip()
         self.assertEqual(old_link, old_generation)
+
+    def test_bootstrap_ignores_a_plist_rewritten_after_the_guard(self) -> None:
+        original = self.world.agents / f"{DISPOSABLE_LABEL}.plist"
+        plain = self.answer()
+        submitted: list[bytes] = []
+        booted = False
+
+        def answer(argv: list[str]) -> subprocess.CompletedProcess[str]:
+            nonlocal booted
+            if argv[0] == "launchctl" and argv[1] == "bootout" and not booted:
+                booted = True
+                result = plain(argv)
+                document = plistlib.loads(original.read_bytes())
+                document["Label"] = PRODUCTION_LABEL
+                original.write_bytes(plistlib.dumps(document))
+                return result
+            if argv[0] == "launchctl" and argv[1] == "bootstrap":
+                submitted.append(Path(argv[3]).read_bytes())
+            return plain(argv)
+
+        recorder = Recorder(answer)
+        self.assertEqual(self.replace(recorder), 0)
+        self.assertEqual(plistlib.loads(original.read_bytes())["Label"], PRODUCTION_LABEL)
+        self.assertEqual([plistlib.loads(blob)["Label"] for blob in submitted], [DISPOSABLE_LABEL])
+        self.assertNotIn(
+            PRODUCTION_LABEL,
+            " ".join(part for call in recorder.launchctl() for part in call),
+        )
 
     def test_replace_restores_the_old_job_when_the_realm_does_not_read_back(self) -> None:
         before = self.world.installed()

@@ -19,7 +19,9 @@ target guard (``resolve_job``) before it starts any process:
 * a job whose daemon or state root is the production one is refused even under
   another label, because its install would overwrite the production binaries;
 * the plist's ``Label`` must equal ``--label``, because ``launchctl bootstrap``
-  registers the label written in the plist, not the one on the command line.
+  registers the label written in the plist, not the one on the command line;
+  the validated bytes are copied to a private snapshot and every command uses
+  that copy, so an edit after the guard cannot change what launchctl loads.
 
 Commands:
 
@@ -57,6 +59,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -166,7 +169,7 @@ def resolve_job(
             f"--production-deploy declares a production deploy, but {label} is not "
             f"{PRODUCTION_LABEL}",
         )
-    document = _read_plist(plist)
+    data, document = _read_plist(plist)
     if document.get("Label") != label:
         raise Refused(
             "plist_label_mismatch",
@@ -178,7 +181,7 @@ def resolve_job(
         canonical = host.home / "Library" / "LaunchAgents" / f"{PRODUCTION_LABEL}.plist"
         if canonical.is_file():
             production_daemon, production_state_root, _ = _program(
-                _read_plist(canonical), canonical
+                _read_plist(canonical)[1], canonical
             )
             if (
                 daemon.resolve() == production_daemon.resolve()
@@ -189,17 +192,33 @@ def resolve_job(
                     f"{plist} runs {daemon} with state root {state_root}, which is the "
                     "production install; only --production-deploy may address it",
                 )
-    return Job(label, domain, plist, daemon, state_root, port)
+    snapshot = _snapshot_plist(data, label)
+    return Job(label, domain, snapshot, daemon, state_root, port)
 
 
-def _read_plist(plist: Path) -> dict:
+def _read_plist(plist: Path) -> tuple[bytes, dict]:
+    """The plist bytes and their parse, so the guard and the snapshot agree."""
     try:
-        document = plistlib.loads(plist.read_bytes())
+        data = plist.read_bytes()
+        document = plistlib.loads(data)
     except (OSError, ValueError, ExpatError) as error:
         raise Refused("plist_unreadable", f"{plist}: {error}") from error
     if not isinstance(document, dict):
         raise Refused("plist_unreadable", f"{plist} is not a launchd job dictionary")
-    return document
+    return data, document
+
+
+def _snapshot_plist(data: bytes, label: str) -> Path:
+    """A private copy of the bytes the guard read, for launchctl to load."""
+    try:
+        directory = Path(tempfile.mkdtemp(prefix="kontor-deploy-"))
+        os.chmod(directory, 0o700)
+        snapshot = directory / f"{label}.plist"
+        snapshot.write_bytes(data)
+        os.chmod(snapshot, 0o600)
+    except OSError as error:
+        raise Refused("plist_snapshot", f"cannot write a private plist snapshot: {error}") from error
+    return snapshot
 
 
 def _program(document: dict, plist: Path) -> tuple[Path, Path, int]:
@@ -514,6 +533,8 @@ def main(argv: Sequence[str] | None = None, host: Host | None = None) -> int:
     except (Failed, OSError, subprocess.SubprocessError) as error:
         print(f"kontor-deploy: failed: {error}", file=sys.stderr)
         return EXIT_FAILED
+    finally:
+        shutil.rmtree(job.plist.parent, ignore_errors=True)
     return 0
 
 
