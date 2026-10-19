@@ -265,6 +265,85 @@ async fn a_completed_correction_does_not_remove_a_marker_restored_for_a_later_ou
 }
 
 #[tokio::test]
+async fn a_completed_correction_replays_after_its_setting_and_document_are_removed() {
+    let world = World::open().await;
+    let path = fixture(&world);
+    let preview = Call::post("/v1/provider-markers:preview", &preview_body())
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let revision = preview.json()["revision"]
+        .as_str()
+        .expect("a revision")
+        .to_owned();
+    let preview_hash = preview.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+    let apply = serde_json::json!({
+        "runtime_family": fake_family().to_string(),
+        "provider": "claude",
+        "expected_revision": revision,
+        "preview_hash": preview_hash,
+    });
+    let cleared = Call::post("/v1/provider-markers:apply", &apply)
+        .signed_as(&world, "admin")
+        .with_key("provider-marker-completed-gone")
+        .send(&world)
+        .await;
+    assert_eq!(cleared.status, 200, "{}", cleared.body);
+    assert_eq!(cleared.json()["outcome"], "cleared");
+
+    // The operator removes the addressed setting after the correction
+    // completed. The key is still the same completed act, so its retry is
+    // answered from the durable completion, not from the moved document.
+    std::fs::write(
+        &path,
+        serde_json::json!({ "schema_version": 5, "runtimes": [] }).to_string(),
+    )
+    .expect("the addressed setting is removed");
+    let setting_gone = Call::post("/v1/provider-markers:apply", &apply)
+        .signed_as(&world, "admin")
+        .with_key("provider-marker-completed-gone")
+        .send(&world)
+        .await;
+    assert_eq!(setting_gone.status, 200, "{}", setting_gone.body);
+    assert_eq!(setting_gone.json()["outcome"], "replayed");
+    assert_eq!(setting_gone.json()["changed"], false);
+    assert_eq!(
+        setting_gone.json()["before"],
+        serde_json::json!(["claude", "codex"])
+    );
+    assert_eq!(setting_gone.json()["after"], serde_json::json!(["codex"]));
+
+    // The whole document is gone too. A completed key is still `replayed`,
+    // which is exactly what the documentation promises a retry.
+    std::fs::remove_file(&path).expect("the document is removed");
+    let document_gone = Call::post("/v1/provider-markers:apply", &apply)
+        .signed_as(&world, "admin")
+        .with_key("provider-marker-completed-gone")
+        .send(&world)
+        .await;
+    assert_eq!(document_gone.status, 200, "{}", document_gone.body);
+    assert_eq!(document_gone.json()["outcome"], "replayed");
+    assert_eq!(document_gone.json()["changed"], false);
+    assert_eq!(
+        document_gone.json()["revision"],
+        cleared.json()["revision"],
+        "the replay names the revision the correction left behind"
+    );
+
+    // A fresh preview still reports the missing document as not found.
+    let fresh = Call::post("/v1/provider-markers:preview", &preview_body())
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+    assert_eq!(fresh.status, 404, "{}", fresh.body);
+    assert_eq!(fresh.code(), "not_found");
+}
+
+#[tokio::test]
 async fn a_marker_correction_refuses_unknown_stale_malformed_and_unauthorized_calls() {
     let world = World::open().await;
     let path = fixture(&world);

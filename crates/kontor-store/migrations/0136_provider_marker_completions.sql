@@ -7,7 +7,10 @@
 -- replay of the completed key would remove that restored marker a second time.
 -- The row is written only after a successful apply (or a proven already-cleared)
 -- and names the revision the correction left behind, so every later use of the
--- key is a replay that never writes.
+-- key is a replay that never writes. It also carries the host key and the
+-- before/after sets the successful apply reported, so a replay is answered from
+-- durable state even after the addressed setting or the whole document has been
+-- removed.
 --
 -- Completion is permanent: a completed act is never reopened, and a key that
 -- has completed can never turn back into an unfinished claim (ASMA-7968).
@@ -19,6 +22,10 @@ CREATE TABLE provider_marker_completions (
     written_revision TEXT NOT NULL
                           CHECK (length(written_revision) = 64
                                  AND written_revision NOT GLOB '*[^0-9a-f]*'),
+    host_key         TEXT NOT NULL
+                          CHECK (length(host_key) BETWEEN 1 AND 256),
+    before_providers TEXT NOT NULL,
+    after_providers  TEXT NOT NULL,
     completed_at     TEXT NOT NULL
                           CHECK (completed_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*Z')
 ) STRICT;

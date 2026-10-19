@@ -255,9 +255,9 @@ pub(crate) fn write(path: &Path, expected: &[u8], updated: &[u8]) -> Result<(), 
 
 /// Flush the directory entry a rename published.
 fn flush_parent(path: &Path) -> std::io::Result<()> {
-    let directory = path.parent().ok_or_else(|| {
-        std::io::Error::other("the settings path has no parent directory")
-    })?;
+    let directory = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("the settings path has no parent directory"))?;
     std::fs::File::open(directory)?.sync_all()
 }
 

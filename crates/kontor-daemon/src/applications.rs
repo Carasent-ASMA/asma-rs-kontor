@@ -21545,10 +21545,28 @@ impl Services {
             )
             .advising("read the marker again with the preview and apply with a fresh key")
         };
-        let completed = state
+        let restart_required =
+            !self.running_daemon_answers_available(state, family, &request.provider);
+        // A completed key is answered from its durable row before the document
+        // is read, so removing the addressed setting or the whole file after a
+        // successful correction cannot turn its retry into a revision conflict.
+        if let Some(completion) = state
             .with_store(|store| store.provider_marker_completion(key.as_str()))
             .map_err(|error| self.refuse(&error))?
-            .is_some();
+        {
+            return Ok(ProviderMarkerDto {
+                realm_id: state.realm_id(),
+                runtime_family: family.to_string(),
+                host_key: completion.host_key,
+                provider: request.provider.clone(),
+                outcome: ProviderMarkerOutcomeDto::Replayed,
+                before: completion.before.into_iter().collect(),
+                after: completion.after.into_iter().collect(),
+                changed: false,
+                effects: provider_marker_effects(false, restart_required),
+                revision: completion.written_revision,
+            });
+        }
         let path = crate::runtimes::path_in(&self.state_root);
         let bytes = crate::provider_marker::read(&path)
             .map_err(|error| self.provider_marker_error(error))?
@@ -21556,22 +21574,6 @@ impl Services {
         let plan = crate::provider_marker::plan(&bytes, family.as_str(), &request.provider)
             .map_err(|_| changed_since())?;
         let revision = ContentHash::of(&bytes);
-        let restart_required =
-            !self.running_daemon_answers_available(state, family, &request.provider);
-        if completed {
-            return Ok(ProviderMarkerDto {
-                realm_id: state.realm_id(),
-                runtime_family: family.to_string(),
-                host_key: plan.host_key,
-                provider: request.provider.clone(),
-                outcome: ProviderMarkerOutcomeDto::Replayed,
-                before: plan.before.iter().cloned().collect(),
-                after: plan.before.iter().cloned().collect(),
-                changed: false,
-                effects: provider_marker_effects(false, restart_required),
-                revision,
-            });
-        }
         if !plan.before.contains(&request.provider) {
             // A first attempt whose rename landed but whose directory flush did
             // not is recovered here. Make the rename durable before completion
@@ -21584,6 +21586,9 @@ impl Services {
                     store.record_provider_marker_completion(
                         key.as_str(),
                         &revision,
+                        &plan.host_key,
+                        &plan.before,
+                        &plan.after,
                         kontor_api::now(),
                     )
                 })
@@ -21610,7 +21615,14 @@ impl Services {
         let written = ContentHash::of(&updated);
         state
             .with_store(|store| {
-                store.record_provider_marker_completion(key.as_str(), &written, kontor_api::now())
+                store.record_provider_marker_completion(
+                    key.as_str(),
+                    &written,
+                    &plan.host_key,
+                    &plan.before,
+                    &plan.after,
+                    kontor_api::now(),
+                )
             })
             .map_err(|error| self.refuse(&error))?;
         Ok(ProviderMarkerDto {
@@ -26886,6 +26898,9 @@ impl ApplicationOperations for Services {
                         store.record_provider_marker_completion(
                             key.as_str(),
                             &written,
+                            &plan.host_key,
+                            &plan.before,
+                            &plan.after,
                             kontor_api::now(),
                         )
                     })
@@ -26898,6 +26913,9 @@ impl ApplicationOperations for Services {
                         store.record_provider_marker_completion(
                             key.as_str(),
                             &revision,
+                            &plan.host_key,
+                            &plan.before,
+                            &plan.after,
                             kontor_api::now(),
                         )
                     })
