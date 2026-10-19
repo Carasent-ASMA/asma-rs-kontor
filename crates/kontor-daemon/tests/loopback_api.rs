@@ -52144,9 +52144,38 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
             .await;
         }
     }
-    // A real epic that was never materialized has no control plane at all. The
-    // fence must refuse its readers as non-authority too, rather than report
-    // its placement and advise a topology change they cannot make.
+    // A real epic that was never applied has no control plane at all. The
+    // membership fence refuses a seat of another epic before any placement is
+    // read, so the reader learns neither its staffing nor its advice.
+    let ungoverned_epic = MiniProjectId::generate();
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.create_mini_project(&NewMiniProject {
+                id: ungoverned_epic,
+                project_id,
+                name: name("Unapplied epic"),
+                created_at: at("2026-08-18T09:00:00Z"),
+            })
+        })
+        .expect("the unapplied epic is created");
+    let ungoverned_epic = ungoverned_epic.to_string();
+    for actor in [lsa, tpm] {
+        let ungoverned_read = scoped_completion(actor, 1, project, &ungoverned_epic)
+            .send(world)
+            .await;
+        assert_eq!(
+            ungoverned_read.status, 403,
+            "an unapplied epic's placement is not this reader's to learn: {}",
+            ungoverned_read.body
+        );
+        assert_eq!(ungoverned_read.code(), "forbidden");
+        assert!(ungoverned_read.json().get("phase").is_none());
+    }
+    // A governed epic of this project, with its own control plane and
+    // leadership, exists beside the one the reader leads. Its completion run
+    // has not started.
     let project_read = Call::get(format!("/v1/projects/{project}"))
         .signed_as(world, "observer")
         .send(world)
@@ -52172,18 +52201,6 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
         .as_str()
         .expect("an epic id")
         .to_owned();
-    for actor in [lsa, tpm] {
-        let unmaterialized_read = scoped_completion(actor, 1, project, &unmaterialized_epic)
-            .send(world)
-            .await;
-        assert_eq!(
-            unmaterialized_read.status, 403,
-            "an unmaterialized epic's placement is not this reader's to learn: {}",
-            unmaterialized_read.body
-        );
-        assert_eq!(unmaterialized_read.code(), "forbidden");
-        assert!(unmaterialized_read.json().get("phase").is_none());
-    }
     // An in-project leadership seat resolves this epic, which exists but never
     // started completion. The daemon reports that absence, and writes no
     // receipt for the refused remediation.
