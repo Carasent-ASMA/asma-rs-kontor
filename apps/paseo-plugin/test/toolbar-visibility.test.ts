@@ -72,7 +72,7 @@ describe("compact toolbar visibility", () => {
     expect(
       reduceToolbarVisibility(
         "collapsed",
-        context({ offset: 1800, delta: -11, contentHeight: 2000 }),
+        context({ offset: 1300, delta: -11, contentHeight: 2000 }),
       ),
     ).toBe("expanded");
   });
@@ -108,6 +108,18 @@ describe("compact toolbar visibility", () => {
     expect(
       reduceToolbarVisibility("expanded", context({ offset: -20, delta: 100 })),
     ).toBe("expanded");
+    expect(
+      reduceToolbarVisibility(
+        "collapsed",
+        context({ offset: 1405, delta: 5, contentHeight: 2000, viewportHeight: 600 }),
+      ),
+    ).toBe("collapsed");
+    expect(
+      reduceToolbarVisibility(
+        "collapsed",
+        context({ offset: 1405, delta: -20, contentHeight: 2000, viewportHeight: 600 }),
+      ),
+    ).toBe("collapsed");
     expect(
       reduceToolbarVisibility(
         "expanded",
@@ -166,15 +178,38 @@ describe("compact toolbar visibility", () => {
     });
   });
 
-  it("uses the net header height when the wide slim row appears or disappears", () => {
+  it("uses the complete in-flow height, including the compact gap", () => {
     expect(
-      toolbarCompensationHeight({ fullHeight: 260, slimHeight: 44, compact: true }),
-    ).toBe(260);
+      toolbarCompensationHeight({
+        fullHeight: 260,
+        slimHeight: 44,
+        compact: true,
+        gap: 8,
+      }),
+    ).toBe(268);
     expect(
-      toolbarCompensationHeight({ fullHeight: 260, slimHeight: 44, compact: false }),
+      toolbarCompensationHeight({
+        fullHeight: 220,
+        slimHeight: 44,
+        compact: true,
+        gap: 8,
+      }),
+    ).toBe(228);
+    expect(
+      toolbarCompensationHeight({
+        fullHeight: 260,
+        slimHeight: 44,
+        compact: false,
+        gap: 8,
+      }),
     ).toBe(216);
     expect(
-      toolbarCompensationHeight({ fullHeight: 30, slimHeight: 44, compact: false }),
+      toolbarCompensationHeight({
+        fullHeight: 30,
+        slimHeight: 44,
+        compact: false,
+        gap: 8,
+      }),
     ).toBe(0);
   });
 
@@ -210,7 +245,31 @@ describe("compact toolbar visibility", () => {
         direction: "reveal",
         maxOffset: 2000,
       }),
-    ).toBe(2000);
+    ).toBe(2070);
+    expect(
+      toolbarScrollCompensation({
+        currentOffset: 2050,
+        headerHeight: 120,
+        direction: "reveal",
+        maxOffset: 2000,
+      }),
+    ).toBe(2120);
+    expect(
+      toolbarScrollCompensation({
+        currentOffset: 1389,
+        headerHeight: 228,
+        direction: "reveal",
+        maxOffset: 1400,
+      }),
+    ).toBe(1617);
+    expect(
+      toolbarScrollCompensation({
+        currentOffset: 500,
+        headerHeight: 228,
+        direction: "reveal",
+        maxOffset: 0,
+      }),
+    ).toBe(728);
     expect(
       toolbarScrollCompensation({
         currentOffset: 500,

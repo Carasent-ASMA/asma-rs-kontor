@@ -258,7 +258,7 @@ describe("Kontor filters affordance", () => {
     expect(readSessionView("host-a").advancedOpen).toBe(true);
   });
 
-  it("does not change the saved view when toolbar visibility changes", () => {
+  it("leaves the saved view untouched when only pure toolbar helpers run", () => {
     const saved = patchSessionView("host-a", {
       query: "ASMA-8540",
       status: "running",

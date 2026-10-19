@@ -56,6 +56,7 @@ import {
   EMPTY_SCROLL_ACCUMULATOR,
   initialToolbarVisibility,
   reduceToolbarVisibility,
+  TOOLBAR_LAYOUT_GAP,
   toolbarCompensationHeight,
   toolbarLayout,
   toolbarScrollCompensation,
@@ -833,6 +834,7 @@ export function SessionsScreen({ host, layout, navigation, theme }: PluginScreen
         fullHeight: expandedToolbarHeightRef.current,
         slimHeight: slimHeightRef.current,
         compact,
+        gap: TOOLBAR_LAYOUT_GAP,
       }),
       direction: collapsed ? "collapse" : "reveal",
       maxOffset: maxScrollOffsetRef.current,
@@ -1034,27 +1036,35 @@ export function SessionsScreen({ host, layout, navigation, theme }: PluginScreen
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
       const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
       const offset = contentOffset.y;
-      maxScrollOffsetRef.current = Math.max(
+      const maxOffset = Math.max(
         0,
         contentSize.height - layoutMeasurement.height,
       );
-      scrollOffsetRef.current = offset;
-      writeScrollOffset(host.id, offset);
+      maxScrollOffsetRef.current = maxOffset;
+      const outOfRange = offset < 0 || offset > maxOffset;
+      // Bounce samples must not reach the saved offset, the visibility reducer
+      // or the deliberate-scroll accumulator. Clamping the last sample also
+      // makes the bounce return a zero delta rather than a reverse scroll.
+      const visibleOffset = outOfRange
+        ? Math.min(maxOffset, Math.max(0, offset))
+        : offset;
+      scrollOffsetRef.current = visibleOffset;
+      writeScrollOffset(host.id, visibleOffset);
 
       const suppressed = Date.now() < programmaticUntilRef.current;
-      if (suppressed) {
+      if (suppressed || outOfRange) {
         scrollAccumulatorRef.current = EMPTY_SCROLL_ACCUMULATOR;
       } else {
         scrollAccumulatorRef.current = accumulateScrollDelta(
           scrollAccumulatorRef.current,
-          offset - lastScrollOffsetRef.current,
+          visibleOffset - lastScrollOffsetRef.current,
         );
       }
       const current: ToolbarVisibility = toolbarCollapsedRef.current
         ? "collapsed"
         : "expanded";
       const next = reduceToolbarVisibility(current, {
-        offset,
+        offset: visibleOffset,
         delta: scrollAccumulatorRef.current.distance,
         contentHeight: contentSize.height,
         viewportHeight: layoutMeasurement.height,
@@ -1062,6 +1072,7 @@ export function SessionsScreen({ host, layout, navigation, theme }: PluginScreen
           fullHeight: expandedToolbarHeightRef.current,
           slimHeight: slimHeightRef.current,
           compact,
+          gap: TOOLBAR_LAYOUT_GAP,
         }),
         pinned:
           searchFocusedRef.current ||
@@ -1070,7 +1081,7 @@ export function SessionsScreen({ host, layout, navigation, theme }: PluginScreen
           Date.now() < filterPinnedUntilRef.current,
         suppressed,
       });
-      lastScrollOffsetRef.current = offset;
+      lastScrollOffsetRef.current = visibleOffset;
       if (next !== current) {
         setToolbarVisibility(next);
       }
@@ -1429,7 +1440,7 @@ export function SessionsScreen({ host, layout, navigation, theme }: PluginScreen
         paddingTop: compact ? 12 : 16,
         paddingHorizontal: compact ? 12 : 18,
         paddingBottom: compact ? 20 : 16,
-        gap: 8,
+        gap: TOOLBAR_LAYOUT_GAP,
       }}
     >
       {slimSlot}

@@ -372,10 +372,16 @@ covers host-scoped query, filter, expansion and scroll restoration.
 `test/session-directory.test.ts` covers the needs-input priority matrix,
 permission clear/cancel and reconnect replacement. `test/sessions-screen.test.ts`
 covers the filters affordance, slim toolbar actions, touch targets and saved
-view independence. `test/toolbar-visibility.test.ts` covers the single compact
-scroll/collapse variant, pins, suppression and compensation. `test/security.test.ts`
-extends the floor checks to the client files: no Kontor credential, no
-`kontord`, no file/process access and no agent-control or workflow-write call.
+settings. `test/sessions-screen-events.test.ts` exercises the actual
+SessionsScreen scroll/layout path for compact collapse and near-bottom reveal
+compensation (including the parent gap and post-reveal range), bottom
+bounce/return, top reveal and saved-settings preservation. That is code/model
+evidence with analytical geometry, not a native no-jump claim.
+`test/toolbar-visibility.test.ts` covers the single compact scroll/collapse
+variant, pins, suppression, bounce handling and compensation helpers.
+`test/security.test.ts` extends the floor checks to the client files: no Kontor
+credential, no `kontord`, no file/process access and no agent-control or
+workflow-write call.
 
 The isolated closure suite's `navigator-probe.mjs` creates one disposable
 session, subscribes to the native directory, verifies a `limit: 1` complete

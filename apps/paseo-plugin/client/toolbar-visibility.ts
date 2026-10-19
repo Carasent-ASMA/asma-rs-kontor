@@ -2,6 +2,8 @@ export const COLLAPSE_SCROLL_DELTA = 18;
 export const REVEAL_SCROLL_DELTA = 10;
 export const TOP_REVEAL_OFFSET = 8;
 export const MIN_SCROLLABLE_OVERFLOW = 24;
+/** Parent gap between the toolbar slots and the session list. */
+export const TOOLBAR_LAYOUT_GAP = 8;
 
 export type ToolbarVisibility = "expanded" | "collapsed";
 
@@ -83,10 +85,15 @@ export function reduceToolbarVisibility(
   if (current === "expanded" && context.offset < minimumCollapseOffset) {
     return "expanded";
   }
-  if (maxOffset <= MIN_SCROLLABLE_OVERFLOW) {
+  if (context.offset < 0) {
+    // A top overscroll is also the explicit reveal-at-top behavior.
     return "expanded";
   }
-  if (context.offset < 0 || context.offset > maxOffset) {
+  if (context.offset > maxOffset) {
+    // A bottom iOS-style bounce is not a reverse scroll.
+    return current;
+  }
+  if (maxOffset <= MIN_SCROLLABLE_OVERFLOW) {
     return "expanded";
   }
   if (context.delta > COLLAPSE_SCROLL_DELTA) {
@@ -115,19 +122,22 @@ export function toolbarLayout(input: {
 }
 
 /**
- * On wide layouts the slim row appears only while collapsed, so the net header
- * height removed/added is the full toolbar minus the slim row. On compact the
- * slim row is always present and the full toolbar height is the net change.
+ * Complete in-flow layout change. On wide layouts the slim row replaces the
+ * full toolbar in the same slot, so the net change is full minus slim and the
+ * parent gap is unchanged. On compact the slim row stays in place, so the full
+ * toolbar and one parent gap are removed/added.
  */
 export function toolbarCompensationHeight(input: {
   readonly fullHeight: number;
   readonly slimHeight: number;
   readonly compact: boolean;
+  readonly gap: number;
 }): number {
-  return Math.max(
-    0,
-    input.fullHeight - (input.compact ? 0 : input.slimHeight),
-  );
+  const net = input.fullHeight - (input.compact ? 0 : input.slimHeight);
+  if (net <= 0) {
+    return 0;
+  }
+  return net + (input.compact ? Math.max(0, input.gap) : 0);
 }
 
 export type ToolbarScrollCompensationInput = {
@@ -140,7 +150,9 @@ export type ToolbarScrollCompensationInput = {
 /**
  * Collapsing removes a header above the list; scroll up by the same height so
  * the visible row does not move. Revealing deep in the list scrolls down by the
- * same height. At the top, revealing leaves the offset at the top.
+ * same height and grows the list's scroll range by that height, so the target
+ * is bounded by the post-reveal maximum, not the pre-reveal one. At the top,
+ * revealing leaves the offset at the top.
  */
 export function toolbarScrollCompensation(
   input: ToolbarScrollCompensationInput,
@@ -156,7 +168,7 @@ export function toolbarScrollCompensation(
   }
   const target = input.currentOffset + input.headerHeight;
   if (Number.isFinite(input.maxOffset) && input.maxOffset > 0) {
-    return Math.min(input.maxOffset, target);
+    return Math.min(input.maxOffset + input.headerHeight, target);
   }
   return target;
 }
