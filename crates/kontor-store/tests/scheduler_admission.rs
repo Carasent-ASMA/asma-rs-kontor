@@ -34,7 +34,7 @@ use std::collections::BTreeSet;
 use kontor_core::calendar::{ExecutionAuthorization, TimeRange, WorkScope};
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, CanonicalDocument, CommandReceiptId,
-    CurrencyCode, ExecutionAuthorizationId, ExternalId, ExternalName, IdempotencyKey,
+    ContentHash, CurrencyCode, ExecutionAuthorizationId, ExternalId, ExternalName, IdempotencyKey,
     MiniProjectId, ModuleKey, Money, ProjectId, ResourceLeaseId, RuntimeBindingId, RuntimeKindKey,
     SCHEMA_VERSION, SpecVersion, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId, Timestamp,
     parse_utc_timestamp,
@@ -44,12 +44,12 @@ use kontor_core::repository::{
     CalendarRepository, CommandRepository, CredentialReference, CredentialReferenceKind,
     NewAbandonReceipt, NewAccountProfile, NewAgentRun, NewCommandIntent, NewMiniProject,
     NewProject, NewTask, NewTeamRun, ProjectRepository, RepositoryError, RunClosure, RunRepository,
-    SpecRepository,
+    SpecRepository, TeamRunClosure,
 };
 use kontor_core::spec::{BudgetBounds, RoleAuthority, TeamRunSnapshot, TeamTemplateRevision};
 use kontor_core::state::{
-    DesiredRunState, RunLifecycle, TaskState, TerminalEvidence, TerminalEvidenceSource,
-    TerminalOutcome,
+    DesiredRunState, RunLifecycle, TaskState, TeamEvidenceSource, TeamTerminalEvidence,
+    TerminalEvidence, TerminalEvidenceSource, TerminalOutcome,
 };
 use kontor_scheduler::{
     AdmissionEventId, AdmittedCandidate, CalendarAdmission, CapacityConfig, CapacityLimitKind,
@@ -1666,6 +1666,105 @@ fn a_non_terminal_team_run_blocks_replacement_after_its_only_child_ends() {
             .expect("the in-flight tasks are readable"),
         [task].into_iter().collect()
     );
+}
+
+/// A settled-turn closure is terminal while its persistent seats are expected to
+/// stay live. It releases those seats, so the task leaves the in-flight set and a
+/// replacement may be admitted even though the old child run has not ended.
+#[test]
+fn a_settled_turn_closure_with_a_live_child_frees_the_task() {
+    let harness = Harness::new();
+    let scope = harness.scope("settled-live");
+    let task = harness.task(&scope, "Settled while seated", TaskState::Ready);
+    let first_admitted = harness.admitted(&scope, task, None, None);
+    let peers = BTreeSet::new();
+    let first_parts = Parts::new("settled-live-first");
+    harness
+        .store
+        .admit_candidate(&commit(
+            &scope,
+            &first_admitted,
+            &peers,
+            &first_parts,
+            &scope.template,
+            now(),
+        ))
+        .expect("the first admission commits");
+
+    let team = harness
+        .store
+        .get_team_run(scope.project, first_parts.team_run)
+        .expect("the team run is readable")
+        .expect("the team run exists");
+    let child = harness
+        .store
+        .get_agent_run(scope.project, first_parts.agent_run)
+        .expect("the only child is readable")
+        .expect("the only child exists");
+    assert!(
+        child.terminal.is_none(),
+        "the persistent seat is still live, which is the point of the source"
+    );
+
+    harness
+        .store
+        .close_team_run(&TeamRunClosure {
+            project_id: scope.project,
+            team_run_id: first_parts.team_run,
+            expected_revision: team.revision,
+            evidence: TeamTerminalEvidence {
+                outcome: TerminalOutcome::Succeeded,
+                source: TeamEvidenceSource::SettledTurns {
+                    team_run_id: first_parts.team_run,
+                },
+                evidence_hash: ContentHash::of(b"every declared slot settled"),
+                closed_at: now(),
+            },
+        })
+        .expect("a settled-turn closure is accepted with a live child");
+
+    let closed = harness
+        .store
+        .get_team_run(scope.project, first_parts.team_run)
+        .expect("the team run is readable")
+        .expect("the team run exists");
+    assert!(
+        closed.lifecycle.is_terminal(),
+        "the settled-turn closure ends the envelope"
+    );
+    let live = harness
+        .store
+        .get_agent_run(scope.project, first_parts.agent_run)
+        .expect("the only child is readable")
+        .expect("the only child exists");
+    assert!(
+        live.terminal.is_none(),
+        "closing the envelope did not close the persistent seat"
+    );
+    assert!(
+        !harness
+            .store
+            .tasks_with_open_runs()
+            .expect("the in-flight tasks are readable")
+            .contains(&task),
+        "the closed envelope, not its live child, decides what is in flight"
+    );
+
+    // The same read is what admission and serialization peers use, so a
+    // replacement may now be admitted beside the still-live seat.
+    let replacement = harness.admitted(&scope, task, None, None);
+    let replacement_parts = Parts::new("settled-live-second");
+    harness
+        .store
+        .admit_candidate(&commit(
+            &scope,
+            &replacement,
+            &peers,
+            &replacement_parts,
+            &scope.template,
+            now(),
+        ))
+        .expect("a replacement is admitted once the envelope is terminal");
 }
 
 #[test]
