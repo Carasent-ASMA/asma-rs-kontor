@@ -21573,6 +21573,12 @@ impl Services {
             });
         }
         if !plan.before.contains(&request.provider) {
+            // A first attempt whose rename landed but whose directory flush did
+            // not is recovered here. Make the rename durable before completion
+            // says this key's effect finished, or a power cut could bring the
+            // marked document back under a completed key.
+            crate::provider_marker::sync_parent_directory(&path)
+                .map_err(|error| self.provider_marker_error(error))?;
             state
                 .with_store(|store| {
                     store.record_provider_marker_completion(

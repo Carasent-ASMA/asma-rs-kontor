@@ -231,7 +231,11 @@ pub(crate) fn write(path: &Path, expected: &[u8], updated: &[u8]) -> Result<(), 
         if current != expected {
             return Err(Commit::Changed);
         }
-        std::fs::rename(&temporary, path).map_err(Commit::Io)
+        std::fs::rename(&temporary, path).map_err(Commit::Io)?;
+        // The rename publishes the name; only a directory fsync makes it
+        // survive a power cut. Without it a completion row could say the
+        // marker is gone while the old document comes back after a crash.
+        flush_parent(path).map_err(Commit::Io)
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(&temporary);
@@ -247,6 +251,29 @@ pub(crate) fn write(path: &Path, expected: &[u8], updated: &[u8]) -> Result<(), 
             Err(MarkerError::WriteFailed)
         }
     }
+}
+
+/// Flush the directory entry a rename published.
+fn flush_parent(path: &Path) -> std::io::Result<()> {
+    let directory = path.parent().ok_or_else(|| {
+        std::io::Error::other("the settings path has no parent directory")
+    })?;
+    std::fs::File::open(directory)?.sync_all()
+}
+
+/// Make a settings rename durable before the caller records its completion.
+///
+/// A key whose first attempt landed the file but died before flushing the
+/// directory recovers through this same call, so completion is never recorded
+/// over a rename a power cut can still undo.
+pub(crate) fn sync_parent_directory(path: &Path) -> Result<(), MarkerError> {
+    flush_parent(path).map_err(|error| {
+        tracing::warn!(
+            error = %error,
+            "a runtime settings directory could not be flushed"
+        );
+        MarkerError::WriteFailed
+    })
 }
 
 /// Remove one provider from one runtime object's `unavailable_providers`.
