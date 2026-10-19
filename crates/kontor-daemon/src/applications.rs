@@ -1128,6 +1128,10 @@ pub struct Services {
     /// Serializes provider-marker corrections so a plan can never race the write
     /// that commits it, and two corrections cannot interleave their CAS checks.
     provider_marker_guard: tokio::sync::Mutex<()>,
+    /// A black-box test's hold between a provider-marker apply's replay
+    /// pre-check and its durable claim. Absent in every composed daemon unless
+    /// a test installs one.
+    provider_marker_bind_hold: std::sync::Mutex<Option<PlanningPairReceiptHold>>,
 }
 
 /// The realm-scoped operation a provider-marker correction binds its key to.
@@ -1225,6 +1229,7 @@ impl Services {
             memory_cognee: OnceLock::new(),
             state_root,
             provider_marker_guard: tokio::sync::Mutex::new(()),
+            provider_marker_bind_hold: std::sync::Mutex::new(None),
         }))
     }
 
@@ -21747,6 +21752,53 @@ impl Services {
                 .advising("repair the runtime settings document, then retry"),
         }
     }
+
+    /// Name a competing claim by another operation as what it is.
+    ///
+    /// The replay pre-check and the durable claim are separate store calls, so
+    /// another operation can bind the key between them. The generic mapping
+    /// would call that a revision conflict and tell the caller to re-read and
+    /// retry, which can never succeed for a key that is permanently bound.
+    fn provider_marker_bind_error(&self, error: &RepositoryError) -> ApiError {
+        if matches!(
+            error,
+            RepositoryError::Conflict {
+                subject: "idempotency key",
+                ..
+            }
+        ) {
+            return self.deny(
+                ApiErrorCode::IdempotencyConflict,
+                "the idempotency key was already used for a different operation",
+            );
+        }
+        self.refuse(error)
+    }
+
+    /// Hold every provider-marker apply between its replay pre-check and its
+    /// durable claim, for a black-box test that must let another operation bind
+    /// the same key in that window.
+    #[doc(hidden)]
+    pub fn hold_provider_marker_bind(&self) -> PlanningPairReceiptHold {
+        let hold = PlanningPairReceiptHold::default();
+        *self
+            .provider_marker_bind_hold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hold.clone());
+        hold
+    }
+
+    /// Wait at an installed bind hold; with none installed, return at once.
+    async fn provider_marker_bind_hold_point(&self) {
+        let hold = self
+            .provider_marker_bind_hold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(hold) = hold {
+            hold.pass().await;
+        }
+    }
 }
 
 #[async_trait]
@@ -26850,6 +26902,11 @@ impl ApplicationOperations for Services {
             }
             return self.replayed_provider_marker(state, key, &family, request);
         }
+        // A black-box test can line another operation's claim up between the
+        // pre-check above and the durable claim below, which is the race the
+        // bind's own conflict translation exists for. No composed daemon
+        // installs a hold here.
+        self.provider_marker_bind_hold_point().await;
 
         let path = crate::runtimes::path_in(&self.state_root);
         let bytes = crate::provider_marker::read(&path)
@@ -26899,7 +26956,7 @@ impl ApplicationOperations for Services {
         };
         let applied = state
             .with_store(|store| store.bind_realm_operation(&binding))
-            .map_err(|error| self.refuse(&error))?;
+            .map_err(|error| self.provider_marker_bind_error(&error))?;
         if applied == Applied::Unchanged {
             // A concurrent attempt with this exact request claimed the key
             // between the replay check and the claim; answer from what it left.

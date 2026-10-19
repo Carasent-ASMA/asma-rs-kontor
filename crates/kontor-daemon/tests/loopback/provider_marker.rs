@@ -1135,6 +1135,91 @@ async fn a_provider_marker_key_bound_by_another_realm_operation_is_a_conflict() 
 }
 
 #[tokio::test]
+async fn a_competing_claim_between_the_pre_check_and_the_bind_is_a_conflict() {
+    let world = World::open().await;
+    let path = fixture(&world);
+    let family = fake_family().to_string();
+    let preview = Call::post(
+        "/v1/provider-markers:preview",
+        &serde_json::json!({
+            "runtime_family": family,
+            "provider": "claude",
+        }),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let revision = preview.json()["revision"]
+        .as_str()
+        .expect("a revision")
+        .to_owned();
+    let preview_hash = preview.json()["preview_hash"]
+        .as_str()
+        .expect("a preview hash")
+        .to_owned();
+    let apply = serde_json::json!({
+        "runtime_family": family,
+        "provider": "claude",
+        "expected_revision": revision,
+        "preview_hash": preview_hash,
+    });
+
+    // The apply passes its replay pre-check, then waits before its durable
+    // claim. Another operation bound to the same key lands in that window.
+    let hold = world.daemon.hold_provider_marker_bind();
+    let held = async {
+        Call::post("/v1/provider-markers:apply", &apply)
+            .signed_as(&world, "admin")
+            .with_key("marker-bind-race")
+            .send(&world)
+            .await
+    };
+    let race = async {
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            while hold.waiting() < 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the apply reaches the window before its claim");
+        world
+            .daemon
+            .state()
+            .with_store(|store| {
+                store.bind_realm_operation(&IdempotencyBinding {
+                    key: "marker-bind-race".to_owned(),
+                    operation: "publish_fleet_policy",
+                    fingerprint: ContentHash::of(b"the other operation"),
+                    bound_at: at("2026-10-02T09:00:00Z"),
+                })
+            })
+            .expect("the competing claim lands between the pre-check and the bind");
+        hold.release();
+    };
+    let (applied, ()) = tokio::join!(held, race);
+    assert_eq!(applied.status, 409, "{}", applied.body);
+    assert_eq!(
+        applied.code(),
+        "idempotency_conflict",
+        "a permanently bound key is not a revision to re-read and retry: {}",
+        applied.body
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the document reads"),
+        marker_document(),
+        "the losing apply rewrites nothing"
+    );
+    let binding = world
+        .daemon
+        .state()
+        .with_store(|store| store.realm_idempotency_binding("marker-bind-race"))
+        .expect("the binding reads")
+        .expect("the competing operation's claim stands");
+    assert_eq!(binding.operation, "publish_fleet_policy");
+}
+
+#[tokio::test]
 async fn a_retry_finishes_a_provider_marker_correction_claimed_before_the_write() {
     let world = World::open().await;
     let path = fixture(&world);
