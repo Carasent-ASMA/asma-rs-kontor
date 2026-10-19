@@ -735,7 +735,15 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const hosts = useHosts();
   const hostSummary = hosts.find((candidate) => candidate.serverId === host.id);
   const hostOnline = hostSummary?.status === "online";
-  const [view, setView] = useState<SessionViewState>(() => readSessionView(viewScope));
+  const [hostView, setHostView] = useState<{
+    readonly hostId: string;
+    readonly viewScope: string;
+    readonly view: SessionViewState;
+  }>(() => ({ hostId: host.id, viewScope, view: readSessionView(viewScope) }));
+  const view =
+    hostView.hostId === host.id && hostView.viewScope === viewScope
+      ? hostView.view
+      : readSessionView(viewScope);
   const localDirectory = useSessionDirectory({
     hostId: host.id,
     hostStatus: hostSummary?.status ?? "offline",
@@ -786,6 +794,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const revealFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchInputRef = useRef<ComponentRef<typeof TextInput> | null>(null);
   const previousOrderRef = useRef(state.entries.map((entry) => entry.id).join("\n"));
+  const previousViewRef = useRef({ hostId: host.id, viewScope });
 
   useEffect(() => {
     return () => {
@@ -795,6 +804,32 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       }
     };
   }, []);
+
+  useLayoutEffect(() => {
+    if (previousViewRef.current.hostId === host.id && previousViewRef.current.viewScope === viewScope) {
+      return;
+    }
+    previousViewRef.current = { hostId: host.id, viewScope };
+    const nextView = readSessionView(viewScope);
+    setHostView({ hostId: host.id, viewScope, view: nextView });
+    restoredRef.current = false;
+    scrollOffsetRef.current = nextView.scrollOffset;
+    lastScrollOffsetRef.current = nextView.scrollOffset;
+    maxScrollOffsetRef.current = 0;
+    scrollAccumulatorRef.current = EMPTY_SCROLL_ACCUMULATOR;
+    programmaticUntilRef.current = 0;
+    pendingCompensationRef.current = null;
+    pendingRevealRef.current = null;
+    filterPinnedUntilRef.current = 0;
+    searchFocusedRef.current = false;
+    toolbarControlFocusedRef.current = false;
+    previousOrderRef.current = "";
+    const collapsed =
+      initialToolbarVisibility(nextView.scrollOffset) === "collapsed";
+    toolbarCollapsedRef.current = collapsed;
+    setToolbarCollapsed(collapsed);
+    toolbarOpacity.setValue(collapsed ? 0 : 1);
+  }, [host.id, viewScope, toolbarOpacity]);
 
   useLayoutEffect(() => {
     const order = state.entries.map((entry) => entry.id).join("\n");
@@ -814,9 +849,13 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
 
   const updateView = useCallback(
     (patch: Partial<SessionViewState>) => {
-      setView(patchSessionView(viewScope, patch));
+      setHostView({
+        hostId: host.id,
+        viewScope,
+        view: patchSessionView(viewScope, patch),
+      });
     },
-    [viewScope],
+    [host.id, viewScope],
   );
 
   const setToolbarVisibility = useCallback((next: ToolbarVisibility) => {
@@ -1025,8 +1064,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
 
   const handleClearAll = useCallback(() => {
     pinFilterInteraction();
-    setView(resetSessionView(viewScope));
-  }, [viewScope, pinFilterInteraction]);
+    setHostView({ hostId: host.id, viewScope, view: resetSessionView(viewScope) });
+  }, [host.id, viewScope, pinFilterInteraction]);
 
   const handleScrollBeginDrag = useCallback(() => {
     filterPinnedUntilRef.current = 0;
@@ -1200,7 +1239,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       {showBanner && staleMessage ? (
         <Banner
           testID="sessions-source-banner"
-          message={`${staleMessage} Last complete read: ${updatedLabel(state.lastUpdatedAt)}.`}
+          message={`${staleMessage} ${
+            state.inventoryComplete ? "Last complete read" : "Inventory read attempt"
+          }: ${updatedLabel(state.lastUpdatedAt)}.`}
           tone={state.status === "error" ? "danger" : "warning"}
           actionLabel="Retry"
           onAction={refresh}
@@ -1541,11 +1582,16 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         ListFooterComponent={
           state.entries.length === 0 ? null : (
             <View style={{ paddingVertical: 12, alignItems: "center" }}>
-              <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>
+              <Text
+                testID="sessions-footer"
+                style={{ color: colors.foregroundMuted, fontSize: 11 }}
+              >
                 {shownCount} of {state.entries.length} session rows visible ·{" "}
                 {state.lastUpdatedAt === null
                   ? "not read yet"
-                  : `complete inventory read ${updatedLabel(state.lastUpdatedAt)}`}
+                  : state.inventoryComplete
+                    ? `complete inventory read ${updatedLabel(state.lastUpdatedAt)}`
+                    : `partial inventory read ${updatedLabel(state.lastUpdatedAt)}`}
               </Text>
             </View>
           )

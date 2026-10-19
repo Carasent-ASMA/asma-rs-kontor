@@ -17,10 +17,18 @@ export function nativeFreshnessColor(label: string, colors: Colors): string {
   if (["Reading", "Stale", "Reconnecting", "Host idle"].includes(label)) return colors.statusWarning;
   return colors.statusDanger;
 }
+export function inventoryReadLabel(state: Pick<DirectoryState, "lastUpdatedAt" | "inventoryComplete">): string {
+  if (state.lastUpdatedAt === null) return "Inventory not read yet · time Unknown";
+  // The timestamp records the latest successful walk, including partial reads.
+  const readAt = new Date(state.lastUpdatedAt).toISOString();
+  if (state.inventoryComplete === true) return `Last complete read ${readAt}`;
+  if (state.inventoryComplete === false) return `Last partial inventory read ${readAt}`;
+  return `Last inventory read ${readAt} · completeness Unknown`;
+}
 export function NativeFreshnessPill({ state, hostStatus, colors }: { state: DirectoryState; hostStatus: PluginHostSummary["status"]; colors: Colors }) {
   const label = nativeFreshnessLabel({ ...state, hostStatus });
   const color = nativeFreshnessColor(label, colors);
-  return <View accessible accessibilityRole="text" accessibilityLabel={`Native sessions: ${label}. Last complete read ${state.lastUpdatedAt === null ? "Unknown" : new Date(state.lastUpdatedAt).toISOString()}. Source freshness is reported separately.`} style={{ borderWidth: 1, borderColor: color, borderRadius: 12, paddingHorizontal: 8, paddingVertical: 5 }}>
+  return <View accessible accessibilityRole="text" accessibilityLabel={`Native sessions: ${label}. ${inventoryReadLabel(state)}. Source freshness is reported separately.`} style={{ borderWidth: 1, borderColor: color, borderRadius: 12, paddingHorizontal: 8, paddingVertical: 5 }}>
     <Text numberOfLines={1} style={{ color, fontSize: 12 }}>Native · {label}</Text>
   </View>;
 }

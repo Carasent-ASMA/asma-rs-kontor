@@ -12,6 +12,7 @@ import { SourceDetails } from "./source-details";
 import { Action, Card, Copy, type Colors } from "./page-controls";
 import { FormattedPlanBlock, headingAnchor, planBlocks } from "./plan-document";
 import { safeHttpsUrl } from "./plan-links";
+import { inventoryReadLabel } from "./native-freshness";
 
 type PageProps = {
   teamsSources?: readonly ReadSourceSummary[]; teamsJsonReads?: Readonly<Record<string, SourceRead>>;
@@ -44,7 +45,7 @@ function Overview(props: PageProps) {
   return <>
     <Card colors={colors} title={props.contextLabel ?? "All projects"}>
       <NativeSummaryIndicators counts={total} colors={colors} />
-      <Copy colors={colors} muted>Inventory: {directory.status} · {directory.live ? "Live (reconciled subscription)" : "Not Live"} · last complete read {directory.lastUpdatedAt ? new Date(directory.lastUpdatedAt).toISOString() : "Unknown"}</Copy>
+      <Copy colors={colors} muted>Inventory: {directory.status} · {directory.live ? "Live (reconciled subscription)" : "Not Live"} · {inventoryReadLabel(directory)}</Copy>
       <Copy colors={colors}>Lifecycle: Unknown · Delivered work: Unknown</Copy>
       <Copy colors={colors}>Governed scheduler / gates: kontord is not enabled</Copy>
       {reads.filter((read) => read.source.kind === "jira").map((read) => <SourceDetails key={read.source.id} read={read} colors={colors} />)}

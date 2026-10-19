@@ -82,6 +82,8 @@ export type DirectoryState = {
   readonly staleReason: string | null;
   readonly pages: number;
   readonly lastUpdatedAt: number | null;
+  /** Whether rows came from a walk with live updates attached; absent means unknown for older consumers. */
+  readonly inventoryComplete?: boolean;
   readonly includeArchived: boolean;
 };
 
@@ -110,6 +112,7 @@ export function emptyDirectoryState(includeArchived = false): DirectoryState {
     staleReason: null,
     pages: 0,
     lastUpdatedAt: null,
+    inventoryComplete: false,
     includeArchived,
   };
 }
@@ -351,6 +354,7 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
   let staleReason: string | null = null;
   let pages = 0;
   let lastUpdatedAt: number | null = null;
+  let inventoryComplete = false;
   let includeArchived = options.includeArchived;
   let disposed = false;
   let generation = 0;
@@ -379,6 +383,7 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
       staleReason,
       pages,
       lastUpdatedAt,
+      inventoryComplete,
       includeArchived,
     };
   }
@@ -495,10 +500,11 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     applyPendingUpdates();
     pages = collected.pages;
     lastUpdatedAt = Date.now();
+    inventoryComplete = subscriptionActive;
     error = null;
     staleReason = subscriptionActive
       ? null
-      : "Live updates are unavailable; showing the last complete read.";
+      : "Live updates are unavailable; the inventory may be incomplete.";
     status = "ready";
     live = subscriptionActive;
     if (pendingOverflow) {
@@ -732,6 +738,7 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     subscriptionActive = false;
     releaseSubscription();
     if (hostOnline) {
+      inventoryComplete = false;
       status = entries.size > 0 ? "stale" : "loading";
       staleReason = entries.size > 0 ? "Refreshing the archive scope." : null;
       emit();
@@ -741,6 +748,7 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     entries.clear();
     pages = 0;
     lastUpdatedAt = null;
+    inventoryComplete = false;
     status = "error";
     staleReason = null;
     error =

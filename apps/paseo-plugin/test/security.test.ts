@@ -62,6 +62,7 @@ const clientFiles = [
   "../client/session-view-store.ts",
   "../client/session-view.ts",
   "../client/sessions-screen.tsx",
+  "../client/toolbar-visibility.ts",
   "../client/use-session-directory.ts",
 ] as const;
 

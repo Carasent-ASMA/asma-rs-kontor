@@ -12,9 +12,11 @@ Center command and an in-session **← Kontor** composer pill for live agents wi
 a workspace. The screen, sidebar and command are navigation affordances; the
 pill is the in-session return control where the composer supports it.
 
-- **Complete inventory.** The screen walks every page of the selected host's
-  native agent directory (200 rows per page) before it reports the inventory
-  as current. The default scope is every non-archived session, including
+- **Complete inventory, with honest partial reads.** The screen walks every
+  page of the selected host's native agent directory (200 rows per page) before
+  it reports the inventory as current. If live updates are unavailable while
+  the walk completes, the inventory is labelled partial rather than complete.
+  The default scope is every non-archived session, including
   closed, idle, error, running and initializing sessions, unlabelled or ad-hoc
   work and both Kontor orchestration surfaces. Workspace or project membership
   is never an enrollment filter. An advanced option includes archived sessions;
@@ -119,7 +121,7 @@ stay visible; no ASCII, Mermaid, prose extraction or cached graph index is used.
 Dependency depth is not readiness or task status. Graph integrates the separately authored
 ASMA-8548 component without editing its owned files: nodes start visible; native scrolling, selection,
 dependency navigation, centre-selected and the wave-list alternate are available.
-Zoom is unavailable. Device, keyboard and text-scale qualification remains open.
+Graph controls: − / + zoom, 100% Reset, Fit graph, and Fit as wave list. Pinch is not implemented; device, keyboard, text-scale and runtime qualification remains open.
 
 Overview separates native runtime/attention from task progress, lifecycle,
 decisions and delivery. The canonical export supplies task declarations but no
@@ -339,9 +341,11 @@ Observed on this workstation:
   acceptance wording, the bounded return-control walk retry, single-flight
   subscriptions, abortable directory walks, a bounded update buffer and the
   archive-scope error handling. Those changes do not alter the accepted
-  desktop/iPhone UI path; no new device pass is claimed for them. This candidate still does not claim
-  saved-view restoration or full B1, and KN-03 does not substitute for the KN-01
-  checks. The procedure and evidence checklist are recorded below.
+  desktop/iPhone UI path; no new device pass is claimed for them. The
+  code-only follow-up `364f5e83` adds the partial-read labeling and host-switch
+  view restoration with focused unit tests; it also has no new device pass. This
+  candidate still does not claim saved-view restoration or full B1, and KN-03
+  does not substitute for the KN-01 checks. The procedure and evidence checklist are recorded below.
 
 ### Desktop and iPhone acceptance procedure
 
@@ -359,7 +363,8 @@ Record before starting:
   revision (`paseo plugin ls --json`).
 - Selected host `serverId`/label, `KONTOR_PLUGIN_MCP=off`, and `kontord`
   stopped or unavailable.
-- Complete inventory count and pages read from the screen header.
+- Inventory count and pages read from the screen header; the footer says
+  complete or partial for the last walk.
 - Two sessions that share the same title but have different native IDs and
   distinct workspace/cwd context. Each row shows its native ID, so the pair is
   distinguishable without relying on the title.

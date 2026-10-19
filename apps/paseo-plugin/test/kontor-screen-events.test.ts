@@ -69,10 +69,10 @@ function mount(compact: boolean, initial?: Partial<KontorRoute>) {
   };
 }
 describe("Kontor shell native actions", () => {
-  it("keeps the compact title on one line, the confirmed key at its lower border and the full accessible label", () => {
+  it.each([true, false])("keeps the title on one line, the confirmed key at its lower border and the full accessible label (compact=%s)", (compact) => {
     const title = "A long configured source title that must remain available to assistive technology";
     model.sources = [{ id: "long-plan", title, kind: "plan", path: "/configured/long.md", projectId: null, epic: "ASMA-8539", workstream: null, revisionKind: "working copy" }];
-    const screen = mount(true, { tab: "Plan", sourceId: "long-plan", epicKey: "ASMA-8539" });
+    const screen = mount(compact, { tab: "Plan", sourceId: "long-plan", epicKey: "ASMA-8539" });
     const row = screen.elements().find((node) => node.props.testID === "kontor-context-row")!;
     expect(row.props.style).toMatchObject({ minHeight: 52 });
     const field = screen.elements().find((node) => node.props.testID === "kontor-context-picker")!;
@@ -84,13 +84,15 @@ describe("Kontor shell native actions", () => {
     expect(elements(button).find((node) => node.props.numberOfLines === 1)?.props.ellipsizeMode).toBe("tail");
     const key = elements(field).find((node) => node.props.testID === "kontor-context-epic")!;
     expect(key.props.children).toBe("ASMA-8539"); expect(key.props.style).toMatchObject({ position: "absolute", bottom: -1, fontSize: 10 });
+    expect(key.props.accessible).toBe(false); expect(key.props.pointerEvents).toBe("none");
     screen.click(`${title} ▾`); expect(screen.action(`Plan: ${title}`)).toBeDefined();
     screen.click("All projects"); expect(screen.elements().some((node) => node.props.testID === "kontor-context-epic")).toBe(false);
-    expect(screen.action("All projects ▾")).toBeDefined();
+    expect(screen.action("All projects ▾").props.accessibilityLabel).toBe("Project context: All projects");
+    expect(screen.elements().find((node) => node.props.testID === "kontor-context-row")?.props.style).toMatchObject({ minHeight: 52 });
   });
-  it("does not display an unconfirmed source epic as a Jira key", () => {
+  it.each([true, false])("does not display an unconfirmed source epic as a Jira key (compact=%s)", (compact) => {
     model.sources = [{ id: "source", title: "Source", kind: "plan", path: "/configured/source.md", projectId: null, epic: "unconfirmed", workstream: null, revisionKind: "working copy" }];
-    const screen = mount(true, { tab: "Plan", sourceId: "source" });
+    const screen = mount(compact, { tab: "Plan", sourceId: "source" });
     expect(screen.action("Source ▾").props.accessibilityLabel).toBe("Project context: Source");
     expect(screen.elements().some((node) => node.props.testID === "kontor-context-epic")).toBe(false);
   });

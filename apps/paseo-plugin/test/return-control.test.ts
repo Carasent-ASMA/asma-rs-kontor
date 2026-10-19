@@ -362,6 +362,92 @@ describe("Kontor return control", () => {
     stop();
   });
 
+  it("drops buffered updates on subscription error instead of restoring a wrong-workspace pill", async () => {
+    let releaseWalk!: (value: {
+      entries: ReturnType<typeof sessionEntry>[];
+      pages: number;
+    }) => void;
+    const heldWalk = new Promise<{
+      entries: ReturnType<typeof sessionEntry>[];
+      pages: number;
+    }>((resolve) => {
+      releaseWalk = resolve;
+    });
+    const fake = fakeClient([readyAgent("agent-a", "wks-a")]);
+    collectDirectory.mockReturnValueOnce(heldWalk);
+
+    const stop = contributeReturnControl(fake.client, "sessions", {
+      retryDelayMs: 1000,
+    });
+    await vi.waitFor(() => expect(collectDirectory).toHaveBeenCalledTimes(1), {
+      interval: 5,
+    });
+
+    fake.observers[0]!.update({
+      type: "agent_update",
+      payload: updateAgent(agentSnapshot("agent-a", "wks-b")),
+    });
+    expect(fake.pillFor("agent-a")?.contribution.workspaceId).toBe("wks-a");
+
+    fake.observers[0]!.error?.();
+    releaseWalk({
+      entries: [sessionEntry("agent-a", { workspaceId: "wks-a" })],
+      pages: 1,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(fake.pillFor("agent-a")?.contribution.workspaceId).toBe("wks-a");
+
+    stop();
+  });
+
+  it("drops buffered updates on a reconnect snapshot before the fresh walk", async () => {
+    let releaseWalk!: (value: {
+      entries: ReturnType<typeof sessionEntry>[];
+      pages: number;
+    }) => void;
+    const heldWalk = new Promise<{
+      entries: ReturnType<typeof sessionEntry>[];
+      pages: number;
+    }>((resolve) => {
+      releaseWalk = resolve;
+    });
+    const fake = fakeClient([readyAgent("agent-a", "wks-a")]);
+    collectDirectory
+      .mockReturnValueOnce(heldWalk)
+      .mockRejectedValueOnce(new Error("fresh reconciliation failed"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const stop = contributeReturnControl(fake.client, "sessions", {
+      retryDelayMs: 1000,
+    });
+    await vi.waitFor(() => expect(collectDirectory).toHaveBeenCalledTimes(1), {
+      interval: 5,
+    });
+
+    fake.observers[0]!.update({
+      type: "agent_update",
+      payload: updateAgent(agentSnapshot("agent-a", "wks-b")),
+    });
+    fake.observers[0]!.snapshot();
+    releaseWalk({
+      entries: [sessionEntry("agent-a", { workspaceId: "wks-a" })],
+      pages: 1,
+    });
+    await vi.waitFor(() => expect(collectDirectory).toHaveBeenCalledTimes(2), {
+      interval: 5,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(fake.pillFor("agent-a")?.contribution.workspaceId).toBe("wks-a");
+    expect(errorSpy).toHaveBeenCalledWith(
+      "Kontor return control could not walk the agent directory",
+      expect.any(Error),
+    );
+
+    stop();
+  });
+
   it("retries a failed directory walk while the subscription is healthy", async () => {
     const fake = fakeClient([readyAgent("agent-a", "wks-a")]);
     collectDirectory

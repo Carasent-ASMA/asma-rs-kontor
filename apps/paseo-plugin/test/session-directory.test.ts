@@ -948,14 +948,49 @@ describe("SessionDirectory", () => {
 
     expect(latest.status).toBe("ready");
     expect(latest.live).toBe(false);
+    expect(latest.inventoryComplete).toBe(false);
     expect(latest.entries).toHaveLength(1);
-    expect(latest.staleReason).toMatch(/Live updates are unavailable/);
+    expect(latest.staleReason).toMatch(/may be incomplete/);
 
     fake.failSubscription(false);
     await directory.refresh();
 
     expect(latest.live).toBe(true);
+    expect(latest.inventoryComplete).toBe(true);
     expect(latest.staleReason).toBeNull();
+
+    await directory.dispose();
+  });
+
+  it("does not claim a complete inventory when a session moves behind the cursor while live is unavailable", async () => {
+    const first = entry("agent-a", { updatedAt: "2026-10-18T10:02:00.000Z" });
+    const moved = entry("agent-b", { updatedAt: "2026-10-18T10:00:00.000Z" });
+    const fake = fakeDirectory([[first], [moved]]);
+    fake.failSubscription();
+    const held = fake.holdNextPage();
+    let latest = emptyDirectoryState();
+    const directory = new SessionDirectory({
+      client: () => fake.client,
+      includeArchived: false,
+      onChange: (state) => {
+        latest = state;
+      },
+    });
+
+    const starting = directory.start();
+    await held.started;
+    // Simulate the host moving agent-b ahead of the cursor after page one was
+    // read: the remaining walk no longer contains it, and no subscription is
+    // available to deliver the update.
+    fake.setPages([[first], []]);
+    held.release();
+    await starting;
+
+    expect(latest.status).toBe("ready");
+    expect(latest.live).toBe(false);
+    expect(latest.inventoryComplete).toBe(false);
+    expect(latest.staleReason).toMatch(/may be incomplete/);
+    expect(latest.entries.map((item) => item.id)).toEqual(["agent-a"]);
 
     await directory.dispose();
   });

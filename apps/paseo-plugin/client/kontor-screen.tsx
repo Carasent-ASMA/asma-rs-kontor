@@ -158,8 +158,8 @@ function HostScreen(props: PluginScreenProps) {
     <View testID="kontor-context-row" style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingRight: 8, borderBottomWidth: 1, borderColor: colors.border, minHeight: 52 }}>
       <Action label="‹ Back" colors={colors} disabled={hostNavigation(host.id).back.length === 0} onPress={() => { const next = goBack(host.id); setRoute({ ...next }); setQuery(readRouteView(host.id, next).query); }} />
       <View testID="kontor-context-picker" style={{ flex: 1, minWidth: 0, borderWidth: 1, borderColor: colors.border, borderRadius: 7 }}>
-        <Action label={layout.compact ? `${contextTitle} ▾` : `${selectedPlan && scopedEpic ? `${scopedEpic} · ` : ""}${route.sourceId ? selectedPlan?.title ?? "Source unavailable" : projectLabel} ▾`} accessibilityLabel={`Project context: ${contextTitle}${contextEpic ? `, ${contextEpic}` : ""}`} colors={colors} onPress={() => setSheet("context")} />
-        {layout.compact && contextEpic ? <Text testID="kontor-context-epic" accessible={false} pointerEvents="none" numberOfLines={1} style={{ position: "absolute", bottom: -1, left: 10, paddingHorizontal: 3, fontSize: 10, lineHeight: 11, color: colors.foregroundMuted, backgroundColor: colors.surface0 }}>{contextEpic}</Text> : null}
+        <Action label={`${contextTitle} ▾`} accessibilityLabel={`Project context: ${contextTitle}${contextEpic ? `, ${contextEpic}` : ""}`} colors={colors} onPress={() => setSheet("context")} />
+        {contextEpic ? <Text testID="kontor-context-epic" accessible={false} pointerEvents="none" numberOfLines={1} style={{ position: "absolute", bottom: -1, left: 10, paddingHorizontal: 3, fontSize: 10, lineHeight: 11, color: colors.foregroundMuted, backgroundColor: colors.surface0 }}>{contextEpic}</Text> : null}
       </View>
       <NativeFreshnessPill state={directory.state} hostStatus={hostStatus} colors={colors} />
       {!layout.compact ? conversationReturn : null}
