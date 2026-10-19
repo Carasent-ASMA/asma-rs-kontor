@@ -34,6 +34,22 @@ export function nativeSummary(entries: readonly DirectoryEntry[]) {
     needsInput: entries.filter((entry) => entry.needsInput).length,
     errors: entries.filter((entry) => entry.status === "error").length };
 }
+export type OverviewFilter = "all" | "attention" | "needs-input" | "decisions";
+export function recordedDecisions(reads: readonly SourceRead[]) {
+  const sources = reads.filter((read) => read.source.kind === "decisions");
+  const ready = sources.filter((read) => read.status === "ready" && read.records !== null);
+  return { open: ready.length ? ready.reduce((sum, read) => sum + read.records!.decisions.filter((record) => record.state === "open").length, 0) : null,
+    unknown: ready.length ? ready.reduce((sum, read) => sum + read.records!.decisions.filter((record) => record.state === "unknown").length, 0) : null,
+    captured: ready.length, configured: sources.length, complete: sources.length > 0 && ready.length === sources.length };
+}
+export function filteredOverviewRows(entries: readonly DirectoryEntry[], reads: readonly SourceRead[], filter: OverviewFilter) {
+  return overviewRows(entries, reads).filter((row) => {
+    if (filter === "attention") return inboxEntries(row.entries).length > 0;
+    if (filter === "needs-input") return row.entries.some((entry) => entry.needsInput);
+    if (filter === "decisions") { const decisions = recordedDecisions(row.reads); return !decisions.complete || (decisions.open ?? 0) > 0 || (decisions.unknown ?? 0) > 0; }
+    return true;
+  });
+}
 export function inboxEntries(entries: readonly DirectoryEntry[]): DirectoryEntry[] {
   return entries.filter((entry) => entry.needsInput || entry.status === "error" || entry.requiresAttention || entry.attentionReason !== null);
 }

@@ -1,3 +1,4 @@
+import { nativeFreshnessLabel as stateLabel, nativeFreshnessColor as stateColor } from "./native-freshness";
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { useHosts } from "@getpaseo/plugin/client";
 import {
@@ -110,39 +111,6 @@ function scopeLabel(includeArchived: boolean): string {
   return includeArchived
     ? "All sessions, including archived"
     : "All non-archived sessions";
-}
-
-function stateLabel(input: {
-  hostOnline: boolean;
-  status: "idle" | "loading" | "ready" | "stale" | "error";
-  live: boolean;
-}): string {
-  if (!input.hostOnline) {
-    return "Host offline";
-  }
-  if (input.status === "loading" || input.status === "idle") {
-    return "Reading";
-  }
-  if (input.status === "error") {
-    return "Unavailable";
-  }
-  if (input.status === "stale" || !input.live) {
-    return "Stale";
-  }
-  return "Live";
-}
-
-function stateColor(label: string, colors: ThemeColors): string {
-  if (label === "Live") {
-    return colors.statusSuccess;
-  }
-  if (label === "Stale" || label === "Reading") {
-    return colors.statusWarning;
-  }
-  if (label === "Host offline" || label === "Unavailable") {
-    return colors.statusDanger;
-  }
-  return colors.foregroundMuted;
 }
 
 function updatedLabel(timestamp: number | null): string {

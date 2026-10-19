@@ -1,4 +1,5 @@
 import { readSessionView, writeSessionView, type SessionViewState } from "./session-view-store";
+import type { ReadSourceSummary, SourceRead } from "../shared/read-sources";
 
 export const DESTINATIONS = ["Sessions", "Overview", "Plan", "Board", "Graph", "Delivery", "Decisions", "AI teams & sessions", "Activity", "Inbox", "Search", "Settings"] as const;
 export type Destination = (typeof DESTINATIONS)[number];
@@ -60,5 +61,23 @@ export function writeRouteView(hostId: string, route: KontorRoute, patch: { quer
 export function refreshSourceRevision(hostId: string, revision: string | null): KontorRoute {
   const state = hostNavigation(hostId);
   state.route = { ...state.route, sourceRevision: revision };
+  return state.route;
+}
+/** Only explicit epic/project metadata or the exact canonical epic binds a source. */
+export function contextPlanSources(route: KontorRoute, sources: readonly ReadSourceSummary[], reads: Readonly<Record<string, SourceRead>>, allowedIds: readonly string[] | null = null): ReadSourceSummary[] {
+  return sources.filter((source) => source.kind === "plan"
+    && (allowedIds === null || allowedIds.includes(source.id))
+    && (route.projectId === null || source.projectId === route.projectId)
+    && (route.epicKey === null || (source.epic ?? reads[source.id]?.graph?.epic.jira) === route.epicKey));
+}
+export function resolveContextPlan(route: KontorRoute, sources: readonly ReadSourceSummary[], reads: Readonly<Record<string, SourceRead>>, allowedIds: readonly string[] | null = null): KontorRoute {
+  if (!["Plan", "Graph", "Board"].includes(route.tab) || route.sourceId !== null || route.epicKey === null) return route;
+  const plans = contextPlanSources(route, sources, reads, allowedIds);
+  if (plans.length !== 1) return route;
+  return { ...route, sourceId: plans[0]!.id, sourceRevision: reads[plans[0]!.id]?.revision ?? null };
+}
+export function refreshContextSource(hostId: string, sourceId: string, revision: string | null): KontorRoute {
+  const state = hostNavigation(hostId);
+  state.route = { ...state.route, sourceId, sourceRevision: revision };
   return state.route;
 }

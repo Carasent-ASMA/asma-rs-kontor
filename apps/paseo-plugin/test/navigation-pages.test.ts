@@ -1,11 +1,25 @@
 import { describe, expect, it } from "vitest";
 import { goBack, hostNavigation, linkedPlans, navigate, readRouteView, refreshSourceRevision, sessionScopeKey, writeRouteView } from "../client/navigation-state";
-import { inboxEntries, jiraIssueUrl, nativeSummary, overviewRows, searchRecords } from "../client/page-data";
+import { inboxEntries, jiraIssueUrl, nativeSummary, overviewRows, searchRecords, filteredOverviewRows, recordedDecisions } from "../client/page-data";
+import type { SourceRead } from "../shared/read-sources";
 import { reorderedSiblings } from "../client/organization-order";
 import { sessionEntry } from "./session-fixtures";
 import { patchSessionView, readSessionView } from "../client/session-view-store";
 
 describe("read-only navigation and data truth", () => {
+  it("filters existing attention observations and keeps Unknown decision coverage distinct from captured zero", () => {
+    const entries = [sessionEntry("permission", { labels: { epic: "ASMA-1" }, attentionReason: "permission", requiresAttention: false }), sessionEntry("quiet", { labels: { epic: "ASMA-2" } })];
+    const empty: SourceRead = { source: { id: "decisions", title: "Captured decisions", kind: "decisions", path: "/configured/decisions.json", epic: "ASMA-1", projectId: null, workstream: null, revisionKind: "working copy" }, status: "ready", readAt: "now", modifiedAt: null, revision: "hash", content: null, graph: null, records: { teams: [], decisions: [], delivery: [] }, diagnostics: [] };
+    expect(filteredOverviewRows(entries, [], "attention").map((row) => row.key)).toEqual(["ASMA-1"]);
+    expect(filteredOverviewRows(entries, [], "needs-input").map((row) => row.key)).toEqual(["ASMA-1"]);
+    expect(recordedDecisions([empty])).toMatchObject({ open: 0, complete: true });
+    expect(recordedDecisions([])).toMatchObject({ open: null, complete: false });
+    expect(filteredOverviewRows(entries, [empty], "decisions").map((row) => row.key)).toEqual(["ASMA-2"]);
+    const unknown = { ...empty, records: { teams: [], delivery: [], decisions: [{ id: "unclassified", title: "Unknown recorded state", state: "unknown" as const }] } };
+    expect(recordedDecisions([unknown])).toMatchObject({ open: 0, unknown: 1, complete: true });
+    expect(filteredOverviewRows(entries, [unknown], "decisions").map((row) => row.key)).toEqual(["ASMA-1", "ASMA-2"]);
+    expect(filteredOverviewRows(entries, [{ ...empty, status: "unavailable" }], "decisions").map((row) => row.key)).toEqual(["ASMA-1", "ASMA-2"]);
+  });
   it("keeps host-scoped context through Overview and supports explicit All projects clearing", () => {
     navigate("one", { projectId: "project", tab: "Plan", sourceId: "source" });
     navigate("one", { tab: "Overview" });

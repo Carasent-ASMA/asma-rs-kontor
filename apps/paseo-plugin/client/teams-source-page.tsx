@@ -1,3 +1,5 @@
+import { BindingDetail } from "./teams-binding-detail";
+import { FleetRoleCards, TemplateRoleCards } from "./teams-role-cards";
 import { useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import type { DirectoryEntry } from "./session-directory";
@@ -24,23 +26,6 @@ export function TeamsSnapshotDetails({ snapshot, colors }: { snapshot: TeamsSour
     {snapshot.diagnostics.map((diagnostic, index) => <Copy key={index} colors={colors}>{diagnostic.code} · {diagnostic.pointer}: {diagnostic.message}</Copy>)}
   </Disclosure>;
 }
-function ChainDetails({ chain, colors }: { chain: TeamsFleetData["chains"][number]; colors: Colors }) {
-  return <>
-    <Copy colors={colors}>Source provenance: {chain.provenance.sourceId} · {chain.provenance.pointer}</Copy>
-    <Copy colors={colors}>Rungs keep source order. Alternatives within a rung are alternatives, not serial fallbacks. All provider/account and model fields are declared configuration, not availability or eligibility.</Copy>
-    {chain.rungs.map((rung) => <View key={rung.index} style={{ paddingVertical: 4 }}>
-      <Copy colors={colors}>Rung {rung.index + 1} · {rung.alternatives.length} alternatives</Copy>
-      {rung.alternatives.map((alternative, index) => <View key={index} style={{ paddingLeft: 8 }}>
-        <Copy colors={colors}>Alternative {index + 1}: {alternative.reference} · selected effort: {alternative.selectedEffort ?? "Not supplied"}</Copy>
-        <Copy colors={colors}>Model alias {alternative.modelAlias} · model ID {alternative.model?.id ?? "Unknown"} · vendor {alternative.model?.vendor ?? "Unknown"}</Copy>
-        <Copy colors={colors}>Domain alias {alternative.model?.domain ?? "Unknown"} · provider {alternative.domain?.provider ?? "Unknown"} · account aliases {alternative.domain?.accounts.join(", ") || "Unknown"} · model prefix {alternative.domain?.modelPrefix ?? "Not supplied"}</Copy>
-        <Copy colors={colors}>Declared model metadata: supported efforts {alternative.model?.supportedEfforts?.join(", ") ?? "Not supplied"}; vision {alternative.model ? String(alternative.model.vision) : "Unknown"}; calibrated {alternative.model ? String(alternative.model.calibrated) : "Unknown"}.</Copy>
-        <Copy colors={colors} muted>Source provenance: {alternative.provenance.sourceId} · {alternative.provenance.pointer}{alternative.model ? ` · ${alternative.model.provenance.pointer}` : ""}{alternative.domain ? ` · ${alternative.domain.provenance.pointer}` : ""}</Copy>
-        {alternative.diagnostics.map((diagnostic, issue) => <Copy key={issue} colors={colors}>{diagnostic.code} · {diagnostic.pointer}: {diagnostic.message}</Copy>)}
-      </View>)}
-    </View>)}
-  </>;
-}
 const BINDINGS_PER_PAGE = 8;
 function ConfiguredBindings({ data, colors }: { data: TeamsFleetData; colors: Colors }) {
   const [page, setPage] = useState(0);
@@ -55,24 +40,18 @@ function ConfiguredBindings({ data, colors }: { data: TeamsFleetData; colors: Co
       <Action label="Next bindings" colors={colors} disabled={current + 1 >= pages} onPress={() => setPage(current + 1)} />
     </View>
     {data.bindings.slice(start, start + BINDINGS_PER_PAGE).map((binding) => {
-      const chain = binding.chainResolved ? data.chains.find((candidate) => candidate.name === binding.chainName) : undefined;
-      const independence = Object.entries(data.rules.independent_of).filter(([from, of]) => from === binding.reference || of === binding.reference);
       return <Disclosure key={binding.reference} label={`${binding.reference} → ${binding.chainName}`} colors={colors}>
-        <Copy colors={colors}>groupKind: {binding.groupKind} · groupId: {binding.groupId} · slotId: {binding.slotId ?? "Not supplied"} · declared chainName: {binding.chainName}</Copy>
-        <Copy colors={colors}>Binding source provenance: {binding.provenance.sourceId} · {binding.provenance.pointer}</Copy>
-        <Copy colors={colors}>Declared rules for this binding: calibration_required {data.rules.calibration_required.includes(binding.reference) ? "declared" : "not declared"}; vision_required {data.rules.vision_required.includes(binding.reference) ? "declared" : "not declared"}. Policy eligibility is not evaluated.</Copy>
-        <Copy colors={colors} muted>Rule source: {binding.provenance.sourceId} · /rules/calibration_required · /rules/vision_required · /rules/independent_of</Copy>
-        {independence.length ? independence.map(([from, of]) => <Copy key={from} colors={colors}>Declared independent_of: {from} → {of}</Copy>) : <Copy colors={colors}>independent_of: no relationship declared for this binding.</Copy>}
-        {chain ? <ChainDetails chain={chain} colors={colors} /> : <Copy colors={colors}>Declared chain {binding.chainName}: definition unavailable. Mapping retained; rungs and model metadata Unknown.</Copy>}
+        <BindingDetail binding={binding} data={data} colors={colors} />
       </Disclosure>;
     })}
   </Disclosure>;
 }
-function SnapshotData({ snapshot, colors }: { snapshot: TeamsSourceSnapshot; colors: Colors }) {
+function SnapshotData({ snapshot, colors, metadata }: { snapshot: TeamsSourceSnapshot; colors: Colors; metadata: ReturnType<typeof composeTeamsSourceView>["metadata"] }) {
   const data = snapshot.data;
   if (!data) return <Copy colors={colors}>Configured source unavailable. Other sources and native sessions remain usable.</Copy>;
   if (data.kind === "fleet") return <>
     <Copy colors={colors}>Fleet schema {data.schemaVersion} · {data.chains.length} chains · {data.models.length} model definitions · {data.bindings.length} bindings</Copy>
+    <Disclosure label="Configured groups / roles" colors={colors}><FleetRoleCards key={snapshot.sha256} data={data} metadata={metadata.filter((item) => item.sourceId === snapshot.source.id)} colors={colors} /></Disclosure>
     <ConfiguredBindings data={data} colors={colors} />
     <Disclosure label={`Configured chains (${data.chains.length})`} colors={colors}>
       <Copy colors={colors}>Rungs keep source order. Alternatives within a rung are alternatives, not serial fallbacks. Targets are configuration, not running models or availability.</Copy>
@@ -88,10 +67,7 @@ function SnapshotData({ snapshot, colors }: { snapshot: TeamsSourceSnapshot; col
   </>;
   return <Disclosure label={`Bundled template defaults (${data.templates.length})`} colors={colors}>
     <Copy colors={colors}>Every source version is retained. Defaults are separate from fleet configuration and observed sessions.</Copy>
-    {data.templates.map((template) => <View key={`${template.id}:${template.version}`}>
-      <Copy colors={colors}>{template.name} · {template.id} v{template.version}</Copy>
-      {template.slots.map((slot) => <Copy key={slot.id} colors={colors}>{slot.id} · role {slot.role.role} v{slot.role.version} · default rungs: {slot.defaultRungs.map((rung) => `${rung.provider}/${rung.model}${rung.effort ? ` @${rung.effort}` : ""}`).join(" → ")}</Copy>)}
-    </View>)}
+    <TemplateRoleCards key={snapshot.sha256} data={data} colors={colors} />
   </Disclosure>;
 }
 export function TeamsSourcePage({ sources, snapshots = {}, errors = {}, bindingDiagnostics = [], available, reads, entries, observedAt, colors, children }: {
@@ -114,7 +90,7 @@ export function TeamsSourcePage({ sources, snapshots = {}, errors = {}, bindingD
       return <Card key={source.id} title={`${source.title} · ${bindings.formats[source.id]}`} colors={colors}>
         <Copy colors={colors}>Source state: {snapshot?.status ?? "unavailable"}{available ? "" : " · stale"} · {snapshot?.configurationState ?? "Not read"}</Copy>
         <Copy colors={colors}>Read {snapshot?.readAt ?? "Not captured"} · source observation time: Not supplied · activation: {snapshot?.activation ?? "not-attested"}</Copy>
-        {snapshot ? <><TeamsSnapshotDetails snapshot={snapshot} colors={colors} /><SnapshotData snapshot={snapshot} colors={colors} /></> : <Disclosure label="Source details" colors={colors}><Copy colors={colors}>{source.path} · {errors[source.id] ?? "Awaiting a successful adapter read; observed state Unknown."}</Copy></Disclosure>}
+        {snapshot ? <><TeamsSnapshotDetails snapshot={snapshot} colors={colors} /><SnapshotData snapshot={snapshot} metadata={view.metadata} colors={colors} /></> : <Disclosure label="Source details" colors={colors}><Copy colors={colors}>{source.path} · {errors[source.id] ?? "Awaiting a successful adapter read; observed state Unknown."}</Copy></Disclosure>}
       </Card>;
     })}
     {view.metadata.length ? <Card title="Unresolved configuration metadata" colors={colors}>

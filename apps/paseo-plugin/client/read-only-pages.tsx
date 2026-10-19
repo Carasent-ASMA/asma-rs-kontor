@@ -1,25 +1,27 @@
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { TextInput } from "@getpaseo/plugin/client/react-native";
 import type { DirectoryEntry, DirectoryState } from "./session-directory";
 import type { ReadSourceSummary, SourceRead } from "../shared/read-sources";
 import type { Destination } from "./navigation-state";
-import { historicalJiraIssue, confirmedEpic, inboxEntries, nativeSummary, overviewRows, searchRecords } from "./page-data";
+import { historicalJiraIssue, confirmedEpic, inboxEntries, nativeSummary, overviewRows, searchRecords, filteredOverviewRows, recordedDecisions, type OverviewFilter } from "./page-data";
 import { NativeSummaryIndicators, PlanTaskStatus } from "./overview-status";
 import type { TeamsSourceSnapshot } from "../shared/teams-source-snapshot";
 import { TeamsSourcePage } from "./teams-source-page";
 import { SourceDetails } from "./source-details";
 import { Action, Card, Copy, type Colors } from "./page-controls";
+import { FormattedPlanBlock, headingAnchor, planBlocks } from "./plan-document";
 
 type PageProps = {
   teamsSources?: readonly ReadSourceSummary[]; teamsJsonReads?: Readonly<Record<string, SourceRead>>;
   teamsSnapshots?: Readonly<Record<string, TeamsSourceSnapshot>>; teamsErrors?: Readonly<Record<string, string>>;
   teamsBindingDiagnostics?: readonly string[]; teamsAvailable?: boolean;
   contextLabel?: string; tab: Destination; colors: Colors; entries: readonly DirectoryEntry[]; directory: DirectoryState;
+  compact?: boolean; onChooseSource?: () => void; onDocumentLink?: (target: string) => void;
   sources: readonly ReadSourceSummary[]; reads: Readonly<Record<string, SourceRead>>; sourceId: string | null;
   sourceError: string | null; query: string; setQuery: (query: string) => void;
   onSource: (id: string) => void; onOpen: (entry: DirectoryEntry) => void; onTab: (tab: Destination) => void;
-  onEpicTab: (tab: "Board" | "Sessions", epicKey: string | null, sourceId: string | null) => void;
+  onEpicTab: (tab: "Board" | "Graph" | "Sessions", epicKey: string | null, sourceId: string | null) => void;
   initialDocumentOffset: number; onDocumentScroll: (offset: number) => void;
   initialOffset: number; onScroll: (offset: number) => void;
 };
@@ -34,6 +36,10 @@ function Overview(props: PageProps) {
   const { colors, directory, onSource, onOpen } = props;
   const reads = Object.values(props.reads);
   const total = nativeSummary(props.entries);
+  const filters: Array<[OverviewFilter, string]> = [["all", "All"], ["attention", "Native attention"], ["needs-input", "Needs input"], ["decisions", "Open / Unknown decisions"]];
+  const filter = filters.find(([key]) => key === props.query)?.[0] ?? "all";
+  const rows = filteredOverviewRows(props.entries, reads, filter);
+  const allRows = overviewRows(props.entries, reads);
   return <>
     <Card colors={colors} title={props.contextLabel ?? "All projects"}>
       <NativeSummaryIndicators counts={total} colors={colors} />
@@ -43,24 +49,26 @@ function Overview(props: PageProps) {
       {reads.filter((read) => read.source.kind === "jira").map((read) => <SourceDetails key={read.source.id} read={read} colors={colors} />)}
       {!reads.some((read) => read.jiraHistory) ? <Copy colors={colors}>Historical Jira: not connected to a configured status source.</Copy> : null}
     </Card>
-    {overviewRows(props.entries, reads).map((row) => {
+    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>{filters.map(([key, label]) => <Action key={key} label={label} colors={colors} selected={filter === key} onPress={() => props.setQuery(key === "all" ? "" : key)} />)}</View>
+    <Copy colors={colors} muted>{rows.filter((row) => /^ASMA-\d+$/.test(row.key)).length}/{allRows.filter((row) => /^ASMA-\d+$/.test(row.key)).length} epics · {rows.reduce((sum, row) => sum + row.entries.length, 0)} shown sessions</Copy>
+    {!rows.length ? <Copy colors={colors}>No matching observations. Decision coverage can remain Unknown.</Copy> : null}
+    {rows.map((row) => {
       const counts = nativeSummary(row.entries);
       const plans = row.reads.filter((read) => read.source.kind === "plan");
-      const decisions = row.reads.filter((read) => read.source.kind === "decisions" && read.status === "ready");
-      const configuredDecisions = row.reads.filter((read) => read.source.kind === "decisions");
-      const openDecisions = decisions.reduce((sum, read) => sum + (read.records?.decisions.filter((decision) => decision.state === "open").length ?? 0), 0);
+      const decisions = recordedDecisions(row.reads);
       const workflow = historicalJiraIssue(row.key, null, reads);
       return <Card key={row.key} colors={colors} title={row.key}>
         <Copy colors={colors}>Lifecycle: Unknown · Native runtime snapshot</Copy>
         <NativeSummaryIndicators counts={counts} colors={colors} />
         <Copy colors={colors}>Jira workflow: {workflow ? `${workflow.issue.status} · historical, observed ${workflow.observations.map((value) => value.observedAt).join(" / ")}` : "Unknown"}. Current completion: Unknown.</Copy>
         {plans.map((read) => <PlanTaskStatus key={read.source.id} plan={read} reads={reads} colors={colors} />)}
-        <Copy colors={colors}>Unresolved decisions: {decisions.length ? `${openDecisions} recorded open · coverage ${decisions.length}/${configuredDecisions.length} configured sources` : "Unknown — decision source not connected"}</Copy>
-        <Copy colors={colors}>Needs decision: {decisions.length ? `${openDecisions} recorded open; see Decisions` : "Unknown"} · Delivery: Unknown</Copy>
+        <Copy colors={colors}>Unresolved decisions: {decisions.open === null ? "Unknown — decision source not connected" : `${decisions.open} recorded open · ${decisions.unknown} recorded Unknown · coverage ${decisions.captured}/${decisions.configured} configured sources${decisions.complete ? "" : " · remaining coverage Unknown"}`}</Copy>
+        <Copy colors={colors}>Delivery: Unknown</Copy>
         {plans.length === 1 ? <><SourceDetails read={plans[0]!} colors={colors} /><Action colors={colors} label="Open plan" onPress={() => onSource(plans[0]!.source.id)} /></> : plans.length > 1 ? <Copy colors={colors}>Choose a plan in the top context picker.</Copy> : null}
         {!plans.length ? <Copy colors={colors} muted>No plan linked</Copy> : null}
         <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
           {plans.length ? <Action label="Tasks" colors={colors} onPress={() => props.onEpicTab("Board", /^ASMA-\d+$/.test(row.key) ? row.key : null, plans.length === 1 ? plans[0]!.source.id : null)} /> : null}
+          {plans.length ? <Action label="Graph" colors={colors} onPress={() => props.onEpicTab("Graph", /^ASMA-\d+$/.test(row.key) ? row.key : null, plans.length === 1 ? plans[0]!.source.id : null)} /> : null}
           <Action label={/^ASMA-\d+$/.test(row.key) ? "Sessions" : "All sessions"} colors={colors} onPress={() => props.onEpicTab("Sessions", /^ASMA-\d+$/.test(row.key) ? row.key : null, null)} />
         </View>
         <NativeRows entries={row.entries.slice(0, 3)} colors={colors} onOpen={onOpen} />
@@ -69,9 +77,13 @@ function Overview(props: PageProps) {
   </>;
 }
 function Plan(props: PageProps) {
+  const [sourceMode, setSourceMode] = useState(false);
+  const [contentsOpen, setContentsOpen] = useState(!props.compact);
+  const [linkMessage, setLinkMessage] = useState<string | null>(null);
   const candidate = props.sourceId ? props.reads[props.sourceId] : undefined;
   const selected = candidate?.source.kind === "plan" ? candidate : undefined;
   const offsets = useRef<Record<number, number>>({});
+  const pendingHeading = useRef<number | null>(null);
   const scroller = useRef<ScrollView | null>(null);
   const position = useRef({ restoring: props.initialDocumentOffset > 0, target: props.initialDocumentOffset, requested: null as number | null, height: null as number | null, viewport: null as number | null });
   const restoreDocument = () => {
@@ -88,15 +100,34 @@ function Plan(props: PageProps) {
     props.onDocumentScroll(y);
     scroller.current?.scrollTo({ y, animated: true });
   };
-  const lines = useMemo(() => selected?.content?.split("\n") ?? [], [selected?.content]);
-  const headings = lines.flatMap((line, index) => /^#{1,6}\s+/.test(line) ? [{ label: line.replace(/^#+\s+/, ""), index }] : []);
+  const blocks = useMemo(() => planBlocks(selected?.content ?? ""), [selected?.content]);
+  const headings = blocks.filter((block) => block.kind === "heading").map((block) => ({ label: block.text, index: block.line }));
+  const navigateHeading = (index: number) => {
+    if (sourceMode) { pendingHeading.current = index; setSourceMode(false); }
+    else scrollToHeading(index);
+  };
   const needle = props.query.trim().toLocaleLowerCase();
+  const openLink = (target: string) => {
+    if (target.startsWith("#")) {
+      let anchor: string; try { anchor = decodeURIComponent(target.slice(1)); } catch { setLinkMessage("Invalid heading link."); return; }
+      const match = headings.find((heading) => headingAnchor(heading.label) === anchor || heading.label === anchor);
+      if (match) navigateHeading(match.index); else setLinkMessage("This heading is not present in the exact source.");
+    } else if (props.onDocumentLink) props.onDocumentLink(target);
+    else setLinkMessage("Link navigation is unavailable on this host.");
+  };
   return <>
-    {!selected ? <Copy colors={props.colors}>No plan linked. Select a configured plan in the top context picker. Conversation prose and titles do not create links.</Copy> : <>
+    {!selected ? <><Copy colors={props.colors}>{props.sources.filter((source) => source.kind === "plan").length > 1 ? "Several explicitly linked plans. Choose an exact source." : "No plan linked. Select a configured plan in the top context picker."} Conversation prose and titles do not create links.</Copy>{props.onChooseSource ? <Action label="Choose plan" colors={props.colors} onPress={props.onChooseSource} /> : null}</> : <>
       <SourceDetails read={selected} colors={props.colors} />
       <Copy colors={props.colors} muted>Document content is read-only. Approval and lifecycle are not inferred from prose.</Copy>
-      <TextInput accessibilityLabel="Search this plan" placeholder="Search this plan" value={props.query} onChangeText={props.setQuery} style={{ color: props.colors.foreground, minHeight: 44, padding: 10, borderWidth: 1, borderColor: props.colors.border }} />
-      <View style={{ flexDirection: "row", flexWrap: "wrap" }}>{headings.filter((heading) => !needle || heading.label.toLocaleLowerCase().includes(needle)).map((heading) => <Action key={heading.index} label={heading.label} colors={props.colors} onPress={() => scrollToHeading(heading.index)} />)}</View>
+      <TextInput accessibilityLabel="Search this plan" placeholder="Search this plan" value={props.query} onChangeText={(query) => { setSourceMode(false); props.setQuery(query); }} style={{ color: props.colors.foreground, minHeight: 44, padding: 10, borderWidth: 1, borderColor: props.colors.border }} />
+      {needle ? <Copy colors={props.colors} muted>{blocks.filter((block) => block.text.toLocaleLowerCase().includes(needle)).length} matching blocks · search highlights the formatted view</Copy> : null}
+      <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
+        <Action label="Formatted" colors={props.colors} selected={!sourceMode} onPress={() => setSourceMode(false)} />
+        <Action label="Exact Source" colors={props.colors} selected={sourceMode} onPress={() => setSourceMode(true)} />
+        <Action label={`Contents (${headings.length})`} colors={props.colors} selected={contentsOpen} onPress={() => setContentsOpen(!contentsOpen)} />
+      </View>
+      {contentsOpen ? <View style={{ flexDirection: "row", flexWrap: "wrap" }}>{headings.filter((heading) => !needle || heading.label.toLocaleLowerCase().includes(needle)).map((heading) => <Action key={heading.index} label={heading.label} colors={props.colors} onPress={() => navigateHeading(heading.index)} />)}</View> : null}
+      {linkMessage ? <Copy colors={props.colors}>{linkMessage}</Copy> : null}
       {selected.content === null ? <Copy colors={props.colors}>This configured plan is unavailable.</Copy> :
         <ScrollView testID="plan-document" ref={scroller} style={{ minHeight: 280, maxHeight: 640 }} nestedScrollEnabled
           onLayout={(event) => { position.current.viewport = event.nativeEvent.layout.height; restoreDocument(); }}
@@ -114,9 +145,10 @@ function Plan(props: PageProps) {
             }
             props.onDocumentScroll(y);
           }} scrollEventThrottle={100}>
-          {lines.map((line, index) => <Text key={index} selectable onLayout={(event) => { offsets.current[index] = event.nativeEvent.layout.y; }}
-            style={{ color: props.colors.foreground, fontSize: /^#+\s/.test(line) ? 16 : 13, lineHeight: 21,
-              fontWeight: /^#+\s/.test(line) ? "600" : "400", backgroundColor: needle && line.toLocaleLowerCase().includes(needle) ? props.colors.surface2 : undefined }}>{line || " "}</Text>)}
+          {sourceMode ? <Text selectable testID="plan-exact-source" style={{ color: props.colors.foreground, fontFamily: "monospace", fontSize: 13, lineHeight: 21 }}>{selected.content}</Text> : blocks.map((block) => <View key={block.line} testID={`plan-line-${block.line}`} onLayout={(event) => {
+            offsets.current[block.line] = event.nativeEvent.layout.y;
+            if (pendingHeading.current === block.line) { pendingHeading.current = null; scrollToHeading(block.line); }
+          }} style={{ paddingVertical: 5 }}><FormattedPlanBlock block={block} colors={props.colors} query={props.query} onLink={openLink} /></View>)}
         </ScrollView>}
     </>}
   </>;

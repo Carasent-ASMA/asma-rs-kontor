@@ -27,14 +27,26 @@ function text(node: ReactNode): string {
   if (typeof node.type === "function") return text((node.type as (props: any) => ReactNode)(node.props));
   return text(node.props.children as ReactNode);
 }
-function overview(reads: Record<string, SourceRead>) {
+function overview(reads: Record<string, SourceRead>, extra: Partial<Props> = {}) {
   const props: Props = { tab: "Overview", contextLabel: "Selected plan", colors: {} as Props["colors"], entries: [sessionEntry("idle", { status: "idle", labels: { epic: "ASMA-8539" } })], directory: { entries: [], status: "ready", live: false, lastUpdatedAt: 1, error: null, staleReason: null, pages: 1, includeArchived: false }, sources: Object.values(reads).map((value) => value.source), reads, sourceId: "plan", sourceError: null, query: "", setQuery: vi.fn(), onSource: vi.fn(), onOpen: vi.fn(), onTab: vi.fn(), onEpicTab: vi.fn(), initialOffset: 0, onScroll: vi.fn(), initialDocumentOffset: 0, onDocumentScroll: vi.fn() };
+  Object.assign(props, extra);
   const outer = ReadOnlyPage(props);
   const child = elements(outer).find((element) => element.props.tab === "Overview")!;
   return (child.type as (props: Props) => ReactNode)(child.props as Props);
 }
 beforeEach(() => { model.open = false; });
 describe("compact Overview source evidence", () => {
+  it("opens source-bound Graph and uses observation filters with explicit epic/session units", () => {
+    const onEpicTab = vi.fn(); const setQuery = vi.fn();
+    const tree = overview({ plan, jira: read }, { onEpicTab, setQuery });
+    const action = elements(tree).find((node) => node.props.label === "Graph")!;
+    (action.props.onPress as () => void)(); expect(onEpicTab).toHaveBeenCalledWith("Graph", "ASMA-8539", "plan");
+    const filter = elements(tree).find((node) => node.props.label === "Needs input")!;
+    (filter.props.onPress as () => void)(); expect(setQuery).toHaveBeenCalledWith("needs-input");
+    expect(text(tree)).toContain("1/1 epics · 1 shown sessions");
+    expect(text(overview({ plan }, { query: "needs-input" }))).toContain("0/1 epics · 0 shown sessions");
+    expect(text(tree)).toContain("Unresolved decisions: Unknown"); expect(text(tree)).not.toContain("0 recorded open");
+  });
   it("keeps source state and original observation visible, expanding technical details only on request", () => {
     const render = () => SourceDetails({ read, colors: {} as Props["colors"] });
     const closed = render(); const visible = text(closed);

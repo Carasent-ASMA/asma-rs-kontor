@@ -3,6 +3,7 @@ import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DirectoryEntry } from "../client/session-directory";
 import type { ReadSourceSummary } from "../shared/read-sources";
+import { Linking } from "react-native";
 
 const model = vi.hoisted(() => ({
   slots: [] as unknown[], cursor: 0, entries: [] as DirectoryEntry[], sources: [] as ReadSourceSummary[], values: {} as object,
@@ -18,6 +19,7 @@ vi.mock("react", async (original) => ({
   useEffect: () => {},
 }));
 vi.mock("react-native", () => ({
+  Linking: { openURL: vi.fn(async () => {}) },
   SafeAreaView: "SafeAreaView", KeyboardAvoidingView: "KeyboardAvoidingView", ScrollView: "ScrollView", View: "View", Text: "Text", Pressable: "Pressable",
 }));
 vi.mock("@getpaseo/plugin/client", () => ({ useHosts: () => [] }));
@@ -33,6 +35,7 @@ import { KontorScreen } from "../client/kontor-screen";
 import { DESTINATIONS, hostNavigation, navigate, type KontorRoute } from "../client/navigation-state";
 import { DEFAULT_ORGANIZATION_SETTINGS } from "../shared/organization";
 import { sessionEntry } from "./session-fixtures";
+import { GraphPage } from "../client/graph-page";
 function elements(value: ReactNode): ReactElement<Record<string, unknown>>[] {
   if (Array.isArray(value)) return value.flatMap(elements);
   if (!isValidElement<Record<string, unknown>>(value)) return [];
@@ -57,6 +60,44 @@ function mount(compact: boolean, initial?: Partial<KontorRoute>) {
   };
 }
 describe("Kontor shell native actions", () => {
+  it("resolves epic → Graph/Plan only for an exact unique catalog plan, and preserves Back", () => {
+    model.sources = [{ id: "explicit", title: "Chosen source", kind: "plan", path: "/plans/explicit.md", projectId: null, epic: "ASMA-1", workstream: null, revisionKind: "working copy" }];
+    const screen = mount(true); screen.click("All projects ▾"); screen.click("ASMA-1"); screen.click("More"); screen.click("Graph");
+    expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab: "Graph", epicKey: "ASMA-1", sourceId: "explicit" });
+    screen.click("‹ Back"); expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab: "Sessions", epicKey: "ASMA-1" });
+    screen.click("Plan"); expect(hostNavigation(screen.props.host.id).route.sourceId).toBe("explicit");
+  });
+  it("keeps multiple linked sources as accessible choices and reserves the context row before desktop tabs", () => {
+    model.sources = ["one", "two"].map((id) => ({ id, title: id, kind: "plan", path: `/plans/${id}.md`, projectId: null, epic: "ASMA-1", workstream: null, revisionKind: "working copy" }));
+    const screen = mount(false, { epicKey: "ASMA-1" }); screen.click("Graph");
+    expect(hostNavigation(screen.props.host.id).route.sourceId).toBeNull();
+    const graph = screen.elements().find((node) => node.type === GraphPage)!;
+    (graph.props.onChooseSource as () => void)(); screen.render();
+    expect(screen.action("Plan: one")).toBeDefined(); expect(screen.action("Plan: two")).toBeDefined();
+    expect(screen.elements().findIndex((node) => node.props.testID === "kontor-context-row")).toBeLessThan(screen.elements().findIndex((node) => node.props.accessibilityRole === "tablist"));
+    screen.click("Plan: two"); expect(hostNavigation(screen.props.host.id).route.sourceId).toBe("two");
+  });
+  it("routes Plan document links through configured sources and exact native IDs", () => {
+    model.sources = ["a", "b"].map((id) => ({ id, title: id, kind: "plan", path: `/plans/${id}.md`, projectId: null, epic: "ASMA-1", workstream: null, revisionKind: "working copy" }));
+    const screen = mount(true, { tab: "Plan", sourceId: "a" });
+    const page = () => screen.elements().find((node) => typeof node.props.onDocumentLink === "function")!;
+    (page().props.onDocumentLink as (target: string) => void)("paseo://agents/native");
+    expect(screen.props.navigation?.openAgent).toHaveBeenCalledWith({ agentId: "native", serverId: screen.props.host.id });
+    (page().props.onDocumentLink as (target: string) => void)("paseo://agents/missing"); expect(screen.props.navigation?.openAgent).toHaveBeenCalledTimes(1);
+    (page().props.onDocumentLink as (target: string) => void)("https://carasent.atlassian.net/browse/ASMA-8541");
+    expect(Linking.openURL).toHaveBeenCalledWith("https://carasent.atlassian.net/browse/ASMA-8541");
+    (page().props.onDocumentLink as (target: string) => void)("./b.md"); screen.render();
+    expect(hostNavigation(screen.props.host.id).route.sourceId).toBe("b"); screen.click("‹ Back");
+    expect(hostNavigation(screen.props.host.id).route.sourceId).toBe("a");
+  });
+  it("wires Board scroll state into history before opening Plan and restores it on Back", () => {
+    const screen = mount(true, { tab: "Board", sourceId: "plan-a", sourceRevision: "sha-a" });
+    const board = () => screen.elements().find((element) => element.type === GraphPage)!;
+    (board().props.onScroll as (offset: number) => void)(800);
+    (board().props.onPlan as (sourceId: string) => void)("plan-a"); screen.render();
+    expect(hostNavigation(screen.props.host.id).route.tab).toBe("Plan"); screen.click("‹ Back");
+    expect(board().props.initialOffset).toBe(800);
+  });
   it("keeps the native conversation and its association boundary while choosing a linked plan", () => {
     model.values = { ...DEFAULT_ORGANIZATION_SETTINGS, planAssociations: { native: ["linked-a", "linked-b"] } };
     model.sources = ["linked-a", "linked-b", "unrelated"].map((id, index) => ({ id, title: id, kind: "plan", workstream: null, epic: `ASMA-${index + 1}`, projectId: `project-${index + 1}`, path: `/configured/${id}.md`, revisionKind: "working copy" }));
@@ -67,10 +108,14 @@ describe("Kontor shell native actions", () => {
     expect(hostNavigation(screen.props.host.id).route).toMatchObject({ sourceId: "linked-b", originAgentId: "native" });
     expect(screen.action("Return to conversation").props.disabled).toBe(false);
     expect((page().props.sources as ReadSourceSummary[]).map((source) => source.id)).toEqual(["linked-b"]);
-    screen.click("linked-b ▾");
+    screen.click("ASMA-2 · linked-b ▾");
     expect(screen.action("Plan: linked-a")).toBeDefined(); expect(screen.action("Plan: linked-b")).toBeDefined();
     expect(screen.elements().some((element) => element.props.label === "Plan: unrelated")).toBe(false);
-    screen.click("Close"); screen.click("Return to conversation");
+    screen.click("Close"); screen.click("More"); screen.click("Graph");
+    const linkedGraph = screen.elements().find((node) => node.type === GraphPage)!;
+    (linkedGraph.props.onPlan as (sourceId: string) => void)("linked-b"); screen.render();
+    expect(hostNavigation(screen.props.host.id).route.originAgentId).toBe("native");
+    screen.click("Return to conversation");
     expect(screen.props.navigation?.openAgent).toHaveBeenCalled();
   });
   it("wires the inner document position independently from the outer Plan page through Back", () => {
@@ -95,9 +140,9 @@ describe("Kontor shell native actions", () => {
     expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab: "Overview", sourceId: "source-one", projectId: "p-one", epicKey: "ASMA-1" });
     expect((page().props.entries as DirectoryEntry[]).map((entry) => entry.id)).toEqual(["one"]);
     expect((page().props.sources as ReadSourceSummary[]).map((source) => source.id)).toEqual(["source-one", "decisions-one"]);
-    expect(screen.action("First plan ▾")).toBeDefined();
+    expect(screen.action("ASMA-1 · First plan ▾")).toBeDefined();
     expect(hostNavigation("independent-overview-host").route.sourceId).toBeNull();
-    screen.click("First plan ▾"); screen.click("All projects");
+    screen.click("ASMA-1 · First plan ▾"); screen.click("All projects");
     expect((page().props.entries as DirectoryEntry[]).map((entry) => entry.id)).toEqual(["one", "two"]);
     expect(screen.elements().filter((element) => element.props.tab === true)[0]?.props.icon).toBe("List");
   });

@@ -1,7 +1,7 @@
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { SourceRead } from "../shared/read-sources";
-vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useMemo: (factory: () => unknown) => factory(), useRef: (current: unknown) => ({ current }) }));
+vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useMemo: (factory: () => unknown) => factory(), useRef: (current: unknown) => ({ current }), useState: (initial: unknown) => [initial, () => {}] }));
 vi.mock("react-native", () => ({ ScrollView: "ScrollView", Text: "Text", View: "View" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput", Icon: "Icon" }));
 import { ReadOnlyPage } from "../client/read-only-pages";
@@ -75,7 +75,7 @@ describe("inner Plan document position", () => {
     const route = navigate("document-heading", { tab: "Plan", sourceId: "plan-a", sourceRevision: "sha-a" });
     writeRouteView("document-heading", route, { documentOffset: 900 });
     const screen = mount("document-heading");
-    const endLine = elements(screen.tree).find((element) => element.props.children === "## End")!;
+    const endLine = elements(screen.tree).find((element) => element.props.testID === "plan-line-2")!;
     (endLine.props.onLayout as (event: object) => void)({ nativeEvent: { layout: { y: 450 } } });
     const heading = elements(screen.tree).find((element) => element.props.label === "End")!;
     (heading.props.onPress as () => void)(); screen.layout(); screen.size(5000);
