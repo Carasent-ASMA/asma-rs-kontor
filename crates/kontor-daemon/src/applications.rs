@@ -37508,6 +37508,13 @@ impl ApplicationOperations for Services {
                 team_pending = None;
                 state.signals().appended();
             }
+            // The run is immutable, but the frozen snapshot this process holds
+            // for it is not: a first abandonment that closed the run and then
+            // failed before releasing it leaves the session claimed here, and
+            // this replay is the only path back to give it up.
+            if let Some(binding) = run.binding.as_ref() {
+                self.release(binding.id)?;
+            }
             return Ok(AbandonedRunDto {
                 realm_id: state.realm_id(),
                 agent_run_id: agent_run_id.to_string(),
@@ -37711,12 +37718,23 @@ impl ApplicationOperations for Services {
                 kontor_core::state::TerminalEvidenceSource::OperatorAbandon { .. } => None,
             };
             // Closing the run commits before the team is settled, so a team
-            // closure that failed — behind a Team Definition migration fence, or
-            // on a declared slot that never ran — leaves an envelope with no live
-            // child. The run is immutable now, and this replay is the only path
-            // back to it: retry the closure, which is idempotent, instead of
-            // reporting the stranded envelope forever.
+            // closure that failed behind a Team Definition migration fence
+            // leaves an envelope with no live child. The run is immutable now,
+            // and this replay is the only path back to it: retry the closure,
+            // which is idempotent, instead of reporting the stranded envelope
+            // forever.
+            //
+            // A declared slot that never produced a terminal run is not repaired
+            // here: `settle_team` answers pending for that shape however often
+            // it is asked. The `runtime:abandon` route is what accounts for that
+            // slot and lets the envelope close: it abandons a never-bound run,
+            // or, once every existing run has ended, closes the envelope itself.
             let (team_run_closed, team_pending) = self.settle_team(project_id, &run, now)?;
+            // A first settlement that failed after closing the run never reached
+            // the release below, so the snapshot would stay held for a session
+            // that is already over. Releasing it here is what makes the recovery
+            // path finish the whole settlement, not only the team.
+            self.release(binding.id)?;
             return Ok(RuntimeSettlementDto {
                 realm_id,
                 agent_run_id: agent_run_id.to_string(),
