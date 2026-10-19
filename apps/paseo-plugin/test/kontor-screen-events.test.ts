@@ -34,7 +34,7 @@ vi.mock("../client/use-read-sources", () => ({ useReadSources: () => ({ sources:
 vi.mock("../client/use-workspace-directory", () => ({ useWorkspaceDirectory: () => ({ entries: [], error: null, readAt: null }) }));
 
 import { KontorScreen } from "../client/kontor-screen";
-import { DESTINATIONS, hostNavigation, navigate, type KontorRoute } from "../client/navigation-state";
+import { DESTINATIONS, hostNavigation, navigate, readRouteView, type KontorRoute } from "../client/navigation-state";
 import { DEFAULT_ORGANIZATION_SETTINGS } from "../shared/organization";
 import { sessionEntry } from "./session-fixtures";
 import { GraphPage } from "../client/graph-page";
@@ -149,6 +149,13 @@ describe("Kontor shell native actions", () => {
     screen.click("ASMA-2 · linked-b ▾");
     const choices = () => screen.elements().filter((node) => String(node.props.label).startsWith("Plan: ")).map((node) => node.props.label);
     expect(choices()).toEqual(["Plan: linked-a", "Plan: linked-b"]);
+    screen.click("Close"); screen.click("Plan");
+    expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab: "Plan", sourceId: "linked-b", originAgentId: "native" });
+    const selectedPlan = screen.elements().find((node) => typeof node.props.onSource === "function")!;
+    expect((selectedPlan.props.sources as ReadSourceSummary[]).map((source) => source.id)).toEqual(["linked-b"]);
+    screen.click("‹ Back");
+    expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab, sourceId: "linked-b", originAgentId: "native" });
+    screen.click("ASMA-2 · linked-b ▾"); expect(choices()).toEqual(["Plan: linked-a", "Plan: linked-b"]);
     screen.click("All projects");
     expect(hostNavigation(screen.props.host.id).route).toMatchObject({ originAgentId: null, sourceId: null, projectId: null, epicKey: null });
     screen.click("All projects ▾"); expect(choices()).toContain("Plan: unrelated"); screen.click("Close");
@@ -181,6 +188,53 @@ describe("Kontor shell native actions", () => {
     expect(progress.known).toBe(19); expect(progress.unknown).toBe(0);
     expect(progress.states[0]?.evidence?.observations).toMatchObject([{ issue: { key: actualGraph.nodes[0]!.jira, status: "Closed", cat: "done" }, sourceId: "jira-history", sourceTitle: "Historical Jira", observedAt: "2026-10-18T17:00+00:00" }]);
     expect(hostNavigation(screen.props.host.id).route.originAgentId).toBe("native");
+    screen.click("Plan");
+    const planPage = screen.elements().find((node) => typeof node.props.onSource === "function")!;
+    expect(planPage.props.reads).toEqual(forwarded);
+    screen.click("‹ Back");
+    expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab, sourceId: "linked-plan", originAgentId: "native" });
+    const returned = screen.elements().find((node) => node.type === GraphPage)!;
+    expect(returned.props.reads).toEqual(forwarded);
+  });
+  it.each(["unrelated", "linked-next", null] as const)("leaves conversation filtering when global Overview selects %s, preserving Plan and Back", (targetId) => {
+    const linked: SourceRead = { source: { id: "linked-plan", title: "linked-plan", kind: "plan", path: actualGraph.source, projectId: null, epic: actualGraph.epic.jira, workstream: null, revisionKind: "working copy" }, status: "ready", revision: actualGraph.source_sha256, readAt: "2026-10-19T10:00:00Z", modifiedAt: null, content: "# Linked plan", graph: actualGraph, records: null, diagnostics: [] };
+    const otherPlans: SourceRead[] = ["linked-next", "unrelated"].map((id) => ({ ...linked, source: { ...linked.source, id, title: id, path: `/configured/${id}.md` }, revision: "b".repeat(64), graph: null, content: `# Configured ${id}` }));
+    const jira: SourceRead = { ...linked, source: { ...linked.source, id: "jira-history", title: "Historical Jira", kind: "jira", path: "/configured/history.json", epic: null }, revision: capturedHistory.provenance.sha256, graph: null, content: null, jiraHistory: capturedHistory };
+    const configured = [linked, ...otherPlans, jira];
+    model.sources = configured.map((read) => read.source); model.reads = Object.fromEntries(configured.map((read) => [read.source.id, read]));
+    model.values = { ...DEFAULT_ORGANIZATION_SETTINGS, planAssociations: { native: ["linked-plan", "linked-next"] } };
+    const screen = mount(true, { tab: "Plan", sourceId: linked.source.id, sourceRevision: linked.revision, epicKey: linked.source.epic, originAgentId: "native" });
+    const page = () => screen.elements().find((node) => typeof node.props.onDocumentScroll === "function")!;
+    const linkedRoute = { ...hostNavigation(screen.props.host.id).route };
+    (page().props.onDocumentScroll as (offset: number) => void)(900);
+    (page().props.onScroll as (offset: number) => void)(120);
+    screen.click("Overview"); (page().props.onScroll as (offset: number) => void)(800);
+    screen.click(`${actualGraph.epic.jira} · linked-plan ▾`);
+    screen.click(targetId ? `Plan: ${targetId}` : "All projects"); screen.click("Plan");
+    expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab: "Plan", sourceId: targetId, originAgentId: null });
+    expect((page().props.sources as ReadSourceSummary[]).map((source) => source.id)).toEqual(configured.map((read) => read.source.id));
+    expect(page().props.reads).toEqual(model.reads);
+    expect(page().props.initialDocumentOffset).toBe(0); expect(page().props.initialOffset).toBe(0);
+    expect(historicalPlanProgress(actualGraph, Object.values(page().props.reads as Record<string, SourceRead>))).toMatchObject({ known: 19, unknown: 0 });
+    expect((page().props.reads as Record<string, SourceRead>)["jira-history"]).toBe(jira);
+    if (targetId === null) {
+      (page().props.onSource as (id: string) => void)("unrelated"); screen.render();
+    }
+    const selected = targetId ?? "unrelated";
+    expect(page().props.sourceId).toBe(selected);
+    expect((page().props.reads as Record<string, SourceRead>)[selected]?.content).toBe(`# Configured ${selected}`);
+    expect(screen.elements().some((node) => node.props.label === "Return to conversation")).toBe(false);
+    if (targetId === null) screen.click("‹ Back");
+    screen.click("‹ Back");
+    expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab: "Overview", sourceId: targetId, originAgentId: null });
+    screen.click("‹ Back");
+    expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab: "Overview", sourceId: "linked-plan", originAgentId: "native" });
+    expect(page().props.initialOffset).toBe(800);
+    screen.click("‹ Back");
+    expect(hostNavigation(screen.props.host.id).route).toEqual(linkedRoute);
+    expect(page().props.initialDocumentOffset).toBe(900); expect(page().props.initialOffset).toBe(120);
+    expect(screen.action("Return to conversation").props.disabled).toBe(false);
+    expect(readRouteView(`other-${screen.props.host.id}`, linkedRoute)).toMatchObject({ offset: 0, documentOffset: 0 });
   });
   it("wires the inner document position independently from the outer Plan page through Back", () => {
     model.sources = ["plan-a", "plan-b"].map((id) => ({ id, title: id, kind: "plan", path: `/configured/${id}.md`, workstream: null, epic: null, projectId: null, revisionKind: "working copy" }));

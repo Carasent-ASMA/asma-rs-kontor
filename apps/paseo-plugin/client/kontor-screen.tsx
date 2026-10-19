@@ -100,9 +100,10 @@ function HostScreen(props: PluginScreenProps) {
   const selectSource = (sourceId: string, tab?: Destination) => {
     const source = sourceState.sources.find((candidate) => candidate.id === sourceId && candidate.kind === "plan");
     if (!source) return;
+    // A global picker selection leaves the conversation's plan-association scope.
     visit({ ...(tab ? { tab } : {}), sourceId, sourceRevision: sourceState.reads[sourceId]?.revision ?? null,
       projectId: source.projectId, epicKey: sourceState.reads[sourceId]?.graph?.epic.jira ?? source.epic,
-      originAgentId: route.originAgentId });
+      originAgentId: linkedContext && associationIds?.includes(sourceId) ? route.originAgentId : null });
   };
   const primary = layout.compact ? PRIMARY_MOBILE : PRIMARY_DESKTOP;
   const setSearch = (value: string) => { writeRouteView(host.id, route, { query: value, offset: 0 }); setQuery(value); };
