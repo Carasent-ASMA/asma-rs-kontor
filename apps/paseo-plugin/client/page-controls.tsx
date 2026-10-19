@@ -3,7 +3,7 @@ import { Pressable, Text, View } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 export type Colors = PluginTheme["colors"];
-/** Wide tabs follow the prototype's compact left-grouped strip; stacked tabs are the compact bottom bar. */
+/** Wide tabs follow the prototype's compact left-grouped strip; stacked tabs are the compact bottom bar. A touch pointer gets 44pt in every style. */
 export function Action({ label, accessibilityLabel, onPress, colors, icon, stacked = false, tab = false, selected: selectedProp, disabled = false, expanded, trailing, small = false, ref }: {
   label: string; onPress: () => void; colors: Colors; selected?: boolean; disabled?: boolean;
   icon?: string;
@@ -20,8 +20,8 @@ export function Action({ label, accessibilityLabel, onPress, colors, icon, stack
   const strip = !stacked && (tab || trailing !== undefined);
   const compactButton = small && !stacked && !strip;
   return <Pressable ref={ref} accessibilityRole={tab ? "tab" : "button"} accessibilityLabel={accessibilityLabel ?? label} accessibilityState={{ selected, disabled, ...(expanded === undefined ? {} : { expanded }) }} aria-expanded={expanded} {...aria}
-    disabled={disabled} onPress={onPress} style={strip ? { minHeight: 32, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 5, justifyContent: "center", flexDirection: "row", alignItems: "center", gap: 4,
-      backgroundColor: selected ? colors.surface2 : undefined, opacity: disabled ? 0.5 : 1 } : compactButton ? { minHeight: 30, minWidth: 30, paddingHorizontal: 9, justifyContent: "center", flexDirection: "row", alignItems: "center", gap: 5,
+    disabled={disabled} onPress={onPress} style={strip ? { minHeight: COARSE_POINTER ? 44 : 32, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 5, justifyContent: "center", flexDirection: "row", alignItems: "center", gap: 4,
+      backgroundColor: selected ? colors.surface2 : undefined, opacity: disabled ? 0.5 : 1 } : compactButton ? { minHeight: COARSE_POINTER ? 44 : 30, minWidth: COARSE_POINTER ? 44 : 30, paddingHorizontal: 9, justifyContent: "center", flexDirection: "row", alignItems: "center", gap: 5,
       borderRadius: 6, borderWidth: 1, borderColor: colors.border, backgroundColor: selected ? colors.surface2 : undefined, opacity: disabled ? 0.5 : 1 } : { minHeight: stacked ? 48 : 44, minWidth: 44, flex: stacked ? 1 : undefined, paddingHorizontal: stacked ? 2 : 10, justifyContent: "center",
       borderRadius: stacked ? 6 : 8, backgroundColor: selected ? colors.surface2 : undefined, opacity: disabled ? 0.5 : 1, flexDirection: stacked ? "column" : "row", alignItems: "center", gap: stacked ? 3 : 5 }}>
     {icon && !strip ? <Icon name={icon} size={stacked ? 19 : 16} color={selected ? colors.accent : colors.foregroundMuted} /> : null}
@@ -36,6 +36,13 @@ export function Card({ title, children, colors }: { title: string; children: Rea
   return <View style={{ padding: 12, gap: 6, borderWidth: 1, borderColor: colors.border, borderRadius: 10, backgroundColor: colors.surface1 }}>
     <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: 15, fontWeight: "600" }}>{title}</Text>{children}
   </View>;
+}
+/** Square icon button; a touch pointer gets a real 44pt target, since the web ignores a hit slop. */
+export function IconButton({ label, icon, colors, onPress }: { label: string; icon: string; colors: Colors; onPress: () => void }) {
+  const size = COARSE_POINTER ? 44 : 34;
+  return <Pressable accessibilityRole="button" accessibilityLabel={label} onPress={onPress} style={{ width: size, height: size, borderRadius: 7, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center" }}>
+    <Icon name={icon} size={16} color={colors.foreground} />
+  </Pressable>;
 }
 /** True where a finger is the primary pointer: native apps, and web on phones and tablets. A mouse keeps the denser rows. */
 export const COARSE_POINTER = (() => {

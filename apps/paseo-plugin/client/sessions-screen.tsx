@@ -16,6 +16,7 @@ import {
   useState,
   type ComponentRef,
   type ReactNode,
+  type RefObject,
 } from "react";
 import {
   AccessibilityInfo,
@@ -71,7 +72,8 @@ import type { useOrganizationSettings } from "./use-organization-settings";
 import { allGroupKeys, buildOrganizationTree, defaultGroupExpanded, filterOrganizationTree, flattenOrganizationTree, inEpicScope, isDeskWork, organizationScope, sessionState, visibleSessions, workstreamRank, type OrganizationGroup, type OrganizationRow, type OrganizationWorkspace } from "./session-organization";
 import { rowKey, siblingKeys, reorderSavedSiblingOrder } from "./organization-order";
 import { OrganizationRowView, StateBadge, stateColor as sessionStateColor, WORKSPACE_KINDS } from "./organization-row";
-import { Action, Disclosure } from "./page-controls";
+import { AnchoredMenu, MenuItem } from "./anchored-menu";
+import { Action, COARSE_POINTER, Disclosure } from "./page-controls";
 
 type ThemeColors = PluginTheme["colors"];
 
@@ -87,6 +89,7 @@ export const SESSION_SHORTCUTS: readonly { readonly id: string | null; readonly 
   { id: "Adam", label: "Adam desk" },
   { id: "Other work", label: "Other work" },
 ];
+/** Workspace scope, a menu in Filters & view; the shortcuts above repeat all but Durable desks. */
 const SCOPE_CHOICES: readonly { readonly id: string | null; readonly label: string }[] = [
   { id: null, label: "All Paseo workspaces" },
   { id: "Desks", label: "Durable desks" },
@@ -417,7 +420,7 @@ export function FiltersButton({
       onFocus={onFocus}
       onPress={onPress}
       style={{
-        minHeight: compact ? FILTERS_TOUCH_TARGET : 36,
+        minHeight: compact || COARSE_POINTER ? FILTERS_TOUCH_TARGET : 36,
         minWidth: FILTERS_TOUCH_TARGET,
         flexDirection: "row",
         alignItems: "center",
@@ -507,7 +510,7 @@ export function ClearFiltersButton({
       onFocus={onFocus}
       onPress={onPress}
       style={{
-        minHeight: compact ? FILTERS_TOUCH_TARGET : 32,
+        minHeight: compact || COARSE_POINTER ? FILTERS_TOUCH_TARGET : 32,
         minWidth: FILTERS_TOUCH_TARGET,
         paddingHorizontal: 10,
         paddingVertical: 6,
@@ -780,7 +783,8 @@ export function ActiveFilterSummary({
   );
 }
 
-function FilterChip({
+/** A touch pointer gets a 44pt chip; a mouse keeps the denser one. */
+export function FilterChip({
   active,
   label,
   colors,
@@ -821,7 +825,7 @@ function FilterChip({
       onFocus={onFocus}
       onPress={onPress}
       style={{
-        minHeight: compact ? 36 : 30,
+        minHeight: COARSE_POINTER ? FILTERS_TOUCH_TARGET : compact ? 36 : 30,
         flexDirection: "row",
         alignItems: "center",
         gap: 6,
@@ -852,6 +856,72 @@ function OptionLine({ label, colors, children }: { label: string; colors: ThemeC
     <View style={{ gap: 5 }}>
       <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>{label}</Text>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4, alignItems: "center" }}>{children}</View>
+    </View>
+  );
+}
+
+/** A labelled single choice inside Filters & view that opens as a menu, like the prototype's selects; the current value stays in view. */
+export function OptionSelect({
+  label,
+  value,
+  expanded,
+  colors,
+  compact,
+  anchor,
+  testID,
+  disabled = false,
+  onBlur,
+  onFocus,
+  onPress,
+}: {
+  label: string;
+  value: string;
+  expanded: boolean;
+  colors: ThemeColors;
+  compact: boolean;
+  anchor: RefObject<View | null>;
+  testID: string;
+  disabled?: boolean;
+  onBlur?: () => void;
+  onFocus?: (event?: unknown) => void;
+  onPress: () => void;
+}) {
+  return (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+      <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>{label}</Text>
+      <Pressable
+        ref={anchor}
+        testID={testID}
+        disabled={disabled}
+        accessibilityRole="button"
+        accessibilityLabel={`${label}: ${value}`}
+        accessibilityHint={`Opens the ${label.toLocaleLowerCase()} choices`}
+        accessibilityState={{ expanded, disabled }}
+        aria-expanded={expanded}
+        onBlur={onBlur}
+        onFocus={onFocus}
+        onPress={onPress}
+        style={{
+          minHeight: COARSE_POINTER ? FILTERS_TOUCH_TARGET : compact ? 36 : 30,
+          flexShrink: 1,
+          minWidth: 0,
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 6,
+          paddingHorizontal: 8,
+          borderRadius: 6,
+          borderWidth: 1,
+          borderColor: colors.border,
+          backgroundColor: colors.surface1,
+        }}
+      >
+        <Text numberOfLines={1} style={{ flexShrink: 1, color: colors.foreground, fontSize: compact ? 12 : 11, fontWeight: "600" }}>
+          {value}
+        </Text>
+        <Text accessibilityElementsHidden importantForAccessibility="no" style={{ color: colors.foregroundMuted, fontSize: 12 }}>
+          ▾
+        </Text>
+      </Pressable>
     </View>
   );
 }
@@ -1022,6 +1092,11 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [, setExpansionRevision] = useState(0);
   const [orderSelection, setOrderSelection] = useState<string | null>(null);
+  const [optionMenu, setOptionMenu] = useState<"grouping" | "scope" | null>(null);
+  const [rootSize, setRootSize] = useState({ width: 0, height: 0 });
+  const rootRef = useRef<View | null>(null);
+  const groupingRef = useRef<View | null>(null);
+  const scopeRef = useRef<View | null>(null);
   const editsDisabled = !hostOnline || organization?.state.status !== "ready" || organization.state.saving;
   useEffect(() => { onIncludeArchived?.(view.includeArchived); }, [view.includeArchived, onIncludeArchived]);
   const savePreference = (patch: Partial<OrganizationSettings>) => {
@@ -1038,6 +1113,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   );
   const toolbarCollapsedRef = useRef(toolbarCollapsed);
   toolbarCollapsedRef.current = toolbarCollapsed;
+  // A select menu closes with the options panel that holds its select.
+  useEffect(() => { if (!view.advancedOpen || toolbarCollapsed) setOptionMenu(null); }, [view.advancedOpen, toolbarCollapsed]);
   const searchFocusedRef = useRef(false);
   const toolbarControlFocusedRef = useRef(false);
   const filterPinnedUntilRef = useRef(0);
@@ -1740,7 +1817,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           style={{
             flex: 1,
             minWidth: 0,
-            minHeight: compact ? 44 : 36,
+            minHeight: compact || COARSE_POINTER ? 44 : 36,
             borderRadius: 7,
             borderWidth: 1,
             borderColor: colors.border,
@@ -1757,7 +1834,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             accessibilityLabel="Clear search"
             disabled={toolbarCollapsed}
             onPress={() => updateFilter({ query: "" })}
-            style={{ minHeight: compact ? 44 : 32, justifyContent: "center", paddingHorizontal: 6 }}
+            style={{ minHeight: compact || COARSE_POINTER ? 44 : 32, justifyContent: "center", paddingHorizontal: 6 }}
           >
             <Text style={{ color: colors.accent, fontSize: 12, fontWeight: "600" }}>
               Clear
@@ -1813,16 +1890,12 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             gap: 10,
           }}
         >
-          <OptionLine label="Group by" colors={colors}>
-            {GROUPINGS.map(({ id, label }) => <FilterChip key={id} testID={`sessions-grouping-${id}`} label={label} compact={compact} active={grouping === id} colors={colors} {...focusProps} onPress={() => chooseGrouping(id)} />)}
-          </OptionLine>
+          <OptionSelect testID="sessions-grouping" label="Group by" value={GROUPINGS.find(({ id }) => id === grouping)?.label ?? grouping} expanded={optionMenu === "grouping"} anchor={groupingRef} compact={compact} colors={colors} {...focusProps} onPress={() => setOptionMenu(optionMenu === "grouping" ? null : "grouping")} />
           {streamChoices.length > 1 ? <OptionLine label={streams === null ? "Workstreams · all" : `Workstreams · ${streams.length} of ${streamChoices.length}`} colors={colors}>
             {streamChoices.map(([key, label]) => <FilterChip key={key} checkbox label={label} compact={compact} active={streams === null || streams.includes(key)} colors={colors} {...focusProps} onPress={() => toggleStream(key)} />)}
             {streams !== null ? <FilterChip label="All" compact={compact} active={false} colors={colors} {...focusProps} onPress={() => { pinFilterInteraction(); updateView({ streams: null, scrollOffset: 0 }); }} /> : null}
           </OptionLine> : null}
-          <OptionLine label="Workspace scope" colors={colors}>
-            {SCOPE_CHOICES.map(({ id, label }) => <FilterChip key={label} label={label} compact={compact} active={shortcut === id} colors={colors} {...focusProps} onPress={() => { pinFilterInteraction(); updateView({ shortcut: id, scrollOffset: 0 }); }} />)}
-          </OptionLine>
+          <OptionSelect testID="sessions-scope" label="Workspace scope" value={SCOPE_CHOICES.find(({ id }) => id === shortcut)?.label ?? String(shortcut)} expanded={optionMenu === "scope"} anchor={scopeRef} compact={compact} colors={colors} {...focusProps} onPress={() => setOptionMenu(optionMenu === "scope" ? null : "scope")} />
           <OptionLine label="Epic lifecycle" colors={colors}>
             <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>Not captured in session data; no lifecycle is inferred from idle or closed sessions.</Text>
           </OptionLine>
@@ -1859,6 +1932,27 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       ) : null}
     </View>
   );
+
+  // Group by and Workspace scope open as menus over the screen; a choice returns focus to its select.
+  const optionAnchor = optionMenu === "grouping" ? groupingRef : scopeRef;
+  const chooseOption = (choose: () => void) => {
+    setOptionMenu(null);
+    choose();
+    (optionAnchor.current as unknown as { focus?: () => void } | null)?.focus?.();
+  };
+  const optionMenuLayer = optionMenu === null ? null : (
+    <AnchoredMenu testID={`sessions-${optionMenu}-menu`} anchor={optionAnchor} root={rootRef} rootSize={rootSize} colors={colors}
+      label={optionMenu === "grouping" ? "Group sessions by" : "Session workspace scope"} onClose={() => setOptionMenu(null)}
+      placement={compact ? { align: "stretch", width: 0, maxHeight: Math.min(rootSize.height * 0.6, 360) } : { align: "start", width: 240 }}>
+      {optionMenu === "grouping"
+        ? GROUPINGS.map(({ id, label }) => <MenuItem key={id} label={label} tall={compact} selected={grouping === id} colors={colors} onPress={() => chooseOption(() => chooseGrouping(id))} />)
+        : SCOPE_CHOICES.map(({ id, label }) => <MenuItem key={label} label={label} tall={compact} selected={shortcut === id} colors={colors} onPress={() => chooseOption(() => { pinFilterInteraction(); updateView({ shortcut: id, scrollOffset: 0 }); })} />)}
+    </AnchoredMenu>
+  );
+  const handleRootLayout = (event: LayoutChangeEvent) => {
+    const { width, height } = event.nativeEvent.layout;
+    if (width !== rootSize.width || height !== rootSize.height) setRootSize({ width, height });
+  };
 
   const toolbar = toolbarLayout({
     collapsed: toolbarCollapsed,
@@ -1947,6 +2041,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   if (state.entries.length === 0 && (state.status === "loading" || state.status === "idle")) {
     return (
       <View
+        ref={rootRef}
+        onLayout={handleRootLayout}
         style={{
           flex: 1,
           backgroundColor: colors.surface0,
@@ -1963,6 +2059,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             Reading sessions from {host.label}…
           </Text>
         </View>
+        {optionMenuLayer}
       </View>
     );
   }
@@ -1990,6 +2087,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
 
   return (
     <View
+      ref={rootRef}
+      onLayout={handleRootLayout}
       style={{
         flex: 1,
         backgroundColor: colors.surface0,
@@ -2086,6 +2185,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           )
         }
       />
+      {optionMenuLayer}
     </View>
   );
 }

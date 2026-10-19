@@ -11,7 +11,7 @@ import { useSessionDirectory } from "./use-session-directory";
 import { readSessionView } from "./session-view-store";
 import { DESTINATIONS, contextHeading, goBack, hostNavigation, navigate, NO_SCOPE, readPageView, readRouteView, refreshSourceRevision, routeViewKey, sessionScopeKey, tabScope, writePageView, writeRouteView, type Destination, type KontorRoute } from "./navigation-state";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
-import { Action, type Colors } from "./page-controls";
+import { Action, IconButton, type Colors } from "./page-controls";
 import { ReadOnlyPage } from "./read-only-pages";
 import { DEFAULT_PLAN_VIEW } from "./plan-reader";
 import { DEFAULT_TEAMS_VIEW } from "./teams-source-page";
@@ -228,11 +228,6 @@ function HostScreen(props: PluginScreenProps) {
     {menus}
     </View>
   </KeyboardAvoidingView></SafeAreaView>;
-}
-function IconButton({ label, icon, colors, onPress }: { label: string; icon: string; colors: Colors; onPress: () => void }) {
-  return <Pressable accessibilityRole="button" accessibilityLabel={label} onPress={onPress} hitSlop={5} style={{ width: 34, height: 34, borderRadius: 7, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center" }}>
-    <Icon name={icon} size={16} color={colors.foreground} />
-  </Pressable>;
 }
 /** Bounded, left-aligned title-only selector; the confirmed Jira key floats on its lower border. */
 function ContextPicker({ label, epicKey, compact, expanded, colors, onPress, ref }: { label: string; epicKey: string | null; compact: boolean; expanded: boolean; colors: Colors; onPress: () => void; ref?: Ref<View> }) {

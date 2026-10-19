@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { BackHandler, Pressable, Text, View } from "react-native";
-import type { Colors } from "./page-controls";
+import { COARSE_POINTER, type Colors } from "./page-controls";
 
 export type MenuRect = { x: number; y: number; width: number; height: number };
 export type MenuSize = { width: number; height: number };
@@ -90,7 +90,7 @@ export function MenuItem({ label, detail, accessibilityLabel, selected = false, 
   label: string; detail?: string | null; accessibilityLabel?: string; selected?: boolean; onPress: () => void; colors: Colors; tall?: boolean; indent?: number;
 }) {
   return <Pressable role="menuitem" accessibilityLabel={accessibilityLabel ?? (detail ? `${label}, ${detail}` : label)} accessibilityState={{ selected }} aria-current={selected || undefined} onPress={onPress}
-    style={({ pressed, hovered, focused }: { pressed: boolean; hovered?: boolean; focused?: boolean }) => ({ minHeight: tall ? 44 : 32, paddingLeft: 10 + 12 * indent, paddingRight: 10, paddingVertical: 6, borderRadius: 5, justifyContent: "center",
+    style={({ pressed, hovered, focused }: { pressed: boolean; hovered?: boolean; focused?: boolean }) => ({ minHeight: tall || COARSE_POINTER ? 44 : 32, paddingLeft: 10 + 12 * indent, paddingRight: 10, paddingVertical: 6, borderRadius: 5, justifyContent: "center",
       backgroundColor: pressed || hovered || focused ? colors.surface2 : selected ? colors.surface2 : undefined })}>
     <MenuItemText label={label} detail={detail} selected={selected} colors={colors} tall={tall} />
   </Pressable>;
