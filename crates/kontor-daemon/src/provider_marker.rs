@@ -82,7 +82,16 @@ pub(crate) fn read(path: &Path) -> Result<Option<Vec<u8>>, MarkerError> {
     match std::fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(_) => Err(MarkerError::Unreadable),
+        Err(error) => {
+            // The document may be perfectly well formed; the read itself is
+            // what failed. Log the IO error so the operator can see the real
+            // cause instead of being sent to repair a valid file.
+            tracing::warn!(
+                error = %error,
+                "a runtime settings document could not be read"
+            );
+            Err(MarkerError::Unreadable)
+        }
     }
 }
 

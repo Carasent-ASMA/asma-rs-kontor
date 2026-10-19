@@ -452,6 +452,56 @@ async fn a_marker_correction_refuses_unknown_stale_malformed_and_unauthorized_ca
     assert_eq!(replayed.json()["changed"], false);
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn an_unreadable_document_is_not_reported_as_a_document_to_repair() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let world = World::open().await;
+    let path = fixture(&world);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000))
+        .expect("the document becomes unreadable");
+
+    // The bytes are never parsed: the read itself failed, so the advice names
+    // permissions and disk space rather than asking for a repair.
+    let unreadable = Call::post("/v1/provider-markers:preview", &preview_body())
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+    assert_eq!(unreadable.status, 503, "{}", unreadable.body);
+    assert_eq!(
+        unreadable.json()["rule"],
+        "the runtime settings document could not be read"
+    );
+    let read_action = unreadable.json()["action"]
+        .as_str()
+        .expect("an action")
+        .to_owned();
+    assert!(read_action.contains("permissions"), "{read_action}");
+    assert!(!read_action.contains("repair"), "{read_action}");
+
+    // A document that is readable but not a fleet description stays the repair
+    // case, so the two failures are never conflated.
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+        .expect("the document is readable again");
+    std::fs::write(&path, b"{\"schema_version\": 5, \"runtimes\": \"no\"}")
+        .expect("a document this build cannot compose");
+    let malformed = Call::post("/v1/provider-markers:preview", &preview_body())
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+    assert_eq!(malformed.status, 503, "{}", malformed.body);
+    assert_eq!(
+        malformed.json()["rule"],
+        "the runtime settings document could not be read as a fleet description"
+    );
+    let malformed_action = malformed.json()["action"]
+        .as_str()
+        .expect("an action")
+        .to_owned();
+    assert!(malformed_action.contains("repair"), "{malformed_action}");
+}
+
 #[tokio::test]
 async fn a_reused_provider_marker_key_is_an_idempotency_conflict_and_writes_nothing() {
     let world = World::open().await;

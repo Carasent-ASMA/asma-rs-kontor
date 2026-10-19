@@ -21698,7 +21698,13 @@ impl Services {
                     "the runtime settings document could not be written",
                 )
                 .advising("check the state root's free disk space and permissions, then retry"),
-            MarkerError::Malformed | MarkerError::Unreadable => self
+            MarkerError::Unreadable => self
+                .deny(
+                    ApiErrorCode::Unavailable,
+                    "the runtime settings document could not be read",
+                )
+                .advising("check the state root's permissions and free disk space, then retry"),
+            MarkerError::Malformed => self
                 .deny(
                     ApiErrorCode::Unavailable,
                     "the runtime settings document could not be read as a fleet description",
