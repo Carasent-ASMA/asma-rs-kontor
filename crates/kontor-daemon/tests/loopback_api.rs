@@ -52052,7 +52052,7 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
             format!("/v1/projects/{project}/epics/{key}/completion:remediate"),
             remediation,
         )
-        .with_token(token)
+        .with_token(token.clone())
         .with_key(format!("foreign-remediate-{key}"))
         .send(world)
         .await;
@@ -52062,6 +52062,34 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
             remediated.body
         );
         assert_eq!(remediated.code(), "forbidden");
+        let invoked = Call::post(
+            format!("/v1/projects/{project}/epics/{key}/planning-pair-runs:invoke"),
+            &serde_json::json!({
+                "protocol": "planning_pair@1",
+                "profile": {
+                    "id": "planning_pair",
+                    "version": 1,
+                    "definition_hash": ContentHash::of(b"foreign-planning-pair-profile").as_str()
+                },
+                "topic": "A foreign project binding probe",
+                "question": "A seat of another project must not learn this project's binding state.",
+                "members": [
+                    {"slot": "seat-a", "binding_key": "seat-a"},
+                    {"slot": "seat-b", "binding_key": "seat-b"}
+                ],
+                "expected_revision": 1
+            }),
+        )
+        .with_token(token)
+        .with_key(format!("foreign-planning-pair-{key}"))
+        .send(world)
+        .await;
+        assert_eq!(
+            invoked.status, 403,
+            "a seat of another project must not invoke its planning pair: {}",
+            invoked.body
+        );
+        assert_eq!(invoked.code(), "forbidden");
     }
     for actor in [lsa, tpm] {
         for key in [absent_key.as_str(), foreign_epic_key.as_str()] {
