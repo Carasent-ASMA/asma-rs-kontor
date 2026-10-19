@@ -112,6 +112,9 @@ class Failed(Exception):
     """A step failed after the guard passed."""
 
 
+ROLLBACK_ERRORS = (Failed, OSError, subprocess.SubprocessError)
+
+
 @dataclass(frozen=True)
 class Job:
     """One launchd job, as the guard accepted it."""
@@ -432,18 +435,28 @@ def replace(
             "newJobStopped": False,
             "oldBinariesRestored": False,
             "oldJobRestarted": False,
+            "rollbackErrors": {},
             "databaseRestored": False,
         }
         try:
             if started:
-                bootout(job, host)
-                rollback["newJobStopped"] = True
+                try:
+                    bootout(job, host)
+                    rollback["newJobStopped"] = True
+                except ROLLBACK_ERRORS as rollback_error:
+                    rollback["rollbackErrors"]["newJobStopped"] = str(rollback_error)
             if installing:
-                restore(job, previous)
-                rollback["oldBinariesRestored"] = True
+                try:
+                    restore(job, previous)
+                    rollback["oldBinariesRestored"] = True
+                except ROLLBACK_ERRORS as rollback_error:
+                    rollback["rollbackErrors"]["oldBinariesRestored"] = str(rollback_error)
             if stopped:
-                bootstrap(job, host)
-                rollback["oldJobRestarted"] = True
+                try:
+                    bootstrap(job, host)
+                    rollback["oldJobRestarted"] = True
+                except ROLLBACK_ERRORS as rollback_error:
+                    rollback["rollbackErrors"]["oldJobRestarted"] = str(rollback_error)
         finally:
             _write_json(backup_dir / "rollback.json", rollback)
         raise

@@ -481,6 +481,36 @@ class ReplaceTest(WorldTest):
                 self.assertFalse((self.world.backup / "deployment.json").exists())
                 shutil.rmtree(self.world.backup)
 
+    def test_rollback_continues_when_the_new_job_cannot_be_stopped(self) -> None:
+        before = self.world.installed()
+        plain = self.answer(readback_status=503)
+        bootouts = 0
+
+        def answer(argv: list[str]) -> subprocess.CompletedProcess[str]:
+            nonlocal bootouts
+            if argv[0] == "launchctl" and argv[1] == "bootout":
+                bootouts += 1
+                if bootouts == 2:
+                    return subprocess.CompletedProcess(
+                        args=[], returncode=5, stdout="", stderr="Boot-out failed"
+                    )
+            return plain(argv)
+
+        recorder = Recorder(answer)
+        self.assertEqual(self.replace(recorder), deploy.EXIT_FAILED)
+        self.assertEqual(
+            [call[1] for call in recorder.launchctl()],
+            ["bootout", "bootstrap", "bootout", "bootstrap"],
+        )
+        installed = self.world.installed()
+        for name in deploy.BINARIES:
+            self.assertEqual(installed[name], before[name])
+        rollback = json.loads((self.world.backup / "rollback.json").read_text())
+        self.assertFalse(rollback["newJobStopped"])
+        self.assertTrue(rollback["oldBinariesRestored"])
+        self.assertTrue(rollback["oldJobRestarted"])
+        self.assertIn("newJobStopped", rollback["rollbackErrors"])
+
     def test_replace_restarts_the_old_job_when_the_port_never_frees(self) -> None:
         before = self.world.installed()
 
