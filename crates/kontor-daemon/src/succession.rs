@@ -21,6 +21,7 @@ use kontor_core::succession::{
 };
 use kontor_runtime::{BindingMessageTimeline, TimelinePosition};
 use kontor_scheduler::headroom::{EligibleAccount, HeadroomConfig, Placement, SeatClass};
+use secrecy::{ExposeSecret, SecretString};
 use serde::Serialize;
 
 /// Stable replacement for content removed by the succession redaction pass.
@@ -295,23 +296,24 @@ impl SuccessionSummarizerTransport for GovernedSuccessionSummarizer<'_> {
 /// Transient redaction policy used on both sides of the summarizer boundary.
 ///
 /// `sensitive_literals` are runtime-resolved values such as credential
-/// canaries. They are deliberately held only in memory and are never exposed
-/// through `Debug`, serialization, receipts or errors.
+/// canaries. They are held in [`SecretString`]s so these copies are zeroized on
+/// drop, and they are never exposed through `Debug`, serialization, receipts or
+/// errors. Each value is read only where it is substituted out of text.
 pub struct SuccessionRedactionPolicy {
     policy_hash: ContentHash,
-    sensitive_literals: Vec<String>,
+    sensitive_literals: Vec<SecretString>,
 }
 
 impl SuccessionRedactionPolicy {
     /// Construct one exact policy revision with transient literal values.
     #[must_use]
-    pub fn new(policy_hash: ContentHash, sensitive_literals: Vec<String>) -> Self {
+    pub fn new(policy_hash: ContentHash, sensitive_literals: Vec<SecretString>) -> Self {
         let mut sensitive_literals = sensitive_literals
             .into_iter()
-            .filter(|literal| !literal.is_empty())
+            .filter(|literal| !literal.expose_secret().is_empty())
             .collect::<Vec<_>>();
-        sensitive_literals.sort_by_key(|literal| std::cmp::Reverse(literal.len()));
-        sensitive_literals.dedup();
+        sensitive_literals.sort_by_key(|literal| std::cmp::Reverse(literal.expose_secret().len()));
+        sensitive_literals.dedup_by(|left, right| left.expose_secret() == right.expose_secret());
         Self {
             policy_hash,
             sensitive_literals,
@@ -321,7 +323,7 @@ impl SuccessionRedactionPolicy {
     fn redact_text(&self, source: &str) -> String {
         let mut redacted = source.to_owned();
         for literal in &self.sensitive_literals {
-            redacted = redacted.replace(literal, REDACTED_SUCCESSION_CONTENT);
+            redacted = redacted.replace(literal.expose_secret(), REDACTED_SUCCESSION_CONTENT);
         }
         if reject_sensitive_text("succession redaction output", &redacted).is_err() {
             REDACTED_SUCCESSION_CONTENT.to_owned()
