@@ -53,8 +53,20 @@ function statusColor(entry: DirectoryEntry, colors: ThemeColors): string {
   return colors[STATUS_COLORS[entry.status]];
 }
 
-function indicatorColor(entry: DirectoryEntry, colors: ThemeColors): string {
+export function indicatorColor(entry: DirectoryEntry, colors: ThemeColors): string {
   return entry.needsInput ? colors.statusWarning : statusColor(entry, colors);
+}
+
+export const FILTERS_TOGGLE_TEST_ID = "sessions-advanced-toggle";
+export const CLEAR_FILTERS_TEST_ID = "sessions-clear-filters";
+export const FILTERS_TOUCH_TARGET = 44;
+
+export function filtersAccessibilityLabel(activeCount: number): string {
+  return activeCount > 0 ? `Filters, ${activeCount} active` : "Filters";
+}
+
+export function filtersDisclosureGlyph(expanded: boolean): string {
+  return expanded ? "⌃" : "⌄";
 }
 
 function scopeLabel(includeArchived: boolean): string {
@@ -224,6 +236,136 @@ const SessionRow = memo(function SessionRow({
     </Pressable>
   );
 });
+
+export function FiltersButton({
+  activeCount,
+  expanded,
+  colors,
+  compact,
+  onPress,
+}: {
+  readonly activeCount: number;
+  readonly expanded: boolean;
+  readonly colors: ThemeColors;
+  readonly compact: boolean;
+  readonly onPress: () => void;
+}) {
+  return (
+    <Pressable
+      testID={FILTERS_TOGGLE_TEST_ID}
+      accessibilityRole="button"
+      accessibilityState={{ expanded }}
+      accessibilityLabel={filtersAccessibilityLabel(activeCount)}
+      accessibilityHint={expanded ? "Collapses filter options" : "Expands filter options"}
+      hitSlop={4}
+      onPress={onPress}
+      style={{
+        flex: 1,
+        minHeight: FILTERS_TOUCH_TARGET,
+        minWidth: FILTERS_TOUCH_TARGET,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: activeCount > 0 ? colors.accent : colors.border,
+        backgroundColor: colors.surface1,
+      }}
+    >
+      <Text
+        style={{
+          color: colors.foreground,
+          fontSize: compact ? 15 : 13,
+          fontWeight: "600",
+        }}
+      >
+        Filters
+      </Text>
+      {activeCount > 0 ? (
+        <View
+          accessibilityElementsHidden
+          importantForAccessibility="no"
+          style={{
+            minWidth: 20,
+            height: 20,
+            borderRadius: 10,
+            paddingHorizontal: 5,
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: colors.accent,
+          }}
+        >
+          <Text
+            style={{
+              color: colors.accentForeground,
+              fontSize: 11,
+              fontWeight: "700",
+            }}
+          >
+            {activeCount}
+          </Text>
+        </View>
+      ) : null}
+      <View style={{ flex: 1 }} />
+      <Text
+        accessibilityElementsHidden
+        importantForAccessibility="no"
+        style={{
+          color: colors.foregroundMuted,
+          fontSize: 18,
+          lineHeight: 20,
+        }}
+      >
+        {filtersDisclosureGlyph(expanded)}
+      </Text>
+    </Pressable>
+  );
+}
+
+export function ClearFiltersButton({
+  colors,
+  compact,
+  onPress,
+}: {
+  readonly colors: ThemeColors;
+  readonly compact: boolean;
+  readonly onPress: () => void;
+}) {
+  return (
+    <Pressable
+      testID={CLEAR_FILTERS_TEST_ID}
+      accessibilityRole="button"
+      accessibilityLabel="Clear filters"
+      accessibilityHint="Clears status, attention and archive filters"
+      hitSlop={4}
+      onPress={onPress}
+      style={{
+        minHeight: FILTERS_TOUCH_TARGET,
+        minWidth: FILTERS_TOUCH_TARGET,
+        paddingHorizontal: 10,
+        paddingVertical: 8,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: colors.border,
+        backgroundColor: colors.surface0,
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <Text
+        style={{
+          color: colors.accent,
+          fontSize: compact ? 13 : 12,
+          fontWeight: "600",
+        }}
+      >
+        Clear filters
+      </Text>
+    </Pressable>
+  );
+}
 
 function FilterChip({
   active,
@@ -587,42 +729,20 @@ export function SessionsScreen({ host, layout, navigation, theme }: PluginScreen
       </View>
 
       <View>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-          <Pressable
-            testID="sessions-advanced-toggle"
-            accessibilityRole="button"
-            accessibilityState={{ expanded: view.advancedOpen }}
-            accessibilityLabel={`Advanced filters${activeCount > 0 ? `, ${activeCount} active` : ""}`}
+        <View style={{ flexDirection: "row", alignItems: "stretch", gap: 8 }}>
+          <FiltersButton
+            activeCount={activeCount}
+            expanded={view.advancedOpen}
+            colors={colors}
+            compact={compact}
             onPress={() => updateView({ advancedOpen: !view.advancedOpen })}
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              gap: 6,
-              paddingVertical: 6,
-              flex: 1,
-            }}
-          >
-            <Text style={{ color: colors.foreground, fontSize: 12, fontWeight: "600" }}>
-              Filters
-            </Text>
-            {activeCount > 0 ? (
-              <Text style={{ color: colors.accent, fontSize: 12 }}>({activeCount})</Text>
-            ) : null}
-            <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>
-              {view.advancedOpen ? "Hide" : "Show"}
-            </Text>
-          </Pressable>
+          />
           {activeCount > 0 ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Clear filters"
+            <ClearFiltersButton
+              colors={colors}
+              compact={compact}
               onPress={handleClearFilters}
-              style={{ paddingVertical: 6, paddingHorizontal: 4 }}
-            >
-              <Text style={{ color: colors.accent, fontSize: 12, fontWeight: "600" }}>
-                Clear filters
-              </Text>
-            </Pressable>
+            />
           ) : null}
         </View>
         {view.advancedOpen ? (
@@ -639,7 +759,7 @@ export function SessionsScreen({ host, layout, navigation, theme }: PluginScreen
             <ToggleRow
               testID="sessions-advanced-attention"
               label="Only sessions needing attention"
-              description="Finished, failed or waiting for permission."
+              description="Finished, failed, needs input or waiting for permission."
               checked={view.attentionOnly}
               colors={colors}
               onPress={() => updateFilter({ attentionOnly: !view.attentionOnly })}
