@@ -7615,6 +7615,54 @@ async fn consultation_recovery_retires_legacy_modes_but_refuses_another_route() 
     }
 }
 
+/// A consultation on a per-service OpenCode alias retires as OpenCode: no
+/// `kontor.read_only` and the operator-accepted fallback marker carrying the
+/// route provenance hash. The matching launch writes exactly that pair.
+#[tokio::test]
+async fn an_opencode_alias_consultation_retires_with_its_fallback_marker() {
+    use kontor_runtime::adapter::ConsultationSeatRetireRequest;
+    let run_id = ConsultationRunId::Committee(CommitteeRunId::parse(MINI_PROJECT).unwrap());
+    let seat_binding_id = SeatBindingId::parse(RUN_QA).unwrap();
+    let requested = fleet_provenance();
+    let mut before = consultation_agent(AGENT, run_id, seat_binding_id);
+    before["agent"]["provider"] = serde_json::json!("opencode-zai");
+    before["agent"]["model"] = serde_json::json!("zai-coding-plan/glm-5.3");
+    before["agent"]["status"] = serde_json::json!("idle");
+    before["agent"]["labels"][label::OPERATOR_ACCEPTED_FALLBACK] =
+        serde_json::json!(requested.policy_hash.as_str());
+    let archived = consultation_agent(AGENT_ARCHIVED, run_id, seat_binding_id);
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering(&PaseoCommand::agent_archive(AGENT_ID), CLI_AGENT_ARCHIVED)
+        .then_answering_rpc("fetch_agent_request", before)
+        .answering_rpc("fetch_agent_request", archived);
+    let plane = Plane::fresh(recorded);
+    let request = ConsultationSeatRetireRequest {
+        seat_binding_id,
+        identity: NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).unwrap(),
+            host: name(HOST_KEY),
+            generation: 1,
+            native_id: external(AGENT_ID),
+        },
+        model_rung: ModelRung {
+            provider: ProviderRef("opencode-zai".to_owned()),
+            model: ModelRef("zai-coding-plan/glm-5.3".to_owned()),
+            effort: None,
+        },
+        route_provenance: kontor_runtime::adapter::ConsultationRouteProvenance::fleet_configuration(
+            requested.policy_hash.clone(),
+        ),
+        requested_at: kontor_core::id::Timestamp::now(),
+    };
+    plane
+        .adapter
+        .retire_consultation_seat(&request)
+        .await
+        .expect("an OpenCode alias predecessor carries the labels its retire demands");
+    assert_eq!(plane.daemon.count(&format!("agent archive {AGENT_ID}")), 1);
+}
+
 #[tokio::test]
 async fn completed_consultation_release_checks_identity_and_replays_after_lost_confirmation() {
     use kontor_runtime::adapter::ConsultationSessionReleaseRequest;
@@ -15525,6 +15573,100 @@ async fn a_consultation_launch_writes_and_reads_back_its_fleet_provenance() {
             requested.policy_hash.as_str()
         );
     }
+}
+
+/// A consultation on a per-service OpenCode alias is launched as OpenCode:
+/// it carries the operator-accepted fallback marker with the route provenance
+/// hash and no read-only marker. Its retire check reads exactly that pair
+/// (see `an_opencode_alias_consultation_retires_with_its_fallback_marker`),
+/// so labelling the alias like a non-OpenCode provider would make its launch
+/// and retirement disagree.
+#[tokio::test]
+async fn an_opencode_alias_consultation_launches_with_its_fallback_marker() {
+    let requested = fleet_provenance();
+    let seat_binding_id = SeatBindingId::generate();
+    let run_id = ConsultationRunId::Committee(CommitteeRunId::generate());
+    let mut agent = v(AGENT);
+    agent["agent"]["provider"] = serde_json::json!("opencode-zai");
+    agent["agent"]["model"] = serde_json::json!("zai-coding-plan/glm-5.3");
+    agent["agent"]["currentModeId"] = serde_json::json!("plan");
+    agent["agent"]["labels"] = with_fleet_labels(
+        serde_json::json!({
+            "kontor.consultation_run": format!("{}/{}", run_id.family().as_str(), run_id.as_text()),
+            "jira.epic": "ASMA-7744", "kontor.project_id": MINI_PROJECT,
+            "kontor.seat_binding_id": seat_binding_id.to_string(),
+            "kontor.role": "reviewer-a", "kontor.role_slot_id": "reviewer-a",
+            "kontor.workspace_id": WORKSPACE_ID, "kontor.worktree": CWD,
+            "kontor.operator_accepted_fallback": requested.policy_hash.as_str(),
+        }),
+        &requested,
+    );
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE))
+        .answering_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY))
+        .answering_rpc(
+            "create_agent_request",
+            serde_json::json!({"status": "agent_created", "agent": {"id": AGENT_ID}}),
+        )
+        .answering_rpc("fetch_agent_request", agent);
+    let plane = Plane::fresh(recorded);
+    plane
+        .adapter
+        .prepare_project("cmd-consultation-opencode-alias", &project_name())
+        .await
+        .expect("the epic project is prepared");
+    let container = plane
+        .adapter
+        .prepare_container(&child_request(node(NODE_A), Some(bound_root(node(NODE_B)))))
+        .await
+        .expect("the consultation container is prepared")
+        .snapshot;
+    let request = kontor_runtime::adapter::ConsultationLaunchRequest {
+        run_id,
+        seat_binding_id,
+        role_slot_id: slot("reviewer-a"),
+        display_name: name("Reviewer A"),
+        container,
+        cwd: root(),
+        scope: execution_scope(),
+        prompt: text("review the change"),
+        credential: kontor_runtime::adapter::ScopedSeatCredential::new(
+            "consultation-opencode-alias-secret".to_owned(),
+        ),
+        model_rung: ModelRung {
+            provider: ProviderRef("opencode-zai".to_owned()),
+            model: ModelRef("zai-coding-plan/glm-5.3".to_owned()),
+            effort: None,
+        },
+        route_provenance: kontor_runtime::adapter::ConsultationRouteProvenance::fleet_configuration(
+            requested.policy_hash.clone(),
+        ),
+        fleet_provenance: Some(requested.clone()),
+        context_policy: standard_context_policy(),
+        requested_at: at("2026-08-16T09:10:00Z"),
+        planning_pair: None,
+    };
+    plane
+        .adapter
+        .launch_consultation(&request)
+        .await
+        .expect("an OpenCode alias is a supported consultation route");
+    let sent = plane.daemon.sent_messages("create_agent_request");
+    assert_eq!(
+        sent[0]["labels"][label::OPERATOR_ACCEPTED_FALLBACK],
+        requested.policy_hash.as_str(),
+        "the alias carries the fallback hash its retire check demands"
+    );
+    assert!(
+        sent[0]["labels"].get(label::READ_ONLY).is_none(),
+        "an OpenCode alias must never be labelled read-only: {:?}",
+        sent[0]["labels"]
+    );
 }
 
 /// The workspace of a durable desk: a local directory under the desk's own
