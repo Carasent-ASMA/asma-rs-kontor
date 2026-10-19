@@ -71,8 +71,9 @@ The supported MVP assumes:
   directory, and the exact earlier contents of those files — including anything
   secret an operator had already put there — are kept in a journal under
   `<state root>/hosted-directory-publications/`, protected only by the state
-  root's permissions; every provider receives the leadership MCP in its
-  creation frame instead;
+  root's permissions. Every provider, Claude included, also receives the
+  leadership MCP in its creation frame, and Codex, OpenCode and the other
+  providers receive it only there;
 - project repositories and agent-generated content are untrusted input.
 
 Vulnerabilities in Paseo, Agent Orchestrator, Codex, another provider/runtime or

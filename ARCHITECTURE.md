@@ -562,8 +562,8 @@ At `0971674d` the registry declares 230 tools: 93 `admin`, 76 `operator` and 61
 `observer`. The CLI exposes all 230. Computed from source, an admin-tier MCP
 server lists 228 of the 230 — all but the local operation and
 `kontor_account_profile_amend`, which is kept off `tools/list` to save every
-seat's context but stays callable by name. That figure is a source computation, not a live tool-discovery
-observation.
+seat's context but stays callable by name. That figure is a source computation,
+not a live tool-discovery observation.
 
 Authority is the credential and nothing else. A realm has three secrets; a process
 holds one and therefore *is* one seat (a hosted native seat holds a narrower,

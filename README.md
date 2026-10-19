@@ -446,11 +446,13 @@ evidence nobody will read.
 
 Because the run id keys off the commit, running the pilot on a tree whose HEAD
 has moved writes a *new* `docs/evidence/KON-MVP-18/<run-id>/` directory rather
-than rewriting the committed one. That is deliberate — evidence belongs to the
+than rewriting a committed one. That is deliberate — evidence belongs to the
 tree that produced it, and the retained bundle's `commit` field names that tree
 — but it does mean a run after an unrelated commit leaves an untracked
-directory. Retain it only if it is the acceptance record you mean to publish;
-otherwise delete it.
+directory. Delete it and never commit it. The bundles already under
+`docs/evidence/KON-MVP-18/` are historical records that ASMA-8511 is removing,
+and new run bundles stay out of the tree until ASMA-8511 moves this output (see
+`CONTRIBUTING.md`).
 
 Verifying the installed harnesses is a separate, opt-in question:
 

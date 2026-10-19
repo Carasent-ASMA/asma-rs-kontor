@@ -1088,10 +1088,14 @@ creation frame's secret channel, never through a shared file. At `0971674d`:
 | `planning_pair_caller` | 4: run read, invoke, clarification request, disposition record | nothing; selectable by name only |
 | `leadership` | 6: completion read and remediation, open-question list and record, Committee-seat permission inspection and response | hosted LSA, TPM and desk seats: Claude's cwd files plus the creation frame for every provider |
 
-A leadership permission response uses a canonical UUIDv7 `Idempotency-Key` and
-is persisted in schema v75 before the runtime effect. Confirmed replay is inert;
-confirmation-unknown dispatch fails closed instead of guessing or answering a
-second time.
+A leadership permission response accepts any valid `Idempotency-Key`:
+non-empty, at most 256 characters, with no surrounding whitespace, control
+characters or secret-shaped text. A canonical UUIDv7 is the convention, not a
+requirement. A key that is one becomes the response id, and any other key
+derives a stable one, so a retry with the same key is still answered from the
+ledger. The response is persisted in schema v75 before the runtime effect.
+Confirmed replay is inert; confirmation-unknown dispatch fails closed instead of
+guessing or answering a second time.
 
 A Claude hosted desk seat whose proved workspace is a local directory rather
 than a Git worktree gets its `.claude/settings.local.json` then `.mcp.json`
@@ -1100,9 +1104,10 @@ journal at
 `<state-root>/hosted-directory-publications/<sha256(cwd)>.json` and recovered
 under a canonical-cwd lock before any create or reload; a healthy replay only
 validates, and refuses when the files differ (PR #300, `0971674d`). Codex,
-OpenCode and every other provider receive the leadership MCP in their creation
-frame instead. Delivery and consultation seats never use this path. `KONTOR_SEAT_MCP=off` in the daemon's
-environment, read once at daemon start, disables further seat MCP composition
+OpenCode and every other provider receive the leadership MCP only in their
+creation frame, which a Claude seat receives as well. Delivery and consultation
+seats never use this path. `KONTOR_SEAT_MCP=off` in the daemon's environment,
+read once at daemon start, disables further seat MCP composition
 for every plane; files already composed into a worktree or hosted directory and
 sessions already running need separate cleanup. With `off`, creation frames
 carry no Kontor MCP either, and Claude Advisor, Committee and planning-pair
