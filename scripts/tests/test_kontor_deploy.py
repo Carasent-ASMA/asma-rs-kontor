@@ -406,6 +406,25 @@ class ReplaceTest(WorldTest):
                 self.assertFalse((self.world.backup / "deployment.json").exists())
                 shutil.rmtree(self.world.backup)
 
+    def test_replace_restarts_the_old_job_when_the_port_never_frees(self) -> None:
+        before = self.world.installed()
+
+        def answer(argv: list[str]) -> subprocess.CompletedProcess[str]:
+            if argv[0] == "launchctl":
+                return done()
+            if argv[0] == "lsof":
+                return done(0, "4242\n")
+            raise AssertionError(f"unexpected process {argv}")
+
+        recorder = Recorder(answer)
+        self.assertEqual(self.replace(recorder), deploy.EXIT_FAILED)
+        self.assertEqual([call[1] for call in recorder.launchctl()], ["bootout", "bootstrap"])
+        self.assertEqual(self.world.installed(), before)
+        rollback = json.loads((self.world.backup / "rollback.json").read_text())
+        self.assertFalse(rollback["newJobStopped"])
+        self.assertFalse(rollback["oldBinariesRestored"])
+        self.assertTrue(rollback["oldJobRestarted"])
+
     def test_replace_never_applies_twice(self) -> None:
         self.world.backup.mkdir()
         recorder = Recorder(self.answer())

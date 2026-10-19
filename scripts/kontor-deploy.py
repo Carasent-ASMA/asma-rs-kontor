@@ -226,14 +226,23 @@ def launchctl(host: Host, *arguments: str) -> None:
         )
 
 
-def bootout(job: Job, host: Host) -> None:
+def stop_job(job: Job, host: Host) -> None:
+    """The launchctl call alone, so the caller knows the job is unloaded."""
     launchctl(host, "bootout", job.service)
+
+
+def wait_port_free(job: Job, host: Host) -> None:
     for _ in range(POLL_ATTEMPTS):
         listening = host.run(["lsof", "-nP", f"-iTCP:{job.port}", "-sTCP:LISTEN", "-t"])
         if not listening.stdout.strip():
             return
         host.sleep(POLL_INTERVAL)
     raise Failed(f"port {job.port} still listens after the bootout of {job.service}")
+
+
+def bootout(job: Job, host: Host) -> None:
+    stop_job(job, host)
+    wait_port_free(job, host)
 
 
 def bootstrap(job: Job, host: Host) -> None:
@@ -368,8 +377,9 @@ def replace(
 
     stopped = installing = started = False
     try:
-        bootout(job, host)
+        stop_job(job, host)
         stopped = True
+        wait_port_free(job, host)
         realm_snapshot = snapshot(job, host, backup_dir)
         installing = True
         for name in BINARIES:
