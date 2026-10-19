@@ -322,10 +322,10 @@ use kontor_scheduler::{
 use kontor_store::authority::{AuthorityError, SubjectOrigins};
 use kontor_store::publication::{NewPublicationAttestation, PublicationAttestation};
 use kontor_store::{
-    AdmissionCommit, AdmissionScanKey, Applied, AuthorizationRevocation, BacklogImport,
-    ConsultationPermissionDecision, ConsultationPermissionResponseStatus, EpicApplication,
-    EpicExecutionScopeDeclaration, EpicTask, EpicTicketLink, IdempotencyBinding, JiraIntentKind,
-    JiraItemKind, JiraMaterializationRecoveryItem, NewJiraMaterializationBatch,
+    AdmissionCommit, AdmissionScanKey, Applied, AppliedEpic, AuthorizationRevocation,
+    BacklogImport, ConsultationPermissionDecision, ConsultationPermissionResponseStatus,
+    EpicApplication, EpicExecutionScopeDeclaration, EpicTask, EpicTicketLink, IdempotencyBinding,
+    JiraIntentKind, JiraItemKind, JiraMaterializationRecoveryItem, NewJiraMaterializationBatch,
     NewJiraMaterializationItem, NewRoleTurn, ProfileSelection, ProjectEnsure, RegisteredPack,
     RoleTurnReplay, RoleTurnRuntimeProof, SettledTurn, SqliteStore, StoredConflict,
     StoredConsultationPermissionResponse, StoredTeamDraft, StoredTeamsProjection,
@@ -11289,6 +11289,112 @@ impl Services {
         ))
     }
 
+    /// Freeze the task's current claim alongside the complete old binding.
+    /// A changed directory is not authority to strand existing materialized
+    /// seats: every such predecessor must be released and positively archived.
+    async fn container_recovery_placement(
+        &self,
+        node: &SessionTopologyNode,
+        expected: &NativeContainerBinding,
+        adapter: &dyn RuntimeAdapter,
+    ) -> Result<(ExternalName, ContentHash), ApiError> {
+        let old_cwd = expected.canonical_cwd.as_ref().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the stale child binding has no canonical working directory",
+            )
+        })?;
+        let mut cwd = old_cwd.clone();
+        let mut task_proof = serde_json::Value::Null;
+        let mut predecessors = Vec::new();
+        if let Some(task_id) = node.task_id {
+            let state = self.state()?;
+            let task = self.task_row(node.project_id, task_id)?;
+            let claim = state
+                .with_store(|store| store.task_worktree(node.project_id, task_id))
+                .map_err(|error| self.refuse(&error))?;
+            cwd = ExternalName::parse(self.task_root(node.project_id, task_id)?.as_str())
+                .map_err(|error| self.refuse_domain(&error))?;
+            task_proof =
+                serde_json::json!({"task_id":task_id,"revision":task.revision,"claim":claim});
+            if &cwd != old_cwd {
+                let seats = state
+                    .with_store(|store| store.list_seat_bindings(node.project_id, node.id))
+                    .map_err(|error| self.refuse(&error))?;
+                for seat in seats {
+                    let Some(team_id) = seat.team_run_id else {
+                        return Err(self.deny(
+                            ApiErrorCode::PlacementBlocked,
+                            "a moved task container has a seat outside a delivery team",
+                        ));
+                    };
+                    let team = state
+                        .with_store(|store| store.get_team_run(node.project_id, team_id))
+                        .map_err(|error| self.refuse(&error))?;
+                    if seat.task_id != Some(task_id)
+                        || team.is_none_or(|team| team.task_id != task_id)
+                    {
+                        return Err(self.deny(
+                            ApiErrorCode::PlacementBlocked,
+                            "the moved container's seat does not belong to its exact task",
+                        ));
+                    }
+                    let runs = state
+                        .with_store(|store| {
+                            store.list_agent_runs_for_team_run(node.project_id, team_id)
+                        })
+                        .map_err(|error| self.refuse(&error))?;
+                    for row in runs
+                        .into_iter()
+                        .filter(|row| row.role == *seat.role_slot_id.as_role_key())
+                    {
+                        let run = state
+                            .with_store(|store| {
+                                store.get_agent_run(node.project_id, row.agent_run_id)
+                            })
+                            .map_err(|error| self.refuse(&error))?
+                            .ok_or_else(|| {
+                                self.deny(
+                                    ApiErrorCode::StaleBinding,
+                                    "the container's materialized predecessor disappeared",
+                                )
+                            })?;
+                        let Some(binding) = run.binding else { continue };
+                        if seat.lifecycle == TopologyLifecycle::Active || seat.released_at.is_none()
+                        {
+                            return Err(self.deny(ApiErrorCode::PlacementBlocked,
+                                "a moved task container requires explicit release of every materialized predecessor"));
+                        }
+                        let inspection = adapter
+                            .inspect_persistent_seat(&RetitleSeatRequest {
+                                identity: binding.identity.clone(),
+                                provider_session_id: None,
+                                container_native_id: expected.identity.native_id.clone(),
+                                desired_title: seat.role.standard_title.clone(),
+                                requested_at: kontor_api::now(),
+                            })
+                            .await
+                            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+                        if inspection.identity != binding.identity
+                            || inspection.state != PersistentSeatNativeState::Archived
+                        {
+                            return Err(self.deny(ApiErrorCode::PlacementBlocked,
+                                "a moved task container requires exact archived readback of every materialized predecessor"));
+                        }
+                        predecessors.push(serde_json::json!({"seat":seat,"agent_run_id":run.id,
+                            "agent_run_revision":run.revision,"binding":binding}));
+                    }
+                }
+            }
+        }
+        let proof = self.preview_hash(&serde_json::json!({
+            "schema_version":1,
+            "node":node,"old_binding":expected,"task":task_proof,
+            "canonical_cwd":cwd,"archived_predecessors":predecessors,
+        }))?;
+        Ok((cwd, proof))
+    }
+
     /// Build the complete read-only proof for replacing one stale child binding.
     async fn prepare_container_recovery(
         &self,
@@ -11314,14 +11420,6 @@ impl Services {
                     "this topology node holds no native container to recover",
                 )
             })?;
-        let canonical_cwd = expected.canonical_cwd.clone().ok_or_else(|| {
-            self.deny(
-                ApiErrorCode::PlacementBlocked,
-                "the stale child binding has no canonical working directory",
-            )
-        })?;
-        let canonical_root = WorkspaceRoot::parse(canonical_cwd.as_str())
-            .map_err(|error| self.refuse_domain(&error))?;
         let parent_native_id = retitle.bound_project_native_id.clone().ok_or_else(|| {
             self.deny(
                 ApiErrorCode::PlacementBlocked,
@@ -11337,6 +11435,11 @@ impl Services {
                     "no such topology node exists in this project",
                 )
             })?;
+        let (canonical_cwd, placement_proof) = self
+            .container_recovery_placement(&recovery_node, &expected, adapter.as_ref())
+            .await?;
+        let canonical_root = WorkspaceRoot::parse(canonical_cwd.as_str())
+            .map_err(|error| self.refuse_domain(&error))?;
         let recovery_request = ContainerRecoveryRequest {
             topology_node_id,
             container_binding_id: retitle.container_binding_id,
@@ -11377,11 +11480,11 @@ impl Services {
                     return Err(ApiError::from_runtime(state.realm_id(), &adopt_refusal));
                 }
                 return self.prepared_container_recreation(
-                    project_id,
                     expected_revision,
                     expected,
                     recreation_request,
                     adapter,
+                    &placement_proof,
                 );
             }
         };
@@ -11488,6 +11591,7 @@ impl Services {
             },
             "parent_native_id": parent_native_id.as_str(),
             "canonical_cwd": canonical_cwd.as_str(),
+            "placement_proof": placement_proof,
             "observed_title": outcome.observed_title,
         }))?;
         Ok(PreparedContainerRecovery {
@@ -11520,13 +11624,14 @@ impl Services {
     /// says apply is allowed to build at all.
     fn prepared_container_recreation(
         &self,
-        project_id: ProjectId,
         expected_revision: AggregateRevision,
         expected: NativeContainerBinding,
         recreation: ContainerRecreationRequest,
         adapter: Arc<dyn RuntimeAdapter>,
+        placement_proof: &ContentHash,
     ) -> Result<PreparedContainerRecovery, ApiError> {
         let state = self.state()?;
+        let project_id = expected.project_id;
         // Both are already inside the request the census froze, so taking them
         // as separate arguments would only create a way for them to disagree
         // with it.
@@ -11553,6 +11658,7 @@ impl Services {
             },
             "parent_native_id": parent_native_id.as_str(),
             "canonical_cwd": canonical_cwd.as_str(),
+            "placement_proof": placement_proof,
             "expected_title": recreation.expected_title.as_str(),
         }))?;
         Ok(PreparedContainerRecovery {
@@ -25082,6 +25188,9 @@ impl ApplicationOperations for Services {
         topology_node_id: TopologyNodeId,
         request: &ContainerRecoveryApplyRequest,
     ) -> Result<AppliedContainerRecoveryDto, ApiError> {
+        // Serialize native membership changes with the predecessor readback,
+        // creation and binding CAS. A fill cannot race this placement repair.
+        let _native_lifecycle = self.native_lifecycle_change().await?;
         let state = self.state()?;
         let project = self.project_at(project_id, request.expected_revision)?;
         let target = AggregateRef::Project { project_id };
@@ -32483,18 +32592,60 @@ impl ApplicationOperations for Services {
                 applied_at: now,
             })
             .collect::<Vec<_>>();
+        // A re-import may declare a new worktree for an existing task, the same
+        // way a re-apply can. A container recovery freezes the claims it plans
+        // against and builds a native at those directories, so that claim write
+        // must not land between the freeze and the binding: take the same native
+        // lifecycle lock the recovery holds. Only an import that actually moves
+        // a claim takes it — a queued writer refuses all new native work until
+        // its turn, and an import that creates its whole graph writes no claim a
+        // recovery could have frozen.
+        //
+        // The claim decision and the write share one store hold, so no other
+        // writer can move a claim between them. A decision that does move a
+        // claim releases that hold, takes the lifecycle lock, and retries the
+        // write under it; that retry sees every claim the wait made durable.
+        let write = |store: &SqliteStore| {
+            store.import_backlog(&BacklogImport {
+                project_id,
+                expected_authority_revision: request.export.expected_authority_revision,
+                source: request.export.source.as_str(),
+                import_hash: document.hash(),
+                canonical_manifest: document.json(),
+                epics: &applications,
+            })
+        };
         let applied = state
             .with_store(|store| {
-                store.import_backlog(&BacklogImport {
-                    project_id,
-                    expected_authority_revision: request.export.expected_authority_revision,
-                    source: request.export.source.as_str(),
-                    import_hash: document.hash(),
-                    canonical_manifest: document.json(),
-                    epics: &applications,
-                })
+                let moves_claim = applications.iter().try_fold(
+                    false,
+                    |moves, application| -> Result<bool, RepositoryError> {
+                        if moves {
+                            return Ok(true);
+                        }
+                        self.apply_epic_moves_worktree_claim(
+                            store,
+                            project_id,
+                            &application.name,
+                            application.tasks,
+                        )
+                    },
+                )?;
+                if moves_claim {
+                    return Ok(None);
+                }
+                write(store).map(Some)
             })
             .map_err(|error| self.refuse_authority(&error))?;
+        let applied = match applied {
+            Some(applied) => applied,
+            None => {
+                let _native_lifecycle = self.native_lifecycle_change().await?;
+                state
+                    .with_store(write)
+                    .map_err(|error| self.refuse_authority(&error))?
+            }
+        };
         Ok(BacklogImportAppliedDto {
             realm_id: state.realm_id(),
             project_id,
@@ -32738,40 +32889,70 @@ impl ApplicationOperations for Services {
         // scheduled against a window started fresh on every pass, which is the
         // very state this ticket is removing — so the position is part of
         // applying an epic, not something a later call remembers to add.
+        //
+        // A re-apply may declare a new worktree for an existing task. A
+        // container recovery freezes every claim it plans against and builds a
+        // native at that directory, so that claim write must not land between
+        // the freeze and the binding: take the same native lifecycle lock the
+        // recovery holds. Only a write that actually moves a claim takes it — a
+        // queued writer refuses all new native work until its turn, and a fresh
+        // or unchanged apply has no claim a recovery could freeze. The lock is
+        // released before governance, which takes its own native-activity read.
+        //
+        // The claim decision and the write share one store hold, so no other
+        // apply can move a claim between them and make an apparently unchanged
+        // apply write a moved claim without the lock. A decision that does move
+        // a claim releases that hold, takes the lifecycle lock, and retries the
+        // write under it; that retry sees every claim the wait made durable.
         let seed = AdaptivePosition::initial(self.capacity.adaptive);
+        let write = |store: &SqliteStore| -> Result<AppliedEpic, RepositoryError> {
+            let applied = store.apply_epic(&EpicApplication {
+                project_id,
+                name: request.name.clone(),
+                epic_backlog_code: epic_backlog_code.as_ref(),
+                execution_scope: execution_scope.as_ref(),
+                tasks: &tasks,
+                profile: &bundle.profile,
+                definition: &bundle.profile.definition,
+                team: bundle.team.as_ref(),
+                team_source,
+                applied_at: now,
+            })?;
+            // Seeded once, when the epic first exists. Applying the same
+            // epic again is idempotent and must stay that way — and it must
+            // not reset a position later observations have already moved.
+            if store
+                .get_adaptive_admission_state(project_id, applied.mini_project_id)?
+                .is_none()
+            {
+                store.create_adaptive_admission_state(&NewAdaptiveAdmissionState {
+                    project_id,
+                    mini_project_id: applied.mini_project_id,
+                    current_window: seed.current_window,
+                    clean_observation_streak: seed.clean_observation_streak,
+                    last_observation_id: seed.last_observation_id.clone(),
+                    created_at: now,
+                })?;
+            }
+            Ok(applied)
+        };
         let applied = state
             .with_store(|store| {
-                let applied = store.apply_epic(&EpicApplication {
-                    project_id,
-                    name: request.name.clone(),
-                    epic_backlog_code: epic_backlog_code.as_ref(),
-                    execution_scope: execution_scope.as_ref(),
-                    tasks: &tasks,
-                    profile: &bundle.profile,
-                    definition: &bundle.profile.definition,
-                    team: bundle.team.as_ref(),
-                    team_source,
-                    applied_at: now,
-                })?;
-                // Seeded once, when the epic first exists. Applying the same
-                // epic again is idempotent and must stay that way — and it must
-                // not reset a position later observations have already moved.
-                if store
-                    .get_adaptive_admission_state(project_id, applied.mini_project_id)?
-                    .is_none()
-                {
-                    store.create_adaptive_admission_state(&NewAdaptiveAdmissionState {
-                        project_id,
-                        mini_project_id: applied.mini_project_id,
-                        current_window: seed.current_window,
-                        clean_observation_streak: seed.clean_observation_streak,
-                        last_observation_id: seed.last_observation_id.clone(),
-                        created_at: now,
-                    })?;
+                if self.apply_epic_moves_worktree_claim(store, project_id, &request.name, &tasks)? {
+                    return Ok(None);
                 }
-                Ok::<_, RepositoryError>(applied)
+                write(store).map(Some)
             })
             .map_err(|error| self.refuse(&error))?;
+        let applied = match applied {
+            Some(applied) => applied,
+            None => {
+                let _native_lifecycle = self.native_lifecycle_change().await?;
+                state
+                    .with_store(&write)
+                    .map_err(|error| self.refuse(&error))?
+            }
+        };
 
         // Before governance can remove the scheduler's ungoverned barrier,
         // persist the optional covering authorization already revoked.
@@ -35452,6 +35633,11 @@ impl ApplicationOperations for Services {
         task_id: TaskId,
         request: &WorktreeClaimCorrectionApplyRequest,
     ) -> Result<WorktreeClaimCorrectionAppliedDto, ApiError> {
+        // Serialize the claim change with native placement repairs: a recovery
+        // that froze this claim must finish before a correction can replace it,
+        // or its successful result would land at a directory the claim no
+        // longer names.
+        let _native_lifecycle = self.native_lifecycle_change().await?;
         let state = self.state()?;
         let intent = self.worktree_claim_correction_intent(project_id, task_id, request)?;
         let target = AggregateRef::Task { task_id };
@@ -44641,6 +44827,52 @@ impl Services {
             .map_err(|error| self.refuse(&error))?
             .map_or(existing.name, |scope| scope.short_title);
         Ok((self.epic_tracker_key(project_id, existing.id)?, title))
+    }
+
+    /// Whether this epic application would move an existing task's worktree
+    /// claim.
+    ///
+    /// Both `epics:apply` and `backlog/import:apply` reach `upsert_worktree`
+    /// through this rule. The caller holds the store, so this decision and the
+    /// write it guards see the same claims. A container recovery freezes the
+    /// claims it plans against, builds a native at those directories, and only
+    /// then binds it. The one graph write that can land inside that window is a
+    /// claim write, so only it has to hold the native lifecycle lock. A new
+    /// epic, a task this application creates, and an identical re-apply write no
+    /// claim and must not wait behind native work: a queued writer refuses every
+    /// new native operation in the realm until it gets its turn.
+    fn apply_epic_moves_worktree_claim(
+        &self,
+        store: &SqliteStore,
+        project_id: ProjectId,
+        name: &ExternalName,
+        tasks: &[EpicTask],
+    ) -> Result<bool, RepositoryError> {
+        let Some(epic) = store
+            .list_mini_projects(project_id)?
+            .into_iter()
+            .find(|epic| &epic.name == name)
+        else {
+            return Ok(false);
+        };
+        let stored = store.list_epic_tasks(project_id, epic.id)?;
+        for plan in tasks {
+            let Some(task) = stored.iter().find(|task| task.title == plan.title) else {
+                continue;
+            };
+            let current = store.task_worktree(project_id, task.id)?;
+            // The same fallback `apply_epic` writes: a declared claim always,
+            // else the derived one only where nothing was ever declared.
+            let writes_claim = match (&plan.worktree, &plan.derived_worktree) {
+                (Some(declared), _) => current.as_ref() != Some(declared),
+                (None, Some(_)) => current.is_none(),
+                (None, None) => false,
+            };
+            if writes_claim {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Validate a declared managed worktree against the shared branch grammar

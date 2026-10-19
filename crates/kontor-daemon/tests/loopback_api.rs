@@ -35,6 +35,8 @@ mod harness;
 
 #[path = "loopback/committee_evidence.rs"]
 mod committee_evidence;
+#[path = "loopback/container_root_recovery.rs"]
+mod container_root_recovery;
 #[path = "loopback/provider_refresh.rs"]
 mod provider_refresh;
 
@@ -69188,6 +69190,156 @@ async fn route_apply_threads_the_proved_placement_into_the_retirement() {
         call, AdapterCall::RetireHostedSeat(seat) if *seat == binding_id
     )));
     assert_ne!(world.fake.hosted_seat_native_id(binding_id), Some(native));
+}
+
+/// The seat's own topology node, read from its durable binding.
+fn seat_topology_node(
+    world: &World,
+    project_id: ProjectId,
+    binding_id: SeatBindingId,
+) -> TopologyNodeId {
+    world
+        .daemon
+        .state()
+        .with_store(|store| store.get_seat_binding(project_id, binding_id))
+        .expect("the SeatBinding reads")
+        .expect("the SeatBinding exists")
+        .topology_node_id
+}
+
+/// Lineage refuses a preview whose control-plane container the runtime no
+/// longer holds.
+///
+/// Missing-container coverage for the placement check inside
+/// `hosted_seat_lineage`: the seat's stored ECP cannot be observed, so lineage
+/// answers `placement_blocked` before anything is planned. The exact native-id
+/// and root drifts are covered by
+/// `route_preview_refuses_exact_container_drift_with_node_and_membership_preserved`.
+/// Refusing costs no native effect, no seat movement and no receipt.
+#[tokio::test]
+async fn route_preview_refuses_a_missing_container_through_lineage() {
+    let (composed, binding, native, generation) = hosted_tpm_seat(
+        "/tmp/kontor-8234-op4-preview",
+        "asma-8234-op4-preview-seats",
+    )
+    .await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+
+    // The runtime stops holding the container the seat's node records.
+    world
+        .fake
+        .forget_container(seat_topology_node(world, project_id, binding_id));
+
+    let shape_before = succession_shape(world, project_id, binding_id);
+    let calls_before = world.fake.calls().len();
+    let refused = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+        &serde_json::json!({
+            "expected_revision": 1,
+            "seat_binding_id": binding,
+            "expected_native_id": native,
+            "expected_generation": generation,
+            "desired_model_route": {
+                "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+            },
+        }),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.code(), "placement_blocked", "{}", refused.body);
+    assert!(
+        refused.body.contains("not in the ECP workspace"),
+        "the refusal must be lineage's placement rule: {}",
+        refused.body
+    );
+    assert!(
+        !world.fake.calls()[calls_before..]
+            .iter()
+            .any(|call| matches!(
+                call,
+                AdapterCall::RetireHostedSeat(_) | AdapterCall::LaunchHostedSeat(_)
+            )),
+        "a preview produced a native effect"
+    );
+    assert_eq!(
+        world.fake.last_hosted_retire_placement(binding_id),
+        None,
+        "a preview retired something"
+    );
+    assert_eq!(
+        succession_shape(world, project_id, binding_id),
+        shape_before,
+        "a preview moved durable seat state"
+    );
+}
+
+/// Lineage re-runs in the apply re-plan, and a container that disappeared
+/// after preview stops the retirement there.
+///
+/// The preview was planned while the ECP was still held. By apply the runtime
+/// no longer holds it, so the re-plan's lineage check refuses with
+/// `placement_blocked` before any predecessor effect. Predecessor, session and
+/// SeatBinding all stay live, no successor is created, and nothing is archived,
+/// launched or written to history.
+#[tokio::test]
+async fn route_apply_refuses_a_container_missing_after_preview_through_lineage() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8234-op4-drift", "asma-8234-op4-drift-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+
+    // Previewed while the container is still proved, so the refusal under test
+    // is the drift and not a preview that never proved anything.
+    let body = previewed_succession(world, project, epic, &binding, &native, generation).await;
+
+    let shape_before = succession_shape(world, project_id, binding_id);
+    world
+        .fake
+        .forget_container(seat_topology_node(world, project_id, binding_id));
+    let calls_before = world.fake.calls().len();
+    let refused = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &body,
+    )
+    .signed_as(world, "admin")
+    .with_key("asma-8234-op4-drift")
+    .send(world)
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.code(), "placement_blocked", "{}", refused.body);
+    assert!(
+        refused.body.contains("not in the ECP workspace"),
+        "the refusal must be lineage's placement rule: {}",
+        refused.body
+    );
+    assert!(
+        !world.fake.calls()[calls_before..]
+            .iter()
+            .any(|call| matches!(
+                call,
+                AdapterCall::RetireHostedSeat(_) | AdapterCall::LaunchHostedSeat(_)
+            )),
+        "drift still produced a native effect"
+    );
+    assert_eq!(
+        world.fake.last_hosted_retire_placement(binding_id),
+        None,
+        "drift still retired the predecessor"
+    );
+    assert_eq!(
+        succession_shape(world, project_id, binding_id),
+        shape_before,
+        "drift moved durable seat state"
+    );
 }
 
 /// ASMA-8204: an epic closes leaves-first, and only once it is durably done.

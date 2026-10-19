@@ -4034,7 +4034,8 @@ pub struct ContainerRecoveryPreviewDto {
     /// Exact native parent in which the census ran.
     #[schema(value_type = String)]
     pub parent_native_id: ExternalId,
-    /// Preserved canonical working directory.
+    /// Directory the replacement is bound at: the task's current worktree
+    /// claim for a task container, otherwise the stale binding's directory.
     #[schema(value_type = String)]
     pub canonical_cwd: ExternalName,
     /// Runtime-reported candidate title.

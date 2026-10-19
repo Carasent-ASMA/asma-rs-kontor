@@ -17647,7 +17647,7 @@
         "properties": {
           "canonical_cwd": {
             "type": "string",
-            "description": "Preserved canonical working directory."
+            "description": "Directory the replacement is bound at: the task's current worktree\nclaim for a task container, otherwise the stale binding's directory."
           },
           "disposition": {
             "$ref": "#/components/schemas/ContainerRecoveryDispositionDto",
