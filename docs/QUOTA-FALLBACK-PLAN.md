@@ -1,13 +1,17 @@
 # Provider quota routing: durable state behind the rung walk
 
-Status: **Historical shipped baseline plus a 2026-09-04 local candidate.** The
-v48 quota state, v50 live poller and v51 concurrent-window, credit-balance,
-account-before-rung and governed-pin work are on `origin/master`. The current
-candidate tree adds KON-OP-21 reactive evidence capture, durable succession and
-resident bounded recovery, with local tests only. Launch-time
-`Wait`/`NeedsHuman` actuation remains open. Merge, independent audit and
-live-runtime verification of succession are not claimed here.
-Date: 2026-08-21, extended 2026-08-22, candidate status 2026-09-04
+Status: **Implementation record, verified against source at `0971674d`
+(2026-10-11).** The v48 quota state, v50 live poller and v51 concurrent-window,
+credit-balance, account-before-rung and governed-pin work shipped first.
+KON-OP-21 reactive evidence capture, durable succession and resident bounded
+recovery landed on `master` with PR #164 (`3d7c6043`, 2026-09-04). Since #260
+(`592dc87f`, 2026-09-20) new admission requires current quota evidence, and
+live `fleet.yml` routing (#271) and the activated fleet policy (#292) now
+supply chains at placement time; see *Merged follow-ups since 2026-09-05*.
+Launch-time `Wait`/`NeedsHuman` actuation, store-backed vendor and model tables
+and an `agent_runs` rung column remain open. Independent audit, deployment and
+live-runtime receipts for succession are not recorded here.
+Date: 2026-08-21, extended 2026-08-22, candidate status 2026-09-04, status refreshed 2026-10-11 (`0971674d`)
 
 Ticket: **KON-OP-13 / ASMA-7882** owns this. The fleet-mechanics plan
 (`_docs/ai-orchestration/plans/2026-08-05-02-37-plan-agent-fleet-mechanics-layer.md`)
@@ -69,6 +73,14 @@ out whatever the settings say.
   account profile, so the two coincided, but `any` became wrong as soon as a
   second was registered.
 
+> **Superseded 2026-09-20 (#260, `592dc87f`).** Absence no longer permits. New
+> admission needs an exact current quota observation for the account and
+> provider within the configured evidence window; an absent or stale row is
+> `Unavailable` and admits nothing. Blocking states and explicit
+> `CannotReport` keep their meaning (`headroom_of` in
+> `crates/kontor-scheduler/src/headroom.rs`). The bullet above is the v48
+> rationale.
+
 The `exhausted`/`drained` split is a table CHECK rather than a convention: an
 exhausted allowance must carry a reset instant and nothing else may. A plan
 allowance recovers on a clock and stops blocking on its own; a credit balance
@@ -82,6 +94,11 @@ rather than the daemon inventing a substitute. An earlier draft of this change
 refused inside the daemon instead; master's version is better and this one
 adopts it.
 
+> **Superseded by #260 (`592dc87f`).** The frozen-primary fallback is gone.
+> When the walk answers `Wait` or `NeedsHuman`, `freeze_seat_model_rung` now
+> refuses in the daemon with a `ProviderHeadroom` missing-evidence error and
+> launches nothing.
+
 ## Decisions
 
 Taken 2026-08-21 with Igor. These are settled; revisit them explicitly rather
@@ -93,9 +110,9 @@ than by drift.
   `Drained` must **never** be requeued on a timer — retrying a dead OpenRouter
   key every five minutes forever is a new failure mode, not a fallback.
 - **Automatic handoff with receipts is the required outcome.** At this 2026-08-21
-  decision point it was not current behavior; KON-OP-21 now implements the
-  candidate path with a durable attempt, redacted handoff, linked successor and
-  immutable receipt. Release and live proof remain pending.
+  decision point it was not current behavior; KON-OP-21 (merged with #164,
+  `3d7c6043`) implements it with a durable attempt, redacted handoff, linked
+  successor and immutable receipt. A live receipt is not recorded here.
 - **Seat titles come only from the pinned Team Definition.** Succession retains
   the immutable role slot and therefore its exact configured role-only name,
   for example `SA`, `SWE`, `QA` or `AUD`. Account, provider, rung and Jira key
@@ -161,7 +178,7 @@ controls, and it alone would have kept work moving on 2026-08-21.
 | --- | --- | --- |
 | New launch: `rung1 x work` -> `rung1 x personal` | account-before-rung resolver plus a declared provider alias per account | **yes**, when `provider_selects_account` is configured and read back |
 | New launch: `rung1` -> `rung2` | the same headroom walk | **yes** |
-| Running seat: exhausted account -> successor | runtime refusal detection, redacted handoff and successor-run path | **candidate only** — KON-OP-21 is locally implemented and tested; merge/audit/live verification pending |
+| Running seat: exhausted account -> successor | runtime refusal detection, redacted handoff and successor-run path | **merged** — KON-OP-21 landed with #164 (`3d7c6043`); runs only where a realm opts in through `supervision.yml`; audit and live receipt not recorded here |
 
 ### Reuse, do not add
 
@@ -312,30 +329,20 @@ catalog — the snapshot is what that epic's gates are already judged against, a
 a later revision must not re-grade a grant. Explicit bounds may only narrow, and
 a stored `ExecutionAuthorization` now reports the bounds it was granted under.
 
-## Remaining and candidate-only work
+## Still open, and merged follow-ups
 
 ### Enact launch-time `Wait` and `NeedsHuman`
 
+Still open for new delivery and consultation launches.
 `kontor_scheduler::headroom::resolve` returns a typed `Placement::Wait` with a
-reset instant or `Placement::NeedsHuman` with an escalation payload. The current
-delivery launch function must return a `ModelRung`; on those two outcomes it
-drops the payload and preserves the adapter's typed provider-outage refusal
-path. The resolver is truthful, but the launch path does not yet park the work
-until reset or persist the escalation it computed.
-
-Acceptance: a launch-time `Wait` parks without dispatch and wakes at the stored
-reset; `NeedsHuman` persists the exact deliberation path and recommendation;
-restart/replay reproduces either outcome without inventing a rung or a second
-launch.
-
-### Enact launch-time `Wait` and `NeedsHuman`
-
-`kontor_scheduler::headroom::resolve` returns a typed `Placement::Wait` with a
-reset instant or `Placement::NeedsHuman` with an escalation payload. The current
-delivery launch function must return a `ModelRung`; on those two outcomes it
-drops the payload and preserves the adapter's typed provider-outage refusal
-path. The resolver is truthful, but the launch path does not yet park the work
-until reset or persist the escalation it computed.
+reset instant or `Placement::NeedsHuman` with an escalation payload. On either
+outcome the launch path drops the payload and refuses: a delivery seat with a
+`ProviderHeadroom` missing-evidence error, a consultation seat with
+`placement_blocked`, and an Admin-named seat route with `capacity_exhausted`
+for `Wait` or `placement_blocked` for `NeedsHuman`. The resolver is truthful,
+but the launch path does not park the work until reset or persist the
+escalation it computed. Only quota succession acts on `Wait`: it records a
+`deferred` attempt with `deferred_until` and resumes it later.
 
 Acceptance: a launch-time `Wait` parks without dispatch and wakes at the stored
 reset; `NeedsHuman` persists the exact deliberation path and recommendation;
@@ -344,9 +351,18 @@ launch.
 
 ### Vendor and model tables
 
-Replace the hardcoded catalog in
-`Applications::model_catalog`, whose own provenance
-already reads `"state": "fixture/needs-verification"`.
+Still open. `Applications::model_catalog` is still a literal catalog, now with
+per-row provenance: some rows read `"state": "live"` (KON-MVP-25 on
+2026-08-14; the ASMA-8237 watchdog routes, #238 `8e8772de`), others
+`"fixture/needs-verification"`. Rows were added for the watchdog routes (#238),
+`cursor/gpt-5.6-sol` (#267, `d54daf39`) and DeepSeek V4.1 Flash
+(`opencode/deepseek/deepseek-flash`, #214, `e40b5f42`). Since #271 a route the
+active `fleet.yml` snapshot lists is admissible without a compiled row
+(`model_route_is_catalogued`). Vendor exhaustion wording now lives in
+`<state-root>/quota-signals.yml` (with KON-OP-21, #164), not in database
+columns; see
+[CONFIGURATION.md](CONFIGURATION.md#provider-quota-signals). The design below is
+the original target:
 
 ```
 provider:  id, label, charging_basis, pooled_usage, reset_kind,
@@ -369,9 +385,9 @@ Acceptance: the catalog endpoint serves stored rows; no provider or model
 identity remains a literal in `applications.rs`; a seeded row per vendor Kontor
 actually reaches.
 
-### Automatic detection — candidate implemented, release pending
+### Automatic detection — merged (#164), live receipt not recorded
 
-The pre-flight half landed in v51. The current KON-OP-21 candidate also filters
+The pre-flight half landed in v51. KON-OP-21 also filters
 the runtime timeline to message events for the exact immutable binding/native
 generation, matches only configured provider signals eligible for the seat's
 account, and persists redacted runtime-observation quota provenance bound to the
@@ -381,8 +397,7 @@ foreign provenance and contradictory evidence.
 State remains recorded per `(account_profile_id, provider)`, never per provider
 alone: with two Codex accounts, "Codex is exhausted" is not a fact that exists.
 The parser and persistence path have focused local regressions; a captured live
-runtime refusal and exact installed-realm readback are still required release
-evidence.
+runtime refusal and exact installed-realm readback are not recorded here.
 
 ### Persist which rung was chosen
 
@@ -394,14 +409,23 @@ the launch outcome is recorded, and one more migration.
 
 Igor asked for this explicitly as a UI signal; it is the next thing to build.
 
-### Resident supervision and automatic handoff — candidate implemented, release pending
+Partly addressed since #271 (`7ffd650d`): a fleet-routed placement appends one
+JSON line to `<state-root>/fleet-decisions/<team_run_id>.jsonl` naming the
+agent run, step and sub-step, provider, model, effort, vendor, account and
+fleet hash, and #292 adds launch provenance under `fleet-decisions/launches/`.
+That is a file log, not an `agent_runs` column or API projection, and
+template-routed seats write nothing to it.
 
-The current candidate records a durable succession attempt before effects,
+### Resident supervision and automatic handoff — merged (#164), live receipt not recorded
+
+KON-OP-21 records a durable succession attempt before effects,
 builds a bounded redacted handoff from the exact binding generation, resolves
 account before rung, launches and freshly observes the successor, retires the
 predecessor without deleting its runtime-owned history, and confirms one
 immutable receipt. The bodyless Admin recovery command and schema-v2 resident
 loop both drive that same saga; neither accepts caller-supplied quota authority.
+The resident loop starts only in a realm that opts in through `supervision.yml`
+([CONFIGURATION.md](CONFIGURATION.md#seat-supervision)).
 
 Two hazards to get right:
 
@@ -414,10 +438,32 @@ Two hazards to get right:
   needs a human regardless — but the refusal must say which budget was spent.
 
 Local acceptance covers exact provenance, bounded handoff, replay and one
-successor under repeated supervision. Release acceptance still requires a live
+successor under repeated supervision. Release acceptance, not recorded here, requires a live
 seat whose provider exhausts mid-turn to recover on the next admissible pair,
 retain its exact Team Definition role-only seat name, preserve predecessor
 evidence, and produce the same durable receipt when supervision fires again.
+
+### Merged follow-ups since 2026-09-05
+
+Merged; qualification and deployment are not recorded here.
+
+- **Live fleet routing** (#271, `7ffd650d`, 2026-09-25). A realm's
+  `<state-root>/fleet.yml` is re-read at every placement and supplies the
+  chain for the seats it binds, rather than a published template revision. The validator, now the `kontor-fleet`
+  crate, allows 1 to 16 steps, refuses a domain in two steps or a repeated
+  model, and limits providers to `claude`, `codex`, `cursor` and `opencode`.
+  See [CONFIGURATION.md](CONFIGURATION.md#fleet-configuration-fleetyml).
+- **Activated fleet policy** (#292, `4097afb8`, 2026-10-04). `fleet-activation.json`
+  names one immutable `fleet-history/<policy-hash>.yml`, published and
+  activated through `/v1/fleet/policy:preview`, `:publish` and `:activate`. See
+  [CONFIGURATION.md](CONFIGURATION.md#activated-fleet-policy-asma-8280).
+- **Operator bridge** (#267, `d54daf39`, 2026-09-24). An Admin may move a seat
+  off a disabled provider only onto an explicit route on a different provider,
+  and may name a `model_route` on `kontor_team_run_seat_fill`. A consultation
+  admits the exact `cursor/gpt-5.6-sol/xhigh` route in Cursor `plan` mode only
+  under an operator-accepted recovery profile.
+- **Catalog routes**: the approved watchdog fallback routes (#238, `8e8772de`)
+  and DeepSeek V4.1 Flash (#214, `e40b5f42`).
 
 ### Local mutation ledger — 2026-09-04
 

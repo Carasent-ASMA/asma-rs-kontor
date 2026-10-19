@@ -6,9 +6,11 @@ before public disclosure.
 
 ## Supported versions
 
-Kontor is pre-1.0. Security fixes are made on the latest `master` and, when a
-release exists, the latest published pre-1.0 release. Older commits and private
-forks are not supported branches.
+Kontor is pre-1.0. Security fixes are made on the latest `master` and on the
+latest published pre-1.0 release, currently `v0.2.1` (2026-08-30). Older
+commits and private forks are not supported branches. `master` still carries
+workspace version `0.2.1` while containing later changes, so a version number
+alone does not identify the affected code: report the commit.
 
 The current MVP is local-only. Remote exposure, multi-user operation and use as
 an unattended production scheduler are unsupported even if a downstream fork
@@ -56,7 +58,22 @@ The supported MVP assumes:
 - agent runtimes and `asma` tools are installed separately and reached only
   through supported interfaces;
 - secrets stay in their native credential stores and Kontor persists only
-  opaque references;
+  opaque references. Kontor writes a Jira API credential to the OS keychain
+  only through the stopped-realm `install-jira-credential` command, under an
+  address bound to the realm and its canonical state root. The optional GitHub App private
+  key is a PEM file the operator keeps outside every repository; the daemon
+  reads it from the path in `<state root>/config/github-app.json` and with it
+  can post check runs and squash-merge the pull requests it judged;
+- the Cognee experience-memory transport is off by default, and the shipped
+  daemon at this revision refuses to start when `memory-cognee.json` enables
+  it;
+- a Claude desk seat's MCP configuration is composed into its working
+  directory, and the exact earlier contents of those files — including anything
+  secret an operator had already put there — are kept in a journal under
+  `<state root>/hosted-directory-publications/`, protected only by the state
+  root's permissions. Every provider, Claude included, also receives the
+  leadership MCP in its creation frame, and Codex, OpenCode and the other
+  providers receive it only there;
 - project repositories and agent-generated content are untrusted input.
 
 Vulnerabilities in Paseo, Agent Orchestrator, Codex, another provider/runtime or

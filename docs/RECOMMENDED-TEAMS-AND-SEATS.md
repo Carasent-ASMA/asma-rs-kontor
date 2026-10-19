@@ -3,7 +3,15 @@
 Status: **Recommended starting point — not the only possible setup.** Derived
 from the 2026-08-29 v4 fleet restructure (three-round independent-review
 committee, final verdict `compliant`).
-Date: 2026-08-29
+Date: 2026-08-29; Kontor implementation notes re-verified against source at
+`0971674d` (2026-10-11).
+
+The routed, maintained copy of this recommendation is
+[`_docs/reference/2026-09-04-23-35-reference-recommended-teams-and-seats.md`](../_docs/reference/2026-09-04-23-35-reference-recommended-teams-and-seats.md),
+which adds an explicit implementation boundary; the repository README and
+[`_docs/index.md`](../_docs/index.md) route there. This file is the original
+2026-08-29 text, landed on `master` with `fd204794` (2026-08-29). Where the two
+differ, prefer the reference copy.
 
 **This is a recommendation to start from, not a prescription.** Teams, seats,
 chains, committees and advisors are versioned configuration; every adopter is
@@ -42,7 +50,7 @@ written only in this vocabulary.
 | Dimension | What it measures | How it is established |
 |---|---|---|
 | **Reasoning class** | Depth on novel, multi-constraint problems: `frontier` (best available judgment), `strong` (reliable on hard but bounded work), `mid` (competent on well-specified work), `floor` (cheap breadth, low trust) | Public benchmarks are a *screen*, never an admission: class is confirmed by seat-class trial (§6) |
-| **Context class** | Usable window under real seat load | Deterministic classes per the seat context/compaction policy — `lean` (128K) / `standard` (256K) / `large` (400K, approved but not an accepted API value) / `deep` (512K) / `extended` (720K) / `native` (explicit escape hatch only); measured, not vendor-quoted. Per-seat recommendations: §2.6 |
+| **Context class** | Usable window under real seat load | Deterministic classes per the seat context/compaction policy — `lean` (128K) / `standard` (256K) / `large` (400K, approved but not an accepted API value) / `deep` (512K) / `extended` (720K) / `native` (explicit escape hatch only); measured, not vendor-quoted. The five values other than `large` are implemented (`ContextWindowClass`, verified at `0971674d`). Per-seat recommendations: §2.6 |
 | **Vision** | Can it *judge pixels* — screenshots, layout, contrast, state | **Attested only**: a vendor "multimodal" claim or a null capability flag is not vision; a calibration receipt with real screenshot judgments is |
 | **Tool/agentic reliability** | Long tool chains, edit discipline, no drift, no fabricated tool results | Trial tickets with transcript audit |
 | **Verdict trust** | The audit-class trait: false-pass rate on seeded defects; does it assert clean sweeps that are not clean | Calibration with deliberately seeded defects (mutation-style); a model that misses a seeded P0, or asserts a false negative sweep, may work but may not judge |
@@ -167,6 +175,30 @@ live.
 | **Manual Test Lead** | Standalone | Design and drive manual test passes humans or QA Bots execute | `strong`; browser familiarity; vision helpful |
 | **Analyst (model review)** | Standalone, periodic | Runs the model review itself; proposes chain changes | `frontier`/`strong`; must never run on a route whose placement it is judging (self-review ban) |
 
+**How Kontor places these seats (verified at `0971674d`; merged, qualification
+and deployment not recorded here).**
+
+- The TPM and LSA are an epic's Core Team: the `tpm` and `lsa` slots of its ECP
+  in the bundled Team Definition, so Kontor holds one of each per epic rather
+  than one TPM per project. A pinned definition that declares
+  `desk_leadership` instead runs both as that epic's desk Adams in the
+  declared desk's workspace, one live session per subject at a time
+  (#297, `b3db4adf`; see
+  [Desk Adams in kontord](../_docs/reference/2026-10-11-05-36-reference-kontord-desk-adams.md)).
+- A Core Team route correction retires the predecessor and launches exactly one
+  successor per predecessor occupancy (ASMA-8187, #290, `1d7a71dd`, schema
+  v120 and v122). The roster and each seat's occupancy history are readable at
+  `GET /v1/projects/{project_id}/epics/{epic_id}/core-team` and
+  `.../core-team/seats/{seat_binding_id}/occupancies` (ASMA-8196, #284,
+  `d5a4cdff`).
+- Long-lived seats with no epic, titled `<ROLE> • <TOPIC>` such as
+  `LSA • GENERAL`, are durable desk seats (#296, `430975a3`). A definition that declares
+  `pr_review` gives each pull request an Adam tab (for example
+  `TPM • <key> • <repo>#<n>`) and a review room with declared reviewer seats
+  such as `REV A`, `REV B` and `JUDGE` (#298, `e376f405`). Neither bundled
+  definition declares `desk_leadership` or `pr_review`. Naming is in
+  [NATIVE_NAMING.md](NATIVE_NAMING.md#durable-desks-asma-8450).
+
 ### 2.4 Consultation seats
 
 | Seat | Responsibilities | Required capabilities |
@@ -226,7 +258,8 @@ it judges the task hard.
 | QA Bot (mechanism) | `lean` | `standard` | Snapshot evidence in, verdict out |
 
 **Approved future `large` target (400K).** This class is not implemented in
-`ContextWindowClass` at released source `082b63ad` (2026-09-05). It remains an
+`ContextWindowClass` (`crates/kontor-core/src/spec.rs`) at source `0971674d`
+(2026-10-11), nor was it at `082b63ad` (2026-09-05). It remains an
 approved pricing/provider-tier requirement between `standard` and `deep`, but
 must not be published or submitted as an executable profile value. The current
 API accepts `lean`, `standard`, `deep`, `extended` and `native` only.
@@ -259,6 +292,20 @@ A **chain** is the ordered fallback list for one seat; one entry is a
 **rung** (rung 1 … rung 4). The chain is data on the seat; the walk is
 performed by deterministic routing at import/admission time — the model never
 chooses its own rung.
+
+In Kontor at `0971674d`, a seat's chain comes from its team template or, where
+a realm configures one, from the live `fleet.yml` or activated fleet policy
+read at every placement (#271, `7ffd650d`; #292, `4097afb8`; see
+[CONFIGURATION.md](CONFIGURATION.md#fleet-configuration-fleetyml)). The fleet
+validator enforces 1 to 16 steps, no domain in two steps, no repeated model,
+and providers limited to `claude`, `codex`, `cursor` and `opencode`. At
+placement, the file's `rules` skip models not flagged `calibrated` on
+`calibration_required` seats and models not flagged `vision` on
+`vision_required` seats, and `independent_of` avoids the vendor the named seat
+last ran on in the same team run. Those flags are operator declarations, not
+the calibration receipts or vision attestation §6 asks for. The four-rung,
+four-budget, three-platform grammar is a recommendation; the fleet validator
+does not check budget or platform counts.
 
 1. **Rung 1 is the designed best fit, not the best model.** Score candidates
    on §1 and place by *capability-fit × budget elasticity*: scarce frontier
@@ -305,7 +352,9 @@ chooses its own rung.
 
 - **Chains, teams, committees, advisors, completion profiles are versioned
   data.** Changing a model pin is a manifest/spec edit plus an admission
-  receipt — never a code change, never hardcoded.
+  receipt — never a code change, never hardcoded. In Kontor at `0971674d` a
+  route listed by the active fleet snapshot is admissible without a compiled
+  catalog entry (#271), but a new provider still needs a code change.
 - **What IS code** are the safety invariants the data cannot override: one
   non-terminal session per role slot, proposal ≠ authority, verdict gates,
   frozen-evidence hashing, and the guardrail that no advisor, committee or
