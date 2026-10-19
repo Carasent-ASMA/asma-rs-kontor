@@ -37505,6 +37505,16 @@ impl ApplicationOperations for Services {
             // siblings ended: a runtime observation is as final as an operator
             // abandon.
             //
+            // The run is immutable, but the frozen snapshot this process holds
+            // for it is not: a first abandonment that closed the run and then
+            // failed before releasing it leaves the session claimed here, and
+            // this replay is the only path back to give it up. The session is
+            // already over, so the snapshot is given up before any fallible team
+            // work: a Team Definition migration fence must not leave a terminal
+            // run reporting `seat_live`.
+            if let Some(binding) = run.binding.as_ref() {
+                self.release(binding.id)?;
+            }
             // An already-terminal envelope is answered from its stored closure.
             // Calling `settle_team` here would re-release its seats, which a
             // Team Definition migration fence refuses even though this replay
@@ -37521,13 +37531,6 @@ impl ApplicationOperations for Services {
                 team_run_closed = Some(abandoned);
                 team_pending = None;
                 state.signals().appended();
-            }
-            // The run is immutable, but the frozen snapshot this process holds
-            // for it is not: a first abandonment that closed the run and then
-            // failed before releasing it leaves the session claimed here, and
-            // this replay is the only path back to give it up.
-            if let Some(binding) = run.binding.as_ref() {
-                self.release(binding.id)?;
             }
             return Ok(AbandonedRunDto {
                 realm_id: state.realm_id(),
