@@ -11,13 +11,14 @@ import { TeamsSourcePage } from "./teams-source-page";
 import { SourceDetails } from "./source-details";
 import { Action, Card, Copy, type Colors } from "./page-controls";
 import { FormattedPlanBlock, headingAnchor, planBlocks } from "./plan-document";
+import { safeHttpsUrl } from "./plan-links";
 
 type PageProps = {
   teamsSources?: readonly ReadSourceSummary[]; teamsJsonReads?: Readonly<Record<string, SourceRead>>;
   teamsSnapshots?: Readonly<Record<string, TeamsSourceSnapshot>>; teamsErrors?: Readonly<Record<string, string>>;
   teamsBindingDiagnostics?: readonly string[]; teamsAvailable?: boolean;
   contextLabel?: string; tab: Destination; colors: Colors; entries: readonly DirectoryEntry[]; directory: DirectoryState;
-  compact?: boolean; onChooseSource?: () => void; onDocumentLink?: (target: string) => void;
+  compact?: boolean; onChooseSource?: () => void; onDocumentLink?: (target: string) => void; onExternalLink?: (target: string) => void;
   sources: readonly ReadSourceSummary[]; reads: Readonly<Record<string, SourceRead>>; sourceId: string | null;
   sourceError: string | null; query: string; setQuery: (query: string) => void;
   onSource: (id: string) => void; onOpen: (entry: DirectoryEntry) => void; onTab: (tab: Destination) => void;
@@ -157,13 +158,29 @@ function RecordPage(props: PageProps) {
   const kind = props.tab === "Delivery" ? "delivery" : "decisions";
   const reads = Object.values(props.reads).filter((read) => read.source.kind === kind);
   return <>
+    <Copy colors={props.colors} muted>Governed {kind === "delivery" ? "delivery" : "decision"} actions: kontord is not enabled.</Copy>
     {!reads.length ? <Copy colors={props.colors}>{props.tab}: not connected to a configured {kind} source.</Copy> : null}
     {reads.map((read) => <Card key={read.source.id} title={read.source.title} colors={props.colors}>
       <SourceDetails read={read} colors={props.colors} />
-      {kind === "delivery" ? read.records?.delivery.map((record) => <Copy key={record.id} colors={props.colors}>{record.kind} · {record.title} · recorded state: {record.state} · {record.recordedAt ?? "time Unknown"} {record.url ?? ""}</Copy>) : null}
-      {kind === "decisions" ? read.records?.decisions.map((record) => <Copy key={record.id} colors={props.colors}>{record.id} · {record.title} · {record.state} · owner: {record.owner ?? "Unknown"} {record.detail ?? ""} {record.url ?? ""}</Copy>) : null}
+      {kind === "delivery" ? read.records?.delivery.map((record) => <View key={record.id}>
+        <Copy colors={props.colors}>{record.kind} · {record.title} · recorded state: {record.state} · {record.recordedAt ?? "time Unknown"} {record.url ?? ""}</Copy>
+        <RecordLink url={record.url} label="Open evidence" title={record.title} colors={props.colors} onOpen={props.onExternalLink} />
+      </View>) : null}
+      {kind === "decisions" ? read.records?.decisions.map((record) => <View key={record.id}>
+        <Copy colors={props.colors}>{record.id} · {record.title} · {record.state} · owner: {record.owner ?? "Unknown"} {record.detail ?? ""} {record.url ?? ""}</Copy>
+        <RecordLink url={record.url} label="Open decision source" title={record.title} colors={props.colors} onOpen={props.onExternalLink} />
+      </View>) : null}
       {read.status === "ready" && read.records?.[kind].length === 0 ? <Copy colors={props.colors}>No records in this source.</Copy> : null}
     </Card>)}
+  </>;
+}
+function RecordLink({ url, label, title, colors, onOpen }: { url?: string; label: string; title: string; colors: Colors; onOpen?: (target: string) => void }) {
+  if (!url) return null;
+  const safe = safeHttpsUrl(url);
+  if (!safe) return <Copy colors={colors} muted>Source link unavailable: a valid HTTPS URL without credentials is required.</Copy>;
+  return <>
+    <Action label={label} accessibilityLabel={`${label}: ${title}`} colors={colors} disabled={!onOpen} onPress={() => onOpen?.(safe)} />
+    {!onOpen ? <Copy colors={colors} muted>Source link opening is unavailable on this host.</Copy> : null}
   </>;
 }
 export function ReadOnlyPage(props: PageProps) {

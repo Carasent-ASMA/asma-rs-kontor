@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { URL } from "node:url";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
-import type { PluginScreenProps } from "@getpaseo/plugin/client";
+import type { PluginHostSummary, PluginScreenProps } from "@getpaseo/plugin/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DirectoryEntry } from "../client/session-directory";
 import { canonicalGraphSchema, jiraHistorySchema, type ReadSourceSummary, type SourceRead } from "../shared/read-sources";
@@ -9,6 +9,7 @@ import { Linking } from "react-native";
 
 const model = vi.hoisted(() => ({
   slots: [] as unknown[], cursor: 0, entries: [] as DirectoryEntry[], sources: [] as ReadSourceSummary[], reads: {} as Record<string, SourceRead>, values: {} as object,
+  hosts: [] as PluginHostSummary[], toastError: vi.fn(),
   useState<T>(initial: T | (() => T)): [T, (next: T | ((previous: T) => T)) => void] {
     const index = this.cursor++;
     if (!(index in this.slots)) this.slots[index] = typeof initial === "function" ? (initial as () => T)() : initial;
@@ -24,9 +25,9 @@ vi.mock("react-native", () => ({
   Linking: { openURL: vi.fn(async () => {}) },
   SafeAreaView: "SafeAreaView", KeyboardAvoidingView: "KeyboardAvoidingView", ScrollView: "ScrollView", View: "View", Text: "Text", Pressable: "Pressable",
 }));
-vi.mock("@getpaseo/plugin/client", () => ({ useHosts: () => [] }));
+vi.mock("@getpaseo/plugin/client", () => ({ useHosts: () => model.hosts }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({
-  Modal: Object.assign(() => null, { Content: () => null }), ScrollView: "ScrollView", FlatList: "FlatList", TextInput: "TextInput", Icon: "Icon", useToast: () => ({ error: () => {} }),
+  Modal: Object.assign(() => null, { Content: () => null }), ScrollView: "ScrollView", FlatList: "FlatList", TextInput: "TextInput", Icon: "Icon", useToast: () => ({ error: model.toastError }),
 }));
 vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: () => ({ state: { entries: model.entries, status: "ready", live: false, lastUpdatedAt: 1, error: null, staleReason: null, pages: 1, includeArchived: false }, refresh: () => {} }) }));
 vi.mock("../client/use-organization-settings", () => ({ useOrganizationSettings: () => ({ state: { status: "ready", values: model.values, saving: false, saveError: null }, save: async () => true }) }));
@@ -39,6 +40,8 @@ import { DEFAULT_ORGANIZATION_SETTINGS } from "../shared/organization";
 import { sessionEntry } from "./session-fixtures";
 import { GraphPage } from "../client/graph-page";
 import { historicalPlanProgress } from "../client/page-data";
+import { Action } from "../client/page-controls";
+import { NativeFreshnessPill } from "../client/native-freshness";
 
 const actualGraph = canonicalGraphSchema.parse(JSON.parse(readFileSync(new URL("./fixtures/plan-graph-asma-8371.json", import.meta.url), "utf8")));
 const capturedHistory = jiraHistorySchema.parse(JSON.parse(readFileSync(new URL("./fixtures/jira-history.json", import.meta.url), "utf8")));
@@ -48,7 +51,7 @@ function elements(value: ReactNode): ReactElement<Record<string, unknown>>[] {
   return [value, ...elements(value.props.children as ReactNode)];
 }
 let sequence = 0;
-beforeEach(() => { model.slots = []; model.cursor = 0; model.values = DEFAULT_ORGANIZATION_SETTINGS; model.entries = [sessionEntry("native", { labels: { epic: "ASMA-1" } })]; model.sources = []; model.reads = {}; });
+beforeEach(() => { vi.clearAllMocks(); model.slots = []; model.cursor = 0; model.values = DEFAULT_ORGANIZATION_SETTINGS; model.entries = [sessionEntry("native", { labels: { epic: "ASMA-1" } })]; model.sources = []; model.reads = {}; model.hosts = []; });
 function mount(compact: boolean, initial?: Partial<KontorRoute>) {
   const props: PluginScreenProps = { host: { id: `shell-${++sequence}`, label: "Host" }, layout: { compact, platform: "ios" }, params: {}, navigation: { openAgent: vi.fn(), openWorkspace: vi.fn(), openBrowser: vi.fn() },
     theme: { colors: { surface0: "#fff", surface1: "#eee", surface2: "#ddd", foreground: "#111", foregroundMuted: "#555", border: "#aaa", accent: "#00f", accentForeground: "#fff", statusSuccess: "#080", statusWarning: "#850", statusDanger: "#b00" } } };
@@ -66,6 +69,51 @@ function mount(compact: boolean, initial?: Partial<KontorRoute>) {
   };
 }
 describe("Kontor shell native actions", () => {
+  it("keeps the compact title on one line, the confirmed key at its lower border and the full accessible label", () => {
+    const title = "A long configured source title that must remain available to assistive technology";
+    model.sources = [{ id: "long-plan", title, kind: "plan", path: "/configured/long.md", projectId: null, epic: "ASMA-8539", workstream: null, revisionKind: "working copy" }];
+    const screen = mount(true, { tab: "Plan", sourceId: "long-plan", epicKey: "ASMA-8539" });
+    const row = screen.elements().find((node) => node.props.testID === "kontor-context-row")!;
+    expect(row.props.style).toMatchObject({ minHeight: 52 });
+    const field = screen.elements().find((node) => node.props.testID === "kontor-context-picker")!;
+    const action = elements(field).find((node) => node.type === Action)!;
+    expect(action.props.label).toBe(`${title} ▾`);
+    expect(action.props.accessibilityLabel).toBe(`Project context: ${title}, ASMA-8539`);
+    const button = Action(action.props as Parameters<typeof Action>[0]);
+    expect(button.props.style).toMatchObject({ minHeight: 44, minWidth: 44 });
+    expect(elements(button).find((node) => node.props.numberOfLines === 1)?.props.ellipsizeMode).toBe("tail");
+    const key = elements(field).find((node) => node.props.testID === "kontor-context-epic")!;
+    expect(key.props.children).toBe("ASMA-8539"); expect(key.props.style).toMatchObject({ position: "absolute", bottom: -1, fontSize: 10 });
+    screen.click(`${title} ▾`); expect(screen.action(`Plan: ${title}`)).toBeDefined();
+    screen.click("All projects"); expect(screen.elements().some((node) => node.props.testID === "kontor-context-epic")).toBe(false);
+    expect(screen.action("All projects ▾")).toBeDefined();
+  });
+  it("does not display an unconfirmed source epic as a Jira key", () => {
+    model.sources = [{ id: "source", title: "Source", kind: "plan", path: "/configured/source.md", projectId: null, epic: "unconfirmed", workstream: null, revisionKind: "working copy" }];
+    const screen = mount(true, { tab: "Plan", sourceId: "source" });
+    expect(screen.action("Source ▾").props.accessibilityLabel).toBe("Project context: Source");
+    expect(screen.elements().some((node) => node.props.testID === "kontor-context-epic")).toBe(false);
+  });
+  it("forwards actual SDK host status to the shared native freshness pill", () => {
+    const screen = mount(true);
+    for (const status of ["idle", "connecting", "online", "offline", "error"] as const) {
+      model.hosts = [{ serverId: screen.props.host.id, label: "Host", status }]; screen.render();
+      expect(screen.elements().find((node) => node.type === NativeFreshnessPill)?.props.hostStatus).toBe(status);
+    }
+  });
+  it("opens standalone decision evidence through a guarded callback without a selected plan and reports opener failures", async () => {
+    model.sources = [{ id: "decisions", title: "Decisions", kind: "decisions", path: "/configured/decisions.json", projectId: null, epic: null, workstream: null, revisionKind: "working copy" }];
+    const screen = mount(true, { tab: "Decisions" });
+    const page = screen.elements().find((node) => typeof node.props.onExternalLink === "function")!;
+    const open = page.props.onExternalLink as (target: string) => void;
+    expect(page.props.sourceId).toBeNull();
+    open("https://example.com/decision"); expect(Linking.openURL).toHaveBeenCalledWith("https://example.com/decision");
+    for (const url of ["http://example.com", "javascript:alert(1)", "https://user:secret@example.com", "https://example..com", "https://example.com:99999", "https:/malformed"]) open(url);
+    expect(Linking.openURL).toHaveBeenCalledTimes(1); expect(model.toastError).toHaveBeenCalledTimes(6);
+    vi.mocked(Linking.openURL).mockRejectedValueOnce(new Error("No opener"));
+    open("https://example.com/evidence"); await Promise.resolve();
+    expect(model.toastError).toHaveBeenLastCalledWith("This device could not open the source link.");
+  });
   it("reserves the compact context/freshness row while keeping conversation return accessible", () => {
     const compact = mount(true, { tab: "Plan", originAgentId: "native" });
     const row = compact.elements().find((node) => node.props.testID === "kontor-context-row")!;
@@ -124,7 +172,7 @@ describe("Kontor shell native actions", () => {
     expect(hostNavigation(screen.props.host.id).route).toMatchObject({ sourceId: "linked-b", originAgentId: "native" });
     expect(screen.action("Return to conversation").props.disabled).toBe(false);
     expect((page().props.sources as ReadSourceSummary[]).map((source) => source.id)).toEqual(["linked-b"]);
-    screen.click("ASMA-2 · linked-b ▾");
+    screen.click("linked-b ▾");
     expect(screen.action("Plan: linked-a")).toBeDefined(); expect(screen.action("Plan: linked-b")).toBeDefined();
     expect(screen.elements().some((element) => element.props.label === "Plan: unrelated")).toBe(false);
     screen.click("Close"); screen.click("More"); screen.click("Graph");
@@ -141,12 +189,12 @@ describe("Kontor shell native actions", () => {
     const page = screen.elements().find((node) => typeof node.props.onSource === "function")!;
     (page.props.onSource as (id: string) => void)("linked-a"); screen.render();
     if (tab === "Graph") screen.click("More");
-    screen.click(tab); screen.click("ASMA-1 · linked-a ▾"); screen.click("Plan: linked-b");
+    screen.click(tab); screen.click("linked-a ▾"); screen.click("Plan: linked-b");
     expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab, sourceId: "linked-b", originAgentId: "native" });
     expect(screen.action("Return to conversation").props.disabled).toBe(false);
     screen.click("Return to conversation");
     expect(screen.props.navigation?.openAgent).toHaveBeenCalledWith({ agentId: "native", serverId: screen.props.host.id });
-    screen.click("ASMA-2 · linked-b ▾");
+    screen.click("linked-b ▾");
     const choices = () => screen.elements().filter((node) => String(node.props.label).startsWith("Plan: ")).map((node) => node.props.label);
     expect(choices()).toEqual(["Plan: linked-a", "Plan: linked-b"]);
     screen.click("Close"); screen.click("Plan");
@@ -155,13 +203,13 @@ describe("Kontor shell native actions", () => {
     expect((selectedPlan.props.sources as ReadSourceSummary[]).map((source) => source.id)).toEqual(["linked-b"]);
     screen.click("‹ Back");
     expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab, sourceId: "linked-b", originAgentId: "native" });
-    screen.click("ASMA-2 · linked-b ▾"); expect(choices()).toEqual(["Plan: linked-a", "Plan: linked-b"]);
+    screen.click("linked-b ▾"); expect(choices()).toEqual(["Plan: linked-a", "Plan: linked-b"]);
     screen.click("All projects");
     expect(hostNavigation(screen.props.host.id).route).toMatchObject({ originAgentId: null, sourceId: null, projectId: null, epicKey: null });
     screen.click("All projects ▾"); expect(choices()).toContain("Plan: unrelated"); screen.click("Close");
     screen.click("‹ Back");
     expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab, sourceId: "linked-b", originAgentId: "native" });
-    screen.click("ASMA-2 · linked-b ▾"); expect(choices()).toEqual(["Plan: linked-a", "Plan: linked-b"]);
+    screen.click("linked-b ▾"); expect(choices()).toEqual(["Plan: linked-a", "Plan: linked-b"]);
   });
   it.each([
     { tab: "Graph", projectId: null }, { tab: "Graph", projectId: "linked-project" },
@@ -209,7 +257,7 @@ describe("Kontor shell native actions", () => {
     (page().props.onDocumentScroll as (offset: number) => void)(900);
     (page().props.onScroll as (offset: number) => void)(120);
     screen.click("Overview"); (page().props.onScroll as (offset: number) => void)(800);
-    screen.click(`${actualGraph.epic.jira} · linked-plan ▾`);
+    screen.click("linked-plan ▾");
     screen.click(targetId ? `Plan: ${targetId}` : "All projects"); screen.click("Plan");
     expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab: "Plan", sourceId: targetId, originAgentId: null });
     expect((page().props.sources as ReadSourceSummary[]).map((source) => source.id)).toEqual(configured.map((read) => read.source.id));
@@ -258,9 +306,9 @@ describe("Kontor shell native actions", () => {
     expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab: "Overview", sourceId: "source-one", projectId: "p-one", epicKey: "ASMA-1" });
     expect((page().props.entries as DirectoryEntry[]).map((entry) => entry.id)).toEqual(["one"]);
     expect((page().props.sources as ReadSourceSummary[]).map((source) => source.id)).toEqual(["source-one", "decisions-one"]);
-    expect(screen.action("ASMA-1 · First plan ▾")).toBeDefined();
+    expect(screen.action("First plan ▾")).toBeDefined();
     expect(hostNavigation("independent-overview-host").route.sourceId).toBeNull();
-    screen.click("ASMA-1 · First plan ▾"); screen.click("All projects");
+    screen.click("First plan ▾"); screen.click("All projects");
     expect((page().props.entries as DirectoryEntry[]).map((entry) => entry.id)).toEqual(["one", "two"]);
     expect(screen.elements().filter((element) => element.props.tab === true)[0]?.props.icon).toBe("List");
   });
@@ -288,7 +336,7 @@ describe("Kontor shell native actions", () => {
     screen.click("‹ Back"); expect(hostNavigation(screen.props.host.id).route.epicKey).toBeNull();
     screen.click("All projects ▾"); screen.click("ASMA-1"); screen.click("Overview");
     expect(hostNavigation(screen.props.host.id).route).toMatchObject({ projectId: null, epicKey: "ASMA-1", tab: "Overview" });
-    screen.click("ASMA-1 ▾"); screen.click("All projects");
+    screen.click("Choose plan ▾"); screen.click("All projects");
     expect(hostNavigation(screen.props.host.id).route).toMatchObject({ projectId: null, epicKey: null, sourceId: null, tab: "Overview" });
   });
 });

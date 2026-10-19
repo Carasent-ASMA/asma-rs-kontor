@@ -2,7 +2,7 @@ import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 vi.mock("react-native", () => ({ ScrollView: "ScrollView", Text: "Text", View: "View" }));
 import { FormattedPlanBlock, headingAnchor, planBlocks } from "../client/plan-document";
-import { resolvePlanLink } from "../client/plan-links";
+import { resolvePlanLink, safeHttpsUrl } from "../client/plan-links";
 import { sessionEntry } from "./session-fixtures";
 import type { ReadSourceSummary } from "../shared/read-sources";
 type Element = ReactElement<Record<string, unknown>>;
@@ -43,5 +43,27 @@ describe("native read-only Plan presentation", () => {
       expect(resolvePlanLink("file:///plans/a.md", source, [source], [])).toEqual({ kind: "source", id: "source" });
       expect(resolvePlanLink("paseo://agents/native", source, [source], [sessionEntry("native")])).toEqual({ kind: "session", id: "native" });
     } finally { vi.unstubAllGlobals(); }
+  });
+});
+
+describe("shared read-only external HTTPS guard", () => {
+  it.each([
+    "https://example.com/decision?source=record#evidence", "https://example.com:443/a%20b", "HTTPS://example.com",
+    "https://127.0.0.1/evidence", "https://[::1]/evidence", "https://[2001:db8::1]:443/evidence",
+  ])("accepts explicit valid HTTPS without relying on RN URL: %s", (target) => {
+    vi.stubGlobal("URL", undefined);
+    try {
+      expect(safeHttpsUrl(target)).toBe(target);
+      expect(resolvePlanLink(target, source, [source], [])).toEqual({ kind: "url", url: target });
+    } finally { vi.unstubAllGlobals(); }
+  });
+  it.each([
+    "", "http://example.com", "javascript:alert(1)", "data:text/html,unsafe", "file:///configured/source.md", "//example.com",
+    "https://user:secret@example.com", "https://user@example.com", "https:/example.com", "https://", "https://example..com",
+    "https://-example.com", "https://example.com:0", "https://example.com:99999", "https://example.com\\@evil.test",
+    "https://example.com\n/path", "https://example.com/a b", "https://example.com/%zz", "https://[::::]/", "https://999.0.0.1/",
+  ])("rejects unsafe or malformed targets for both records and Plan: %s", (target) => {
+    expect(safeHttpsUrl(target)).toBeNull();
+    expect(resolvePlanLink(target, source, [source], []).kind).toBe("blocked");
   });
 });

@@ -1150,7 +1150,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   }, [viewScope, state.entries.length]);
 
   const label = stateLabel({
-    hostOnline,
+    hostStatus: hostSummary?.status ?? "offline",
     status: state.status,
     live: state.live,
   });

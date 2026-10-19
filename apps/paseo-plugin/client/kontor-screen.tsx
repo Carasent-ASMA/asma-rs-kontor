@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { useHosts } from "@getpaseo/plugin/client";
 import { Modal, useToast } from "@getpaseo/plugin/client/react-native";
-import { KeyboardAvoidingView, Linking, SafeAreaView, ScrollView, View } from "react-native";
+import { KeyboardAvoidingView, Linking, SafeAreaView, ScrollView, Text, View } from "react-native";
 import { DEFAULT_ORGANIZATION_SETTINGS } from "../shared/organization";
 import { SessionsScreen } from "./sessions-screen";
 import { useOrganizationSettings } from "./use-organization-settings";
@@ -20,7 +20,7 @@ import { useWorkspaceDirectory } from "./use-workspace-directory";
 import { GraphPage } from "./graph-page";
 import { contextPlanSources, resolveContextPlan, refreshContextSource } from "./navigation-state";
 import { NativeFreshnessPill } from "./native-freshness";
-import { resolvePlanLink } from "./plan-links";
+import { resolvePlanLink, safeHttpsUrl } from "./plan-links";
 
 const PRIMARY_MOBILE: Destination[] = ["Sessions", "Overview", "Plan", "Board"];
 const PRIMARY_DESKTOP: Destination[] = ["Sessions", "Overview", "Plan", "Board", "Graph", "Delivery"];
@@ -91,6 +91,10 @@ function HostScreen(props: PluginScreenProps) {
   const reads = Object.fromEntries(Object.entries(sourceState.reads).filter(([id]) => sources.some((source) => source.id === id)));
   const epics = [...new Set([...directory.state.entries.map(confirmedEpic), ...sourceState.sources.map((source) => sourceState.reads[source.id]?.graph?.epic.jira ?? source.epic)].filter((key): key is string => key !== null))].sort();
   const projectLabel = route.epicKey ?? (route.projectId === null ? "All projects" : projects.find(([id]) => id === route.projectId)?.[1] ?? "Project unavailable");
+  const contextEpic = scopedEpic && jiraIssueUrl(scopedEpic) ? scopedEpic : null;
+  let contextTitle = projectLabel;
+  if (route.epicKey) contextTitle = "Choose plan";
+  if (route.sourceId) contextTitle = selectedPlan?.title ?? "Source unavailable";
   const pickerPlans = contextPlanSources(linkedContext ? { ...route, epicKey: null, projectId: null } : route, sourceState.sources, sourceState.reads, linkedContext ? associationIds : null);
   const visitContext = (patch: Partial<KontorRoute>, queryOverride?: string) => {
     const candidate = { ...hostNavigation(host.id).route, ...patch };
@@ -111,13 +115,18 @@ function HostScreen(props: PluginScreenProps) {
     const result = openSessionById({ entries: directory.state.entries, id: entry.id, serverId: host.id, navigation: props.navigation });
     if (!result.ok) toast.error(result.message);
   };
+  const openExternalLink = (target: string) => {
+    const url = safeHttpsUrl(target);
+    if (!url) { toast.error("This source link is not a valid HTTPS URL without credentials."); return; }
+    void Linking.openURL(url).catch(() => toast.error("This device could not open the source link."));
+  };
   const openDocumentLink = (target: string) => {
     if (!selectedPlan) { toast.error("The selected plan source is unavailable."); return; }
     const linkedSources = associationIds ? sourceState.sources.filter((source) => associationIds.includes(source.id)) : sourceState.sources;
     const link = resolvePlanLink(target, selectedPlan, linkedSources, directory.state.entries);
     if (link.kind === "source") selectSource(link.id, "Plan");
     else if (link.kind === "session") { const entry = directory.state.entries.find((entry) => entry.id === link.id); if (entry) open(entry); }
-    else if (link.kind === "url") void Linking.openURL(link.url).catch(() => toast.error("This device could not open the source link."));
+    else if (link.kind === "url") openExternalLink(link.url);
     else toast.error(link.reason);
   };
   const conversationReturn = route.originAgentId && props.navigation ? <Action label="Return to conversation" colors={colors} disabled={!directory.state.entries.some((entry) => entry.id === route.originAgentId)} onPress={() => { const entry = directory.state.entries.find((candidate) => candidate.id === route.originAgentId); if (entry) open(entry); }} /> : null;
@@ -138,7 +147,7 @@ function HostScreen(props: PluginScreenProps) {
     onChooseSource={() => setSheet("context")}
     onSelect={selectSource} onPlan={(sourceId, taskId) => visit({ tab: "Plan", sourceId, sourceRevision: sourceState.reads[sourceId]?.revision ?? null, originAgentId: route.originAgentId }, taskId ?? "")}
     onIssue={(key) => { const url = jiraIssueUrl(key); if (url) void Linking.openURL(url).catch(() => toast.error("This device could not open the verified Jira link.")); }} />;
-  else page = <ReadOnlyPage key={routeViewKey(route)} compact={layout.compact} onChooseSource={() => setSheet("context")} onDocumentLink={openDocumentLink} contextLabel={route.sourceId ? selectedPlan?.title ?? "Source unavailable" : projectLabel} tab={route.tab} colors={colors} entries={entries} directory={directory.state} sources={sources} reads={reads} sourceId={route.sourceId}
+  else page = <ReadOnlyPage key={routeViewKey(route)} compact={layout.compact} onChooseSource={() => setSheet("context")} onDocumentLink={openDocumentLink} onExternalLink={openExternalLink} contextLabel={route.sourceId ? selectedPlan?.title ?? "Source unavailable" : projectLabel} tab={route.tab} colors={colors} entries={entries} directory={directory.state} sources={sources} reads={reads} sourceId={route.sourceId}
     teamsSources={sourceState.sources.filter((source) => source.kind === "teams")} teamsJsonReads={Object.fromEntries(Object.entries(sourceState.reads).filter(([, read]) => read.source.kind === "teams"))}
     teamsSnapshots={sourceState.teamsSnapshots} teamsErrors={sourceState.teamsErrors} teamsBindingDiagnostics={sourceState.teamsBindingDiagnostics} teamsAvailable={sourceState.available}
     sourceError={sourceState.error} query={query} setQuery={setSearch} onSource={(sourceId) => selectSource(sourceId, "Plan")} onOpen={open} onTab={(tab) => visit({ tab, originAgentId: null })}
@@ -148,8 +157,11 @@ function HostScreen(props: PluginScreenProps) {
   return <SafeAreaView style={{ flex: 1, backgroundColor: colors.surface0 }}><KeyboardAvoidingView behavior={layout.platform === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
     <View testID="kontor-context-row" style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingRight: 8, borderBottomWidth: 1, borderColor: colors.border, minHeight: 52 }}>
       <Action label="‹ Back" colors={colors} disabled={hostNavigation(host.id).back.length === 0} onPress={() => { const next = goBack(host.id); setRoute({ ...next }); setQuery(readRouteView(host.id, next).query); }} />
-      <View style={{ flex: 1, minWidth: 0, borderWidth: 1, borderColor: colors.border, borderRadius: 7 }}><Action label={`${selectedPlan && scopedEpic ? `${scopedEpic} · ` : ""}${route.sourceId ? selectedPlan?.title ?? "Source unavailable" : projectLabel} ▾`} accessibilityLabel={`Project context: ${scopedEpic ?? projectLabel}, ${selectedPlan?.title ?? "choose plan"}`} colors={colors} onPress={() => setSheet("context")} /></View>
-      <NativeFreshnessPill state={directory.state} hostOnline={hostStatus === "online"} colors={colors} />
+      <View testID="kontor-context-picker" style={{ flex: 1, minWidth: 0, borderWidth: 1, borderColor: colors.border, borderRadius: 7 }}>
+        <Action label={layout.compact ? `${contextTitle} ▾` : `${selectedPlan && scopedEpic ? `${scopedEpic} · ` : ""}${route.sourceId ? selectedPlan?.title ?? "Source unavailable" : projectLabel} ▾`} accessibilityLabel={`Project context: ${contextTitle}${contextEpic ? `, ${contextEpic}` : ""}`} colors={colors} onPress={() => setSheet("context")} />
+        {layout.compact && contextEpic ? <Text testID="kontor-context-epic" accessible={false} pointerEvents="none" numberOfLines={1} style={{ position: "absolute", bottom: -1, left: 10, paddingHorizontal: 3, fontSize: 10, lineHeight: 11, color: colors.foregroundMuted, backgroundColor: colors.surface0 }}>{contextEpic}</Text> : null}
+      </View>
+      <NativeFreshnessPill state={directory.state} hostStatus={hostStatus} colors={colors} />
       {!layout.compact ? conversationReturn : null}
     </View>
     {layout.compact && conversationReturn ? <View testID="kontor-conversation-return-row" style={{ minHeight: 44, flexDirection: "row", justifyContent: "flex-end" }}>{conversationReturn}</View> : null}

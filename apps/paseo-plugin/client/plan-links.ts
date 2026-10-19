@@ -1,6 +1,26 @@
 import type { DirectoryEntry } from "./session-directory";
 import type { ReadSourceSummary } from "../shared/read-sources";
 export type PlanLink = { kind: "session"; id: string } | { kind: "source"; id: string } | { kind: "url"; url: string } | { kind: "blocked"; reason: string };
+/** Explicit HTTPS only; no RN URL polyfill, credentials or ambiguous authority. */
+export function safeHttpsUrl(target: string): string | null {
+  if (/[\u0000-\u0020\u007f\\<>"{}|^`]/.test(target) || /%(?![a-f0-9]{2})/i.test(target)) return null;
+  const https = target.match(/^https:\/\/([^/?#]+)(?:[/?#].*)?$/i);
+  const authority = https?.[1]?.match(/^(\[[a-f0-9:]+\]|[a-z0-9.-]+)(?::(\d{1,5}))?$/i);
+  if (!authority) return null;
+  const host = authority[1]!;
+  const port = authority[2];
+  if (port && (Number(port) < 1 || Number(port) > 65535)) return null;
+  if (host.startsWith("[")) {
+    const halves = host.slice(1, -1).split("::");
+    const groups = halves.flatMap((half) => half ? half.split(":") : []);
+    if (halves.length > 2 || groups.some((group) => !/^[a-f0-9]{1,4}$/i.test(group))) return null;
+    if (halves.length === 2 ? groups.length >= 8 : groups.length !== 8) return null;
+  } else {
+    if (host.length > 253 || host.split(".").some((label) => !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label))) return null;
+    if (/^\d+\.\d+\.\d+\.\d+$/.test(host) && host.split(".").some((part) => Number(part) > 255)) return null;
+  }
+  return target;
+}
 export function resolvePlanLink(target: string, current: ReadSourceSummary, sources: readonly ReadSourceSummary[], entries: readonly DirectoryEntry[]): PlanLink {
   const blocked: PlanLink = { kind: "blocked", reason: "This link is not a configured plan, observed native session or safe HTTPS URL." };
   if (/[\u0000-\u0020\u007f\\]/.test(target)) return blocked;
@@ -12,14 +32,8 @@ export function resolvePlanLink(target: string, current: ReadSourceSummary, sour
       const id = decodeURIComponent(session[1]!);
       return entries.some((entry) => entry.id === id) ? { kind: "session", id } : { kind: "blocked", reason: "This exact native session is not in the current host directory." };
     }
-    const https = target.match(/^https:\/\/([^/?#]+)(?:[/?#].*)?$/i);
-    if (https) {
-      const authority = https[1]!;
-      if (!/^(?:[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?|\[[a-f0-9:]+\])(?::\d{1,5})?$/i.test(authority)) return blocked;
-      const port = authority.match(/:(\d+)$/)?.[1];
-      if (port && (Number(port) < 1 || Number(port) > 65535)) return blocked;
-      return { kind: "url", url: target };
-    }
+    const url = safeHttpsUrl(target);
+    if (url) return { kind: "url", url };
     if (/^[a-z][a-z0-9+.-]*:/i.test(target) && !target.startsWith("file:///")) return blocked;
     const path = decodeURIComponent(target.replace(/^file:\/\//, "").split("#")[0]!);
     if (path.startsWith("//") || /[?\u0000-\u001f\u007f\\]/.test(path)) return blocked;
