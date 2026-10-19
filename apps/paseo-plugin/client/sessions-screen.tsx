@@ -6,13 +6,27 @@ import {
   useToast,
 } from "@getpaseo/plugin/client/react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentRef,
+} from "react";
+import {
+  AccessibilityInfo,
   ActivityIndicator,
+  Animated,
   Pressable,
   Text,
   View,
   type FlatList as NativeFlatList,
+  type LayoutChangeEvent,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
 } from "react-native";
 import { openSessionById } from "./session-actions";
 import {
@@ -37,6 +51,17 @@ import {
   writeScrollOffset,
   type SessionViewState,
 } from "./session-view-store";
+import {
+  accumulateScrollDelta,
+  EMPTY_SCROLL_ACCUMULATOR,
+  initialToolbarVisibility,
+  reduceToolbarVisibility,
+  toolbarCompensationHeight,
+  toolbarLayout,
+  toolbarScrollCompensation,
+  type ScrollAccumulator,
+  type ToolbarVisibility,
+} from "./toolbar-visibility";
 import { useSessionDirectory } from "./use-session-directory";
 
 type ThemeColors = PluginTheme["colors"];
@@ -54,7 +79,13 @@ function statusColor(entry: DirectoryEntry, colors: ThemeColors): string {
 }
 
 export function indicatorColor(entry: DirectoryEntry, colors: ThemeColors): string {
-  return entry.needsInput ? colors.statusWarning : statusColor(entry, colors);
+  if (entry.needsInput) {
+    return colors.statusWarning;
+  }
+  if (entry.status === "error" || entry.attentionReason === "error") {
+    return colors.statusDanger;
+  }
+  return statusColor(entry, colors);
 }
 
 export const FILTERS_TOGGLE_TEST_ID = "sessions-advanced-toggle";
@@ -220,7 +251,8 @@ const SessionRow = memo(function SessionRow({
             numberOfLines={1}
             style={{
               color: colors.surface0,
-              backgroundColor: colors.statusWarning,
+              backgroundColor:
+                attention === "Error" ? colors.statusDanger : colors.statusWarning,
               borderRadius: 6,
               overflow: "hidden",
               paddingHorizontal: 5,
@@ -242,22 +274,31 @@ export function FiltersButton({
   expanded,
   colors,
   compact,
+  disabled = false,
+  onBlur,
+  onFocus,
   onPress,
 }: {
   readonly activeCount: number;
   readonly expanded: boolean;
   readonly colors: ThemeColors;
   readonly compact: boolean;
+  readonly disabled?: boolean;
+  readonly onBlur?: () => void;
+  readonly onFocus?: () => void;
   readonly onPress: () => void;
 }) {
   return (
     <Pressable
       testID={FILTERS_TOGGLE_TEST_ID}
+      disabled={disabled}
       accessibilityRole="button"
       accessibilityState={{ expanded }}
       accessibilityLabel={filtersAccessibilityLabel(activeCount)}
       accessibilityHint={expanded ? "Collapses filter options" : "Expands filter options"}
       hitSlop={4}
+      onBlur={onBlur}
+      onFocus={onFocus}
       onPress={onPress}
       style={{
         flex: 1,
@@ -327,19 +368,28 @@ export function FiltersButton({
 export function ClearFiltersButton({
   colors,
   compact,
+  disabled = false,
+  onBlur,
+  onFocus,
   onPress,
 }: {
   readonly colors: ThemeColors;
   readonly compact: boolean;
+  readonly disabled?: boolean;
+  readonly onBlur?: () => void;
+  readonly onFocus?: () => void;
   readonly onPress: () => void;
 }) {
   return (
     <Pressable
       testID={CLEAR_FILTERS_TEST_ID}
+      disabled={disabled}
       accessibilityRole="button"
       accessibilityLabel="Clear filters"
       accessibilityHint="Clears status, attention and archive filters"
       hitSlop={4}
+      onBlur={onBlur}
+      onFocus={onFocus}
       onPress={onPress}
       style={{
         minHeight: FILTERS_TOUCH_TARGET,
@@ -367,25 +417,188 @@ export function ClearFiltersButton({
   );
 }
 
+export function SlimActionButton({
+  testID,
+  label,
+  accessibilityLabel,
+  accessibilityHint,
+  count,
+  colors,
+  disabled = false,
+  onPress,
+}: {
+  readonly testID: string;
+  readonly label: string;
+  readonly accessibilityLabel: string;
+  readonly accessibilityHint: string;
+  readonly count?: number;
+  readonly colors: ThemeColors;
+  readonly disabled?: boolean;
+  readonly onPress: () => void;
+}) {
+  return (
+    <Pressable
+      testID={testID}
+      disabled={disabled}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      accessibilityHint={accessibilityHint}
+      hitSlop={4}
+      onPress={onPress}
+      style={{
+        minHeight: FILTERS_TOUCH_TARGET,
+        minWidth: FILTERS_TOUCH_TARGET,
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 5,
+        paddingHorizontal: 10,
+        paddingVertical: 8,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: colors.border,
+        backgroundColor: colors.surface1,
+      }}
+    >
+      <Text
+        numberOfLines={1}
+        style={{ color: colors.foreground, fontSize: 13, fontWeight: "600" }}
+      >
+        {label}
+      </Text>
+      {count !== undefined && count > 0 ? (
+        <View
+          accessibilityElementsHidden
+          importantForAccessibility="no"
+          style={{
+            minWidth: 18,
+            height: 18,
+            borderRadius: 9,
+            paddingHorizontal: 4,
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: colors.accent,
+          }}
+        >
+          <Text style={{ color: colors.accentForeground, fontSize: 10, fontWeight: "700" }}>
+            {count}
+          </Text>
+        </View>
+      ) : null}
+    </Pressable>
+  );
+}
+
+export function SlimToolbar({
+  hostLabel,
+  statusLabel,
+  statusColor,
+  activeCount,
+  colors,
+  compact,
+  disabled = false,
+  onSearch,
+  onFilters,
+}: {
+  readonly hostLabel: string;
+  readonly statusLabel: string;
+  readonly statusColor: string;
+  readonly activeCount: number;
+  readonly colors: ThemeColors;
+  readonly compact: boolean;
+  readonly disabled?: boolean;
+  readonly onSearch: () => void;
+  readonly onFilters: () => void;
+}) {
+  return (
+    <View
+      testID="sessions-slim-toolbar"
+      style={{
+        minHeight: FILTERS_TOUCH_TARGET,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+      }}
+    >
+      <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 7 }}>
+        <View
+          style={{
+            width: 8,
+            height: 8,
+            borderRadius: 4,
+            backgroundColor: statusColor,
+          }}
+        />
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text
+            numberOfLines={1}
+            style={{
+              color: colors.foreground,
+              fontSize: compact ? 14 : 13,
+              fontWeight: "600",
+            }}
+          >
+            {hostLabel}
+          </Text>
+          <Text
+            numberOfLines={1}
+            style={{ color: statusColor, fontSize: 11, marginTop: 1 }}
+          >
+            {statusLabel}
+          </Text>
+        </View>
+      </View>
+      <SlimActionButton
+        testID="sessions-slim-search"
+        label="Search"
+        accessibilityLabel="Search sessions"
+        accessibilityHint="Shows the search and filter controls"
+        colors={colors}
+        disabled={disabled}
+        onPress={onSearch}
+      />
+      <SlimActionButton
+        testID="sessions-slim-filters"
+        label="Filters"
+        accessibilityLabel={filtersAccessibilityLabel(activeCount)}
+        accessibilityHint="Shows the filter options"
+        count={activeCount}
+        colors={colors}
+        disabled={disabled}
+        onPress={onFilters}
+      />
+    </View>
+  );
+}
+
 function FilterChip({
   active,
   label,
   colors,
+  disabled = false,
+  onBlur,
+  onFocus,
   onPress,
   testID,
 }: {
   active: boolean;
   label: string;
   colors: ThemeColors;
+  disabled?: boolean;
+  onBlur?: () => void;
+  onFocus?: () => void;
   onPress: () => void;
   testID?: string;
 }) {
   return (
     <Pressable
       testID={testID}
+      disabled={disabled}
       accessibilityRole="button"
       accessibilityState={{ selected: active }}
       accessibilityLabel={label}
+      onBlur={onBlur}
+      onFocus={onFocus}
       onPress={onPress}
       style={{
         paddingHorizontal: 10,
@@ -414,6 +627,9 @@ function ToggleRow({
   description,
   checked,
   colors,
+  disabled = false,
+  onBlur,
+  onFocus,
   onPress,
   testID,
 }: {
@@ -421,16 +637,22 @@ function ToggleRow({
   description: string;
   checked: boolean;
   colors: ThemeColors;
+  disabled?: boolean;
+  onBlur?: () => void;
+  onFocus?: () => void;
   onPress: () => void;
   testID?: string;
 }) {
   return (
     <Pressable
       testID={testID}
+      disabled={disabled}
       accessibilityRole="switch"
       accessibilityState={{ checked }}
       accessibilityLabel={label}
       accessibilityHint={description}
+      onBlur={onBlur}
+      onFocus={onFocus}
       onPress={onPress}
       style={{
         flexDirection: "row",
@@ -469,15 +691,21 @@ function Banner({
   message,
   actionLabel,
   colors,
+  disabled = false,
   tone,
   onAction,
+  onBlur,
+  onFocus,
   testID,
 }: {
   message: string;
   actionLabel?: string;
   colors: ThemeColors;
+  disabled?: boolean;
   tone: "warning" | "danger";
   onAction?: () => void;
+  onBlur?: () => void;
+  onFocus?: () => void;
   testID?: string;
 }) {
   return (
@@ -498,6 +726,9 @@ function Banner({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={actionLabel}
+          disabled={disabled}
+          onBlur={onBlur}
+          onFocus={onFocus}
           onPress={onAction}
           style={{ alignSelf: "flex-start", paddingVertical: 4 }}
         >
@@ -528,6 +759,57 @@ export function SessionsScreen({ host, layout, navigation, theme }: PluginScreen
   entriesRef.current = state.entries;
   const restoredRef = useRef(false);
   const rowHeight = compact ? 64 : 68;
+  const [toolbarCollapsed, setToolbarCollapsed] = useState(
+    () => initialToolbarVisibility(readSessionView(host.id).scrollOffset) === "collapsed",
+  );
+  const toolbarCollapsedRef = useRef(toolbarCollapsed);
+  toolbarCollapsedRef.current = toolbarCollapsed;
+  const searchFocusedRef = useRef(false);
+  const toolbarControlFocusedRef = useRef(false);
+  const filterPinnedUntilRef = useRef(0);
+  const screenReaderRef = useRef(false);
+  const reduceMotionRef = useRef(false);
+  const toolbarOpacityRef = useRef<Animated.Value | null>(null);
+  if (toolbarOpacityRef.current === null) {
+    toolbarOpacityRef.current = new Animated.Value(toolbarCollapsed ? 0 : 1);
+  }
+  const toolbarOpacity = toolbarOpacityRef.current;
+  const expandedToolbarHeightRef = useRef(0);
+  const slimHeightRef = useRef(FILTERS_TOUCH_TARGET);
+  const scrollOffsetRef = useRef(readSessionView(host.id).scrollOffset);
+  const lastScrollOffsetRef = useRef(scrollOffsetRef.current);
+  const maxScrollOffsetRef = useRef(0);
+  const scrollAccumulatorRef = useRef<ScrollAccumulator>(EMPTY_SCROLL_ACCUMULATOR);
+  const programmaticUntilRef = useRef(0);
+  const pendingCompensationRef = useRef<number | null>(null);
+  const pendingRevealRef = useRef<{ readonly focusSearch: boolean } | null>(null);
+  const revealFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchInputRef = useRef<ComponentRef<typeof TextInput> | null>(null);
+  const previousOrderRef = useRef(state.entries.map((entry) => entry.id).join("\n"));
+
+  useEffect(() => {
+    return () => {
+      if (revealFallbackTimerRef.current !== null) {
+        clearTimeout(revealFallbackTimerRef.current);
+        revealFallbackTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    const order = state.entries.map((entry) => entry.id).join("\n");
+    if (order === previousOrderRef.current) {
+      return;
+    }
+    previousOrderRef.current = order;
+    // A live reorder can adjust the list offset. Do not read that as a
+    // deliberate scroll and toggle the toolbar. Ordinary status updates that
+    // keep the order do not suppress scrolling.
+    programmaticUntilRef.current = Math.max(
+      programmaticUntilRef.current,
+      Date.now() + 150,
+    );
+  }, [state.entries]);
 
   const updateView = useCallback(
     (patch: Partial<SessionViewState>) => {
@@ -536,11 +818,180 @@ export function SessionsScreen({ host, layout, navigation, theme }: PluginScreen
     [host.id],
   );
 
+  const setToolbarVisibility = useCallback((next: ToolbarVisibility) => {
+    if (next === (toolbarCollapsedRef.current ? "collapsed" : "expanded")) {
+      return;
+    }
+    const collapsed = next === "collapsed";
+    if (collapsed && expandedToolbarHeightRef.current <= 0) {
+      return;
+    }
+    const target = toolbarScrollCompensation({
+      currentOffset: scrollOffsetRef.current,
+      headerHeight: toolbarCompensationHeight({
+        fullHeight: expandedToolbarHeightRef.current,
+        slimHeight: slimHeightRef.current,
+        compact,
+      }),
+      direction: collapsed ? "collapse" : "reveal",
+      maxOffset: maxScrollOffsetRef.current,
+    });
+    pendingCompensationRef.current = target;
+    toolbarCollapsedRef.current = collapsed;
+    scrollAccumulatorRef.current = EMPTY_SCROLL_ACCUMULATOR;
+    setToolbarCollapsed(collapsed);
+  }, [compact]);
+
+  useLayoutEffect(() => {
+    const target = pendingCompensationRef.current;
+    if (target === null) {
+      return;
+    }
+    pendingCompensationRef.current = null;
+    programmaticUntilRef.current = Date.now() + 250;
+    scrollOffsetRef.current = target;
+    lastScrollOffsetRef.current = target;
+    writeScrollOffset(host.id, target);
+    listRef.current?.scrollToOffset({ offset: target, animated: false });
+  }, [host.id, toolbarCollapsed]);
+
+  useEffect(() => {
+    let mounted = true;
+    void AccessibilityInfo.isScreenReaderEnabled()
+      .then((enabled) => {
+        if (mounted) {
+          screenReaderRef.current = enabled;
+        }
+      })
+      .catch(() => undefined);
+    void AccessibilityInfo.isReduceMotionEnabled()
+      .then((enabled) => {
+        if (mounted) {
+          reduceMotionRef.current = enabled;
+        }
+      })
+      .catch(() => undefined);
+    const subscription = AccessibilityInfo.addEventListener(
+      "screenReaderChanged",
+      (enabled) => {
+        screenReaderRef.current = enabled;
+      },
+    );
+    const motionSubscription = AccessibilityInfo.addEventListener(
+      "reduceMotionChanged",
+      (enabled) => {
+        reduceMotionRef.current = enabled;
+      },
+    );
+    return () => {
+      mounted = false;
+      subscription.remove();
+      motionSubscription.remove();
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    if (toolbarCollapsed) {
+      // Collapse immediately. Keeping a fading overlay above the reclaimed
+      // list would obscure the rows the user is scrolling through.
+      toolbarOpacity.stopAnimation();
+      toolbarOpacity.setValue(0);
+      return;
+    }
+    const animation = Animated.timing(toolbarOpacity, {
+      toValue: 1,
+      duration: reduceMotionRef.current ? 0 : 120,
+      useNativeDriver: true,
+    });
+    animation.start();
+    return () => animation.stop();
+  }, [toolbarCollapsed, toolbarOpacity]);
+
+  const pinFilterInteraction = useCallback(() => {
+    filterPinnedUntilRef.current = Date.now() + 1_500;
+  }, []);
+
+  const handleToolbarControlFocus = useCallback(() => {
+    toolbarControlFocusedRef.current = true;
+    pinFilterInteraction();
+  }, [pinFilterInteraction]);
+
+  const handleToolbarControlBlur = useCallback(() => {
+    toolbarControlFocusedRef.current = false;
+  }, []);
+
+  const revealToolbar = useCallback(
+    (focusSearch = false) => {
+      pinFilterInteraction();
+      setToolbarVisibility("expanded");
+      if (focusSearch) {
+        setTimeout(() => searchInputRef.current?.focus(), 0);
+      }
+    },
+    [pinFilterInteraction, setToolbarVisibility],
+  );
+
+  const handleRevealSearch = useCallback(() => {
+    revealToolbar(true);
+  }, [revealToolbar]);
+
+  const handleRevealFilters = useCallback(() => {
+    pinFilterInteraction();
+    if (!view.advancedOpen) {
+      updateView({ advancedOpen: true });
+      if (toolbarCollapsedRef.current) {
+        pendingRevealRef.current = { focusSearch: false };
+        if (revealFallbackTimerRef.current !== null) {
+          clearTimeout(revealFallbackTimerRef.current);
+        }
+        revealFallbackTimerRef.current = setTimeout(() => {
+          revealFallbackTimerRef.current = null;
+          if (!pendingRevealRef.current) {
+            return;
+          }
+          pendingRevealRef.current = null;
+          setToolbarVisibility("expanded");
+        }, 80);
+      }
+      return;
+    }
+    revealToolbar(false);
+  }, [pinFilterInteraction, revealToolbar, updateView, view.advancedOpen]);
+
+  const handleToolbarLayout = useCallback(
+    (event: LayoutChangeEvent) => {
+      const height = event.nativeEvent.layout.height;
+      if (height > 0) {
+        expandedToolbarHeightRef.current = height;
+      }
+      if (revealFallbackTimerRef.current !== null) {
+        clearTimeout(revealFallbackTimerRef.current);
+        revealFallbackTimerRef.current = null;
+      }
+      const pending = pendingRevealRef.current;
+      if (!pending) {
+        return;
+      }
+      pendingRevealRef.current = null;
+      setToolbarVisibility("expanded");
+      if (pending.focusSearch) {
+        setTimeout(() => searchInputRef.current?.focus(), 0);
+      }
+    },
+    [setToolbarVisibility],
+  );
+
+  const handleAdvancedToggle = useCallback(() => {
+    pinFilterInteraction();
+    updateView({ advancedOpen: !view.advancedOpen });
+  }, [pinFilterInteraction, updateView, view.advancedOpen]);
+
   const updateFilter = useCallback(
     (patch: Partial<SessionFilters>) => {
+      pinFilterInteraction();
       updateView({ ...patch, scrollOffset: 0 });
     },
-    [updateView],
+    [pinFilterInteraction, updateView],
   );
 
   const handleOpen = useCallback(
@@ -559,17 +1010,72 @@ export function SessionsScreen({ host, layout, navigation, theme }: PluginScreen
   );
 
   const handleClearFilters = useCallback(() => {
+    pinFilterInteraction();
     updateView({
       status: "all",
       attentionOnly: false,
       includeArchived: false,
       scrollOffset: 0,
     });
-  }, [updateView]);
+  }, [pinFilterInteraction, updateView]);
 
   const handleClearAll = useCallback(() => {
+    pinFilterInteraction();
     setView(resetSessionView(host.id));
-  }, [host.id]);
+  }, [host.id, pinFilterInteraction]);
+
+  const handleScrollBeginDrag = useCallback(() => {
+    filterPinnedUntilRef.current = 0;
+    scrollAccumulatorRef.current = EMPTY_SCROLL_ACCUMULATOR;
+  }, []);
+
+  const handleListScroll = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+      const offset = contentOffset.y;
+      maxScrollOffsetRef.current = Math.max(
+        0,
+        contentSize.height - layoutMeasurement.height,
+      );
+      scrollOffsetRef.current = offset;
+      writeScrollOffset(host.id, offset);
+
+      const suppressed = Date.now() < programmaticUntilRef.current;
+      if (suppressed) {
+        scrollAccumulatorRef.current = EMPTY_SCROLL_ACCUMULATOR;
+      } else {
+        scrollAccumulatorRef.current = accumulateScrollDelta(
+          scrollAccumulatorRef.current,
+          offset - lastScrollOffsetRef.current,
+        );
+      }
+      const current: ToolbarVisibility = toolbarCollapsedRef.current
+        ? "collapsed"
+        : "expanded";
+      const next = reduceToolbarVisibility(current, {
+        offset,
+        delta: scrollAccumulatorRef.current.distance,
+        contentHeight: contentSize.height,
+        viewportHeight: layoutMeasurement.height,
+        headerHeight: toolbarCompensationHeight({
+          fullHeight: expandedToolbarHeightRef.current,
+          slimHeight: slimHeightRef.current,
+          compact,
+        }),
+        pinned:
+          searchFocusedRef.current ||
+          toolbarControlFocusedRef.current ||
+          screenReaderRef.current ||
+          Date.now() < filterPinnedUntilRef.current,
+        suppressed,
+      });
+      lastScrollOffsetRef.current = offset;
+      if (next !== current) {
+        setToolbarVisibility(next);
+      }
+    },
+    [compact, host.id, setToolbarVisibility],
+  );
 
   const visible = useMemo(
     () =>
@@ -601,6 +1107,9 @@ export function SessionsScreen({ host, layout, navigation, theme }: PluginScreen
     if (offset <= 0) {
       return;
     }
+    scrollOffsetRef.current = offset;
+    lastScrollOffsetRef.current = offset;
+    programmaticUntilRef.current = Date.now() + 300;
     const timer = setTimeout(() => {
       listRef.current?.scrollToOffset({ offset, animated: false });
     }, 0);
@@ -620,8 +1129,12 @@ export function SessionsScreen({ host, layout, navigation, theme }: PluginScreen
     (state.status === "ready" && !state.live && state.staleReason !== null);
   const navigationMissing = navigation === undefined;
 
-  const header = (
-    <View style={{ gap: 10 }}>
+  const fullToolbar = (
+    <View
+      testID="sessions-full-toolbar"
+      onLayout={handleToolbarLayout}
+      style={{ gap: 10 }}
+    >
       <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text
@@ -659,6 +1172,9 @@ export function SessionsScreen({ host, layout, navigation, theme }: PluginScreen
           actionLabel="Retry"
           onAction={refresh}
           colors={colors}
+          disabled={toolbarCollapsed}
+          onBlur={handleToolbarControlBlur}
+          onFocus={handleToolbarControlFocus}
         />
       ) : null}
 
@@ -668,14 +1184,25 @@ export function SessionsScreen({ host, layout, navigation, theme }: PluginScreen
           message="This Paseo app does not expose native session navigation to plugins. Update Paseo to open sessions from this screen."
           tone="warning"
           colors={colors}
+          disabled={toolbarCollapsed}
+          onBlur={handleToolbarControlBlur}
+          onFocus={handleToolbarControlFocus}
         />
       ) : null}
 
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
         <TextInput
+          ref={searchInputRef}
           testID="sessions-search"
           value={view.query}
+          editable={!toolbarCollapsed}
           onChangeText={(query) => updateFilter({ query })}
+          onFocus={() => {
+            searchFocusedRef.current = true;
+          }}
+          onBlur={() => {
+            searchFocusedRef.current = false;
+          }}
           placeholder="Search sessions, workspaces, projects"
           placeholderTextColor={colors.foregroundMuted}
           autoCapitalize="none"
@@ -698,6 +1225,7 @@ export function SessionsScreen({ host, layout, navigation, theme }: PluginScreen
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Clear search"
+            disabled={toolbarCollapsed}
             onPress={() => updateFilter({ query: "" })}
             style={{ paddingHorizontal: 8, paddingVertical: 8 }}
           >
@@ -716,6 +1244,9 @@ export function SessionsScreen({ host, layout, navigation, theme }: PluginScreen
             label={statusFilterLabel(status)}
             active={view.status === status}
             colors={colors}
+            disabled={toolbarCollapsed}
+            onBlur={handleToolbarControlBlur}
+            onFocus={handleToolbarControlFocus}
             onPress={() => updateFilter({ status })}
           />
         ))}
@@ -724,6 +1255,9 @@ export function SessionsScreen({ host, layout, navigation, theme }: PluginScreen
           label="Attention"
           active={view.attentionOnly}
           colors={colors}
+          disabled={toolbarCollapsed}
+          onBlur={handleToolbarControlBlur}
+          onFocus={handleToolbarControlFocus}
           onPress={() => updateFilter({ attentionOnly: !view.attentionOnly })}
         />
       </View>
@@ -735,12 +1269,18 @@ export function SessionsScreen({ host, layout, navigation, theme }: PluginScreen
             expanded={view.advancedOpen}
             colors={colors}
             compact={compact}
-            onPress={() => updateView({ advancedOpen: !view.advancedOpen })}
+            disabled={toolbarCollapsed}
+            onBlur={handleToolbarControlBlur}
+            onFocus={handleToolbarControlFocus}
+            onPress={handleAdvancedToggle}
           />
           {activeCount > 0 ? (
             <ClearFiltersButton
               colors={colors}
               compact={compact}
+              disabled={toolbarCollapsed}
+              onBlur={handleToolbarControlBlur}
+              onFocus={handleToolbarControlFocus}
               onPress={handleClearFilters}
             />
           ) : null}
@@ -762,6 +1302,9 @@ export function SessionsScreen({ host, layout, navigation, theme }: PluginScreen
               description="Finished, failed, needs input or waiting for permission."
               checked={view.attentionOnly}
               colors={colors}
+              disabled={toolbarCollapsed}
+              onBlur={handleToolbarControlBlur}
+              onFocus={handleToolbarControlFocus}
               onPress={() => updateFilter({ attentionOnly: !view.attentionOnly })}
             />
             <ToggleRow
@@ -770,12 +1313,82 @@ export function SessionsScreen({ host, layout, navigation, theme }: PluginScreen
               description="Archived is separate from the native closed state."
               checked={view.includeArchived}
               colors={colors}
+              disabled={toolbarCollapsed}
+              onBlur={handleToolbarControlBlur}
+              onFocus={handleToolbarControlFocus}
               onPress={() => updateFilter({ includeArchived: !view.includeArchived })}
             />
           </View>
         ) : null}
       </View>
     </View>
+  );
+
+  const toolbar = toolbarLayout({
+    collapsed: toolbarCollapsed,
+    compact,
+  });
+  const slimSlot = (
+    <View
+      testID="sessions-slim-toolbar-slot"
+      onLayout={(event) => {
+        const height = event.nativeEvent.layout.height;
+        if (height > 0) {
+          slimHeightRef.current = height;
+        }
+      }}
+      pointerEvents={toolbar.showSlimRow ? "auto" : "none"}
+      accessibilityElementsHidden={!toolbar.showSlimRow}
+      importantForAccessibility={
+        toolbar.showSlimRow ? "auto" : "no-hide-descendants"
+      }
+      style={
+        toolbar.showSlimRow
+          ? undefined
+          : {
+              position: "absolute",
+              top: 0,
+              left: 0,
+              right: 0,
+              opacity: 0,
+            }
+      }
+    >
+      <SlimToolbar
+        hostLabel={host.label}
+        statusLabel={label}
+        statusColor={labelColor}
+        activeCount={activeCount}
+        colors={colors}
+        compact={compact}
+        disabled={!toolbar.showSlimRow}
+        onSearch={handleRevealSearch}
+        onFilters={handleRevealFilters}
+      />
+    </View>
+  );
+  const fullToolbarSlot = (
+    <Animated.View
+      testID="sessions-full-toolbar-slot"
+      pointerEvents={toolbar.showFullToolbar ? "auto" : "none"}
+      accessibilityElementsHidden={!toolbar.showFullToolbar}
+      importantForAccessibility={
+        toolbar.showFullToolbar ? "auto" : "no-hide-descendants"
+      }
+      style={[
+        toolbar.showFullToolbar
+          ? undefined
+          : {
+              position: "absolute",
+              top: 0,
+              left: 0,
+              right: 0,
+            },
+        { opacity: toolbarOpacity },
+      ]}
+    >
+      {fullToolbar}
+    </Animated.View>
   );
 
   if (state.entries.length === 0 && (state.status === "loading" || state.status === "idle")) {
@@ -788,7 +1401,8 @@ export function SessionsScreen({ host, layout, navigation, theme }: PluginScreen
           gap: 12,
         }}
       >
-        {header}
+        {slimSlot}
+        {fullToolbarSlot}
         <View style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 10 }}>
           <ActivityIndicator color={colors.foregroundMuted} />
           <Text style={{ color: colors.foregroundMuted, fontSize: 13 }}>
@@ -816,7 +1430,8 @@ export function SessionsScreen({ host, layout, navigation, theme }: PluginScreen
         gap: 8,
       }}
     >
-      {header}
+      {slimSlot}
+      {fullToolbarSlot}
       <FlatList
         ref={listRef}
         testID="sessions-list"
@@ -830,10 +1445,10 @@ export function SessionsScreen({ host, layout, navigation, theme }: PluginScreen
         })}
         initialNumToRender={24}
         windowSize={11}
-        onScroll={(event) => {
-          writeScrollOffset(host.id, event.nativeEvent.contentOffset.y);
-        }}
-        scrollEventThrottle={120}
+        onScroll={handleListScroll}
+        onScrollBeginDrag={handleScrollBeginDrag}
+        maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+        scrollEventThrottle={16}
         contentContainerStyle={visible.length === 0 ? { flexGrow: 1 } : undefined}
         renderItem={({ item }) => (
           <SessionRow

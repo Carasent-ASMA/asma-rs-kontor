@@ -4,9 +4,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("react-native", () => ({
   AccessibilityInfo: {
     addEventListener: () => ({ remove: () => undefined }),
+    isReduceMotionEnabled: async () => false,
     isScreenReaderEnabled: async () => false,
   },
   ActivityIndicator: () => null,
+  Animated: {
+    Value: class {
+      constructor(_value: number) {}
+      setValue() {}
+      stopAnimation() {}
+    },
+    View: () => null,
+    timing: () => ({ start: () => undefined, stop: () => undefined }),
+  },
   Pressable: () => null,
   Text: () => null,
   View: () => null,
@@ -34,6 +44,8 @@ import {
   filtersAccessibilityLabel,
   filtersDisclosureGlyph,
   indicatorColor,
+  SlimActionButton,
+  SlimToolbar,
 } from "../client/sessions-screen";
 import {
   clearSessionViews,
@@ -41,6 +53,10 @@ import {
   readSessionView,
 } from "../client/session-view-store";
 import { DEFAULT_SESSION_FILTERS } from "../client/session-view";
+import {
+  reduceToolbarVisibility,
+  toolbarLayout,
+} from "../client/toolbar-visibility";
 import { sessionEntry } from "./session-fixtures";
 
 const colors = {
@@ -79,6 +95,29 @@ function collectText(node: unknown): string {
 
 function styleOf(element: ElementLike): Record<string, unknown> {
   return element.props.style as Record<string, unknown>;
+}
+
+function findAll(
+  node: unknown,
+  predicate: (element: ElementLike) => boolean,
+): ElementLike[] {
+  if (node === null || node === undefined || typeof node !== "object") {
+    return [];
+  }
+  if (Array.isArray(node)) {
+    return node.flatMap((child) => findAll(child, predicate));
+  }
+  const element = node as ElementLike;
+  return [
+    ...(predicate(element) ? [element] : []),
+    ...findAll(element.props.children, predicate),
+  ];
+}
+
+function findByTestID(node: unknown, testID: string): ElementLike {
+  const found = findAll(node, (element) => element.props.testID === testID);
+  expect(found).toHaveLength(1);
+  return found[0]!;
 }
 
 describe("Kontor filters affordance", () => {
@@ -146,6 +185,70 @@ describe("Kontor filters affordance", () => {
     expect(collectText(element)).toContain("Clear filters");
   });
 
+  it("keeps one slim host/state row with Search and Filters actions", () => {
+    const opened: string[] = [];
+    const element = SlimToolbar({
+      hostLabel: "srv_tWq3jTzpOlc9",
+      statusLabel: "Stale",
+      statusColor: colors.statusWarning,
+      activeCount: 2,
+      colors,
+      compact: true,
+      onSearch: () => opened.push("search"),
+      onFilters: () => opened.push("filters"),
+    });
+
+    const text = collectText(element);
+    expect(element.props.testID).toBe("sessions-slim-toolbar");
+    expect(text).toContain("srv_tWq3jTzpOlc9");
+    expect(text).toContain("Stale");
+    expect(text).not.toContain("Kontor");
+
+    const search = findByTestID(element, "sessions-slim-search");
+    const filters = findByTestID(element, "sessions-slim-filters");
+    expect(search.props.label).toBe("Search");
+    expect(search.props.accessibilityLabel).toBe("Search sessions");
+    expect(filters.props.label).toBe("Filters");
+    expect(filters.props.count).toBe(2);
+    expect(filters.props.accessibilityLabel).toBe(filtersAccessibilityLabel(2));
+    expect(filters.props.accessibilityLabel).toContain("2 active");
+
+    (search.props.onPress as () => void)();
+    (filters.props.onPress as () => void)();
+    expect(opened).toEqual(["search", "filters"]);
+  });
+
+  it("gives both slim actions a 44x44 usable target", () => {
+    const search = SlimActionButton({
+      testID: "sessions-slim-search",
+      label: "Search",
+      accessibilityLabel: "Search sessions",
+      accessibilityHint: "Shows the search and filter controls",
+      colors,
+      onPress: () => undefined,
+    });
+    const filters = SlimActionButton({
+      testID: "sessions-slim-filters",
+      label: "Filters",
+      accessibilityLabel: filtersAccessibilityLabel(1),
+      accessibilityHint: "Shows the filter options",
+      count: 1,
+      colors,
+      onPress: () => undefined,
+    });
+
+    for (const element of [search, filters]) {
+      expect(element.props.accessibilityRole).toBe("button");
+      expect(styleOf(element).minHeight).toBeGreaterThanOrEqual(
+        FILTERS_TOUCH_TARGET,
+      );
+      expect(styleOf(element).minWidth).toBeGreaterThanOrEqual(
+        FILTERS_TOUCH_TARGET,
+      );
+    }
+    expect(collectText(filters)).toContain("1");
+  });
+
   it("keeps collapsed default and saved advanced expansion independent", () => {
     expect(DEFAULT_SESSION_FILTERS.advancedOpen).toBe(false);
     expect(readSessionView("host-a").advancedOpen).toBe(false);
@@ -155,14 +258,44 @@ describe("Kontor filters affordance", () => {
     expect(readSessionView("host-a").advancedOpen).toBe(true);
   });
 
+  it("does not change the saved view when toolbar visibility changes", () => {
+    const saved = patchSessionView("host-a", {
+      query: "ASMA-8540",
+      status: "running",
+      attentionOnly: true,
+      includeArchived: true,
+      advancedOpen: true,
+      scrollOffset: 240,
+    });
+    const before = { ...saved };
+
+    reduceToolbarVisibility("expanded", {
+      offset: 400,
+      delta: 40,
+      contentHeight: 2000,
+      viewportHeight: 600,
+      headerHeight: 200,
+      pinned: false,
+    });
+    toolbarLayout({ collapsed: true, compact: true });
+
+    expect(readSessionView("host-a")).toEqual(before);
+  });
+
   it("uses the warning indicator for a needs-input session and lifecycle colour otherwise", () => {
     const waiting = sessionEntry("waiting", {
       status: "running",
       pendingPermissionCount: 1,
     });
     const running = sessionEntry("running", { status: "running" });
+    const failed = sessionEntry("failed", {
+      status: "idle",
+      requiresAttention: false,
+      attentionReason: "error",
+    });
 
     expect(indicatorColor(waiting, colors)).toBe(colors.statusWarning);
     expect(indicatorColor(running, colors)).toBe(colors.accent);
+    expect(indicatorColor(failed, colors)).toBe(colors.statusDanger);
   });
 });

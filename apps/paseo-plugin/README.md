@@ -27,6 +27,14 @@ pill is the in-session return control where the composer supports it.
   bootstrap fails, the last inventory stays visible and the plugin retries the
   owned observation with bounded backoff. Cleanup cancels the retry and releases
   any owned subscription; a retry never creates a second observer.
+- **Needs input.** The installed native priority is followed: a pending
+  permission or `attentionReason: "permission"` wins over the raw lifecycle even
+  when `requiresAttention` is false. The row gets an amber indicator and a
+  **Needs input** label, and the attention filter includes it. The raw
+  `running`/`idle`/`error`/`closed`/`initializing` status stays separate. The
+  derived state clears when the host resolves or cancels the permission and is
+  replaced by the fresh page walk after a reconnect; it is never carried over as
+  a stale badge.
 - **Reconnect reconciliation.** A dropped host marks the visible rows stale and
   stops claiming to be live. A new subscription snapshot triggers a fresh page
   walk before the directory is current again. Failed refreshes keep the last
@@ -34,8 +42,11 @@ pill is the in-session return control where the composer supports it.
 - **Search and filters.** Search matches every token against the full original
   session title, workspace name, project name/key, cwd and recognized
   structured labels (`epic`, `workstream`, PR and ticket identifiers). Native
-  state and attention filter independently; the advanced area shows an
-  active-filter count and a clear action.
+  state and attention filter independently; attention includes **Needs input**
+  permission waits. The advanced area shows an active-filter count and a clear
+  action. On compact layouts the Filters button has a visible down/up chevron,
+  an active-count badge and a 44x44 pt target; Clear filters is a separate
+  control.
 - **Open the existing session.** Each row shows its native agent ID and opens
   by that ID through the host's navigation API. Duplicate titles never select
   by name. Missing sessions, older hosts without plugin navigation and host
@@ -46,11 +57,21 @@ pill is the in-session return control where the composer supports it.
   workspace route, so the plugin screen is not kept underneath the session.
   Return with the **← Kontor** composer pill (for a live agent with a
   workspace), the persistent plugin sidebar entry or the global **Open Kontor**
-  Command Center item. The pill opens the same host's Kontor screen; the screen
-  restores its search, filters, expansion and scroll offset for that client
-  session. A live agent with no workspace has no composer pill and keeps the
-  sidebar and Command Center paths. The plugin does not add or control the
-  native top-left Back button.
+  Command Center item. The pill opens the same host's Kontor screen. The
+  existing host-scoped view store is unchanged; physical restoration on this
+  candidate is not claimed and remains a pending device check. A live agent with
+  no workspace has no composer pill and keeps the sidebar and Command Center
+  paths. The plugin does not add or control the native top-left Back button.
+- **Compact toolbar.** Compact layouts keep one slim host/live-or-stale row with
+  **Search** and **Filters** (including the active count). The full host
+  summary, search field, status chips and advanced options sit at the list top.
+  Deliberate downward scrolling collapses the full controls; a short reverse
+  scroll, or the explicit Search/Filters action, reveals them at the current
+  list position. The collapsed controls are removed from layout rather than
+  leaving a spacer. Focused search/filter controls and screen-reader mode pin
+  the controls open; reduce motion skips the short reveal fade. Wide layouts
+  keep the existing full header without an extra persistent row; stale/error
+  truth remains visible in the slim row when collapsed.
 - **Archived placement limit.** The advanced archived option asks the host for
   archived agents. The host directory can omit an archived session when its
   workspace/project placement cannot be resolved. That is a host scope limit,
@@ -132,9 +153,10 @@ Observed on this workstation:
   than as a universal artifact hash.
 - **KN-01 device acceptance is not performed and is not waived.** KN-01 closure
   requires opening the correct existing session on desktop and actual iPhone,
-  and returning with search, filter and position preserved. KN-03 does not
-  substitute for those KN-01 checks. The procedure and evidence checklist are
-  recorded below; the authorized device window is separate.
+  and returning with search, filter and position preserved. This candidate does
+  not claim saved-view restoration or full B1. KN-03 does not substitute for
+  those KN-01 checks. The procedure and evidence checklist are recorded below;
+  the authorized device window is separate.
 
 ### Desktop and iPhone acceptance procedure (pending)
 
@@ -203,6 +225,13 @@ Evidence checklist:
       expansion and scroll position on desktop.
 - [ ] Pill, sidebar and Command Center returns preserve search, filter,
       expansion and scroll position on iPhone.
+- [ ] A pending permission shows **Needs input** with an amber indicator and is
+      included in the attention filter; after resolution/cancel it clears.
+- [ ] On compact layouts the full toolbar collapses on deliberate downward
+      scroll and reveals on a short reverse scroll or Search/Filters without a
+      blank gap or visible row jump.
+- [ ] The Filters button has a chevron, active count, 44x44 pt target and a
+      separate Clear filters control.
 - [ ] Missing-session and reconnect cases use controlled/disposable data only.
 - [ ] Desktop pass/fail, iPhone pass/fail, tester and timestamp.
 
@@ -299,8 +328,8 @@ archive scope, session count and pages read).
    the workspace route with `dismissTo`/`POP_TO`, so return with the **← Kontor**
    composer pill, the persistent sidebar entry or the global **Open Kontor**
    Command Center item; native back does not keep the plugin screen underneath
-   the session. Search, filters, expansion and scroll offset are restored on
-   return.
+   the session. The host-scoped view store is used on return; physical
+   restoration on this candidate is not claimed and remains a pending check.
 4. If the host disconnects, the rows stay visible with a stale banner. Retry or
    wait for reconnect; the next subscription snapshot reconciles every page
    before the screen reports **Live** again.
@@ -338,9 +367,13 @@ remove/workspace lifecycle, failed-bootstrap and owned-subscription-error
 observation recovery, retry cleanup, ad-hoc sessions without a workspace,
 late-walk fencing and opening the screen. `test/session-view-store.test.ts`
 covers host-scoped query, filter, expansion and scroll restoration.
-`test/security.test.ts` extends the floor checks to the client files: no Kontor
-credential, no `kontord`, no file/process access and no agent-control or
-workflow-write call.
+`test/session-directory.test.ts` covers the needs-input priority matrix,
+permission clear/cancel and reconnect replacement. `test/sessions-screen.test.ts`
+covers the filters affordance, slim toolbar actions, touch targets and saved
+view independence. `test/toolbar-visibility.test.ts` covers the single compact
+scroll/collapse variant, pins, suppression and compensation. `test/security.test.ts`
+extends the floor checks to the client files: no Kontor credential, no
+`kontord`, no file/process access and no agent-control or workflow-write call.
 
 The isolated closure suite's `navigator-probe.mjs` creates one disposable
 session, subscribes to the native directory, verifies a `limit: 1` complete
