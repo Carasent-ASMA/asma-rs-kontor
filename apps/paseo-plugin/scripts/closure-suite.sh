@@ -24,6 +24,12 @@ paseo plugin install "$PLUGIN_DIR" --home "$HOME_DIR" --json >"$HOME_DIR/install
 paseo plugin ls --home "$HOME_DIR" --json >"$HOME_DIR/installed.json"
 node -e 'const j=require(process.argv[1]);const p=j.find(x=>x.id==="kontor");if(!p||p.status!=="running")process.exit(1);console.log(JSON.stringify({id:p.id,status:p.status,identity:p.installation.identity}))' "$HOME_DIR/installed.json"
 
+echo "== native client bundle parse (Hermes) =="
+PASEO_CLOSURE_PORT="$PORT" node "$PLUGIN_DIR/scripts/native-bundle-check.mjs" "$PORT" | tee "$HOME_DIR/native-bundle.json"
+
+echo "== native navigator API (no kontord) =="
+PASEO_CLOSURE_PORT="$PORT" node "$PLUGIN_DIR/scripts/navigator-probe.mjs" "$PORT" "$HOME_DIR" | tee "$HOME_DIR/navigator.json"
+
 echo "== guarded behaviour =="
 PASEO_CLOSURE_PORT="$PORT" node "$PLUGIN_DIR/scripts/closure.mjs" "$PORT" guarded | tee "$HOME_DIR/guarded.json"
 

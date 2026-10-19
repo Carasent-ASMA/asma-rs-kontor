@@ -1,8 +1,8 @@
 {
   "id": "kontor",
   "name": "Kontor",
-  "description": "Kontor seat binding hooks and the workspace placement guard.",
+  "description": "Kontor session navigator, seat binding hooks and the workspace placement guard.",
   "requirements": {
-    "paseo": ">=0.11.0"
+    "paseo": ">=0.11.4"
   }
 }

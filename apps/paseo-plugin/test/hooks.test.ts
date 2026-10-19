@@ -506,4 +506,25 @@ describe("contribute", () => {
     expect(registered).toEqual(["agent.create", "agent.session_open", "workspace.create"]);
     expect(cleanup()).toBeUndefined();
   });
+
+  it("keeps the floor hooks without the observer MCP", async () => {
+    const handlers = new Map<string, (payload: unknown) => unknown>();
+    const server = {
+      before: (name: string, handler: (payload: unknown) => unknown) => {
+        handlers.set(name, handler);
+        return () => {};
+      },
+    } as unknown as PluginServerContext;
+
+    contribute(server, config({ mcpEnabled: false }));
+
+    const createHandler = handlers.get("agent.create");
+    expect(createHandler).toBeDefined();
+    const request = createRequest();
+    const result = (await createHandler?.({
+      request,
+    })) as AgentCreateRequest;
+    expect(result.config.mcpServers).toEqual(request.config.mcpServers);
+    expect(result.config.systemPrompt).toContain(KONTOR_SYSTEM_PROMPT_LINE);
+  });
 });
