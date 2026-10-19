@@ -51953,6 +51953,72 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
         assert_eq!(cross_project.status, 403, "{}", cross_project.body);
         assert!(cross_project.json().get("phase").is_none());
     }
+    // The epic-id form resolves without any store lookup. A Jira key does not:
+    // the resolver reads the addressed project's binding tables first, and the
+    // store tells a missing key, an unconfirmed one and a task-kind one apart.
+    // A seat of another project must be refused before any of that is read.
+    let foreign_epic_key = test_jira_key("foreign completion epic");
+    let foreign_task_key = test_jira_key("foreign completion task");
+    let absent_key = test_jira_key("foreign completion absent");
+    let mut foreign_body = epic_body(
+        foreign_project.json()["revision"]
+            .as_u64()
+            .expect("a foreign project revision"),
+        "Foreign completion epic",
+        &first_category(world).await,
+        serde_json::json!([{"title": "A foreign task"}]),
+    );
+    foreign_body["execution_scope"]["external_epic_key"] = serde_json::json!(foreign_epic_key);
+    foreign_body["tasks"][0]["ticket_links"] = serde_json::json!([{
+        "connector": "connector.jira",
+        "external_issue_key": foreign_task_key,
+    }]);
+    let foreign_applied = Call::post(
+        format!("/v1/projects/{foreign_project_id}/epics:apply"),
+        &foreign_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("completion-read-foreign-epic")
+    .send(world)
+    .await;
+    assert_eq!(foreign_applied.status, 200, "{}", foreign_applied.body);
+    let foreign_epic = foreign_applied.json()["epic_id"]
+        .as_str()
+        .expect("a foreign epic id")
+        .to_owned();
+    for actor in [lsa, tpm] {
+        for key in [absent_key.as_str(), foreign_epic_key.as_str()] {
+            let probe = scoped_completion(actor, 1, &foreign_project_id, key)
+                .send(world)
+                .await;
+            assert_eq!(
+                probe.status, 403,
+                "a seat of another project must not learn a binding state: {}",
+                probe.body
+            );
+            assert_eq!(probe.code(), "forbidden");
+            assert!(probe.json().get("phase").is_none());
+        }
+    }
+    confirm_test_epic_identity_as(
+        world,
+        &foreign_project_id,
+        &foreign_epic,
+        None,
+        &foreign_epic_key,
+    );
+    for actor in [lsa, tpm] {
+        let task_key_probe = scoped_completion(actor, 1, &foreign_project_id, &foreign_task_key)
+            .send(world)
+            .await;
+        assert_eq!(
+            task_key_probe.status, 403,
+            "a task-kind key in another project is not this reader's to resolve: {}",
+            task_key_probe.body
+        );
+        assert_eq!(task_key_probe.code(), "forbidden");
+        assert!(task_key_probe.json().get("phase").is_none());
+    }
     // A real epic that was never materialized has no control plane at all. The
     // fence must refuse its readers as non-authority too, rather than report
     // its placement and advise a topology change they cannot make.
