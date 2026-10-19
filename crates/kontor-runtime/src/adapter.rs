@@ -2117,6 +2117,20 @@ pub trait RuntimeAdapter: Send + Sync {
     /// * Every preflight failure, refused before any native effect.
     async fn compact(&self, request: &CompactRequest) -> RuntimeResult<CompactionReceipt>;
 
+    /// Whether this runtime implements governed succession summaries.
+    ///
+    /// Startup reads this synchronously to refuse a summarizer selection that
+    /// names a runtime which cannot execute an admitted summary route. The
+    /// answer must agree with [`Self::summarize_succession`]: a runtime that
+    /// claims this and then refuses would make every handoff silently degrade.
+    ///
+    /// The default is `false`. A runtime must override both this and
+    /// [`Self::summarize_succession`] to opt in, so no runtime acquires the
+    /// surface by accident.
+    fn supports_succession_summary(&self) -> bool {
+        false
+    }
+
     /// Produce one bounded summary from an already-redacted prompt.
     ///
     /// The control plane resolves `model_rung` through the same account-before-

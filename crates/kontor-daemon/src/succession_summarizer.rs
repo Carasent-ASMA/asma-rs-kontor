@@ -8,10 +8,10 @@
 //!
 //! Absent configuration is valid and leaves the unavailable fallback in force:
 //! an existing Realm that never asked for summaries keeps its typed degraded
-//! handoff and starts no seat. A present document that names no composed runtime
-//! refuses the start, because an operator who wrote it believes governed
-//! summaries are armed, and silently serving a degraded handoff would be the
-//! opposite of what the file says.
+//! handoff and starts no seat. A present document that names no composed runtime,
+//! or one that does not implement governed summaries, refuses the start, because
+//! an operator who wrote it believes governed summaries are armed, and silently
+//! serving a degraded handoff would be the opposite of what the file says.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -47,6 +47,13 @@ pub enum ConfigError {
     /// The named runtime family is not composed in this Realm's fleet.
     #[error("the configured succession summarizer runtime is not composed in this realm")]
     UnknownRuntime,
+    /// The named runtime does not implement governed summaries.
+    ///
+    /// Serving the start would leave every handoff degraded while the operator
+    /// believes summaries are armed, which is the opposite of what the
+    /// selection document says.
+    #[error("the configured succession summarizer runtime cannot produce summaries")]
+    UnsupportedRuntime,
 }
 
 /// The operator's runtime selection.
@@ -64,8 +71,9 @@ struct SuccessionSummarizerConfig {
 /// # Errors
 /// Returns [`ConfigError::Unreadable`] when the document exists but cannot be
 /// read, [`ConfigError::Invalid`] when it is not a generation this build
-/// understands, and [`ConfigError::UnknownRuntime`] when it names a family the
-/// composed fleet does not hold.
+/// understands, [`ConfigError::UnknownRuntime`] when it names a family the
+/// composed fleet does not hold, and [`ConfigError::UnsupportedRuntime`] when
+/// that family cannot execute a governed summary.
 pub fn read(
     state_root: &Path,
     runtimes: &RuntimeRegistry,
@@ -83,6 +91,9 @@ pub fn read(
     }
     let family = RuntimeKindKey::parse(&config.runtime_family).map_err(|_| ConfigError::Invalid)?;
     let adapter = runtimes.get(&family).ok_or(ConfigError::UnknownRuntime)?;
+    if !adapter.supports_succession_summary() {
+        return Err(ConfigError::UnsupportedRuntime);
+    }
     Ok(Some(Arc::new(RuntimeSuccessionSummarizer {
         adapter,
         runtime_kind: family,
@@ -180,6 +191,57 @@ mod tests {
         assert!(matches!(
             read(directory.path(), &runtimes),
             Err(ConfigError::UnknownRuntime)
+        ));
+    }
+
+    #[test]
+    fn a_composed_runtime_that_declares_summarize_is_composed() {
+        let directory = tempfile::tempdir().expect("a state root");
+        std::fs::write(
+            directory.path().join(CONFIG_FILE),
+            r#"{"schema_version":1,"runtime_family":"fake.runtime"}"#,
+        )
+        .expect("the document is written");
+        let (runtimes, _) = registry();
+        let transport = read(directory.path(), &runtimes)
+            .expect("a declaring runtime is composed")
+            .expect("the configured transport");
+        assert_eq!(
+            transport.runtime_kind().map(RuntimeKindKey::as_str),
+            Some("fake.runtime")
+        );
+    }
+
+    #[test]
+    fn a_composed_runtime_without_summarize_refuses_the_start() {
+        let directory = tempfile::tempdir().expect("a state root");
+        std::fs::write(
+            directory.path().join(CONFIG_FILE),
+            r#"{"schema_version":1,"runtime_family":"fake.runtime"}"#,
+        )
+        .expect("the document is written");
+        let capabilities = RuntimeCapabilities {
+            trust_grade: TrustGrade::A,
+            supported: RuntimeCapability::ALL
+                .iter()
+                .copied()
+                .filter(|capability| *capability != RuntimeCapability::Summarize)
+                .collect(),
+            account_env: true,
+            limits: RuntimeLimits {
+                max_message_bytes: 4096,
+                max_history_page: 64,
+                max_concurrent_sessions: 8,
+                context_window: kontor_core::spec::ContextWindowBounds::unknown(),
+            },
+        };
+        let fake = Arc::new(ScriptedFakeRuntime::new(capabilities));
+        let family = RuntimeKindKey::parse("fake.runtime").expect("the fake family");
+        let runtimes =
+            RuntimeRegistry::new().with(family, Arc::clone(&fake) as Arc<dyn RuntimeAdapter>);
+        assert!(matches!(
+            read(directory.path(), &runtimes),
+            Err(ConfigError::UnsupportedRuntime)
         ));
     }
 
