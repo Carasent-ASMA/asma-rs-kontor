@@ -17,6 +17,7 @@ type SessionEntryOverrides = {
   workspaceId?: string | null;
   cwd?: string;
   updatedAt?: string;
+  labels?: Readonly<Record<string, string>>;
 };
 
 export function sessionEntry(
@@ -45,10 +46,12 @@ export function sessionEntry(
     provider: "opencode/deepseek/deepseek-flash",
     model: null,
     parentAgentId: null,
-    labels: {},
+    labels: overrides.labels ?? {},
     projectKey: overrides.projectKey ?? "prj_1",
-    projectName: overrides.projectName ?? "Project",
-    workspaceName: overrides.workspaceName ?? "Workspace",
+    projectName:
+      overrides.projectName === undefined ? "Project" : overrides.projectName,
+    workspaceName:
+      overrides.workspaceName === undefined ? "Workspace" : overrides.workspaceName,
   };
   return {
     ...merged,
@@ -58,6 +61,7 @@ export function sessionEntry(
       merged.projectName,
       merged.projectKey,
       merged.cwd,
+      ...Object.values(merged.labels),
     ]
       .filter((part): part is string => part !== null)
       .join("\n")

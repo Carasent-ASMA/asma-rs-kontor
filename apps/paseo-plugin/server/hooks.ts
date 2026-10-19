@@ -12,6 +12,7 @@ import {
 import { isKontorSeat, seatBinding, type AgentLabels } from "./labels";
 import { evaluatePlacement } from "./placement";
 import { readPlacementBinding } from "./placement-binding";
+import { organizationSettings } from "../shared/organization";
 
 type AgentCreateRequest = PluginBeforeRequests["agent.create"];
 type SessionOpenRequest = PluginBeforeRequests["agent.session_open"];
@@ -186,6 +187,7 @@ export function contribute(
   server: PluginServerContext,
   config: KontorPluginConfig = readConfig(),
 ): () => void {
+  server.registerSettings(organizationSettings);
   server.before("agent.create", ({ request }) => addKontorAgentConfig(request, config));
 
   server.before("agent.session_open", async ({ request }, context) => ({
