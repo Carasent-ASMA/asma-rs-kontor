@@ -78,7 +78,8 @@ class HomePathTests(unittest.TestCase):
         )
 
     def test_allows_synthetic_home_users(self) -> None:
-        for user in sorted(public_tree.SYNTHETIC_HOME_USERS):
+        # Named here rather than read from the set, so dropping one fails.
+        for user in ("me", "operator", "someone", "test"):
             with self.subTest(user=user):
                 text = f"/Users/{user}/repo /home/{user}/.kontor"
                 self.assertEqual(codes("crates/x/tests/fixture.json", text), [])

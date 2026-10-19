@@ -58,7 +58,7 @@ LICENCE_AND_ATTRIBUTION = frozenset(
 )
 
 # Home directories of made-up users in synthetic fixtures and examples.
-SYNTHETIC_HOME_USERS = frozenset({"me", "operator", "someone"})
+SYNTHETIC_HOME_USERS = frozenset({"me", "operator", "someone", "test"})
 
 # Code paths that may still name provider-account aliases. The compiled route
 # catalog, the Teams-editor provider catalog, the bundled team pack and the
