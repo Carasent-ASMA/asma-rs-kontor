@@ -37504,8 +37504,17 @@ impl ApplicationOperations for Services {
             // and the task stays in flight forever. It does not matter how the
             // siblings ended: a runtime observation is as final as an operator
             // abandon.
+            //
+            // An already-terminal envelope is answered from its stored closure.
+            // Calling `settle_team` here would re-release its seats, which a
+            // Team Definition migration fence refuses even though this replay
+            // changes nothing. Only an envelope that is still open needs the
+            // settlement attempted.
             let (mut team_run_closed, mut team_pending) =
-                self.settle_team(project_id, &run, now)?;
+                self.team_closure_state(project_id, &run)?;
+            if team_run_closed.is_none() {
+                (team_run_closed, team_pending) = self.settle_team(project_id, &run, now)?;
+            }
             if team_run_closed.is_none()
                 && let Some(abandoned) = self.abandon_team_run(key, project_id, &run, now)?
             {

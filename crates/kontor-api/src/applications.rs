@@ -13056,7 +13056,11 @@ pub async fn settle_runtime(
 /// Kontor's row without cancelling it would leave an agent running that nothing
 /// is steering. `runtime:settle` is the path for those.
 ///
-/// Idempotent: a run that is already closed reports its stored closure.
+/// Idempotent: a run that is already closed reports its stored closure. An
+/// already-closed TeamRun envelope is answered from that closure even while a
+/// Team Definition migration is in flight. An envelope that is still open and
+/// stranded needs settlement, and is refused with `409 placement_blocked` until
+/// that migration settles.
 #[utoipa::path(
     post, path = "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:abandon",
     tag = "applications",

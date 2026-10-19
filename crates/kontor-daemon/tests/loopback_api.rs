@@ -25019,30 +25019,16 @@ struct FencedTeam {
     apply_body: serde_json::Value,
 }
 
-/// Seat a multi-slot team, then leave one Team Definition migration in flight
-/// exactly as a lost acknowledgement leaves it.
-async fn strand_a_team_behind_a_migration_fence(world: &World, slug: &'static str) -> FencedTeam {
-    world.script(HISTORY_LIVE);
-    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
-    let (project, epic, _account, seats) = seated_turns(world, slug).await;
-    let runs: Vec<String> = seats
-        .as_array()
-        .expect("the seated roster")
-        .iter()
-        .map(|seat| {
-            seat["agent_run_id"]
-                .as_str()
-                .expect("an agent run id")
-                .to_owned()
-        })
-        .collect();
-    assert!(
-        runs.len() > 1,
-        "the fixture must seat a multi-slot team: {}",
-        seats
-    );
-    let project_id = ProjectId::parse(&project).expect("a project id");
-    let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
+/// Start a Team Definition migration and leave it in flight, exactly as a lost
+/// acknowledgement leaves it. The epic must already be pinned and materialized.
+async fn leave_team_definition_migration_in_flight(
+    world: &World,
+    project: &str,
+    epic: &str,
+    slug: &str,
+) -> serde_json::Value {
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let epic_id = MiniProjectId::parse(epic).expect("an epic id");
     let (project_revision, target) = world.daemon.state().with_store(|store| {
         let revision = store
             .get_project(project_id)
@@ -25111,6 +25097,32 @@ async fn strand_a_team_behind_a_migration_fence(world: &World, slug: &'static st
     .send(world)
     .await;
     assert_eq!(partial.code(), "rename_pending", "{}", partial.body);
+    apply_body
+}
+
+/// Seat a multi-slot team, then leave one Team Definition migration in flight
+/// exactly as a lost acknowledgement leaves it.
+async fn strand_a_team_behind_a_migration_fence(world: &World, slug: &'static str) -> FencedTeam {
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(world, slug).await;
+    let runs: Vec<String> = seats
+        .as_array()
+        .expect("the seated roster")
+        .iter()
+        .map(|seat| {
+            seat["agent_run_id"]
+                .as_str()
+                .expect("an agent run id")
+                .to_owned()
+        })
+        .collect();
+    assert!(
+        runs.len() > 1,
+        "the fixture must seat a multi-slot team: {}",
+        seats
+    );
+    let apply_body = leave_team_definition_migration_in_flight(world, &project, &epic, slug).await;
     FencedTeam {
         project,
         epic,
@@ -25436,6 +25448,107 @@ async fn a_runtime_observed_terminal_run_closes_its_stranded_team_on_abandon_rep
             .iter()
             .all(|snapshot| snapshot.binding_id != last_binding.id),
         "the abandon replay forgets the durable binding snapshot"
+    );
+}
+
+/// An abandon replay of an already-closed team changes nothing. A Team
+/// Definition migration in flight must not turn the endpoint's documented 200
+/// into a `placement_blocked` 409; the stored closure is the answer.
+#[tokio::test]
+async fn an_abandon_replay_of_an_already_closed_team_answers_behind_a_migration_fence() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "closed-team-abandon-replay").await;
+    let runs: Vec<String> = seats
+        .as_array()
+        .expect("the seated roster")
+        .iter()
+        .map(|seat| {
+            seat["agent_run_id"]
+                .as_str()
+                .expect("an agent run id")
+                .to_owned()
+        })
+        .collect();
+    for (index, run) in runs.iter().enumerate() {
+        finish_natively(&world, run).await;
+        let settled = Call::post(
+            format!("/v1/projects/{project}/agent-runs/{run}/runtime:settle"),
+            &serde_json::json!({}),
+        )
+        .signed_as(&world, "operator")
+        .with_key(format!("closed-team-abandon-replay-settle-{index}"))
+        .send(&world)
+        .await;
+        assert_eq!(settled.status, 200, "seat {index}: {}", settled.body);
+    }
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
+    let last = runs.last().expect("a final seat");
+    let last_id = AgentRunId::parse(last).expect("an agent run id");
+    let run = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, last_id)
+            .expect("the last run reads")
+            .expect("the last run exists")
+    });
+    let team = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(project_id, run.team_run_id)
+            .expect("the team reads")
+            .expect("the team exists")
+    });
+    assert!(
+        team.lifecycle.is_terminal(),
+        "the fixture settled every seat, so the team is closed"
+    );
+
+    leave_team_definition_migration_in_flight(
+        &world,
+        &project,
+        &epic,
+        "closed-team-abandon-replay",
+    )
+    .await;
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.get_in_flight_team_definition_migration(project_id, epic_id))
+            .expect("the migration reads")
+            .is_some(),
+        "the fixture really left a Team Definition migration in flight"
+    );
+
+    let abandoned = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{last}/runtime:abandon"),
+        &serde_json::json!({
+            "expected_revision": run.revision.get(),
+            "reason": "Replaying the closure of an already-abandoned run"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("closed-team-abandon-replay-again")
+    .send(&world)
+    .await;
+    assert_eq!(abandoned.status, 200, "{}", abandoned.body);
+    assert_eq!(
+        abandoned.json()["applied"],
+        "unchanged",
+        "{}",
+        abandoned.body
+    );
+    assert_eq!(
+        abandoned.json()["team_run_closed"],
+        serde_json::json!(run.team_run_id.to_string()),
+        "{}",
+        abandoned.body
+    );
+    assert!(
+        abandoned.json()["team_pending"].is_null(),
+        "{}",
+        abandoned.body
     );
 }
 
