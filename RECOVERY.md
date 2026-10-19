@@ -178,7 +178,8 @@ cannot widen what a line may contain.
 launchd job. It names the job only by explicit arguments: `--label` and
 `--domain` have no default, and `--plist` has no default but is required for
 `bootstrap` and `replace`. It reads the daemon path, state root and port from
-the plist's `ProgramArguments`.
+the plist's `ProgramArguments`; a relative `--state-root` is resolved against
+the plist's `WorkingDirectory`, as launchd runs it.
 
 ```sh
 python3 scripts/kontor-deploy.py --label <label> --domain gui/<uid> --plist <plist> \
@@ -201,6 +202,9 @@ Before it starts any process, the script refuses (exit 3):
 * a declared production deploy outside this user's `gui/<uid>` domain, or from
   any plist but `~/Library/LaunchAgents/com.asma.kontor.daemon.plist`;
 * `--production-deploy` with any other label;
+* a non-production `bootstrap` or `replace` whose daemon or state root is the
+  production one, using the canonical plist or, when that plist is absent, the
+  target recorded by the last declared production deploy;
 * a plist whose `Label` differs from `--label`. `launchctl bootstrap` registers
   the label written in the plist, and that is how a test once replaced the
   production job.

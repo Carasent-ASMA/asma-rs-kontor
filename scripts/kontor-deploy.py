@@ -17,8 +17,14 @@ starts any process:
 * a declared production deploy must name this user's ``gui/<uid>`` domain and
   this user's ``~/Library/LaunchAgents/com.asma.kontor.daemon.plist``;
 * ``--production-deploy`` with any other label is refused;
-* a job whose daemon or state root is the production one is refused even under
-  another label, because its install would overwrite the production binaries;
+* a non-production ``bootstrap`` or ``replace`` whose daemon or state root is
+  the production one is refused even under another label, because its install
+  would overwrite the production binaries; when the canonical production plist
+  is missing, the target recorded by the last declared production deploy is
+  used instead;
+* a relative ``--state-root`` is resolved against the plist's
+  ``WorkingDirectory``, or ``/`` when it has none, so the snapshot and read-back
+  address the state root launchd serves;
 * the plist's ``Label`` must equal ``--label``, because ``launchctl bootstrap``
   registers the label written in the plist, not the one on the command line;
   the validated bytes are copied to a private snapshot and every command uses
@@ -70,6 +76,7 @@ from collections.abc import Callable, Sequence
 from xml.parsers.expat import ExpatError
 
 PRODUCTION_LABEL = "com.asma.kontor.daemon"
+DEPLOY_TARGET_RELATIVE = Path(".local") / "state" / "kontor" / "deploy-target.json"
 BINARIES = ("kontor-daemon", "kontor", "kontor-mcp")
 LABEL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9.-]*")
 DOMAIN_PATTERN = re.compile(r"(gui|user)/[0-9]+")
@@ -198,15 +205,19 @@ def resolve_job(
             f"{plist} registers {document.get('Label')!r}; launchctl would act on "
             f"that label, not {label!r}",
         )
-    if label.casefold() != PRODUCTION_LABEL:
+    if label.casefold() == PRODUCTION_LABEL:
+        if command != "bootout":
+            _record_production_target(host, daemon, state_root)
+    elif command != "bootout":
         canonical = host.home / "Library" / "LaunchAgents" / f"{PRODUCTION_LABEL}.plist"
         if canonical.is_file():
-            production_daemon, production_state_root, _ = _program(
-                _read_plist(canonical)[1], canonical
-            )
-            if (
-                daemon.resolve() == production_daemon.resolve()
-                or state_root.resolve() == production_state_root.resolve()
+            target = _job_paths(_read_plist(canonical)[1], canonical)
+        else:
+            target = _recorded_production_target(host)
+        if target is not None:
+            production_daemon, production_state_root = target
+            if _same_path(daemon, production_daemon) or _same_path(
+                state_root, production_state_root
             ):
                 raise Refused(
                     "production_target",
@@ -244,8 +255,45 @@ def _snapshot_plist(data: bytes, label: str) -> Path:
     return snapshot
 
 
-def _program(document: dict, plist: Path) -> tuple[Path, Path, int]:
-    """The daemon, state root and port the job runs, from ProgramArguments."""
+def _production_target_path(host: Host) -> Path:
+    return host.home / DEPLOY_TARGET_RELATIVE
+
+
+def _record_production_target(host: Host, daemon: Path, state_root: Path) -> None:
+    path = _production_target_path(host)
+    try:
+        path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        _write_json(path, {"daemon": str(daemon), "stateRoot": str(state_root)})
+    except OSError as error:
+        raise Refused(
+            "production_target_record",
+            f"cannot record the production target at {path}: {error}",
+        ) from error
+
+
+def _recorded_production_target(host: Host) -> tuple[Path, Path] | None:
+    try:
+        document = json.loads(_production_target_path(host).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(document, dict):
+        return None
+    daemon = document.get("daemon")
+    state_root = document.get("stateRoot")
+    if not isinstance(daemon, str) or not isinstance(state_root, str):
+        return None
+    return Path(daemon), Path(state_root)
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    try:
+        return os.path.samefile(left, right)
+    except OSError:
+        return left.resolve() == right.resolve()
+
+
+def _job_paths(document: dict, plist: Path) -> tuple[Path, Path]:
+    """The daemon and state root the job runs, from ProgramArguments."""
     arguments = document.get("ProgramArguments")
     if (
         not isinstance(arguments, list)
@@ -257,14 +305,28 @@ def _program(document: dict, plist: Path) -> tuple[Path, Path, int]:
     if not daemon.is_absolute() or daemon.name != "kontor-daemon":
         raise Refused("plist_program", f"{plist} does not run an absolute kontor-daemon")
     state_root = _option(arguments, "--state-root")
-    port = _option(arguments, "--port")
-    if state_root is None or port is None or not port.isdigit():
-        raise Refused(
-            "plist_program",
-            f"{plist} must pass --state-root and --port: the deploy snapshots the "
-            "one and waits on the other",
-        )
-    return daemon, Path(state_root), int(port)
+    if state_root is None:
+        raise Refused("plist_program", f"{plist} must pass --state-root")
+    state_root_path = Path(state_root)
+    if not state_root_path.is_absolute():
+        working_directory = document.get("WorkingDirectory", "/")
+        if not isinstance(working_directory, str) or not working_directory:
+            raise Refused("plist_program", f"{plist} has an invalid WorkingDirectory")
+        base = Path(working_directory)
+        if not base.is_absolute():
+            raise Refused("plist_program", f"{plist} has a relative WorkingDirectory")
+        state_root_path = (base / state_root_path).resolve()
+    return daemon, state_root_path
+
+
+def _program(document: dict, plist: Path) -> tuple[Path, Path, int]:
+    """The daemon, state root and port the job runs, from ProgramArguments."""
+    daemon, state_root = _job_paths(document, plist)
+    arguments = document.get("ProgramArguments")
+    port = _option(arguments, "--port") if isinstance(arguments, list) else None
+    if port is None or not port.isdigit():
+        raise Refused("plist_program", f"{plist} must pass --port: the deploy waits on it")
+    return daemon, state_root, int(port)
 
 
 def _option(arguments: list[str], name: str) -> str | None:

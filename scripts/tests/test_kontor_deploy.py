@@ -107,12 +107,27 @@ class World:
         for name in deploy.BINARIES:
             (self.candidates / name).write_bytes(f"new {name}\n".encode())
 
-    def plist(self, label: str, path: Path | None = None) -> Path:
+    def plist(
+        self,
+        label: str,
+        path: Path | None = None,
+        daemon: Path | None = None,
+        state_root: Path | str | None = None,
+        port: int | str = 47717,
+        working_directory: Path | str | None = None,
+    ) -> Path:
         path = path or (self.agents / f"{label}.plist")
         program = [
-            str(self.bin / "kontor-daemon"), "--state-root", str(self.state), "--port", "47717"
+            str(daemon or (self.bin / "kontor-daemon")),
+            "--state-root",
+            str(state_root if state_root is not None else self.state),
+            "--port",
+            str(port),
         ]
-        path.write_bytes(plistlib.dumps({"Label": label, "ProgramArguments": program}))
+        document = {"Label": label, "ProgramArguments": program}
+        if working_directory is not None:
+            document["WorkingDirectory"] = str(working_directory)
+        path.write_bytes(plistlib.dumps(document))
         return path
 
     def host(self, recorder: Recorder, uid: int) -> deploy.Host:
@@ -269,6 +284,13 @@ class ProductionJobGuardTest(WorldTest):
             "symlinked daemon": {**base, "ProgramArguments": [str(daemon_alias), *program[1:]]},
             "symlinked state root": {**base, "ProgramArguments": symlinked_state},
         }
+        upper_bin = self.world.bin.parent / self.world.bin.name.upper()
+        upper_state = self.world.state.parent / self.world.state.name.upper()
+        if upper_bin.exists() and upper_state.exists():
+            case_variant = list(program)
+            case_variant[0] = str(upper_bin / "kontor-daemon")
+            case_variant[program.index("--state-root") + 1] = str(upper_state)
+            cases["case-variant paths"] = {**base, "ProgramArguments": case_variant}
         for case, document in cases.items():
             with self.subTest(case=case):
                 plist = self.world.agents / f"{DISPOSABLE_LABEL}-{case.replace(' ', '-')}.plist"
@@ -278,11 +300,62 @@ class ProductionJobGuardTest(WorldTest):
                     "--label", DISPOSABLE_LABEL,
                     "--domain", DISPOSABLE_DOMAIN,
                     "--plist", str(plist),
-                    "bootout",
+                    "bootstrap",
                 ]
                 code = run_main(argv, self.world.host(recorder, DISPOSABLE_UID))
                 self.assertEqual(code, deploy.EXIT_REFUSED)
                 self.assertEqual(recorder.calls, [])
+
+    def test_a_recorded_production_target_is_refused_when_the_canonical_plist_is_absent(
+        self,
+    ) -> None:
+        production_bin = self.world.home / "prod-bin"
+        production_state = self.world.home / "prod-state"
+        production_bin.mkdir()
+        production_state.mkdir()
+        for name in deploy.BINARIES:
+            (production_bin / name).write_bytes(f"prod {name}\n".encode())
+        canonical = self.world.plist(
+            PRODUCTION_LABEL,
+            daemon=production_bin / "kontor-daemon",
+            state_root=production_state,
+        )
+        recorder = Recorder()
+        declared = [
+            "--label", PRODUCTION_LABEL,
+            "--domain", REAL_GUI_DOMAIN,
+            "--plist", str(canonical),
+            "--production-deploy", "ASMA-8506",
+            "bootstrap",
+        ]
+        self.assertEqual(run_main(declared, self.world.host(recorder, REAL_UID)), 0)
+        record = self.world.home / deploy.DEPLOY_TARGET_RELATIVE
+        self.assertEqual(
+            json.loads(record.read_text()),
+            {
+                "daemon": str(production_bin / "kontor-daemon"),
+                "stateRoot": str(production_state),
+            },
+        )
+        canonical.unlink()
+        disposable = self.world.plist(
+            DISPOSABLE_LABEL,
+            daemon=production_bin / "kontor-daemon",
+            state_root=production_state,
+            port=47718,
+        )
+        recorder = Recorder()
+        argv = [
+            "--label", DISPOSABLE_LABEL,
+            "--domain", DISPOSABLE_DOMAIN,
+            "--plist", str(disposable),
+            *command_argv("replace", self.world),
+        ]
+        self.assertEqual(
+            run_main(argv, self.world.host(recorder, DISPOSABLE_UID)), deploy.EXIT_REFUSED
+        )
+        self.assertEqual(recorder.calls, [])
+        self.assertFalse(self.world.backup.exists())
 
     def test_a_production_deploy_cannot_be_declared_for_another_label(self) -> None:
         recorder = Recorder()
@@ -390,6 +463,55 @@ class ExplicitTargetTest(WorldTest):
             [["launchctl", "bootout", f"{REAL_GUI_DOMAIN}/{PRODUCTION_LABEL}"]],
         )
         self.assertEqual([call for call in recorder.calls if call[0] == "lsof"], [])
+
+    def test_bootout_ignores_an_unreadable_production_plist(self) -> None:
+        canonical = self.world.plist(PRODUCTION_LABEL)
+        canonical.write_bytes(b"not a plist")
+        plist = self.world.plist(DISPOSABLE_LABEL)
+        recorder = Recorder()
+        argv = [
+            "--label", DISPOSABLE_LABEL,
+            "--domain", DISPOSABLE_DOMAIN,
+            "--plist", str(plist),
+            "bootout",
+        ]
+        self.assertEqual(run_main(argv, self.world.host(recorder, DISPOSABLE_UID)), 0)
+        self.assertEqual(
+            recorder.launchctl(),
+            [["launchctl", "bootout", f"{DISPOSABLE_DOMAIN}/{DISPOSABLE_LABEL}"]],
+        )
+
+    def test_a_relative_state_root_resolves_against_the_working_directory(self) -> None:
+        workdir = self.world.home / "launchd-workdir"
+        workdir.mkdir()
+        plist = self.world.plist(
+            DISPOSABLE_LABEL, state_root="kontor/state", working_directory=workdir
+        )
+        recorder = Recorder()
+        job = deploy.resolve_job(
+            DISPOSABLE_LABEL,
+            DISPOSABLE_DOMAIN,
+            plist,
+            None,
+            self.world.host(recorder, DISPOSABLE_UID),
+            "bootstrap",
+        )
+        self.assertEqual(job.state_root, (workdir / "kontor" / "state").resolve())
+        self.assertTrue(job.state_root.is_absolute())
+
+    def test_a_relative_state_root_without_a_working_directory_uses_root(self) -> None:
+        plist = self.world.plist(DISPOSABLE_LABEL, state_root="kontor/state")
+        recorder = Recorder()
+        job = deploy.resolve_job(
+            DISPOSABLE_LABEL,
+            DISPOSABLE_DOMAIN,
+            plist,
+            None,
+            self.world.host(recorder, DISPOSABLE_UID),
+            "bootstrap",
+        )
+        self.assertEqual(job.state_root, Path("/kontor/state"))
+        self.assertTrue(job.state_root.is_absolute())
 
     def test_commands_address_only_the_named_job(self) -> None:
         plist = self.world.plist(DISPOSABLE_LABEL)
@@ -512,6 +634,42 @@ class ReplaceTest(WorldTest):
             PRODUCTION_LABEL,
             " ".join(part for call in recorder.launchctl() for part in call),
         )
+
+    def test_replace_uses_the_state_root_launchd_resolves(self) -> None:
+        workdir = self.world.home / "launchd-workdir"
+        workdir.mkdir()
+        plist = self.world.plist(
+            DISPOSABLE_LABEL, state_root="relative/state", working_directory=workdir
+        )
+        expected = (workdir / "relative" / "state").resolve()
+        roots: list[str] = []
+
+        def answer(argv: list[str]) -> subprocess.CompletedProcess[str]:
+            if argv[0] == "launchctl":
+                return done()
+            if argv[0] == "lsof":
+                return done(1)
+            if argv[0] == str(self.world.bin / "kontor-daemon") and "snapshot" in argv:
+                roots.append(argv[argv.index("--state-root") + 1])
+                snapshot = Path(argv[argv.index("--into") + 1]) / "kontor-realm.db"
+                snapshot.write_bytes(b"snapshot\n")
+                return done(0, f"{snapshot}\n")
+            if argv[:2] == [str(self.world.bin / "kontor"), "realm-get"]:
+                roots.append(argv[argv.index("--state-root") + 1])
+                body = {"status": 200, "body": {"realm_id": REALM_ID}}
+                return done(0, json.dumps(body))
+            raise AssertionError(f"unexpected process {argv}")
+
+        argv = [
+            "--label", DISPOSABLE_LABEL,
+            "--domain", DISPOSABLE_DOMAIN,
+            "--plist", str(plist),
+            *command_argv("replace", self.world),
+        ]
+        self.assertEqual(
+            run_main(argv, self.world.host(Recorder(answer), DISPOSABLE_UID)), 0
+        )
+        self.assertEqual(roots, [str(expected), str(expected)])
 
     def test_replace_restores_the_old_job_when_the_realm_does_not_read_back(self) -> None:
         before = self.world.installed()
