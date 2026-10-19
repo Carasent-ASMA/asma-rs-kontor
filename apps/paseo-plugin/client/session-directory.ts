@@ -447,6 +447,9 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
   }
 
   async function runRefresh(): Promise<void> {
+    if (disposed) {
+      return;
+    }
     const runGeneration = generation;
     const runEpoch = readEpoch;
     let collected: CollectedDirectory;
@@ -622,6 +625,9 @@ export const SessionDirectory: SessionDirectoryConstructor = function SessionDir
     refreshPromise = (async () => {
       if (!subscriptionActive) {
         await openSubscription(generation);
+        if (disposed) {
+          return;
+        }
       }
       do {
         refreshQueued = false;
