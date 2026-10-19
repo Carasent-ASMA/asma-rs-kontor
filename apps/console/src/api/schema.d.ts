@@ -3798,6 +3798,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/provider-markers:apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Remove one setting's provider-unavailability marker under compare-and-swap. */
+        post: operations["apply_provider_marker"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/provider-markers:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** What removing one setting's provider-unavailability marker would do. */
+        post: operations["preview_provider_marker"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/realm": {
         parameters: {
             query?: never;
@@ -9693,6 +9727,89 @@ export interface components {
             revision: number;
             /** @description The source inside that layer. */
             source_id: string;
+        };
+        /** @description Remove one setting's provider-unavailability marker under compare-and-swap. */
+        ProviderMarkerApplyRequest: {
+            /** @description The document revision the preview read. */
+            expected_revision: string;
+            /** @description The hash the preview answered with. */
+            preview_hash: string;
+            /** @description The provider whose marker is removed. */
+            provider: string;
+            /** @description The runtime family key naming the configured setting. */
+            runtime_family: string;
+        };
+        /** @description One setting's provider-unavailability marker after a correction. */
+        ProviderMarkerDto: {
+            /** @description The setting's unavailable providers after the call. */
+            after: string[];
+            /** @description The setting's unavailable providers before the call. */
+            before: string[];
+            /** @description Whether this call rewrote the document. */
+            changed: boolean;
+            /** @description What the correction effected, in a stable order. */
+            effects: components["schemas"]["ProviderMarkerEffectDto"][];
+            /** @description The non-secret host key the addressed setting is bound under. */
+            host_key: string;
+            /** @description Which of the three stable outcomes this call was. */
+            outcome: components["schemas"]["ProviderMarkerOutcomeDto"];
+            /** @description The provider whose marker was removed. */
+            provider: string;
+            /** @description The Realm it was applied in. */
+            realm_id: string;
+            /** @description The document revision after the call. */
+            revision: string;
+            /** @description The runtime family addressed. */
+            runtime_family: string;
+        };
+        /**
+         * @description One effect a marker correction would have.
+         * @enum {string}
+         */
+        ProviderMarkerEffectDto: "marker_removed" | "restart_required";
+        /**
+         * @description The typed outcome of one marker correction.
+         * @enum {string}
+         */
+        ProviderMarkerOutcomeDto: "cleared" | "already_cleared" | "replayed";
+        /**
+         * @description What removing one setting's provider-unavailability marker would do.
+         *
+         *     A preview is a read: it takes no idempotency key, rewrites nothing and
+         *     touches no seat. The `revision` it reports is the exact document revision it
+         *     was computed against, and the hash the apply must name.
+         */
+        ProviderMarkerPreviewDto: {
+            /** @description The same set with the named provider removed. */
+            after: string[];
+            /** @description The setting's unavailable providers, as the document stands. */
+            before: string[];
+            /** @description Whether applying would rewrite the document. */
+            changed: boolean;
+            /** @description What the correction would effect, in a stable order. */
+            effects: components["schemas"]["ProviderMarkerEffectDto"][];
+            /** @description The non-secret host key the addressed setting is bound under. */
+            host_key: string;
+            /** @description The hash the corresponding apply must name. */
+            preview_hash: string;
+            /** @description The provider whose marker would be removed. */
+            provider: string;
+            /** @description The Realm that computed it. */
+            realm_id: string;
+            /** @description The document revision this preview was computed against. */
+            revision: string;
+            /** @description The runtime family addressed. */
+            runtime_family: string;
+        };
+        /** @description One runtime setting's provider-unavailability marker, addressed for removal. */
+        ProviderMarkerPreviewRequest: {
+            /** @description The provider whose marker would be removed. */
+            provider: string;
+            /**
+             * @description The runtime family key naming the configured setting. It is unique per
+             *     realm: two settings may not claim one family.
+             */
+            runtime_family: string;
         };
         /** @description One account's quota state for one provider, as a projection reports it. */
         ProviderQuotaStateDto: {
@@ -23666,6 +23783,121 @@ export interface operations {
             };
             /** @description The root exists under a different name, or the key was reused */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    apply_provider_marker: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProviderMarkerApplyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderMarkerDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_provider_marker: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProviderMarkerPreviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderMarkerPreviewDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

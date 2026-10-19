@@ -67,7 +67,9 @@ use kontor_api::applications::{
     AvailabilityOverrideRequest, CapacityCeilingsDto, CapacityConfigurationDto,
     CapacityConfigurationPreviewDto, CapacityConfigurationRequest, CapacityObservationDto,
     CapacityRefreshRequest, ContainerReadbackDto, MutationReceiptDto, NativeContainerParentDto,
-    ObservedBindingDto, ProjectCapacityDto, PublishTriggerRequest, RecordProviderQuotaRequest,
+    ObservedBindingDto, ProjectCapacityDto, ProviderMarkerApplyRequest, ProviderMarkerDto,
+    ProviderMarkerEffectDto, ProviderMarkerOutcomeDto, ProviderMarkerPreviewDto,
+    ProviderMarkerPreviewRequest, PublishTriggerRequest, RecordProviderQuotaRequest,
     ResolvedRoleRefDto, SeatBindingOutcomeDto, SeatBindingRequest, TopologySeatDto,
 };
 use kontor_api::applications::{
@@ -1118,6 +1120,42 @@ pub struct Services {
     planning_pair_recovery_hold: std::sync::Mutex<Option<PlanningPairReceiptHold>>,
     /// Optional explicitly composed semantic transport. No credential lookup.
     memory_cognee: OnceLock<kontor_memory_cognee::Client>,
+    /// The realm's state root, where `runtimes.json` lives.
+    ///
+    /// Held here because the provider-marker correction is a write to that
+    /// operator-owned document, and nothing below this layer may know a path.
+    state_root: PathBuf,
+    /// Serializes provider-marker corrections so a plan can never race the write
+    /// that commits it, and two corrections cannot interleave their CAS checks.
+    provider_marker_guard: tokio::sync::Mutex<()>,
+    /// A black-box test's hold between a provider-marker apply's replay
+    /// pre-check and its durable claim. Absent in every composed daemon unless
+    /// a test installs one.
+    provider_marker_bind_hold: std::sync::Mutex<Option<PlanningPairReceiptHold>>,
+}
+
+/// The realm-scoped operation a provider-marker correction binds its key to.
+///
+/// The spelling is also the `CHECK` value migration 0135 widened
+/// `realm_idempotency_bindings` with, and the two must change together.
+const PROVIDER_MARKER_OPERATION: &str = "clear_provider_marker";
+
+/// What one marker correction effects, in a stable order.
+///
+/// `restart_required` is a fact about the *running* daemon, not about the
+/// document: the fleet is composed at start, so a held marker survives a file
+/// edit until the next start. Reporting it for an unchanged document is
+/// deliberate — an operator who cleared the file by hand and never restarted is
+/// exactly who needs to know.
+fn provider_marker_effects(changed: bool, restart_required: bool) -> Vec<ProviderMarkerEffectDto> {
+    let mut effects = Vec::new();
+    if changed {
+        effects.push(ProviderMarkerEffectDto::MarkerRemoved);
+    }
+    if restart_required {
+        effects.push(ProviderMarkerEffectDto::RestartRequired);
+    }
+    effects
 }
 
 struct CompletionCommit<'a> {
@@ -1160,6 +1198,7 @@ impl Services {
         realm_id: kontor_core::id::RealmId,
         capacity: CapacityConfig,
         jira: JiraConnectors,
+        state_root: PathBuf,
         runtime_roots: PathBuf,
         usage_poller: crate::usage::UsagePoller,
         quota_signals: Vec<kontor_accounts::QuotaSignal>,
@@ -1188,6 +1227,9 @@ impl Services {
             planning_pair_receipt_hold: std::sync::Mutex::new(None),
             planning_pair_recovery_hold: std::sync::Mutex::new(None),
             memory_cognee: OnceLock::new(),
+            state_root,
+            provider_marker_guard: tokio::sync::Mutex::new(()),
+            provider_marker_bind_hold: std::sync::Mutex::new(None),
         }))
     }
 
@@ -21470,6 +21512,295 @@ impl Services {
     }
 }
 
+impl Services {
+    // -- The provider-availability marker's own helpers -----------------------
+    //
+    // They sit beside the trait implementation rather than inside it because
+    // they are decisions this composition root makes for itself, not operations
+    // the public contract declares.
+
+    /// Answer a replay of a key already bound to this exact correction.
+    ///
+    /// A marker that is already gone is the durable effect this key names, so
+    /// nothing is written. That state is also completed here: a first attempt
+    /// whose write landed but whose completion insert failed leaves a claimed
+    /// key with the marker gone, and without this row a later operator restore
+    /// of the marker would make the key look unfinished and remove the marker a
+    /// new outage left. A completed key is answered the same way even when
+    /// the operator has restored the marker for a later outage: completion is
+    /// durable state, not a guess from the current bytes, so the restored
+    /// marker survives its replay. A marker that still stands at the revision
+    /// the first attempt read and whose key never completed means the process
+    /// died or the write failed before the document moved: the same request
+    /// carries enough state to finish that correction now, and the retry must
+    /// not be refused over the revision its own first attempt read. Anything
+    /// else is a conflict for the caller to read rather than a second write to
+    /// perform.
+    fn replayed_provider_marker(
+        &self,
+        state: &ApiState,
+        key: &IdempotencyKey,
+        family: &RuntimeKindKey,
+        request: &ProviderMarkerApplyRequest,
+    ) -> Result<ProviderMarkerDto, ApiError> {
+        let changed_since = || {
+            self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the runtime settings document changed after this key's correction",
+            )
+            .advising("read the marker again with the preview and apply with a fresh key")
+        };
+        let restart_required =
+            !self.running_daemon_answers_available(state, family, &request.provider);
+        // A completed key is answered from its durable row before the document
+        // is read, so removing the addressed setting or the whole file after a
+        // successful correction cannot turn its retry into a revision conflict.
+        if let Some(completion) = state
+            .with_store(|store| store.provider_marker_completion(key.as_str()))
+            .map_err(|error| self.refuse(&error))?
+        {
+            return Ok(ProviderMarkerDto {
+                realm_id: state.realm_id(),
+                runtime_family: family.to_string(),
+                host_key: completion.host_key,
+                provider: request.provider.clone(),
+                outcome: ProviderMarkerOutcomeDto::Replayed,
+                before: completion.before.into_iter().collect(),
+                after: completion.after.into_iter().collect(),
+                changed: false,
+                effects: provider_marker_effects(false, restart_required),
+                revision: completion.written_revision,
+            });
+        }
+        let path = crate::runtimes::path_in(&self.state_root);
+        let bytes = crate::provider_marker::read(&path)
+            .map_err(|error| self.provider_marker_error(error))?
+            .ok_or_else(changed_since)?;
+        let plan = crate::provider_marker::plan(&bytes, family.as_str(), &request.provider)
+            .map_err(|_| changed_since())?;
+        let revision = ContentHash::of(&bytes);
+        if !plan.before.contains(&request.provider) {
+            // A first attempt whose rename landed but whose directory flush did
+            // not is recovered here. Make the rename durable before completion
+            // says this key's effect finished, or a power cut could bring the
+            // marked document back under a completed key.
+            crate::provider_marker::sync_parent_directory(&path)
+                .map_err(|error| self.provider_marker_error(error))?;
+            state
+                .with_store(|store| {
+                    store.record_provider_marker_completion(
+                        key.as_str(),
+                        &revision,
+                        &plan.host_key,
+                        &plan.before,
+                        &plan.after,
+                        kontor_api::now(),
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+            return Ok(ProviderMarkerDto {
+                realm_id: state.realm_id(),
+                runtime_family: family.to_string(),
+                host_key: plan.host_key,
+                provider: request.provider.clone(),
+                outcome: ProviderMarkerOutcomeDto::Replayed,
+                before: plan.before.iter().cloned().collect(),
+                after: plan.after.iter().cloned().collect(),
+                changed: false,
+                effects: provider_marker_effects(false, restart_required),
+                revision,
+            });
+        }
+        // A first attempt that started writing but never recorded completion is
+        // not repeated while the marker still stands: the operator may have
+        // restored it for a new outage after that write landed, and the
+        // document alone cannot tell the two states apart.
+        if state
+            .with_store(|store| store.provider_marker_write_started(key.as_str()))
+            .map_err(|error| self.refuse(&error))?
+        {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "a previous attempt started writing this correction and did not complete it",
+                )
+                .advising(
+                    "read the marker again with the preview and apply with a fresh key; a restored marker may belong to a new outage",
+                ));
+        }
+        if revision != request.expected_revision {
+            return Err(changed_since());
+        }
+        let updated = plan.updated.ok_or_else(changed_since)?;
+        crate::provider_marker::write(&path, &bytes, &updated)
+            .map_err(|error| self.provider_marker_error(error))?;
+        let written = ContentHash::of(&updated);
+        state
+            .with_store(|store| {
+                store.record_provider_marker_completion(
+                    key.as_str(),
+                    &written,
+                    &plan.host_key,
+                    &plan.before,
+                    &plan.after,
+                    kontor_api::now(),
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
+        Ok(ProviderMarkerDto {
+            realm_id: state.realm_id(),
+            runtime_family: family.to_string(),
+            host_key: plan.host_key,
+            provider: request.provider.clone(),
+            outcome: ProviderMarkerOutcomeDto::Cleared,
+            before: plan.before.iter().cloned().collect(),
+            after: plan.after.iter().cloned().collect(),
+            changed: true,
+            effects: provider_marker_effects(true, restart_required),
+            revision: written,
+        })
+    }
+
+    /// Resolve the runtime family key that names one configured setting.
+    fn provider_marker_family(&self, text: &str) -> Result<RuntimeKindKey, ApiError> {
+        RuntimeKindKey::parse(text).map_err(|error| self.refuse_domain(&error))
+    }
+
+    /// Whether the running daemon currently answers "available" for this exact
+    /// family and provider.
+    ///
+    /// A family this process was never composed with cannot answer at all,
+    /// which is the same consumer-visible fact as a held marker: a start is
+    /// needed before the document governs any launch.
+    fn running_daemon_answers_available(
+        &self,
+        state: &ApiState,
+        family: &RuntimeKindKey,
+        provider: &str,
+    ) -> bool {
+        state
+            .runtimes()
+            .get(family)
+            .is_some_and(|adapter| adapter.provider_available(provider))
+    }
+
+    /// The one hash a preview answers with and an apply recomputes.
+    fn provider_marker_preview_hash(
+        &self,
+        family: &RuntimeKindKey,
+        provider: &str,
+        revision: &ContentHash,
+    ) -> Result<ContentHash, ApiError> {
+        self.preview_hash(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "provider_marker_preview",
+            "runtime_family": family.as_str(),
+            "provider": provider,
+            "revision": revision.as_str(),
+        }))
+    }
+
+    /// Refuse a document-level marker failure without echoing any of it.
+    fn provider_marker_error(&self, error: crate::provider_marker::MarkerError) -> ApiError {
+        use crate::provider_marker::MarkerError;
+        match error {
+            MarkerError::UnknownFamily => self.deny(
+                ApiErrorCode::NotFound,
+                "no configured runtime setting declares that family",
+            ),
+            MarkerError::DuplicateFamily => self.deny(
+                ApiErrorCode::InvalidRequest,
+                "more than one configured runtime setting declares that family",
+            ),
+            MarkerError::NotRewritable => self
+                .deny(
+                    ApiErrorCode::Unavailable,
+                    "the runtime settings document is not a regular file this realm may rewrite",
+                )
+                .advising("replace the symlink with the settings file itself, then retry"),
+            MarkerError::Busy => self
+                .deny(
+                    ApiErrorCode::Unavailable,
+                    "another writer holds the runtime settings lock",
+                )
+                .advising("wait for that writer to finish, then retry"),
+            MarkerError::Changed => self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the runtime settings document changed during the correction",
+                )
+                .advising(
+                    "read the marker again with the preview and apply the revision it reports",
+                ),
+            MarkerError::WriteFailed => self
+                .deny(
+                    ApiErrorCode::Unavailable,
+                    "the runtime settings document could not be written",
+                )
+                .advising("check the state root's free disk space and permissions, then retry"),
+            MarkerError::Unreadable => self
+                .deny(
+                    ApiErrorCode::Unavailable,
+                    "the runtime settings document could not be read",
+                )
+                .advising("check the state root's permissions and free disk space, then retry"),
+            MarkerError::Malformed => self
+                .deny(
+                    ApiErrorCode::Unavailable,
+                    "the runtime settings document could not be read as a fleet description",
+                )
+                .advising("repair the runtime settings document, then retry"),
+        }
+    }
+
+    /// Name a competing claim by another operation as what it is.
+    ///
+    /// The replay pre-check and the durable claim are separate store calls, so
+    /// another operation can bind the key between them. The generic mapping
+    /// would call that a revision conflict and tell the caller to re-read and
+    /// retry, which can never succeed for a key that is permanently bound.
+    fn provider_marker_bind_error(&self, error: &RepositoryError) -> ApiError {
+        if matches!(
+            error,
+            RepositoryError::Conflict {
+                subject: "idempotency key",
+                ..
+            }
+        ) {
+            return self.deny(
+                ApiErrorCode::IdempotencyConflict,
+                "the idempotency key was already used for a different operation",
+            );
+        }
+        self.refuse(error)
+    }
+
+    /// Hold every provider-marker apply between its replay pre-check and its
+    /// durable claim, for a black-box test that must let another operation bind
+    /// the same key in that window.
+    #[doc(hidden)]
+    pub fn hold_provider_marker_bind(&self) -> PlanningPairReceiptHold {
+        let hold = PlanningPairReceiptHold::default();
+        *self
+            .provider_marker_bind_hold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hold.clone());
+        hold
+    }
+
+    /// Wait at an installed bind hold; with none installed, return at once.
+    async fn provider_marker_bind_hold_point(&self) {
+        let hold = self
+            .provider_marker_bind_hold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(hold) = hold {
+            hold.pass().await;
+        }
+    }
+}
+
 #[async_trait]
 impl ApplicationOperations for Services {
     fn recall_memory(
@@ -26478,6 +26809,213 @@ impl ApplicationOperations for Services {
                 version: catalog.version,
                 content_hash,
             },
+        })
+    }
+
+    // -- The provider-availability marker -------------------------------------
+    //
+    // A runtime host that was taken out during an outage keeps refusing that
+    // provider until a human deletes the entry from `runtimes.json`, and the
+    // daemon composes the set once, at start. This pair is the supported way to
+    // do that deletion: a preview that names the exact document revision, and
+    // an apply that removes one member under compare-and-swap. It edits the
+    // operator-owned file and nothing else — no seat is retired, replaced or
+    // relaunched, because no runtime operation is reachable from here.
+
+    fn preview_provider_marker(
+        &self,
+        request: &ProviderMarkerPreviewRequest,
+    ) -> Result<ProviderMarkerPreviewDto, ApiError> {
+        let state = self.state()?;
+        let family = self.provider_marker_family(&request.runtime_family)?;
+        kontor_core::id::validate_open_key("provider", &request.provider)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let path = crate::runtimes::path_in(&self.state_root);
+        let bytes = crate::provider_marker::read(&path)
+            .map_err(|error| self.provider_marker_error(error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "this realm has no runtime settings document",
+                )
+            })?;
+        let revision = ContentHash::of(&bytes);
+        let plan = crate::provider_marker::plan(&bytes, family.as_str(), &request.provider)
+            .map_err(|error| self.provider_marker_error(error))?;
+        let changed = plan.updated.is_some();
+        let restart_required =
+            !self.running_daemon_answers_available(state, &family, &request.provider);
+        Ok(ProviderMarkerPreviewDto {
+            realm_id: state.realm_id(),
+            runtime_family: family.to_string(),
+            host_key: plan.host_key,
+            provider: request.provider.clone(),
+            before: plan.before.iter().cloned().collect(),
+            after: plan.after.iter().cloned().collect(),
+            changed,
+            effects: provider_marker_effects(changed, restart_required),
+            preview_hash: self.provider_marker_preview_hash(
+                &family,
+                &request.provider,
+                &revision,
+            )?,
+            revision,
+        })
+    }
+
+    async fn apply_provider_marker(
+        &self,
+        key: &IdempotencyKey,
+        request: &ProviderMarkerApplyRequest,
+    ) -> Result<ProviderMarkerDto, ApiError> {
+        // One correction at a time: the document read, the compare-and-swap and
+        // the write are one critical section, so two applies cannot both see a
+        // matching revision and then overwrite each other's work.
+        let _guard = self.provider_marker_guard.lock().await;
+        let state = self.state()?;
+        let family = self.provider_marker_family(&request.runtime_family)?;
+        kontor_core::id::validate_open_key("provider", &request.provider)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "provider_marker_apply",
+            "runtime_family": family.as_str(),
+            "provider": request.provider,
+            "expected_revision": request.expected_revision.as_str(),
+            "preview_hash": request.preview_hash.as_str(),
+        }))?;
+        // The key is judged before the revision, exactly like every other keyed
+        // realm write: a retry presents the revision it read *before* its first
+        // write, which as a bare compare-and-swap would look stale and be
+        // refused for having succeeded.
+        if let Some(bound) = state
+            .with_store(|store| store.realm_idempotency_binding(key.as_str()))
+            .map_err(|error| self.refuse(&error))?
+        {
+            if bound.operation != PROVIDER_MARKER_OPERATION
+                || bound.fingerprint != intent.hash().as_str()
+            {
+                return Err(self.deny(
+                    ApiErrorCode::IdempotencyConflict,
+                    "the idempotency key was already used for a different operation",
+                ));
+            }
+            return self.replayed_provider_marker(state, key, &family, request);
+        }
+        // A black-box test can line another operation's claim up between the
+        // pre-check above and the durable claim below, which is the race the
+        // bind's own conflict translation exists for. No composed daemon
+        // installs a hold here.
+        self.provider_marker_bind_hold_point().await;
+
+        let path = crate::runtimes::path_in(&self.state_root);
+        let bytes = crate::provider_marker::read(&path)
+            .map_err(|error| self.provider_marker_error(error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "this realm has no runtime settings document",
+                )
+            })?;
+        let revision = ContentHash::of(&bytes);
+        if revision != request.expected_revision {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the runtime settings document moved since the preview",
+                )
+                .advising(
+                    "read the marker again with the preview and apply the revision it reports",
+                ));
+        }
+        // The plan is computed before the preview hash is judged so an unknown
+        // family or an ambiguous document is refused as what it is, rather than
+        // as a hash mismatch the caller cannot act on.
+        let plan = crate::provider_marker::plan(&bytes, family.as_str(), &request.provider)
+            .map_err(|error| self.provider_marker_error(error))?;
+        let expected_preview =
+            self.provider_marker_preview_hash(&family, &request.provider, &revision)?;
+        if expected_preview != request.preview_hash {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the supplied preview hash does not describe this correction at that revision",
+            ));
+        }
+        let restart_required =
+            !self.running_daemon_answers_available(state, &family, &request.provider);
+        // The durable claim comes before the write: the binding is the fence
+        // that makes this document change happen under this operation's key, so
+        // a different operation cannot bind the same key between the check and
+        // the correction. The request was validated first, so a refusal does not
+        // claim a key the caller would then have to replace.
+        let binding = IdempotencyBinding {
+            key: key.as_str().to_owned(),
+            operation: PROVIDER_MARKER_OPERATION,
+            fingerprint: intent.hash().clone(),
+            bound_at: kontor_api::now(),
+        };
+        let applied = state
+            .with_store(|store| store.bind_realm_operation(&binding))
+            .map_err(|error| self.provider_marker_bind_error(&error))?;
+        if applied == Applied::Unchanged {
+            // A concurrent attempt with this exact request claimed the key
+            // between the replay check and the claim; answer from what it left.
+            return self.replayed_provider_marker(state, key, &family, request);
+        }
+        let (outcome, changed, revision_after) = match plan.updated {
+            Some(updated) => {
+                // Record that the write is starting before the document moves,
+                // so a completion lost after the rename can never make a later
+                // retry remove a marker an operator restored for a new outage.
+                state
+                    .with_store(|store| {
+                        store.record_provider_marker_write_start(key.as_str(), kontor_api::now())
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+                crate::provider_marker::write(&path, &bytes, &updated)
+                    .map_err(|error| self.provider_marker_error(error))?;
+                let written = ContentHash::of(&updated);
+                state
+                    .with_store(|store| {
+                        store.record_provider_marker_completion(
+                            key.as_str(),
+                            &written,
+                            &plan.host_key,
+                            &plan.before,
+                            &plan.after,
+                            kontor_api::now(),
+                        )
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+                (ProviderMarkerOutcomeDto::Cleared, true, written)
+            }
+            None => {
+                state
+                    .with_store(|store| {
+                        store.record_provider_marker_completion(
+                            key.as_str(),
+                            &revision,
+                            &plan.host_key,
+                            &plan.before,
+                            &plan.after,
+                            kontor_api::now(),
+                        )
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+                (ProviderMarkerOutcomeDto::AlreadyCleared, false, revision)
+            }
+        };
+        Ok(ProviderMarkerDto {
+            realm_id: state.realm_id(),
+            runtime_family: family.to_string(),
+            host_key: plan.host_key,
+            provider: request.provider.clone(),
+            outcome,
+            before: plan.before.iter().cloned().collect(),
+            after: plan.after.iter().cloned().collect(),
+            changed,
+            effects: provider_marker_effects(changed, restart_required),
+            revision: revision_after,
         })
     }
 
@@ -46682,6 +47220,7 @@ mod tests {
                 kontor_core::id::RealmId::generate(),
             )
             .expect("no connectors"),
+            directory.path().to_path_buf(),
             directory.path().join("runtime-roots"),
             crate::usage::UsagePoller::discover(directory.path()),
             Vec::new(),
@@ -46742,6 +47281,7 @@ mod tests {
                 kontor_core::id::RealmId::generate(),
             )
             .expect("no connectors"),
+            directory.path().to_path_buf(),
             directory.path().join("runtime-roots"),
             crate::usage::UsagePoller::discover(directory.path()),
             Vec::new(),
@@ -48733,6 +49273,7 @@ mod coherence {
             crate::DEFAULT_CAPACITY,
             kontor_jira::JiraConnectors::read(home.path(), kontor_core::id::RealmId::generate())
                 .expect("no connectors"),
+            home.path().to_path_buf(),
             home.path().join("runtime-roots"),
             crate::usage::UsagePoller::discover(home.path()),
             Vec::new(),

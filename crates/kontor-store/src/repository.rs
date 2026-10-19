@@ -149,7 +149,9 @@ mod durable_seats;
 mod pr_reviews;
 use crate::events::append::stored_payload;
 use crate::events::replay::{EVENT_COLUMNS, read_event};
-use crate::graph::{Applied, IdempotencyBinding};
+use crate::graph::{
+    Applied, IdempotencyBinding, ProviderMarkerCompletion, RecordedIdempotencyBinding,
+};
 
 /// Maximum length of an agent-run parent chain that is walked when checking for
 /// a lineage cycle.
@@ -13534,6 +13536,205 @@ impl SqliteStore {
         };
         transaction.commit().map_err(backend)?;
         Ok(applied)
+    }
+
+    /// The realm-scoped operation one key is bound to, if it has ever been used.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn realm_idempotency_binding(
+        &self,
+        key: &str,
+    ) -> RepositoryResult<Option<RecordedIdempotencyBinding>> {
+        self.connection
+            .query_row(
+                "SELECT operation, fingerprint FROM realm_idempotency_bindings
+                 WHERE idempotency_key = ?1",
+                params![key],
+                |row| {
+                    Ok(RecordedIdempotencyBinding {
+                        operation: row.get(0)?,
+                        fingerprint: row.get(1)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(backend)
+    }
+
+    /// Record that the provider-marker correction claimed under `key` has
+    /// finished, naming the revision it left and the answer it reported.
+    ///
+    /// A binding alone cannot tell a retry whether the effect it names already
+    /// happened: the document is the only other witness, and an operator may
+    /// restore the marker for a later outage. This row is the durable witness,
+    /// so a completed key answers a replay instead of removing that restored
+    /// marker a second time. Its host key and before/after sets let the replay
+    /// answer without the document, even after the addressed setting or the
+    /// file has been removed. Completion is recorded only for a key already
+    /// bound to this operation; it is never a claim of its own.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when no provider-marker claim
+    /// exists for the key, and backend failures otherwise.
+    pub fn record_provider_marker_completion(
+        &self,
+        key: &str,
+        written_revision: &ContentHash,
+        host_key: &ExternalName,
+        before: &BTreeSet<String>,
+        after: &BTreeSet<String>,
+        completed_at: Timestamp,
+    ) -> RepositoryResult<Applied> {
+        let transaction = self.begin()?;
+        let owner: Option<String> = transaction
+            .query_row(
+                "SELECT operation FROM realm_idempotency_bindings
+                 WHERE idempotency_key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        if owner.as_deref() != Some("clear_provider_marker") {
+            return Err(conflict(
+                "idempotency key",
+                "no provider-marker claim exists for this key",
+            ));
+        }
+        let inserted = transaction
+            .execute(
+                "INSERT INTO provider_marker_completions
+                     (idempotency_key, written_revision, host_key,
+                      before_providers, after_providers, completed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT (idempotency_key) DO NOTHING",
+                params![
+                    key,
+                    written_revision.as_str(),
+                    host_key.as_str(),
+                    to_json(before)?,
+                    to_json(after)?,
+                    text(completed_at)
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(if inserted == 0 {
+            Applied::Unchanged
+        } else {
+            Applied::Created
+        })
+    }
+
+    /// One completed provider-marker correction, if the key has completed.
+    ///
+    /// # Errors
+    /// Backend failures and a stored row this build cannot parse.
+    pub fn provider_marker_completion(
+        &self,
+        key: &str,
+    ) -> RepositoryResult<Option<ProviderMarkerCompletion>> {
+        let stored: Option<(String, String, String, String)> = self
+            .connection
+            .query_row(
+                "SELECT written_revision, host_key, before_providers, after_providers
+                 FROM provider_marker_completions
+                 WHERE idempotency_key = ?1",
+                params![key],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        stored
+            .map(|(revision, host_key, before, after)| {
+                Ok(ProviderMarkerCompletion {
+                    written_revision: ContentHash::parse(&revision).map_err(|_| {
+                        RepositoryError::Backend {
+                            detail: "a provider-marker completion no longer matches its digest"
+                                .to_owned(),
+                        }
+                    })?,
+                    host_key: ExternalName::parse(&host_key).map_err(|_| {
+                        RepositoryError::Backend {
+                            detail: "a provider-marker completion no longer names its host key"
+                                .to_owned(),
+                        }
+                    })?,
+                    before: from_json(&before)?,
+                    after: from_json(&after)?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Record that the provider-marker correction claimed under `key` is about
+    /// to replace the settings document.
+    ///
+    /// The phase separates "the write never started" from "the write started
+    /// and its completion was lost". A retry may finish the first state, but
+    /// when the marker is present in the second it cannot tell a write that
+    /// never landed from a marker an operator restored for a new outage, so it
+    /// must ask for a fresh preview and key instead of writing again. The phase
+    /// is only recorded for a key already bound to this operation.
+    ///
+    /// # Errors
+    /// Returns [`RepositoryError::Conflict`] when no provider-marker claim
+    /// exists for the key, and backend failures otherwise.
+    pub fn record_provider_marker_write_start(
+        &self,
+        key: &str,
+        started_at: Timestamp,
+    ) -> RepositoryResult<Applied> {
+        let transaction = self.begin()?;
+        let owner: Option<String> = transaction
+            .query_row(
+                "SELECT operation FROM realm_idempotency_bindings
+                 WHERE idempotency_key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        if owner.as_deref() != Some("clear_provider_marker") {
+            return Err(conflict(
+                "idempotency key",
+                "no provider-marker claim exists for this key",
+            ));
+        }
+        let inserted = transaction
+            .execute(
+                "INSERT INTO provider_marker_write_starts (idempotency_key, started_at)
+                 VALUES (?1, ?2)
+                 ON CONFLICT (idempotency_key) DO NOTHING",
+                params![key, text(started_at)],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(if inserted == 0 {
+            Applied::Unchanged
+        } else {
+            Applied::Created
+        })
+    }
+
+    /// Whether the correction claimed under `key` started replacing the
+    /// settings document.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn provider_marker_write_started(&self, key: &str) -> RepositoryResult<bool> {
+        let exists: Option<i64> = self
+            .connection
+            .query_row(
+                "SELECT 1 FROM provider_marker_write_starts
+                 WHERE idempotency_key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        Ok(exists.is_some())
     }
 }
 

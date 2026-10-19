@@ -373,15 +373,27 @@ pub fn read(state_root: &Path) -> Result<RuntimeSettings, FleetError> {
         }
         Err(source) => return Err(FleetError::Io { source }),
     };
+    parse(&bytes)
+}
+
+/// Parse one fleet description from its exact bytes.
+///
+/// Split from [`read`] so an operation that holds the document already — and
+/// must judge it before rewriting it — applies the same named refusals and the
+/// same generation check rather than a second, drifting copy of them.
+///
+/// # Errors
+/// As [`read`], for bytes that are present but not a document this build wrote.
+pub fn parse(bytes: &[u8]) -> Result<RuntimeSettings, FleetError> {
     // Named refusals first, and deliberately before the generation check: an
     // operator who wrote `family: "ao"` needs to be told that this build does not
     // run AO, not that their document is from another generation. Both are true;
     // only one tells them what to do.
-    if let Some(family) = deferred_family(&bytes) {
+    if let Some(family) = deferred_family(bytes) {
         return Err(FleetError::UnsupportedFamily { family });
     }
     let settings: RuntimeSettings =
-        serde_json::from_slice(&bytes).map_err(|_| FleetError::Malformed)?;
+        serde_json::from_slice(bytes).map_err(|_| FleetError::Malformed)?;
     if !READABLE_SCHEMAS.contains(&settings.schema_version) {
         return Err(FleetError::Malformed);
     }

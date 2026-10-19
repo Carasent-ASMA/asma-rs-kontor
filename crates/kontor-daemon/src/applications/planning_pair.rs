@@ -101,7 +101,7 @@ impl PlanningPairReceiptHold {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    async fn pass(&self) {
+    pub(super) async fn pass(&self) {
         self.lock().waiting += 1;
         std::future::poll_fn(|context| {
             let mut state = self.lock();
