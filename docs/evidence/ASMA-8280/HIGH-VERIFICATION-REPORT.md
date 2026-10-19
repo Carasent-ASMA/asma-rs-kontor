@@ -8,7 +8,7 @@ Verify seat: Paseo agent `2399c746-32aa-4d10-a39e-ccdbc8c5aed1`
 Native session/handle: `4447678e-9d39-4eea-a910-3b0356b2a614`
 Parent TPM: `3c52abda-4fd0-4af6-b086-476bc51eb305`
 Workspace: `wks_a284b5d96a0ea32b`
-Checkout: `/Users/igor/carasent/asma-modules/.worktrees/asma-8280/asma-rs-kontor`
+Checkout: `$HOME/carasent/asma-modules/.worktrees/asma-8280/asma-rs-kontor`
 Candidate HEAD: `ec68ec5a8c5029d11728cc6f6c45c77b5b4255bf`
 Candidate tree: `51db91c62531dea43f4332105d29e1c54d9ae82b`
 Parent: `2a96a65086384f3d12680b3157a10bc8cd26364e`

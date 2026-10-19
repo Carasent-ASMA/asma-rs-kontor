@@ -1,5 +1,5 @@
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.28s
-     Running tests/loopback_api.rs (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/reproduction/target-base/debug/deps/loopback_api-6520399e83adc025)
+     Running tests/loopback_api.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/reproduction/target-base/debug/deps/loopback_api-6520399e83adc025)
 
 running 1 test
 test message_delivery_proofs::legacy_message_proof_duplicate_split_across_pages_is_terminal_without_delivery ... ok

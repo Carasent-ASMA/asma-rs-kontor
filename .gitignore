@@ -17,3 +17,10 @@ coverage/
 .idea/
 .vscode/
 *.swp
+
+# Python bytecode embeds absolute source paths
+__pycache__/
+
+# KON-MVP-18 pilot runs write their receipts into the checkout; receipts stay
+# out of the public tree (scripts/public_tree.py)
+/docs/evidence/KON-MVP-18/run-*/

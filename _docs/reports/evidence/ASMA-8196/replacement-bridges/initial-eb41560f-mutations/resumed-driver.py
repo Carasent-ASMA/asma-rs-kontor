@@ -1,7 +1,7 @@
 from pathlib import Path
 import subprocess,os,json,hashlib,datetime,tarfile,io,difflib,re
 
-owner=Path('/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor')
+owner=Path(os.environ['HOME'])/'carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor'
 root=Path('/private/tmp/ASMA-8196-bridge-mutations-eb41560f')
 source=root/'source'
 pin='eb41560fe3506eb06b43e5f2ab8f47ece61facaf'
@@ -12,7 +12,7 @@ if not source.exists():
 paths=['crates/kontor-daemon/src/applications.rs','crates/kontor-store/src/repository.rs']
 original={p:(source/p).read_text() for p in paths}
 assert all((source/p).read_bytes()==(owner/p).read_bytes() for p in paths), 'resume only after exact restoration'
-env=dict(os.environ,CARGO_TARGET_DIR='/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target')
+env=dict(os.environ,CARGO_TARGET_DIR=os.environ['HOME']+'/carasent/asma-modules/_tools/asma-rs-kontor/target')
 def sha(path):return hashlib.sha256(path.read_bytes()).hexdigest()
 def run(name,args,expected):
     log=root/(name+'.txt')

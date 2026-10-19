@@ -36,6 +36,8 @@ use kontor_core::repository::{
 use kontor_core::repository::{TeamDefinitionRepository, TopologyRepository};
 use kontor_core::spec::{TeamRunSnapshot, TopologySnapshot};
 use kontor_core::state::{NativeRuntimeIdentity, ObservedContainerKind, TaskState};
+use kontor_daemon::succession::SuccessionSummarizerTransport;
+use kontor_daemon::succession_summarizer::CONFIG_FILE as SUCCESSION_SUMMARIZER_FILE;
 use kontor_daemon::usage::{ExactProviderUsageReporter, UsagePoller};
 use kontor_daemon::{DATABASE_FILE, DEFAULT_CAPACITY, Daemon, DaemonConfig};
 use kontor_profiles::pack::{PackAvailability, resolve_profile};
@@ -216,6 +218,12 @@ struct WorldComposition {
     jira_connectors: Option<kontor_jira::JiraConnectors>,
     quota_signals: Option<String>,
     memory_cognee: Option<kontor_memory_cognee::Client>,
+    /// An exactly composed governed summarizer transport for succession.
+    succession_summarizer: Option<Arc<dyn SuccessionSummarizerTransport>>,
+    /// The summary the configured runtime returns from the startup-composed
+    /// transport. Writing this also installs the selection document, so the
+    /// daemon reaches the transport through ordinary startup.
+    runtime_summarizer: Option<String>,
     /// Start from an empty state root and let the daemon create the Realm.
     created_realm: bool,
 }
@@ -279,11 +287,24 @@ impl World {
     }
 
     /// Start an empty Realm with the shipped runtime-refusal quota signals.
+    ///
+    /// The shipped example names neutral account aliases, while the compiled
+    /// route catalog the test packs route through still names the Codex logins
+    /// `codex-work` and `codex-personal` (an open ASMA-8511 gap). Only the two
+    /// Codex `provider:` lines are mapped back; every marker, reset prefix and
+    /// zone stays the shipped bytes.
     pub(crate) async fn open_empty_with_quota_signals() -> Self {
-        Self::open_empty_with_quota_signal_document(include_str!(
-            "../../../../config/examples/quota-signals.yml"
-        ))
-        .await
+        let mut document = include_str!("../../../../config/examples/quota-signals.yml").to_owned();
+        for (shipped, catalogued) in [("codex-b", "codex-work"), ("codex-a", "codex-personal")] {
+            let line = format!("    provider: {shipped}\n");
+            assert_eq!(
+                document.matches(&line).count(),
+                1,
+                "the shipped example declares {shipped} once"
+            );
+            document = document.replace(&line, &format!("    provider: {catalogued}\n"));
+        }
+        Self::open_empty_with_quota_signal_document(&document).await
     }
 
     /// Start an empty Realm with an exact test-owned signal document.
@@ -341,6 +362,64 @@ impl World {
             DEFAULT_CAPACITY,
             WorldComposition {
                 usage_reporter: Some(reporter),
+                ..WorldComposition::default()
+            },
+        )
+        .await
+    }
+
+    /// Start an empty Realm whose succession handoffs dispatch through an
+    /// exactly configured governed summarizer transport.
+    ///
+    /// The shipped refusal signals are installed for the same reason the
+    /// quota-signal world installs them: a quota succession needs the runtime
+    /// refusal classified into a blocking row before any walk can run. The
+    /// declared-chain headroom walk still decides whether a dispatch is
+    /// admitted; this only composes the transport that executes an admitted
+    /// route, which is the exact production path minus the still-unavailable
+    /// runtime-backed implementation.
+    pub(crate) async fn open_empty_with_succession_summarizer(
+        summarizer: Arc<dyn SuccessionSummarizerTransport>,
+    ) -> Self {
+        Self::compose_with_connector(
+            // The production handoff reads one bounded page of 256 events, and
+            // a runtime that declares less would refuse the read rather than
+            // shorten it. The fake declares a page that admits the read.
+            capabilities_with_history_page(512),
+            true,
+            false,
+            false,
+            DEFAULT_CAPACITY,
+            WorldComposition {
+                quota_signals: Some(
+                    include_str!("../../../../config/examples/quota-signals.yml").to_owned(),
+                ),
+                succession_summarizer: Some(summarizer),
+                ..WorldComposition::default()
+            },
+        )
+        .await
+    }
+
+    /// Start an empty Realm whose ordinary startup composes the governed
+    /// summarizer from its configured runtime.
+    ///
+    /// The selection document and the runtime's staged answer are installed
+    /// before `Daemon::start`, so nothing here injects a transport: the daemon
+    /// reads the state root and composes the runtime-backed transport exactly as
+    /// the executable does.
+    pub(crate) async fn open_empty_with_runtime_summarizer(summary: &str) -> Self {
+        Self::compose_with_connector(
+            capabilities_with_history_page(512),
+            true,
+            false,
+            false,
+            DEFAULT_CAPACITY,
+            WorldComposition {
+                quota_signals: Some(
+                    include_str!("../../../../config/examples/quota-signals.yml").to_owned(),
+                ),
+                runtime_summarizer: Some(summary.to_owned()),
                 ..WorldComposition::default()
             },
         )
@@ -469,6 +548,17 @@ impl World {
         } else {
             ScriptedFakeRuntime::new(capabilities)
         });
+        if let Some(summary) = composition.runtime_summarizer.as_deref() {
+            fake.answering_succession_summaries_with([summary]);
+            std::fs::write(
+                directory.path().join(SUCCESSION_SUMMARIZER_FILE),
+                format!(
+                    r#"{{"schema_version":1,"runtime_family":"{}"}}"#,
+                    fake_family()
+                ),
+            )
+            .expect("the succession summarizer selection is installed");
+        }
         let registry = if configured {
             RuntimeRegistry::new().with(fake_family(), Arc::clone(&fake) as Arc<dyn RuntimeAdapter>)
         } else {
@@ -488,12 +578,13 @@ impl World {
         if let Some(client) = composition.memory_cognee {
             config = config.with_memory_cognee(client);
         }
-        let daemon = match composition.usage_reporter {
-            Some(reporter) => {
-                let poller = UsagePoller::with_exact_reporter(directory.path(), reporter);
-                Daemon::start_with_usage_poller(config, registry, poller)
-            }
-            None => Daemon::start(config, registry),
+        let daemon = if let Some(summarizer) = composition.succession_summarizer {
+            Daemon::start_with_succession_summarizer(config, registry, summarizer)
+        } else if let Some(reporter) = composition.usage_reporter {
+            let poller = UsagePoller::with_exact_reporter(directory.path(), reporter);
+            Daemon::start_with_usage_poller(config, registry, poller)
+        } else {
+            Daemon::start(config, registry)
         }
         .expect("the realm starts");
         let router = daemon.router();

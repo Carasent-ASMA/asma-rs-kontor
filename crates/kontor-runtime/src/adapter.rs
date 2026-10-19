@@ -18,8 +18,8 @@ use kontor_core::DomainError;
 use kontor_core::compaction::CompactionReceipt;
 use kontor_core::consultation::ConsultationRunId;
 use kontor_core::id::{
-    BoundedText, ContentHash, ExternalId, ExternalName, RoleSlotId, RuntimeBindingId,
-    SeatBindingId, Timestamp,
+    AccountProfileId, BoundedText, ContentHash, ExternalId, ExternalName, RoleSlotId,
+    RuntimeBindingId, SeatBindingId, Timestamp,
 };
 use kontor_core::repository::RuntimeBinding;
 use kontor_core::spec::{ContextPolicySnapshot, ModelRung, SeatAutonomy};
@@ -2116,4 +2116,57 @@ pub trait RuntimeAdapter: Send + Sync {
     ///   different content.
     /// * Every preflight failure, refused before any native effect.
     async fn compact(&self, request: &CompactRequest) -> RuntimeResult<CompactionReceipt>;
+
+    /// Whether this runtime implements governed succession summaries.
+    ///
+    /// Startup reads this synchronously to refuse a summarizer selection that
+    /// names a runtime which cannot execute an admitted summary route. The
+    /// answer must agree with [`Self::summarize_succession`]: a runtime that
+    /// claims this and then refuses would make every handoff silently degrade.
+    ///
+    /// The default is `false`. A runtime must override both this and
+    /// [`Self::summarize_succession`] to opt in, so no runtime acquires the
+    /// surface by accident.
+    fn supports_succession_summary(&self) -> bool {
+        false
+    }
+
+    /// Produce one bounded summary from an already-redacted prompt.
+    ///
+    /// The control plane resolves `model_rung` through the same account-before-
+    /// rung headroom walk every launch uses, so an implementation executes
+    /// exactly that route and never re-resolves, retries or substitutes another
+    /// one. `account` is the exact account the walk admitted with that route:
+    /// the summary must run as it, even when the runtime's ambient account is a
+    /// different one, and a runtime that cannot bind the account refuses rather
+    /// than answering as the ambient account. Only the redacted predecessor
+    /// projection crosses this boundary; the derived text it returns is redacted
+    /// and validated again before it can be persisted or handed to a successor.
+    ///
+    /// The daemon drops this call after `SUCCESSION_SUMMARY_TIMEOUT` (sixty
+    /// seconds) while it holds the realm's succession guard. An implementation
+    /// must therefore stop every native effect when this future is dropped: a
+    /// cancelled summary must not keep spending on the admitted account after
+    /// the handoff has already degraded.
+    ///
+    /// The default refuses. A runtime with no governed summary surface must say
+    /// so before it can acquire one by accident, and the handoff then keeps its
+    /// typed degraded outcome.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError::UnsupportedCapability`] when the runtime does not
+    /// declare [`crate::capability::RuntimeCapability::Summarize`],
+    /// [`RuntimeError::AccountEnvironmentUnavailable`] when it cannot execute as
+    /// the admitted account, and any closed runtime refusal when the exact route
+    /// cannot be executed.
+    async fn summarize_succession(
+        &self,
+        _model_rung: &ModelRung,
+        _account: AccountProfileId,
+        _prompt: &str,
+    ) -> RuntimeResult<String> {
+        Err(RuntimeError::UnsupportedCapability {
+            capability: crate::capability::RuntimeCapability::Summarize,
+        })
+    }
 }

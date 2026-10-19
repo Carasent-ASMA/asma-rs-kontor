@@ -11,7 +11,7 @@
       "--test",
       "contract"
     ],
-    "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor",
+    "cwd": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor",
     "started_at": "2026-10-11T19:22:01.657125+00:00",
     "finished_at": "2026-10-11T19:22:19.274554+00:00",
     "exit": 0,
@@ -30,10 +30,10 @@
       "RUSTC_WRAPPER": "",
       "CARGO_NET_OFFLINE": "true",
       "RUST_TEST_THREADS": "2",
-      "CARGO_TARGET_DIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/target-carrier-archive",
-      "TMPDIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
-      "GIT_CEILING_DIRECTORIES": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
-      "SWAGGER_UI_DOWNLOAD_URL": "file:///Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/swagger-ui.zip"
+      "CARGO_TARGET_DIR": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/target-carrier-archive",
+      "TMPDIR": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
+      "GIT_CEILING_DIRECTORIES": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
+      "SWAGGER_UI_DOWNLOAD_URL": "file://$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/swagger-ui.zip"
     },
     "test_summaries": [
       "test result: ok. 145 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.37s",
@@ -48,7 +48,7 @@
       "--all",
       "--check"
     ],
-    "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor",
+    "cwd": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor",
     "started_at": "2026-10-11T19:22:19.293830+00:00",
     "finished_at": "2026-10-11T19:22:22.627351+00:00",
     "exit": 0,
@@ -67,10 +67,10 @@
       "RUSTC_WRAPPER": "",
       "CARGO_NET_OFFLINE": "true",
       "RUST_TEST_THREADS": "2",
-      "CARGO_TARGET_DIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/target-carrier-archive",
-      "TMPDIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
-      "GIT_CEILING_DIRECTORIES": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
-      "SWAGGER_UI_DOWNLOAD_URL": "file:///Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/swagger-ui.zip"
+      "CARGO_TARGET_DIR": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/target-carrier-archive",
+      "TMPDIR": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
+      "GIT_CEILING_DIRECTORIES": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
+      "SWAGGER_UI_DOWNLOAD_URL": "file://$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/swagger-ui.zip"
     },
     "test_summaries": []
   },
@@ -87,7 +87,7 @@
       "-D",
       "warnings"
     ],
-    "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor",
+    "cwd": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor",
     "started_at": "2026-10-11T19:22:22.644838+00:00",
     "finished_at": "2026-10-11T19:22:35.896657+00:00",
     "exit": 0,
@@ -106,10 +106,10 @@
       "RUSTC_WRAPPER": "",
       "CARGO_NET_OFFLINE": "true",
       "RUST_TEST_THREADS": "2",
-      "CARGO_TARGET_DIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/target-carrier-archive",
-      "TMPDIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
-      "GIT_CEILING_DIRECTORIES": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
-      "SWAGGER_UI_DOWNLOAD_URL": "file:///Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/swagger-ui.zip"
+      "CARGO_TARGET_DIR": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/target-carrier-archive",
+      "TMPDIR": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
+      "GIT_CEILING_DIRECTORIES": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
+      "SWAGGER_UI_DOWNLOAD_URL": "file://$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/swagger-ui.zip"
     },
     "test_summaries": []
   },
@@ -127,7 +127,7 @@
       "--",
       "--test-threads=2"
     ],
-    "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor",
+    "cwd": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor",
     "started_at": "2026-10-11T19:22:35.914436+00:00",
     "finished_at": "2026-10-11T19:23:34.216755+00:00",
     "exit": 0,
@@ -146,10 +146,10 @@
       "RUSTC_WRAPPER": "",
       "CARGO_NET_OFFLINE": "true",
       "RUST_TEST_THREADS": "2",
-      "CARGO_TARGET_DIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/target-carrier-archive",
-      "TMPDIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
-      "GIT_CEILING_DIRECTORIES": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
-      "SWAGGER_UI_DOWNLOAD_URL": "file:///Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/swagger-ui.zip"
+      "CARGO_TARGET_DIR": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/target-carrier-archive",
+      "TMPDIR": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
+      "GIT_CEILING_DIRECTORIES": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
+      "SWAGGER_UI_DOWNLOAD_URL": "file://$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/swagger-ui.zip"
     },
     "test_summaries": [
       "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 612 filtered out; finished in 2.96s"
@@ -169,7 +169,7 @@
       "--",
       "--test-threads=2"
     ],
-    "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor",
+    "cwd": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor",
     "started_at": "2026-10-11T19:23:34.237838+00:00",
     "finished_at": "2026-10-11T19:23:38.336976+00:00",
     "exit": 0,
@@ -188,10 +188,10 @@
       "RUSTC_WRAPPER": "",
       "CARGO_NET_OFFLINE": "true",
       "RUST_TEST_THREADS": "2",
-      "CARGO_TARGET_DIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/target-carrier-archive",
-      "TMPDIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
-      "GIT_CEILING_DIRECTORIES": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
-      "SWAGGER_UI_DOWNLOAD_URL": "file:///Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/swagger-ui.zip"
+      "CARGO_TARGET_DIR": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/target-carrier-archive",
+      "TMPDIR": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
+      "GIT_CEILING_DIRECTORIES": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
+      "SWAGGER_UI_DOWNLOAD_URL": "file://$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/swagger-ui.zip"
     },
     "test_summaries": [
       "test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 608 filtered out; finished in 3.77s"
@@ -211,7 +211,7 @@
       "--",
       "--test-threads=2"
     ],
-    "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor",
+    "cwd": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor",
     "started_at": "2026-10-11T19:23:38.361343+00:00",
     "finished_at": "2026-10-11T19:23:50.187077+00:00",
     "exit": 0,
@@ -230,10 +230,10 @@
       "RUSTC_WRAPPER": "",
       "CARGO_NET_OFFLINE": "true",
       "RUST_TEST_THREADS": "2",
-      "CARGO_TARGET_DIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/target-carrier-archive",
-      "TMPDIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
-      "GIT_CEILING_DIRECTORIES": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
-      "SWAGGER_UI_DOWNLOAD_URL": "file:///Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/swagger-ui.zip"
+      "CARGO_TARGET_DIR": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/target-carrier-archive",
+      "TMPDIR": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
+      "GIT_CEILING_DIRECTORIES": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
+      "SWAGGER_UI_DOWNLOAD_URL": "file://$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/swagger-ui.zip"
     },
     "test_summaries": [
       "test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 596 filtered out; finished in 11.17s"
@@ -253,7 +253,7 @@
       "--",
       "--test-threads=2"
     ],
-    "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor",
+    "cwd": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor",
     "started_at": "2026-10-11T19:23:50.207349+00:00",
     "finished_at": "2026-10-11T19:23:57.848255+00:00",
     "exit": 0,
@@ -272,10 +272,10 @@
       "RUSTC_WRAPPER": "",
       "CARGO_NET_OFFLINE": "true",
       "RUST_TEST_THREADS": "2",
-      "CARGO_TARGET_DIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/target-carrier-archive",
-      "TMPDIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
-      "GIT_CEILING_DIRECTORIES": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
-      "SWAGGER_UI_DOWNLOAD_URL": "file:///Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/swagger-ui.zip"
+      "CARGO_TARGET_DIR": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/target-carrier-archive",
+      "TMPDIR": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
+      "GIT_CEILING_DIRECTORIES": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
+      "SWAGGER_UI_DOWNLOAD_URL": "file://$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/swagger-ui.zip"
     },
     "test_summaries": [
       "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 606 filtered out; finished in 7.20s"
@@ -295,7 +295,7 @@
       "--",
       "--nocapture"
     ],
-    "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor",
+    "cwd": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor",
     "started_at": "2026-10-11T19:23:57.872927+00:00",
     "finished_at": "2026-10-11T19:24:34.564591+00:00",
     "exit": 0,
@@ -314,10 +314,10 @@
       "RUSTC_WRAPPER": "",
       "CARGO_NET_OFFLINE": "true",
       "RUST_TEST_THREADS": "2",
-      "CARGO_TARGET_DIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/target-carrier-archive",
-      "TMPDIR": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
-      "GIT_CEILING_DIRECTORIES": "/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
-      "SWAGGER_UI_DOWNLOAD_URL": "file:///Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/swagger-ui.zip"
+      "CARGO_TARGET_DIR": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/target-carrier-archive",
+      "TMPDIR": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
+      "GIT_CEILING_DIRECTORIES": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-repair/tmp",
+      "SWAGGER_UI_DOWNLOAD_URL": "file://$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/swagger-ui.zip"
     },
     "test_summaries": [
       "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.97s"

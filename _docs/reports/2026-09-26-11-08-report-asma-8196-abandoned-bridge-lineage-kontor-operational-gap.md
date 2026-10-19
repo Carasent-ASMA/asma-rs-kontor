@@ -8,6 +8,8 @@ jira: ASMA-8196
 
 # ASMA-8196 abandoned replacement bridge selection
 
+> **Public tree, 2026-10-17 (ASMA-8511):** the run receipts and deployment records this document linked were removed from the public tree. Their links are now plain text. Each removed file is listed with its SHA-256 in the [removed-evidence manifest](../../docs/evidence/removed-run-evidence-2026-10-17.tsv), and stays in git history at `0971674d`.
+
 ## Observed defect and authority
 
 The deployed `dddb7287` naming preview returned HTTP 409 for ASMA-8190 with
@@ -136,7 +138,7 @@ No output, outcome or historical member finding was edited or reclassified.
 The [actual corrective source audit](evidence/ASMA-8196/replacement-bridges/actual-lsa-6b-audit.txt)
 finds no remaining P0/P1/P2 in source `6b3654bca823ac85ed7cc0bb1d6965bc730c4743`,
 tree `daaf541fbc0e66d5e960a6a5e1909e348528df3f`. Its
-[publication receipt](evidence/ASMA-8196/replacement-bridges/lsa-6b-publication-receipt.json)
+publication receipt
 preserves the complete actual conditional verdict, including its qualification
 requirements. The earlier 3b9 P1 and P2 findings remain unchanged as history.
 
@@ -176,7 +178,7 @@ credit to the changed 6b implementation or its new regressions.
 ## Qualification audit and byte-preserving publication correction
 
 The [actual qualification audit](evidence/ASMA-8196/replacement-bridges/actual-lsa-a488-audit.txt)
-and [identity receipt](evidence/ASMA-8196/replacement-bridges/lsa-a488-publication-receipt.json)
+and identity receipt
 confirm source qualification is complete and preserve the publication-only P2.
 Both full-gate logs are now base64 JSON carriers: decoding `rawBase64` reproduces
 the complete original bytes, including diagnostic whitespace, at the unchanged
@@ -209,22 +211,22 @@ Other worktrees and their changes remain untouched.
 ## Merged deployment and fresh continuity — 2026-09-26
 
 The [actual final publication audit](evidence/ASMA-8196/replacement-bridges/actual-lsa-09f-publication-audit.txt)
-with its [identity receipt](evidence/ASMA-8196/replacement-bridges/lsa-09f-publication-receipt.json)
+with its identity receipt
 closes the publication-only P2 and supports merging exact head `09f02b24`.
-The [merge readback](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/merge-receipt.json)
+The merge readback
 records PR #276 merged at `e29b895d0f045c499144870a2fa610fc642b6cc0`.
-Its [release build receipt](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/build-receipt.json)
-and [encoded raw build log](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/release-build-log.json)
+Its release build receipt
+and encoded raw build log
 record exit 0 from the exact merged-source archive, unchanged executable source
 relative to qualified 6b, and the three candidate binary hashes.
 
-The [guarded deployment plan](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/deployment-plan.json),
+The guarded deployment plan,
 actual apply script `deployment-apply.py` (sha256 `079b09dc483844717c9734ba3c1c64dbf2ff3e549851627d976bad31c86efd59`),
-and [deployment receipt](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/deployment-receipt.json)
+and deployment receipt
 record the controlled restart at `2026-09-26T10:45:33.519752Z`, consistent DB
 backup, exact realm, schema 119, `quick_check=ok`, zero foreign-key violations,
 unchanged runtime/fleet configuration hashes and preserved ASMA-8098 Done@14.
-The [identity checkpoint](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/before-lineage-identity.json)
+The identity checkpoint
 binds unchanged run/parent/runtime/native/seat identities and ASMA-8188's actual
 verification-gate sequence 2 across the restart. No manual SQLite write occurred.
 
@@ -238,26 +240,26 @@ verification-gate sequence 2 across the restart. No manual SQLite write occurred
 > [`scripts/kontor-deploy.py`](../../scripts/kontor-deploy.py).
 
 Five fresh read-only Paseo conformance tests passed, zero failed, and the sole
-mutating test was filtered; [encoded raw output](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/postdeployment-read-only-live-log.json)
+mutating test was filtered; encoded raw output
 binds exact e29 source and the live 0.9.1 identity. These are new postdeployment
 checks, not reused ASMA-8098 or earlier deployment test credit.
 
-The [ASMA-8190 preview before settlement](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/ASMA-8190-preview-before-settle.json)
-already returned HTTP 200. [Supported settlement](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/runtime-settle-current-verify.json)
+The ASMA-8190 preview before settlement
+already returned HTTP 200. Supported settlement
 then recorded the current verify run as `waiting_input` at cursor 4868 without
 inventing a terminal result or closing its TeamRun. The fresh
-[ASMA-8190 preview](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/ASMA-8190-preview.json)
+ASMA-8190 preview
 selects only run `01a0cf81-50ec-7822-8f3a-bd60690a9bfe`, native
 `a526c5cc-e399-43c9-8a5e-830e5834a27b`, SeatBinding
 `01a0b033-1d67-7bc2-b5e4-e5dd3ad9c72b`, generation 1. The cancelled
 `5750a5be-8399-4360-a9af-4f9594eac006` is absent; no proposed change exists.
-The [current exact native readback](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/current-verify-native.json)
+The current exact native readback
 confirms the preserved native is idle, unarchived, in Plan mode.
 
-All thirteen [fresh preview results](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/preview-summary.json)
+All thirteen fresh preview results
 return HTTP 200, totaling 99 current targets and zero `would_change`.
-The [joined current census](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/joined-current-census.json)
-and [58 exact-ID native readbacks](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/native-exact-readbacks.json)
+The joined current census
+and 58 exact-ID native readbacks
 find all requested natives and all 56 current project/workspace containers;
 43 distinct current seat references have matching names and present parents.
 Fifteen of the 43 current seat references are archived. The complete 58-ID
@@ -271,8 +273,8 @@ sets. Their before/apply/after/current temporal reconciliation is still pending.
 Source correction, exact-source qualification, independent source/publication
 review, PR merge, release build, controlled deployment, supported runtime
 observation and thirteen fresh naming previews are complete. The bridge-selection
-P1 is corrected end to end without rewriting recorded identities. The [independent deployed-checkpoint audit](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/actual-lsa-deployed-checkpoint.txt)
-and its [identity receipt](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/lsa-deployed-checkpoint-publication-receipt.json)
+P1 is corrected end to end without rewriting recorded identities. The independent deployed-checkpoint audit
+and its identity receipt
 confirm the bounded deployment and current naming claims. Its archived-count
 precision note is clarified above. Historical before/apply/after/current census
 reconciliation remains pending. Current run `waiting_input` is freshness evidence,

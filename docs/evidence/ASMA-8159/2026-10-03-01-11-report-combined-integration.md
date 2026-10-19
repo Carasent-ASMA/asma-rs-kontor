@@ -6,6 +6,8 @@
 > **Scope:** MEM-04 / TASK-004 of ASMA-8155; Paseo-direct; Carasent-ASMA/asma-rs-kontor
 > **Summary:** Combined affected-source verification and all seven compiled behavioral mutation kills, frozen docs join findings, and prepared production-frontier worksheets. Accepted runtime source is unchanged; no live or release acceptance is claimed.
 
+> **Public tree, 2026-10-17 (ASMA-8511):** the run receipts and deployment records this document linked were removed from the public tree. Their links are now plain text. Each removed file is listed with its SHA-256 in the [removed-evidence manifest](../removed-run-evidence-2026-10-17.tsv), and stays in git history at `0971674d`.
+
 ## When to load
 
 Load for TPM admission of independent review on the exact final local SHA, for
@@ -17,7 +19,7 @@ stops after the local commit and handoff, without polling or reviewing this work
 
 Task ASMA-8159, integration owner/single persistent writer; workspace
 wks_b22a010864eaa006. Checkout:
-/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and.
+$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and.
 Branch: feat/ASMA-8155-kontor-experience-memory-and-analogue-recall.
 
 The complete preserved execution contract was read before editing; SHA-256
@@ -35,8 +37,8 @@ checked; no application environment or secret was inspected.
 | ASMA-8158 / initial combined HEAD | 831dd7c1dc95a57258c75f5896bff5b76f3830fa | User-supplied frozen QA+Audit PASS; auditPassed=true |
 | ASMA-8157 docs | 9b5b538c269deca55058f3fdd9efc66ee8046ab9 | User-supplied independent docs review PASS |
 
-[provenance.json](receipts/provenance.json) records exact trees, contract/plan
-hashes and toolchain. [ancestry.json](receipts/ancestry.json) proves both accepted
+provenance.json records exact trees, contract/plan
+hashes and toolchain. ancestry.json proves both accepted
 module commits are reachable, while the named external candidates are not.
 Initial HEAD tracked state was clean; only .agents/, .asma/, .cursor/, AGENTS.md
 and CLAUDE.md were untracked adapters. They remain excluded from staging.
@@ -60,9 +62,9 @@ final handoff; they cannot be embedded self-referentially in the commit.
 Initial combined Git tree: ae9bcea100575e5bfa295cf57865139b08b9ab70.
 Tracked non-evidence source manifest: 81c6d5ac5e55c809deb367d47e2b064c2cac6878daf314d63858099d3ca9a239
 (1142 files; SHA-256 of Python json.dumps(files, sort_keys=True).encode(), each
-value an exact file SHA-256). [source-manifest.json](receipts/source-manifest.json)
+value an exact file SHA-256). source-manifest.json
 pins every file; final restoration/integrity checks are in
-[final-validation.json](receipts/final-validation.json).
+final-validation.json.
 
 | Key source/artifact | Exact SHA-256 |
 | --- | --- |
@@ -88,7 +90,7 @@ inherited macOS daemon lib/usage suite that touches Keychain. No full workspace/
 desktop/console runtime suite or real analogue benchmark is represented here.
 
 Every command below runs in the exact checkout above, without source changes.
-[verification.json](receipts/verification.json) records exact argv/cwd, exits,
+verification.json records exact argv/cwd, exits,
 timings, executed/failed-test summaries and full raw/gzip log hashes. No empty
 or zero-test invocation is credited as a test pass.
 
@@ -117,12 +119,12 @@ directly; no install occurred. Regeneration is byte-identical to the accepted
 console declaration, and standalone strict typechecking passed. This does not
 repeat the inherited full console suite. The generated schema hash remains
 f139d5ac32ddfc6d12fe7f07d4e22f9c9256c555a8db11e2ed00f8918afa5af4.
-[supplemental.json](receipts/supplemental.json) contains these exact commands and
+supplemental.json contains these exact commands and
 all eight generated CLI help readbacks, each exit 0:
 
 | Check | Exact command | Result |
 | --- | --- | --- |
-| client-generate | `node /Users/igor/.npm/_npx/f1e70922fc87e24a/node_modules/openapi-typescript/bin/cli.js crates/kontor-api/contract/openapi.json -o target/mem04-schema.d.ts` | exit 0 |
+| client-generate | `node $HOME/.npm/_npx/f1e70922fc87e24a/node_modules/openapi-typescript/bin/cli.js crates/kontor-api/contract/openapi.json -o target/mem04-schema.d.ts` | exit 0 |
 | client-byte-parity | `cmp apps/console/src/api/schema.d.ts target/mem04-schema.d.ts` | exit 0 |
 | client-typecheck | `/opt/homebrew/bin/tsc --noEmit --strict --skipLibCheck --lib ES2022 apps/console/src/api/schema.d.ts` | exit 0 |
 | kontor_experience_propose-help | `target/debug/kontor experience-propose --help` | exit 0 |
@@ -148,7 +150,7 @@ exactly one test. Exits are 0 / 101 / 0 for all seven. No compile failure earns 
 kill. No current survivor or invalid compile occurred. Historical receipts and
 reviewed outcomes remain preserved separately; they were never overwritten.
 
-[mutations.json](receipts/mutations.json) pins exact source/patch/log hashes,
+mutations.json pins exact source/patch/log hashes,
 argv, failed assertions, baseline/seeded/restored source-manifest hashes and
 virtual seeded Git trees. Virtual trees use normal Git SHA-1 blob/tree encoding
 of the initial tracked tree with one substituted source blob; the computed

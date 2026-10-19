@@ -1,9 +1,9 @@
     Blocking waiting for file lock on package cache
     Blocking waiting for file lock on package cache
     Blocking waiting for file lock on package cache
-   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/reproduction/current-probe/crates/kontor-daemon)
+   Compiling kontor-daemon v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/reproduction/current-probe/crates/kontor-daemon)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 26.15s
-     Running tests/loopback_api.rs (/Users/igor/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/loopback_api-6520399e83adc025)
+     Running tests/loopback_api.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/loopback_api-6520399e83adc025)
 
 running 1 test
 test message_delivery_proofs::qualification_readonly_repeat_probe ... READONLY_PROBE round=1

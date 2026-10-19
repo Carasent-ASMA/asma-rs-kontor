@@ -56,6 +56,7 @@ pub mod quota_observation;
 pub mod recovery;
 pub mod runtimes;
 pub mod succession;
+pub mod succession_summarizer;
 pub mod succession_supervision;
 pub mod supervision;
 pub mod usage;
@@ -79,6 +80,7 @@ use tracing::{info, warn};
 use crate::credentials::CredentialError;
 use crate::lock::{LockError, StateRootLock};
 use crate::runtimes::FleetError;
+use crate::succession::{SuccessionSummarizerTransport, UnavailableSuccessionSummarizer};
 use crate::supervision::{SupervisionError, SupervisionPolicy};
 
 /// The database file's name inside a state root.
@@ -258,6 +260,13 @@ pub enum StartupError {
         /// Static redacted refusal.
         #[source]
         source: kontor_memory_cognee::Error,
+    },
+    /// The configured governed succession summarizer could not be composed.
+    #[error("the configured succession summarizer could not be composed: {source}")]
+    SuccessionSummarizer {
+        /// The settings document's own refusal.
+        #[source]
+        source: succession_summarizer::ConfigError,
     },
 }
 
@@ -480,7 +489,7 @@ impl Daemon {
     /// selecting capacity requires opening the store but precedes credentials
     /// and service composition. A failed start releases its state-root lock.
     pub fn start(config: DaemonConfig, runtimes: RuntimeRegistry) -> Result<Self, StartupError> {
-        Self::start_with_supervision(config, runtimes, None, None)
+        Self::start_with_supervision(config, runtimes, None, None, None)
     }
 
     /// Start with a scripted exact-provider reporter for black-box contracts.
@@ -494,7 +503,23 @@ impl Daemon {
         runtimes: RuntimeRegistry,
         usage_poller: usage::UsagePoller,
     ) -> Result<Self, StartupError> {
-        Self::start_with_supervision(config, runtimes, None, Some(usage_poller))
+        Self::start_with_supervision(config, runtimes, None, Some(usage_poller), None)
+    }
+
+    /// Start with an explicitly composed governed summarizer transport.
+    ///
+    /// The declared-chain headroom walk still decides *whether* one summary is
+    /// admitted; the transport only executes an admitted route, so this is the
+    /// embedding and black-box contract seam and never a way around admission.
+    /// Ordinary startup reads the Realm's `succession-summarizer.json` and
+    /// composes its configured runtime instead.
+    #[doc(hidden)]
+    pub fn start_with_succession_summarizer(
+        config: DaemonConfig,
+        runtimes: RuntimeRegistry,
+        succession_summarizer: Arc<dyn SuccessionSummarizerTransport>,
+    ) -> Result<Self, StartupError> {
+        Self::start_with_supervision(config, runtimes, None, None, Some(succession_summarizer))
     }
 
     fn start_with_supervision(
@@ -502,6 +527,7 @@ impl Daemon {
         runtimes: RuntimeRegistry,
         supervision: Option<SupervisionPolicy>,
         usage_poller: Option<usage::UsagePoller>,
+        succession_summarizer: Option<Arc<dyn SuccessionSummarizerTransport>>,
     ) -> Result<Self, StartupError> {
         // The address can be judged before touching the state root. Capacity
         // selection must wait for the store: a durable policy supersedes the seed.
@@ -558,6 +584,17 @@ impl Daemon {
                 .transpose()
                 .map_err(|source| StartupError::GithubApp { source })?
                 .map(Arc::new);
+        // An explicitly composed transport is the embedding and black-box seam
+        // and always wins. Ordinary startup reads the Realm's own selection and
+        // composes the named runtime; an absent document keeps the honest
+        // unavailable fallback, so an unconfigured Realm launches nothing.
+        let succession_summarizer = match succession_summarizer {
+            Some(transport) => Some(transport),
+            None => succession_summarizer::read(&config.state_root, &runtimes)
+                .map_err(|source| StartupError::SuccessionSummarizer { source })?,
+        };
+        let succession_summarizer =
+            succession_summarizer.unwrap_or_else(|| Arc::new(UnavailableSuccessionSummarizer));
         let applications = applications::Services::new(
             realm_id,
             config.capacity,
@@ -567,6 +604,7 @@ impl Daemon {
             quota_signals,
             github_publication.clone(),
             Arc::new(crate::fleet::FleetSource::at(&config.state_root)),
+            succession_summarizer,
         )
         .map_err(|source| StartupError::Applications { source })?;
 
@@ -648,7 +686,9 @@ impl Daemon {
         // `KONTOR_SEAT_MCP=off` kill switch governs every plane at once.
         let seat_mcp = runtimes::seat_mcp(&config.state_root);
         let registry = runtimes::build_registry(&settings, seat_mcp.as_ref())?;
-        Self::start_with_supervision(config, registry, supervision, None)
+        let succession_summarizer = succession_summarizer::read(&config.state_root, &registry)
+            .map_err(|source| StartupError::SuccessionSummarizer { source })?;
+        Self::start_with_supervision(config, registry, supervision, None, succession_summarizer)
     }
 
     /// This Realm's identity.
@@ -1565,6 +1605,27 @@ mod tests {
         );
     }
 
+    /// The executable's start reads the summarizer selection from the state
+    /// root, so a document that names a runtime the fleet does not compose
+    /// refuses the start instead of silently degrading every handoff.
+    #[test]
+    fn configured_startup_reads_the_summarizer_selection_from_the_state_root() {
+        let directory = tempfile::TempDir::new().expect("a temporary directory");
+        std::fs::write(
+            directory.path().join(succession_summarizer::CONFIG_FILE),
+            r#"{"schema_version":1,"runtime_family":"paseo.agent"}"#,
+        )
+        .expect("the selection document is written");
+        let error = Daemon::start_configured(DaemonConfig::at(directory.path()).with_port(0))
+            .expect_err("an uncomposed summarizer runtime must refuse the start");
+        assert!(matches!(
+            error,
+            StartupError::SuccessionSummarizer {
+                source: succession_summarizer::ConfigError::UnknownRuntime
+            }
+        ));
+    }
+
     /// Without a stored policy the seed must be valid. Opening the store is
     /// necessary to decide precedence, but refusal still precedes credentials
     /// and service composition and must release the root for a corrected start.
@@ -1777,6 +1838,7 @@ mod tests {
             RuntimeRegistry::new(),
             Some(v1_policy),
             None,
+            None,
         )
         .expect("v1 daemon");
         assert!(
@@ -1792,6 +1854,7 @@ mod tests {
             DaemonConfig::at(v2_root.path()).with_port(0),
             RuntimeRegistry::new(),
             Some(v2_policy),
+            None,
             None,
         )
         .expect("v2 daemon");

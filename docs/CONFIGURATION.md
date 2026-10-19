@@ -25,6 +25,7 @@ system behaviour instead of instructions somebody has to remember.
 | `<state-root>/credentials.json` | The realm's three tier secrets, `0600`, read by the CLI and every MCP server | `schema_version: 1`; generated at first start |
 | `<state-root>/endpoint.json` | The bound loopback `base_url`, rewritten after every bind | `schema_version: 1`; generated. Clients read it when present and otherwise use `http://127.0.0.1:7717` |
 | `<state-root>/runtimes.json` | Runtime family, plane endpoint, per-account provider aliases, the plane's default seat posture, and per-plane outage controls (`unavailable_providers`, catalogued `provider_fallbacks`) | Generation `5`; generation `4` is read as a `5` that declares no posture, which resolves to `ask`; generation `3` is refused rather than upgraded, because it can compose the right sessions under misleading names. Absent: no runtimes, and session routes answer unconfigured |
+| `<state-root>/succession-summarizer.json` | Optional governed succession summarizer selection: `{"schema_version": 1, "runtime_family": "<family>"}`. Its absence keeps the typed degraded handoff and dispatches no summary. A present document refuses the daemon start when it is malformed, names a family the composed fleet does not hold, or names a runtime that does not declare the `summarize` capability. No shipped runtime supports summaries yet — Paseo, Codex and AO do not declare it — so only a runtime implementing the governed summary surface can be selected; until one ships, summaries stay degraded and ASMA-8340 stays open | `schema_version: 1`; absent: typed degraded handoff. Present but malformed, an unknown family or a runtime without the `summarize` capability refuses the start |
 | `<state-root>/supervision.yml` | Optional seat supervision policy. Schema v1 is validation/classification only; schema v2 can explicitly enable resident bounded succession (see below) | `schema_version` 1 or 2; absent: no supervisor |
 | `<state-root>/quota-signals.yml` | Vendor exhaustion wording, applied to a seat's own refusal text (see below) | `schema_version: 1`; absent: refusal classification is inert. Present but invalid refuses the start |
 | `<state-root>/fleet.yml` | Live model routing — domains, accounts, models, chains and seat bindings, read at every placement (see below) | `schema_version: 1`; absent: template routing. Not read while `fleet-activation.json` exists |
@@ -610,14 +611,14 @@ can never change routing.
 schema_version: 1
 
 domains:
-  claude:     { provider: claude,   accounts: [claude-personal, claude-work] }
-  codex:      { provider: codex,    accounts: [codex-work] }
+  claude:     { provider: claude,   accounts: [claude-a, claude-b] }
+  codex:      { provider: codex,    accounts: [codex-b] }
   cursor:     { provider: cursor,   accounts: [cursor] }
   openrouter: { provider: opencode, accounts: [opencode], model_prefix: "openrouter/" }
 
 unavailable:
   domains: [openrouter]   # a provider that does not work at all
-  accounts: [claude-work] # one switched-off login
+  accounts: [claude-b] # one switched-off login
 
 models:
   opus-5: { domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }
@@ -891,7 +892,7 @@ The same operation allocates a whole Committee jointly when it is given
   "slots": [
     {"slot_id": "reviewer-a", "role": "reviewer", "binding_key": "committee/<template>/reviewer-a"},
     {"slot_id": "reviewer-b", "role": "reviewer", "binding_key": "committee/<template>/reviewer-b",
-     "unavailable_accounts": ["codex-work"]},
+     "unavailable_accounts": ["codex-b"]},
     {"slot_id": "judge", "role": "judge", "binding_key": "committee/<template>/judge"}
   ]
 }
@@ -920,7 +921,7 @@ and `--planning-pair`:
   "members": [
     {"slot": "seat-a", "binding_key": "advisor/<profile-a>"},
     {"slot": "seat-b", "binding_key": "advisor/<profile-b>",
-     "unavailable_accounts": ["codex-work"]}
+     "unavailable_accounts": ["codex-b"]}
   ]
 }
 ```
@@ -976,7 +977,7 @@ read correctly without that field, and guessing wrong shifts the reset by hours.
 declares a stable logical `id`, unique within the document, and a positive
 `version` that increments whenever its wording or parsing changes. Two logins of
 one vendor carry the same sentence under the same family, so a record naming
-only `claude-work` could not say which fingerprint authorized a retirement —
+only `claude-b` could not say which fingerprint authorized a retirement —
 which is why the shipped Claude entries have distinct ids despite identical
 wording. A signal's complete definition (id, version, provider, basis, ordered
 markers, reset prefix, zone) is digested, and durable provenance cites that
@@ -984,11 +985,11 @@ digest: changing any of it under an unchanged id and version produces a
 different digest, which immutable history is entitled to refuse.
 
 **`provider` is an exact catalog alias, never a vendor family.** A deployment
-addresses one login per alias — `codex-work` and `codex-personal` are two
+addresses one login per alias — `codex-b` and `codex-a` are two
 accounts of the same vendor — and each account's routing document declares
 exactly which aliases it may select. A quota state is keyed by
 `(account, provider)`, so a signal naming the bare family `codex` matches no
-account that routes `codex-work`, and classification for that account is
+account that routes `codex-b`, and classification for that account is
 silently inert. **Name one entry per alias**, repeating the vendor's wording as
 many times as the deployment has logins.
 
@@ -996,8 +997,8 @@ many times as the deployment has logins.
 this sequence to the aliases the seat's own account may select, and only then
 reads the text; classification returns the first *eligible* signal whose markers
 all appear. So repeating identical wording across two aliases is safe —
-`codex-work`'s entry can never stand in front of `codex-personal`'s for a seat
-running on the personal login. Order still decides between two entries that are
+`codex-b`'s entry can never stand in front of `codex-a`'s for a seat
+running on the `codex-a` login. Order still decides between two entries that are
 both eligible for one account, which is why the shipped example lists the Claude
 aliases before the Codex ones: the whole of the Codex marker set is the words
 "usage limit", which a Claude refusal also contains.

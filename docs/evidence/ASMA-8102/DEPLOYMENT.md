@@ -54,7 +54,7 @@ pinned topology revision.
 The consistent database snapshot, old and new binaries, hashes, realm
 readbacks, project inventories and topology receipts are retained at:
 
-`/Users/igor/.local/state/kontor/asma/deploy-backups/20260906T073955Z-asma-8102-12e140b/`
+`$HOME/.local/state/kontor/asma/deploy-backups/20260906T073955Z-asma-8102-12e140b/`
 
 Its machine-readable `deployment.json` asserts exact build/install hashes,
 database integrity, zero foreign-key violations, preserved project inventory

@@ -1816,7 +1816,8 @@ pub struct StoredTopologyContainerRecovery {
     pub parent_native_id: ExternalId,
     /// Native shape read back for the replacement.
     pub observed_kind: ObservedContainerKind,
-    /// Preserved canonical working directory.
+    /// Directory the replacement is bound at: the task's current worktree
+    /// claim for a task container, otherwise the stale binding's directory.
     pub canonical_cwd: Option<ExternalName>,
     /// Runtime-reported title observed during the recovery census.
     pub observed_title: ExternalName,

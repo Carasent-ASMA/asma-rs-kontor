@@ -7,13 +7,15 @@
 > **Scope:** Carasent-ASMA/asma-rs-kontor; MEM-02 of ASMA-8155, Paseo-direct
 > **Summary:** Fixture transport, authoritative recall integration, actual launch prompt witnesses and MUT-004/005/006 receipts. No live projection, semantic-quality, independent acceptance or deployment claim.
 
+> **Public tree, 2026-10-17 (ASMA-8511):** the run receipts and deployment records this document linked were removed from the public tree. Their links are now plain text. Each removed file is listed with its SHA-256 in the [removed-evidence manifest](../removed-run-evidence-2026-10-17.tsv), and stays in git history at `0971674d`.
+
 ## Authority and frozen source
 
 Execution contract: `/private/tmp/ASMA-8155-full-lsa-readiness-original-20261002.txt`, SHA-256 `7ee35150e2e90cdc4fab83bac999ecd2cef6286d236df128b0ad5b8c211d828b`; sections 3, 4 and 7 govern this candidate. Canonical plan: `asma-modules/_docs/ai-orchestration/plans/2026-09-12-10-10-plan-kontor-experience-memory.md`, TASK-002. Neither authority was edited.
 
 Branch: `feat/ASMA-8158-cognee-projection-and-task-launch-injection`. Accepted base: `655e07ead8b87bebf3a5d43ddccc15c860114e05`, schema 120. No migration was added. The final commit and tree hashes accompany the writer handoff, avoiding a self-referential commit hash in this document.
 
-[source-hashes.json](receipts/source-hashes.json) pins the eleven changed feature files, including configuration and tests. Its aggregate SHA-256 is `528cbcd02cc5ccf553923c01751390bea1cf8f1441f2157e4e6a3c920ecb2b21`: SHA-256 of Python's default `json.dumps(files, sort_keys=True).encode()`, where each value is the file's SHA-256. Mutation baseline, seeded and restored manifests are recorded separately. The two mutated runtime files restored to:
+source-hashes.json pins the eleven changed feature files, including configuration and tests. Its aggregate SHA-256 is `528cbcd02cc5ccf553923c01751390bea1cf8f1441f2157e4e6a3c920ecb2b21`: SHA-256 of Python's default `json.dumps(files, sort_keys=True).encode()`, where each value is the file's SHA-256. Mutation baseline, seeded and restored manifests are recorded separately. The two mutated runtime files restored to:
 
 - Adapter: `f461effcda17a460a0939ef2bb077f74de1bd0b26ee5b6c44b997fcd3ec84c40`.
 - Applications: `0a15e9f04c77edfd34b56ef6a0be1f70b5c142b4cdc1d795bc0e5d2a7292617a`.
@@ -47,7 +49,7 @@ The inspected upstream reference is commit `b32d8afc59e1064d9291b9828a8a147be9cc
 
 ## Verification
 
-[verification.json](receipts/verification.json) records results and log hashes. All ten new tests use synthetic documents, disposable stores and loopback fixture servers or FakeRuntime. No semantic-quality claim is made.
+verification.json records results and log hashes. All ten new tests use synthetic documents, disposable stores and loopback fixture servers or FakeRuntime. No semantic-quality claim is made.
 
 | Check | Result |
 | --- | --- |
@@ -66,7 +68,7 @@ The earlier broad daemon/adapter run completed with 673 passed, 0 failed and 1 e
 
 ## Mutation receipts
 
-[mutations.json](receipts/mutations.json) records exact commands, patch/source/log hashes, compilation, failed assertions and restoration. [run-mutations.py](run-mutations.py) reproduces the sequential fixture-only seed/test/restore procedure. Each seeded build compiled successfully, then failed a behavior assertion; each baseline and restored witness passed. Exits are 0 / 101 / 0 for all three. No invalid compile was counted as a kill.
+mutations.json records exact commands, patch/source/log hashes, compilation, failed assertions and restoration. [run-mutations.py](run-mutations.py) reproduces the sequential fixture-only seed/test/restore procedure. Each seeded build compiled successfully, then failed a behavior assertion; each baseline and restored witness passed. Exits are 0 / 101 / 0 for all three. No invalid compile was counted as a kill.
 
 | Mutant | Seed and witness | Result |
 | --- | --- | --- |
@@ -80,6 +82,6 @@ No mutants survived. MUT-007 was not run or claimed. Patches in this evidence di
 
 The broad inherited daemon unit suite includes `usage::tests::a_home_with_no_credential_yields_no_token_for_any_vendor`. On macOS it invokes `/usr/bin/security find-generic-password` using temporary fixture-home aliases. Both broad invocations reached this test before the behavior was discovered. Its passing assertions require `NoCredential`; no provider credential was retrieved. This nevertheless violated the explicit **no Keychain access** constraint. The final broad run was stopped and the incident disclosed during execution. No further usage-unit or full-daemon unit run followed discovery. This report does not claim that execution satisfied the no-Keychain boundary.
 
-The full dependency policy gate remains blocked by the unchanged base's yanked package. It was left in place because this task is limited to the new crate's required dependency changes; [dependency-delta.json](receipts/dependency-delta.json) records that no registry package/version changed. No source compilation or targeted fixture blocker remains.
+The full dependency policy gate remains blocked by the unchanged base's yanked package. It was left in place because this task is limited to the new crate's required dependency changes; dependency-delta.json records that no registry package/version changed. No source compilation or targeted fixture blocker remains.
 
 The candidate is for the TPM to admit independent QA and Spec Audit on the final committed SHA. This writer performed implementation verification and mutation witnesses, not independent review. No Jira writes/transitions, push/PR/merge, install/deploy, live Cognee, live corpus/database mutation, experience approval outside disposable fixtures, new ADR/Goal or changes to another checkout were performed. Adapter links/instructions remain untouched and uncommitted. Stop after the single writer handoff; do not poll reviewers.

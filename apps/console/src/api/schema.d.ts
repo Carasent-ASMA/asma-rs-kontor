@@ -5975,7 +5975,10 @@ export interface components {
         ContainerRecoveryDispositionDto: "adopt_existing" | "recreate_absent";
         /** @description Exact before/after identity proved by a read-only recovery census. */
         ContainerRecoveryPreviewDto: {
-            /** @description Preserved canonical working directory. */
+            /**
+             * @description Directory the replacement is bound at: the task's current worktree
+             *     claim for a task container, otherwise the stale binding's directory.
+             */
             canonical_cwd: string;
             /** @description Which answer this census reached. */
             disposition: components["schemas"]["ContainerRecoveryDispositionDto"];

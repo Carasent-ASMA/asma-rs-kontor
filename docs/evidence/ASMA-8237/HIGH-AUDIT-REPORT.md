@@ -56,7 +56,7 @@ on native `1ae38e13-53b6-4e34-9615-2d94a355f420`, with
 `account_profile_id: null`. That `NULL` producer pin is preserved.
 
 The current Paseo native readback reports provider `codex/gpt-5.6-sol`, not an
-alias-routed `codex-work` or `codex-personal` provider. The enabled project
+alias-routed `codex-b` or `codex-a` provider. The enabled project
 account profile for the unaliased local Paseo harness is `Igor · Local Paseo`,
 account `01a00751-5be9-7281-bba5-75d8c0c101e7`. This is the acting evaluator
 account attribution; it does not rewrite the run's `NULL` producer pin.
@@ -75,7 +75,7 @@ The only production behavior change is in
 
 | Provider/model route | Explicit efforts admitted |
 | --- | --- |
-| `codex`, `codex-work`, `codex-personal` / `gpt-5.6-luna` | `low`, `medium`, `high`, `xhigh`, `max` |
+| `codex`, `codex-b`, `codex-a` / `gpt-5.6-luna` | `low`, `medium`, `high`, `xhigh`, `max` |
 | `cursor/auto-smart` | `low`, `medium`, `high`, `xhigh` |
 | `opencode/openrouter/z-ai/glm-5.3-flash` | `low`, `high`, `max` |
 | `opencode/openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` | `medium`, `high` |
@@ -143,7 +143,7 @@ audit does not rewrite it.
 ## Deployment and operational limits
 
 The deployment receipt at
-`/Users/igor/.local/state/kontor/asma/deployments/ASMA-7869-20260920T185808Z-9dae7f79/deployment.json`
+`$HOME/.local/state/kontor/asma/deployments/ASMA-7869-20260920T185808Z-9dae7f79/deployment.json`
 records source `9dae7f790552bc4746255cd01d8ad1160cab7211`, verified at
 `2026-09-20T18:59:21.759604+00:00`, live schema 114, successful quick check,
 zero foreign-key violations, preserved identities, and watchdog status

@@ -281,8 +281,8 @@ permission block — so an advisory cursor seat would carry a containment claim
 with no mechanism behind it, contradicted in-repo.
 
 **Latent, not live:** the governed model catalog exposes no `cursor` provider
-(`codex`, `codex-work`, `codex-personal`, `claude`, `claude-work`,
-`claude-personal`, `opencode`), so no route can select it today. The guard that
+(`codex`, `codex-b`, `codex-a`, `claude`, `claude-b`,
+`claude-a`, `opencode`), so no route can select it today. The guard that
 stops it is the catalog, not the posture layer. Worth either refusing cursor's
 `Advisory` arm outright or recording the caveat before cursor is ever catalogued.
 

@@ -35,6 +35,8 @@ mod harness;
 
 #[path = "loopback/committee_evidence.rs"]
 mod committee_evidence;
+#[path = "loopback/container_root_recovery.rs"]
+mod container_root_recovery;
 #[path = "loopback/provider_refresh.rs"]
 mod provider_refresh;
 
@@ -287,8 +289,13 @@ use kontor_core::state::{
     Freshness, GateVerdict, NativeRuntimeIdentity, ObservedRunState, RuntimeContact,
     TerminalEvidence, TerminalEvidenceSource, TerminalOutcome, TopologyLifecycle,
 };
-use kontor_core::succession::NewSuccessionAttempt;
-use kontor_core::succession::SuccessionAttemptState;
+use kontor_core::succession::{
+    NewSuccessionAttempt, SuccessionAttemptState, SuccessionHandoffOutcome, SuccessionRedactionPass,
+};
+use kontor_daemon::succession::{
+    SuccessionSummarizerError, SuccessionSummarizerTransport, SuccessionSummaryRequest,
+    SuccessionSummaryResponse,
+};
 use kontor_daemon::succession_supervision::{
     SuccessionSupervisionCoordinator, reconcile_once as reconcile_succession_once,
 };
@@ -25011,6 +25018,908 @@ async fn an_in_flight_team_definition_migration_fences_replacement_before_any_ef
     );
 }
 
+/// A team seated behind an in-flight Team Definition migration.
+struct FencedTeam {
+    project: String,
+    epic: String,
+    runs: Vec<String>,
+    apply_body: serde_json::Value,
+}
+
+/// Start a Team Definition migration and leave it in flight, exactly as a lost
+/// acknowledgement leaves it. The epic must already be pinned and materialized.
+async fn leave_team_definition_migration_in_flight(
+    world: &World,
+    project: &str,
+    epic: &str,
+    slug: &str,
+) -> serde_json::Value {
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let epic_id = MiniProjectId::parse(epic).expect("an epic id");
+    let (project_revision, target) = world.daemon.state().with_store(|store| {
+        let revision = store
+            .get_project(project_id)
+            .expect("the project reads")
+            .expect("the project exists")
+            .revision;
+        let pin = store
+            .get_mini_project_team_definition(project_id, epic_id)
+            .expect("the pin reads")
+            .expect("the epic is pinned");
+        let mut definition = store
+            .get_team_definition(
+                project_id,
+                pin.definition.definition_id,
+                pin.definition.version,
+            )
+            .expect("the definition reads")
+            .expect("the definition exists");
+        definition.version =
+            SpecVersion::parse(definition.version.get() + 1).expect("the next revision");
+        definition
+            .containers
+            .iter_mut()
+            .find(|container| container.kind.as_str() == "ESW")
+            .expect("the ESW definition")
+            .prefix = ExternalName::parse("ESW2").expect("a distinct configured prefix");
+        store
+            .publish_team_definition(project_id, &definition, kontor_api::now())
+            .expect("the target definition publishes");
+        (revision, definition)
+    });
+    let upgrade = serde_json::json!({
+        "target_definition": {"id": target.definition_id, "version": target.version},
+        "legacy_topics": {},
+        "expected_revision": project_revision,
+    });
+    let preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/team-definition:upgrade-preview"),
+        &upgrade,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let changing_node = preview.json()["targets"]
+        .as_array()
+        .expect("the migration census")
+        .iter()
+        .find(|target| target["subject_kind"] == "container" && target["would_change"] == true)
+        .and_then(|target| target["topology_node_id"].as_str())
+        .map(TopologyNodeId::parse)
+        .transpose()
+        .expect("a valid topology node")
+        .expect("a changing container");
+    let apply_body = serde_json::json!({
+        "upgrade": upgrade,
+        "preview_hash": preview.json()["preview_hash"],
+    });
+    world.fake.lose_next_retitle_ack(changing_node);
+    let partial = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/team-definition:upgrade-apply"),
+        &apply_body,
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("{slug}-migration"))
+    .send(world)
+    .await;
+    assert_eq!(partial.code(), "rename_pending", "{}", partial.body);
+    apply_body
+}
+
+/// Seat a multi-slot team, then leave one Team Definition migration in flight
+/// exactly as a lost acknowledgement leaves it.
+async fn strand_a_team_behind_a_migration_fence(world: &World, slug: &'static str) -> FencedTeam {
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(world, slug).await;
+    let runs: Vec<String> = seats
+        .as_array()
+        .expect("the seated roster")
+        .iter()
+        .map(|seat| {
+            seat["agent_run_id"]
+                .as_str()
+                .expect("an agent run id")
+                .to_owned()
+        })
+        .collect();
+    assert!(
+        runs.len() > 1,
+        "the fixture must seat a multi-slot team: {}",
+        seats
+    );
+    let apply_body = leave_team_definition_migration_in_flight(world, &project, &epic, slug).await;
+    FencedTeam {
+        project,
+        epic,
+        runs,
+        apply_body,
+    }
+}
+
+/// Finish every seat but the last. That declared slot is still live, so the
+/// team is legitimately incomplete and the fence is not consulted yet.
+async fn finish_every_seat_but_the_last(world: &World, fenced: &FencedTeam, slug: &str) -> String {
+    let (last, earlier) = fenced.runs.split_last().expect("a final seat");
+    for (index, run) in earlier.iter().enumerate() {
+        finish_natively(world, run).await;
+        let settled = Call::post(
+            format!(
+                "/v1/projects/{}/agent-runs/{run}/runtime:settle",
+                fenced.project
+            ),
+            &serde_json::json!({}),
+        )
+        .signed_as(world, "operator")
+        .with_key(format!("{slug}-seat-{index}"))
+        .send(world)
+        .await;
+        assert_eq!(settled.status, 200, "seat {index}: {}", settled.body);
+        assert!(
+            settled.json()["team_run_closed"].is_null(),
+            "the team is incomplete while a declared slot is live: {}",
+            settled.body
+        );
+    }
+    last.clone()
+}
+
+/// Strand the last run: its own closure commits, then the fence refuses only
+/// the team closure.
+async fn strand_the_last_seat(
+    world: &World,
+    fenced: &FencedTeam,
+    last: &str,
+    slug: &str,
+) -> String {
+    finish_natively(world, last).await;
+    let uri = format!(
+        "/v1/projects/{}/agent-runs/{last}/runtime:settle",
+        fenced.project
+    );
+    let refused = Call::post(&uri, &serde_json::json!({}))
+        .signed_as(world, "operator")
+        .with_key(format!("{slug}-seat-last"))
+        .send(world)
+        .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.code(), "placement_blocked", "{}", refused.body);
+    uri
+}
+
+/// An envelope whose last child ended while a Team Definition migration fenced
+/// its closure is not a permanent hold.
+///
+/// `close_agent_run` commits before `settle_team` runs. The fence can then
+/// refuse the closure, leaving a non-terminal TeamRun with no live child. The
+/// run itself is immutable, so `runtime:settle` is the only path back to it:
+/// the replay must retry the closure rather than merely report the stranded
+/// envelope, and it must close the team once the fence lifts.
+#[tokio::test]
+async fn a_team_stranded_behind_a_migration_fence_closes_when_its_settlement_is_replayed() {
+    let world = World::open_empty_with_a_plane().await;
+    let fenced = strand_a_team_behind_a_migration_fence(&world, "stranded-settlement-replay").await;
+    let last = finish_every_seat_but_the_last(&world, &fenced, "stranded-settlement-replay").await;
+    let last_uri = strand_the_last_seat(&world, &fenced, &last, "stranded-settlement-replay").await;
+
+    let project_id = ProjectId::parse(&fenced.project).expect("a project id");
+    let last_id = AgentRunId::parse(&last).expect("the last agent run id");
+    let (team_run_id, last_binding) = world.daemon.state().with_store(|store| {
+        let run = store
+            .get_agent_run(project_id, last_id)
+            .expect("the last run reads")
+            .expect("the last run exists");
+        let binding = run.binding.expect("the last run is bound");
+        (run.team_run_id, binding)
+    });
+    assert!(
+        world
+            .daemon
+            .state()
+            .sessions()
+            .get(last_binding.id)
+            .is_some(),
+        "the failed settlement left the closed run's frozen snapshot held"
+    );
+    let task_id = TaskId::parse(
+        Call::get(format!(
+            "/v1/projects/{}/epics/{}",
+            fenced.project, fenced.epic
+        ))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await
+        .json()["tasks"][0]["task_id"]
+            .as_str()
+            .expect("the task id"),
+    )
+    .expect("a canonical task id");
+    let stranded = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(project_id, team_run_id)
+            .expect("the team reads")
+            .expect("the team exists")
+    });
+    assert!(
+        !stranded.lifecycle.is_terminal(),
+        "the fence left the envelope open with no live child"
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.tasks_with_open_runs())
+            .expect("the in-flight tasks read")
+            .contains(&task_id),
+        "admission must see the stranded envelope as in flight"
+    );
+
+    // A replay while the fence is still up retries the closure and is refused
+    // by the same fence — it does not report a bare stuck-open team.
+    let still_fenced = Call::post(&last_uri, &serde_json::json!({}))
+        .signed_as(&world, "operator")
+        .with_key("stranded-settlement-replay-seat-last-again")
+        .send(&world)
+        .await;
+    assert_eq!(still_fenced.status, 409, "{}", still_fenced.body);
+    assert_eq!(
+        still_fenced.code(),
+        "placement_blocked",
+        "{}",
+        still_fenced.body
+    );
+    // The terminal replay gives up the frozen snapshot before the fenced seat
+    // release, so the refused replay does not leave a closed run reporting
+    // `seat_live`.
+    assert!(
+        world
+            .daemon
+            .state()
+            .sessions()
+            .get(last_binding.id)
+            .is_none(),
+        "the fenced replay released the closed run's frozen snapshot"
+    );
+
+    // The same key completes the interrupted migration, and the next replay of
+    // the settlement closes the team.
+    let resumed = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/team-definition:upgrade-apply",
+            fenced.project, fenced.epic
+        ),
+        &fenced.apply_body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("stranded-settlement-replay-migration")
+    .send(&world)
+    .await;
+    assert_eq!(resumed.status, 200, "{}", resumed.body);
+
+    let settled = Call::post(&last_uri, &serde_json::json!({}))
+        .signed_as(&world, "operator")
+        .with_key("stranded-settlement-replay-seat-last-released")
+        .send(&world)
+        .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    assert_eq!(
+        settled.json()["team_run_closed"],
+        serde_json::json!(team_run_id.to_string()),
+        "{}",
+        settled.body
+    );
+    let closed = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(project_id, team_run_id)
+            .expect("the team reads")
+            .expect("the team exists")
+    });
+    assert!(
+        closed.lifecycle.is_terminal(),
+        "the replayed settlement closes the envelope"
+    );
+    assert!(
+        !world
+            .daemon
+            .state()
+            .with_store(|store| store.tasks_with_open_runs())
+            .expect("the in-flight tasks read")
+            .contains(&task_id),
+        "the task is schedulable again once the envelope is terminal"
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .sessions()
+            .get(last_binding.id)
+            .is_none(),
+        "the replayed settlement releases the closed run's frozen snapshot"
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.list_binding_snapshots())
+            .expect("the binding snapshots read")
+            .iter()
+            .all(|snapshot| snapshot.binding_id != last_binding.id),
+        "the replayed settlement forgets the durable binding snapshot"
+    );
+}
+
+/// A runtime-observed terminal run is as final as an operator abandon: a replay
+/// may close the team whatever closed the children.
+///
+/// The first abandonment is recorded before the runtime sees the run end, so a
+/// replay of `runtime:abandon` on a runtime-observed run carries no abandon
+/// receipt of its own. The team must still converge once every child is
+/// terminal, or the admission change turns that history into a permanent hold.
+#[tokio::test]
+async fn a_runtime_observed_terminal_run_closes_its_stranded_team_on_abandon_replay() {
+    let world = World::open_empty_with_a_plane().await;
+    let fenced = strand_a_team_behind_a_migration_fence(&world, "stranded-abandon-replay").await;
+    let last = finish_every_seat_but_the_last(&world, &fenced, "stranded-abandon-replay").await;
+    strand_the_last_seat(&world, &fenced, &last, "stranded-abandon-replay").await;
+
+    let resumed = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/team-definition:upgrade-apply",
+            fenced.project, fenced.epic
+        ),
+        &fenced.apply_body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("stranded-abandon-replay-migration")
+    .send(&world)
+    .await;
+    assert_eq!(resumed.status, 200, "{}", resumed.body);
+
+    let project_id = ProjectId::parse(&fenced.project).expect("a project id");
+    let last_id = AgentRunId::parse(&last).expect("the last agent run id");
+    let run = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, last_id)
+            .expect("the last run reads")
+            .expect("the last run exists")
+    });
+    assert!(
+        matches!(
+            run.terminal.as_ref().map(|terminal| &terminal.source),
+            Some(kontor_core::state::TerminalEvidenceSource::RuntimeObservation { .. })
+        ),
+        "the run must be closed by the runtime, not by this operator"
+    );
+    let last_binding = run
+        .binding
+        .clone()
+        .expect("the stranded run is bound to its session");
+    assert!(
+        world
+            .daemon
+            .state()
+            .sessions()
+            .get(last_binding.id)
+            .is_some(),
+        "the failed settlement left the closed run's frozen snapshot held"
+    );
+    let abandoned = Call::post(
+        format!(
+            "/v1/projects/{}/agent-runs/{last}/runtime:abandon",
+            fenced.project
+        ),
+        &serde_json::json!({
+            "expected_revision": run.revision.get(),
+            "reason": "Every run of this team has ended; the envelope is stranded"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("stranded-abandon-replay-run")
+    .send(&world)
+    .await;
+    assert_eq!(abandoned.status, 200, "{}", abandoned.body);
+    assert_eq!(
+        abandoned.json()["applied"],
+        "unchanged",
+        "{}",
+        abandoned.body
+    );
+    assert_eq!(
+        abandoned.json()["team_run_closed"],
+        serde_json::json!(run.team_run_id.to_string()),
+        "{}",
+        abandoned.body
+    );
+    let closed = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(project_id, run.team_run_id)
+            .expect("the team reads")
+            .expect("the team exists")
+    });
+    assert!(
+        closed.lifecycle.is_terminal(),
+        "the replay closes the stranded envelope"
+    );
+    assert!(
+        matches!(
+            closed.terminal.as_ref().map(|terminal| &terminal.source),
+            Some(kontor_core::state::TeamEvidenceSource::ChildEvidence { .. })
+        ),
+        "the replay records the children's own outcome rather than an operator abandon: {:?}",
+        closed.terminal
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .sessions()
+            .get(last_binding.id)
+            .is_none(),
+        "the abandon replay releases the closed run's frozen snapshot"
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.list_binding_snapshots())
+            .expect("the binding snapshots read")
+            .iter()
+            .all(|snapshot| snapshot.binding_id != last_binding.id),
+        "the abandon replay forgets the durable binding snapshot"
+    );
+}
+
+/// A stranded envelope's abandon replay gives up the closed run's frozen
+/// snapshot before any fallible team work. The fence may still refuse the
+/// settlement, but a terminal run must not keep reporting `seat_live` while it
+/// does.
+#[tokio::test]
+async fn a_stranded_team_abandon_replay_releases_the_seat_before_the_fence() {
+    let world = World::open_empty_with_a_plane().await;
+    let fenced = strand_a_team_behind_a_migration_fence(&world, "stranded-abandon-fence").await;
+    let last = finish_every_seat_but_the_last(&world, &fenced, "stranded-abandon-fence").await;
+    strand_the_last_seat(&world, &fenced, &last, "stranded-abandon-fence").await;
+
+    let project_id = ProjectId::parse(&fenced.project).expect("a project id");
+    let last_id = AgentRunId::parse(&last).expect("the last agent run id");
+    let (team_run_id, last_binding, last_revision) = world.daemon.state().with_store(|store| {
+        let run = store
+            .get_agent_run(project_id, last_id)
+            .expect("the last run reads")
+            .expect("the last run exists");
+        let binding = run.binding.clone().expect("the last run is bound");
+        (run.team_run_id, binding, run.revision.get())
+    });
+    assert!(
+        world
+            .daemon
+            .state()
+            .sessions()
+            .get(last_binding.id)
+            .is_some(),
+        "the failed settlement left the closed run's frozen snapshot held"
+    );
+
+    let abandon_uri = format!(
+        "/v1/projects/{}/agent-runs/{last}/runtime:abandon",
+        fenced.project
+    );
+    let body = serde_json::json!({
+        "expected_revision": last_revision,
+        "reason": "Every run of this team has ended; the envelope is stranded"
+    });
+    // The fence refuses the settlement, but the closed run must not keep its
+    // frozen snapshot because of it.
+    let refused = Call::post(&abandon_uri, &body)
+        .signed_as(&world, "operator")
+        .with_key("stranded-abandon-fence-run")
+        .send(&world)
+        .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.code(), "placement_blocked", "{}", refused.body);
+    assert!(
+        world
+            .daemon
+            .state()
+            .sessions()
+            .get(last_binding.id)
+            .is_none(),
+        "the fenced abandon replay released the closed run's frozen snapshot"
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.list_binding_snapshots())
+            .expect("the binding snapshots read")
+            .iter()
+            .all(|snapshot| snapshot.binding_id != last_binding.id),
+        "the fenced abandon replay forgets the durable binding snapshot"
+    );
+
+    let resumed = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/team-definition:upgrade-apply",
+            fenced.project, fenced.epic
+        ),
+        &fenced.apply_body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("stranded-abandon-fence-migration")
+    .send(&world)
+    .await;
+    assert_eq!(resumed.status, 200, "{}", resumed.body);
+
+    let abandoned = Call::post(&abandon_uri, &body)
+        .signed_as(&world, "operator")
+        .with_key("stranded-abandon-fence-run-again")
+        .send(&world)
+        .await;
+    assert_eq!(abandoned.status, 200, "{}", abandoned.body);
+    assert_eq!(
+        abandoned.json()["team_run_closed"],
+        serde_json::json!(team_run_id.to_string()),
+        "{}",
+        abandoned.body
+    );
+    let closed = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(project_id, team_run_id)
+            .expect("the team reads")
+            .expect("the team exists")
+    });
+    assert!(
+        closed.lifecycle.is_terminal(),
+        "the replay closes the stranded envelope"
+    );
+    assert!(
+        matches!(
+            closed.terminal.as_ref().map(|terminal| &terminal.source),
+            Some(kontor_core::state::TeamEvidenceSource::ChildEvidence { .. })
+        ),
+        "the replay records the children's own outcome rather than an operator abandon: {:?}",
+        closed.terminal
+    );
+}
+
+/// An abandon replay of an already-closed team changes nothing. A Team
+/// Definition migration in flight must not turn the endpoint's documented 200
+/// into a `placement_blocked` 409; the stored closure is the answer.
+#[tokio::test]
+async fn an_abandon_replay_of_an_already_closed_team_answers_behind_a_migration_fence() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "closed-team-abandon-replay").await;
+    let runs: Vec<String> = seats
+        .as_array()
+        .expect("the seated roster")
+        .iter()
+        .map(|seat| {
+            seat["agent_run_id"]
+                .as_str()
+                .expect("an agent run id")
+                .to_owned()
+        })
+        .collect();
+    for (index, run) in runs.iter().enumerate() {
+        finish_natively(&world, run).await;
+        let settled = Call::post(
+            format!("/v1/projects/{project}/agent-runs/{run}/runtime:settle"),
+            &serde_json::json!({}),
+        )
+        .signed_as(&world, "operator")
+        .with_key(format!("closed-team-abandon-replay-settle-{index}"))
+        .send(&world)
+        .await;
+        assert_eq!(settled.status, 200, "seat {index}: {}", settled.body);
+    }
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
+    let last = runs.last().expect("a final seat");
+    let last_id = AgentRunId::parse(last).expect("an agent run id");
+    let run = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, last_id)
+            .expect("the last run reads")
+            .expect("the last run exists")
+    });
+    let team = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(project_id, run.team_run_id)
+            .expect("the team reads")
+            .expect("the team exists")
+    });
+    assert!(
+        team.lifecycle.is_terminal(),
+        "the fixture settled every seat, so the team is closed"
+    );
+
+    leave_team_definition_migration_in_flight(
+        &world,
+        &project,
+        &epic,
+        "closed-team-abandon-replay",
+    )
+    .await;
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.get_in_flight_team_definition_migration(project_id, epic_id))
+            .expect("the migration reads")
+            .is_some(),
+        "the fixture really left a Team Definition migration in flight"
+    );
+
+    let abandoned = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{last}/runtime:abandon"),
+        &serde_json::json!({
+            "expected_revision": run.revision.get(),
+            "reason": "Replaying the closure of an already-abandoned run"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("closed-team-abandon-replay-again")
+    .send(&world)
+    .await;
+    assert_eq!(abandoned.status, 200, "{}", abandoned.body);
+    assert_eq!(
+        abandoned.json()["applied"],
+        "unchanged",
+        "{}",
+        abandoned.body
+    );
+    assert_eq!(
+        abandoned.json()["team_run_closed"],
+        serde_json::json!(run.team_run_id.to_string()),
+        "{}",
+        abandoned.body
+    );
+    assert!(
+        abandoned.json()["team_pending"].is_null(),
+        "{}",
+        abandoned.body
+    );
+}
+
+/// A settlement replay of an already-closed run and team changes nothing. A
+/// Team Definition migration in flight must not turn the documented 200 into a
+/// 409, and the replay must not leave the closed run's frozen snapshot held.
+#[tokio::test]
+async fn a_settlement_replay_of_an_already_closed_team_answers_behind_a_migration_fence() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "closed-team-settle-replay").await;
+    let runs: Vec<String> = seats
+        .as_array()
+        .expect("the seated roster")
+        .iter()
+        .map(|seat| {
+            seat["agent_run_id"]
+                .as_str()
+                .expect("an agent run id")
+                .to_owned()
+        })
+        .collect();
+    for (index, run) in runs.iter().enumerate() {
+        finish_natively(&world, run).await;
+        let settled = Call::post(
+            format!("/v1/projects/{project}/agent-runs/{run}/runtime:settle"),
+            &serde_json::json!({}),
+        )
+        .signed_as(&world, "operator")
+        .with_key(format!("closed-team-settle-replay-settle-{index}"))
+        .send(&world)
+        .await;
+        assert_eq!(settled.status, 200, "seat {index}: {}", settled.body);
+    }
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
+    let last = runs.last().expect("a final seat");
+    let last_id = AgentRunId::parse(last).expect("an agent run id");
+    let run = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, last_id)
+            .expect("the last run reads")
+            .expect("the last run exists")
+    });
+    let last_binding = run.binding.clone().expect("the last run is bound");
+    let team = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(project_id, run.team_run_id)
+            .expect("the team reads")
+            .expect("the team exists")
+    });
+    assert!(
+        team.lifecycle.is_terminal(),
+        "the fixture settled every seat, so the team is closed"
+    );
+
+    leave_team_definition_migration_in_flight(&world, &project, &epic, "closed-team-settle-replay")
+        .await;
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.get_in_flight_team_definition_migration(project_id, epic_id))
+            .expect("the migration reads")
+            .is_some(),
+        "the fixture really left a Team Definition migration in flight"
+    );
+
+    let settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{last}/runtime:settle"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("closed-team-settle-replay-again")
+    .send(&world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    assert_eq!(settled.json()["applied"], "unchanged", "{}", settled.body);
+    assert_eq!(
+        settled.json()["team_run_closed"],
+        serde_json::json!(run.team_run_id.to_string()),
+        "{}",
+        settled.body
+    );
+    assert!(settled.json()["team_pending"].is_null(), "{}", settled.body);
+    assert!(
+        world
+            .daemon
+            .state()
+            .sessions()
+            .get(last_binding.id)
+            .is_none(),
+        "the replay leaves no frozen snapshot held"
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.list_binding_snapshots())
+            .expect("the binding snapshots read")
+            .iter()
+            .all(|snapshot| snapshot.binding_id != last_binding.id),
+        "the replay leaves no durable binding snapshot behind"
+    );
+}
+
+/// A team stopped by a declared slot that never produced a terminal run is not
+/// repaired by replaying `runtime:settle`.
+///
+/// The refused slot is mid-order, so the slot after it has no run at all.
+/// `settle_team` only certifies an envelope whose every declared slot is
+/// accounted for, so this shape stays pending however often the settlement
+/// replay is asked. `runtime:abandon` of the never-bound run is the route that
+/// makes its slot terminal and lets the envelope close.
+#[tokio::test]
+async fn a_settlement_replay_leaves_a_never_bound_slot_pending_until_abandoned() {
+    let seeded = omega_with_one_refused_slot("missing-slot-replay", "omega-cat", "omega-k4").await;
+    let UnboundWorld {
+        world,
+        project,
+        team_run,
+        seats,
+        ..
+    } = &seeded;
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let team_run_id = TeamRunId::parse(team_run).expect("a team run id");
+
+    // Every seat the runtime accepted ends. The refused slot has no terminal
+    // run, so the envelope cannot certify yet.
+    for (index, seat) in seats.iter().enumerate() {
+        let agent_run = seat["agent_run_id"].as_str().expect("a run id");
+        finish_natively(world, agent_run).await;
+        let settled = Call::post(
+            format!("/v1/projects/{project}/agent-runs/{agent_run}/runtime:settle"),
+            &serde_json::json!({}),
+        )
+        .signed_as(world, "operator")
+        .with_key(format!("missing-slot-settle-{index}"))
+        .send(world)
+        .await;
+        assert_eq!(settled.status, 200, "{}", settled.body);
+        assert!(
+            settled.json()["team_run_closed"].is_null(),
+            "the declared slot with no terminal run keeps the team open: {}",
+            settled.body
+        );
+        assert!(
+            !settled.json()["team_pending"].is_null(),
+            "the settlement says why the team cannot close: {}",
+            settled.body
+        );
+    }
+
+    // Replaying that settlement retries the closure, but the shape is still
+    // incomplete, so it stays pending instead of closing or claiming success.
+    let first = seats[0]["agent_run_id"].as_str().expect("a run id");
+    let replayed = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{first}/runtime:settle"),
+        &serde_json::json!({}),
+    )
+    .signed_as(world, "operator")
+    .with_key("missing-slot-settle-replay")
+    .send(world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert!(
+        replayed.json()["team_run_closed"].is_null(),
+        "a settlement replay does not repair a declared slot that never ran: {}",
+        replayed.body
+    );
+    assert!(
+        !replayed.json()["team_pending"].is_null(),
+        "the replay reports the same lift condition: {}",
+        replayed.body
+    );
+
+    // The refused slot is mid-order, so the slot after it has no run at all:
+    // that is the missing declared slot this route has to account for.
+    let rows = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run_id))
+        .expect("the seats are readable");
+    assert!(
+        rows.iter().all(|run| run.role.as_str() != "omega-k3"),
+        "a declared slot after the refused one has no AgentRun at all: {rows:?}"
+    );
+
+    // The never-bound run is the route: abandoning it accounts for its declared
+    // slot, and the envelope closes once every existing run is terminal.
+    let unbound = rows
+        .into_iter()
+        .find(|seat| seat.native_id.is_none())
+        .expect("the refused launch left its durable unbound run");
+    assert_eq!(
+        unbound.role.as_str(),
+        "omega-k4",
+        "the abandoned run is the refused slot's"
+    );
+    let unbound_run = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_agent_run(project_id, unbound.agent_run_id))
+        .expect("the unbound run reads")
+        .expect("the unbound run exists");
+    let abandoned = Call::post(
+        format!(
+            "/v1/projects/{project}/agent-runs/{}/runtime:abandon",
+            unbound.agent_run_id
+        ),
+        &serde_json::json!({
+            "expected_revision": unbound_run.revision.get(),
+            "reason": "The refused launch never bound a session, so this declared slot has no terminal run"
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("missing-slot-abandon")
+    .send(world)
+    .await;
+    assert_eq!(abandoned.status, 200, "{}", abandoned.body);
+    assert_eq!(
+        abandoned.json()["team_run_closed"],
+        serde_json::json!(team_run),
+        "{}",
+        abandoned.body
+    );
+    let closed = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(project_id, team_run_id)
+            .expect("the team reads")
+            .expect("the team exists")
+    });
+    assert!(
+        closed.lifecycle.is_terminal(),
+        "the declared slot is accounted for and the envelope closes"
+    );
+}
+
 /// The refusal that made the 2026-08-22 incident unrecoverable, and its cure.
 ///
 /// A seat that hits a usage limit is **still reachable** — it answers, it just
@@ -25915,6 +26824,619 @@ async fn bodyless_quota_recovery_is_confirmed_once_with_handoff_and_receipt_chai
         calls_before_replay,
         "a conflicting composite replay performs no runtime effect",
     );
+}
+
+/// A deterministic governed summarizer that records what crossed its boundary.
+struct GovernedSummarizerFake {
+    calls: Mutex<Vec<(ModelRung, AccountProfileId, SuccessionSummaryRequest)>>,
+    summary: String,
+}
+
+impl GovernedSummarizerFake {
+    fn new(summary: impl Into<String>) -> Self {
+        Self {
+            calls: Mutex::new(Vec::new()),
+            summary: summary.into(),
+        }
+    }
+
+    fn calls(&self) -> Vec<(ModelRung, AccountProfileId, SuccessionSummaryRequest)> {
+        self.calls.lock().expect("the summarizer lock").clone()
+    }
+}
+
+#[async_trait]
+impl SuccessionSummarizerTransport for GovernedSummarizerFake {
+    async fn summarize(
+        &self,
+        model_rung: &ModelRung,
+        account: AccountProfileId,
+        request: &SuccessionSummaryRequest,
+    ) -> Result<SuccessionSummaryResponse, SuccessionSummarizerError> {
+        self.calls.lock().expect("the summarizer lock").push((
+            model_rung.clone(),
+            account,
+            request.clone(),
+        ));
+        Ok(SuccessionSummaryResponse::new(self.summary.clone()))
+    }
+}
+
+/// The configured governed summarizer is selected through the production
+/// services composition: the declared-chain walk admits an exact alias rung on
+/// the account that did not refuse, only Message content crosses the summarizer
+/// boundary, and the persisted handoff binds route provenance and hash.
+#[tokio::test]
+async fn a_configured_governed_summarizer_produces_the_persisted_handoff_summary() {
+    let summary_text = "Continue from the accepted checkpoint and keep the watcher armed";
+    let summarizer = Arc::new(GovernedSummarizerFake::new(summary_text));
+    let world = World::open_empty_with_succession_summarizer(summarizer.clone()).await;
+    world.daemon.reconcile().await;
+    let operator_secret = secret(&world, "operator");
+    let CodexAliasEpic {
+        project,
+        seats,
+        personal,
+        ..
+    } = codex_alias_epic(&world, false, true).await;
+    let project_id = ProjectId::parse(&project).expect("project id");
+    let predecessor_id =
+        AgentRunId::parse(seats[0]["agent_run_id"].as_str().expect("predecessor id"))
+            .expect("canonical predecessor id");
+    let predecessor = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("predecessor reads")
+            .expect("predecessor exists")
+    });
+    let binding = predecessor
+        .binding
+        .as_ref()
+        .expect("predecessor binding")
+        .clone();
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(binding.id)
+        .expect("the process holds the exact predecessor binding");
+    let now = kontor_api::now();
+    world
+        .fake
+        .observe_uncorrelated_user_message(
+            &held,
+            &format!(
+                "The accepted checkpoint is the schema v1 handoff; the operator credential is X{operator_secret}"
+            ),
+            now,
+        )
+        .expect("one predecessor message is recorded");
+    world
+        .fake
+        .observe_trailing_tool_call(&held, now)
+        .expect("one excluded tool call is recorded");
+    world
+        .fake
+        .observe_blocked_refusal(
+            &held,
+            "[System Error] You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Jan 1st, 2099 12:00 AM.",
+            now,
+        )
+        .expect("the native session reaches a quota refusal");
+
+    let route = format!("/v1/projects/{project}/agent-runs/{predecessor_id}/successors:recover");
+    let recovered = Call::post_raw(&route, "")
+        .signed_as(&world, "admin")
+        .with_key("governed-summary-recovery")
+        .send(&world)
+        .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    assert_eq!(recovered.json()["state"], "confirmed");
+
+    let key = IdempotencyKey::parse("governed-summary-recovery").expect("idempotency key");
+    let attempt = world.daemon.state().with_store(|store| {
+        store
+            .succession_attempt_by_key(&key)
+            .expect("attempt reads")
+            .expect("attempt exists")
+    });
+    let handoff = attempt.handoff.clone().expect("handoff is durable");
+
+    let calls = summarizer.calls();
+    assert_eq!(calls.len(), 1, "exactly one governed dispatch is executed");
+    let (dispatched_route, dispatched_account, outbound) = &calls[0];
+    let SuccessionHandoffOutcome::Summary {
+        timeline,
+        summarizer_model_rung,
+        summarizer_account: stored_account,
+        summary,
+        summary_hash,
+        input_redaction,
+        output_redaction,
+    } = &handoff.outcome
+    else {
+        panic!(
+            "a configured governed summarizer must produce a summary, got {:?}",
+            handoff.outcome
+        );
+    };
+    assert_eq!(
+        dispatched_route, summarizer_model_rung,
+        "the executed route is exactly the persisted provenance"
+    );
+    assert_eq!(
+        dispatched_account.to_string(),
+        personal,
+        "the runtime executes the summary as the account the walk admitted"
+    );
+    assert_eq!(
+        stored_account.as_ref(),
+        Some(dispatched_account),
+        "the persisted provenance binds the account the runtime executed the summary as"
+    );
+    assert_eq!(
+        summarizer_model_rung.provider.0, "codex-personal",
+        "the walk leaves the alias whose allowance refused"
+    );
+    assert_eq!(outbound.timeline(), *timeline);
+    let outbound_json = serde_json::to_string(outbound).expect("serializable outbound request");
+    assert!(
+        outbound_json.contains("accepted checkpoint"),
+        "the predecessor message crosses the boundary"
+    );
+    assert!(
+        !outbound_json.contains("trailing tool call"),
+        "a ToolCall payload never crosses the summarizer boundary"
+    );
+    assert!(
+        !outbound_json.contains(&operator_secret),
+        "the production redaction policy removes the realm's own bearer"
+    );
+    assert_eq!(summary.as_str(), summary_text);
+    assert_eq!(summary_hash, &ContentHash::of(summary_text.as_bytes()));
+    assert_eq!(input_redaction.pass, SuccessionRedactionPass::Input);
+    assert_eq!(output_redaction.pass, SuccessionRedactionPass::Output);
+    assert_eq!(output_redaction.redacted_hash, *summary_hash);
+    assert_eq!(
+        input_redaction.policy_hash, output_redaction.policy_hash,
+        "both redaction passes bind one policy revision"
+    );
+    let canonical = handoff
+        .canonicalize()
+        .expect("the handoff readback validates");
+    assert_eq!(
+        canonical.hash(),
+        &attempt.handoff_hash.clone().expect("stored handoff hash"),
+        "stored hash readback is the canonical handoff digest"
+    );
+    assert!(
+        !canonical.json().contains("trailing tool call"),
+        "the persisted handoff carries no tool payload"
+    );
+    assert!(
+        !canonical.json().contains(&operator_secret),
+        "the persisted handoff never carries the realm's own bearer"
+    );
+
+    let successor_id = AgentRunId::parse(
+        recovered.json()["successor"]["successor_agent_run_id"]
+            .as_str()
+            .expect("successor id"),
+    )
+    .expect("canonical successor id");
+    let prompt = world
+        .fake
+        .launched_prompt(successor_id)
+        .expect("the successor prompt is inspectable");
+    assert!(
+        prompt.as_str().contains(summary_text),
+        "the successor starts from the persisted summary"
+    );
+    assert!(!prompt.as_str().contains("trailing tool call"));
+}
+
+/// A credential rotation during the predecessor transcript fetch still masks the
+/// bearer the transcript was recorded with.
+///
+/// The redaction set is snapshotted before the history await, so the generation
+/// that could have been quoted is the one that masks the outbound request and
+/// the persisted handoff. Reading the set after the await would only know the
+/// rotated generation and let the previous bearer through.
+#[tokio::test]
+async fn a_credential_rotation_during_the_transcript_fetch_still_redacts_the_previous_bearer() {
+    let summary_text = "Continue from the accepted checkpoint and keep the watcher armed";
+    let summarizer = Arc::new(GovernedSummarizerFake::new(summary_text));
+    let world = World::open_empty_with_succession_summarizer(summarizer.clone()).await;
+    world.daemon.reconcile().await;
+    let previous_operator = secret(&world, "operator");
+    let CodexAliasEpic { project, seats, .. } = codex_alias_epic(&world, false, true).await;
+    let project_id = ProjectId::parse(&project).expect("project id");
+    let predecessor_id =
+        AgentRunId::parse(seats[0]["agent_run_id"].as_str().expect("predecessor id"))
+            .expect("canonical predecessor id");
+    let predecessor = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("predecessor reads")
+            .expect("predecessor exists")
+    });
+    let binding = predecessor
+        .binding
+        .as_ref()
+        .expect("predecessor binding")
+        .clone();
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(binding.id)
+        .expect("the process holds the exact predecessor binding");
+    let now = kontor_api::now();
+    world
+        .fake
+        .observe_uncorrelated_user_message(
+            &held,
+            &format!(
+                "The accepted checkpoint is the schema v1 handoff; the operator credential is X{previous_operator}"
+            ),
+            now,
+        )
+        .expect("one predecessor message is recorded");
+    world
+        .fake
+        .observe_blocked_refusal(
+            &held,
+            "[System Error] You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Jan 1st, 2099 12:00 AM.",
+            now,
+        )
+        .expect("the native session reaches a quota refusal");
+
+    let history = world.fake.pause_next_history();
+    let route = format!("/v1/projects/{project}/agent-runs/{predecessor_id}/successors:recover");
+    let recovery = Call::post_raw(&route, "")
+        .signed_as(&world, "admin")
+        .with_key("rotated-summary-recovery")
+        .send(&world);
+    let rotate = async {
+        history.entered().await;
+        world
+            .daemon
+            .rotate_credentials()
+            .expect("the realm rotates while the transcript is in flight");
+        history.release();
+    };
+    let (recovered, ()) = tokio::join!(recovery, rotate);
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    assert_eq!(recovered.json()["state"], "confirmed");
+
+    let rotated_operator = secret(&world, "operator");
+    assert_ne!(
+        rotated_operator, previous_operator,
+        "the rotation mints a new operator bearer"
+    );
+
+    let key = IdempotencyKey::parse("rotated-summary-recovery").expect("idempotency key");
+    let attempt = world.daemon.state().with_store(|store| {
+        store
+            .succession_attempt_by_key(&key)
+            .expect("attempt reads")
+            .expect("attempt exists")
+    });
+    let handoff = attempt.handoff.clone().expect("handoff is durable");
+
+    let calls = summarizer.calls();
+    assert_eq!(calls.len(), 1, "exactly one governed dispatch is executed");
+    let (_, _, outbound) = &calls[0];
+    let outbound_json = serde_json::to_string(outbound).expect("serializable outbound request");
+    assert!(
+        outbound_json.contains("accepted checkpoint"),
+        "the predecessor message crosses the boundary"
+    );
+    assert!(
+        !outbound_json.contains(&previous_operator),
+        "the outbound request never carries the bearer the transcript quoted"
+    );
+    assert!(
+        !outbound_json.contains(&rotated_operator),
+        "the outbound request never carries the rotated bearer either"
+    );
+    let canonical = handoff
+        .canonicalize()
+        .expect("the handoff readback validates");
+    assert!(
+        !canonical.json().contains(&previous_operator),
+        "the persisted handoff never carries the bearer the transcript quoted"
+    );
+    assert!(
+        !canonical.json().contains(&rotated_operator),
+        "the persisted handoff never carries the rotated bearer either"
+    );
+}
+
+/// Ordinary startup composes the summarizer from the configured runtime.
+///
+/// This is the executable's path: `succession-summarizer.json` names a
+/// composed runtime, `start_with_supervision` reads it, and the admitted route
+/// is dispatched through that runtime's adapter. Nothing injects a transport,
+/// so the handoff can only be a summary if the production composition works.
+#[tokio::test]
+async fn startup_composes_the_configured_runtime_summarizer() {
+    let summary_text = "Continue from the accepted checkpoint and keep the watcher armed";
+    let world = World::open_empty_with_runtime_summarizer(summary_text).await;
+    world.daemon.reconcile().await;
+    let operator_secret = secret(&world, "operator");
+    let CodexAliasEpic {
+        project,
+        seats,
+        personal,
+        ..
+    } = codex_alias_epic(&world, false, true).await;
+    let project_id = ProjectId::parse(&project).expect("project id");
+    let predecessor_id =
+        AgentRunId::parse(seats[0]["agent_run_id"].as_str().expect("predecessor id"))
+            .expect("canonical predecessor id");
+    let predecessor = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("predecessor reads")
+            .expect("predecessor exists")
+    });
+    let binding = predecessor
+        .binding
+        .as_ref()
+        .expect("predecessor binding")
+        .clone();
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(binding.id)
+        .expect("the process holds the exact predecessor binding");
+    let now = kontor_api::now();
+    world
+        .fake
+        .observe_uncorrelated_user_message(
+            &held,
+            &format!(
+                "The accepted checkpoint is the schema v1 handoff; the operator credential is X{operator_secret}"
+            ),
+            now,
+        )
+        .expect("one predecessor message is recorded");
+    world
+        .fake
+        .observe_trailing_tool_call(&held, now)
+        .expect("one excluded tool call is recorded");
+    world
+        .fake
+        .observe_blocked_refusal(
+            &held,
+            "[System Error] You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Jan 1st, 2099 12:00 AM.",
+            now,
+        )
+        .expect("the native session reaches a quota refusal");
+
+    let route = format!("/v1/projects/{project}/agent-runs/{predecessor_id}/successors:recover");
+    let recovered = Call::post_raw(&route, "")
+        .signed_as(&world, "admin")
+        .with_key("startup-runtime-summary-recovery")
+        .send(&world)
+        .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    assert_eq!(recovered.json()["state"], "confirmed");
+
+    let key = IdempotencyKey::parse("startup-runtime-summary-recovery").expect("idempotency key");
+    let attempt = world.daemon.state().with_store(|store| {
+        store
+            .succession_attempt_by_key(&key)
+            .expect("attempt reads")
+            .expect("attempt exists")
+    });
+    let handoff = attempt.handoff.clone().expect("handoff is durable");
+
+    let calls = world.fake.succession_summary_calls();
+    assert_eq!(
+        calls.len(),
+        1,
+        "the configured runtime executes exactly one governed summary"
+    );
+    let (dispatched_route, dispatched_account, prompt) = &calls[0];
+    let SuccessionHandoffOutcome::Summary {
+        summarizer_model_rung,
+        summarizer_account: stored_account,
+        summary,
+        ..
+    } = &handoff.outcome
+    else {
+        panic!(
+            "startup must compose a working governed summarizer, got {:?}",
+            handoff.outcome
+        );
+    };
+    assert_eq!(
+        dispatched_route, summarizer_model_rung,
+        "the runtime executes exactly the persisted provenance route"
+    );
+    assert_eq!(
+        dispatched_account.to_string(),
+        personal,
+        "the runtime executes the summary as the account the walk admitted"
+    );
+    assert_eq!(
+        stored_account.as_ref(),
+        Some(dispatched_account),
+        "the persisted provenance binds the account the runtime executed the summary as"
+    );
+    assert_eq!(
+        summarizer_model_rung.provider.0, "codex-personal",
+        "the walk leaves the alias whose allowance refused"
+    );
+    assert_eq!(summary.as_str(), summary_text);
+    assert!(
+        prompt.contains("accepted checkpoint"),
+        "the predecessor message crosses the transport boundary"
+    );
+    assert!(
+        !prompt.contains("trailing tool call"),
+        "a ToolCall payload never crosses the summarizer boundary"
+    );
+    assert!(
+        !prompt.contains(&operator_secret),
+        "the production redaction policy removes the realm's own bearer"
+    );
+}
+
+/// A task pinned to one account never summarizes on another enabled alias.
+///
+/// The predecessor's account is blocked, so an unpinned walk would move to the
+/// other alias and send the task's redacted transcript there. The pin keeps the
+/// handoff on the operator's account; because that account has no headroom, the
+/// summary degrades instead of dispatching anywhere else.
+#[tokio::test]
+async fn a_pinned_task_never_summarizes_on_an_unpinned_account_alias() {
+    let summarizer = Arc::new(GovernedSummarizerFake::new(
+        "Continue from the accepted checkpoint",
+    ));
+    let world = World::open_empty_with_succession_summarizer(summarizer.clone()).await;
+    world.daemon.reconcile().await;
+    let CodexAliasEpic {
+        project,
+        seats,
+        work,
+        ..
+    } = codex_alias_epic_with_pin(&world, false, true, Some("work")).await;
+    let project_id = ProjectId::parse(&project).expect("project id");
+    let predecessor_id =
+        AgentRunId::parse(seats[0]["agent_run_id"].as_str().expect("predecessor id"))
+            .expect("canonical predecessor id");
+    let predecessor = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("predecessor reads")
+            .expect("predecessor exists")
+    });
+    let binding = predecessor
+        .binding
+        .as_ref()
+        .expect("predecessor binding")
+        .clone();
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(binding.id)
+        .expect("the process holds the exact predecessor binding");
+    world
+        .fake
+        .observe_uncorrelated_user_message(
+            &held,
+            "The accepted checkpoint is the schema v1 handoff",
+            kontor_api::now(),
+        )
+        .expect("one predecessor message is recorded");
+    let work_account = AccountProfileId::parse(&work).expect("work account");
+    let (predecessor, _) = record_runtime_quota_refusal(
+        &world,
+        project_id,
+        predecessor_id,
+        &binding,
+        work_account,
+        "codex-work",
+        at("2099-01-01T00:00:00Z"),
+    )
+    .await;
+    let (task, team, quota) = world.daemon.state().with_store(|store| {
+        let team = store
+            .get_team_run(project_id, predecessor.team_run_id)
+            .expect("team reads")
+            .expect("team exists");
+        let task = store
+            .get_task(project_id, team.task_id)
+            .expect("task reads")
+            .expect("task exists");
+        let quota = store
+            .list_provider_quota_states(project_id)
+            .expect("quota rows read")
+            .into_iter()
+            .find(|row| row.account_profile_id == work_account && row.provider == "codex-work")
+            .expect("exact quota row");
+        (task, team, quota)
+    });
+    assert_eq!(
+        world
+            .fake
+            .launched_model(predecessor_id)
+            .expect("the frozen route")
+            .provider
+            .0,
+        "codex-work",
+        "the pinned seat starts on the pinned account"
+    );
+    let key = IdempotencyKey::parse("pinned-summary-recovery").expect("idempotency key");
+    world.daemon.state().with_store(|store| {
+        store
+            .create_succession_attempt(&NewSuccessionAttempt {
+                id: kontor_core::id::SuccessionAttemptId::generate(),
+                project_id,
+                task_id: task.id,
+                team_run_id: team.id,
+                role: predecessor.role.clone(),
+                predecessor_agent_run_id: predecessor_id,
+                predecessor_runtime_binding_id: binding.id,
+                predecessor_native_identity: binding.identity.clone(),
+                expected_task_revision: task.revision,
+                expected_team_revision: team.revision,
+                expected_predecessor_revision: predecessor.revision,
+                runtime_observation_cursor: predecessor
+                    .projection
+                    .last_cursor
+                    .expect("blocked cursor"),
+                quota_provenance_id: quota.provenance_id.expect("runtime provenance"),
+                quota_state_revision: quota.revision,
+                quota_evidence_hash: quota.evidence_hash.clone(),
+                quota_provider: quota.provider.clone(),
+                successor_model_rung: Some(ModelRung {
+                    provider: ProviderRef("codex-work".to_owned()),
+                    model: ModelRef("gpt-5.6-sol".to_owned()),
+                    effort: Some(EffortLevel::High),
+                }),
+                successor_account_profile_id: Some(work_account),
+                idempotency_key: key.clone(),
+                intent_hash: ContentHash::of(b"pinned-summary-intent"),
+                deferred_until: None,
+                created_at: kontor_api::now(),
+            })
+            .expect("the planned attempt is durable")
+    });
+    let recovered = Call::post_raw(
+        format!("/v1/projects/{project}/agent-runs/{predecessor_id}/successors:recover"),
+        "",
+    )
+    .signed_as(&world, "admin")
+    .with_key("pinned-summary-recovery")
+    .send(&world)
+    .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    assert_eq!(recovered.json()["state"], "confirmed", "{}", recovered.body);
+
+    assert!(
+        summarizer.calls().is_empty(),
+        "a blocked pin must degrade, never dispatch the transcript to the other alias"
+    );
+    let attempt = world.daemon.state().with_store(|store| {
+        store
+            .succession_attempt_by_key(&key)
+            .expect("attempt reads")
+            .expect("attempt exists")
+    });
+    assert!(matches!(
+        attempt.handoff.as_ref().map(|handoff| &handoff.outcome),
+        Some(SuccessionHandoffOutcome::Degraded {
+            timeline: Some(_),
+            reason: kontor_core::succession::SuccessionHandoffDegradedReason::SummarizerUnplaceable,
+            ..
+        })
+    ));
 }
 
 /// A transport refusal after the successor row is durably linked resumes that
@@ -38657,6 +40179,18 @@ async fn alpha_with_one_unbound_slot(slug: &'static str) -> UnboundWorld {
 /// `derive_follow_ups` — with a condition in front of it the derivation
 /// short-circuits first, and the guard cannot be falsified.
 async fn omega_with_one_unbound_slot(slug: &'static str, category: &'static str) -> UnboundWorld {
+    omega_with_one_refused_slot(slug, category, "omega-k3").await
+}
+
+/// The same, with the refused slot named.
+///
+/// A refusal stops the seating loop, so a slot refused before the end of the
+/// frozen order leaves every declared slot after it with no AgentRun at all.
+async fn omega_with_one_refused_slot(
+    slug: &'static str,
+    category: &'static str,
+    refused: &'static str,
+) -> UnboundWorld {
     let world = World::open_empty_with_a_plane().await;
     world.script(HISTORY_LIVE);
     assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
@@ -38664,7 +40198,7 @@ async fn omega_with_one_unbound_slot(slug: &'static str, category: &'static str)
     // is never bound, and it is a transport fact: no session, no binding.
     world
         .fake
-        .refusing_launch_of(&kontor_core::id::RoleSlotId::parse("omega-k3").expect("a slot"));
+        .refusing_launch_of(&kontor_core::id::RoleSlotId::parse(refused).expect("a slot"));
 
     let pack: serde_json::Value = serde_json::from_str(OMEGA_PACK).expect("the omega pack parses");
     let registered = Call::post(
@@ -38808,8 +40342,8 @@ async fn omega_with_one_unbound_slot(slug: &'static str, category: &'static str)
         })
         .collect();
     assert!(
-        seats.iter().all(|seat| seat["role_slot"] != "omega-k3"),
-        "omega-k3 must never have been bound: {rows:?}"
+        seats.iter().all(|seat| seat["role_slot"] != refused),
+        "{refused} must never have been bound: {rows:?}"
     );
     assert!(
         !seats.is_empty(),
@@ -57133,6 +58667,17 @@ async fn codex_alias_epic(
     exhaust_work: bool,
     declare_aliases: bool,
 ) -> CodexAliasEpic {
+    codex_alias_epic_with_pin(world, exhaust_work, declare_aliases, None).await
+}
+
+/// The same fixture with an optional task pin written before the first seat
+/// launches, because a run snapshots the task's selections.
+async fn codex_alias_epic_with_pin(
+    world: &World,
+    exhaust_work: bool,
+    declare_aliases: bool,
+    pin: Option<&str>,
+) -> CodexAliasEpic {
     let registered = Call::post(
         "/v1/catalog/packs:register",
         &serde_json::json!({"pack": codex_account_pack()}),
@@ -57226,6 +58771,30 @@ async fn codex_alias_epic(
     assert_eq!(applied.status, 200, "{}", applied.body);
     let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
     let epic_revision = applied.json()["revision"].as_u64().expect("revision");
+    if let Some(alias) = pin {
+        let task = &applied.json()["tasks"][0];
+        let account = match alias {
+            "work" => &work,
+            "personal" => &personal,
+            other => panic!("unknown account pin {other}"),
+        };
+        let selected = Call::post(
+            format!(
+                "/v1/projects/{project}/tasks/{}/account-selection",
+                task["task_id"].as_str().expect("task id"),
+            ),
+            &serde_json::json!({
+                "expected_revision": task["revision"].as_u64().expect("task revision"),
+                "account_profile_id": account,
+                "reason": "Pin the task before its seats launch"
+            }),
+        )
+        .signed_as(world, "admin")
+        .with_key("codex-alias-task-pin")
+        .send(world)
+        .await;
+        assert_eq!(selected.status, 200, "{}", selected.body);
+    }
     confirm_test_epic_identity(world, &project, &epic);
     materialize_execution_topology(
         world,
@@ -58839,9 +60408,9 @@ async fn duplicate_rendered_slots_in_one_team_are_refused_before_runtime_or_admi
 // ---------------------------------------------------------------------------
 
 const LEGACY_ASMA_8120_WORKTREE: &str =
-    "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8049-jira-key-rollout";
+    "/Users/operator/carasent/asma-modules/.worktrees/feat/ASMA-8049-jira-key-rollout";
 const CORRECTED_ASMA_8120_WORKTREE: &str =
-    "/Users/igor/carasent/asma-modules/.worktrees/asma-8120/asma-rs-kontor";
+    "/Users/operator/carasent/asma-modules/.worktrees/asma-8120/asma-rs-kontor";
 const ASMA_8120_BRANCH: &str =
     "feat/ASMA-8120-deploy-jira-key-runtime-and-migrate-current-native-containers";
 
@@ -58858,7 +60427,7 @@ async fn worktree_correction_fixture(world: &World, key: &str) -> WorktreeCorrec
         world,
         key,
         "ASMA modules",
-        "/Users/igor/carasent/asma-modules",
+        "/Users/operator/carasent/asma-modules",
     )
     .await;
     let project = created.json()["project_id"]
@@ -59081,7 +60650,7 @@ async fn a_task_worktree_claim_correction_refuses_every_unbound_input() {
             serde_json::json!({
                 "expected_revision": fixture.task_revision,
                 "old_worktree": LEGACY_ASMA_8120_WORKTREE,
-                "new_worktree": "/Users/igor/carasent/asma-modules/.worktrees/asma-9999/asma-rs-kontor",
+                "new_worktree": "/Users/operator/carasent/asma-modules/.worktrees/asma-9999/asma-rs-kontor",
             }),
             "invalid_request",
             "worktree_target_invalid",
@@ -59416,7 +60985,7 @@ const GOVERNED_PROJECT_ID: &str = "01a0064a-e056-7603-9968-ef64fdaacb75";
 
 /// The root path the mapping used to key on, kept only to prove it no longer
 /// confers anything.
-const FORMER_GOVERNED_ROOT: &str = "/Users/igor/carasent/asma-modules";
+const FORMER_GOVERNED_ROOT: &str = "/Users/operator/carasent/asma-modules";
 
 /// The governed project, seeded under its exact durable id.
 ///
@@ -62378,7 +63947,7 @@ async fn a_policy_blocked_epic_pass_still_carries_a_proved_rename_forward() {
 /// the same document at an unused version, with each container template moved
 /// to its typed Jira-key token and nothing else changed.
 ///
-/// `docs/evidence/ASMA-8117/team-definition-successors/asma-operational-v4.json`
+/// `crates/kontor-core/tests/fixtures/team-definition-successors/asma-operational-v4.json`
 /// is this exact document; `kontor-core`'s `team_definition_successors` suite
 /// proves the two agree field by field.
 fn jira_key_successor_definition() -> kontor_core::spec::TeamDefinitionSpec {
@@ -67621,6 +69190,156 @@ async fn route_apply_threads_the_proved_placement_into_the_retirement() {
         call, AdapterCall::RetireHostedSeat(seat) if *seat == binding_id
     )));
     assert_ne!(world.fake.hosted_seat_native_id(binding_id), Some(native));
+}
+
+/// The seat's own topology node, read from its durable binding.
+fn seat_topology_node(
+    world: &World,
+    project_id: ProjectId,
+    binding_id: SeatBindingId,
+) -> TopologyNodeId {
+    world
+        .daemon
+        .state()
+        .with_store(|store| store.get_seat_binding(project_id, binding_id))
+        .expect("the SeatBinding reads")
+        .expect("the SeatBinding exists")
+        .topology_node_id
+}
+
+/// Lineage refuses a preview whose control-plane container the runtime no
+/// longer holds.
+///
+/// Missing-container coverage for the placement check inside
+/// `hosted_seat_lineage`: the seat's stored ECP cannot be observed, so lineage
+/// answers `placement_blocked` before anything is planned. The exact native-id
+/// and root drifts are covered by
+/// `route_preview_refuses_exact_container_drift_with_node_and_membership_preserved`.
+/// Refusing costs no native effect, no seat movement and no receipt.
+#[tokio::test]
+async fn route_preview_refuses_a_missing_container_through_lineage() {
+    let (composed, binding, native, generation) = hosted_tpm_seat(
+        "/tmp/kontor-8234-op4-preview",
+        "asma-8234-op4-preview-seats",
+    )
+    .await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+
+    // The runtime stops holding the container the seat's node records.
+    world
+        .fake
+        .forget_container(seat_topology_node(world, project_id, binding_id));
+
+    let shape_before = succession_shape(world, project_id, binding_id);
+    let calls_before = world.fake.calls().len();
+    let refused = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+        &serde_json::json!({
+            "expected_revision": 1,
+            "seat_binding_id": binding,
+            "expected_native_id": native,
+            "expected_generation": generation,
+            "desired_model_route": {
+                "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+            },
+        }),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.code(), "placement_blocked", "{}", refused.body);
+    assert!(
+        refused.body.contains("not in the ECP workspace"),
+        "the refusal must be lineage's placement rule: {}",
+        refused.body
+    );
+    assert!(
+        !world.fake.calls()[calls_before..]
+            .iter()
+            .any(|call| matches!(
+                call,
+                AdapterCall::RetireHostedSeat(_) | AdapterCall::LaunchHostedSeat(_)
+            )),
+        "a preview produced a native effect"
+    );
+    assert_eq!(
+        world.fake.last_hosted_retire_placement(binding_id),
+        None,
+        "a preview retired something"
+    );
+    assert_eq!(
+        succession_shape(world, project_id, binding_id),
+        shape_before,
+        "a preview moved durable seat state"
+    );
+}
+
+/// Lineage re-runs in the apply re-plan, and a container that disappeared
+/// after preview stops the retirement there.
+///
+/// The preview was planned while the ECP was still held. By apply the runtime
+/// no longer holds it, so the re-plan's lineage check refuses with
+/// `placement_blocked` before any predecessor effect. Predecessor, session and
+/// SeatBinding all stay live, no successor is created, and nothing is archived,
+/// launched or written to history.
+#[tokio::test]
+async fn route_apply_refuses_a_container_missing_after_preview_through_lineage() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8234-op4-drift", "asma-8234-op4-drift-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+
+    // Previewed while the container is still proved, so the refusal under test
+    // is the drift and not a preview that never proved anything.
+    let body = previewed_succession(world, project, epic, &binding, &native, generation).await;
+
+    let shape_before = succession_shape(world, project_id, binding_id);
+    world
+        .fake
+        .forget_container(seat_topology_node(world, project_id, binding_id));
+    let calls_before = world.fake.calls().len();
+    let refused = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &body,
+    )
+    .signed_as(world, "admin")
+    .with_key("asma-8234-op4-drift")
+    .send(world)
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.code(), "placement_blocked", "{}", refused.body);
+    assert!(
+        refused.body.contains("not in the ECP workspace"),
+        "the refusal must be lineage's placement rule: {}",
+        refused.body
+    );
+    assert!(
+        !world.fake.calls()[calls_before..]
+            .iter()
+            .any(|call| matches!(
+                call,
+                AdapterCall::RetireHostedSeat(_) | AdapterCall::LaunchHostedSeat(_)
+            )),
+        "drift still produced a native effect"
+    );
+    assert_eq!(
+        world.fake.last_hosted_retire_placement(binding_id),
+        None,
+        "drift still retired the predecessor"
+    );
+    assert_eq!(
+        succession_shape(world, project_id, binding_id),
+        shape_before,
+        "drift moved durable seat state"
+    );
 }
 
 /// ASMA-8204: an epic closes leaves-first, and only once it is durably done.

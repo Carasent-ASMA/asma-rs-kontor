@@ -3,7 +3,7 @@
   "authorization_id": "ASMA-8155/slot5-additive-join/2026-10-04/single-use",
   "authorization_sha256": "574c63a6ac7cd1519d1d4ac2e1bfb169b5f4cb9ec0ba68e450161fd7c6e0c9fd",
   "preflight": {
-    "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+    "cwd": "$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
     "head": "95ef03f740e438a1388950a278efe67b082f0944",
     "tree": "3c5bb408067cda4088c49cb1706844a0809beb14",
     "branch": "feat/ASMA-8155-kontor-experience-memory-and-analogue-recall",
@@ -57,7 +57,7 @@
       "origin",
       "master"
     ],
-    "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+    "cwd": "$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
     "exit": 0,
     "output": "From github.com:Carasent-ASMA/asma-rs-kontor\n * branch              master     -> FETCH_HEAD\n"
   },
@@ -315,7 +315,7 @@
     "argv": [
       "git",
       "-C",
-      "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
       "merge",
       "--no-ff",
       "--no-edit",
@@ -355,7 +355,7 @@
       "100644 68c4766cd4a254c3c74cdc64a7d2fa6e4d985410 2\ttests/contract/mcp_parity.rs",
       "100644 e76a4fa8ccab2e7d34002c9ba04b06d2fecf9029 3\ttests/contract/mcp_parity.rs"
     ],
-    "merge_head_path": "/Users/igor/carasent/asma-modules/.git/modules/_tools/asma-rs-kontor/worktrees/feat-asma-8155-kontor-experience-memory-and/MERGE_HEAD",
+    "merge_head_path": "$HOME/carasent/asma-modules/.git/modules/_tools/asma-rs-kontor/worktrees/feat-asma-8155-kontor-experience-memory-and/MERGE_HEAD",
     "merge_head_exists": true,
     "merge_head": "1d7a71dde5214774dd35153f1a31435e129cbd01",
     "staged_changed_paths": [

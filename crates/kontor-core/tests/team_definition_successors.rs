@@ -14,15 +14,14 @@ use kontor_core::id::ContentHash;
 use kontor_core::naming::{NativeNameSegment, NativeNameToken};
 use kontor_core::spec::TeamDefinitionSpec;
 
-/// Prepared successors live with the ASMA-8117 evidence, deliberately outside
+/// Prepared successors are test fixtures of this crate, deliberately outside
 /// the bundled operational profile so no deployment can publish them.
-fn evidence_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/evidence/ASMA-8117/team-definition-successors")
+fn fixture_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/team-definition-successors")
 }
 
 fn read_json(relative: &str) -> serde_json::Value {
-    let path = evidence_root().join(relative);
+    let path = fixture_root().join(relative);
     let text = std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("{} is readable: {error}", path.display()));
     serde_json::from_str(&text)

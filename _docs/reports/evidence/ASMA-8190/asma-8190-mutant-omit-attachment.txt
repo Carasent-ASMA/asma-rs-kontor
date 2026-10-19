@@ -11,7 +11,7 @@ failures:
 
 test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 476 filtered out; finished in 1.99s
 
-   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-daemon)
+   Compiling kontor-daemon v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-daemon)
 warning: unused variable: `attached_at`
     --> crates/kontor-daemon/src/applications.rs:7988:18
      |
@@ -22,7 +22,7 @@ warning: unused variable: `attached_at`
 
 warning: `kontor-daemon` (lib) generated 1 warning (run `cargo fix --lib -p kontor-daemon` to apply 1 suggestion)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 31.65s
-     Running tests/loopback_api.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/loopback_api-b347fa1894c0337e)
+     Running tests/loopback_api.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/loopback_api-b347fa1894c0337e)
 
 thread 'materializing_reconciles_a_bound_seats_prepared_intent' (55872988) panicked at crates/kontor-daemon/tests/loopback_api.rs:64293:9:
 successful exact-native recovery records attachment

@@ -59,7 +59,7 @@ in `receipts/conflict-inventory.json`. The load-bearing rules:
 ## Verification evidence (attribution corrected — see Errata)
 
 All commands ran with `CARGO_BUILD_JOBS=2`, the shared reusable target
-`/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target`,
+`$HOME/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target`,
 `--locked`, and `--offline` for the combined run.
 
 | Gate | Result | Raw log |

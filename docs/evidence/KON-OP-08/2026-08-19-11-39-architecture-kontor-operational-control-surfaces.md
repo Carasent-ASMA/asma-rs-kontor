@@ -642,6 +642,19 @@ the client's supported surface where available.
 | VS Code/Copilot | Portable user `~/.copilot/mcp-config.json`, `servers.kontor` stdio entry | Structured JSON readback; VS Code's Agent Host reads this file natively. |
 | Cursor | `~/.cursor/mcp.json`, `mcpServers.kontor` | Structured JSON readback and, when installed, Cursor MCP list/tools readback. |
 
+> **Correction (2026-10-17, ASMA-8341):** OpenCode 1.18.31 resolves the flat
+> `mcp.kontor` member and ignores `mcp.servers.kontor`, so the bootstrap
+> adapter writes `mcp.kontor` and refuses a same-name unrelated flat entry
+> with its observed hash. The OpenCode row above records the superseded
+> shape.
+>
+> **Correction (2026-10-17, ASMA-8341):** The Copilot agent host bundled in
+> VS Code (1.0.81-0) and Copilot CLI 1.0.14 read only the `mcpServers` object
+> and refuse a configuration that lacks it (`mcpServers: Required`), so the
+> bootstrap adapter writes `mcpServers.kontor` and refuses a same-name
+> unrelated `mcpServers.kontor` entry with its observed hash. The
+> VS Code/Copilot row above records the superseded `servers.kontor` shape.
+
 An adapter result is one of `installed`, `updated`, `already_current`,
 `repaired`, `absent`, `conflict` or `failed_readback`. A missing client is
 `absent`, never a silent success and never an overall failure when every

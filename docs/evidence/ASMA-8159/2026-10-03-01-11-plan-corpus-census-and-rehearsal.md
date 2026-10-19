@@ -14,7 +14,7 @@ independent review. This is a rehearsal specification, not execution evidence.
 ## Inputs and identity
 
 The authoritative plan is
-/Users/igor/carasent/asma-modules/_docs/ai-orchestration/plans/2026-09-12-10-10-plan-kontor-experience-memory.md,
+$HOME/carasent/asma-modules/_docs/ai-orchestration/plans/2026-09-12-10-10-plan-kontor-experience-memory.md,
 TASK-004 / REQ-016–017 / TEST-010. The preserved LSA contract has SHA-256
 7ee35150e2e90cdc4fab83bac999ecd2cef6286d236df128b0ad5b8c211d828b.
 Its sections 4 and 6 supersede the historical plan's migration-0095 wording.

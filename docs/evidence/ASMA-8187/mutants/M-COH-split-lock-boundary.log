@@ -39,7 +39,7 @@ mutant         : FAILED in 4.78s, exit 101
                   splits only the occupancy chain's acquisition)
 command: cargo test -p kontor-daemon --lib -- coherence --test-threads=1
 hard limit: 420s
-   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-daemon)
+   Compiling kontor-daemon v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-daemon)
 warning: method `epic_control_seat_binding` is never used
     --> crates/kontor-daemon/src/applications.rs:8448:8
      |
@@ -64,7 +64,7 @@ test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 123 filtered out; fi
 exit status: 0
 command: cargo test -p kontor-daemon --lib -- coherence --test-threads=1
 hard limit: 420s
-   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-daemon)
+   Compiling kontor-daemon v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-daemon)
 warning: method `epic_control_seat_binding` is never used
     --> crates/kontor-daemon/src/applications.rs:8454:8
      |

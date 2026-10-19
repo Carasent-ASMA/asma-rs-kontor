@@ -182,6 +182,11 @@ pub enum SuccessionHandoffOutcome {
         timeline: SuccessionTimelineRange,
         /// Exact provider/model/effort route used for the summary.
         summarizer_model_rung: ModelRung,
+        /// Exact account the headroom walk admitted with that route and the
+        /// runtime executed the summary as. `None` only on handoffs stored
+        /// before the account was bound.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summarizer_account: Option<AccountProfileId>,
         /// Bounded, post-redaction derived summary. Runtime transcript material
         /// has no durable field in this type.
         summary: BoundedText,
@@ -213,6 +218,7 @@ impl SuccessionHandoffOutcome {
             Self::Summary {
                 timeline,
                 summarizer_model_rung,
+                summarizer_account: _,
                 summary,
                 summary_hash,
                 input_redaction,

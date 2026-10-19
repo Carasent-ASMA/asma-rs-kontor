@@ -3,7 +3,7 @@
 # surfaces as a timeout with evidence rather than an indefinite hang.
 LIMIT=${LIMIT:-300}
 LOG="$1"; shift
-cd /Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor
+cd $HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor
 : > "$LOG"
 echo "command: cargo $@" >> "$LOG"
 echo "hard limit: ${LIMIT}s" >> "$LOG"

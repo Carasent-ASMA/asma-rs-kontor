@@ -4034,7 +4034,8 @@ pub struct ContainerRecoveryPreviewDto {
     /// Exact native parent in which the census ran.
     #[schema(value_type = String)]
     pub parent_native_id: ExternalId,
-    /// Preserved canonical working directory.
+    /// Directory the replacement is bound at: the task's current worktree
+    /// claim for a task container, otherwise the stale binding's directory.
     #[schema(value_type = String)]
     pub canonical_cwd: ExternalName,
     /// Runtime-reported candidate title.
@@ -13014,7 +13015,10 @@ pub async fn lifecycle(
 /// is the one thing a control plane must never let happen quietly.
 ///
 /// Idempotent: a run that is already closed reports its stored closure and no
-/// second observation is taken.
+/// second observation is taken. An already-closed TeamRun envelope is answered
+/// from that closure even while a Team Definition migration is in flight. An
+/// envelope that is still open and stranded needs settlement, and is refused
+/// with `409 placement_blocked` until that migration settles.
 #[utoipa::path(
     post, path = "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:settle",
     tag = "applications",
@@ -13056,7 +13060,11 @@ pub async fn settle_runtime(
 /// Kontor's row without cancelling it would leave an agent running that nothing
 /// is steering. `runtime:settle` is the path for those.
 ///
-/// Idempotent: a run that is already closed reports its stored closure.
+/// Idempotent: a run that is already closed reports its stored closure. An
+/// already-closed TeamRun envelope is answered from that closure even while a
+/// Team Definition migration is in flight. An envelope that is still open and
+/// stranded needs settlement, and is refused with `409 placement_blocked` until
+/// that migration settles.
 #[utoipa::path(
     post, path = "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:abandon",
     tag = "applications",

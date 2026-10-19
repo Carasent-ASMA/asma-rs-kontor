@@ -11,9 +11,9 @@ failures:
 
 test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 476 filtered out; finished in 1.98s
 
-   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-daemon)
+   Compiling kontor-daemon v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-daemon)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 31.37s
-     Running tests/loopback_api.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/loopback_api-b347fa1894c0337e)
+     Running tests/loopback_api.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/loopback_api-b347fa1894c0337e)
 
 thread 'materializing_reconciles_a_bound_seats_prepared_intent' (55874493) panicked at crates/kontor-daemon/tests/loopback_api.rs:64297:9:
 inspection is attachment, never invented activity

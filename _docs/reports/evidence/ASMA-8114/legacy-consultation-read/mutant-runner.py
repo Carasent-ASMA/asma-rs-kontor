@@ -1,6 +1,6 @@
 import datetime, difflib, hashlib, io, json, os, pathlib, subprocess, tarfile
 
-repo = pathlib.Path('/Users/igor/carasent/asma-modules/.worktrees/asma-8113/asma-rs-kontor')
+repo = pathlib.Path(os.environ['HOME']) / 'carasent/asma-modules/.worktrees/asma-8113/asma-rs-kontor'
 commit = '51cfef9caaa1e2b12674ad932d0adfb0658d4777'
 tree = 'c63a37e6d0b0db8e6cfb495d044e02d33f62a698'
 root = pathlib.Path('/private/tmp/ASMA-8114-legacy-read-51cfef9c')

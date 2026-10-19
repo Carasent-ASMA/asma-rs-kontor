@@ -125,7 +125,7 @@ kontor-mcp    1c29165fe70fc21a699ecc835df6da46010bdf6449c97eec6d77d3838f0fff7b
 ```
 
 The previous fleet is recoverable from
-`/Users/igor/.local/state/kontor/asma/backups/pre-pr65-20260820T182041Z`.
+`$HOME/.local/state/kontor/asma/backups/pre-pr65-20260820T182041Z`.
 Launchd restarted `com.asma.kontor.daemon` as PID `7300`, serving schema 46 on
 `127.0.0.1:7717`. Startup re-attested the fleet, retained `findings=126`, opened
 the reconciliation barrier, and logged zero post-boot `refused to restore`

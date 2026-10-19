@@ -1,7 +1,7 @@
 {
   "coordinator": "74250c1e",
   "phase": 1,
-  "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+  "cwd": "$HOME/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
   "base_sha": "8a368041d5c692c301371513c9a51947d659c57e",
   "base_tree": "97ed01c64537c814beaa28cbe8372cc502e9d772",
   "commands": [
@@ -113,7 +113,7 @@
   },
   "cap_bytes": 10737418240,
   "cached_console_generator": {
-    "path": "/Users/igor/.npm/_npx/f1e70922fc87e24a/node_modules/openapi-typescript/bin/cli.js",
+    "path": "$HOME/.npm/_npx/f1e70922fc87e24a/node_modules/openapi-typescript/bin/cli.js",
     "version": "7.13.0",
     "cli_sha256": "8d7ba578431790f4325dd3bbc128f2301970fdbbdeba9781019e8cc25d0fa407"
   },

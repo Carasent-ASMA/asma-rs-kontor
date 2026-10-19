@@ -84,7 +84,7 @@ after the verified `e16cd98d` tree.
 ## Live convergence audit
 
 Deployment receipt
-`/Users/igor/.local/state/kontor/asma/deployments/ASMA-7869-20260920T185808Z-9dae7f79/deployment.json`
+`$HOME/.local/state/kontor/asma/deployments/ASMA-7869-20260920T185808Z-9dae7f79/deployment.json`
 was verified at `2026-09-20T18:59:21.759604Z`. It records source `9dae7f79`,
 schema 114, one restart, a healthy open realm, zero foreign-key violations,
 and the watchdog still stopped. Git ancestry proves `e16cd98d`, `a231b329`, and
