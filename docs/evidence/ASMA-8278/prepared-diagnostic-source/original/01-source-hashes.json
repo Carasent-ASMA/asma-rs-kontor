@@ -5,7 +5,7 @@
   "public_derivative": {
     "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
     "ledger": "../../PUBLIC-REDACTION.json",
-    "note": "Custody pointer added; this file is unchanged. Any certified source hash describes the original; public candidate files are redacted derivatives."
+    "note": "This public file is a consumer/derivative copy. Its derivative mappings were corrected at 6aa7aa32; its historical original bytes and digest are preserved by TPM custody. Any certified source hash describes the original; public candidate files are redacted derivatives."
   },
   "derivatives": {
     "crates/kontor-runtime/src/planning_pair/attestation.rs": "a6e46758a48ae9d48cb2e719541fc055288126621370820a58418f7d0e9f8779",
