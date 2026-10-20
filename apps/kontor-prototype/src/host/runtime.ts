@@ -56,8 +56,9 @@ export function simulateUpdate(agentId: string, patch: Partial<FixtureSession["a
   for (const observer of observers) observer.update?.({ type: "agent_update", payload: { kind: "upsert", agent: next.agent, project: next.project } });
 }
 
-function listAgents(options: { filter?: { includeArchived?: boolean }; page?: { limit?: number; cursor?: string }; subscribe?: object } = {}) {
+async function listAgents(options: { filter?: { includeArchived?: boolean }; page?: { limit?: number; cursor?: string }; subscribe?: object } = {}) {
   if (hostStatus !== "online") return Promise.reject(new Error("Prototype host is offline (simulated)."));
+  if (scenario.inventoryDelayMs) await new Promise((resolve) => setTimeout(resolve, scenario.inventoryDelayMs));
   const includeArchived = options.filter?.includeArchived === true;
   const all = [...sessions.values()]
     .filter((value) => includeArchived || !value.agent.archivedAt)
@@ -114,7 +115,7 @@ export const fakePaseo = refusingProxy("paseo", {
   projects: refusingProxy("paseo.projects", { list: async () => {
     if (hostStatus !== "online") throw new Error("Prototype host is offline (simulated).");
     const base = [...new Map(WORKSPACES.map(workspace => [workspace.projectId, { projectId: workspace.projectId,
-      projectKey: workspace.projectId, projectDisplayName: workspace.projectDisplayName, projectCustomName: workspace.projectCustomName,
+      projectKey: workspace.projectId, projectDisplayName: workspace.projectDisplayName, projectCustomName: scenario.longContextNames ? "Kontor native project with a deliberately long name for narrow screens and enlarged text" : workspace.projectCustomName,
       projectRootPath: `/fixture/${workspace.projectId}`, projectKind: "non_git", projectCustomIconRevision: null, projectIconRevision: "automatic:none:v1" }])).values()];
     return { requestId: "fixture-projects", projects: scenario.inventory === "none" ? [] : scenario.inventory === "desks" ? DESK_PROJECTS : scenario.inventory === "integration" ? [...base, ...DESK_PROJECTS] : base };
   } }),
@@ -127,7 +128,7 @@ export const fakePaseo = refusingProxy("paseo", {
 export async function invokeRpc(method: string, input: unknown): Promise<unknown> {
   await new Promise((resolve) => setTimeout(resolve, 60));
   if (hostStatus !== "online") throw new Error("Prototype host is offline (simulated).");
-  const reads = scenario.sources ? SOURCE_READS : [];
+  const reads = scenario.sources ? SOURCE_READS.map((read) => scenario.longContextNames && read.source.id === "plan-99101" ? { ...read, source: { ...read.source, title: "A long selected plan title whose epic and native project must stay separate across every view" } } : read) : [];
   switch (method) {
     case "sources.list":
       return { sources: reads.map((read) => read.source), diagnostics: [] };

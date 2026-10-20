@@ -18,9 +18,9 @@ const queryClient = new QueryClient();
 
 // Seed the plugin's own in-memory route and Sessions view, as a user would have left them.
 const start = scenario.start;
-if (start?.tab && start.tab !== "Sessions") {
+if (start?.tab) {
   const read = [PLAN_99101, PLAN_99102].find((value) => value.source.id === start.sourceId);
-  navigate(HOST_ID, { tab: start.tab, sourceId: read?.source.id ?? null, sourceRevision: read?.revision ?? null, epicKey: read?.graph?.epic.jira ?? null, projectId: read?.source.projectId ?? null });
+  navigate(HOST_ID, { tab: start.tab, sourceId: read?.source.id ?? null, sourceRevision: read?.revision ?? null, epicKey: start.epicKey ?? read?.graph?.epic.jira ?? null, projectId: start.projectId ?? read?.source.projectId ?? null });
   hostNavigation(HOST_ID).back = [];
 }
 if (start?.query || start?.status || start?.grouping) {

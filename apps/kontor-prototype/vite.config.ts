@@ -32,9 +32,10 @@ export default defineConfig({
   },
   define: {
     __DEV__: "false",
+    global: "globalThis",
     "process.env.NODE_ENV": JSON.stringify(process.env.NODE_ENV ?? "development"),
   },
-  server: { port: 58091, strictPort: true, fs: { allow: [path.resolve(here, "../..")] } },
-  preview: { port: 58092, strictPort: true },
+  server: { port: 58151, strictPort: true, fs: { allow: [path.resolve(here, "../..")] } },
+  preview: { port: 58151, strictPort: true },
   build: { outDir: "dist", sourcemap: true, chunkSizeWarningLimit: 4000 },
 });

@@ -19,6 +19,8 @@ export type Scenario = {
   readonly start?: {
     readonly tab?: "Sessions" | "Board" | "Overview" | "Plan";
     readonly sourceId?: string;
+    readonly projectId?: string;
+    readonly epicKey?: string;
     readonly query?: string;
     readonly status?: "error" | "needs_input" | "running" | "attention" | "earlier_error";
     /** Grouping chosen in this Sessions view (kept in memory, not saved). */
@@ -27,6 +29,8 @@ export type Scenario = {
   /** Scripted native changes, applied in order and labelled simulated. */
   readonly script?: readonly { readonly afterMs: number; readonly agentId: string; readonly patch: Record<string, unknown>; readonly note: string }[];
   readonly hostOfflineAfterMs?: number;
+  readonly inventoryDelayMs?: number;
+  readonly longContextNames?: boolean;
   /** Board reads SIMULATED team, workflow and risk-tier declarations (`fixtures/teams.ts`); labelled in the banner. */
   readonly simulatedTeams?: boolean;
 };
@@ -42,6 +46,13 @@ const EXPANDED: Partial<OrganizationSettings> = {
 };
 
 export const SCENARIOS: readonly Scenario[] = [
+  { id: "mobile-header", title: "Mobile header", summary: "Current plugin toolbar: one local selector/Back/status line. Native title is a simulation; the SDK does not offer a picker slot there.", inventory: "integration", sources: true },
+  { id: "mobile-header-project", title: "Header: native project", summary: "Native project selection stays distinct from epic/plan selection across the six main views.", inventory: "integration", sources: true, start: { tab: "Sessions", projectId: "proj_kontor_demo" } },
+  { id: "mobile-header-epic", title: "Header: epic without a plan", summary: "Confirmed fictional epic scope without a configured plan. Project remains All projects.", inventory: "integration", sources: true, start: { tab: "Sessions", epicKey: "ASMA-99199" } },
+  { id: "mobile-header-long", title: "Header: long names", summary: "Long fictional native project and plan names. Full names remain accessible; the compact selector truncates visually.", inventory: "integration", sources: true, longContextNames: true, start: { tab: "Sessions", sourceId: "plan-99101" } },
+  { id: "mobile-header-no-sources", title: "Header: no plan sources", summary: "Native projects remain selectable without configured plan sources.", inventory: "integration", sources: false },
+  { id: "mobile-header-loading", title: "Header: reading inventory", summary: "Simulated 8-second inventory delay. An online connection does not fabricate Live.", inventory: "integration", sources: true, inventoryDelayMs: 8000 },
+  { id: "mobile-header-offline", title: "Header: offline", summary: "Simulated disconnect at 3 seconds. Host offline stays distinct from retained source freshness.", inventory: "integration", sources: true, hostOfflineAfterMs: 3000 },
   { id: "baseline", title: "Baseline", summary: "Default inventory, Sessions tree with one epic open.", inventory: "base", sources: true, settings: EXPANDED },
   { id: "integrated-review", title: "Combined navigator review", summary: "All applicable plugin changes: timestamps, lifecycle, native desks, compact header and model reports. Sessions and plan catalogs are fictional; 19 real-source reads are separate qualification evidence. Host title overlap is not delivered here.", inventory: "integration", sources: true, start: { grouping: "flat" } },
   { id: "integrated-roles", title: "Combined review: Roles", summary: "Combined fictional inventory in Roles, with exact times and model/report Details.", inventory: "integration", sources: true, settings: { grouping: "role", expandedGroups: { "roles/role:SWE": true, "roles/role:QA": true, "roles/role:AUD": true, "roles/role:TPM": true } } },
