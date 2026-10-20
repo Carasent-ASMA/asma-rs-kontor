@@ -506,6 +506,12 @@ describe("Kontor shell native actions", () => {
     expect(screen.action("More").props.expanded).toBe(false);
     expect(hostNavigation(screen.props.host.id).route.tab).toBe("Inbox");
     screen.click("More"); screen.click("More"); expect(screen.menu()).toBeUndefined();
+    // The picker, reached by Tab from the open menu, takes its slot without a close between them, so it must open as a new panel.
+    screen.click("More");
+    const more = AnchoredMenu(screen.menu()!.props as Parameters<typeof AnchoredMenu>[0]);
+    screen.openPicker();
+    expect(screen.menu()!.props).toMatchObject({ testID: "kontor-context-menu", dialog: true });
+    expect(AnchoredMenu(screen.menu()!.props as Parameters<typeof AnchoredMenu>[0]).key).not.toBe(more.key);
   });
   it("scopes Overview by a confirmed epic without a plan, returns with Back, and clears to All projects", () => {
     const screen = mount(true);
