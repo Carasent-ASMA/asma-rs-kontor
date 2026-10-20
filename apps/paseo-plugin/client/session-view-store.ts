@@ -30,6 +30,19 @@ export function isResultMode(view: SessionFilters & { readonly task?: SessionTas
   return view.query.trim().length > 0 || view.status !== "all" || !!view.task;
 }
 
+/** Count narrowing choices only. Presentation and explicit route context are separate. */
+export function sessionFilterCount(view: SessionViewState): number {
+  return [view.query.trim().length > 0, view.status !== "all", !!view.task,
+    view.shortcut != null, view.streams != null, view.includeArchived !== DEFAULT_SESSION_FILTERS.includeArchived].filter(Boolean).length;
+}
+
+/** Clear all filtering choices; the existing transition restores the context's tree anchor. */
+export function clearSessionFilterPatch(view: SessionViewState): Partial<SessionViewState> {
+  if (sessionFilterCount(view) === 0) return {};
+  return { query: "", status: "all", task: null, shortcut: null, streams: null,
+    includeArchived: DEFAULT_SESSION_FILTERS.includeArchived, scrollOffset: 0, peek: null };
+}
+
 const RESULT_KEYS = ["query", "status", "task", "includeArchived", "shortcut", "streams", "grouping"] as const;
 
 /**

@@ -273,7 +273,9 @@ import {
   SlimToolbar,
   toolbarOpenPatch,
 } from "../client/sessions-screen";
-import { MobileFiltersPage, MobileFiltersTrigger } from "../client/mobile-filters";
+import { MobileFiltersPage } from "../client/mobile-filters";
+import { MobileQuickToolbar } from "../client/mobile-quick-toolbar";
+import { MobileQuickChooser } from "../client/mobile-quick-chooser";
 import { StateBadge } from "../client/organization-row";
 import { SessionUsage, SessionUsageLines } from "../client/session-usage-view";
 import { AnchoredMenu, MenuItem } from "../client/anchored-menu";
@@ -328,6 +330,11 @@ function findByTestID(node: unknown, testID: string): ElementLike {
   );
   expect(found).toHaveLength(1);
   return found[0]!;
+}
+
+function sessionSearch(): ElementLike {
+  const toolbar = walk(harness.current()).find((node) => node.type === MobileQuickToolbar);
+  return toolbar ? { props: { value: toolbar.props.query, onChangeText: toolbar.props.onQuery } } : findByTestID(harness.current(), "sessions-search");
 }
 
 function scrollEvent(
@@ -408,7 +415,7 @@ function toggle(kind: string) {
 }
 
 function expandAll() {
-  const mobile = walk(harness.current()).some((node) => node.type === MobileFiltersTrigger);
+  const mobile = walk(harness.current()).some((node) => node.type === MobileQuickToolbar);
   if (mobile) openMobileFilters();
   const options = walk(harness.current()).some((element) => element.props.testID === "sessions-options");
   if (!options) {
@@ -419,7 +426,7 @@ function expandAll() {
   if (mobile) closeMobileFilters();
 }
 function setStateFilter(status: string) {
-  const mobile = walk(harness.current()).some((node) => node.type === MobileFiltersTrigger);
+  const mobile = walk(harness.current()).some((node) => node.type === MobileQuickToolbar);
   if (mobile) openMobileFilters();
   (findByTestID(harness.current(), `sessions-filter-${status}`).props.onPress as () => void)(); harness.flush();
   if (mobile) closeMobileFilters();
@@ -511,7 +518,7 @@ describe("SessionsScreen toolbar events", () => {
     const list = () => findByTestID(harness.current(), "sessions-list");
     const header = () => list().props.ListHeaderComponent;
     renderScreen();
-    const search = (query: string) => { (findByTestID(harness.current(), "sessions-search").props.onChangeText as (query: string) => void)(query); harness.flush(); };
+    const search = (query: string) => { (sessionSearch().props.onChangeText as (query: string) => void)(query); harness.flush(); };
     search("");
     expect(testIDs(header())).not.toContain("sessions-count");
     expect(textOf(findByTestID(harness.current(), "sessions-options-count"))).toMatch(/^1 session · 1 workspace · complete inventory read /);
@@ -598,17 +605,17 @@ describe("SessionsScreen toolbar events", () => {
       );
 
     render();
-    expect(findByTestID(harness.current(), "sessions-search").props.value).toBe(
+    expect(sessionSearch().props.value).toBe(
       "host-a query",
     );
 
     activeHost = "host-b";
     harness.flush();
-    expect(findByTestID(harness.current(), "sessions-search").props.value).toBe(
+    expect(sessionSearch().props.value).toBe(
       "host-b query",
     );
 
-    const search = findByTestID(harness.current(), "sessions-search");
+    const search = sessionSearch();
     (search.props.onChangeText as (query: string) => void)("host-b edited");
     harness.flush();
 
@@ -652,17 +659,17 @@ describe("SessionsScreen toolbar events", () => {
     expect(scrollToOffset).toHaveBeenLastCalledWith({ offset: 420, animated: false });
 
     viewScope = "host-a:epic-b"; harness.flush(); vi.advanceTimersByTime(0);
-    expect(findByTestID(harness.current(), "sessions-search").props.value).toBe("other");
+    expect(sessionSearch().props.value).toBe("other");
     expect(scrollToOffset).toHaveBeenLastCalledWith({ offset: 180, animated: false });
     expect(directory.inputs.at(-1)?.includeArchived).toBe(false);
-    (findByTestID(harness.current(), "sessions-search").props.onChangeText as (query: string) => void)("edited b");
+    (sessionSearch().props.onChangeText as (query: string) => void)("edited b");
     harness.flush();
     expect(readSessionView("host-a:epic-b").query).toBe("edited b");
     expect(readSessionView("host-a:epic-a")).toMatchObject({ query: "session-a", scrollOffset: 420 });
     expect(readSessionView("host-a").query).toBe("host default");
 
     viewScope = "host-a:epic-a"; harness.flush(); vi.advanceTimersByTime(0);
-    expect(findByTestID(harness.current(), "sessions-search").props.value).toBe("session-a");
+    expect(sessionSearch().props.value).toBe("session-a");
     expect(scrollToOffset).toHaveBeenLastCalledWith({ offset: 420, animated: false });
     expect(directory.inputs.at(-1)?.includeArchived).toBe(true);
   });
@@ -916,23 +923,23 @@ describe("SessionsScreen toolbar events", () => {
     rootHeight(SHORT_PEEK_HEIGHT - 100);
     setStateFilter("idle");
     // Results keep their toolbar and filters at any height; only the peek folds them.
-    expect(testIDs(harness.current())).toContain("sessions-mobile-toolbar");
+    expect(walk(harness.current()).some((node) => node.type === MobileQuickToolbar)).toBe(true);
     expect(header()).not.toContain("sessions-full-toolbar");
     showInTree();
-    expect(testIDs(harness.current())).not.toContain("sessions-mobile-toolbar");
+    expect(walk(harness.current()).some((node) => node.type === MobileQuickToolbar)).toBe(false);
     expect(header()).toEqual([]);
     expect([textOf(peekText()), peekText().props.numberOfLines, peekText().props.accessibilityLabel]).toEqual(["In the tree · not saved", 1, "Showing “Session quiet” in the tree. Branches opened here are not saved."]);
     // A full-size Back, the 44pt touch action.
     expect(back().props.small).toBe(false);
     expect(sessionRowIds()).toEqual(expect.arrayContaining(["quiet"]));
     (back().props.onPress as () => void)(); harness.flush();
-    expect(testIDs(harness.current())).toContain("sessions-mobile-toolbar");
+    expect(walk(harness.current()).some((node) => node.type === MobileQuickToolbar)).toBe(true);
     expect(header()).not.toContain("sessions-full-toolbar");
     expect(sessionRowIds()).toEqual(["quiet"]);
     // A phone-height screen keeps the toolbar and the longer note during the peek.
     rootHeight(SHORT_PEEK_HEIGHT);
     showInTree();
-    expect(testIDs(harness.current())).toContain("sessions-mobile-toolbar");
+    expect(walk(harness.current()).some((node) => node.type === MobileQuickToolbar)).toBe(true);
     expect(header()).not.toContain("sessions-full-toolbar");
     expect([textOf(peekText()), peekText().props.numberOfLines]).toEqual(["Shown in the tree. Branches opened here are not saved.", 2]);
   });
@@ -1537,7 +1544,7 @@ describe("SessionsScreen toolbar events", () => {
     patchSessionView("host-a", { query: "" });
     const { scrollToOffset } = renderScreen(undefined, false);
     scroll(480);
-    const search = (query: string) => { (findByTestID(harness.current(), "sessions-search").props.onChangeText as (query: string) => void)(query); harness.flush(); };
+    const search = (query: string) => { (sessionSearch().props.onChangeText as (query: string) => void)(query); harness.flush(); };
     search("quiet");
     expect(readSessionView("host-a")).toMatchObject({ treeOffset: 480, scrollOffset: 0 });
     vi.runOnlyPendingTimers();
@@ -1915,16 +1922,51 @@ describe("SessionsScreen mobile filter page", () => {
     expect(banner.props.actionLabel).toBe("Retry");
   });
 
-  it("keeps only search and one Filters entry beside results, ignoring the old inline-open preference", () => {
+  it("keeps the quick toolbar and one full-page Filters route beside results, ignoring the old inline-open preference", () => {
     patchSessionView("host-a", { toolbarOpen: true, advancedOpen: true, status: "idle", grouping: "role" });
     renderCompact();
     expect(testIDs(harness.current())).toContain("sessions-list");
     expect(testIDs(harness.current())).not.toContain("sessions-full-toolbar");
     expect(testIDs(harness.current())).not.toContain("sessions-options");
-    const triggers = walk(harness.current()).filter((node) => node.type === MobileFiltersTrigger);
+    const triggers = walk(harness.current()).filter((node) => node.type === MobileQuickToolbar);
     expect(triggers).toHaveLength(1);
-    expect(triggers[0]!.props.count).toBe(2);
-    expect(textOf(findByTestID(harness.current(), "sessions-mobile-summary"))).toContain("Idle");
+    expect(triggers[0]!.props.activeCount).toBe(1);
+    expect(triggers[0]!.props.summary).toContain("Idle");
+  });
+
+  it("applies all seven quick actions to actual rows and updates counts with search, without a settings write", () => {
+    directory.state = { ...(directory.state as object), entries: [
+      sessionEntry("run", { title: "mobile run", status: "running" }),
+      sessionEntry("idle", { title: "mobile idle" }),
+      sessionEntry("error", { title: "mobile error", status: "error", requiresAttention: true, attentionReason: "error" }),
+      sessionEntry("input", { title: "mobile input", needsInput: true, requiresAttention: true, attentionReason: "permission" }),
+      sessionEntry("notice", { title: "mobile notice", requiresAttention: true, attentionReason: "finished" }),
+      sessionEntry("other", { title: "unrelated" }),
+    ] };
+    const save = vi.fn(async () => true);
+    const organization = { state: { status: "ready", values: { ...DEFAULT_ORGANIZATION_SETTINGS, favorites: ["idle"] }, revision: "r", saving: false, saveError: null, save: async () => true, reset: async () => true, reload: async () => {} }, save } satisfies NonNullable<Parameters<typeof SessionsScreen>[0]["organization"]>;
+    patchSessionView("host-a", { query: "mobile", grouping: "flat" });
+    renderScreen(organization, true);
+    const toolbar = () => walk(harness.current()).find((node) => node.type === MobileQuickToolbar)!;
+    const expected = { all: ["error", "idle", "input", "notice", "run"], running: ["run"], idle: ["idle", "input", "notice"], error: ["error"], needs_input: ["input"], attention: ["error", "input", "notice"], favorites: ["idle"] };
+    for (const [status, ids] of Object.entries(expected)) {
+      (toolbar().props.onStatus as (status: string) => void)(status); harness.flush();
+      expect(sessionRowIds().sort()).toEqual(ids);
+      expect((toolbar().props.counts as Record<string, number>)[status]).toBe(ids.length);
+      expect(readSessionView("host-a").query).toBe("mobile");
+    }
+    (toolbar().props.onChooser as () => void)(); harness.flush();
+    expect(readSessionView("host-a").status).toBe("favorites");
+    const chooser = walk(harness.current()).find((node) => node.type === MobileQuickChooser)!;
+    (chooser.props.onClose as () => void)(); harness.flush();
+    (toolbar().props.onQuery as (query: string) => void)("run"); harness.flush();
+    expect(sessionRowIds()).toEqual([]);
+    expect((toolbar().props.counts as Record<string, number>).all).toBe(1);
+    (toolbar().props.onStatus as (status: string) => void)("all"); harness.flush();
+    expect(sessionRowIds()).toEqual(["run"]);
+    (toolbar().props.onQuery as (query: string) => void)(""); harness.flush();
+    expect(sessionRowIds()).toHaveLength(6);
+    expect(save).not.toHaveBeenCalled();
   });
 
   it("applies filters immediately and Back keeps search, grouping, task/scope choices and results", () => {
@@ -1943,14 +1985,60 @@ describe("SessionsScreen mobile filter page", () => {
     expect(findByTestID(harness.current(), "sessions-filter-running").props.active).toBe(true);
     (walk(harness.current()).find((node) => node.type === ClearFiltersButton)!.props.onPress as () => void)(); harness.flush();
     closeMobileFilters();
-    expect(sessionRowIds().sort()).toEqual(["idle", "running"]);
-    expect(readSessionView("host-a")).toMatchObject({ query: "mobile", status: "all", grouping: "role", shortcut: null, includeArchived: false });
+    expect((walk(harness.current()).find((node) => node.type === MobileQuickToolbar)!.props.counts as Record<string, number>).all).toBe(2);
+    expect(groupRows().map((row) => row.group.label).sort()).toEqual(["QA", "SWE"]);
+    expect(readSessionView("host-a")).toMatchObject({ query: "", status: "all", grouping: "role", shortcut: null, includeArchived: false });
+  });
+
+  it.each(["quick", "full-page", "desktop", "collapsed", "empty"] as const)("clears compound filters from %s within the explicit project/epic and preserves preferences", (entry) => {
+    const scope = "host-a:project-a:ASMA-1";
+    const onClearScope = vi.fn(), save = vi.fn(async () => true), refresh = vi.fn(), archive = vi.fn();
+    const values = { ...DEFAULT_ORGANIZATION_SETTINGS, grouping: "flat" as const, favorites: ["match"], expandedGroups: { keep: true } };
+    const organization = { state: { status: "ready" as const, values, revision: "r", saving: false, saveError: null, save: async () => true, reset: async () => true, reload: async () => {} }, save };
+    const supplied = { state: { ...emptyDirectoryState(), status: "ready" as const, entries: [
+      sessionEntry("match", { projectKey: "project-a", labels: { epic: "ASMA-1" } }),
+      sessionEntry("second", { projectKey: "project-a", labels: { epic: "ASMA-1" }, status: "running" }),
+      sessionEntry("outside-project", { projectKey: "project-b", labels: { epic: "ASMA-1" } }),
+      sessionEntry("outside-epic", { projectKey: "project-a", labels: { epic: "ASMA-2" } }),
+    ], pages: 1, lastUpdatedAt: 0, inventoryComplete: true }, refresh };
+    patchSessionView(scope, { query: "no match", status: "favorites", task: { jira: "ASMA-9", kontorId: null, label: "ASMA-9" },
+      shortcut: "Adam", streams: [], includeArchived: true, grouping: "flat", arranging: true, advancedOpen: true, toolbarOpen: false, scrollOffset: entry === "collapsed" ? 300 : 0, treeOffset: 70 });
+    const compact = entry === "quick" || entry === "full-page";
+    harness.render(() => SessionsScreen({ host: { id: "host-a", label: "Host" }, layout: { compact, platform: "web" }, theme: { colors } as PluginTheme, params: {},
+      directory: supplied, organization, projectId: "project-a", epicKey: "ASMA-1", scopeLabel: "ASMA-1", onClearScope, onIncludeArchived: archive, viewScope: scope }));
+    expect(sessionRowIds()).toEqual([]);
+    let clear: () => void;
+    if (entry === "quick") clear = walk(harness.current()).find((node) => node.type === MobileQuickToolbar)!.props.onClear as () => void;
+    else if (entry === "collapsed") clear = walk(harness.current()).find((node) => node.type === ActiveFilterSummary)!.props.onClear as () => void;
+    else if (entry === "empty") clear = walk(findByTestID(harness.current(), "sessions-list").props.ListEmptyComponent).find((node) => node.props.accessibilityLabel === "Clear filters")!.props.onPress as () => void;
+    else {
+      if (entry === "full-page") openMobileFilters();
+      clear = walk(harness.current()).find((node) => node.type === ClearFiltersButton)!.props.onPress as () => void;
+    }
+    clear(); harness.flush();
+    if (entry === "full-page") {
+      expect(walk(harness.current()).some((node) => node.type === MobileFiltersPage)).toBe(true);
+      expect(walk(harness.current()).some((node) => node.type === MobileQuickToolbar)).toBe(false);
+      expect(testIDs(harness.current()).filter((id) => id === "sessions-search")).toHaveLength(1);
+      closeMobileFilters();
+    }
+    expect(readSessionView(scope)).toMatchObject({ query: "", status: "all", task: null, shortcut: null, streams: null, includeArchived: false,
+      grouping: "flat", advancedOpen: true, toolbarOpen: false, arranging: true, scrollOffset: 70, peek: null });
+    expect(sessionRowIds().sort()).toEqual(["match", "second"]);
+    const cleared = readSessionView(scope);
+    clear(); harness.flush();
+    expect(readSessionView(scope)).toEqual(cleared);
+    expect(values.favorites).toEqual(["match"]);
+    expect(values.expandedGroups).toEqual({ keep: true });
+    expect(save).not.toHaveBeenCalled(); expect(refresh).not.toHaveBeenCalled(); expect(onClearScope).not.toHaveBeenCalled();
+    expect(archive).toHaveBeenLastCalledWith(false);
+    expect(directory.inputs.at(-1)?.enabled).toBe(false);
   });
 
   it("returns keyboard focus to Filters and restores an unchanged list offset", () => {
     patchSessionView("host-a", { grouping: "flat", scrollOffset: 370 });
     renderCompact(); vi.runAllTimers();
-    const ref = walk(harness.current()).find((node) => node.type === MobileFiltersTrigger)!.props.ref as RefLike;
+    const ref = walk(harness.current()).find((node) => node.type === MobileQuickToolbar)!.props.filtersTriggerRef as RefLike;
     const focus = vi.fn(); ref.current = { focus };
     openMobileFilters(); closeMobileFilters();
     const scrollToOffset = vi.fn();
@@ -1980,8 +2068,8 @@ describe("SessionsScreen mobile filter page", () => {
 });
 
 function openMobileFilters() {
-  const trigger = walk(harness.current()).find((node) => node.type === MobileFiltersTrigger)!;
-  (trigger.props.onPress as () => void)(); harness.flush();
+  const trigger = walk(harness.current()).find((node) => node.type === MobileQuickToolbar)!;
+  (trigger.props.onFilters as () => void)(); harness.flush();
 }
 function closeMobileFilters() {
   const page = walk(harness.current()).find((node) => node.type === MobileFiltersPage)!;

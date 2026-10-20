@@ -39,7 +39,6 @@ import {
   attentionLabel,
   archivedLabel,
   earlierErrorLabel,
-  hasActiveView,
   matchesQuery,
   matchesStatus,
   MORE_STATUS_FILTERS,
@@ -50,11 +49,12 @@ import {
 } from "./session-view";
 import {
   isResultMode,
+  clearSessionFilterPatch,
+  sessionFilterCount,
   patchLocalExpansion,
   patchSessionView,
   readLocalExpansion,
   readSessionView,
-  resetSessionView,
   sessionViewTransition,
   writeScrollOffset,
   type SessionGrouping,
@@ -85,7 +85,9 @@ import { nativeFreshnessLabel } from "./native-freshness";
 import { sessionTimeLines, useClock, useUpdatedTime, type RowTime, type TimeFreshness } from "./session-time";
 import { sessionUsageLabel } from "./session-usage";
 import { SessionUsage, SessionUsageLines } from "./session-usage-view";
-import { MobileFiltersPage, MobileFiltersTrigger, focusControl } from "./mobile-filters";
+import { MobileFiltersPage, focusControl } from "./mobile-filters";
+import { MobileQuickToolbar } from "./mobile-quick-toolbar";
+import { MobileQuickChooser } from "./mobile-quick-chooser";
 
 type ThemeColors = PluginTheme["colors"];
 /** A tree row, or a flat match while a search, state or task filter is on. */
@@ -761,7 +763,7 @@ export function ClearFiltersButton({
       disabled={disabled}
       accessibilityRole="button"
       accessibilityLabel="Clear filters"
-      accessibilityHint="Clears the state, desk, workstream and archive filters"
+      accessibilityHint="Clears search, state, task, desk, workstream and archive filters; keeps the current context and view preferences"
       hitSlop={4}
       onBlur={onBlur}
       onFocus={onFocus}
@@ -1029,7 +1031,7 @@ export function ActiveFilterSummary({
           testID={FILTER_SUMMARY_TEST_ID}
           accessibilityRole="button"
           accessibilityLabel={`Active filters: ${parts.join(", ")}. Clear filters`}
-          accessibilityHint="Clears the search, state, desk, workstream and archive filters"
+          accessibilityHint="Clears search, state, task, desk, workstream and archive filters; keeps the current context and view preferences"
           onPress={onClear}
           style={pressableStyle}
         >
@@ -1326,6 +1328,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const [mobileFilterScope, setMobileFilterScope] = useState<string | null>(null);
   const mobileFiltersOpen = compact && mobileFilterScope === `${host.id}:${viewScope}`;
   const filtersTriggerRef = useRef<View | null>(null);
+  const quickChooserRef = useRef<View | null>(null);
+  const [quickChooserScope, setQuickChooserScope] = useState<string | null>(null);
+  useEffect(() => { setQuickChooserScope(null); }, [compact, viewScope, mobileFiltersOpen]);
   const returnFromFiltersRef = useRef(false);
   const hosts = useHosts();
   const hostSummary = hosts.find((candidate) => candidate.serverId === host.id);
@@ -1751,43 +1756,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
 
   const handleClearFilters = useCallback(() => {
     pinFilterInteraction();
-    updateView({
-      status: "all",
-      task: null,
-      includeArchived: false,
-      shortcut: null,
-      streams: null,
-      scrollOffset: 0,
-    });
-  }, [pinFilterInteraction, updateView]);
-
-  /** One tap on the collapsed summary: clears what narrows the list, keeps grouping and disclosure. */
-  const handleClearSummary = useCallback(() => {
-    pinFilterInteraction();
-    updateView({
-      query: "",
-      status: "all",
-      task: null,
-      includeArchived: false,
-      shortcut: null,
-      streams: null,
-      scrollOffset: 0,
-    });
-  }, [pinFilterInteraction, updateView]);
-
-  const handleClearAll = useCallback(() => {
-    pinFilterInteraction();
-    const current = readSessionView(viewScope);
-    resetSessionView(viewScope);
-    // The tree returns where it was before the search or filter.
-    const anchor = { scrollOffset: isResultMode(current) ? current.treeOffset ?? 0 : 0 };
-    setHostView({
-      hostId: host.id,
-      viewScope,
-      // Clearing filters does not also open or close the compact toolbar.
-      view: patchSessionView(viewScope, compact ? { ...anchor, ...toolbarOpenPatch(!toolbarCollapsedRef.current) } : anchor),
-    });
-  }, [compact, host.id, viewScope, pinFilterInteraction]);
+    updateView(clearSessionFilterPatch(readSessionView(viewScope)));
+  }, [pinFilterInteraction, updateView, viewScope]);
 
   const handleScrollBeginDrag = useCallback(() => {
     filterPinnedUntilRef.current = 0;
@@ -2003,15 +1973,12 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     view.status === "closed" ? "Closed sessions" : view.status === "initializing" ? "Starting sessions" : null,
     view.includeArchived ? "Including archived" : null,
   ].filter((part): part is string => !!part);
-  const activeCount = optionParts.length;
-  const hasOrganizationFilter = shortcut !== null || streams !== null;
-  const clearable = view.status !== "all" || !!task || view.includeArchived || hasOrganizationFilter;
+  const activeCount = sessionFilterCount(view);
+  const clearable = activeCount > 0;
   const taskKeys = task ? [task.jira ? `${TASK_JIRA_LABELS.join(" or ")} equal to ${task.jira}` : null, task.kontorId ? `${TASK_TICKET_LABEL} equal to ${task.kontorId}` : null].filter(Boolean).join(", or ") : "";
   const summaryParts = activeFilterParts({ query: view.query, status: view.status, shortcut: shortcut?.startsWith("desk-project:") ? scopeChoiceLabel : shortcut, streams, includeArchived: view.includeArchived, task: task?.label });
   // The compact slim badge also counts the state and desk chips its closed toolbar hides; search has its own button.
-  const slimActiveCount = compact
-    ? [view.status !== "all", !!task, shortcut !== null, streams !== null, view.includeArchived, grouping !== "hierarchy"].filter(Boolean).length
-    : activeCount;
+  const slimActiveCount = activeCount;
   // While the compact toolbar is open, a short list still has room for the small drag that closes it.
   const scrollSlack = compact && !toolbarCollapsed && listHeight > 0 ? { minHeight: listHeight + COMPACT_SCROLL_SLACK } : {};
   // Compact draws the toolbar inside the list, so they share the list viewport; wide stacks them in the screen.
@@ -2275,14 +2242,13 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             onPress={() => updateFilter({ status })}
           />
         ))}
-        {clearable ? (
           <ClearFiltersButton
             colors={colors}
             compact={compact}
             {...focusProps}
+            disabled={focusProps.disabled || !clearable}
             onPress={handleClearFilters}
           />
-        ) : null}
       </View>
       {optionParts.length > 0 && !view.advancedOpen ? <Text testID="sessions-options-summary" numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 11 }}>{optionParts.join(" · ")}</Text> : null}
 
@@ -2418,20 +2384,16 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     collapsed: toolbarCollapsed,
     compact,
   });
-  const mobileToolbar = (
-    <View testID="sessions-mobile-toolbar" style={{ gap: 4 }}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-        <TextInput ref={searchInputRef} testID="sessions-search" value={view.query} onChangeText={(query) => updateFilter({ query })}
-          accessibilityLabel="Search sessions by topic, role or ticket" placeholder="Search sessions…" placeholderTextColor={colors.foregroundMuted}
-          autoCapitalize="none" autoCorrect={false}
-          style={{ flex: 1, minWidth: 0, minHeight: 44, fontSize: 16, color: colors.foreground, backgroundColor: colors.surface1, borderWidth: 1, borderColor: colors.border, borderRadius: 7, paddingHorizontal: 10, paddingVertical: 6 }} />
-        <MobileFiltersTrigger ref={filtersTriggerRef} colors={colors} count={slimActiveCount} onPress={handleRevealFilters} />
-      </View>
-      {scopeLabel || summaryParts.length > 0 || grouping !== "hierarchy" ? <Text testID="sessions-mobile-summary" style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>
-        {[scopeLabel, ...summaryParts, grouping !== "hierarchy" ? `Group: ${GROUPINGS.find((choice) => choice.id === grouping)?.label}` : null].filter(Boolean).join(" · ")}
-      </Text> : null}
-    </View>
-  );
+  const mobileToolbar = <MobileQuickToolbar key={viewScope} colors={colors} width={Math.max(0, rootSize.width - 24)}
+    query={view.query} status={view.status} counts={statusCounts} activeCount={slimActiveCount}
+    summary={[scopeLabel, ...summaryParts, grouping !== "hierarchy" ? `Group: ${GROUPINGS.find((choice) => choice.id === grouping)?.label}` : null].filter(Boolean).join(" · ")}
+    searchInputRef={searchInputRef} filtersTriggerRef={filtersTriggerRef} chooserRef={quickChooserRef} chooserOpen={quickChooserScope === viewScope}
+    onQuery={(query) => updateFilter({ query })} onStatus={(status) => updateFilter({ status })} onFilters={handleRevealFilters}
+    onClear={handleClearFilters}
+    onChooser={() => { searchInputRef.current?.blur(); setQuickChooserScope(viewScope); }} />;
+  const quickChooserLayer = compact && !mobileFiltersOpen && quickChooserScope === viewScope ? <MobileQuickChooser
+    root={rootRef} rootSize={rootSize} anchor={quickChooserRef} colors={colors} status={view.status} counts={statusCounts}
+    onStatus={(status) => updateFilter({ status })} onClose={() => setQuickChooserScope(null)} /> : null;
   const slimSlot = compact ? mobileToolbar : (
     <View
       testID="sessions-slim-toolbar-slot"
@@ -2471,12 +2433,12 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         onFilters={handleRevealFilters}
         onHide={compact ? handleHideToolbar : undefined}
       />
-      {compact && toolbarCollapsed ? (
+      {toolbar.showSlimRow ? (
         <ActiveFilterSummary
           parts={summaryParts}
           scopeLabel={scopeLabel}
           colors={colors}
-          onClear={handleClearSummary}
+          onClear={handleClearFilters}
           onClearScope={onClearScope}
         />
       ) : null}
@@ -2572,7 +2534,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const extraData = { colors, arrangeEnabled, orderSelection, editsDisabled, favorites, peek, showBanner, timesLive };
   const emptyMessage = task && candidates.length === 0
     ? `No session in this view is linked to ${task.label}.`
-    : hasActiveView(view) || hasOrganizationFilter || task
+    : clearable
       ? "No sessions match the current search and filters."
       : state.status === "error"
         ? "No sessions could be read from this host."
@@ -2699,15 +2661,15 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 8, padding: 20 }}
           >
             <Text style={{ color: colors.foreground, fontSize: 14, textAlign: "center" }}>{emptyMessage}</Text>
-            {hasActiveView(view) || hasOrganizationFilter || task ? (
+            {clearable ? (
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="Clear search and filters"
-                onPress={handleClearAll}
+                accessibilityLabel="Clear filters"
+                onPress={handleClearFilters}
                 style={{ minHeight: compact || COARSE_POINTER ? FILTERS_TOUCH_TARGET : 32, justifyContent: "center", paddingHorizontal: 8 }}
               >
                 <Text style={{ color: colors.accent, fontSize: 13, fontWeight: "600" }}>
-                  Clear search and filters
+                  Clear filters
                 </Text>
               </Pressable>
             ) : (
@@ -2738,6 +2700,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       />
       {optionMenuLayer}
       {detailsLayer}
+      {quickChooserLayer}
     </View>
   );
 }

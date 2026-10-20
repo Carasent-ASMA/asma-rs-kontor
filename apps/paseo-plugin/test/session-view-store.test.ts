@@ -6,6 +6,8 @@ import {
   readSessionView,
   resetSessionView,
   sessionViewTransition,
+  clearSessionFilterPatch,
+  sessionFilterCount,
 } from "../client/session-view-store";
 import { DEFAULT_SESSION_FILTERS } from "../client/session-view";
 
@@ -59,6 +61,30 @@ describe("filtered results and the tree position", () => {
   });
 
   const task = { jira: "ASMA-7", kontorId: null, label: "ASMA-7" };
+
+  it.each([
+    { query: "missing" }, { status: "favorites" as const }, { task },
+    { shortcut: "desk-project:example" }, { streams: [] }, { includeArchived: true },
+  ])("counts and clears a single visible or advanced-only criterion %j", (patch) => {
+    const view = { ...readSessionView("host-a"), grouping: "flat" as const, advancedOpen: true, ...patch };
+    expect(sessionFilterCount(view)).toBe(1);
+    const cleared = { ...view, ...sessionViewTransition(view, clearSessionFilterPatch(view)) };
+    expect(sessionFilterCount(cleared)).toBe(0);
+    expect(cleared).toMatchObject({ grouping: "flat", advancedOpen: true });
+  });
+
+  it("clears every filter idempotently while keeping view preferences and the existing tree anchor", () => {
+    const current = { ...readSessionView("host-a"), query: "missing", status: "favorites" as const, task, shortcut: "Adam", streams: [], includeArchived: true,
+      grouping: "flat" as const, advancedOpen: true, toolbarOpen: false, arranging: true, scrollOffset: 40, treeOffset: 600 };
+    expect(sessionFilterCount(current)).toBe(6);
+    const cleared = { ...current, ...sessionViewTransition(current, clearSessionFilterPatch(current)) };
+    expect(cleared).toMatchObject({ query: "", status: "all", task: null, shortcut: null, streams: null, includeArchived: false,
+      grouping: "flat", advancedOpen: true, toolbarOpen: false, arranging: true, scrollOffset: 600, peek: null });
+    expect(sessionFilterCount(cleared)).toBe(0);
+    const twice = { ...cleared, ...sessionViewTransition(cleared, clearSessionFilterPatch(cleared)) };
+    expect(sessionFilterCount(twice)).toBe(0);
+    expect(twice).toEqual(cleared);
+  });
 
   it("treats a query, a state filter or a task as results; a shortcut alone keeps the tree", () => {
     const base = readSessionView("host-a");
