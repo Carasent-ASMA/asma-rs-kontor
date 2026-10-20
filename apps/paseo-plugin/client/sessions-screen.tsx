@@ -2369,9 +2369,11 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         keyExtractor={listRowKey}
         extraData={extraData}
         onScrollToIndexFailed={({ index, averageItemLength }) => {
-          // Rows past the rendered window have no measured offset yet: land near it, then on it.
+          // Rows past the rendered window have no measured offset yet: land near it, then on it. The
+          // retry belongs to the list that asked for it; Back or a scope change can swap in a shorter list first.
+          const mode = listModeRef.current;
           listRef.current?.scrollToOffset({ offset: index * averageItemLength, animated: false });
-          setTimeout(() => listRef.current?.scrollToIndex({ index, viewPosition: 0.3, animated: false }), 60);
+          setTimeout(() => { if (listModeRef.current === mode) listRef.current?.scrollToIndex({ index, viewPosition: 0.3, animated: false }); }, 60);
         }}
         initialNumToRender={24}
         windowSize={11}

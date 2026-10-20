@@ -898,6 +898,35 @@ describe("SessionsScreen toolbar events", () => {
     expect(scrollToIndex).toHaveBeenCalledTimes(2);
   });
 
+  it("drops a scroll retry once Back has swapped the tree for the shorter results list", () => {
+    directory.state = { ...(directory.state as object), entries: [
+      sessionEntry("busy", { status: "running", labels: { epic: "ASMA-1" } }),
+      sessionEntry("quiet", { status: "idle", labels: { epic: "ASMA-1" } }),
+    ] };
+    patchSessionView("host-a", { query: "" });
+    renderScreen();
+    const scrollToIndex = vi.fn();
+    (findByTestID(harness.current(), "sessions-list").props.ref as RefLike).current = { scrollToOffset: vi.fn(), scrollToIndex };
+    (findByTestID(harness.current(), "sessions-filter-idle").props.onPress as () => void)(); harness.flush();
+    const [result] = listRows() as [Extract<ListRow, { kind: "result" }>];
+    ((findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: result }).props.onShowInTree as (entry: unknown) => void)(result.entry);
+    harness.flush();
+    // A tree row past the rendered window has no measured offset, so its scroll fails and is retried.
+    const failed = () => (findByTestID(harness.current(), "sessions-list").props.onScrollToIndexFailed as (info: { index: number; averageItemLength: number }) => void)({ index: 43, averageItemLength: 40 });
+    const retries = () => scrollToIndex.mock.calls.filter(([place]) => (place as { index: number }).index === 43).length;
+    failed();
+    vi.advanceTimersByTime(60);
+    expect(retries()).toBe(1);
+    // Back before the retry: the one-row results list must never be asked for tree row 43.
+    failed();
+    (walk(findByTestID(harness.current(), "sessions-peek")).find((element) => element.props.label === "Back to 1 result")!.props.onPress as () => void)();
+    harness.flush();
+    expect(listRows()).toHaveLength(1);
+    vi.advanceTimersByTime(60);
+    vi.runOnlyPendingTimers();
+    expect(retries()).toBe(1);
+  });
+
   it("returns to the tree position it left when the search is cleared", () => {
     directory.state = { ...(directory.state as object), entries: [sessionEntry("busy", { status: "running" }), sessionEntry("quiet")] };
     patchSessionView("host-a", { query: "" });
