@@ -169,6 +169,11 @@ export const OPTIONS_SPACE_SHARE = 0.7;
 export const OPTIONS_MIN_HEIGHT = 3 * FILTERS_TOUCH_TARGET;
 /** Wide screen padding above the toolbar and below the list. */
 const WIDE_SCREEN_PADDING = 16;
+/**
+ * Below this compact screen height, Show in tree folds the slim toolbar and the filter summary into
+ * its Back row: at 320pt they would otherwise fill the screen and hide the session it shows.
+ */
+export const SHORT_PEEK_HEIGHT = 420;
 
 /** Compact toolbar disclosure, kept in the local in-memory view store beside the filters. */
 export function compactToolbarOpen(view: SessionViewState): boolean {
@@ -1850,6 +1855,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const activeCount = optionParts.length;
   const hasOrganizationFilter = shortcut !== null || streams !== null;
   const clearable = view.status !== "all" || !!task || view.includeArchived || hasOrganizationFilter;
+  const taskKeys = task ? [task.jira ? `${TASK_JIRA_LABELS.join(" or ")} equal to ${task.jira}` : null, task.kontorId ? `${TASK_TICKET_LABEL} equal to ${task.kontorId}` : null].filter(Boolean).join(", or ") : "";
   const summaryParts = activeFilterParts({ query: view.query, status: view.status, shortcut, streams, includeArchived: view.includeArchived, task: task?.label });
   // The compact slim badge also counts the state and desk chips its closed toolbar hides; search has its own button.
   const slimActiveCount = compact
@@ -1927,7 +1933,10 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       else listRef.current?.scrollToOffset({ offset, animated: false });
       focus?.();
     }, 0);
-    return () => clearTimeout(timer);
+    // The first pass places the session by estimated row heights, which leave out a list header
+    // such as open compact Filters; once the new rows are measured, place it again.
+    const settle = index >= 0 ? setTimeout(() => listRef.current?.scrollToIndex({ index, viewPosition: 0.3, animated: false }), 150) : undefined;
+    return () => { clearTimeout(timer); clearTimeout(settle); };
   }, [listMode]);
 
   const staleMessage = state.error ?? state.staleReason;
@@ -2056,13 +2065,12 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         <Pressable
           testID="sessions-task-filter"
           accessibilityRole="button"
-          accessibilityLabel={`Task ${task.label}, sessions whose task labels equal it. Remove task filter`}
+          accessibilityLabel={`Task ${task.label}: sessions with a label ${taskKeys}. Remove task filter`}
           {...focusProps}
           onPress={() => { pinFilterInteraction(); updateView({ task: null, scrollOffset: 0 }); }}
           style={{ alignSelf: "flex-start", maxWidth: "100%", minHeight: compact || COARSE_POINTER ? FILTERS_TOUCH_TARGET : 30, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, borderRadius: 15, borderWidth: 1, borderColor: colors.accent, backgroundColor: colors.surface2 }}
         >
           <Text numberOfLines={1} style={{ flexShrink: 1, color: colors.foreground, fontSize: 12, fontWeight: "600" }}>Task {task.label}</Text>
-          <Text numberOfLines={1} style={{ flexShrink: 2, color: colors.foregroundMuted, fontSize: 11 }}>exact session labels</Text>
           <Text accessibilityElementsHidden importantForAccessibility="no" style={{ color: colors.foregroundMuted, fontSize: 12 }}>✕</Text>
         </Pressable>
       ) : null}
@@ -2288,9 +2296,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   }
 
   const extraData = { colors, arrangeEnabled, orderSelection, editsDisabled, favorites, peek };
-  const taskKeys = task ? [task.jira ? `${TASK_JIRA_LABELS.join(" or ")} equal to ${task.jira}` : null, task.kontorId ? `${TASK_TICKET_LABEL} equal to ${task.kontorId}` : null].filter(Boolean).join(", or ") : "";
   const emptyMessage = task && candidates.length === 0
-    ? `No session in this view has a label ${taskKeys}.`
+    ? `No session in this view is linked to ${task.label}.`
     : hasActiveView(view) || hasOrganizationFilter || task
       ? "No sessions match the current search and filters."
       : state.status === "error"
@@ -2308,20 +2315,21 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const resultLine = resultMode && results.length > 0 ? (
     <Text testID="sessions-count" accessibilityLiveRegion="polite" style={{ color: colors.foregroundMuted, fontSize: 11, paddingHorizontal: 4, paddingBottom: 8 }}>
       {`${results.length} matching session${results.length === 1 ? "" : "s"} · ${resultWorkspaces} workspace${resultWorkspaces === 1 ? "" : "s"}${unplaced ? ` · ${unplaced} without a workspace` : ""}`}
-      {task ? ` · label ${taskKeys}` : ""}
       {state.inventoryComplete && state.lastUpdatedAt !== null ? "" : ` · ${inventoryRead}`}
     </Text>
   ) : null;
   const peekTitle = peek ? state.entries.find((entry) => entry.id === peek.sessionId)?.title ?? "This session" : "";
+  const shortPeek = peek !== null && compact && rootSize.height > 0 && rootSize.height < SHORT_PEEK_HEIGHT;
+  const peekDescription = peekAncestors ? `Showing “${peekTitle}” in the tree. Branches opened here are not saved.` : `“${peekTitle}” is not in the tree under the current scope.`;
+  let peekText = peekDescription;
+  if (shortPeek) peekText = peekAncestors ? "In the tree · not saved" : "Not in this tree";
+  else if (compact) peekText = peekAncestors ? "Shown in the tree. Branches opened here are not saved." : "Not in the tree under this scope.";
   const peekBar = peek ? (
     <View testID="sessions-peek" style={{ flexDirection: "row", flexWrap: compact ? "nowrap" : "wrap", alignItems: "center", gap: 8, paddingHorizontal: 4 }}>
       {/* Compact keeps the bar to one row beside Back; the highlighted row already names the session. */}
-      <Text accessibilityLiveRegion="polite" numberOfLines={compact ? 2 : undefined}
-        accessibilityLabel={peekAncestors ? `Showing “${peekTitle}” in the tree. Branches opened here are not saved.` : `“${peekTitle}” is not in the tree under the current scope.`}
+      <Text accessibilityLiveRegion="polite" numberOfLines={shortPeek ? 1 : compact ? 2 : undefined} accessibilityLabel={peekDescription}
         style={{ flex: 1, minWidth: compact ? 0 : 180, color: colors.foregroundMuted, fontSize: compact ? 11 : 12, lineHeight: compact ? 15 : 17 }}>
-        {compact
-          ? (peekAncestors ? "Shown in the tree. Branches opened here are not saved." : "Not in the tree under this scope.")
-          : (peekAncestors ? `Showing “${peekTitle}” in the tree. Branches opened here are not saved.` : `“${peekTitle}” is not in the tree under the current scope.`)}
+        {peekText}
       </Text>
       <Action ref={peekBackRef} small={!compact} colors={colors} label={`Back to ${results.length} result${results.length === 1 ? "" : "s"}`} onPress={handleBackToResults} />
     </View>
@@ -2329,7 +2337,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   // A peek pins its way back above the list, so scrolling to the session never hides it.
   const listLine = peek ? null : resultMode ? resultLine : countLine;
   // An element, not a component, so the search input keeps its focus across renders.
-  const listHeader = compact && fullToolbarSlot !== null ? (
+  const listHeader = compact && fullToolbarSlot !== null && !shortPeek ? (
     <View testID="sessions-list-header">
       {fullToolbarSlot}
       {listLine}
@@ -2349,7 +2357,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         gap: TOOLBAR_LAYOUT_GAP,
       }}
     >
-      {slimSlot}
+      {/* A short-screen peek keeps only its Back row; Back brings the toolbar and filters back. */}
+      {shortPeek ? null : slimSlot}
       {compactNotices}
       {compact ? null : fullToolbarSlot}
       {peekBar}

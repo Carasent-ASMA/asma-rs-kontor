@@ -9,9 +9,10 @@ import { validatePlanGraph } from "./plan-graph/contract";
 import { SourceDetails } from "./source-details";
 import { historicalPlanProgress } from "./page-data";
 import { Action, COARSE_POINTER, Copy, type Colors } from "./page-controls";
-import { sessionsLive, TaskSessionsChooser, TaskSessionsControl, type BoardSessions } from "./board-sessions";
+import { directSession, sessionsLive, TaskSessionsChooser, TaskSessionsControl, type BoardSessions } from "./board-sessions";
 import { taskSessions, type TaskLink } from "./session-results";
 import type { SessionTaskFilter } from "./session-view-store";
+import type { TaskTeamRead, TaskTeamReader } from "./task-teams";
 
 const stores = new Map<string, PlanGraphStore>();
 function retainedStore(hostId: string): PlanGraphStore {
@@ -65,7 +66,7 @@ export type BoardItem =
   | { kind: "task"; id: string; node: GraphNode }
   | { kind: "jira"; id: string; record: CapturedJiraRecord };
 
-export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, reads, available, error, epicKey, onPlan, onIssue, initialOffset = 0, onScroll, onChooseSource, onBoard, onCopy, sessions }: {
+export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, reads, available, error, epicKey, onPlan, onIssue, initialOffset = 0, onScroll, onChooseSource, onBoard, onCopy, sessions, taskTeams }: {
   mode: "Board" | "Graph"; hostId: string; theme: PluginTheme; compact: boolean;
   sources: readonly ReadSourceSummary[]; selectedId: string | null; reads: Readonly<Record<string, SourceRead>>;
   available: boolean; error: string | null; onSelect: (sourceId: string) => void;
@@ -81,6 +82,8 @@ export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, r
   onBoard?: () => void;
   /** Native sessions for exact task-label joins on Board rows. */
   sessions?: BoardSessions;
+  /** A task's declared team, workflow and risk tier, or what the configured sources cover instead. */
+  taskTeams?: TaskTeamReader;
 }) {
   const [evidenceOpen, setEvidenceOpen] = useState(false);
   const [chooser, setChooser] = useState<string | null>(null);
@@ -169,6 +172,31 @@ export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, r
   for (const record of undeclared) items.push({ kind: "jira", id: `jira:${record.key}`, record });
 
   const truth = "Jira states are dated historical captures. Current completion and readiness: Unknown.";
+  // Exact label joins only (see taskSessions); a row without a key to join on links nothing.
+  const live = sessions ? sessionsLive(sessions.state) : false;
+  const taskOf = (item: BoardItem): SessionTaskFilter | null => item.kind === "task"
+    ? (item.node.jira || item.node.kontor_id ? { jira: item.node.jira, kontorId: item.node.kontor_id, label: item.node.jira ?? item.node.kontor_id ?? item.node.id } : null)
+    : item.kind === "jira" ? { jira: item.record.key, kontorId: null, label: item.record.key } : null;
+  const links = new Map<string, TaskLink[]>();
+  const teams = new Map<string, TaskTeamRead>();
+  if (sessions) for (const item of items) {
+    const task = taskOf(item);
+    if (!task) continue;
+    links.set(item.id, taskSessions(sessions.state.entries, task));
+    if (taskTeams) teams.set(item.id, taskTeams(task));
+  }
+  const linkedTasks = [...links.values()].filter((value) => value.length > 0).length;
+  const declaredOf = (id: string) => { const team = teams.get(id); return team?.state === "declared" ? team.declaration : null; };
+  const declaredTasks = [...teams.keys()].filter((id) => declaredOf(id) !== null).length;
+  // A risk tier alone is not a team; the row still shows it.
+  const teamTasks = [...teams.keys()].filter((id) => { const team = declaredOf(id); return !!team && (team.team !== null || team.roles.length > 0); }).length;
+  const declaringSources = [...new Set([...teams.values()].flatMap((team) => team.state === "declared" ? [team.declaration.source] : []))];
+  const coverage = [...teams.values()].flatMap((team) => team.state === "not-provided" ? [team.coverage] : [])[0] ?? null;
+  // How sessions and teams were read stays in Source details; the Board shows only what they say.
+  const sessionNotes = sessions && links.size ? [
+    "Linked sessions: a session links to a task only when its jira.issue or task label equals the task's Jira key, or its kontor.ticket label equals its Kontor ticket. Titles are not read; a role comes from the session's role label.",
+    declaredTasks ? `Team, workflow and risk tier: declared for ${declaredTasks} of ${links.size} tasks by ${declaringSources.join(", ")}.` : coverage,
+  ].filter((note): note is string => !!note) : [];
   const days = captureDays(captureTimes);
   const notes = [sourceNote, !read && plans.length > 1 ? "Several explicitly linked plans; select an exact source." : null, jiraNote];
   const noteCopy = (values: readonly (string | null)[]) => values.map((value, index) => value ? <Copy key={index} colors={colors}>{value}</Copy> : null);
@@ -191,42 +219,37 @@ export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, r
       <Copy colors={colors} small muted>{truth}</Copy>
       {items.length ? noteCopy(notes) : null}
       {items.flatMap((item) => item.kind === "section" ? [<Copy key={item.id} colors={colors} small muted>{`${item.title}: ${item.note}`}</Copy>] : [])}
+      {sessionNotes.map((note) => <Copy key={note} colors={colors} small muted>{note}</Copy>)}
       {details}
     </View> : null}
   </View>;
   const planSource = read?.source.id;
-  // Exact label joins only (see taskSessions); a row without a key to join on links nothing.
-  const live = sessions ? sessionsLive(sessions.state) : false;
-  const taskOf = (item: BoardItem): SessionTaskFilter | null => item.kind === "task"
-    ? (item.node.jira || item.node.kontor_id ? { jira: item.node.jira, kontorId: item.node.kontor_id, label: item.node.jira ?? item.node.kontor_id ?? item.node.id } : null)
-    : item.kind === "jira" ? { jira: item.record.key, kontorId: null, label: item.record.key } : null;
-  const links = new Map<string, TaskLink[]>();
-  if (sessions) for (const item of items) { const task = taskOf(item); if (task) links.set(item.id, taskSessions(sessions.state.entries, task)); }
-  const linkedTasks = [...links.values()].filter((value) => value.length > 0).length;
   const sessionControl = (item: BoardItem) => {
     const linked = links.get(item.id) ?? [];
-    if (!sessions || !linked.length) return null;
+    const team = declaredOf(item.id);
+    if (!sessions || (!linked.length && !team)) return null;
     const open = () => {
-      if (linked.length === 1) { sessions.onOpen(linked[0]!.entry); return; }
+      const direct = directSession(linked, team);
+      if (direct) { sessions.onOpen(direct); return; }
       chooserAnchor.current = sessionButtons.current.get(item.id) ?? null;
       setChooser(item.id);
     };
-    return <TaskSessionsControl testID={`${item.id}-sessions`} links={linked} live={live} compact={compact} colors={colors} onPress={open}
+    return <TaskSessionsControl testID={`${item.id}-sessions`} links={linked} team={team} live={live} compact={compact} colors={colors} onPress={open}
       buttonRef={(node) => { if (node) sessionButtons.current.set(item.id, node); else sessionButtons.current.delete(item.id); }} />;
   };
   const chosen = typeof chooser === "string" ? items.find((item) => item.id === chooser) : undefined;
   const chosenTask = chosen ? taskOf(chosen) : null;
-  const chooserLayer = sessions && chosen && chosenTask ? <TaskSessionsChooser taskKey={chosenTask.label} task={chosenTask} links={links.get(chosen.id) ?? []} live={live}
+  const chooserLayer = sessions && chosen && chosenTask ? <TaskSessionsChooser taskKey={chosenTask.label} task={chosenTask} links={links.get(chosen.id) ?? []} team={teams.get(chosen.id)} live={live}
     archivedIncluded={sessions.state.includeArchived} anchor={chooserAnchor} root={root} rootSize={rootSize} compact={compact} colors={colors} sessions={sessions} onClose={() => setChooser(null)} /> : null;
   let sessionsMeta: string | null = null;
   if (sessions && links.size) {
     const read = sessions.state;
     if (!read.entries.length && (read.status === "loading" || read.status === "idle")) sessionsMeta = "Linked sessions: reading…";
     else if (!read.entries.length && read.status === "error") sessionsMeta = "Linked sessions unavailable: the session list could not be read";
-    else sessionsMeta = `${linkedTasks ? `${linkedTasks} of ${links.size} tasks with sessions` : "No task has a linked session"} · exact labels${live ? "" : " · last known"}`;
+    else sessionsMeta = `${linkedTasks ? `${linkedTasks} of ${links.size} tasks with sessions` : "No task has a linked session"}${teamTasks ? ` · ${teamTasks} with a declared team` : ""}${live ? "" : " · last known"}`;
   }
   const sessionsHeader = sessionsMeta ? <Text testID="board-sessions-meta" numberOfLines={1}
-    accessibilityLabel={`${sessionsMeta}. A session links to a task only when its jira.issue, task or kontor.ticket label equals the task's key. Team, workflow and risk tier are not declared by any configured source.`}
+    accessibilityLabel={`${sessionsMeta}. Source details say how sessions and teams are read.`}
     style={{ paddingHorizontal: compact ? 8 : 12, paddingBottom: compact ? 4 : 6, color: colors.foregroundMuted, fontSize: 12, lineHeight: 16 }}>{sessionsMeta}</Text> : null;
   const listElement = <FlatList ref={list} data={items} keyExtractor={(item) => item.id} initialNumToRender={20} windowSize={7}
     onContentSizeChange={(_width, height) => {

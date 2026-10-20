@@ -2,8 +2,8 @@
 
 An isolated review build of the Kontor Paseo plugin. It renders the plugin's own
 client source (`apps/paseo-plugin/index.client.tsx` and everything it imports) on
-react-native-web, behind a fixture host. Every session, plan and Jira capture is
-fictional. Nothing here connects to Paseo, and nothing here is installed into
+react-native-web, behind a fixture host. Every session, plan, Jira capture and
+simulated team declaration is fictional. Nothing here connects to Paseo, and nothing here is installed into
 Paseo.
 
 This is research and prototype source. Production code lives only in
@@ -44,6 +44,8 @@ reloads both frames from their fixtures.
 | `empty-results` | A search that matches nothing. |
 | `clear-restore` | 84 sessions. Open some groups, scroll, filter, then clear the filter: the open branches and the scroll position come back. |
 | `board-tasks` | Board for plan ASMA-99101. Tasks have zero, one or several linked sessions, and a replacement SWE session counts as earlier. |
+| `team-declared` | **Simulated.** Board for plan ASMA-99101 with fixture team, workflow and risk-tier declarations. ASMA-99103: SA, then SWE, then QA and AUD in parallel. ASMA-99104: a replaced SWE, a reviewer outside the team, no SA or AUD session. ASMA-99108: a risk tier only. ASMA-99105 and ASMA-99106: not declared. |
+| `team-unordered` | **Simulated.** Board for plan ASMA-99102. ASMA-99107: roles without a declared order. ASMA-99113: a declared team with no session yet. |
 | `parallel-roles` | Board for plan ASMA-99102: two SWE sessions and two QA sessions work on one task at the same time. |
 | `simulated-updates` | A script changes native states every 4 s, and the banner says the changes are simulated. |
 | `host-offline` | The host drops after 4 s. Board then shows the last known states. |
@@ -70,11 +72,18 @@ These are substitutes in `src/host`:
   also runs the scripted simulated updates.
 - `theme.ts`: Paseo dark and light colours, copied from the host theme. The
   colours and fonts are an approximation.
+- `task-team-source.ts`: a stand-in for the plugin's `client/task-team-source.ts`.
+  It returns the production reader's answer, except in scenarios marked
+  simulated, where the keys in `fixtures/teams.ts` answer with a simulated
+  declaration. See "Team, workflow and risk tier" below.
 
-Every host side effect lands in the frame's **Host log**: settings saves, opening a
-session or workspace, links, the clipboard and toasts. Each one is also printed as
-a `[kontor-prototype] <kind> <detail>` console line, so browser checks can count
-them.
+Navigation works in the prototype. Opening a session or a workspace shows the
+host shim's view of it (title, state, labels, Open workspace) with a Back button,
+where Paseo would open the native conversation or workspace. Host side effects
+are mocked: settings saves, links, the clipboard and toasts go nowhere. The
+frame's **Host log** records every navigation and every mocked effect, and each
+is also printed as a `[kontor-prototype] <kind> <detail>` console line, so
+browser checks can count them.
 
 ## Native preview path (not run)
 
@@ -105,20 +114,77 @@ is kept as a reference and is not maintained alongside this prototype.
 | --- | --- |
 | Sessions (desks, epic and project tree, filters, favourites) | The delivered Sessions screen, plus flat filtered results, Show in tree and Clear restoring the tree. |
 | Plan, Graph, Delivery | The delivered Plan, Graph and Delivery pages with fixture sources. |
-| Board (not in the HTML) | The delivered compact Board, plus linked sessions for each task and a role line. |
+| Board (`vBoard`): stats, a project switch, filter chips and task rows by lane, wave or grid. A row opens the task view (`vTask`), whose Runs tab names the team and run, with a seat pipeline: one chip per role seat, each opening that seat's session. The teaching-plan fixtures give each task a High-stakes or Standard tier, shown in plan exports | The delivered compact Board, kept as is. Each task row adds one line for its sessions: the risk tier and workflow when a source declares them, then the roles in declared steps (" → " between steps, " & " for roles in parallel, "–" for a role with no session). One session opens directly; otherwise a chooser lists the sessions by workspace. The HTML's task view, team snapshot and seat tiles are not reproduced. |
 | Teams and skills | The delivered "AI teams & sessions" page under More. The HTML's team editor (seat transitions, skills, rungs) is not in the plugin. |
 | Settings | The delivered Settings page. Saves go to the host log only. |
 | Home, ledger, scope, decisions, Adam desk, kickoff and rehearsals | Not in the delivered plugin, so not reproduced. Overview, Decisions, Activity and Inbox show the plugin's own pages. |
 
+## Team, workflow and risk tier
+
+**What production reads.** The plugin's `client/task-team-source.ts` gives Board
+a task's team, workflow and risk tier only from a configured source that
+declares them for that task. None of the configured source kinds does:
+
+| Source kind | What it declares | Team, workflow or risk for a task |
+| --- | --- | --- |
+| Plan export (canonical graph v1) | Task id, title, phase, Jira key, Kontor id, dependencies, wave | No such field |
+| Teams configuration: fleet bindings | Team slots bound to model chains | Not per task. Tier names appear only in YAML comments, which the parser drops |
+| Teams configuration: roster | Epic seats (LSA, TPM) | Not per task |
+| Teams configuration: templates | Team templates with roles and handoffs ("Plan, build and verify", "Research spike") | Not assigned to any task |
+| Jira history | Key, status, status category | No |
+| Decision and delivery records | Decisions; pull requests, checks and releases | No |
+
+So production Board shows "Team, workflow and risk tier: not provided" in the
+task's chooser, and Source details lists the sources that were read. Session
+labels are never read as a declaration: an unenforced label assigns nothing.
+Kontor's daemon is the only path that binds a task to a team, and the plugin
+has no daemon access.
+
+**Vocabulary checked.** The workflow name "build-verify-deploy" does not occur in
+`_docs`, `.agents`, `AGENTS.md`, `_tools/ai-orchestration` or `config` in
+asma-modules, or in `docs`, `crates` or `apps/paseo-plugin` here. The nearest
+names are "ASMA: plan, build, verify"
+(`_tools/ai-orchestration/manifest/teams/asma-plan-build-verify.json`) and
+"Plan, build and verify" (`crates/kontor-teams/fixtures/mvp-team-pack.json`).
+Chore, Standard and High-stakes are policy categories, not team ids
+(`.agents/skills/ticket-triage-tiers/SKILL.md`). The task workspace's slots are
+SA, SWE, QA and AUD, with no handoffs declared
+(`crates/kontor-profiles/fixtures/operational-domain.json`).
+
+**What the simulated scenarios add.** `team-declared` and `team-unordered`
+answer with `fixtures/teams.ts` for some fixture keys, so the design can be
+reviewed with real-looking declarations. The banner says "SIMULATED team
+declarations", and Source details names "Simulated team declarations (prototype
+fixture)". This is a design fixture, not a source format, a backend schema or a
+Kontor binding. The same plugin code renders the production "not provided" state
+for every other task and scenario.
+
+**How a declaration is shown.**
+- The task line gives the risk tier and workflow, then the roles. A missing part
+  is named ("workflow not declared"); a role without a session shows "–".
+- Roles are placed in steps by the declared handoffs. Roles without a path
+  between them share a step and are joined by " & " (parallel QA and AUD). A
+  handoff back to an earlier role, such as QA returning work to SWE, does not
+  reorder them. With no handoffs declared, nothing is ordered.
+- A session sits under a role only by its own `kontor.role` or `role` label.
+  Linked sessions whose role the declaration does not name are listed after the
+  team; replaced and archived ones count as "N earlier".
+- A task with a declared team always opens the chooser, which leads with the
+  team, even with one or no session.
+- How sessions and teams were read (label keys, the exact join, the declaring
+  source) is in Source details, on Board and in the chooser, not in the main
+  text.
+
 ## Known limits
 
-- Team, workflow and risk tier: no configured source declares them for a task, so
-  the prototype shows them as not declared. Roles come only from the
-  `kontor.role` or `role` session label. Their display order implies no handoff.
 - A task links to a session only when one of these session labels exactly equals
   the task's key: `jira.issue`, `task` (both against the Jira key) or
   `kontor.ticket` (against the Kontor ticket). Session titles are never read.
-- At 390×320, the compact toolbar, a filter chip and the pinned Show in tree bar
-  leave almost no room for the list. The rows are reached again after Back.
+- Below 420pt of screen height on a phone, Show in tree keeps only its Back row
+  above the list. The toolbar and filters come back with Back.
 - Any anchored menu logs "BackHandler is not supported on web" on
   react-native-web. The delivered More menu logs the same message.
+- This is a web build. The ASMA-8307 proposal it follows
+  (`_docs/ux/architecture/2026-09-29-19-34-architecture-executable-ux-prototyping.md`)
+  is In Review, not accepted. Nothing here was checked on iOS or Android; see
+  "Native preview path".

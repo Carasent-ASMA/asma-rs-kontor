@@ -66,7 +66,7 @@ export function HostShell() {
 
   const prototypeBar = <View testID="prototype-bar" style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10, minHeight: 28, backgroundColor: themeName === "light" ? "#fff4d6" : "#3a3220", borderBottomWidth: 1, borderColor: colors.border }}>
     <Text numberOfLines={1} style={{ flex: 1, color: colors.foreground, fontSize: 11 }}>
-      <Text style={{ fontWeight: "700" }}>PROTOTYPE</Text> · fictional fixture data · no Paseo host · {scenario.title}{scenario.script ? " · simulated updates" : ""}
+      <Text style={{ fontWeight: "700" }}>PROTOTYPE</Text> · fictional fixture data · no Paseo host · {scenario.title}{scenario.script ? " · simulated updates" : ""}{scenario.simulatedTeams ? " · SIMULATED team declarations" : ""}
     </Text>
     <Pressable testID="prototype-log-toggle" accessibilityRole="button" accessibilityState={{ expanded: logOpen }} onPress={() => setLogOpen(!logOpen)} style={{ minHeight: 28, justifyContent: "center", paddingHorizontal: 6 }}>
       <Text style={{ color: colors.foreground, fontSize: 11, textDecorationLine: "underline" }}>Host log ({events})</Text>
@@ -104,12 +104,12 @@ function HostLog({ onClose, compact }: { onClose: () => void; compact: boolean }
   const rows = [...hostEvents()].reverse();
   return <View testID="prototype-log" style={compact ? { position: "absolute", left: 0, right: 0, bottom: 0, height: "45%", backgroundColor: colors.surface1, borderTopWidth: 1, borderColor: colors.border } : { width: 320, borderLeftWidth: 1, borderColor: colors.border, backgroundColor: colors.surface1 }}>
     <View style={{ flexDirection: "row", alignItems: "center", padding: 8 }}>
-      <Text style={{ flex: 1, color: colors.foreground, fontWeight: "600", fontSize: 12 }}>Host side effects (logged, not performed)</Text>
+      <Text style={{ flex: 1, color: colors.foreground, fontWeight: "600", fontSize: 12 }}>Host log: navigation runs in the shim; Paseo effects are mocked</Text>
       <Pressable accessibilityRole="button" accessibilityLabel="Close host log" onPress={onClose} style={{ minWidth: 44, minHeight: 32, alignItems: "center", justifyContent: "center" }}><Text style={{ color: colors.foreground }}>✕</Text></Pressable>
     </View>
     <ScrollView contentContainerStyle={{ padding: 8, gap: 6 }}>
       {rows.length ? rows.map((event) => <Text key={event.seq} style={{ color: colors.foregroundMuted, fontSize: 11, fontFamily: "monospace" }}>{event.at.slice(11, 19)} {event.kind} · {event.detail}</Text>)
-        : <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>Nothing yet. Settings saves, opened sessions, links, copies and toasts appear here.</Text>}
+        : <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>Nothing yet. Opened sessions and workspaces (shown by the host shim), and mocked settings saves, links, copies and toasts appear here.</Text>}
     </ScrollView>
   </View>;
 }

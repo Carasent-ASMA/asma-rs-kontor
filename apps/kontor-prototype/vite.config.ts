@@ -23,6 +23,8 @@ export default defineConfig({
       { find: /^paseo-sdk\/client$/, replacement: fromPlugin.resolve("@getpaseo/plugin/client") },
       { find: /^paseo-sdk\/host$/, replacement: fromPlugin.resolve("@getpaseo/plugin/client/host") },
       { find: /^@getpaseo\/plugin$/, replacement: fromPlugin.resolve("@getpaseo/plugin") },
+      // The production task team reader, or simulated declarations in scenarios that ask for them.
+      { find: /^\.\/task-team-source$/, replacement: host("task-team-source.ts") },
       // React Native renders through react-native-web; the shim only reroutes Linking.
       { find: /^react-native$/, replacement: host("react-native.ts") },
     ],

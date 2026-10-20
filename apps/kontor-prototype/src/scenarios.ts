@@ -21,6 +21,8 @@ export type Scenario = {
   /** Scripted native changes, applied in order and labelled simulated. */
   readonly script?: readonly { readonly afterMs: number; readonly agentId: string; readonly patch: Record<string, unknown>; readonly note: string }[];
   readonly hostOfflineAfterMs?: number;
+  /** Board reads SIMULATED team, workflow and risk-tier declarations (`fixtures/teams.ts`); labelled in the banner. */
+  readonly simulatedTeams?: boolean;
 };
 
 const EXPANDED: Partial<OrganizationSettings> = {
@@ -38,6 +40,8 @@ export const SCENARIOS: readonly Scenario[] = [
   { id: "empty-results", title: "Empty results", summary: "A search that matches nothing.", inventory: "base", sources: true, settings: EXPANDED, start: { query: "no such session" } },
   { id: "clear-restore", title: "Clear restores the tree", summary: "84 sessions. Open groups, scroll, filter, then clear: the tree and scroll come back.", inventory: "large", sources: true, settings: EXPANDED },
   { id: "board-tasks", title: "Board: task sessions", summary: "Plan ASMA-99101 on Board: zero, one and several linked sessions per task.", inventory: "base", sources: true, start: { tab: "Board", sourceId: "plan-99101" } },
+  { id: "team-declared", title: "Board: declared teams (simulated)", summary: "Plan ASMA-99101 with SIMULATED team, workflow and risk declarations: parallel QA and AUD, missing roles, a partial declaration and undeclared tasks.", inventory: "base", sources: true, start: { tab: "Board", sourceId: "plan-99101" }, simulatedTeams: true },
+  { id: "team-unordered", title: "Board: team without order (simulated)", summary: "Plan ASMA-99102 with SIMULATED declarations: roles with no declared handoff, and a declared team with no session yet.", inventory: "base", sources: true, start: { tab: "Board", sourceId: "plan-99102" }, simulatedTeams: true },
   { id: "parallel-roles", title: "Board: parallel roles", summary: "Plan ASMA-99102: two builders and two QA sessions working at once.", inventory: "base", sources: true, start: { tab: "Board", sourceId: "plan-99102" } },
   {
     id: "simulated-updates", title: "Scripted changes", summary: "Native changes every few seconds from a script (simulated, not live).", inventory: "base", sources: true, start: { tab: "Board", sourceId: "plan-99101" },
