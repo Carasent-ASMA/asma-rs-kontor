@@ -7,7 +7,7 @@ import {
   filterDirectoryEntries,
   hasActiveView,
   matchesQuery,
-  needsAttention,
+  matchesStatus,
   statusFilterLabel,
 } from "../client/session-view";
 import { sessionEntry } from "./session-fixtures";
@@ -55,7 +55,7 @@ describe("session search and filters", () => {
 
     const attention = filterDirectoryEntries(entries, {
       ...DEFAULT_SESSION_FILTERS,
-      attentionOnly: true,
+      status: "attention",
     });
     expect(attention.map((entry) => entry.id)).toEqual(["a"]);
 
@@ -70,16 +70,15 @@ describe("session search and filters", () => {
     const filters = {
       ...DEFAULT_SESSION_FILTERS,
       status: "running" as const,
-      attentionOnly: true,
       includeArchived: true,
     };
-    expect(activeFilterCount(filters)).toBe(3);
+    expect(activeFilterCount(filters)).toBe(2);
     expect(hasActiveView(filters)).toBe(true);
     expect(hasActiveView({ ...DEFAULT_SESSION_FILTERS, query: "  " })).toBe(false);
     expect(hasActiveView({ ...DEFAULT_SESSION_FILTERS, query: "x" })).toBe(true);
   });
 
-  it("includes a permission wait in attention even when requiresAttention is false", () => {
+  it("separates Needs input, Error and Attention, with a permission wait as Needs input", () => {
     const pending = sessionEntry("pending", {
       status: "running",
       requiresAttention: false,
@@ -94,9 +93,12 @@ describe("session search and filters", () => {
 
     expect(pending.needsInput).toBe(true);
     expect(permissionReason.needsInput).toBe(true);
-    expect(needsAttention(pending)).toBe(true);
-    expect(needsAttention(permissionReason)).toBe(true);
-    expect(needsAttention(idle)).toBe(false);
+    expect(matchesStatus(pending, "needs_input")).toBe(true);
+    expect(matchesStatus(permissionReason, "needs_input")).toBe(true);
+    expect(matchesStatus(idle, "needs_input")).toBe(false);
+    expect(matchesStatus(pending, "attention")).toBe(false);
+    expect(matchesStatus(idle, "favorites", ["idle"])).toBe(true);
+    expect(matchesStatus(idle, "favorites")).toBe(false);
     expect(attentionLabel(pending)).toBe("Needs input");
     expect(attentionLabel(permissionReason)).toBe("Needs input");
     expect(
@@ -118,12 +120,13 @@ describe("session search and filters", () => {
       ),
     ).toBe("Error");
     expect(
-      needsAttention(
+      matchesStatus(
         sessionEntry("failed-idle", {
           status: "idle",
           requiresAttention: false,
           attentionReason: "error",
         }),
+        "error",
       ),
     ).toBe(true);
     expect(
@@ -148,7 +151,7 @@ describe("session search and filters", () => {
     expect(
       filterDirectoryEntries([pending, permissionReason, idle], {
         ...DEFAULT_SESSION_FILTERS,
-        attentionOnly: true,
+        status: "needs_input",
       }).map((entry) => entry.id),
     ).toEqual(["pending", "permission-reason"]);
 
@@ -162,7 +165,9 @@ describe("session search and filters", () => {
 
   it("labels native state and attention without interpreting completion", () => {
     expect(statusFilterLabel("all")).toBe("All");
-    expect(statusFilterLabel("initializing")).toBe("Initializing");
+    expect(statusFilterLabel("initializing")).toBe("Starting");
+    expect(statusFilterLabel("needs_input")).toBe("Needs input");
+    expect(statusFilterLabel("favorites")).toBe("★ Favorites");
     expect(attentionLabel(entries[0]!)).toBe("Needs input");
     expect(attentionLabel(entries[1]!)).toBeNull();
     expect(archivedLabel(entries[0]!)).toBeNull();

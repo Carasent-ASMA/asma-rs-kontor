@@ -1,0 +1,342 @@
+{
+  "schema": "consumption/data@2",
+  "generated": "2026-10-18T17:00+00:00",
+  "provenance": {
+    "path": "/historical/consumption-data.json",
+    "sha256": "672ab5bb2aa7e9875743a0ca7ecd084dad6cc05bf59226efbb916bca0e11be18",
+    "capturedEpics": 135
+  },
+  "selection": [
+    "ASMA-8190",
+    "ASMA-8371",
+    "ASMA-8539"
+  ],
+  "epics": [
+    {
+      "key": "ASMA-8190",
+      "status": "In Development",
+      "cat": "indeterminate",
+      "children": [
+        {
+          "key": "ASMA-8191",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8192",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8193",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8194",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8195",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8196",
+          "status": "In Development",
+          "cat": "indeterminate"
+        },
+        {
+          "key": "ASMA-8197",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8198",
+          "status": "DRAFT",
+          "cat": "new"
+        },
+        {
+          "key": "ASMA-8199",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8200",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8201",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8202",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8203",
+          "status": "In Development",
+          "cat": "indeterminate"
+        },
+        {
+          "key": "ASMA-8204",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8205",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8234",
+          "status": "In Development",
+          "cat": "indeterminate"
+        },
+        {
+          "key": "ASMA-8237",
+          "status": "Closed",
+          "cat": "done"
+        }
+      ]
+    },
+    {
+      "key": "ASMA-8539",
+      "status": "Groomed",
+      "cat": "new",
+      "children": [
+        {
+          "key": "ASMA-8540",
+          "status": "In Development",
+          "cat": "indeterminate"
+        },
+        {
+          "key": "ASMA-8541",
+          "status": "READY FOR DEVELOPMENT",
+          "cat": "new"
+        },
+        {
+          "key": "ASMA-8542",
+          "status": "READY FOR DEVELOPMENT",
+          "cat": "new"
+        }
+      ]
+    },
+    {
+      "key": "ASMA-8371",
+      "status": "In Development",
+      "cat": "indeterminate",
+      "children": [
+        {
+          "key": "ASMA-8372",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8373",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8374",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8375",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8376",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8377",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8378",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8379",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8380",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8381",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8384",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8387",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8390",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8391",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8394",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8395",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8396",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8397",
+          "status": "In Development",
+          "cat": "indeterminate"
+        },
+        {
+          "key": "ASMA-8404",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8405",
+          "status": "DRAFT",
+          "cat": "new"
+        },
+        {
+          "key": "ASMA-8406",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8407",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8408",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8409",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8420",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8423",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8424",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8430",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8438",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8441",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8445",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8446",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8447",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8456",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8459",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8465",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8481",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8532",
+          "status": "Closed",
+          "cat": "done"
+        },
+        {
+          "key": "ASMA-8533",
+          "status": "DRAFT",
+          "cat": "new"
+        },
+        {
+          "key": "ASMA-8536",
+          "status": "DRAFT",
+          "cat": "new"
+        },
+        {
+          "key": "ASMA-8538",
+          "status": "Closed",
+          "cat": "done"
+        }
+      ]
+    }
+  ]
+}

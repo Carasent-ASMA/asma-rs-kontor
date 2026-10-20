@@ -494,15 +494,24 @@ describe("workspace.create hook", () => {
 describe("contribute", () => {
   it("registers the three decided hooks", () => {
     const registered: string[] = [];
+    const settings: string[] = [];
     const server = {
       before: (name: string) => {
         registered.push(name);
         return () => {};
       },
+      registerSettings: (definition: { readonly id: string }) => {
+        settings.push(definition.id);
+        return {
+          read: async () => ({ status: "ready", revision: "r1", values: {} }),
+          subscribe: () => () => {},
+        };
+      },
     } as unknown as PluginServerContext;
 
     const cleanup = contribute(server, config());
 
+    expect(settings).toEqual([]);
     expect(registered).toEqual(["agent.create", "agent.session_open", "workspace.create"]);
     expect(cleanup()).toBeUndefined();
   });
@@ -514,6 +523,10 @@ describe("contribute", () => {
         handlers.set(name, handler);
         return () => {};
       },
+      registerSettings: () => ({
+        read: async () => ({ status: "ready", revision: "r1", values: {} }),
+        subscribe: () => () => {},
+      }),
     } as unknown as PluginServerContext;
 
     contribute(server, config({ mcpEnabled: false }));

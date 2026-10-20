@@ -82,8 +82,8 @@ export type DirectoryState = {
   readonly staleReason: string | null;
   readonly pages: number;
   readonly lastUpdatedAt: number | null;
-  /** Whether the displayed rows came from a walk with live updates attached. */
-  readonly inventoryComplete: boolean;
+  /** Whether rows came from a walk with live updates attached; absent means unknown for older consumers. */
+  readonly inventoryComplete?: boolean;
   readonly includeArchived: boolean;
 };
 

@@ -20,11 +20,12 @@ export function useSessionDirectory(input: {
   readonly hostId: string;
   readonly hostStatus: HostStatus;
   readonly includeArchived: boolean;
+  readonly enabled?: boolean;
 }): {
   readonly state: DirectoryState;
   readonly refresh: () => void;
 } {
-  const { hostId, hostStatus, includeArchived } = input;
+  const { hostId, hostStatus, includeArchived, enabled = true } = input;
   const [stateForHost, setStateForHost] = useState<{
     readonly hostId: string;
     readonly state: DirectoryState;
@@ -38,6 +39,7 @@ export function useSessionDirectory(input: {
   includeArchivedRef.current = includeArchived;
 
   useEffect(() => {
+    if (!enabled) return;
     let active = true;
     const directory = new SessionDirectory({
       client: () => getPaseoClient(hostId),
@@ -60,7 +62,7 @@ export function useSessionDirectory(input: {
       }
       void directory.dispose();
     };
-  }, [hostId]);
+  }, [hostId, enabled]);
 
   useEffect(() => {
     const directory = directoryRef.current;

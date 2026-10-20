@@ -212,7 +212,7 @@ describe("Kontor return control", () => {
     patchSessionView("host-a", {
       query: "ASMA-8540",
       status: "running",
-      attentionOnly: true,
+      shortcut: "Adam",
       includeArchived: true,
       advancedOpen: true,
       scrollOffset: 240,
@@ -222,7 +222,7 @@ describe("Kontor return control", () => {
     expect(readSessionView("host-a")).toMatchObject({
       query: "ASMA-8540",
       status: "running",
-      attentionOnly: true,
+      shortcut: "Adam",
       includeArchived: true,
       advancedOpen: true,
       scrollOffset: 240,

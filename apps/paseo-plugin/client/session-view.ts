@@ -1,22 +1,33 @@
 import {
-  SESSION_STATUSES,
   type DirectoryEntry,
   type SessionStatus,
 } from "./session-directory";
 
 export const ALL_STATUS_FILTER = "all" as const;
 
-export type StatusFilter = typeof ALL_STATUS_FILTER | SessionStatus;
+/** One exclusive state choice; runtime and attention choices may overlap on the same session. */
+export type StatusFilter =
+  | typeof ALL_STATUS_FILTER
+  | SessionStatus
+  | "needs_input"
+  | "attention"
+  | "favorites";
 
-export const STATUS_FILTERS: readonly StatusFilter[] = [
+/** Frequent choices in prototype order; Starting and Closed sit under More states. */
+export const QUICK_STATUS_FILTERS: readonly StatusFilter[] = [
   ALL_STATUS_FILTER,
-  ...SESSION_STATUSES,
+  "running",
+  "idle",
+  "error",
+  "needs_input",
+  "attention",
+  "favorites",
 ];
+export const MORE_STATUS_FILTERS: readonly StatusFilter[] = ["initializing", "closed"];
 
 export type SessionFilters = {
   readonly query: string;
   readonly status: StatusFilter;
-  readonly attentionOnly: boolean;
   readonly includeArchived: boolean;
   readonly advancedOpen: boolean;
 };
@@ -24,16 +35,24 @@ export type SessionFilters = {
 export const DEFAULT_SESSION_FILTERS: SessionFilters = {
   query: "",
   status: ALL_STATUS_FILTER,
-  attentionOnly: false,
   includeArchived: false,
   advancedOpen: false,
 };
 
+const STATUS_FILTER_LABELS: Record<StatusFilter, string> = {
+  all: "All",
+  running: "Running",
+  idle: "Idle",
+  error: "Error",
+  needs_input: "Needs input",
+  attention: "Attention",
+  favorites: "★ Favorites",
+  initializing: "Starting",
+  closed: "Closed",
+};
+
 export function statusFilterLabel(status: StatusFilter): string {
-  if (status === ALL_STATUS_FILTER) {
-    return "All";
-  }
-  return status.charAt(0).toLocaleUpperCase() + status.slice(1);
+  return STATUS_FILTER_LABELS[status];
 }
 
 function queryTokens(query: string): string[] {
@@ -54,42 +73,50 @@ export function matchesQuery(entry: DirectoryEntry, query: string): boolean {
 }
 
 /**
- * The attention filter follows the native needs-input priority: a pending
- * permission must be included even when `requiresAttention` is false.
+ * Needs input follows the native pending-permission priority, Error includes an
+ * error attention reason, and Attention is the native attention flag.
  */
-export function needsAttention(entry: DirectoryEntry): boolean {
-  return (
-    entry.needsInput ||
-    entry.status === "error" ||
-    entry.requiresAttention ||
-    entry.attentionReason === "error"
-  );
+export function matchesStatus(
+  entry: DirectoryEntry,
+  status: StatusFilter,
+  favorites: readonly string[] = [],
+): boolean {
+  switch (status) {
+    case ALL_STATUS_FILTER:
+      return true;
+    case "favorites":
+      return favorites.includes(entry.id);
+    case "needs_input":
+      return entry.needsInput;
+    case "attention":
+      return entry.requiresAttention;
+    case "error":
+      return entry.status === "error" || entry.attentionReason === "error";
+    default:
+      return entry.status === status;
+  }
 }
 
-export function matchesFilters(entry: DirectoryEntry, filters: SessionFilters): boolean {
-  if (filters.status !== ALL_STATUS_FILTER && entry.status !== filters.status) {
-    return false;
-  }
-  if (filters.attentionOnly && !needsAttention(entry)) {
-    return false;
-  }
-  return matchesQuery(entry, filters.query);
+export function matchesFilters(
+  entry: DirectoryEntry,
+  filters: SessionFilters,
+  favorites: readonly string[] = [],
+): boolean {
+  return matchesStatus(entry, filters.status, favorites) && matchesQuery(entry, filters.query);
 }
 
 export function filterDirectoryEntries(
   entries: readonly DirectoryEntry[],
   filters: SessionFilters,
+  favorites: readonly string[] = [],
 ): DirectoryEntry[] {
-  return entries.filter((entry) => matchesFilters(entry, filters));
+  return entries.filter((entry) => matchesFilters(entry, filters, favorites));
 }
 
 /** Counts the advanced choices, not the search text or the disclosure state. */
 export function activeFilterCount(filters: SessionFilters): number {
   let count = 0;
   if (filters.status !== ALL_STATUS_FILTER) {
-    count += 1;
-  }
-  if (filters.attentionOnly) {
     count += 1;
   }
   if (filters.includeArchived) {

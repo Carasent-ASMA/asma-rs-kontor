@@ -4,7 +4,8 @@ import type {
 } from "@getpaseo/plugin/client";
 import { SidebarRow } from "@getpaseo/plugin/client/ui";
 import { contributeReturnControl } from "./client/return-control";
-import { SessionsScreen } from "./client/sessions-screen";
+import { KontorScreen } from "./client/kontor-screen";
+import { contributePlanControl } from "./client/plan-control";
 
 export const SESSIONS_SCREEN_ID = "sessions";
 export const SESSIONS_SIDEBAR_ID = "sessions";
@@ -16,7 +17,7 @@ function SessionsSidebarItem({
 }: PluginSidebarItemProps) {
   return (
     <SidebarRow
-      icon="List"
+      icon="Building2"
       label="Kontor"
       active={currentScreen?.screenId === SESSIONS_SCREEN_ID}
       onPress={() => openScreen({ screenId: SESSIONS_SCREEN_ID })}
@@ -29,7 +30,7 @@ export default function contribute(client: PluginClientContext): () => void {
     client.addScreen({
       id: SESSIONS_SCREEN_ID,
       title: "Kontor",
-      Component: SessionsScreen,
+      Component: KontorScreen,
     }),
     client.addSidebarHeaderItem({
       id: SESSIONS_SIDEBAR_ID,
@@ -39,7 +40,7 @@ export default function contribute(client: PluginClientContext): () => void {
     client.addCommandCenterItem({
       id: SESSIONS_COMMAND_ID,
       title: "Open Kontor",
-      icon: "List",
+      icon: "Building2",
       keywords: ["sessions", "agents", "navigator", "kontor"],
       context: "global",
       onSelect({ openScreen }) {
@@ -48,7 +49,9 @@ export default function contribute(client: PluginClientContext): () => void {
     }),
   ];
   const stopReturnControl = contributeReturnControl(client, SESSIONS_SCREEN_ID);
+  const stopPlanControl = contributePlanControl(client, SESSIONS_SCREEN_ID);
   return () => {
+    stopPlanControl();
     stopReturnControl();
     for (const cleanup of cleanups) {
       void cleanup();
