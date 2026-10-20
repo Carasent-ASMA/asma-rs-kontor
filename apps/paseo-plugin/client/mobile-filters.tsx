@@ -24,19 +24,22 @@ export function MobileFiltersPage({ colors, onBack, menuOpen, children }: {
   colors: Colors; onBack(): void; menuOpen: boolean; children: ReactNode;
 }) {
   const backRef = useRef<View | null>(null);
+  const latestOnBack = useRef(onBack);
+  latestOnBack.current = onBack;
   useEffect(() => { focusControl(backRef.current); }, []);
   useEffect(() => {
     // A nested select handles its own Back/Escape first.
     if (menuOpen) return;
-    const back = BackHandler.addEventListener("hardwareBackPress", () => { onBack(); return true; });
+    // Keep this subscription in place: native Back visits newer outer menus first.
+    const back = BackHandler.addEventListener("hardwareBackPress", () => { latestOnBack.current(); return true; });
     const document = (globalThis as { document?: PageDocument }).document;
     const escape = (event: PageKey) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
-      event.preventDefault(); event.stopPropagation(); onBack();
+      event.preventDefault(); event.stopPropagation(); latestOnBack.current();
     };
     document?.addEventListener("keydown", escape);
     return () => { back.remove(); document?.removeEventListener("keydown", escape); };
-  }, [menuOpen, onBack]);
+  }, [menuOpen]);
   return <View testID="sessions-mobile-filters" style={{ flex: 1, minHeight: 0 }}>
     <View style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 8, borderBottomWidth: 1, borderColor: colors.border }}>
       <Action ref={backRef} label="Back" icon="ArrowLeft" accessibilityLabel="Back to sessions, keep filter choices" onPress={onBack} colors={colors} />
