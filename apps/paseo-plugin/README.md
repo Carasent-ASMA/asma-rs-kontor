@@ -60,8 +60,12 @@ pill is the in-session return control where the composer supports it.
   navigation. Paseo 0.11.4 uses `router.dismissTo` / `POP_TO` to reach the host
   workspace route, so the plugin screen is not kept underneath the session.
   Return with the **← Kontor** composer pill (for a live agent with a
-  workspace), the persistent plugin sidebar entry or the global **Open Kontor**
-  Command Center item. The pill opens the same host's Kontor screen. The
+  workspace), the persistent plugin sidebar entry, the global **Open Kontor**
+  Command Center item or, from an opened session's Command Center, **Back to
+  Kontor**. The pill and both commands open the same host's Kontor screen.
+  **Back to Kontor** does the same as **Open Kontor**; it is an agent-context
+  command with the keywords back and return. The plugin SDK gives a command no
+  key binding of its own. The
   existing host-scoped view store is unchanged; physical restoration on this
   candidate is not claimed and remains a pending device check. A live agent with
   no workspace has no composer pill and keeps the sidebar and Command Center
@@ -516,8 +520,8 @@ Evidence checklist:
 | `before("workspace.create")` | Refuses a labelled Kontor seat's explicit workspace creation outside that seat's own placement: its bound project and canonical worktree. Both the initial agent's labels and the caller carried on the request (`agent.callerAgentId`) are checked. Interactive and unlabelled creation is unchanged, and an unreadable caller lookup with no seat labels on the request fails open. |
 
 The hooks add no menu and no agent-creation path. The navigator adds the
-Kontor screen, sidebar row, Command Center command and per-agent **← Kontor**
-composer pill described above.
+Kontor screen, sidebar row, the **Open Kontor** and **Back to Kontor** Command
+Center commands and the per-agent **← Kontor** composer pill described above.
 
 ## Kontor placement
 
@@ -598,8 +602,9 @@ archive scope, session count and pages read).
    chips and **Filters** for native state, attention and archived sessions.
 3. Select a row to open that exact native session. In 0.11.4 the host reaches
    the workspace route with `dismissTo`/`POP_TO`, so return with the **← Kontor**
-   composer pill, the persistent sidebar entry or the global **Open Kontor**
-   Command Center item; native back does not keep the plugin screen underneath
+   composer pill, the persistent sidebar entry, the global **Open Kontor**
+   Command Center item or the session's **Back to Kontor** command; native back
+   does not keep the plugin screen underneath
    the session. The host-scoped view store is used on return; physical
    restoration on this candidate is not claimed and remains a pending check.
 4. If the host disconnects, the rows stay visible with a stale banner. Retry or
@@ -633,7 +638,7 @@ recognized epic/workstream label search, disconnect staleness, reconnect
 reconciliation, obsolete-generation update fencing and source failures.
 `test/session-actions.test.ts` covers duplicate-name open by native ID and the
 missing/navigation/failure cases. `test/client-entry.test.ts` pins the Kontor
-screen, sidebar and **Open Kontor** command.
+screen, sidebar and the **Open Kontor** and **Back to Kontor** commands.
 `test/keyboard-shortcuts.test.ts` covers the Back shortcut's key match, every
 case it leaves alone, its listening phase and removal, and **Test shortcut**'s
 key, modifier-only, timeout and stop results; `test/keyboard-settings-card.test.tsx`

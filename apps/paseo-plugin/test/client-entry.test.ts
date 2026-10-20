@@ -36,6 +36,7 @@ vi.mock("@getpaseo/plugin/client/react-native", () => ({
 }));
 
 import contribute, {
+  BACK_COMMAND_ID,
   SESSIONS_COMMAND_ID,
   SESSIONS_SCREEN_ID,
   SESSIONS_SIDEBAR_ID,
@@ -56,8 +57,9 @@ type SidebarContribution = {
 type CommandContribution = {
   id: string;
   title: string;
-  context: "global";
+  context: "global" | "agent";
   icon: string;
+  keywords?: readonly string[];
   onSelect: (context: { openScreen: (input: unknown) => void }) => void;
 };
 
@@ -66,7 +68,7 @@ describe("Kontor client entry", () => {
     vi.clearAllMocks();
   });
 
-  it("registers the Kontor screen, native sidebar entry and Open Kontor command", () => {
+  it("registers the Kontor screen, native sidebar entry, Open Kontor and Back to Kontor commands", () => {
     const calls: Array<{
       kind: "screen" | "sidebar" | "command";
       value: ScreenContribution | SidebarContribution | CommandContribution;
@@ -95,7 +97,7 @@ describe("Kontor client entry", () => {
 
     const cleanup = contribute(client);
 
-    expect(calls.map((call) => call.kind)).toEqual(["screen", "sidebar", "command"]);
+    expect(calls.map((call) => call.kind)).toEqual(["screen", "sidebar", "command", "command"]);
 
     const screen = calls[0]!.value as ScreenContribution;
     expect(screen.id).toBe(SESSIONS_SCREEN_ID);
@@ -118,11 +120,22 @@ describe("Kontor client entry", () => {
     command.onSelect({ openScreen: (input) => opened.push(input) });
     expect(opened).toEqual([{ screenId: SESSIONS_SCREEN_ID }]);
 
+    const backCommand = calls[3]!.value as CommandContribution;
+    expect(backCommand.id).toBe(BACK_COMMAND_ID);
+    expect(backCommand.id).not.toBe(SESSIONS_COMMAND_ID);
+    expect(backCommand.title).toBe("Back to Kontor");
+    expect(backCommand.context).toBe("agent");
+    expect(backCommand.icon).toBe("ArrowLeft");
+    expect(backCommand.keywords).toEqual(expect.arrayContaining(["back", "kontor"]));
+    const returned: unknown[] = [];
+    backCommand.onSelect({ openScreen: (input) => returned.push(input) });
+    expect(returned).toEqual([{ screenId: SESSIONS_SCREEN_ID }]);
+
     expect(contributeReturnControl).toHaveBeenCalledTimes(1);
     expect(contributeReturnControl).toHaveBeenCalledWith(client, SESSIONS_SCREEN_ID);
 
     cleanup();
     expect(stopReturnControl).toHaveBeenCalledTimes(1);
-    expect(cleaned).toEqual(["screen", "sidebar", "command"]);
+    expect(cleaned).toEqual(["screen", "sidebar", "command", "command"]);
   });
 });
