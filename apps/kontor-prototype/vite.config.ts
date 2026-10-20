@@ -31,6 +31,8 @@ export default defineConfig({
     dedupe: ["react", "react-dom", "react-native-web", "@tanstack/react-query", "zod"],
   },
   define: {
+    // React Native Web animation cleanup references the native global alias.
+    global: "globalThis",
     __DEV__: "false",
     "process.env.NODE_ENV": JSON.stringify(process.env.NODE_ENV ?? "development"),
   },
