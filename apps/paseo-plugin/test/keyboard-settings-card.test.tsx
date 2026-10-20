@@ -18,7 +18,7 @@ vi.mock("react-native", () => ({ BackHandler: { addEventListener: () => ({ remov
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
 
 import { KeyboardSettingsCard, testMessage } from "../client/keyboard-settings-card";
-import type { ShortcutEvent } from "../client/keyboard-shortcuts";
+import type { PageEvent, ShortcutEvent } from "../client/keyboard-shortcuts";
 import { Action } from "../client/page-controls";
 import type { KeyboardSettingsState } from "../client/use-keyboard-settings";
 
@@ -45,16 +45,20 @@ function state(status: KeyboardSettingsState["status"], extra: Record<string, un
   const shape = status === "loading" ? { status } : status === "error" ? { status, error: "settings RPC failed" } : status === "invalid" ? { status, error: "backShortcut: invalid enum", revision: "rev-bad" } : { status, values: { backShortcut: "off" }, revision: "rev-a" };
   return { ...base, ...shape, ...extra } as KeyboardSettingsState;
 }
-const listeners: { listener: Listener; capture: boolean }[] = [];
+const listeners: { type: string; listener: Listener; capture: boolean }[] = [];
+// Kontor's screen root fills the page; `hostField` is a field outside it.
+const inside = { tagName: "DIV" }, hostField = { tagName: "INPUT" };
+const screenRoot = { contains: (node: unknown) => node === inside, getClientRects: () => [{}], getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }) };
 const page = {
-  activeElement: null, body: {},
-  addEventListener: (_type: string, listener: Listener, capture: boolean) => { listeners.push({ listener, capture }); },
-  removeEventListener: (_type: string, listener: Listener, capture: boolean) => { const index = listeners.findIndex((entry) => entry.listener === listener && entry.capture === capture); if (index >= 0) listeners.splice(index, 1); },
+  activeElement: null as unknown, body: {}, elementFromPoint: () => inside,
+  addEventListener: (type: string, listener: Listener, capture: boolean) => { listeners.push({ type, listener, capture }); },
+  removeEventListener: (type: string, listener: Listener, capture: boolean) => { const index = listeners.findIndex((entry) => entry.type === type && entry.listener === listener && entry.capture === capture); if (index >= 0) listeners.splice(index, 1); },
 };
-const press = (key: Partial<ShortcutEvent>) => { const event = { key: "`", code: "Backquote", metaKey: true, preventDefault: vi.fn(), ...key }; for (const { listener } of [...listeners]) listener(event); return event; };
+const fire = (type: string, event: PageEvent) => { for (const entry of [...listeners]) if (entry.type === type) entry.listener(event as ShortcutEvent); };
+const press = (key: Partial<ShortcutEvent>) => { const event = { key: "`", code: "Backquote", metaKey: true, preventDefault: vi.fn(), ...key }; fire("keydown", event); return event; };
 
 function mount(initial: KeyboardSettingsState, web = true) {
-  const props = { state: initial, save: vi.fn(async () => true), colors: {} as never, web };
+  const props = { state: initial, save: vi.fn(async () => true), colors: {} as never, web, root: { current: screenRoot }, copy: vi.fn() };
   hooks.values = []; hooks.effects = [];
   let cleanups: (() => void)[] = [];
   const render = () => { hooks.cursor = 0; const tree = KeyboardSettingsCard(props); return tree; };
@@ -63,15 +67,16 @@ function mount(initial: KeyboardSettingsState, web = true) {
   hooks.effects.length = 0;
   const actions = () => { hooks.effects.length = 0; return walk(render(), (element) => element.type !== Action).filter((element) => element.type === Action); };
   const action = (label: string) => { const found = actions().find((element) => element.props.label === label); if (!found) throw new Error(`Missing ${label}`); return found; };
+  const live = () => { const region = walk(render(), (element) => element.type !== Action).find((element) => element.props.accessibilityLiveRegion === "polite"); hooks.effects.length = 0; return region ? visible(region.props.children as ReactNode) : null; };
   return {
-    props, actions, action, text: () => { const text = visible(render()); hooks.effects.length = 0; return text; },
+    props, actions, action, live, text: () => { const text = visible(render()); hooks.effects.length = 0; return text; },
     press(label: string) { (action(label).props.onPress as () => void)(); },
     unmount() { cleanups.forEach((cleanup) => cleanup()); },
   };
 }
 
 describe("Keyboard settings card", () => {
-  beforeEach(() => { vi.stubGlobal("document", page); listeners.length = 0; vi.useFakeTimers(); });
+  beforeEach(() => { vi.stubGlobal("document", page); listeners.length = 0; page.activeElement = null; vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
   it("tells native clients and pages without a document that shortcuts are web and desktop only", () => {
@@ -88,10 +93,10 @@ describe("Keyboard settings card", () => {
     const text = card.text();
     expect(text).toContain("Back shortcut: goes back one Kontor view, like the Back button.");
     expect(text).toContain("Shared by every client of this host.");
-    expect(text).toContain("System Settings › Keyboard › Keyboard Shortcuts › Keyboard");
+    expect(text).toContain("macOS can use Cmd+` for “Move focus to next window” (System Settings › Keyboard › Keyboard Shortcuts › Keyboard), so it may take the key before Kontor sees it.");
     expect(text).not.toContain(NATIVE);
     expect(card.actions().map((element) => [element.props.label, element.props.selected, element.props.disabled])).toEqual([
-      ["Off", true, false], [BACK, false, false], ["Test shortcut", undefined, false],
+      ["Off", true, false], [BACK, false, false], ["Test shortcut", undefined, undefined],
     ]);
     card.press(BACK);
     expect(card.props.save).toHaveBeenCalledExactlyOnceWith({ backShortcut: "cmd-backquote" });
@@ -113,7 +118,7 @@ describe("Keyboard settings card", () => {
       expect(card.action(label).props.selected).toBe(current.status === "ready" && label === "Off");
     }
     // Testing never writes, so it stays available; only an invalid document can be reset.
-    expect(card.action("Test shortcut").props.disabled).toBe(false);
+    expect(card.action("Test shortcut").props.disabled ?? false).toBe(false);
     expect(card.actions().some((element) => element.props.label === "Reset the keyboard setting")).toBe(current.status === "invalid");
   });
 
@@ -132,42 +137,88 @@ describe("Keyboard settings card", () => {
     expect(mount(state("ready", { saveError: "denied", saving: true })).text()).toContain("Not saved: denied · Saving…");
   });
 
-  it("listens for one key on Test shortcut and says what reached Kontor", () => {
+  it("listens for one key on Test shortcut, says what reached Kontor, lets the result be copied and writes no setting", () => {
     const card = mount(state("ready"));
     card.press("Test shortcut");
-    expect(listeners.map((entry) => entry.capture)).toEqual([true]);
-    const waiting = card.action("Listening for 10 seconds: press the shortcut");
-    expect(waiting.props.disabled).toBe(true);
+    expect(listeners.map((entry) => [entry.type, entry.capture])).toEqual([["keydown", true], ["focusin", true], ["pointerdown", true], ["visibilitychange", false]]);
+    // The same first button cancels, and there is no result to copy yet.
+    expect(card.actions().map((element) => element.props.label)).toEqual(["Off", BACK, "Cancel test"]);
+    expect(card.action("Cancel test").props.disabled ?? false).toBe(false);
+    expect(card.live()).toBe("Listening for 10 seconds: press Cmd+` (Cmd+< on Norwegian) once, here in Kontor. Leaving Kontor stops the test.");
     const key = press({});
     expect(key.preventDefault).toHaveBeenCalledTimes(1);
     expect(listeners).toEqual([]);
-    expect(card.action("Test shortcut").props.disabled).toBe(false);
-    expect(card.text()).toContain("Kontor received Cmd+` (key position Backquote). The Back shortcut reaches Kontor here.");
-    // A second test clears the last result until a key arrives.
+    const received = "Kontor received Cmd+` (reported key position Backquote). That matches the Back shortcut.";
+    expect(card.actions().map((element) => element.props.label)).toEqual(["Off", BACK, "Test shortcut", "Copy result"]);
+    expect(card.live()).toBe(received);
+    card.press("Copy result");
+    expect(card.props.copy).toHaveBeenCalledExactlyOnceWith(received, "Test result");
+    // A second test clears the last result, so there is nothing stale to copy, even once it is cancelled.
     card.press("Test shortcut");
     expect(card.text()).not.toContain("Kontor received");
+    expect(card.actions().map((element) => element.props.label)).toEqual(["Off", BACK, "Cancel test"]);
+    card.press("Cancel test");
+    expect(card.actions().map((element) => element.props.label)).toEqual(["Off", BACK, "Test shortcut"]);
+    expect(card.live()).toBe("");
+    card.press("Test shortcut");
     vi.advanceTimersByTime(10_000);
-    expect(card.text()).toContain("No key reached Kontor within 10 seconds.");
+    expect(card.live()).toContain("No key pressed with Cmd reached Kontor within 10 seconds.");
+    expect(card.props.save).not.toHaveBeenCalled();
+  });
+
+  it("cancels a running test without a result", () => {
+    const card = mount(state("ready"));
+    card.press("Test shortcut");
+    card.press("Cancel test");
+    expect(listeners).toEqual([]);
+    expect(card.actions().map((element) => element.props.label)).toEqual(["Off", BACK, "Test shortcut"]);
+    expect(card.live()).toBe("");
+    vi.advanceTimersByTime(10_000);
+    expect(card.live()).toBe("");
+    expect(press({}).preventDefault).not.toHaveBeenCalled();
+  });
+
+  it("stops when focus moves to a host field, and leaves a letter typed there alone", () => {
+    const card = mount(state("ready"));
+    card.press("Test shortcut");
+    page.activeElement = hostField;
+    fire("focusin", { target: hostField });
+    expect(listeners).toEqual([]);
+    expect(card.live()).toBe("The test stopped: focus or a click moved outside Kontor.");
+    const letter = press({ key: "a", code: "KeyA", metaKey: false, target: hostField });
+    expect(letter.preventDefault).not.toHaveBeenCalled();
+    expect(card.live()).toBe("The test stopped: focus or a click moved outside Kontor.");
   });
 
   it("stops a running test when the card goes away", () => {
     const card = mount(state("ready"));
     card.press("Test shortcut");
     card.text();
-    expect(listeners.length).toBe(1);
+    expect(listeners.length).toBe(4);
     card.unmount();
     expect(listeners).toEqual([]);
     vi.advanceTimersByTime(10_000);
-    expect(card.text()).not.toContain("No key reached Kontor");
+    expect(card.text()).not.toContain("No key pressed with Cmd");
   });
 });
 
 describe("Test shortcut wording", () => {
-  it("names what reached Kontor, or that nothing or only modifiers did", () => {
-    expect(testMessage({ kind: "nothing" })).toBe("No key reached Kontor within 10 seconds.");
-    expect(testMessage({ kind: "modifiers", label: "Cmd" })).toBe("Only Cmd reached Kontor. macOS or the app took the rest of the key first.");
-    expect(testMessage({ kind: "key", label: "Cmd+<", code: "Backquote", back: true })).toBe("Kontor received Cmd+< (key position Backquote). The Back shortcut reaches Kontor here.");
-    expect(testMessage({ kind: "key", label: "A", code: "KeyA", back: false })).toBe("Kontor received A (key position KeyA). That is not the Back shortcut.");
-    expect(testMessage({ kind: "key", label: "A", code: "", back: false })).toBe("Kontor received A. That is not the Back shortcut.");
+  const unknown = "The test cannot tell why: focus may have been elsewhere, the key may not have been pressed fully, or macOS, the browser or the host may have taken it.";
+  it("says what reached Kontor and names no cause it cannot see", () => {
+    expect(testMessage({ kind: "nothing" })).toBe(`No key pressed with Cmd reached Kontor within 10 seconds. ${unknown}`);
+    expect(testMessage({ kind: "cmd" })).toBe(`Only Cmd reached Kontor within 10 seconds, with no key pressed with it. ${unknown}`);
+    expect(testMessage({ kind: "key", label: "Cmd+<", code: "Backquote", back: true })).toBe("Kontor received Cmd+< (reported key position Backquote). That matches the Back shortcut.");
+    expect(testMessage({ kind: "key", label: "Cmd+A", code: "KeyA", back: false })).toBe("Kontor received Cmd+A (reported key position KeyA). That does not match the Back shortcut.");
+    expect(testMessage({ kind: "key", label: "Cmd+A", code: "", back: false })).toBe("Kontor received Cmd+A. That does not match the Back shortcut.");
+  });
+
+  it.each([
+    ["focus", "focus or a click moved outside Kontor"],
+    ["front", "Kontor was no longer the screen in front"],
+    ["window", "Kontor's window lost focus"],
+    ["hidden", "the page was hidden"],
+  ] as const)("says the test stopped when %s, and whether Cmd had reached Kontor", (reason, words) => {
+    expect(testMessage({ kind: "left", reason, cmd: false })).toBe(`The test stopped: ${words}.`);
+    expect(testMessage({ kind: "left", reason, cmd: true })).toBe(`The test stopped: ${words}. Only Cmd had reached Kontor.`);
   });
 });

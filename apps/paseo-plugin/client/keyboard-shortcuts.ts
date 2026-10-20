@@ -7,12 +7,19 @@ export type ShortcutEvent = {
   key: string; code?: string; metaKey?: boolean; ctrlKey?: boolean; altKey?: boolean; shiftKey?: boolean;
   repeat?: boolean; isComposing?: boolean; defaultPrevented?: boolean; target?: unknown; preventDefault(): void;
 };
+/** A focus, pointer or visibility event; only its target is read. */
+export type PageEvent = { target?: unknown };
+type PageEventType = "focusin" | "pointerdown" | "visibilitychange";
 type Box = { left: number; top: number; width: number; height: number };
 type ScreenRoot = { contains?(node: unknown): boolean; getClientRects?(): ArrayLike<unknown>; getBoundingClientRect?(): Box };
 export type ShortcutPage = {
-  activeElement?: unknown; body?: unknown; elementFromPoint?(x: number, y: number): unknown;
+  activeElement?: unknown; body?: unknown; visibilityState?: string; elementFromPoint?(x: number, y: number): unknown;
+  /** The window, whose blur means focus left the host's window. */
+  defaultView?: { addEventListener(type: "blur", listener: () => void): void; removeEventListener(type: "blur", listener: () => void): void } | null;
   addEventListener(type: "keydown", listener: (event: ShortcutEvent) => void, capture: boolean): void;
+  addEventListener(type: PageEventType, listener: (event: PageEvent) => void, capture: boolean): void;
   removeEventListener(type: "keydown", listener: (event: ShortcutEvent) => void, capture: boolean): void;
+  removeEventListener(type: PageEventType, listener: (event: PageEvent) => void, capture: boolean): void;
 };
 
 /** How long Test shortcut waits for a key. */
@@ -84,26 +91,55 @@ export function useBackShortcut(shortcut: BackShortcut, web: boolean, root: { re
   }, [shortcut, web]);
 }
 
+/** Why a test stopped before a key or its time ran out. */
+export type ShortcutTestExit = "focus" | "front" | "window" | "hidden";
 export type ShortcutTestResult =
   | { kind: "key"; label: string; code: string; back: boolean }
-  | { kind: "modifiers"; label: string }
-  | { kind: "nothing" };
+  | { kind: "cmd" }
+  | { kind: "nothing" }
+  | { kind: "left"; reason: ShortcutTestExit; cmd: boolean };
 
 /**
- * Waits once for a key and reports what reached Kontor, or that only modifiers or nothing did (macOS or the app may
- * take a key first). It listens early (capture phase) and claims the key it reports, so the Back shortcut does not
- * also act on it. The returned function stops waiting without a result.
+ * Waits for one key pressed with Cmd in Kontor and reports it, or that Cmd alone or nothing reached Kontor. A repeat,
+ * an input method composing, typing in a field and keys without Cmd are left alone. The test stops when focus or a
+ * click moves outside `root`, the window loses focus, the page is hidden or Kontor is no longer in front. It listens
+ * early (capture phase) and claims only the Back shortcut's own key, so Back does not also act on the press it
+ * reports. The returned function stops without a result.
  */
-export function testShortcut(page: ShortcutPage, done: (result: ShortcutTestResult) => void, timeoutMs = SHORTCUT_TEST_MS): () => void {
-  let modifiers: string | null = null;
-  const stop = () => { clearTimeout(timer); page.removeEventListener("keydown", onKey, true); };
+export function testShortcut(page: ShortcutPage, root: () => unknown, done: (result: ShortcutTestResult) => void, timeoutMs = SHORTCUT_TEST_MS): () => void {
+  let cmd = false;
+  const view = page.defaultView ?? null;
+  const owns = (node: unknown) => !!(root() as ScreenRoot | null)?.contains?.(node);
+  const finish = (result: ShortcutTestResult) => { stop(); done(result); };
+  const leave = (reason: ShortcutTestExit) => finish({ kind: "left", reason, cmd });
   const onKey = (event: ShortcutEvent) => {
-    if (MODIFIERS.has(event.key)) { modifiers = describeKey(event); return; }
-    event.preventDefault();
-    stop();
-    done({ kind: "key", label: describeKey(event), code: event.code ?? "", back: isBackShortcut(event, "cmd-backquote") });
+    if (event.repeat || event.isComposing) return;
+    const active = page.activeElement;
+    if (active != null && active !== page.body && !owns(active)) return leave("focus");
+    if (!inFront(page, root() as ScreenRoot | null)) return leave("front");
+    if (isEditable(event.target ?? active)) return;
+    if (MODIFIERS.has(event.key)) { if (event.key === "Meta") cmd = true; return; }
+    if (!event.metaKey) return;
+    const back = isBackShortcut(event, "cmd-backquote");
+    if (back) event.preventDefault();
+    finish({ kind: "key", label: describeKey(event), code: event.code ?? "", back });
   };
-  const timer = setTimeout(() => { stop(); done(modifiers ? { kind: "modifiers", label: modifiers } : { kind: "nothing" }); }, timeoutMs);
+  const onMove = (event: PageEvent) => { if (!owns(event.target)) leave("focus"); };
+  const onVisibility = () => { if (page.visibilityState === "hidden") leave("hidden"); };
+  const onBlur = () => leave("window");
+  const stop = () => {
+    clearTimeout(timer);
+    page.removeEventListener("keydown", onKey, true);
+    page.removeEventListener("focusin", onMove, true);
+    page.removeEventListener("pointerdown", onMove, true);
+    page.removeEventListener("visibilitychange", onVisibility, false);
+    view?.removeEventListener("blur", onBlur);
+  };
+  const timer = setTimeout(() => { if (!inFront(page, root() as ScreenRoot | null)) leave("front"); else finish(cmd ? { kind: "cmd" } : { kind: "nothing" }); }, timeoutMs);
   page.addEventListener("keydown", onKey, true);
+  page.addEventListener("focusin", onMove, true);
+  page.addEventListener("pointerdown", onMove, true);
+  page.addEventListener("visibilitychange", onVisibility, false);
+  view?.addEventListener("blur", onBlur);
   return stop;
 }

@@ -76,10 +76,15 @@ pill is the in-session return control where the composer supports it.
   button does, and acts only while Kontor is the screen in front and has focus
   (or nothing has). It leaves the key alone while typing in a field, composing,
   holding the key, with a Kontor menu or dialog open, when the host or a menu
-  already handled the key, and when there is no view to go back to. macOS uses
-  the same keys for "Move focus to next window"; **Test shortcut** waits ten
-  seconds for one key press and says what reached Kontor, so a press that macOS
-  takes first shows as Cmd alone. The choice is a separate host settings
+  already handled the key, and when there is no view to go back to. macOS can
+  use the same keys for "Move focus to next window", so it may take them first.
+  **Test shortcut** waits ten seconds for one key pressed with Cmd in Kontor and
+  says what reached Kontor: the key and its reported position, Cmd alone, or
+  nothing. It does not name a cause it cannot see. It leaves typing, repeats,
+  input methods and keys without Cmd alone, stops when focus, a click or the
+  window leaves Kontor, claims only the Back shortcut's own key so Back does not
+  act during the test, and writes no setting. **Cancel test** stops it, and
+  **Copy result** copies the result. The choice is a separate host settings
   document (`keyboard`, schema version 1), shared by every client of the host;
   the organization document is untouched. Native clients show that the shortcut
   is web and desktop only, since the plugin SDK has no keyboard contract and the
@@ -641,9 +646,10 @@ missing/navigation/failure cases. `test/client-entry.test.ts` pins the Kontor
 screen, sidebar and the **Open Kontor** and **Back to Kontor** commands.
 `test/keyboard-shortcuts.test.ts` covers the Back shortcut's key match, every
 case it leaves alone, its listening phase and removal, and **Test shortcut**'s
-key, modifier-only, timeout and stop results; `test/keyboard-settings-card.test.tsx`
-and `test/keyboard-settings.test.ts` cover the Keyboard card states and its
-separate settings document. `test/return-control.test.ts`
+key, Cmd-only, timeout, stop and leaving results and the keys it leaves alone;
+`test/keyboard-settings-card.test.tsx` and `test/keyboard-settings.test.ts` cover
+the Keyboard card states, Cancel and Copy result, and its separate settings
+document. `test/return-control.test.ts`
 covers per-agent pill registration, snapshot reconciliation, close/archive/
 remove/workspace lifecycle, failed-bootstrap and owned-subscription-error
 observation recovery, retry cleanup, ad-hoc sessions without a workspace,
