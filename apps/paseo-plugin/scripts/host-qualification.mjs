@@ -62,7 +62,7 @@ try {
   const serverModule = evaluate(hostRequire);
   let definition;
   cleanup = serverModule.default({
-    registerSettings(value) { definition = value; const registration = store.register(value); settings.set(value.id, registration); return registration.settings; },
+    registerSettings(value) { if (value.id === "organization") definition = value; const registration = store.register(value); settings.set(value.id, registration); return registration.settings; },
     handle(contract, handler) { handlers.set(contract.name, handler); },
     before(name) { hooks.push(name); return () => {}; },
   });
@@ -105,6 +105,17 @@ try {
   const associations = await handlers.get("sources.associations")({});
   assert.equal(associations.status, "ready");
   assert.deepEqual(associations.associations, { "native-conversation": ["qualification-plan"] });
+  // The Back shortcut lives in its own file: off by default, closed to other combos, and saving it leaves organization.json alone.
+  const keyboard = settings.get("keyboard");
+  assert.ok(keyboard);
+  const keyboardDefault = await keyboard.read.handle();
+  assert.equal(keyboardDefault.status, "ready"); assert.deepEqual(keyboardDefault.values, { backShortcut: "off" });
+  assert.equal((await keyboard.write.handle({ revision: keyboardDefault.revision, values: { backShortcut: "cmd-k" } })).status, "invalid");
+  const organizationBytes = await readFile(join(work, "organization.json"));
+  const keyboardSaved = await keyboard.write.handle({ revision: keyboardDefault.revision, values: { backShortcut: "cmd-backquote" } });
+  assert.equal(keyboardSaved.status, "saved");
+  assert.ok((await readFile(join(work, "organization.json"))).equals(organizationBytes));
+  assert.deepEqual((await registration.read.handle()).values, clearedEpic.values);
   const restart = new PluginSettingsStore(work, () => {});
   const restarted = restart.register(definition);
   assert.deepEqual((await restarted.read.handle()).values, clearedEpic.values);
@@ -159,6 +170,7 @@ try {
     serverBytes: Buffer.byteLength(compiled.serverBundle), serverSha256: hash(compiled.serverBundle),
     hermesExit: 0, bytecodeVersion: 96, bytecodeBytes: bytecode.length, bytecodeSha256: hash(bytecode), bytecodeSourcePath: clientPath,
     settings: { twoClientConflict: conflict.status, reloadPreservesUnrelatedChanges: true, rootOrderPreserved: true, bothMappingClearsSaved: true, restartPersistence: true, invalidStoredDataPreserved: true, successfulNotifications: notices.length, changes: changes.length },
+    keyboard: { defaultBackShortcut: keyboardDefault.values.backShortcut, otherComboRefused: true, saved: keyboardSaved.values.backShortcut, organizationBytesUnchanged: true },
     historicalJira, teams,
     plan: { path: resolve(planPath), sourceSha256: expectedSourceHash, graphSha256: source.graph.graph_sha256, nodes: source.graph.nodes.length, edges: source.graph.edges.length, status: source.status },
   };

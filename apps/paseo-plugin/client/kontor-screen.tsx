@@ -6,6 +6,9 @@ import { KeyboardAvoidingView, Linking, Pressable, SafeAreaView, ScrollView, Tex
 import { DEFAULT_ORGANIZATION_SETTINGS } from "../shared/organization";
 import { SessionsScreen } from "./sessions-screen";
 import { useOrganizationSettings } from "./use-organization-settings";
+import { useKeyboardSettings } from "./use-keyboard-settings";
+import { useBackShortcut } from "./keyboard-shortcuts";
+import { KeyboardSettingsCard } from "./keyboard-settings-card";
 import { useReadSources } from "./use-read-sources";
 import { useSessionDirectory } from "./use-session-directory";
 import { patchSessionView, readSessionView, sessionViewTransition } from "./session-view-store";
@@ -45,6 +48,7 @@ function HostScreen(props: PluginScreenProps) {
   const organization = useOrganizationSettings();
   const saved = organization.state.status === "ready" ? organization.state.values : DEFAULT_ORGANIZATION_SETTINGS;
   const colors = appearanceColors(props.theme.colors, saved.appearance);
+  const keyboard = useKeyboardSettings();
   const [route, setRoute] = useState(() => hostNavigation(host.id).route);
   const [menu, setMenu] = useState<"more" | "context" | null>(null);
   const [pickerQuery, setPickerQuery] = useState("");
@@ -122,6 +126,7 @@ function HostScreen(props: PluginScreenProps) {
   const tabPress = (tab: Destination) => visitContext({ tab, ...tabScope(host.id, tab) });
   const toggle = (kind: "more" | "context") => { setPickerQuery(""); setMenu(menu === kind ? null : kind); };
   const back = () => { const next = goBack(host.id); setRoute({ ...next }); setQuery(readRouteView(host.id, next).query); setMenu(null); };
+  useBackShortcut(keyboard.state.status === "ready" ? keyboard.state.values.backShortcut : "off", layout.platform === "web", rootRef, () => hostNavigation(host.id).back.length > 0, back);
   const setSearch = (value: string) => { writeRouteView(host.id, route, { query: value, offset: 0 }); setQuery(value); };
   const open = (entry: (typeof entries)[number]) => {
     const result = openSessionById({ entries: directory.state.entries, id: entry.id, serverId: host.id, navigation: props.navigation });
@@ -196,7 +201,8 @@ function HostScreen(props: PluginScreenProps) {
     workspaces={workspaces.entries.filter((workspace) => (route.projectId === null || workspace.projectId === route.projectId) && (route.epicKey === null || saved.displayMappings[`workspace:${workspace.id}`]?.epic?.trim().toLocaleLowerCase() === route.epicKey.trim().toLocaleLowerCase())).map((workspace) => ({ id: workspace.id, name: workspace.title ?? workspace.name, projectKey: workspace.projectId, projectName: workspace.projectCustomName ?? workspace.projectDisplayName }))}
     workspaceNote={workspaces.error ? `Workspace list unavailable: ${workspaces.error}` : workspaces.readAt ? `Empty workspaces from the workspace list read ${new Date(workspaces.readAt).toLocaleTimeString()}` : "Reading the workspace list…"} />;
   else if (route.tab === "Settings") page = <OrganizationSettingsPage colors={colors} state={presentation.state} entries={directory.state.entries} workspaces={workspaces.entries.map((workspace) => ({ id: workspace.id, name: workspace.title ?? workspace.name }))} sources={sourceState.sources} reads={sourceState.reads} teamsSnapshots={sourceState.teamsSnapshots} teamsErrors={sourceState.teamsErrors} sourcesAvailable={sourceState.available} sourceError={sourceState.error} refresh={() => { void sourceState.refresh(); }}
-    onOpenTeams={() => visit({ tab: "AI teams & sessions", ...tabScope(host.id, "AI teams & sessions") }, undefined, (next) => writePageView(host.id, next, { ...readPageView(host.id, next, DEFAULT_TEAMS_VIEW), configured: true }))} />;
+    onOpenTeams={() => visit({ tab: "AI teams & sessions", ...tabScope(host.id, "AI teams & sessions") }, undefined, (next) => writePageView(host.id, next, { ...readPageView(host.id, next, DEFAULT_TEAMS_VIEW), configured: true }))}
+    keyboard={<KeyboardSettingsCard state={keyboard.state} save={keyboard.save} colors={colors} web={layout.platform === "web"} />} />;
   else if (route.tab === "Board" || route.tab === "Graph") page = <GraphPage key={routeViewKey(route)} mode={route.tab} hostId={host.id} theme={{ ...props.theme, colors }} compact={layout.compact} sources={sources} selectedId={route.sourceId} reads={reads} available={sourceState.available} error={sourceState.error} epicKey={scopedEpic} onBoard={() => visit({ tab: "Board" })}
     initialOffset={readRouteView(host.id, route).offset} onScroll={(offset) => writeRouteView(host.id, route, { offset })}
     onChooseSource={() => toggle("context")} onCopy={copy}

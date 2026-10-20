@@ -11,7 +11,8 @@ vi.mock("react", async (original) => ({
 vi.mock("react-native", () => ({ BackHandler: { addEventListener: () => ({ remove: () => undefined }) }, Pressable: "Pressable", Text: "Text", View: "View" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
 
-import { AnchoredMenu, type FocusTarget } from "../client/anchored-menu";
+import { AnchoredMenu, anchoredPanelOpen, type FocusTarget } from "../client/anchored-menu";
+import { installBackShortcut, type ShortcutEvent } from "../client/keyboard-shortcuts";
 
 type Key = { key: string; shiftKey?: boolean; altKey?: boolean; ctrlKey?: boolean; metaKey?: boolean };
 type Event = Key & { preventDefault: ReturnType<typeof vi.fn>; stopPropagation: ReturnType<typeof vi.fn> };
@@ -182,6 +183,35 @@ describe("anchored menu keys on web", () => {
     expect(listeners.size).toBe(1);
     press({ key: "Escape" });
     expect([other.focus.mock.calls.length, trigger.focus.mock.calls.length]).toEqual([1, 0]);
+  });
+
+  it("counts each open menu and dialog until it unmounts, so the Back shortcut leaves the key to them", () => {
+    let shortcut: ((event: ShortcutEvent) => void) | null = null;
+    const root = { contains: () => true, getClientRects: () => [{}], getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }) };
+    const back = vi.fn();
+    installBackShortcut({ elementFromPoint: () => ({}), addEventListener: (_type, listener) => { shortcut = listener; }, removeEventListener: () => {} },
+      { shortcut: "cmd-backquote", root: () => root, canGoBack: () => true, back });
+    const backKey = () => { const event = { key: "`", code: "Backquote", metaKey: true, preventDefault: vi.fn() }; shortcut!(event); return event; };
+    expect(anchoredPanelOpen()).toBe(false);
+    const dialog = mount({ panel: panelOf([node()]), dialog: true });
+    const menu = mount({ panel: panelOf([node()]) });
+    expect(anchoredPanelOpen()).toBe(true);
+    expect(backKey().preventDefault).not.toHaveBeenCalled();
+    menu.unmount();
+    expect(anchoredPanelOpen()).toBe(true);
+    expect(backKey().preventDefault).not.toHaveBeenCalled();
+    dialog.unmount();
+    expect(anchoredPanelOpen()).toBe(false);
+    expect(back).not.toHaveBeenCalled();
+    expect(backKey().preventDefault).toHaveBeenCalledTimes(1);
+    expect(back).toHaveBeenCalledTimes(1);
+    // A slot that swaps one opening for another stays counted once.
+    const draw = slot(), trigger = node(), other = node();
+    draw({ panel: panelOf([node()]), anchor: trigger });
+    draw({ panel: panelOf([node()]), dialog: true, anchor: other });
+    expect(anchoredPanelOpen()).toBe(true);
+    mounted.splice(0).forEach((unmount) => unmount());
+    expect(anchoredPanelOpen()).toBe(false);
   });
 
   it("keeps Tab with a dialog when a menu opens over it", () => {

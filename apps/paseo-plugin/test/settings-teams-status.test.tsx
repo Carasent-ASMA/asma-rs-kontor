@@ -17,6 +17,7 @@ vi.mock('../client/use-read-sources', () => ({ useReadSources: () => ({ sources:
 vi.mock('../client/use-session-directory', () => ({ useSessionDirectory: () => ({ state: { entries: [], status: 'ready', live: false, lastUpdatedAt: 1, error: null, staleReason: null, pages: 1, includeArchived: false } }) }));
 vi.mock('../client/use-workspace-directory', () => ({ useWorkspaceDirectory: () => ({ entries: [], error: null, readAt: null }) }));
 vi.mock('../client/use-organization-settings', () => ({ useOrganizationSettings: () => ({ state: { status: 'ready', values: DEFAULT_ORGANIZATION_SETTINGS, revision: 'qa-rev', saving: false, saveError: null } }) }));
+vi.mock('../client/use-keyboard-settings', () => ({ useKeyboardSettings: () => ({ state: { status: 'loading' }, save: async () => true }) }));
 import { DEFAULT_ORGANIZATION_SETTINGS } from '../shared/organization';
 import { KontorScreen } from '../client/kontor-screen';
 import { OrganizationSettingsPage } from '../client/organization-settings-page';

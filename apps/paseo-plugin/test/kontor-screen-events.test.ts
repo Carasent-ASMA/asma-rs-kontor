@@ -10,6 +10,9 @@ import { Linking } from "react-native";
 const model = vi.hoisted(() => ({
   slots: [] as unknown[], cursor: 0, entries: [] as DirectoryEntry[], sources: [] as ReadSourceSummary[], reads: {} as Record<string, SourceRead>, values: {} as object,
   hosts: [] as PluginHostSummary[], toastError: vi.fn(), toastShow: vi.fn(), copyText: vi.fn(async (_text: string) => {}), updates: 0,
+  keyboardSave: vi.fn(async () => true),
+  keyboard: { status: "loading" } as { status: "loading" } | { status: "ready"; values: { backShortcut: "off" | "cmd-backquote" } },
+  shortcut: null as null | { shortcut: string; web: boolean; root: { readonly current: unknown }; canGoBack: () => boolean; back: () => void },
   useState<T>(initial: T | (() => T)): [T, (next: T | ((previous: T) => T)) => void] {
     const index = this.cursor++;
     if (!(index in this.slots)) this.slots[index] = typeof initial === "function" ? (initial as () => T)() : initial;
@@ -35,6 +38,11 @@ vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: () => (
 vi.mock("../client/use-organization-settings", () => ({ useOrganizationSettings: () => ({ state: { status: "ready", values: model.values, saving: false, saveError: null }, save: async () => true }) }));
 vi.mock("../client/use-read-sources", () => ({ useReadSources: () => ({ sources: model.sources, reads: model.reads, teamsSnapshots: {}, error: null, loading: false, available: true }) }));
 vi.mock("../client/use-workspace-directory", () => ({ useWorkspaceDirectory: () => ({ entries: [], error: null, readAt: null }) }));
+vi.mock("../client/use-keyboard-settings", () => ({ useKeyboardSettings: () => ({ state: model.keyboard, save: model.keyboardSave }) }));
+vi.mock("../client/keyboard-shortcuts", async (original) => ({
+  ...await original<typeof import("../client/keyboard-shortcuts")>(),
+  useBackShortcut: (shortcut: string, web: boolean, root: { readonly current: unknown }, canGoBack: () => boolean, back: () => void) => { model.shortcut = { shortcut, web, root, canGoBack, back }; },
+}));
 
 import { KontorScreen } from "../client/kontor-screen";
 import { DESTINATIONS, hostNavigation, navigate, readRouteView, sessionScopeKey, type KontorRoute } from "../client/navigation-state";
@@ -50,6 +58,8 @@ import { NativeFreshnessPill } from "../client/native-freshness";
 import { DEFAULT_PLAN_VIEW, type PlanView } from "../client/plan-reader";
 import { ReadOnlyPage } from "../client/read-only-pages";
 import { TeamsSourcePage } from "../client/teams-source-page";
+import { OrganizationSettingsPage } from "../client/organization-settings-page";
+import { KeyboardSettingsCard } from "../client/keyboard-settings-card";
 
 const actualGraph = canonicalGraphSchema.parse(JSON.parse(readFileSync(new URL("./fixtures/plan-graph-asma-8371.json", import.meta.url), "utf8")));
 const capturedHistory = jiraHistorySchema.parse(JSON.parse(readFileSync(new URL("./fixtures/jira-history.json", import.meta.url), "utf8")));
@@ -59,7 +69,7 @@ function elements(value: ReactNode): ReactElement<Record<string, unknown>>[] {
   return [value, ...elements(value.props.children as ReactNode)];
 }
 let sequence = 0;
-beforeEach(() => { vi.clearAllMocks(); model.slots = []; model.cursor = 0; model.updates = 0; model.values = DEFAULT_ORGANIZATION_SETTINGS; model.entries = [sessionEntry("native", { labels: { epic: "ASMA-1" } })]; model.sources = []; model.reads = {}; model.hosts = []; });
+beforeEach(() => { vi.clearAllMocks(); model.slots = []; model.cursor = 0; model.updates = 0; model.values = DEFAULT_ORGANIZATION_SETTINGS; model.entries = [sessionEntry("native", { labels: { epic: "ASMA-1" } })]; model.sources = []; model.reads = {}; model.hosts = []; model.keyboard = { status: "loading" }; model.shortcut = null; });
 /** Renders the header selector as the screen would, so its own semantics and style are visible. */
 function pickerField(picker: ReactElement<Record<string, unknown>>): ReactElement<Record<string, unknown>> {
   return (picker.type as (props: Record<string, unknown>) => ReactElement<Record<string, unknown>>)(picker.props);
@@ -387,6 +397,40 @@ describe("Kontor shell native actions", () => {
     screen.click("Sessions");
     expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab: "Sessions", sourceId: null, epicKey: null, projectId: null, originAgentId: null });
     expect(screen.picker()).toBeUndefined();
+  });
+  it("hands the Back shortcut the saved choice once read, on web only, and the same Back as the button", () => {
+    const screen = mount(false);
+    // Unread, the shortcut stays off; outside the web, there are no page keys to listen to.
+    expect(model.shortcut).toMatchObject({ shortcut: "off", web: false });
+    model.keyboard = { status: "ready", values: { backShortcut: "cmd-backquote" } };
+    screen.props.layout = { compact: false, platform: "web" }; screen.render();
+    expect(model.shortcut).toMatchObject({ shortcut: "cmd-backquote", web: true });
+    expect(model.shortcut!.canGoBack()).toBe(false);
+    screen.click("Board");
+    expect(hostNavigation(screen.props.host.id).route.tab).toBe("Board");
+    expect(model.shortcut!.canGoBack()).toBe(true);
+    model.shortcut!.back(); screen.flush();
+    expect(hostNavigation(screen.props.host.id).route.tab).toBe("Sessions");
+    expect(model.shortcut!.canGoBack()).toBe(false);
+    // It closes an open menu like the Back button does.
+    screen.click("Board"); screen.click("More");
+    expect(screen.menu()).toBeDefined();
+    model.shortcut!.back(); screen.flush();
+    expect(screen.menu()).toBeUndefined();
+    expect(hostNavigation(screen.props.host.id).route.tab).toBe("Sessions");
+    model.keyboard = { status: "ready", values: { backShortcut: "off" } }; screen.render();
+    expect(model.shortcut).toMatchObject({ shortcut: "off", web: true });
+  });
+  it.each(["web", "ios"] as const)("gives Settings the Keyboard card with the keyboard document and the platform (%s)", (platform) => {
+    model.keyboard = { status: "ready", values: { backShortcut: "cmd-backquote" } };
+    const screen = mount(false, { tab: "Settings" });
+    screen.props.layout = { compact: false, platform }; screen.render();
+    const settings = screen.elements().find((node) => node.type === OrganizationSettingsPage)!;
+    const card = settings.props.keyboard as ReactElement<Record<string, unknown>>;
+    expect(card.type).toBe(KeyboardSettingsCard);
+    expect(card.props.state).toBe(model.keyboard);
+    expect(card.props.save).toBe(model.keyboardSave);
+    expect(card.props.web).toBe(platform === "web");
   });
   it("restores the Plan reader view through Back and keeps it per plan", () => {
     model.sources = ["plan-a", "plan-b"].map((id) => ({ id, title: id, kind: "plan", path: `/configured/${id}.md`, workstream: null, epic: null, projectId: null, revisionKind: "working copy" }));

@@ -66,6 +66,20 @@ pill is the in-session return control where the composer supports it.
   candidate is not claimed and remains a pending device check. A live agent with
   no workspace has no composer pill and keeps the sidebar and Command Center
   paths. The plugin does not add or control the native top-left Back button.
+- **Back shortcut (web and desktop).** Settings › **Keyboard** offers **Off**
+  (the default) or **Cmd+`**: Cmd with the key at the Backquote position, which
+  types < on a Norwegian layout. It goes back one Kontor view, as the Back
+  button does, and acts only while Kontor is the screen in front and has focus
+  (or nothing has). It leaves the key alone while typing in a field, composing,
+  holding the key, with a Kontor menu or dialog open, when the host or a menu
+  already handled the key, and when there is no view to go back to. macOS uses
+  the same keys for "Move focus to next window"; **Test shortcut** waits ten
+  seconds for one key press and says what reached Kontor, so a press that macOS
+  takes first shows as Cmd alone. The choice is a separate host settings
+  document (`keyboard`, schema version 1), shared by every client of the host;
+  the organization document is untouched. Native clients show that the shortcut
+  is web and desktop only, since the plugin SDK has no keyboard contract and the
+  web listener reads DOM key events.
 - **Compact toolbar.** Compact layouts keep one slim host/live-or-stale row with
   **Search** and **Filters** (including the active count). The full host
   summary, search field, status chips and advanced options sit at the list top.
@@ -619,7 +633,12 @@ recognized epic/workstream label search, disconnect staleness, reconnect
 reconciliation, obsolete-generation update fencing and source failures.
 `test/session-actions.test.ts` covers duplicate-name open by native ID and the
 missing/navigation/failure cases. `test/client-entry.test.ts` pins the Kontor
-screen, sidebar and **Open Kontor** command. `test/return-control.test.ts`
+screen, sidebar and **Open Kontor** command.
+`test/keyboard-shortcuts.test.ts` covers the Back shortcut's key match, every
+case it leaves alone, its listening phase and removal, and **Test shortcut**'s
+key, modifier-only, timeout and stop results; `test/keyboard-settings-card.test.tsx`
+and `test/keyboard-settings.test.ts` cover the Keyboard card states and its
+separate settings document. `test/return-control.test.ts`
 covers per-agent pill registration, snapshot reconciliation, close/archive/
 remove/workspace lifecycle, failed-bootstrap and owned-subscription-error
 observation recovery, retry cleanup, ad-hoc sessions without a workspace,

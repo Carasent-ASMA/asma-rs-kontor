@@ -16,6 +16,7 @@ vi.mock("react", async (original) => ({ ...await original<typeof import("react")
 vi.mock("react-native", () => ({ ScrollView: "ScrollView", View: "View", Text: "Text", Pressable: "Pressable" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput", Icon: "Icon" }));
 import { OrganizationSettingsPage } from "../client/organization-settings-page";
+import { Card, Copy } from "../client/page-controls";
 import { DEFAULT_ORGANIZATION_SETTINGS } from "../shared/organization";
 type Element = ReactElement<Record<string, unknown>>;
 type Props = Parameters<typeof OrganizationSettingsPage>[0];
@@ -127,6 +128,16 @@ describe("Settings source catalog states", () => {
   });
 });
 describe("Settings presentation states", () => {
+  it("places the Keyboard card, kept in its own settings document, between the preferences and the sources", () => {
+    const keyboard = <Card title="Keyboard" colors={{} as Props["colors"]}><Copy colors={{} as Props["colors"]}>Keyboard slot</Copy></Card>;
+    const headers = (screen: ReturnType<typeof mount>) => screen.nodes().filter((node) => node.props.accessibilityRole === "header").map((node) => visible(node));
+    const plain = headers(mount());
+    expect(plain).not.toContain("Keyboard");
+    const titles = headers(mount({ keyboard }));
+    expect(titles.indexOf("Keyboard")).toBe(titles.indexOf("Presentation and associations") + 1);
+    expect(titles[titles.indexOf("Keyboard") + 1]).toBe("Configured sources");
+    expect(titles.filter((title) => title !== "Keyboard")).toEqual(plain);
+  });
   it("shows loading, unavailable and invalid preferences with only their honest actions", () => {
     const loading = mount({ state: state("loading") });
     expect(loading.text()).toContain("Reading saved preferences…");
