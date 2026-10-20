@@ -7,6 +7,14 @@
       "previous_derivative_sha256": "9e55928752fa64ae40800ffea92c4c784b3e691103799ab102697ab15f7f9a18",
       "private_references_redacted": 1,
       "reason": "remove remaining owner-directory prefix (LSA-WP01-PUBLIC-EVIDENCE-001)"
+    },
+    {
+      "bytes": 19186,
+      "derivative_sha256": "fa53ebe53ac06224aa22f97d2214fd7030f06844fdfe1b8918a770bb48bf4a58",
+      "path": "replacement-bridges/SHA256SUMS.json",
+      "previous_derivative_sha256": "77f77cd8f1d898b446d6937506b35251352b9ebddde5eef97ea672fbc30c8d55",
+      "private_references_redacted": 0,
+      "reason": "update custody manifest derivative to current hashes after evidence redaction (LSA-WP01-PUBLIC-EVIDENCE-001)"
     }
   ],
   "additional_redactions_note": "additional_redactions supersedes derivative_sha256 in files for the named paths; files retains the original first-pass pair unchanged.",
@@ -18,7 +26,7 @@
   "files": {
     "replacement-bridges/SHA256SUMS.json": {
       "bytes": 19186,
-      "derivative_sha256": "fa53ebe53ac06224aa22f97d2214fd7030f06844fdfe1b8918a770bb48bf4a58",
+      "derivative_sha256": "77f77cd8f1d898b446d6937506b35251352b9ebddde5eef97ea672fbc30c8d55",
       "original_sha256": "e22b6947c8a149141350b02ab092ff90312b9f64ef86d2fef4e7cdbbda0f7196"
     },
     "replacement-bridges/actual-lsa-09f-publication-audit.txt": {
