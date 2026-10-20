@@ -1208,6 +1208,87 @@ describe("SessionsScreen toolbar events", () => {
     expect(chain(sessionEntry("blank", { labels: { workstream: " ", epic: "" } }))).toEqual(absent);
   });
 
+  it("makes the lines a named stop with a visible focus on web only, and returns focus to the list once the row has left", () => {
+    const screen = renderDetails(placeEntries());
+    const region = () => findByTestID(screen.dialog()!.props.children, "sessions-details-lines");
+    const list = () => findByTestID(harness.current(), "sessions-list");
+    screen.open("long");
+    // Native keeps its own focus rules.
+    expect([region().props.tabIndex, region().props.role, region().props.accessibilityLabel, list().props.tabIndex]).toEqual([undefined, undefined, undefined, undefined]);
+    (screen.dialog()!.props.onClose as () => void)(); harness.flush();
+    vi.stubGlobal("document", { activeElement: null, body: {} });
+    try {
+      screen.open("long");
+      expect(region().props).toMatchObject({ tabIndex: 0, role: "region", accessibilityLabel: "Role and placement" });
+      expect(list().props.tabIndex).toBe(-1);
+      expect(region().props.style).not.toHaveProperty("outlineWidth");
+      (region().props.onFocus as () => void)(); harness.flush();
+      expect(region().props.style).toMatchObject({ outlineColor: colors.accent, outlineStyle: "solid", outlineWidth: 2 });
+      (region().props.onBlur as () => void)(); harness.flush();
+      expect(region().props.style).not.toHaveProperty("outlineWidth");
+      (region().props.onFocus as () => void)(); harness.flush();
+      (screen.dialog()!.props.onClose as () => void)(); harness.flush();
+      screen.open("long");
+      expect(region().props.style).not.toHaveProperty("outlineWidth");
+      // Escape, a press outside and Close all dismiss through onClose; without the row's button, focus goes to the list.
+      const scroller = { focus: vi.fn() };
+      (list().props.ref as RefLike).current = { getScrollableNode: () => scroller };
+      const button = { focus: vi.fn() };
+      (screen.details("long").props.ref as (node: unknown) => void)(button);
+      (screen.details("long").props.ref as (node: unknown) => void)(null);
+      (screen.dialog()!.props.onClose as () => void)(); harness.flush();
+      expect(screen.dialog()).toBeUndefined();
+      expect([scroller.focus.mock.calls.length, button.focus.mock.calls.length]).toEqual([1, 0]);
+      (screen.details("long").props.ref as (node: unknown) => void)(button);
+      screen.open("long");
+      (screen.close().props.onPress as () => void)(); harness.flush();
+      expect([scroller.focus.mock.calls.length, button.focus.mock.calls.length]).toEqual([1, 1]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("closes details whose session has left or that leave Role, sending only focus the page dropped to the list", () => {
+    const screen = renderDetails(placeEntries());
+    const page = { activeElement: null as unknown, body: {} };
+    vi.stubGlobal("document", page);
+    try {
+      const scroller = { focus: vi.fn() };
+      (findByTestID(harness.current(), "sessions-list").props.ref as RefLike).current = { getScrollableNode: () => scroller };
+      const without = (id: string) => { directory.state = { ...(directory.state as object), entries: placeEntries().filter((entry) => entry.id !== id) }; harness.flush(); };
+      screen.open("long");
+      without("long");
+      expect(screen.dialog()).toBeUndefined();
+      expect(scroller.focus).toHaveBeenCalledTimes(1);
+      // They stay closed when the session comes back.
+      without("none");
+      expect(screen.dialog()).toBeUndefined();
+      screen.open("conflict");
+      page.activeElement = page.body;
+      without("conflict");
+      expect(screen.dialog()).toBeUndefined();
+      expect(scroller.focus).toHaveBeenCalledTimes(2);
+      // Focus that moved on is left where it is.
+      without("none");
+      screen.open("desk");
+      page.activeElement = { elsewhere: true };
+      without("desk");
+      expect(screen.dialog()).toBeUndefined();
+      expect(scroller.focus).toHaveBeenCalledTimes(2);
+      without("none");
+      screen.open("cwd");
+      const choose = (label: string) => {
+        (walk(harness.current()).find((element) => element.props.testID === "sessions-grouping")!.props.onPress as () => void)(); harness.flush();
+        (walk(harness.current()).find((element) => element.type === MenuItem && element.props.label === label)!.props.onPress as () => void)(); harness.flush();
+      };
+      choose("Workstreams");
+      choose("Role");
+      expect(screen.dialog()).toBeUndefined();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   const qaEntries = () => [
     sessionEntry("n", { title: "QA • n", pendingPermissionCount: 1 }),
     sessionEntry("e", { title: "QA • e", status: "error" }),

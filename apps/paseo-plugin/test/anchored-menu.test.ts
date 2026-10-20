@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("react-native", () => ({ BackHandler: { addEventListener: () => ({ remove: () => undefined }) }, Pressable: "Pressable", Text: "Text", View: "View" }));
 
-import { measureMenu, menuFrame, type MenuFrame } from "../client/anchored-menu";
+import { containedTab, measureMenu, menuFrame, type FocusTarget, type MenuFrame } from "../client/anchored-menu";
 
 const root = { width: 1000, height: 700 };
 
@@ -50,5 +50,71 @@ describe("anchored menu placement", () => {
     measureMenu(measurable(0, 0, 0, 0), measurable(150, 140, 200, 44), { align: "start", width: 300 }, () => true, (frame) => applied.push(frame));
     measureMenu(null, measurable(150, 140, 200, 44), { align: "start", width: 300 }, () => true, (frame) => applied.push(frame));
     expect(applied).toHaveLength(1);
+  });
+});
+
+/** A focusable node; one that is not drawn has no client rects, as under display: none. */
+const stop = (drawn = true): FocusTarget => ({ focus: () => {}, getClientRects: () => (drawn ? [{}] : []) });
+/** A modal panel whose stops are read afresh on every Tab, so a control it adds or drops counts at once. */
+function modal(stops: FocusTarget[], drawn = true) {
+  const panel: FocusTarget = { focus: () => {}, getClientRects: () => (drawn ? [{}] : []), querySelectorAll: () => stops, contains: (node) => node === panel || stops.includes(node as FocusTarget) };
+  return panel;
+}
+
+describe("modal Tab containment", () => {
+  const trigger = stop();
+  const body = {};
+  const screenOf = (...nodes: FocusTarget[]): FocusTarget => ({ contains: (node) => nodes.includes(node as FocusTarget) });
+
+  it("holds focus on the panel itself when it has nothing to reach", () => {
+    const panel = modal([]);
+    for (const back of [false, true]) {
+      expect(containedTab(panel, screenOf(trigger), panel, body, back)).toBe(panel);
+      expect(containedTab(panel, screenOf(trigger), body, body, back)).toBe(panel);
+    }
+  });
+
+  it("keeps a single stop focused both ways", () => {
+    const close = stop();
+    const panel = modal([close]);
+    expect([containedTab(panel, null, close, body, false), containedTab(panel, null, close, body, true)]).toEqual([close, close]);
+  });
+
+  it("wraps at either end and leaves a move between stops to the browser", () => {
+    const [first, middle, last] = [stop(), stop(), stop()];
+    const panel = modal([first!, middle!, last!]);
+    expect(containedTab(panel, null, last, body, false)).toBe(first);
+    expect(containedTab(panel, null, first, body, true)).toBe(last);
+    expect([containedTab(panel, null, first, body, false), containedTab(panel, null, middle, body, false), containedTab(panel, null, middle, body, true), containedTab(panel, null, last, body, true)]).toEqual([null, null, null, null]);
+  });
+
+  it("brings focus back in from behind the panel, from the panel itself or from the page body", () => {
+    const [first, last] = [stop(), stop()];
+    const panel = modal([first!, last!]);
+    for (const active of [trigger, panel, body, null, undefined]) {
+      expect(containedTab(panel, screenOf(trigger), active, body, false)).toBe(first);
+      expect(containedTab(panel, screenOf(trigger), active, body, true)).toBe(last);
+    }
+  });
+
+  it("counts only the stops drawn at the moment of the Tab", () => {
+    const [first, second, hidden] = [stop(), stop(), stop(false)];
+    const stops = [first!, second!, hidden!];
+    const panel = modal(stops);
+    expect(containedTab(panel, null, second, body, false)).toBe(first);
+    expect(containedTab(panel, null, first, body, true)).toBe(second);
+    const added = stop();
+    stops.push(added);
+    expect(containedTab(panel, null, second, body, false)).toBeNull();
+    expect(containedTab(panel, null, added, body, false)).toBe(first);
+    stops.splice(0, stops.length, hidden!);
+    expect(containedTab(panel, null, body, body, false)).toBe(panel);
+  });
+
+  it("leaves focus in the host app outside the screen, and a panel that is not drawn, alone", () => {
+    const close = stop();
+    const host = stop();
+    expect([containedTab(modal([close]), screenOf(trigger), host, body, false), containedTab(modal([close]), screenOf(trigger), host, body, true)]).toEqual([null, null]);
+    expect([containedTab(modal([close], false), screenOf(trigger), trigger, body, false), containedTab(null, screenOf(trigger), trigger, body, false)]).toEqual([null, null]);
   });
 });

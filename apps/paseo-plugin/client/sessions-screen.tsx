@@ -490,6 +490,9 @@ export function roleRowContext(entry: DirectoryEntry, mappings: Parameters<typeo
   };
 }
 
+/** The page's document on web; native has none, and keeps its own focus rules. */
+const pageDocument = () => (globalThis as { document?: { activeElement?: unknown; body?: unknown } }).document;
+
 /**
  * Everything a Role row shortens, for its details: the role and where it came from, every other
  * declaration, and the whole desk or workstream, epic and workspace chain, with absent values named.
@@ -1992,9 +1995,13 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     set current(_node) {},
   }), []);
   const detailsCloseRef = useRef<View | null>(null);
+  const [detailsLinesFocused, setDetailsLinesFocused] = useState(false);
   useEffect(() => {
+    setDetailsLinesFocused(false);
     if (detailsId !== null) (detailsCloseRef.current as unknown as { focus?: () => void } | null)?.focus?.();
   }, [detailsId]);
+  // A row that has left the list has no button to return to; the list takes focus instead, which does not scroll it.
+  const detailsReturn = () => (detailsAnchor.current ?? listRef.current?.getScrollableNode()) as { focus?: () => void } | null | undefined;
   const peekBackRef = useRef<View | null>(null);
   const focusAfterModeRef = useRef<(() => void) | null>(null);
   const handleShowInTree = useCallback((entry: DirectoryEntry) => {
@@ -2292,20 +2299,32 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   );
   const detailsEntry = detailsId === null || grouping !== "role" ? null : state.entries.find((entry) => entry.id === detailsId) ?? null;
   const closeDetails = () => {
-    const anchor = detailsAnchor.current as unknown as { focus?: () => void } | null;
+    const target = detailsReturn();
     setDetailsId(null);
-    anchor?.focus?.();
+    target?.focus?.();
   };
+  // Details whose session has left, or that Role grouping no longer shows, close. Focus they held,
+  // which the page has now dropped, goes where Close would send it; focus elsewhere stays put.
+  useEffect(() => {
+    if (detailsId === null || detailsEntry !== null) return;
+    const document = pageDocument();
+    const target = document && (document.activeElement == null || document.activeElement === document.body) ? detailsReturn() : null;
+    setDetailsId(null);
+    target?.focus?.();
+  }, [detailsId, detailsEntry === null]);
   // Over the list on a compact screen, so a short one still shows the title, Close and a scrolling chain.
   const detailsLayer = detailsEntry === null ? null : (
     <AnchoredMenu testID="sessions-details" dialog anchor={detailsAnchor} root={rootRef} rootSize={rootSize} colors={colors}
-      label={`Details: ${detailsEntry.title}`} onClose={() => setDetailsId(null)}
+      label={`Details: ${detailsEntry.title}`} onClose={closeDetails}
       placement={compact ? { align: "stretch", width: 0, cover: true } : { align: "end", width: 360, maxHeight: 440 }}
       header={<View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8, paddingLeft: 6, paddingBottom: 4 }}>
         <Text testID="sessions-details-title" selectable style={{ flex: 1, minWidth: 0, paddingTop: 6, color: colors.foreground, fontSize: 13, fontWeight: "600" }}>{detailsEntry.title}</Text>
         <Action ref={detailsCloseRef} small={!compact} colors={colors} label="Close" accessibilityLabel={`Close details: ${detailsEntry.title}`} onPress={closeDetails} />
       </View>}>
-      <ScrollView testID="sessions-details-lines" style={{ flexGrow: 0, flexShrink: 1 }}>
+      {/* On web the lines are a named stop of their own, so a keyboard can scroll a chain longer than the screen. */}
+      <ScrollView testID="sessions-details-lines" {...(pageDocument() ? { tabIndex: 0, role: "region", accessibilityLabel: "Role and placement" } as const : {})}
+        onFocus={() => setDetailsLinesFocused(true)} onBlur={() => setDetailsLinesFocused(false)}
+        style={{ flexGrow: 0, flexShrink: 1, borderRadius: 6, ...(detailsLinesFocused ? { outlineColor: colors.accent, outlineStyle: "solid", outlineWidth: 2 } as const : null) }}>
         {sessionDetailLines(detailsEntry, mappings).map(({ label, value }) => (
           <View key={label} style={{ paddingHorizontal: 6, paddingVertical: 4 }}>
             <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>{label}</Text>
@@ -2500,6 +2519,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       <FlatList
         ref={listRef}
         testID="sessions-list"
+        tabIndex={pageDocument() ? -1 : undefined}
         data={rows}
         keyExtractor={listRowKey}
         extraData={extraData}

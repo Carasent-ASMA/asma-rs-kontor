@@ -130,6 +130,13 @@ lines scroll when the screen is too short for them. On a wide screen they open
 beside the row. Escape, a tap outside, or Close dismisses them and returns
 focus to the button. The row itself still opens the session.
 
+The details are a modal dialog. On the web, Tab and Shift+Tab cycle through
+Close and the lines, which are a named stop of their own with a focus outline,
+so arrows, Page Down and End scroll them. The context picker and the Board
+sessions chooser keep Tab inside in the same way; menus are unchanged. If the
+row's button has left the list by the time the details close, focus goes to
+the list. Details whose session has left close on their own.
+
 On a touch screen, session rows, Details, favorites and the Arrange handle are
 44 pt at any width. A mouse keeps the denser sizes: 40 pt rows, 30 pt Details
 and favorites, and a 28 × 32 pt Arrange handle.
