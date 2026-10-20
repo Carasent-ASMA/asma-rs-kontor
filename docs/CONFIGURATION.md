@@ -110,38 +110,69 @@ It is a bootstrap input, never an activated policy.
 | `binaries` | mapping | Absolute or `PATH`-resolved host commands for `paseo`, `git`, `gh`, `python`, `cargo`. |
 | `project_cli` | mapping | `project.cli.command` → this host's executable. A new project supplies its own name; no tool name is assumed. |
 | `runtime` | mapping | `kontord.endpoint`, `kontord.port`, `paseo.endpoint`, `paseo.port`; loopback addresses only. |
-| `provider_accounts` | mapping | Logical fleet slot → `{provider, native_alias, harness, credential}`. `native_alias` is this host's runtime account id; `credential` is a reference, never a value. |
+| `provider_accounts` | mapping | Logical fleet slot → `{provider, native_alias, harness, credential, serves, efforts?, qualification?}`. `native_alias` is this host's runtime account id; `credential` is a reference, never a value; `serves` names the canonical fleet models the route can serve; a cross-provider route also states `qualification`. |
 | `routes` | mapping | Fleet domain → ordered logical slots this host enables. A slot omitted here is unavailable on this host. |
 | `keychain` | mapping | `service_prefix` for credential references. |
 | `launchd` | mapping | Service labels for the daemon and desk. |
 
-**Route join (Q-04).** The fleet and the host meet on one key: the logical
-slot. A slot is a policy identity, not a native login.
+**Route join (Q-04).** The fleet owns the canonical policy; the host owns the
+working route. They meet on two keys: the logical slot and the canonical model.
 
-1. `fleet.yml` `domains.<domain>.accounts` lists the logical slots in the
-   domain and therefore the failure domain. It never names a native account.
-2. `host.yml` `provider_accounts.<slot>` binds each slot to this host's
-   `native_alias`, `harness`, `provider` and credential reference.
+1. `fleet.yml` owns the canonical model identity and policy: model id, vendor,
+   efforts, chains and seat bindings. `domains.<domain>.provider` names the
+   model's canonical/native provider family; it is not a restriction on a
+   host's working route.
+2. `host.yml` `provider_accounts.<slot>` binds the slot to this host's working
+   route: `provider`, `harness`, `native_alias`, `credential`, `serves` (the
+   fleet model names the route is proved to serve), optional `efforts` (a
+   subset of the fleet model's efforts), and `qualification` (required when the
+   working provider differs from the fleet domain's provider; a reviewed
+   route-contract reference of the form `<route>@<revision>`, not a bare
+   boolean).
 3. `host.yml` `routes.<domain>` selects and orders the slots this host enables.
-   Every route slot must exist in `provider_accounts`, belong to that domain,
-   and use the domain's provider. A domain omitted from `routes` is unavailable
-   on this host, so its chain descends. The slot name keeps the provider prefix
-   (`claude-`, `codex-`, or the bare provider) because the current fleet
-   validator requires it.
-4. Resolution walks the chain step, then `routes.<domain>` in order. For the
-   first available slot it takes `native_alias` and keeps the fleet model id,
-   effort and vendor unchanged. If no slot in the step is available, it
-   descends to the next chain step.
-5. A host edit that changes a native alias, harness or route order changes only
-   new placements. Two hosts with different aliases and a different route order
-   resolve the same fleet chain to the same model id, effort and vendor; the
-   neutral example and `tests/fixtures/config/host-alternate.yml` demonstrate
-   exactly that. A user's native alias changes only in `host.yml`; it never
-   requires a fleet edit. The fleet changes only when a logical slot is added,
-   removed or moved to another domain.
+   Every route slot must exist in `provider_accounts` and belong to that
+   domain. A domain omitted from `routes` is unavailable on this host, so its
+   chain descends. The slot name keeps the provider prefix (`claude-`,
+   `codex-`, or the bare provider) because the current fleet validator requires
+   it; the working route may still be a different provider.
+4. Compatibility is checked against the canonical policy, not assumed from the
+   slot name. A route is eligible only when it lists the canonical model in
+   `serves`, supports the pinned effort (the route's `efforts`, when stated,
+   contains it), and, for a cross-provider route, carries a qualification that
+   names the route. An unproven cross-provider route is refused: the resolver
+   never substitutes a different provider merely because it is available, and
+   never requires a fleet edit to make a host route work.
+5. Fallback skips an incompatible route and continues `routes.<domain>`; if no
+   route in the step serves the pinned model and effort, it descends to the
+   next chain step. If no step has a compatible route, the placement is refused
+   with a typed reason. A fallback never changes the canonical model or effort
+   to make a route fit.
+6. A host edit that changes a native alias, provider, harness or route order
+   changes only new placements. Two hosts with different aliases and route
+   order resolve the same fleet chain to the same canonical model id, effort
+   and vendor; a cross-provider route preserves those canonical values too.
+   `config/examples/host.example.yml`,
+   `tests/fixtures/config/host-alternate.yml` (alias/order) and
+   `tests/fixtures/config/host-cross-provider.yml` (different provider/harness)
+   are the labelled compatibility fixtures. A user's native alias or working
+   provider changes only in `host.yml`; it never requires a fleet edit. The
+   fleet changes only when the canonical model policy or a logical slot
+   changes.
 
-The vendor-independence rule uses the fleet model's `vendor`, never the native
-alias or harness, so changing a host route cannot silently defeat it. Current
+**Successor and migration contract.** The current `schema_version: 2` parser
+still validates `domains.accounts` with the provider-prefix rule and has no
+host-route layer. That is a current parser constraint, not the Q-04 contract.
+WP-08 adopts this successor contract without changing the daemon before KR-14:
+existing `accounts` values are read as logical slots; each legacy native alias
+is mapped to a host route with the provider and harness that served it; active
+run snapshots are preserved; and a host route change never requires a fleet
+policy edit. The fixtures above are labelled for that migration and are test
+data, not deployment files.
+
+The vendor-independence rule uses the canonical `models.<name>.vendor`, never
+the working provider or harness. A `glm-acp-agent` route that serves a canonical
+model with vendor `example` is still `example` for the reviewer-vendor rule, so
+a cross-provider substitution cannot silently defeat independence. Current
 availability, funding and quota remain observed runtime state, not copied YAML
 facts.
 
@@ -152,19 +183,23 @@ immutable `resolved_route` before the run starts:
 resolved_route:
   policy_hash: <fleet policy content hash>
   host_route_hash: <hash of host.yml and the resolved slot order>
-  slot: claude-primary
-  native_alias: laptop-claude-1
-  provider: claude
-  harness: paseo
-  model: claude-opus-example
-  effort: xhigh
-  vendor: anthropic
+  slot: opencode
+  route_provider: glm-acp-agent
+  route_harness: acp-agent
+  native_alias: desktop-glm-acp-1
+  qualification: glm-acp-agent@1
+  canonical_model: example/model
+  canonical_effort: max
+  canonical_vendor: example
   resolved_at: <timestamp>
 ```
 
-The snapshot is authoritative for that run. Editing `host.yml` or the fleet
-policy never rewrites an active run's snapshot: it is read from the run's launch
-intent and receipt, not re-resolved from the current files. A daemon restart
+The snapshot records both the working route (`route_provider`, `route_harness`,
+`native_alias`, `qualification`) and the canonical policy (`canonical_model`,
+`canonical_effort`, `canonical_vendor`). It is authoritative for that run.
+Editing `host.yml` or the fleet policy never rewrites an active run's snapshot:
+it is read from the run's launch intent and receipt, not re-resolved from the
+current files. A daemon restart
 keeps the same snapshot for work that resumes on the same run. A new placement
 — a fresh run, a replacement, or an explicit reroute — resolves anew and
 records a new snapshot under the existing recovery and reroute rules; an

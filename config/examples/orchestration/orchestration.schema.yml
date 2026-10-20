@@ -88,17 +88,30 @@ paths:
   conventions:
     project.worktree_layout: a pattern with <key-slug> and <module>, not a resolved path
 
-# The fleet/host join. The logical slot is the only join key; native aliases
-# are host-local and never appear in the shared fleet policy.
+# The fleet/host join. The fleet owns canonical model/vendor/effort policy; the
+# host owns the working provider/harness/account route. The logical slot is the
+# join key, and the canonical model name is the compatibility key.
 route_binding:
   slot_universe: fleet.domains.<domain>.accounts[]
   host_slot: host.provider_accounts.<slot>
   host_order: host.routes.<domain>[]
   join_key: slot
-  resolution: walk the chain step, then host.routes.<domain> in order; take the first available slot's native_alias
-  fallback: skip an unavailable slot, then descend to the next chain step
-  invariants: [model_id, effort, vendor]
-  host_local: [native_alias, provider, harness, credential]
+  canonical:
+    owner: fleet
+    fields: [model_id, vendor, efforts, chains, bindings]
+    note: domains.<domain>.provider is the canonical/native family, not a host restriction
+  host_route:
+    fields: [provider, harness, native_alias, credential, serves, efforts, qualification]
+    serves: the fleet model names this route is proved to serve
+    efforts: optional subset of the fleet model's efforts
+    qualification: required when provider differs from the fleet domain provider
+  compatibility:
+    rule: the route lists the canonical model in serves and supports the pinned effort; a cross-provider route needs a qualification
+    refusal: an unproven cross-provider route is refused; a different provider is never substituted merely because it is available
+    fleet_edit: a host route change never requires a fleet policy edit
+  fallback: skip an incompatible route, continue routes.<domain>, then descend to the next chain step; never change the canonical model or effort to fit a route
+  vendor_independence: the canonical fleet vendor, not the working provider or harness
+  migration: schema_version 2 accounts become logical slots; legacy native aliases map to host routes; active-run snapshots are preserved; no daemon change before KR-14
 
 # A placement freezes this record. A later host edit changes new placements,
 # never the snapshot an active run already holds.
@@ -107,10 +120,11 @@ route_snapshot:
     - policy_hash
     - host_route_hash
     - slot
+    - route_provider
+    - route_harness
     - native_alias
-    - provider
-    - harness
-    - model
-    - effort
-    - vendor
+    - qualification
+    - canonical_model
+    - canonical_effort
+    - canonical_vendor
     - resolved_at

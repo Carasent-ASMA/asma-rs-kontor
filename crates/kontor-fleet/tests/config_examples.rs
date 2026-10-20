@@ -401,13 +401,33 @@ fn the_schema_file_and_both_examples_agree() {
         Some("slot"),
         "the only fleet/host join key is the logical slot"
     );
-    for field in ["model", "effort", "vendor"] {
+    for field in ["canonical_model", "canonical_effort", "canonical_vendor"] {
         assert!(
             schema_keys(&schema["route_snapshot"]["fields"], "snapshot fields")
                 .contains(&field.to_owned()),
             "the snapshot preserves {field}"
         );
     }
+    for field in ["serves", "efforts", "qualification"] {
+        assert!(
+            schema_keys(
+                &schema["route_binding"]["host_route"]["fields"],
+                "host route fields"
+            )
+            .contains(&field.to_owned()),
+            "the host route declares {field}"
+        );
+    }
+    assert!(
+        schema["route_binding"]["compatibility"]["fleet_edit"]
+            .as_str()
+            .is_some_and(|text| text.contains("never requires a fleet policy edit"))
+    );
+    assert!(
+        schema["route_binding"]["migration"]
+            .as_str()
+            .is_some_and(|text| text.contains("no daemon change before KR-14"))
+    );
 
     for relative in [
         "config/examples/orchestration/orchestration.yml",
@@ -636,6 +656,10 @@ fn the_host_example_declares_every_bootstrap_section_without_a_secret() {
             !required_string(account, "native_alias", name).starts_with('/'),
             "provider_accounts.{name}.native_alias is a runtime account id, not a path"
         );
+        assert!(
+            !schema_keys(required(account, "serves", name), name).is_empty(),
+            "provider_accounts.{name}.serves names at least one canonical model"
+        );
     }
     for (domain, route) in map(&document["routes"], "routes") {
         let domain = domain.as_str().expect("a route domain");
@@ -649,20 +673,37 @@ fn the_host_example_declares_every_bootstrap_section_without_a_secret() {
     }
 
     let fleet = read("config/examples/fleet.yml");
-    for (domain, route) in map(&document["routes"], "routes") {
-        let domain = domain.as_str().expect("a route domain");
-        let fleet_domain = &fleet["domains"][domain];
-        let provider = fleet_domain["provider"]
-            .as_str()
-            .expect("a fleet domain provider");
-        for slot in sequence(route, domain) {
-            let slot = slot.as_str().expect("a logical slot");
-            let account = &document["provider_accounts"][slot];
-            assert_eq!(
-                account["provider"].as_str(),
-                Some(provider),
-                "routes.{domain} slot {slot} joins a provider_accounts entry of the fleet provider"
+    for (slot, account) in accounts {
+        let slot = slot.as_str().expect("a logical slot");
+        let route_provider = required_string(account, "provider", slot);
+        for model in schema_keys(required(account, "serves", slot), slot) {
+            let model_spec = &fleet["models"][&model];
+            assert!(
+                !model_spec.is_null(),
+                "{slot} serves a fleet model: {model}"
             );
+            let domain = model_spec["domain"].as_str().expect("a model domain");
+            let fleet_provider = fleet["domains"][domain]["provider"]
+                .as_str()
+                .expect("a fleet domain provider");
+            if route_provider != fleet_provider {
+                assert!(
+                    account
+                        .get("qualification")
+                        .and_then(Value::as_str)
+                        .is_some(),
+                    "{slot} serves {model} through a cross-provider route and states a qualification"
+                );
+            }
+            if let Some(route_efforts) = account.get("efforts") {
+                let fleet_efforts = schema_keys(&model_spec["efforts"], "fleet efforts");
+                for effort in schema_keys(route_efforts, "route efforts") {
+                    assert!(
+                        fleet_efforts.iter().any(|candidate| candidate == &effort),
+                        "{slot} effort {effort} is a subset of {model}'s fleet efforts"
+                    );
+                }
+            }
         }
     }
 
@@ -734,7 +775,10 @@ fn the_remaining_neutral_files_are_well_formed_yaml() {
 }
 
 fn route_slots(host: &Value, domain: &str) -> Vec<String> {
-    schema_keys(&host["routes"][domain], &format!("routes.{domain}"))
+    host.get("routes")
+        .and_then(|routes| routes.get(domain))
+        .map(|slots| schema_keys(slots, &format!("routes.{domain}")))
+        .unwrap_or_default()
 }
 
 /// Resolve one fleet model through a host's logical slot order. This is the
@@ -818,6 +862,235 @@ fn the_same_fleet_resolves_under_two_different_hosts() {
     assert_eq!(frozen.4, new_placement.4);
     assert_eq!(frozen.5, new_placement.5);
     assert_eq!(frozen.6, new_placement.6);
+}
+
+const OPEN_BINDING: &str = "team/01936f5a-0000-7000-8000-000000000001/open";
+const FALLBACK_BINDING: &str = "team/01936f5a-0000-7000-8000-000000000001/fallback";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedRoute {
+    slot: String,
+    route_provider: String,
+    route_harness: String,
+    native_alias: String,
+    qualification: Option<String>,
+    canonical_model: String,
+    canonical_effort: String,
+    canonical_vendor: String,
+}
+
+/// The successor route-compatibility rule: the fleet supplies the canonical
+/// model, effort and vendor; the host route must prove it serves that model at
+/// that effort, and a cross-provider route needs a qualification.
+fn eligible_route(
+    fleet: &Value,
+    host: &Value,
+    slot: &str,
+    model: &str,
+    effort: &str,
+) -> Result<ResolvedRoute, &'static str> {
+    let account = host
+        .get("provider_accounts")
+        .and_then(|accounts| accounts.get(slot))
+        .ok_or("route_missing")?;
+    let serves = schema_keys(account.get("serves").ok_or("route_not_served")?, "serves");
+    if !serves.iter().any(|candidate| candidate == model) {
+        return Err("route_not_served");
+    }
+
+    let fleet_model = &fleet["models"][model];
+    let fleet_efforts = schema_keys(&fleet_model["efforts"], "fleet efforts");
+    if !fleet_efforts.iter().any(|candidate| candidate == effort) {
+        return Err("fleet_effort_unsupported");
+    }
+    if let Some(route_efforts) = account.get("efforts") {
+        let route_efforts = schema_keys(route_efforts, "route efforts");
+        if !route_efforts.iter().any(|candidate| candidate == effort) {
+            return Err("route_effort_unsupported");
+        }
+    }
+
+    let domain = fleet_model["domain"].as_str().ok_or("fleet_model_domain")?;
+    let fleet_provider = fleet["domains"][domain]["provider"]
+        .as_str()
+        .ok_or("fleet_provider")?;
+    let route_provider = account["provider"].as_str().ok_or("route_provider")?;
+    let qualification = account
+        .get("qualification")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    if route_provider != fleet_provider {
+        let qualification = qualification.as_deref().ok_or("route_unqualified")?;
+        if !qualification.starts_with(route_provider) {
+            return Err("route_unqualified");
+        }
+    }
+
+    Ok(ResolvedRoute {
+        slot: slot.to_owned(),
+        route_provider: route_provider.to_owned(),
+        route_harness: account["harness"]
+            .as_str()
+            .ok_or("route_harness")?
+            .to_owned(),
+        native_alias: account["native_alias"]
+            .as_str()
+            .ok_or("route_native_alias")?
+            .to_owned(),
+        qualification,
+        canonical_model: fleet_model["id"]
+            .as_str()
+            .ok_or("canonical_model")?
+            .to_owned(),
+        canonical_effort: effort.to_owned(),
+        canonical_vendor: fleet_model["vendor"]
+            .as_str()
+            .ok_or("canonical_vendor")?
+            .to_owned(),
+    })
+}
+
+/// Resolve one binding through the configured chain. An incompatible route is
+/// skipped; the next chain step is tried; if nothing is compatible the last
+/// typed reason is returned and nothing is substituted.
+fn resolve_binding(
+    fleet: &Value,
+    host: &Value,
+    binding: &str,
+) -> Result<ResolvedRoute, &'static str> {
+    let chain_name = fleet["bindings"][binding]
+        .as_str()
+        .ok_or("binding_missing")?;
+    let steps = fleet["chains"][chain_name]
+        .as_sequence()
+        .ok_or("chain_missing")?;
+    let mut last = "no_compatible_route";
+    for step in steps {
+        let entries = step.as_sequence().ok_or("step_missing")?;
+        for entry in entries {
+            let entry = entry.as_str().ok_or("entry_missing")?;
+            let (model, effort) = entry.split_once('@').ok_or("entry_malformed")?;
+            let domain = fleet["models"][model]["domain"]
+                .as_str()
+                .ok_or("model_domain")?;
+            for slot in route_slots(host, domain) {
+                match eligible_route(fleet, host, &slot, model, effort) {
+                    Ok(route) => return Ok(route),
+                    Err(reason) => last = reason,
+                }
+            }
+        }
+    }
+    Err(last)
+}
+
+#[test]
+fn the_same_fleet_resolves_through_a_different_provider_route() {
+    let fleet = read("config/examples/fleet.yml");
+    let opencode_route = resolve_binding(
+        &fleet,
+        &read("config/examples/host.example.yml"),
+        OPEN_BINDING,
+    )
+    .expect("the OpenCode route serves the canonical model");
+    let acp_route = resolve_binding(
+        &fleet,
+        &read("tests/fixtures/config/host-cross-provider.yml"),
+        OPEN_BINDING,
+    )
+    .expect("the qualified ACP route serves the same canonical model");
+
+    assert_eq!(opencode_route.route_provider, "opencode");
+    assert_eq!(opencode_route.route_harness, "opencode");
+    assert_eq!(acp_route.route_provider, "glm-acp-agent");
+    assert_eq!(acp_route.route_harness, "acp-agent");
+    assert_eq!(acp_route.qualification.as_deref(), Some("glm-acp-agent@1"));
+
+    assert_eq!(opencode_route.canonical_model, acp_route.canonical_model);
+    assert_eq!(opencode_route.canonical_effort, acp_route.canonical_effort);
+    assert_eq!(opencode_route.canonical_vendor, acp_route.canonical_vendor);
+    assert_eq!(opencode_route.canonical_model, "example/model");
+    assert_eq!(opencode_route.canonical_effort, "max");
+    assert_eq!(opencode_route.canonical_vendor, "example");
+    assert_ne!(opencode_route.native_alias, acp_route.native_alias);
+}
+
+#[test]
+fn an_unqualified_cross_provider_route_is_refused() {
+    let fleet = read("config/examples/fleet.yml");
+    let mut host = read("tests/fixtures/config/host-cross-provider.yml");
+    host["provider_accounts"]["opencode"]
+        .as_mapping_mut()
+        .expect("the opencode route")
+        .remove("qualification");
+    assert_eq!(
+        resolve_binding(&fleet, &host, OPEN_BINDING),
+        Err("route_unqualified"),
+        "a cross-provider substitution without a qualification is refused"
+    );
+
+    let mut wrong = read("tests/fixtures/config/host-cross-provider.yml");
+    wrong["provider_accounts"]["opencode"]["qualification"] =
+        Value::String("unrelated-contract@1".to_owned());
+    assert_eq!(
+        resolve_binding(&fleet, &wrong, OPEN_BINDING),
+        Err("route_unqualified"),
+        "a qualification that does not name the route is not proof"
+    );
+}
+
+#[test]
+fn a_route_that_does_not_serve_the_model_is_refused() {
+    let fleet = read("config/examples/fleet.yml");
+    let mut host = read("tests/fixtures/config/host-cross-provider.yml");
+    host["provider_accounts"]["opencode"]["serves"] =
+        Value::Sequence(vec![Value::String("grok-example".to_owned())]);
+    assert_eq!(
+        resolve_binding(&fleet, &host, OPEN_BINDING),
+        Err("route_not_served"),
+        "a route that does not prove the model is not eligible"
+    );
+}
+
+#[test]
+fn an_incompatible_route_falls_through_the_configured_chain() {
+    let fleet = read("config/examples/fleet.yml");
+    let cross = read("tests/fixtures/config/host-cross-provider.yml");
+
+    // The ACP route states high/max only, so the pinned low effort is refused
+    // on step one and the configured chain descends to the next policy step.
+    let fallback = resolve_binding(&fleet, &cross, FALLBACK_BINDING)
+        .expect("the next policy step is compatible");
+    assert_eq!(fallback.slot, "codex-primary");
+    assert_eq!(fallback.route_provider, "codex");
+    assert_eq!(fallback.canonical_model, "gpt-example");
+    assert_eq!(fallback.canonical_effort, "xhigh");
+    assert_eq!(fallback.canonical_vendor, "openai");
+
+    // The OpenCode host can serve the pinned low effort directly; it does not
+    // silently take the fallback.
+    let direct = resolve_binding(
+        &fleet,
+        &read("config/examples/host.example.yml"),
+        FALLBACK_BINDING,
+    )
+    .expect("the OpenCode route serves the low effort");
+    assert_eq!(direct.slot, "opencode");
+    assert_eq!(direct.canonical_model, "example/model");
+    assert_eq!(direct.canonical_effort, "low");
+}
+
+#[test]
+fn a_chain_with_no_compatible_route_is_refused_without_substitution() {
+    let fleet = read("config/examples/fleet.yml");
+    let mut host = read("tests/fixtures/config/host-cross-provider.yml");
+    host["routes"]["codex"] = Value::Sequence(vec![]);
+    let outcome = resolve_binding(&fleet, &host, FALLBACK_BINDING);
+    assert_eq!(
+        outcome,
+        Err("route_effort_unsupported"),
+        "the typed reason names the first refusal; no model or effort is substituted"
+    );
 }
 
 #[test]

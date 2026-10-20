@@ -1,7 +1,7 @@
-# A second host configuration over the same neutral fleet policy. It proves
-# that the fleet account slots are logical: only the native aliases, harnesses
-# and route order differ, while the canonical model id, effort and vendor stay
-# the same. Test data, not a deployment file.
+# Compatibility fixture A: alias and route-order change over the same fleet
+# policy. The canonical model id, effort and vendor stay the same; only the
+# host-local native aliases and the route order differ. The fleet policy is
+# unchanged. Test data, not a deployment file.
 schema_version: 1
 time_zone: Europe/Oslo
 
@@ -36,26 +36,31 @@ provider_accounts:
     native_alias: desktop-claude-a
     harness: paseo
     credential: keychain:desktop/claude-primary
+    serves: [opus-example]
   claude-secondary:
     provider: claude
     native_alias: desktop-claude-b
     harness: paseo
     credential: keychain:desktop/claude-secondary
+    serves: [opus-example]
   codex-primary:
     provider: codex
     native_alias: desktop-codex-a
     harness: paseo
     credential: keychain:desktop/codex-primary
+    serves: [sol-example]
   cursor:
     provider: cursor
     native_alias: desktop-cursor-a
     harness: paseo
     credential: keychain:desktop/cursor
+    serves: [grok-example]
   opencode:
     provider: opencode
     native_alias: desktop-open-model-a
     harness: opencode
     credential: keychain:desktop/opencode
+    serves: [open-example]
 
 # The desktop prefers the secondary Claude slot.
 routes:

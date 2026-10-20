@@ -46,26 +46,31 @@ provider_accounts:
     native_alias: laptop-claude-1
     harness: paseo
     credential: keychain:kontor-example/claude-primary
+    serves: [opus-example]
   claude-secondary:
     provider: claude
     native_alias: laptop-claude-2
     harness: paseo
     credential: keychain:kontor-example/claude-secondary
+    serves: [opus-example]
   codex-primary:
     provider: codex
     native_alias: laptop-codex-1
     harness: paseo
     credential: keychain:kontor-example/codex-primary
+    serves: [sol-example]
   cursor:
     provider: cursor
     native_alias: laptop-cursor-1
     harness: paseo
     credential: keychain:kontor-example/cursor
+    serves: [grok-example]
   opencode:
     provider: opencode
     native_alias: laptop-open-model-1
     harness: opencode
     credential: keychain:kontor-example/opencode
+    serves: [open-example]
 
 # Route order and availability: a fleet domain maps to the logical slots this
 # host enables, in preference order. A slot omitted here is unavailable on this

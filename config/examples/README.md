@@ -87,13 +87,23 @@ holds references only.
 ## Route join
 
 A fleet domain's `accounts` are logical slots. `host.example.yml`
-`provider_accounts.<slot>.native_alias` is the machine's real account id, and
-`host.routes.<domain>` orders the slots this host enables. A route keeps the
-fleet model id, effort and vendor; an unavailable slot is skipped, then the
-policy descends to its next step. A native alias changes only in `host.yml` and
-never requires a fleet edit; the fleet changes only when a logical slot is
-added, removed or moved. `tests/fixtures/config/host-alternate.yml` shows the
-same fleet under a second host mapping.
+`provider_accounts.<slot>` binds a slot to this host's working route:
+`provider`, `harness`, `native_alias`, `credential` and `serves` (the canonical
+fleet models the route is proved to serve), with optional `efforts` and, for a
+cross-provider route, a `qualification` naming the reviewed route contract
+(`<route>@<revision>`). `host.routes.<domain>` orders the slots
+this host enables.
+
+A route is eligible only when it serves the canonical model at the pinned
+effort; a cross-provider route without a qualification is refused, never
+silently substituted. The canonical model id, effort and vendor are unchanged,
+and vendor independence uses the canonical vendor. An incompatible route is
+skipped and the configured chain falls through; if no step is compatible, the
+placement is refused. A native alias or working provider changes only in
+`host.yml` and never requires a fleet edit. `tests/fixtures/config/host-alternate.yml`
+shows a second alias/order mapping and
+`tests/fixtures/config/host-cross-provider.yml` shows the same fleet through a
+different provider/harness route.
 
 A placement records its resolved slot, native alias, provider, harness, model,
 effort, vendor, policy hash and host-route hash in an immutable

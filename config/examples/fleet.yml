@@ -75,6 +75,13 @@ chains:
     - [opus-example@xhigh]
     - [grok-example@high]
     - [open-example@max]
+  # A fallback chain: if the lightweight route cannot serve the pinned effort,
+  # placement descends to the next policy step rather than substituting a route.
+  open-fallback:
+    - [open-example@low]
+    - [sol-example@xhigh]
+  open-route:
+    - [open-example@max]
 
 # Bindings name chains. Replace the team, committee, advisor and leadership
 # ids with the ids the project publishes; leadership keys name a pinned Core
@@ -84,6 +91,8 @@ bindings:
   team/01936f5a-0000-7000-8000-000000000001/implement: claude-first
   team/01936f5a-0000-7000-8000-000000000001/verify: independent-review
   team/01936f5a-0000-7000-8000-000000000001/audit: codex-first
+  team/01936f5a-0000-7000-8000-000000000001/fallback: open-fallback
+  team/01936f5a-0000-7000-8000-000000000001/open: open-route
   committee/01991c00-0000-7000-8000-000000000001/reviewer-a: independent-review
   committee/01991c00-0000-7000-8000-000000000001/reviewer-b: claude-first
   committee/01991c00-0000-7000-8000-000000000001/judge: codex-first
