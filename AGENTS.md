@@ -50,8 +50,9 @@ without a private parent checkout.
 7. **Secrets stay references.** Credentials, provider homes and tokens never
    enter databases, logs, exports, command arguments, fixtures, tickets or docs.
 8. **The public tree carries only public material.** Never copy people,
-   accounts, costs, credentials, host paths, private project data or links into
-   a private repository. Public examples use placeholders and synthetic values.
+   accounts, costs, credentials, host paths, private project data or private
+   links into this repository. Public examples use placeholders and synthetic
+   values.
 
 ## The workflow in brief
 
