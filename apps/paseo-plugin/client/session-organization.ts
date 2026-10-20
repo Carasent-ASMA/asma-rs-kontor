@@ -1,4 +1,4 @@
-import type { DirectoryEntry } from "./session-directory";
+import { hasSessionAttention, type DirectoryEntry } from "./session-directory";
 
 export const OTHER_WORKSTREAM = "Other work";
 export const UNASSIGNED_EPIC = "Unassigned";
@@ -89,6 +89,10 @@ export type OrganizationGroup = {
   readonly unit: "sessions" | "workspaces";
   readonly unitTotal: number;
   readonly unitVisible: number;
+  /** A workstream that holds desk work or an empty desk workspace; false on every other group. */
+  readonly desk: boolean;
+  /** Native metadata for an empty workspace, retained through display placement. */
+  readonly workspace?: OrganizationWorkspace;
 };
 
 export type OrganizationDisplayMapping = {
@@ -106,6 +110,30 @@ export type OrganizationInput = {
   readonly workspaces?: readonly OrganizationWorkspace[];
 };
 export type OrganizationWorkspace = { readonly id: string; readonly name: string; readonly projectKey?: string | null; readonly projectName?: string | null };
+export type OrganizationProject = { readonly id: string; readonly name: string };
+
+const DESK_PROJECT_SCOPE = "desk-project:";
+export function deskProjectScope(projectId: string): string {
+  return `${DESK_PROJECT_SCOPE}${encodeURIComponent(projectId)}`;
+}
+
+/** Native IDs keep same-named desks distinct and survive a rename; the project feed includes empty desks. */
+export function deriveDeskScopes(
+  entries: readonly DirectoryEntry[],
+  workspaces: readonly OrganizationWorkspace[] = [],
+  projects: readonly OrganizationProject[] = [],
+): { readonly id: string; readonly label: string; readonly projectId: string }[] {
+  const names = new Map(projects.map((project) => [project.id, project.name]));
+  for (const workspace of workspaces) {
+    if (workspace.projectKey && workspace.projectName && !names.has(workspace.projectKey)) names.set(workspace.projectKey, workspace.projectName);
+  }
+  for (const entry of entries) {
+    if (entry.projectKey && entry.projectName && !names.has(entry.projectKey)) names.set(entry.projectKey, entry.projectName);
+  }
+  return [...names].filter(([, name]) => nativeDesk(name) !== null)
+    .map(([projectId, label]) => ({ id: deskProjectScope(projectId), label, projectId }))
+    .sort((left, right) => left.label.localeCompare(right.label) || left.projectId.localeCompare(right.projectId));
+}
 
 export type OrganizationRow =
   | {
@@ -269,12 +297,30 @@ export function declaredScope(
   return { workstream, epic };
 }
 
+/**
+ * The desk a native project's name makes it: "DESK • PR REVIEW" is pr-review, the form the PR desk's
+ * own `desk` label uses, so labelled and unlabelled members share one group. A naming convention, not
+ * a label: it only fills a workstream nothing declares, and the project ID stays the identity.
+ */
+export function nativeDesk(projectName: string | null | undefined): string | null {
+  const prefix = prefixBeforeSeparator(projectName);
+  if (prefix === null || normalizedPrefix(prefix) !== "desk") {
+    return null;
+  }
+  const name = clean(projectName!.slice(projectName!.indexOf(SEPARATOR) + 1));
+  return name === null ? null : name.toLocaleLowerCase().replace(/[\s_]+/g, "-");
+}
+
+/** Mapping, then desk and workstream labels; a native desk project fills what none declares, then Other work. */
 export function organizationScope(
   entry: DirectoryEntry,
   mappings: OrganizationInput["displayMappings"],
 ): { readonly workstream: string; readonly epic: string } {
   const declared = declaredScope(entry, mappings);
-  return { workstream: declared.workstream ?? OTHER_WORKSTREAM, epic: declared.epic ?? UNASSIGNED_EPIC };
+  return {
+    workstream: declared.workstream ?? nativeDesk(entry.projectName) ?? OTHER_WORKSTREAM,
+    epic: declared.epic ?? UNASSIGNED_EPIC,
+  };
 }
 
 /** The epic as shown: no display mapping or epic label links the session to one. */
@@ -315,13 +361,13 @@ export function sessionState(entry: DirectoryEntry): OrganizationState {
   if (entry.needsInput) {
     return "needs_input";
   }
-  if (entry.status === "error" || entry.attentionReason === "error") {
+  if (entry.status === "error") {
     return "failed";
   }
   if (entry.status === "running") {
     return "running";
   }
-  if (entry.requiresAttention || entry.attentionReason !== null) {
+  if (hasSessionAttention(entry)) {
     return "attention";
   }
   return entry.status;
@@ -365,6 +411,8 @@ function group(input: {
   readonly groups: readonly OrganizationGroup[];
   readonly detail?: string | null;
   readonly epic?: string | null;
+  readonly desk?: boolean;
+  readonly workspace?: OrganizationWorkspace;
 }): OrganizationGroup {
   const entries = [
     ...input.groups.flatMap((child) => child.entries),
@@ -376,6 +424,7 @@ function group(input: {
     ...input,
     detail: input.detail ?? null,
     epic: input.epic ?? null,
+    desk: input.desk ?? false,
     entries,
     totalCount: entries.length,
     visibleCount: entries.length,
@@ -553,6 +602,7 @@ function buildWorkspaceGroups(input: {
         shortCode: null,
         parentKey: input.parentKey,
         depth: input.depth,
+        workspace: input.emptyWorkspaces?.find((workspace) => key === `id:${workspace.id}`),
         sessions: roles.sessions,
         groups: roles.groups,
       });
@@ -711,6 +761,8 @@ function buildHierarchy(input: {
       /** Desk work with no linked epic: its workspaces sit directly under the desk. */
       desk: DirectoryEntry[];
       deskEmpty: OrganizationWorkspace[];
+      /** Holds desk work, with or without an epic, or an empty desk workspace. */
+      isDesk: boolean;
     }
   >();
   for (const entry of input.entries) {
@@ -718,10 +770,12 @@ function buildHierarchy(input: {
     const workstreamKey = normalizedPrefix(scope.workstream);
     let workstream = workstreams.get(workstreamKey);
     if (!workstream) {
-      workstream = { label: scope.workstream, epics: new Map(), desk: [], deskEmpty: [] };
+      workstream = { label: scope.workstream, epics: new Map(), desk: [], deskEmpty: [], isDesk: false };
       workstreams.set(workstreamKey, workstream);
     }
-    if (scope.epic === UNASSIGNED_EPIC && isDeskWork(entry, input.displayMappings)) {
+    const deskWork = isDeskWork(entry, input.displayMappings);
+    workstream.isDesk ||= deskWork;
+    if (scope.epic === UNASSIGNED_EPIC && deskWork) {
       workstream.desk.push(entry);
       continue;
     }
@@ -739,13 +793,14 @@ function buildHierarchy(input: {
   for (const workspace of input.workspaces ?? []) {
     if (occupied.has(workspace.id)) continue;
     const mapping = input.displayMappings?.[workspaceMappingKey(workspace.id)];
-    const stream = mapping?.workstream ?? OTHER_WORKSTREAM;
+    const desk = mapping?.workstream ? null : nativeDesk(workspace.projectName);
+    const stream = mapping?.workstream ?? desk ?? OTHER_WORKSTREAM;
     const epic = mapping?.epic ?? UNASSIGNED_EPIC;
     const streamKey = normalizedPrefix(stream);
     let parent = workstreams.get(streamKey);
-    if (!parent) { parent = { label: stream, epics: new Map(), desk: [], deskEmpty: [] }; workstreams.set(streamKey, parent); }
-    // A workspace carries no desk label, so only a desk workstream makes it desk work.
-    if (epic === UNASSIGNED_EPIC && workstreamRank(stream) === 0) { parent.deskEmpty.push(workspace); continue; }
+    if (!parent) { parent = { label: stream, epics: new Map(), desk: [], deskEmpty: [], isDesk: false }; workstreams.set(streamKey, parent); }
+    // A workspace carries no desk label, so a desk workstream or its native desk project makes it desk work.
+    if (epic === UNASSIGNED_EPIC && (workstreamRank(stream) === 0 || desk !== null)) { parent.deskEmpty.push(workspace); parent.isDesk = true; continue; }
     const projectKey = workspace.projectKey ?? `unknown:${workspace.id}`;
     const epicKey = JSON.stringify([projectKey, normalizedPrefix(epic)]);
     let target = parent.epics.get(epicKey);
@@ -790,6 +845,7 @@ function buildHierarchy(input: {
           child.kind !== "epic" ? 1 : child.epic === null ? 2 : 0,
         ),
         detail: assigned > 0 ? `${assigned} epic${assigned === 1 ? "" : "s"}` : null,
+        desk: workstream.isDesk,
       }),
     );
   }
@@ -1089,15 +1145,62 @@ export function inEpicScope(
   return normalizedPrefix(organizationScope(entry, mappings).epic) === normalizedPrefix(epic);
 }
 
-/** Desk work is a desk workstream (PR Review, Adam, QA) or a native desk label without a workstream mapping. */
+/**
+ * Desk work is a desk workstream (PR Review, Adam, QA), a native desk label without a workstream
+ * mapping, or a native desk project's session that nothing assigns a workstream.
+ */
 export function isDeskWork(
   entry: DirectoryEntry,
   mappings: OrganizationInput["displayMappings"],
 ): boolean {
   return (
     workstreamRank(organizationScope(entry, mappings).workstream) === 0 ||
-    (mappedValue(mappings, entry, "workstream") === null && clean(entry.labels.desk) !== null)
+    (mappedValue(mappings, entry, "workstream") === null && clean(entry.labels.desk) !== null) ||
+    (declaredScope(entry, mappings).workstream === null && nativeDesk(entry.projectName) !== null)
   );
+}
+
+/**
+ * A session in a scope context. A desk context counts every member of its native desk project,
+ * whatever workstream it is filed under, plus the sessions a label or mapping files under the desk;
+ * Other work is everything no desk context holds. Any other value names a workstream.
+ */
+export function matchesScope(
+  entry: DirectoryEntry,
+  scope: string | null,
+  mappings: OrganizationInput["displayMappings"],
+): boolean {
+  return matchesDeskScope(scope, entry.projectKey, entry.projectName, organizationScope(entry, mappings).workstream, isDeskWork(entry, mappings));
+}
+
+function matchesDeskScope(scope: string | null, projectId: string | null | undefined, projectName: string | null | undefined, workstream: string, deskWork: boolean): boolean {
+  if (scope?.startsWith(DESK_PROJECT_SCOPE)) return !!projectId && scope === deskProjectScope(projectId);
+  const stream = normalizedPrefix(workstream);
+  const desk = nativeDesk(projectName);
+  switch (scope) {
+    case null:
+      return true;
+    case "PR Review":
+      return stream === "pr review" || stream === "pr-review" || desk === "pr-review";
+    case "Adam":
+      return stream === "adam" || desk === "adam";
+    case "Desks":
+      return desk !== null || deskWork;
+    case "Other work":
+      return desk === null && !deskWork;
+    default:
+      return stream === normalizedPrefix(scope);
+  }
+}
+
+/** Keep empty workspaces by native membership as well as display placement, without admitting siblings. */
+export function scopeKeepsGroup(group: OrganizationGroup, scope: string | null, mappings?: OrganizationInput["displayMappings"]): boolean {
+  if (scope === null) return group.kind === "workspace";
+  if (!["PR Review", "Adam", "Desks"].includes(scope) && !scope.startsWith(DESK_PROJECT_SCOPE)) return false;
+  if (group.kind !== "workspace" || group.totalCount !== 0 || !group.workspace) return false;
+  const workspace = group.workspace;
+  const stream = clean(mappings?.[workspaceMappingKey(workspace.id)]?.workstream) ?? nativeDesk(workspace.projectName) ?? OTHER_WORKSTREAM;
+  return matchesDeskScope(scope, workspace.projectKey, workspace.projectName, stream, workstreamRank(stream) === 0);
 }
 
 export function isFavoriteSession(

@@ -29,7 +29,7 @@ function parseSourceCatalog(raw: string, origin: string): SourceCatalog {
     return { sources: [], diagnostics: [`Invalid ${origin}: ${error instanceof Error ? error.message : String(error)}`] };
   }
 }
-/** Read one operator-owned catalog snapshot on plugin load/reload, never from client settings. */
+/** Read one operator-owned catalog snapshot, never from client settings. */
 export function sourceCatalog(raw = process.env.KONTOR_PLUGIN_READ_SOURCES): SourceCatalog {
   if (raw?.trim()) return parseSourceCatalog(raw, "KONTOR_PLUGIN_READ_SOURCES");
   const file = join(dirname(readConfig().paseoWorktreesRoot), "plugin-config", "kontor", "read-sources.json");
@@ -58,7 +58,7 @@ export function sourceCatalog(raw = process.env.KONTOR_PLUGIN_READ_SOURCES): Sou
   }
 }
 const sha256 = (data: string) => createHash("sha256").update(data).digest("hex");
-async function boundedRead(path: string): Promise<string> {
+export async function boundedRead(path: string): Promise<string> {
   const handle = await open(path, "r");
   try {
     const info = await handle.stat();
@@ -124,15 +124,16 @@ export async function readConfiguredSource(source: ReadSourceSummary, exporter: 
   }
   return result;
 }
-export function contributeReadSources(server: PluginServerContext, settings: PluginSettings<typeof organizationSettingsSchema>, catalog: SourceCatalog = sourceCatalog()): () => void {
+export function contributeReadSources(server: Pick<PluginServerContext, "handle">, settings: PluginSettings<typeof organizationSettingsSchema>, catalog: SourceCatalog | (() => SourceCatalog) = sourceCatalog): () => void {
+  const currentCatalog = () => typeof catalog === "function" ? catalog() : catalog;
   let latest: Awaited<ReturnType<typeof settings.read>> | null = null;
   let readError: string | null = null;
   let stopped = false;
   const firstRead = settings.read().then((state) => { if (latest === null && !stopped) latest = state; }, (error: unknown) => { readError = error instanceof Error ? error.message : String(error); });
   const stop = settings.subscribe((state) => { latest = state; readError = null; });
-  server.handle(listReadSources, () => catalog);
+  server.handle(listReadSources, () => currentCatalog());
   server.handle(readSource, ({ sourceId }) => {
-    const source = catalog.sources.find((entry) => entry.id === sourceId);
+    const source = currentCatalog().sources.find((entry) => entry.id === sourceId);
     if (!source) throw new Error("Source ID is not in the configured host catalog");
     return readConfiguredSource(source);
   });
@@ -140,7 +141,7 @@ export function contributeReadSources(server: PluginServerContext, settings: Plu
     await firstRead;
     const state = latest;
     return { status: state?.status ?? ("unavailable" as const), associations: state?.status === "ready" ? state.values.planAssociations : {},
-      sources: catalog.sources.filter((entry) => entry.kind === "plan"), error: state?.status === "invalid" ? state.error : readError };
+      sources: currentCatalog().sources.filter((entry) => entry.kind === "plan"), error: state?.status === "invalid" ? state.error : readError };
   });
   return () => { stopped = true; void stop(); };
 }

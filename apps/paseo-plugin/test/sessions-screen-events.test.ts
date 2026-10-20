@@ -260,14 +260,19 @@ import {
   OPTIONS_MIN_HEIGHT,
   OPTIONS_SPACE_SHARE,
   SCOPE_SUMMARY_TEST_ID,
+  SessionDetailsButton,
   sessionDetailLines,
+  SessionRow,
+  resultCues,
   SessionsScreen,
+  SessionTimeLines,
   SHORT_PEEK_HEIGHT,
   SlimActionButton,
   SlimToolbar,
   toolbarOpenPatch,
 } from "../client/sessions-screen";
 import { StateBadge } from "../client/organization-row";
+import { SessionUsage, SessionUsageLines } from "../client/session-usage-view";
 import { AnchoredMenu, MenuItem } from "../client/anchored-menu";
 import { nativeFreshnessLabel } from "../client/native-freshness";
 import {
@@ -336,7 +341,7 @@ function scrollEvent(
   } as NativeSyntheticEvent<NativeScrollEvent>;
 }
 
-function renderScreen(organization?: Parameters<typeof SessionsScreen>[0]["organization"], compact = true, platform: "ios" | "web" = compact ? "ios" : "web") {
+function renderScreen(organization?: Parameters<typeof SessionsScreen>[0]["organization"], compact = true, platform: "ios" | "web" = compact ? "ios" : "web", native?: Pick<Parameters<typeof SessionsScreen>[0], "projects" | "workspaces">) {
   const navigation = {
     openAgent: () => undefined,
     openBrowser: () => undefined,
@@ -350,6 +355,7 @@ function renderScreen(organization?: Parameters<typeof SessionsScreen>[0]["organ
       theme: { colors } as PluginTheme,
       params: {},
       organization,
+      ...native,
     } as PluginScreenProps),
   );
   const list = findByTestID(tree, "sessions-list");
@@ -449,6 +455,42 @@ describe("SessionsScreen toolbar events", () => {
   afterEach(() => {
     harness.unmount();
     vi.useRealTimers();
+  });
+
+  it.each([true, false])("keeps history neutral in rows and filters on compact=%s", (compact) => {
+    const history = Array.from({ length: 13 }, (_, n) => sessionEntry(`history-${n}`, {
+      title: `Closed review ${n}`, status: "closed", requiresAttention: true, attentionReason: "error",
+      workspaceName: n < 10 ? "Archived workspace" : "Current workspace",
+    }));
+    directory.state = { ...(directory.state as object), entries: [...history,
+      sessionEntry("current", { status: "error", requiresAttention: true, attentionReason: "error" }),
+      sessionEntry("unread", { requiresAttention: true, attentionReason: "finished" }),
+    ], includeArchived: false };
+    patchSessionView("host-a", { query: "", includeArchived: false });
+    renderScreen(undefined, compact);
+    expect(findByTestID(harness.current(), "sessions-filter-error").props.count).toBe(1);
+    expect(findByTestID(harness.current(), "sessions-filter-attention").props.count).toBe(2);
+    expect(findByTestID(harness.current(), "sessions-filter-closed").props.count).toBe(13);
+    const earlier = findByTestID(harness.current(), "sessions-filter-earlier_error");
+    expect(earlier.props.label).toBe("Earlier errors");
+    expect(earlier.props.count).toBe(13);
+    expect(earlier.props.dot).not.toBe(colors.statusDanger);
+    (earlier.props.onPress as () => void)(); harness.flush();
+    expect(sessionRowIds().sort()).toEqual(history.map((entry) => entry.id).sort());
+    expect(resultCues(history[0]!)).toContain("Earlier error · now closed");
+    const row = SessionRow({ entry: history[0]!, colors, compact, onPress: () => {}, displayContext: "Archived workspace" });
+    expect(textOf(row)).toContain("Earlier error · now closed");
+    const pressable = walk(row).find((element) => element.props.testID === "sessions-row-history-0")!;
+    expect(pressable.props.accessibilityLabel).toContain("Native status closed");
+    expect(pressable.props.accessibilityLabel).toContain("Earlier error · now closed");
+    expect(pressable.props.accessibilityLabel).not.toContain("Needs attention");
+    expect(walk(row).find((element) => element.type === StateBadge)!.props.state).toBe("closed");
+    // Archive remains an explicit independent option, and never hides closed-unarchived history.
+    (findByTestID(harness.current(), "sessions-advanced-archived").props.onPress as () => void)(); harness.flush();
+    expect(directory.inputs.at(-1)?.includeArchived).toBe(true);
+    expect(sessionRowIds()).toHaveLength(13);
+    (findByTestID(harness.current(), "sessions-filter-error").props.onPress as () => void)(); harness.flush();
+    expect(sessionRowIds()).toEqual(["current"]);
   });
 
   it("shows the count line only for results or an incomplete read, and keeps the full count and read in Filters", () => {
@@ -742,6 +784,29 @@ describe("SessionsScreen toolbar events", () => {
       advancedOpen: saved.advancedOpen,
       scrollOffset: 1389 + header,
     });
+  });
+
+  it("selects an empty native desk by ID, distinguishes duplicate names and retains selection across rename", () => {
+    patchSessionView("host-a", { query: "", advancedOpen: true, shortcut: null, toolbarOpen: true });
+    const native: Pick<Parameters<typeof SessionsScreen>[0], "projects" | "workspaces"> = { projects: [{ id: "prj_one", name: "DESK • RESEARCH" }, { id: "prj_two", name: "DESK • RESEARCH" }], workspaces: [] };
+    renderScreen(undefined, true, "ios", native);
+    const openScope = () => { (findByTestID(harness.current(), "sessions-scope").props.onPress as () => void)(); harness.flush(); };
+    openScope();
+    const choices = walk(harness.current()).filter((element) => element.type === MenuItem && element.props.label === "DESK • RESEARCH");
+    expect(choices.map((choice) => choice.props.detail)).toEqual(["prj_one", "prj_two"]);
+    (choices[0]!.props.onPress as () => void)(); harness.flush();
+    expect(readSessionView("host-a").shortcut).toBe("desk-project:prj_one");
+    expect(sessionRowIds()).toEqual([]);
+    expect(findByTestID(harness.current(), "sessions-scope").props.value).toBe("DESK • RESEARCH");
+    native.workspaces = [{ id: "wks_empty_desk", name: "CSW • empty native desk", projectKey: "prj_one", projectName: "DESK • RESEARCH" }];
+    harness.flush();
+    expect(groupRows().filter((row) => row.group.kind === "workspace").map((row) => row.group.label)).toEqual(["CSW • empty native desk"]);
+    native.projects = [{ id: "prj_one", name: "DESK • DOCS" }, native.projects![1]!];
+    harness.flush();
+    expect(findByTestID(harness.current(), "sessions-scope").props.value).toBe("DESK • DOCS");
+    expect(readSessionView("host-a").shortcut).toBe("desk-project:prj_one");
+    openScope();
+    expect(walk(harness.current()).find((element) => element.type === MenuItem && element.props.label === "DESK • DOCS")!.props.selected).toBe(true);
   });
 
   it("retains Favorites and desk shortcuts across a screen remount", () => {
@@ -1115,11 +1180,15 @@ describe("SessionsScreen toolbar events", () => {
     const row = (id: string) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: listRows().find((candidate) => candidate.kind === "session" && candidate.entry.id === id) });
     const details = (id: string) => row(id).props.details as ElementLike;
     const dialog = () => walk(harness.current()).find((element) => element.props.testID === "sessions-details");
-    const lines = () => (findByTestID(dialog()!.props.children, "sessions-details-lines").props.children as ElementLike[])
+    const content = () => (findByTestID(dialog()!.props.children, "sessions-details-lines").props.children as unknown[]).flat() as (ElementLike & { readonly type: unknown })[];
+    // The times come first, drawn by their own clock-driven component; the role and place lines follow.
+    const times = () => content()[0]!;
+    const usage = () => content().find((line) => line.type === SessionUsageLines)!;
+    const lines = () => content().filter((line) => line.type === "View")
       .map((line) => (line.props.children as ElementLike[]).map(textOf).join(": "));
     const close = () => walk(dialog()!.props.header).find((element) => element.props.label === "Close")!;
     const open = (id: string) => { (details(id).props.onPress as () => void)(); harness.flush(); };
-    return { openAgent, save, row, details, dialog, lines, close, open };
+    return { openAgent, save, row, details, dialog, times, usage, lines, close, open };
   }
 
   const placeEntries = () => [
@@ -1183,7 +1252,7 @@ describe("SessionsScreen toolbar events", () => {
     expect(screen.save).not.toHaveBeenCalled();
   });
 
-  it("anchors the details beside the row on a wide screen, closes them when the view leaves Role, and draws no details elsewhere", () => {
+  it("anchors the details beside the row on a wide screen, closes them when the grouping changes, and gives every row its details", () => {
     const screen = renderDetails(placeEntries(), false);
     screen.open("desk");
     expect(screen.dialog()!.props.placement).toEqual({ align: "end", width: 360, maxHeight: 440 });
@@ -1193,7 +1262,24 @@ describe("SessionsScreen toolbar events", () => {
     expandAll();
     const sessions = listRows().filter((row) => row.kind === "session");
     expect(sessions).toHaveLength(5);
-    expect(sessions.map((row) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: row }).props.details)).toEqual(sessions.map(() => undefined));
+    const buttons = sessions.map((row) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: row }).props.details as ElementLike);
+    expect(buttons.map((button) => [button.type, button.props.title, button.props.expanded])).toEqual(sessions.map((row) => [SessionDetailsButton, row.kind === "session" ? row.entry.title : null, false]));
+    // Workstreams details open the same way, with the same lines.
+    (buttons[0]!.props.onPress as () => void)(); harness.flush();
+    expect(screen.dialog()!.props.label).toBe(`Details: ${(sessions[0] as { entry: { title: string } }).entry.title}`);
+    const renderItem = findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike;
+    const result = renderItem({ item: { kind: "result", entry: placeEntries()[0]! } });
+    expect((result.props.details as ElementLike).props.title).toBe(placeEntries()[0]!.title);
+    ((result.props.details as ElementLike).props.onPress as () => void)(); harness.flush();
+    expect(screen.dialog()).toBeDefined();
+  });
+
+  it("names the native desk workstream in Details when a desk member also has an epic", () => {
+    const session = sessionEntry("desk-with-epic", { projectName: "DESK • ADAM", labels: { epic: "ASMA-99101" } });
+    const stream = (mappings: Parameters<typeof sessionDetailLines>[1]) => sessionDetailLines(session, mappings).find((line) => line.label === "Workstream")!.value;
+    expect(stream({})).toBe("adam (native desk project)");
+    expect(stream({ "session:desk-with-epic": { workstream: "declared" } })).toBe("declared");
+    expect(sessionDetailLines({ ...session, labels: { ...session.labels, workstream: "labelled" } }, {}).find((line) => line.label === "Workstream")!.value).toBe("labelled");
   });
 
   it("names a declared Other work workstream or Unassigned epic as declared, and only a missing one as absent", () => {
@@ -1208,6 +1294,85 @@ describe("SessionsScreen toolbar events", () => {
     expect(chain(sessionEntry("blank", { labels: { workstream: " ", epic: "" } }))).toEqual(absent);
   });
 
+  it("keeps exact times and usage details on the same session, with each informed when the list becomes stale", () => {
+    const screen = renderDetails(placeEntries());
+    screen.open("long");
+    expect(screen.times().type).toBe(SessionTimeLines);
+    expect(screen.times().props).toMatchObject({ entry: { id: "long" }, freshness: { live: true, readAt: 0 } });
+    expect(screen.usage().props).toMatchObject({ entry: { id: "long" }, stale: false });
+    directory.state = { ...(directory.state as object), live: false, staleReason: "Live updates stopped.", lastUpdatedAt: 5 };
+    harness.flush();
+    expect(screen.times().props).toMatchObject({ entry: { id: "long" }, freshness: { live: false, readAt: 5 } });
+    expect(screen.usage().props).toMatchObject({ entry: { id: "long" }, stale: true });
+    directory.state = { ...(directory.state as object), status: "stale", live: true };
+    harness.flush();
+    expect(screen.times().props.freshness).toEqual({ live: false, readAt: 5 });
+  });
+
+  /** Search results for a few sessions, with the Updated time three hours back on a live list. */
+  function renderResults(compact: boolean, query = "found") {
+    vi.setSystemTime(Date.parse("2026-10-18T13:00:00.000Z"));
+    const openAgent = vi.fn();
+    directory.state = { ...(directory.state as object), entries: [
+      sessionEntry("found", { title: "SWE • found", updatedAt: "2026-10-18T10:00:00.000Z" }),
+      sessionEntry("found-too", { title: "QA • found too", status: "running", updatedAt: "2026-10-18T12:59:30.000Z" }),
+    ] };
+    patchSessionView("host-a", { query, grouping: "hierarchy", status: "all" });
+    harness.render(() => SessionsScreen({ host: { id: "host-a", label: "Host" }, layout: { compact, platform: compact ? "ios" : "web" },
+      navigation: { openAgent, openBrowser: () => undefined, openWorkspace: () => undefined }, theme: { colors } as PluginTheme, params: {} } as unknown as PluginScreenProps));
+    const result = (id: string) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike & { readonly type: (props: unknown) => ElementLike })({ item: listRows().find((row) => row.kind === "result" && row.entry.id === id) });
+    return { openAgent, result, drawn: (id: string) => { const element = result(id); return element.type(element.props); } };
+  }
+
+  it.each([[true, "3h ago"], [false, "Updated 3 hours ago"]] as const)("gives each result its Updated time and its details beside the row, and keeps open and Show in tree (compact %s)", (compact, shown) => {
+    const screen = renderResults(compact);
+    expect(listRows().map((row) => row.kind)).toEqual(["result", "result"]);
+    const drawn = screen.drawn("found");
+    expect(textOf(findByTestID(drawn, "sessions-row-age"))).toBe(shown);
+    expect(textOf(findByTestID(screen.drawn("found-too"), "sessions-row-age"))).toBe(compact ? "just now" : "Updated just now");
+    const row = findByTestID(drawn, "sessions-row-found");
+    expect(String(row.props.accessibilityLabel).endsWith(". Updated 3 hours ago")).toBe(true);
+    // The details button sits between the row and Show in tree, and opens the details only.
+    const parts = drawn.props.children as ElementLike[];
+    const details = parts[1]!;
+    expect((details as ElementLike & { type: unknown }).type).toBe(SessionDetailsButton);
+    expect(details.props).toMatchObject({ title: "SWE • found", expanded: false });
+    expect(String(parts[2]!.props.accessibilityLabel)).toBe("Show SWE • found in the tree");
+    (details.props.onPress as () => void)(); harness.flush();
+    const dialog = walk(harness.current()).find((element) => element.props.testID === "sessions-details")!;
+    expect(dialog.props.label).toBe("Details: SWE • found");
+    expect(screen.openAgent).not.toHaveBeenCalled();
+    expect((screen.result("found").props.details as ElementLike).props.expanded).toBe(true);
+    (row.props.onPress as () => void)(); harness.flush();
+    expect(screen.openAgent).toHaveBeenCalledTimes(1);
+    expect(screen.openAgent.mock.calls[0]![0]).toMatchObject({ agentId: "found" });
+    // Show in tree leaves the results, and the details opened there close.
+    (screen.result("found").props.onShowInTree as (entry: unknown) => void)(screen.result("found").props.entry); harness.flush();
+    expect(walk(harness.current()).find((element) => element.props.testID === "sessions-details")).toBeUndefined();
+  });
+
+  it("gives rows the Updated time itself, not an age, while the list is not live", () => {
+    const screen = renderResults(true);
+    expect(screen.result("found").props.live).toBe(true);
+    directory.state = { ...(directory.state as object), live: false, staleReason: "Live updates stopped." };
+    harness.flush();
+    expect(screen.result("found").props.live).toBe(false);
+    const time = new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(Date.parse("2026-10-18T10:00:00.000Z"));
+    expect(textOf(findByTestID(screen.drawn("found"), "sessions-row-age"))).toBe(time);
+    expect(String(findByTestID(screen.drawn("found"), "sessions-row-found").props.accessibilityLabel).endsWith(`. Updated today at ${time}`)).toBe(true);
+    // A tree row is told the same, and its details button sits beside it.
+    harness.unmount();
+    harness.reset();
+    renderResults(true, "");
+    directory.state = { ...(directory.state as object), live: false, staleReason: "Live updates stopped." };
+    harness.flush();
+    expandAll();
+    const session = listRows().find((row) => row.kind === "session" && row.entry.id === "found")!;
+    const drawnRow = (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: session });
+    expect((drawnRow.props.children as ElementLike).props.live).toBe(false);
+    expect((drawnRow.props.details as ElementLike).props.title).toBe("SWE • found");
+  });
+
   it("makes the lines a named stop with a visible focus on web only, and returns focus to the list once the row has left", () => {
     const screen = renderDetails(placeEntries());
     const region = () => findByTestID(screen.dialog()!.props.children, "sessions-details-lines");
@@ -1219,7 +1384,7 @@ describe("SessionsScreen toolbar events", () => {
     vi.stubGlobal("document", { activeElement: null, body: {} });
     try {
       screen.open("long");
-      expect(region().props).toMatchObject({ tabIndex: 0, role: "region", accessibilityLabel: "Role and placement" });
+      expect(region().props).toMatchObject({ tabIndex: 0, role: "region", accessibilityLabel: "Times, role, placement, model and token report" });
       expect(list().props.tabIndex).toBe(-1);
       expect(region().props.style).not.toHaveProperty("outlineWidth");
       (region().props.onFocus as () => void)(); harness.flush();
@@ -1804,11 +1969,11 @@ describe("SessionsScreen compact toolbar", () => {
     expect(banner.props.actionLabel).toBe("Retry");
   });
 
-  it("renders a compact session row as one line: title, muted context and the state badge", () => {
-    directory.state = { ...(directory.state as object), entries: [sessionEntry("0123456789abcdef", {
+  it("keeps a compact title and context together, with its Updated time, wrapped report metadata and state badge", () => {
+    directory.state = { ...(directory.state as object), entries: [{ ...sessionEntry("0123456789abcdef", {
       title: "A deliberately long session title that would otherwise wrap onto a second line on a phone",
       status: "running", pendingPermissionCount: 1, archivedAt: "2026-10-18T11:00:00.000Z", workspaceName: "RSW • review",
-    })] };
+    }), provider: "codex", model: "gpt-6.1-sol", telemetry: { lastUsage: { inputTokens: 100, outputTokens: 20 } } }] };
     patchSessionView("host-a", { grouping: "flat", includeArchived: true });
     renderCompact();
     const leaf = renderSessionLeaf();
@@ -1819,7 +1984,15 @@ describe("SessionsScreen compact toolbar", () => {
     expect(walk(title).some((element) => element.props?.testID === "sessions-row-meta")).toBe(true);
     expect(textOf(findByTestID(leaf, "sessions-row-meta"))).toBe("  Running · RSW • review · Project · Archived");
     const lines = walk(leaf).filter((element) => (element as { type?: unknown }).type === "Text" && element.props.numberOfLines === 1);
-    expect(lines.filter((line) => !walk(title).includes(line) || line === title)).toEqual([title]);
+    // The Updated value stays untruncated; model/report metadata can wrap beneath the title.
+    const age = findByTestID(leaf, "sessions-row-age");
+    expect(lines.filter((line) => !walk(title).includes(line) || line === title)).toEqual([title, age]);
+    const content = ((leaf.props.children as ElementLike).props.children as ElementLike[])[0]!;
+    expect(walk(content)).toContain(age);
+    expect(walk(content).some((element) => element.type === SessionUsage && (element.props.entry as { id: string }).id === "0123456789abcdef")).toBe(true);
+    expect(leaf.props.accessibilityLabel).toContain("Reported input tokens: 100");
+    expect(leaf.props.accessibilityLabel).toContain("Reported output tokens: 20");
+    expect(age.props.style).toMatchObject({ flexShrink: 0 });
     expect(walk(leaf).some((element) => (element as { type?: unknown }).type === StateBadge && element.props.state === "needs_input")).toBe(true);
     // ST-02: the native ID is in the accessible label, never in the visible row.
     expect(textOf(leaf)).not.toContain("01234567");
