@@ -1,7 +1,7 @@
 import type { PaseoApi } from "@getpaseo/client";
 import { DEFAULT_ORGANIZATION_SETTINGS, organizationSettingsSchema, type OrganizationSettings } from "../../../paseo-plugin/shared/organization";
 import { DEFAULT_KEYBOARD_SETTINGS, keyboardSettingsSchema, type KeyboardSettings } from "../../../paseo-plugin/shared/keyboard";
-import { baseSessions, roleSessions, scrollSessions, WORKSPACES, type FixtureSession } from "../fixtures/sessions";
+import { baseSessions, roleSessions, scrollSessions, timeSessions, WORKSPACES, type FixtureSession } from "../fixtures/sessions";
 import { SOURCE_READS } from "../fixtures/sources";
 import { SCENARIOS, type Scenario } from "../scenarios";
 import { logHostEvent } from "./event-log";
@@ -33,7 +33,7 @@ export function subscribeHost(listener: () => void): () => void {
 // Sessions ------------------------------------------------------------------
 
 const sessions = new Map<string, FixtureSession>();
-const inventory = { none: () => [], large: scrollSessions, roles: roleSessions, base: baseSessions }[scenario.inventory];
+const inventory = { none: () => [], large: scrollSessions, roles: roleSessions, times: timeSessions, base: baseSessions }[scenario.inventory];
 for (const value of inventory()) sessions.set(value.agent.id, value);
 
 type Observer = { snapshot?: (value: unknown) => void; update?: (message: unknown) => void; error?: (error: unknown) => void };

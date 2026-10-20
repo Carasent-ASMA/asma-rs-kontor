@@ -18,6 +18,8 @@ export type FixtureAgent = {
   archivedAt?: string | null;
   createdAt: string;
   updatedAt: string;
+  lastUserMessageAt?: string | null;
+  activeTurn?: { startedAt: string } | null;
   cwd: string;
   workspaceId: string | null;
   provider: string;
@@ -159,4 +161,31 @@ export function roleSessions(): FixtureSession[] {
     session({ id: "agt_revb_label", title: "Second look at PR 812", ws: "wks_desk_review", status: "idle", minutes: 22, labels: { desk: "PR Review", pr: "812", role: "rev_b" } }),
     session({ id: "agt_aud_long", title: "AUD • ASMA-99206 offline sync reconciliation audit for shared field devices", ws: "wks_tsw_99202", status: "idle", minutes: 16, project: MOBILE, labels: { workstream: "Mobile field operations and offline sync across shared devices", epic: "ASMA-99201", "kontor.role": "AUD", "jira.issue": "ASMA-99206" } }),
   ];
+}
+
+/** Fictional timestamps: metadata changes are deliberately newer than prompt/turn times. */
+export function timeSessions(): FixtureSession[] {
+  const now = Date.now();
+  const time = (minutes: number) => new Date(now - minutes * 60_000).toISOString();
+  const seeds: Seed[] = [
+    { id: "agt_time_recent", title: "SWE • Time recent edit, earlier prompt", ws: "wks_tsw_99103", minutes: 3 },
+    { id: "agt_time_old", title: "QA • Time old session", ws: "wks_tsw_99103", minutes: 40 * 24 * 60 },
+    { id: "agt_time_missing", title: "AUD • Time missing timestamps", ws: "wks_tsw_99103", minutes: 5 },
+    { id: "agt_time_invalid", title: "SWE • Time invalid timestamps", ws: "wks_tsw_99103", minutes: 5 },
+    { id: "agt_time_ahead", title: "TPM • Time clock ahead", ws: "wks_tsw_99103", minutes: -5 },
+    { id: "agt_time_running", title: "SWE • Time current turn started earlier", ws: "wks_tsw_99103", status: "running", minutes: 1 },
+    { id: "agt_time_attention", title: "QA • Time attention raised earlier", ws: "wks_tsw_99103", attention: "finished", minutes: 5 },
+    { id: "agt_time_closed", title: "AUD • Time closed, earlier error notice", ws: "wks_tsw_99103", status: "closed", attention: "error", minutes: 20 },
+  ];
+  return seeds.map((seed) => {
+    const value = session({ ...seed, labels: kontor("ASMA-99101", {}) });
+    value.agent.updatedAt = time(seed.minutes);
+    value.agent.createdAt = time(seed.minutes + 240);
+    value.agent.lastUserMessageAt = time(120);
+    if (seed.id === "agt_time_running") value.agent.activeTurn = { startedAt: time(120) };
+    if (seed.id === "agt_time_attention" || seed.id === "agt_time_closed") value.agent.attentionTimestamp = time(24 * 60);
+    if (seed.id === "agt_time_missing") Object.assign(value.agent, { updatedAt: "", createdAt: "", lastUserMessageAt: null });
+    if (seed.id === "agt_time_invalid") Object.assign(value.agent, { updatedAt: "invalid", createdAt: "invalid", lastUserMessageAt: "invalid" });
+    return value;
+  });
 }

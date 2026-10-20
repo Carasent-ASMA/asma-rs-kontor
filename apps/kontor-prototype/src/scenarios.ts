@@ -11,7 +11,7 @@ export type Scenario = {
   readonly id: string;
   readonly title: string;
   readonly summary: string;
-  readonly inventory: "base" | "large" | "roles" | "none";
+  readonly inventory: "base" | "large" | "roles" | "times" | "none";
   readonly sources: boolean;
   readonly settings?: Partial<OrganizationSettings>;
   /** The saved keyboard document; without it the Back shortcut is off, as on a new host. */
@@ -43,6 +43,9 @@ const EXPANDED: Partial<OrganizationSettings> = {
 
 export const SCENARIOS: readonly Scenario[] = [
   { id: "baseline", title: "Baseline", summary: "Default inventory, Sessions tree with one epic open.", inventory: "base", sources: true, settings: EXPANDED },
+  { id: "time-view", title: "Times: Sessions", summary: "Fictional recent, old, missing, invalid and future timestamps. Updated includes metadata; Details distinguishes prompt, current-turn and attention times.", inventory: "times", sources: true, start: { query: "time" } },
+  { id: "time-roles", title: "Times: Roles", summary: "The same eight fictional sessions grouped by role, with the same Updated values and exact Details.", inventory: "times", sources: true, settings: ROLES, start: { grouping: "role" } },
+  { id: "time-stale", title: "Times: stale inventory", summary: "The fixture host goes offline after 3 seconds. Rows switch to absolute timestamps; Details gives the last-read time.", inventory: "times", sources: true, start: { query: "time" }, hostOfflineAfterMs: 3000 },
   { id: "filtered-errors", title: "Filtered: errors", summary: "Error filter on: runtime errors and an earlier error cue on an idle session.", inventory: "base", sources: true, settings: EXPANDED, start: { status: "error" } },
   { id: "needs-input", title: "Filtered: needs input", summary: "Needs input filter on: a task QA session and a desk reviewer.", inventory: "base", sources: true, settings: EXPANDED, start: { status: "needs_input" } },
   { id: "provenance", title: "Search: provenance", summary: "Search “swe”: matches across epics, a desk, a session without a workspace and one with no labels.", inventory: "base", sources: true, settings: EXPANDED, start: { query: "swe" } },
