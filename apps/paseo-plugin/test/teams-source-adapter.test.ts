@@ -14,13 +14,13 @@ import { composeTeamsSourceView, readTeamsSource, teamsSourceSnapshotSchema,
 // pinned to LSA-SOURCE-02 (not hand-authored records or a runtime-policy fixture).
 const sources = [
   { id: "authoring", filename: "authoring-fleet.yml", format: "fleet-authoring",
-    hash: "f7ddfff7a0db716e3356d43fe209c9c73f4fe51866de5ebbc26f641968fbea54" },
+    hash: "5e49c621a5ed28a181f7e5f7c5c7c67f7bdc09c8d1258e94d48c60988fa5cff4" },
   { id: "operator", filename: "operator-fleet.yml", format: "fleet-operator",
-    hash: "e5040c5d74dbc131338b1568d0c0ada499eb31e55bafc512b4b1d883e578d3a3" },
+    hash: "d0fd421cab74df1346a6fb3c96ae2d85814af7f6336c40fdcd4c95906dab2101" },
   { id: "roster", filename: "core-team.yml", format: "core-roster",
     hash: "329f5fb70d34cb51409f32588533c1b200bd5bb434341a35d9d66fa142fd6cfc" },
   { id: "templates", filename: "mvp-team-pack.json", format: "team-templates",
-    hash: "d4b0965db9be03de42cf9aec25f0dd3c43c9c0493d6b2378b6fb8e4d82f8ee5d" },
+    hash: "2a5a0aed9c23450f984fd3d1f92c5824f4640a71b2bc9697349b0632fed8b3cc" },
 ] as const;
 const temporary: string[] = [];
 afterEach(async () => { await Promise.all(temporary.splice(0).map((path) => rm(path, { recursive: true, force: true }))); });
@@ -52,7 +52,7 @@ function fleet(snapshot: TeamsSourceSnapshot) {
   if (snapshot.data?.kind !== "fleet") throw new Error("Expected fleet data");
   return snapshot.data;
 }
-const observed: readonly ObservedTeamsSession[] = [{ nativeSessionId: "native-exact-id", provider: "codex-personal",
+const observed: readonly ObservedTeamsSession[] = [{ nativeSessionId: "native-exact-id", provider: "codex-a",
   model: "user-selected-model", effort: null, observedAt: "2026-10-19T10:00:00.000Z" }];
 
 describe("ASMA-8550 actual Teams/chains source adapter", () => {
@@ -95,7 +95,7 @@ describe("ASMA-8550 actual Teams/chains source adapter", () => {
       model: { alias: "fable-5.1", id: "claude-fable-5-1", vendor: "anthropic", calibrated: false,
         supportedEfforts: ["low", "medium", "high", "xhigh", "max", "ultracode"],
         provenance: { sourceId: "authoring", pointer: "/models/fable-5.1" } },
-      domain: { provider: "claude", accounts: ["claude-work", "claude-personal"],
+      domain: { provider: "claude", accounts: ["claude-b", "claude-a"],
         provenance: { sourceId: "authoring", pointer: "/domains/claude" } },
       provenance: { sourceId: "authoring", pointer: "/chains/hard-decision/0/0" },
     });

@@ -142,8 +142,8 @@ describe("A-owned Teams source integration", () => {
     expect(visible(page({ sources: [], snapshots: {} }))).toContain("ID missing from the configured catalog");
   });
   it.each([["authoring", 38], ["operator", 36]] as const)("preserves actual hashed 38/36 binding counts with a bounded expandable role view (%s)", (sourceId, expectedCount) => {
-    expect(snapshots.authoring!.sha256).toBe("f7ddfff7a0db716e3356d43fe209c9c73f4fe51866de5ebbc26f641968fbea54");
-    expect(snapshots.operator!.sha256).toBe("e5040c5d74dbc131338b1568d0c0ada499eb31e55bafc512b4b1d883e578d3a3");
+    expect(snapshots.authoring!.sha256).toBe("5e49c621a5ed28a181f7e5f7c5c7c67f7bdc09c8d1258e94d48c60988fa5cff4");
+    expect(snapshots.operator!.sha256).toBe("d0fd421cab74df1346a6fb3c96ae2d85814af7f6336c40fdcd4c95906dab2101");
     expect(visible(page())).not.toContain("Configured bindings");
     view = { ...DEFAULT_TEAMS_VIEW, configured: true };
     const collapsed = visible(page());
@@ -177,7 +177,7 @@ describe("A-owned Teams source integration", () => {
     expect(text.indexOf("Alternative 1: fable-5.1@xhigh")).toBeLessThan(text.indexOf("Alternative 2: opus-5.5@xhigh"));
     expect(text).toContain("selected effort: xhigh");
     expect(text).toContain("Model alias fable-5.1 · model ID claude-fable-5-1 · vendor anthropic");
-    expect(text).toContain("Domain alias claude · provider claude · account aliases claude-work, claude-personal");
+    expect(text).toContain("Domain alias claude · provider claude · account aliases claude-b, claude-a");
     expect(text).toContain("supported efforts low, medium, high, xhigh, max, ultracode");
     expect(text).toContain("calibrated false"); expect(text).toContain("/models/fable-5.1"); expect(text).toContain("/domains/claude");
     expect(text).toContain("Policy eligibility is not evaluated"); expect(text).toContain("not availability or eligibility");
