@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { DirectoryEntry } from "../client/session-directory";
 import {
   buildOrganizationTree,
+  deskProjectScope,
+  deriveDeskScopes,
   filterOrganizationTree,
   flattenOrganizationTree,
   isDeskWork,
@@ -192,5 +194,63 @@ describe("native identity is never merged by name", () => {
     const hostB = buildOrganizationTree({ entries: [entry("b-1", ADAM, "wks_adam", "ADAM", "LSA • host b"), entry("b-2", ADAM, "wks_adam", "ADAM", "LSA • host b2")] });
     expect([treeIds(hostA), treeIds(hostB).sort()]).toEqual([["a-1"], ["b-1", "b-2"]]);
     expect(hostA[0]!.key).toBe(hostB[0]!.key);
+  });
+});
+
+
+describe("native desk project contexts", () => {
+  it("offers a desk with no workspace or session from the project registry", () => {
+    const scopes = deriveDeskScopes([], [], [
+      { id: "prj_empty", name: "DESK • RESEARCH" },
+      { id: "prj_not_a_desk", name: "Research" },
+    ]);
+    expect(scopes).toEqual([{ id: deskProjectScope("prj_empty"), label: "DESK • RESEARCH", projectId: "prj_empty" }]);
+  });
+
+  it("uses current project names, keeps same-named desks distinct and retains the ID across renames", () => {
+    const one = { id: ADAM.projectKey, name: ADAM.projectName };
+    const two = { id: "prj_twin", name: ADAM.projectName };
+    const original = deriveDeskScopes(inventory(), emptyWorkspaces, [one, two]);
+    expect(original.filter((scope) => scope.label === ADAM.projectName).map((scope) => scope.projectId)).toEqual([ADAM.projectKey, "prj_twin"]);
+    const renamed = deriveDeskScopes(inventory(), emptyWorkspaces, [{ ...one, name: "DESK • DOCS" }, two]);
+    expect(renamed.find((scope) => scope.projectId === ADAM.projectKey)).toEqual({ id: deskProjectScope(ADAM.projectKey), label: "DESK • DOCS", projectId: ADAM.projectKey });
+    const retired = deriveDeskScopes(inventory(), emptyWorkspaces, [{ ...one, name: "ADAM (retired)" }]);
+    expect(retired.some((scope) => scope.projectId === ADAM.projectKey)).toBe(false);
+  });
+
+  it("filters by exact project identity, including native members filed under another workstream", () => {
+    const twin = entry("twin", { projectKey: "prj_twin", projectName: ADAM.projectName }, "wks_twin", "ADAM", "LSA • twin");
+    const scope = deskProjectScope(ADAM.projectKey);
+    expect([...inventory(), twin].filter((session) => matchesScope(session, scope, {})).map((session) => session.id)).toEqual(["adam-lsa-1", "adam-lsa-2", "adam-epic", "adam-declared"]);
+    expect(matchesScope(twin, scope, {})).toBe(false);
+    expect(matchesScope(twin, deskProjectScope("prj_twin"), {})).toBe(true);
+  });
+
+  it("keeps native empty desk workspaces across display mappings without admitting a sibling workspace", () => {
+    const workspaces = [...emptyWorkspaces,
+      { id: "wks_twin_idle", name: "CSW • twin", projectKey: "prj_twin", projectName: ADAM.projectName },
+    ];
+    const mappings = { [workspaceMappingKey("wks_adam_idle")]: { workstream: "kontor", epic: "EX-400" } };
+    const tree = buildOrganizationTree({ entries: inventory(), workspaces, displayMappings: mappings });
+    const show = (scope: string) => filterOrganizationTree(tree,
+      (session) => matchesScope(session, scope, mappings),
+      (group) => scopeKeepsGroup(group, scope, mappings),
+      (session) => matchesScope(session, scope, mappings));
+    for (const scope of ["Adam", "Desks", deskProjectScope(ADAM.projectKey)]) {
+      expect(allGroups(show(scope)).filter((group) => group.kind === "workspace" && group.totalCount === 0).map((group) => group.label)).toContain("CSW • EX-8 • review");
+    }
+    expect(allGroups(show(deskProjectScope(ADAM.projectKey))).filter((group) => group.kind === "workspace" && group.totalCount === 0).map((group) => group.label)).toEqual(["CSW • EX-8 • review"]);
+    expect(treeIds(show(deskProjectScope(ADAM.projectKey))).sort()).toEqual(["adam-declared", "adam-epic", "adam-lsa-1", "adam-lsa-2"]);
+  });
+
+  it("honors session mapping, workspace mapping, desk and workstream declarations before the native fallback", () => {
+    const session = entry("precedence", ADAM, "wks_adam", "ADAM", "LSA • precedence", { desk: "declared-desk", workstream: "declared-stream" });
+    const workspace = { [workspaceMappingKey("wks_adam")]: { workstream: "workspace-stream" } };
+    expect(organizationScope(session, { ...workspace, "session:precedence": { workstream: "session-stream" } }).workstream).toBe("session-stream");
+    expect(organizationScope(session, workspace).workstream).toBe("workspace-stream");
+    expect(organizationScope(session, {}).workstream).toBe("declared-desk");
+    expect(organizationScope({ ...session, labels: { workstream: "declared-stream" } }, {}).workstream).toBe("declared-stream");
+    expect(organizationScope({ ...session, labels: {} }, {}).workstream).toBe("adam");
+    expect(matchesScope(session, deskProjectScope(ADAM.projectKey), workspace)).toBe(true);
   });
 });
