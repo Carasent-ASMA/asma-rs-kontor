@@ -160,8 +160,8 @@
       "original_sha256": "46b38a32daba922f725c203d7f51ef5219af5d03e1c2fdae2eeab4b9305ace97"
     },
     "replacement-bridges/initial-eb41560f-mutations/resumed-driver.py": {
-      "bytes": 5887,
-      "derivative_sha256": "9e55928752fa64ae40800ffea92c4c784b3e691103799ab102697ab15f7f9a18",
+      "bytes": 5878,
+      "derivative_sha256": "b0ee1b8715e4f2560c6bf122ba535b9f368602f3704d1e2ddf5041f6a493e836",
       "original_sha256": "748c79717f4ac9670d82944902c9cf04060b5e3169c349d09e8ef47a52652a2e"
     },
     "replacement-bridges/initial-eb41560f-mutations/store-skip-bridge-descendants.txt": {

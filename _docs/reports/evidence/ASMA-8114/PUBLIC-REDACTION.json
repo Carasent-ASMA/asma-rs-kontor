@@ -33,8 +33,8 @@
       "original_sha256": "28a0bedf21fa4ef4daec9879e0bb6c401e3e9b3f0626bcb70d5937f1fbffa4dc"
     },
     "legacy-consultation-read/integrated-1b99689d-full-gate-runner.py": {
-      "bytes": 3665,
-      "derivative_sha256": "4f189f62d56e1864e70005db9efe9b3348ed551499dca9d8c59f49e203f57cf5",
+      "bytes": 3656,
+      "derivative_sha256": "19ee6a5e460ed7f6ac82050cec90c89aa79c4f57e325acdb998e49222085b9ef",
       "original_sha256": "d5d2f23332d7f4b5be32098601b5b740dacef1f73a8d16d7529abc0f87217ef8"
     },
     "legacy-consultation-read/mutant-runner.py": {
