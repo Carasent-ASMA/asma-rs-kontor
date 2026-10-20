@@ -413,7 +413,10 @@ the Apache-2.0 option provides an explicit patent grant. See
 > This proof accepted the Foundation control plane and **passed**; the retained
 > bundle is the record. It is kept as a regression contract rather than as the
 > current acceptance boundary — delivered work is now accepted by an epic
-> Completion Profile, not by this test.
+> Completion Profile, not by this test. ASMA-8511 removed the committed bundles
+> from the tree: each file is listed in
+> [`docs/evidence/removed-run-evidence-2026-10-17.tsv`](docs/evidence/removed-run-evidence-2026-10-17.tsv),
+> and `git show 0971674d:<path>` prints it.
 
 One command runs the whole disposable mini-project proof and writes the evidence
 bundle that accepted the Foundation MVP:
@@ -446,13 +449,12 @@ evidence nobody will read.
 
 Because the run id keys off the commit, running the pilot on a tree whose HEAD
 has moved writes a *new* `docs/evidence/KON-MVP-18/<run-id>/` directory rather
-than rewriting a committed one. That is deliberate — evidence belongs to the
+than rewriting an earlier one. That is deliberate — evidence belongs to the
 tree that produced it, and the retained bundle's `commit` field names that tree
-— but it does mean a run after an unrelated commit leaves an untracked
-directory. Delete it and never commit it. The bundles already under
-`docs/evidence/KON-MVP-18/` are historical records that ASMA-8511 is removing,
-and new run bundles stay out of the tree until ASMA-8511 moves this output (see
-`CONTRIBUTING.md`).
+— but it does mean a run after an unrelated commit leaves a new directory.
+Delete it and never commit it: `.gitignore` keeps it out of git, `verify-tree`
+refuses a run receipt under an evidence root, and new run bundles stay out of
+the tree until ASMA-8511 moves this output (see `CONTRIBUTING.md`).
 
 Verifying the installed harnesses is a separate, opt-in question:
 
