@@ -1,12 +1,13 @@
 import type { DirectoryEntry } from "./session-directory";
-import { epicLabel, isDeskWork, labelRoleCode, organizationScope, ROLE_ORDER, sessionState, workspaceLabel, type OrganizationGroup, type OrganizationState } from "./session-organization";
+import { epicLabel, isDeskWork, labelRoleCode, organizationScope, ROLE_ORDER, sessionState, UNASSIGNED_EPIC, workspaceLabel, type OrganizationGroup, type OrganizationState } from "./session-organization";
 
 type Mappings = Parameters<typeof organizationScope>[1];
 
 /**
  * Where a filtered result sits: the tree's own workstream, epic and workspace
- * labels, from display mappings and session labels only, never from the title.
- * Desks sit outside epics, so a desk result names the desk and its workspace.
+ * labels, from display mappings, session labels and a native desk project, never
+ * from the title. Desk work with no linked epic sits outside epics, so its result
+ * names the desk and its workspace; with an epic it sits in that epic, as in the tree.
  */
 export type SessionProvenance = { readonly parts: readonly string[]; readonly desk: boolean; readonly workspace: string };
 
@@ -17,7 +18,7 @@ export function inWorkspace(entry: DirectoryEntry): boolean {
 
 export function sessionProvenance(entry: DirectoryEntry, mappings: Mappings): SessionProvenance {
   const scope = organizationScope(entry, mappings);
-  const desk = isDeskWork(entry, mappings);
+  const desk = scope.epic === UNASSIGNED_EPIC && isDeskWork(entry, mappings);
   // Say a working directory is not a workspace rather than pass it off as one.
   const workspace = inWorkspace(entry) ? workspaceLabel(entry) : entry.cwd ? `No workspace · ${entry.cwd}` : "No workspace";
   return { parts: desk ? [`${scope.workstream} desk`, workspace] : [scope.workstream, epicLabel(scope.epic), workspace], desk, workspace };

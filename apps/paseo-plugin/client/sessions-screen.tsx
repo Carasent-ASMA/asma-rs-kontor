@@ -75,7 +75,7 @@ import {
 import { useSessionDirectory } from "./use-session-directory";
 import { DEFAULT_ORGANIZATION_SETTINGS, type OrganizationSettings } from "../shared/organization";
 import type { useOrganizationSettings } from "./use-organization-settings";
-import { allGroupKeys, buildOrganizationTree, declaredScope, defaultGroupExpanded, filterOrganizationTree, flattenOrganizationTree, inEpicScope, isDeskWork, NO_LINKED_EPIC, NO_ROLE_KEY, organizationScope, OTHER_WORKSTREAM, ROLE_ROOT_KEY, sessionRole, sessionState, STATE_LABELS, titleRoleCode, UNASSIGNED_EPIC, visibleSessions, workstreamRank, type OrganizationGroup, type OrganizationRow, type OrganizationWorkspace, type RoleSource } from "./session-organization";
+import { allGroupKeys, buildOrganizationTree, declaredScope, defaultGroupExpanded, filterOrganizationTree, flattenOrganizationTree, inEpicScope, matchesScope, NO_LINKED_EPIC, NO_ROLE_KEY, organizationScope, OTHER_WORKSTREAM, ROLE_ROOT_KEY, scopeKeepsGroup, sessionRole, sessionState, STATE_LABELS, titleRoleCode, UNASSIGNED_EPIC, visibleSessions, workstreamRank, type OrganizationGroup, type OrganizationRow, type OrganizationWorkspace, type RoleSource } from "./session-organization";
 import { rowKey, siblingKeys, reorderSavedSiblingOrder } from "./organization-order";
 import { OrganizationRowView, StateBadge, stateColor as sessionStateColor, WORKSPACE_KINDS } from "./organization-row";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
@@ -123,21 +123,7 @@ export function matchesShortcut(
   shortcut: string | null,
   mappings: Parameters<typeof organizationScope>[1],
 ): boolean {
-  const workstream = organizationScope(entry, mappings).workstream.trim().toLocaleLowerCase();
-  switch (shortcut) {
-    case null:
-      return true;
-    case "PR Review":
-      return workstream === "pr review" || workstream === "pr-review";
-    case "Adam":
-      return workstream === "adam";
-    case "Desks":
-      return isDeskWork(entry, mappings);
-    case "Other work":
-      return !isDeskWork(entry, mappings);
-    default:
-      return workstream === shortcut.trim().toLocaleLowerCase();
-  }
+  return matchesScope(entry, shortcut, mappings);
 }
 
 function workstreamKey(label: string): string {
@@ -1844,9 +1830,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const resultMode = isResultMode(view);
   const eligible = useCallback((entry: DirectoryEntry) => matchesShortcut(entry, shortcut, mappings)
     && (streams === null || streams.includes(workstreamKey(organizationScope(entry, mappings).workstream))), [shortcut, streams, mappings]);
-  // Search and state never narrow the tree; with no desk or workstream choice, empty workspaces stay visible.
+  // Search and state never narrow the tree; with no workstream choice, empty workspaces stay visible, a desk context's own included.
   const filtered = useMemo(() => filterOrganizationTree(tree, eligible,
-    (group) => shortcut === null && streams === null && group.kind === "workspace", eligible), [tree, eligible, shortcut, streams]);
+    (group) => streams === null && scopeKeepsGroup(group, shortcut), eligible), [tree, eligible, shortcut, streams]);
   const linked = useMemo(() => task ? new Set(taskSessions(scoped, task).map(({ entry }) => entry.id)) : null, [scoped, task]);
   // Matches before the state filter, so each state chip counts what choosing it would show.
   const candidates = useMemo(() => scoped.filter((entry) => eligible(entry) && (linked === null || linked.has(entry.id)) && matchesResultSearch(entry, tokens, mappings)),
