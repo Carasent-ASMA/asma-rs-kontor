@@ -8,7 +8,7 @@ import { SessionsScreen } from "./sessions-screen";
 import { useOrganizationSettings } from "./use-organization-settings";
 import { useReadSources } from "./use-read-sources";
 import { useSessionDirectory } from "./use-session-directory";
-import { readSessionView } from "./session-view-store";
+import { patchSessionView, readSessionView, sessionViewTransition } from "./session-view-store";
 import { DESTINATIONS, contextHeading, goBack, hostNavigation, navigate, NO_SCOPE, readPageView, readRouteView, refreshSourceRevision, routeViewKey, sessionScopeKey, tabScope, writePageView, writeRouteView, type Destination, type KontorRoute } from "./navigation-state";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
 import { Action, IconButton, type Colors } from "./page-controls";
@@ -24,6 +24,7 @@ import { GraphPage } from "./graph-page";
 import { contextPlanSources, resolveContextPlan, refreshContextSource } from "./navigation-state";
 import { NativeFreshnessPill } from "./native-freshness";
 import { resolvePlanLink, safeHttpsUrl } from "./plan-links";
+import { taskTeamReader } from "./task-team-source";
 
 const PRIMARY_MOBILE: Destination[] = ["Sessions", "Overview", "Plan", "Board"];
 const PRIMARY_DESKTOP: Destination[] = ["Sessions", "Overview", "Plan", "Board", "Graph", "Delivery"];
@@ -55,6 +56,7 @@ function HostScreen(props: PluginScreenProps) {
   const [, setTeamsViewRevision] = useState(0);
   const directory = useSessionDirectory({ hostId: host.id, hostStatus, includeArchived });
   const sourceState = useReadSources(host.id, hostStatus);
+  const taskTeams = useMemo(() => taskTeamReader(sourceState.sources, sourceState.teamsSnapshots), [sourceState.sources, sourceState.teamsSnapshots]);
   const workspaces = useWorkspaceDirectory(host.id, hostStatus === "online");
   const presentation = sourceState.error && !sourceState.available
     ? { ...organization, state: { ...organization.state, status: "error" as const, error: "Plugin source service unavailable; organization preferences are not current." } }
@@ -203,7 +205,14 @@ function HostScreen(props: PluginScreenProps) {
       // A task link carries the exact declaration to reveal, never a search query.
       visit({ tab: "Plan", sourceId, sourceRevision: revision, originAgentId: route.originAgentId }, "", taskId ? (next) => writePageView(host.id, next, { ...readPageView(host.id, next, DEFAULT_PLAN_VIEW), target: { taskId, revision }, revealed: false }) : undefined);
     }}
-    onIssue={(key) => { const url = jiraIssueUrl(key); if (url) void Linking.openURL(url).catch(() => toast.error("This device could not open the verified Jira link.")); }} />;
+    onIssue={(key) => { const url = jiraIssueUrl(key); if (url) void Linking.openURL(url).catch(() => toast.error("This device could not open the verified Jira link.")); }}
+    sessions={{ state: directory.state, onOpen: open,
+      onOpenWorkspace: props.navigation ? (workspaceId) => props.navigation?.openWorkspace({ workspaceId, serverId: host.id }) : undefined,
+      // Sessions opens unscoped with the task's exact label join, never a text search; Back returns to Board.
+      onShowInSessions: (task) => visit({ tab: "Sessions", ...NO_SCOPE }, undefined, (next) => {
+        const scope = sessionScopeKey(host.id, next);
+        patchSessionView(scope, sessionViewTransition(readSessionView(scope), { task, query: "", status: "all", scrollOffset: 0 }));
+      }) }} taskTeams={taskTeams} />;
   else page = <ReadOnlyPage key={routeViewKey(route)} compact={layout.compact} onChooseSource={() => toggle("context")} onDocumentLink={openDocumentLink} onCopy={copy} onExternalLink={openExternalLink} contextLabel={route.sourceId ? selectedPlan?.title ?? "Source unavailable" : projectLabel} tab={route.tab} colors={colors} entries={entries} directory={directory.state} sources={sources} reads={reads} sourceId={route.sourceId}
     teamsSources={sourceState.sources.filter((source) => source.kind === "teams")} teamsJsonReads={Object.fromEntries(Object.entries(sourceState.reads).filter(([, read]) => read.source.kind === "teams"))}
     teamsSnapshots={sourceState.teamsSnapshots} teamsErrors={sourceState.teamsErrors} teamsBindingDiagnostics={sourceState.teamsBindingDiagnostics} teamsAvailable={sourceState.available}

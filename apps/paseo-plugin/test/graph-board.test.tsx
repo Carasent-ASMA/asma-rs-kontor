@@ -11,7 +11,13 @@ vi.mock("@getpaseo/plugin/client/react-native", () => ({ FlatList: "FlatList", S
 import { GraphPage, captureDay, capturedJiraChildren, type BoardItem } from "../client/graph-page";
 import { PlanGraph } from "../client/plan-graph/graph";
 import { SourceDetails } from "../client/source-details";
-import { Action } from "../client/page-controls";
+import { Action, Disclosure } from "../client/page-controls";
+import { TaskSessionsChooser, TaskSessionsControl, type BoardSessions } from "../client/board-sessions";
+import { MenuItem } from "../client/anchored-menu";
+import { emptyDirectoryState, type DirectoryEntry } from "../client/session-directory";
+import { taskSessions } from "../client/session-results";
+import type { TaskTeamDeclaration, TaskTeamReader } from "../client/task-teams";
+import { sessionEntry } from "./session-fixtures";
 beforeEach(() => { model.evidence = false; });
 
 type Element = ReactElement<Record<string, unknown>>;
@@ -39,33 +45,46 @@ function text(node: ReactNode): string {
   if (isRow(node)) return text(expand(node));
   return text(node.props.children as ReactNode);
 }
-function mount(options: { selectedId?: string | null; reads?: SourceRead[]; epicKey?: string | null; compact?: boolean; mode?: "Board" | "Graph"; initialOffset?: number; onBoard?: () => void; page?: typeof GraphPage } = {}) {
+function mount(options: { selectedId?: string | null; reads?: SourceRead[]; epicKey?: string | null; compact?: boolean; mode?: "Board" | "Graph"; initialOffset?: number; onBoard?: () => void; page?: typeof GraphPage; sessions?: BoardSessions; taskTeams?: TaskTeamReader } = {}) {
   const reads = options.reads ?? [jira];
   const onPlan = vi.fn(); const onIssue = vi.fn(); const onChooseSource = vi.fn(); const onScroll = vi.fn();
   const tree = (options.page ?? GraphPage)({ mode: options.mode ?? "Board", hostId: "board-host", theme: { colors } as PluginTheme, compact: options.compact ?? true,
     sources: reads.map((read) => read.source), selectedId: options.selectedId ?? null, reads: Object.fromEntries(reads.map((read) => [read.source.id, read])),
-    available: true, error: null, epicKey: options.epicKey, onSelect: vi.fn(), onPlan, onIssue, onChooseSource, onScroll, initialOffset: options.initialOffset, onBoard: options.onBoard }) as Element;
-  const data = (tree.props.data ?? []) as BoardItem[];
-  const row = (item: BoardItem) => (tree.props.renderItem as (info: { item: BoardItem; index: number }) => Element)({ item, index: data.indexOf(item) });
-  const header = tree.props.ListHeaderComponent as ReactNode;
-  return { tree, data, row, header, onPlan, onIssue, onChooseSource, onScroll };
+    available: true, error: null, epicKey: options.epicKey, onSelect: vi.fn(), onPlan, onIssue, onChooseSource, onScroll, initialOffset: options.initialOffset, onBoard: options.onBoard, sessions: options.sessions, taskTeams: options.taskTeams }) as Element;
+  // Board wraps its list in a View that also holds the linked-session chooser.
+  const list = elements(tree).find((element) => element.type === "FlatList");
+  const data = (list?.props.data ?? []) as BoardItem[];
+  const row = (item: BoardItem) => (list!.props.renderItem as (info: { item: BoardItem; index: number }) => Element)({ item, index: data.indexOf(item) });
+  const header = list?.props.ListHeaderComponent as ReactNode;
+  return { tree, list, data, row, header, onPlan, onIssue, onChooseSource, onScroll };
 }
 const actions = (node: ReactNode) => elements(node).filter((element) => element.type === Action);
 const jiraRows = (data: BoardItem[]) => data.flatMap((item) => item.kind === "jira" ? [item] : []);
 const taskRows = (data: BoardItem[]) => data.flatMap((item) => item.kind === "task" ? [item] : []);
-/** The compact row's outer element: the row button (plan task) or the grouped row (captured Jira). */
-const outer = (row: Element) => expand(row);
+/** The compact row's card, holding the text column, the issue action beside it and any linked sessions below. */
+const card = (row: Element) => expand(row);
+/** The compact row's text column: the row button (plan task) or the grouped row (captured Jira); no other button sits inside it. */
+const outer = (row: Element) => elements(card(row)).find((element) => element.props.accessible === true)!;
 const label = (row: Element) => String(outer(row).props.accessibilityLabel);
 /** The row's full description: the compact row button, or the wide row's detail column. */
 const rowLabel = (row: Element) => String(elements(row).find((element) => element.props.accessible === true)!.props.accessibilityLabel);
 const issueButtons = (row: Element) => elements(row).filter((element) => element.type === "Pressable" && String(element.props.accessibilityLabel).startsWith("Open issue"));
+/** Text of a chain, drawing its inline parts (role steps and glyph runs) the way React would. */
+const INLINE = new Set(["ChainText", "TeamChainText", "Glyphs", "TeamBlock"]);
+function inlineText(node: ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(inlineText).join("");
+  if (!isValidElement<Record<string, unknown>>(node)) return "";
+  if (typeof node.type === "function" && INLINE.has(node.type.name)) return inlineText(expand(node));
+  return inlineText(node.props.children as ReactNode);
+}
 const metaOf = (row: Element) => text(elements(row).find((element) => element.type === "Text" && element.props.numberOfLines === 1 && element.props.style && (element.props.style as { flex?: number }).flex === 1));
 const day = captureDay(history.generated);
 
 describe("Board without a valid canonical graph (BOARD-01)", () => {
   it("lists every captured Jira child of the context epic with status, category, capture time and source, and no title", () => {
-    const { tree, data, row, header } = mount({ epicKey: "ASMA-8371" });
-    expect(tree.type).toBe("FlatList");
+    const { tree, list, data, row, header } = mount({ epicKey: "ASMA-8371" });
+    expect(list).toBeDefined();
     expect(elements(tree).some((element) => element.type === PlanGraph)).toBe(false);
     expect(jiraRows(data).map((item) => item.record.key)).toEqual(children.map((child) => child.key));
     expect(data[0]).toMatchObject({ kind: "section", title: `Captured Jira tasks · ${children.length}` });
@@ -187,14 +206,14 @@ describe("Board without a valid canonical graph (BOARD-01)", () => {
   });
 
   it("restores the fallback list offset once and then reports user scrolling", () => {
-    const { tree, onScroll } = mount({ epicKey: "ASMA-8371", initialOffset: 640 });
-    const scrollToOffset = vi.fn(); (tree.props.ref as { current: unknown }).current = { scrollToOffset };
-    (tree.props.onScroll as (event: object) => void)({ nativeEvent: { contentOffset: { y: 0 } } });
+    const { list, onScroll } = mount({ epicKey: "ASMA-8371", initialOffset: 640 });
+    const scrollToOffset = vi.fn(); (list!.props.ref as { current: unknown }).current = { scrollToOffset };
+    (list!.props.onScroll as (event: object) => void)({ nativeEvent: { contentOffset: { y: 0 } } });
     expect(onScroll).not.toHaveBeenCalled();
-    (tree.props.onContentSizeChange as (width: number, height: number) => void)(400, 3000);
+    (list!.props.onContentSizeChange as (width: number, height: number) => void)(400, 3000);
     expect(scrollToOffset).toHaveBeenCalledWith({ offset: 640, animated: false });
-    (tree.props.onScroll as (event: object) => void)({ nativeEvent: { contentOffset: { y: 120 } } });
-    (tree.props.onContentSizeChange as (width: number, height: number) => void)(400, 3600);
+    (list!.props.onScroll as (event: object) => void)({ nativeEvent: { contentOffset: { y: 120 } } });
+    (list!.props.onContentSizeChange as (width: number, height: number) => void)(400, 3600);
     expect(onScroll.mock.calls).toEqual([[120]]); expect(scrollToOffset).toHaveBeenCalledTimes(1);
   });
 });
@@ -334,15 +353,23 @@ describe("compact Board density (iPhone 390x844)", () => {
       const rendered = row(item);
       expect(actions(rendered)).toEqual([]);
       // Expand once so element identity holds across the queries below.
-      const [shellElement, ...tree] = elements(outer(rendered));
+      const [shellElement, ...tree] = elements(card(rendered));
       const issue = tree.filter((element) => element.type === "Pressable" && String(element.props.accessibilityLabel).startsWith("Open issue"));
       const inIssue = new Set(elements(issue));
       const lines = tree.filter((element) => element.type === "Text" && element.props.numberOfLines !== undefined && !inIssue.has(element));
       expect(lines.map((element) => element.props.numberOfLines)).toEqual([2, 1]);
       const [title, meta] = lines as [Element, Element];
       const shell = shellElement!.props.style as Record<string, number>;
+      const column = tree.find((element) => element.props.accessible === true)!;
       const metaRow = tree.find((element) => element.type === "View" && [element.props.children].flat(Infinity).includes(meta))!;
-      const textHeight = 2 * (title.props.style as { lineHeight: number }).lineHeight + shell.gap! + (metaRow.props.style as { minHeight: number }).minHeight;
+      const textHeight = 2 * (title.props.style as { lineHeight: number }).lineHeight + (column.props.style as { gap: number }).gap + (metaRow.props.style as { minHeight: number }).minHeight;
+      if (item.kind === "task") {
+        // The row button is a real 44pt target on touch, even when the title takes one line (17 + 2 + 22 = 41pt).
+        const oneLine = (title.props.style as { lineHeight: number }).lineHeight + (column.props.style as { gap: number }).gap + (metaRow.props.style as { minHeight: number }).minHeight;
+        expect(column.type).toBe("Pressable");
+        expect(oneLine).toBeLessThan(44);
+        expect((column.props.style as { minHeight: number }).minHeight).toBe(44);
+      }
       const target = issue.length ? (issue[0]!.props.style as { minHeight: number }).minHeight : 0;
       const height = 2 * shell.paddingVertical! + 2 * shell.borderWidth! + Math.max(textHeight, target);
       expect(height).toBeGreaterThanOrEqual(64); expect(height).toBeLessThanOrEqual(76);
@@ -354,10 +381,11 @@ describe("compact Board density (iPhone 390x844)", () => {
         const style = issue[0]!.props.style as { minHeight: number; minWidth: number };
         expect([style.minHeight, style.minWidth, issue[0]!.props.hitSlop]).toEqual([44, 44, undefined]);
         expect(target).toBeLessThanOrEqual(textHeight);
-        // In its own column inside the row: not in the meta line, and not over the title.
+        // In its own column beside the text: not in the meta line, not over the title, and never inside the row button.
         expect(elements(metaRow.props.children as ReactNode).includes(issue[0]!)).toBe(false);
         const columns = tree.find((element) => element.type === "View" && (element.props.style as { flexDirection?: string } | undefined)?.flexDirection === "row" && (element.props.children as ReactNode[]).includes(issue[0]!))!;
         const [textColumn] = columns.props.children as Element[];
+        expect(textColumn).toBe(column);
         expect(elements(textColumn).includes(title) && elements(textColumn).includes(metaRow)).toBe(true);
         expect(elements(textColumn).includes(issue[0]!)).toBe(false);
       }
@@ -366,21 +394,29 @@ describe("compact Board density (iPhone 390x844)", () => {
     expect(actions(wide.row(wide.data[1]!)).map((button) => [button.props.label, button.props.small])).toEqual([["Open in plan", true], ["Open issue", true]]);
   });
 
-  it("keeps the dense 22pt issue action in the meta line for a mouse or trackpad", async () => {
+  it("keeps the dense 22pt issue action level with the meta line, beside the row button, for a mouse or trackpad", async () => {
     vi.resetModules();
     vi.stubGlobal("matchMedia", (query: string) => ({ matches: query !== "(pointer: coarse)" }));
     try {
       const { GraphPage: FinePage } = await import("../client/graph-page");
       const { data, row, onIssue, onPlan } = mount({ selectedId: "plan", reads: [plan, jira], page: FinePage });
       const rendered = row(data[1]!);
-      const tree = elements(outer(rendered));
+      const tree = elements(card(rendered));
       const issue = tree.filter((element) => element.type === "Pressable" && String(element.props.accessibilityLabel).startsWith("Open issue"));
       expect(issue).toHaveLength(1);
       const style = issue[0]!.props.style as { minHeight: number; minWidth: number };
       expect([style.minHeight, style.minWidth, issue[0]!.props.hitSlop]).toEqual([22, 44, undefined]);
       const meta = tree.find((element) => element.type === "Text" && element.props.numberOfLines === 1 && (element.props.style as { flex?: number }).flex === 1)!;
       const metaRow = tree.find((element) => element.type === "View" && [element.props.children].flat(Infinity).includes(meta))!;
-      expect(elements(metaRow.props.children as ReactNode).includes(issue[0]!)).toBe(true);
+      // A sibling of the row button, bottom-aligned so it sits on the meta line's 22pt band; a button never nests in a button.
+      const column = tree.find((element) => element.props.accessible === true)!;
+      expect(elements(column).includes(issue[0]!)).toBe(false);
+      // A mouse keeps the dense row: the row button has no touch minimum.
+      expect((column.props.style as { minHeight: number }).minHeight).toBe(0);
+      const columns = tree.find((element) => element.type === "View" && (element.props.style as { flexDirection?: string } | undefined)?.flexDirection === "row" && (element.props.children as ReactNode[]).includes(issue[0]!))!;
+      expect((columns.props.style as { alignItems: string }).alignItems).toBe("flex-end");
+      expect((metaRow.props.style as { minHeight: number }).minHeight).toBe(style.minHeight);
+      expect((columns.props.children as Element[])[0]).toBe(column);
       (issue[0]!.props.onPress as () => void)();
       (outer(rendered).props.onPress as () => void)();
       expect([onIssue.mock.calls, onPlan.mock.calls]).toEqual([[[graph.nodes[0]!.jira]], [["plan", graph.nodes[0]!.id]]]);
@@ -418,5 +454,195 @@ describe("Board and unavailable Graph disclosures (A11Y-01)", () => {
     (actions(tree).find((button) => button.props.label === "Inspect captured tasks")!.props.onPress as () => void)();
     expect(onBoard).toHaveBeenCalledTimes(1);
     expect(actions(mount({ mode: "Graph", epicKey: null, onBoard }).tree).some((button) => button.props.label === "Inspect captured tasks")).toBe(false);
+  });
+});
+
+describe("Board linked sessions", () => {
+  const sessionsOf = (entries: DirectoryEntry[], extra: Partial<BoardSessions> = {}, live = true): BoardSessions => ({
+    state: { ...emptyDirectoryState(), entries, status: "ready", live, inventoryComplete: true, lastUpdatedAt: 1 },
+    onOpen: vi.fn(), onOpenWorkspace: vi.fn(), onShowInSessions: vi.fn(), ...extra,
+  });
+  const entries = [
+    sessionEntry("swe", { status: "running", workspaceId: "wks_a", workspaceName: "tsw-a", labels: { "jira.issue": graph.nodes[0]!.jira!, role: "SWE" } }),
+    sessionEntry("qa", { status: "idle", needsInput: true, workspaceId: "wks_b", workspaceName: "tsw-b", labels: { "jira.issue": graph.nodes[0]!.jira!, role: "QA" } }),
+    sessionEntry("one", { labels: { task: graph.nodes[1]!.jira!, role: "SWE" } }),
+    sessionEntry("titled", { title: `SWE • ${graph.nodes[2]!.jira}`, labels: { epic: graph.nodes[2]!.jira! } }),
+  ];
+  const control = (rendered: Element) => elements(rendered).find((element) => element.type === TaskSessionsControl);
+  const expandControl = (element: Element) => (TaskSessionsControl as (props: Record<string, unknown>) => Element)(element.props);
+
+  it("joins rows to sessions by exact label only: nothing for 0, Open session for 1, a chooser for several", () => {
+    const sessions = sessionsOf(entries);
+    const { data, row, header } = mount({ selectedId: "plan", reads: [plan, jira], sessions });
+    expect(text(elements(header).find((element) => element.props.testID === "board-sessions-meta"))).toMatch(/^2 of \d+ tasks with sessions$/);
+    const [first, second, third] = taskRows(data);
+    expect(control(row(third!))).toBeUndefined();
+    const single = expandControl(control(row(second!))!);
+    expect(String(single.props.accessibilityLabel)).toMatch(/^Open linked session Session one\. 1 linked session\. SWE: Idle\. Roles come from session labels; no handoff order is declared\.$/);
+    expect(text(single)).toContain("Open session ›");
+    (single.props.onPress as () => void)();
+    expect(sessions.onOpen).toHaveBeenCalledWith(entries[2]);
+    const several = expandControl(control(row(first!))!);
+    expect(String(several.props.accessibilityLabel)).toContain("2 linked sessions. SWE: Running; QA: Needs input.");
+    expect(text(several)).toContain("2 sessions ›");
+    (several.props.onPress as () => void)();
+    expect(sessions.onOpen).toHaveBeenCalledTimes(1);
+    // The setter stub stores the chosen task id; the next render draws the chooser for it.
+    const reopened = mount({ selectedId: "plan", reads: [plan, jira], sessions });
+    const chooser = elements(reopened.tree).find((element) => element.type === TaskSessionsChooser)!;
+    expect([chooser.props.taskKey, (chooser.props.links as unknown[]).length]).toEqual([graph.nodes[0]!.jira, 2]);
+    expect(elements(mount({ selectedId: "plan", reads: [plan, jira] }).header).some((element) => element.props.testID === "board-sessions-meta")).toBe(false);
+  });
+
+  it("adds one chain line to a linked compact row, a real 44pt target on touch, and nothing to an unlinked row", () => {
+    const { data, row } = mount({ selectedId: "plan", reads: [plan, jira], sessions: sessionsOf(entries) });
+    const linked = card(row(taskRows(data)[0]!));
+    const children = [linked.props.children].flat() as Element[];
+    expect(children.at(-1)!.type).toBe(TaskSessionsControl);
+    const style = (expandControl(children.at(-1)!).props.style as (state: object) => { minHeight: number })({ pressed: false });
+    expect(style.minHeight).toBe(44);
+    expect(([card(row(taskRows(data)[2]!)).props.children].flat() as unknown[]).at(-1)).toBeNull();
+  });
+
+  it("says last known when the host's live session feed is not attached", () => {
+    const { header, data, row } = mount({ selectedId: "plan", reads: [plan, jira], sessions: sessionsOf(entries, {}, false) });
+    expect(text(elements(header).find((element) => element.props.testID === "board-sessions-meta"))).toMatch(/ · last known$/);
+    const chain = expandControl(control(row(taskRows(data)[0]!))!);
+    const words = elements(chain).find((element) => typeof element.type === "function" && element.type.name === "ChainText")!;
+    expect(inlineText(words)).toMatch(/^Last known {2}SWE ●/);
+    expect(String(chain.props.accessibilityLabel)).toContain("2 linked sessions, last known states.");
+  });
+
+  it("lists the chooser by workspace with state words, the read's limits and Show in Sessions", () => {
+    const sessions = sessionsOf(entries);
+    const onClose = vi.fn();
+    const task = { jira: graph.nodes[0]!.jira, kontorId: null, label: graph.nodes[0]!.jira! };
+    const props = { taskKey: task.label, task, links: taskSessions(entries, task), live: true, archivedIncluded: false, anchor: { current: null }, root: { current: null }, rootSize: { width: 390, height: 700 }, compact: true, colors, sessions, onClose };
+    const menu = (TaskSessionsChooser as (props: Record<string, unknown>) => Element)(props);
+    // How the links were read sits in a collapsed Source details, not in the chooser's own lines.
+    const details = elements(menu).find((element) => element.type === Disclosure)!;
+    expect(details.props.label).toBe("Source details");
+    expect(text(details.props.children as ReactNode)).toBe(`Linked by an exact jira.issue label equal to ${task.label}. Titles are not read.Archived sessions are not read.`);
+    expect(text(menu).replace(text(details.props.children as ReactNode), "")).not.toMatch(/jira\.issue|exact|label/);
+    const items = () => elements(menu).filter((element) => element.type === MenuItem);
+    expect(items().map((item) => [item.props.label, item.props.detail])).toEqual([
+      ["Open workspace", undefined], ["Session swe", "SWE · Running"], ["Open workspace", undefined], ["Session qa", "QA · Needs input"], ["Show in Sessions", undefined],
+    ]);
+    (items()[0]!.props.onPress as () => void)();
+    expect(sessions.onOpenWorkspace).toHaveBeenCalledWith("wks_a");
+    (items()[3]!.props.onPress as () => void)();
+    expect(sessions.onOpen).toHaveBeenCalledWith(entries[1]);
+    (items()[4]!.props.onPress as () => void)();
+    expect(sessions.onShowInSessions).toHaveBeenCalledWith(task);
+    expect(onClose).toHaveBeenCalledTimes(3);
+    const withoutWorkspaces = (TaskSessionsChooser as (props: Record<string, unknown>) => Element)({ ...props, sessions: { ...sessions, onOpenWorkspace: undefined } });
+    expect(elements(withoutWorkspaces).filter((element) => element.type === MenuItem).map((item) => item.props.label)).not.toContain("Open workspace");
+  });
+
+  it("puts a replaced or archived session under its own heading, apart from the current ones", () => {
+    const key = graph.nodes[0]!.jira!;
+    const history = [
+      sessionEntry("first", { status: "error", labels: { "jira.issue": key, role: "SWE" } }),
+      sessionEntry("second", { status: "running", labels: { "jira.issue": key, role: "SWE", "takeover.predecessor": "first" } }),
+    ];
+    const task = { jira: key, kontorId: null, label: key };
+    const menu = (TaskSessionsChooser as (props: Record<string, unknown>) => Element)({ taskKey: key, task, links: taskSessions(history, task), live: true, archivedIncluded: true, anchor: { current: null }, root: { current: null }, rootSize: { width: 1440, height: 900 }, compact: false, colors, sessions: sessionsOf(history), onClose: vi.fn() });
+    expect(text(menu)).toContain("Replaced or archived");
+    expect(elements(menu).filter((element) => element.type === MenuItem).map((item) => item.props.label)).toEqual(["Open workspace", "Session second", "Session first", "Show in Sessions"]);
+  });
+});
+
+describe("Board declared teams", () => {
+  const key = (index: number) => graph.nodes[index]!.jira!;
+  const team: TaskTeamDeclaration = { source: "Team fixture", risk: "High-stakes", workflow: "Delivery", team: "Task team", roles: ["SA", "SWE", "QA", "AUD"],
+    handoffs: [{ from: "SA", to: "SWE" }, { from: "SWE", to: "QA" }, { from: "SWE", to: "AUD" }, { from: "QA", to: "SWE" }] };
+  const coverage = "No configured source assigns a team, workflow or risk tier to a task (2 read).";
+  const reader = (declared: Readonly<Record<string, TaskTeamDeclaration>>): TaskTeamReader => (task) => {
+    const declaration = task.jira ? declared[task.jira] : undefined;
+    return declaration ? { state: "declared", declaration } : { state: "not-provided", coverage };
+  };
+  const sessionsOf = (entries: DirectoryEntry[]): BoardSessions => ({
+    state: { ...emptyDirectoryState(), entries, status: "ready", live: true, inventoryComplete: true, lastUpdatedAt: 1 },
+    onOpen: vi.fn(), onOpenWorkspace: vi.fn(), onShowInSessions: vi.fn(),
+  });
+  const entries = () => [
+    sessionEntry("swe", { status: "running", labels: { "jira.issue": key(0), role: "swe" } }),
+    sessionEntry("qa", { status: "idle", needsInput: true, labels: { "jira.issue": key(0), "kontor.role": "QA" } }),
+    sessionEntry("rev", { status: "idle", labels: { "jira.issue": key(0), role: "rev-a" } }),
+    sessionEntry("one", { status: "idle", labels: { task: key(1), role: "SWE" } }),
+  ];
+  const control = (rendered: Element) => elements(rendered).find((element) => element.type === TaskSessionsControl);
+  const expandControl = (element: Element) => (TaskSessionsControl as (props: Record<string, unknown>) => Element)(element.props);
+  const rowOf = (data: BoardItem[], index: number) => taskRows(data).find((item) => item.node.jira === key(index))!;
+  const chain = (rendered: Element) => inlineText(elements(rendered).find((element) => typeof element.type === "function" && element.type.name === "TeamChainText"));
+
+  it("shows a declared team on its task, with or without sessions: risk and workflow, then roles in declared steps with parallel roles together", () => {
+    const declared = { [key(0)]: team, [key(1)]: team, [key(2)]: team };
+    const { data, row, header } = mount({ selectedId: "plan", reads: [plan, jira], sessions: sessionsOf(entries()), taskTeams: reader(declared) });
+    expect(text(elements(header).find((element) => element.props.testID === "board-sessions-meta"))).toMatch(/^2 of \d+ tasks with sessions · 3 with a declared team$/);
+    const [first, third] = [0, 2].map((index) => expandControl(control(row(rowOf(data, index)))!));
+    expect(text(elements(first!).find((element) => String(element.props.testID).endsWith("-team")))).toBe("High-stakes · Delivery");
+    // A rework handoff (QA back to SWE) does not reorder the steps; a role nobody is labelled with shows a dash.
+    expect(chain(first!)).toBe("SA –  →  SWE ●  →  QA ▲ & AUD –  ·  REV A ○");
+    expect(String(first!.props.accessibilityLabel)).toBe("Choose a linked session. 3 linked sessions. High-stakes · Delivery. Team Task team. SA: No session, then SWE: Running, then QA and AUD in parallel: QA: Needs input; AUD: No session. Not in the declared team: REV A: Idle. Sessions sit under a role by their role label.");
+    expect(chain(third!)).toBe("SA –  →  SWE –  →  QA – & AUD –");
+    expect(text(third!)).toContain("0 sessions ›");
+  });
+
+  it("opens the chooser for a declared team even with one session, and opens one session directly where no team is declared", () => {
+    const sessions = sessionsOf(entries());
+    const declaredRow = mount({ selectedId: "plan", reads: [plan, jira], sessions, taskTeams: reader({ [key(1)]: team }) });
+    const declared = expandControl(control(declaredRow.row(rowOf(declaredRow.data, 1)))!);
+    expect(text(declared)).toContain("1 session ›");
+    (declared.props.onPress as () => void)();
+    expect(sessions.onOpen).not.toHaveBeenCalled();
+    expect(model.evidence).toBe(`task:${graph.nodes[1]!.id}`);
+    model.evidence = false;
+    const plainRow = mount({ selectedId: "plan", reads: [plan, jira], sessions, taskTeams: reader({}) });
+    const plain = expandControl(control(plainRow.row(rowOf(plainRow.data, 1)))!);
+    expect(text(plain)).toContain("Open session ›");
+    (plain.props.onPress as () => void)();
+    expect(sessions.onOpen).toHaveBeenCalledWith(sessions.state.entries[3]);
+    expect(control(plainRow.row(rowOf(plainRow.data, 2)))).toBeUndefined();
+  });
+
+  it("keeps partial declarations honest: the missing parts are named and roles fall back to labels", () => {
+    const partial: TaskTeamDeclaration = { source: "Team fixture", risk: "Standard", workflow: null, team: null, roles: [], handoffs: [] };
+    const { data, row, header } = mount({ selectedId: "plan", reads: [plan, jira], sessions: sessionsOf(entries()), taskTeams: reader({ [key(0)]: partial, [key(1)]: { ...partial, roles: ["SWE"] }, [key(2)]: { ...partial, team: "Named team" } }) });
+    // A risk tier alone is not a team; a named team or declared roles are.
+    expect(text(elements(header).find((element) => element.props.testID === "board-sessions-meta"))).toMatch(/^2 of \d+ tasks with sessions · 2 with a declared team$/);
+    const line = expandControl(control(row(rowOf(data, 0)))!);
+    expect(text(elements(line).find((element) => String(element.props.testID).endsWith("-team")))).toBe("Standard · workflow not declared");
+    expect(inlineText(elements(line).find((element) => typeof element.type === "function" && element.type.name === "ChainText"))).toBe("SWE ●  ·  QA ▲  ·  REV A ○");
+  });
+
+  it("puts how sessions and teams were read in Board Source details, not in its meta line", () => {
+    model.evidence = true;
+    const notes = (taskTeams: TaskTeamReader) => {
+      const { header } = mount({ selectedId: "plan", reads: [plan, jira], sessions: sessionsOf(entries()), taskTeams });
+      return text(elements(header).find((element) => element.props.testID === "board-source-notes"));
+    };
+    expect(notes(reader({}))).toContain("Linked sessions: a session links to a task only when its jira.issue or task label equals the task's Jira key, or its kontor.ticket label equals its Kontor ticket.");
+    expect(notes(reader({}))).toContain(coverage);
+    expect(notes(reader({ [key(0)]: team }))).toMatch(/Team, workflow and risk tier: declared for 1 of 41 tasks by Team fixture\.$/);
+  });
+
+  it("leads the chooser with the team, or says it is not provided, and names the declaring source only in Source details", () => {
+    const sessions = sessionsOf(entries());
+    const task = { jira: key(0), kontorId: null, label: key(0) };
+    const links = taskSessions(sessions.state.entries, task);
+    const props = { taskKey: task.label, task, links, live: true, archivedIncluded: false, anchor: { current: null }, root: { current: null }, rootSize: { width: 390, height: 700 }, compact: true, colors, sessions, onClose: vi.fn() };
+    const open = (read: Record<string, unknown>) => (TaskSessionsChooser as (props: Record<string, unknown>) => Element)({ ...props, ...read });
+    const declared = open({ team: { state: "declared", declaration: team } });
+    const block = elements(declared).find((element) => typeof element.type === "function" && element.type.name === "TeamBlock")!;
+    expect(inlineText(block)).toBe("High-stakes · DeliveryTeam Task teamSA –  →  SWE ●  →  QA ▲ & AUD –  ·  REV A ○");
+    const details = (menu: Element) => text(elements(menu).find((element) => element.type === Disclosure)!.props.children as ReactNode);
+    expect(details(declared)).toContain("Team, workflow and risk tier declared by Team fixture. A session sits under a role by its own role label, which assigns nothing.");
+    const missing = open({ team: { state: "not-provided", coverage } });
+    expect(inlineText(elements(missing).find((element) => typeof element.type === "function" && element.type.name === "TeamBlock"))).toBe("Team, workflow and risk tier: not provided");
+    expect(details(missing)).toContain(coverage);
+    const none = open({ links: [], team: { state: "declared", declaration: team } });
+    expect(text(none)).toContain(`${key(0)} · no linked session`);
+    expect(details(none)).toContain(`No session has a jira.issue, task or kontor.ticket label equal to ${key(0)}.`);
   });
 });

@@ -2,6 +2,8 @@ import type { DirectoryEntry } from "./session-directory";
 
 export const OTHER_WORKSTREAM = "Other work";
 export const UNASSIGNED_EPIC = "Unassigned";
+/** What the tree and results show for UNASSIGNED_EPIC; group keys keep the original word, so saved disclosure still applies. */
+export const NO_LINKED_EPIC = "No linked epic";
 export const UNASSIGNED_WORKSPACE = "Unassigned workspace";
 
 export type OrganizationGroupKind =
@@ -82,7 +84,7 @@ export type OrganizationGroup = {
   readonly aggregate: OrganizationAggregate;
   /** Secondary context beside the label, such as the native placement of a Role group. */
   readonly detail: string | null;
-  /** Resolved epic of an epic group; null elsewhere and for Unassigned. */
+  /** Resolved epic of an epic group; null elsewhere and for the no-linked-epic group. */
   readonly epic: string | null;
   /** Workspace-kind groups count workspaces; every other group counts sessions. */
   readonly unit: "sessions" | "workspaces";
@@ -216,6 +218,11 @@ export function organizationScope(
   return { workstream, epic };
 }
 
+/** The epic as shown: no display mapping or epic label links the session to one. */
+export function epicLabel(epic: string): string {
+  return epic === UNASSIGNED_EPIC ? NO_LINKED_EPIC : epic;
+}
+
 function workspaceOf(entry: DirectoryEntry): {
   readonly key: string;
   readonly label: string;
@@ -238,6 +245,11 @@ function workspaceOf(entry: DirectoryEntry): {
     return { key: `cwd:${cwd}`, label: cwd };
   }
   return { key: "unassigned", label: UNASSIGNED_WORKSPACE };
+}
+
+/** The workspace label the tree shows for a session. */
+export function workspaceLabel(entry: DirectoryEntry): string {
+  return workspaceOf(entry).label;
 }
 
 export function sessionState(entry: DirectoryEntry): OrganizationState {
@@ -630,6 +642,9 @@ function buildHierarchy(input: {
     {
       label: string;
       epics: Map<string, { label: string; projectKey: string; projectName: string; entries: DirectoryEntry[]; emptyWorkspaces?: OrganizationWorkspace[] }>;
+      /** Desk work with no linked epic: its workspaces sit directly under the desk. */
+      desk: DirectoryEntry[];
+      deskEmpty: OrganizationWorkspace[];
     }
   >();
   for (const entry of input.entries) {
@@ -637,8 +652,12 @@ function buildHierarchy(input: {
     const workstreamKey = normalizedPrefix(scope.workstream);
     let workstream = workstreams.get(workstreamKey);
     if (!workstream) {
-      workstream = { label: scope.workstream, epics: new Map() };
+      workstream = { label: scope.workstream, epics: new Map(), desk: [], deskEmpty: [] };
       workstreams.set(workstreamKey, workstream);
+    }
+    if (scope.epic === UNASSIGNED_EPIC && isDeskWork(entry, input.displayMappings)) {
+      workstream.desk.push(entry);
+      continue;
     }
     const projectKey = entry.projectKey ?? `unknown:${entry.workspaceId ?? entry.cwd ?? entry.id}`;
     const epicKey = JSON.stringify([projectKey, normalizedPrefix(scope.epic)]);
@@ -658,7 +677,9 @@ function buildHierarchy(input: {
     const epic = mapping?.epic ?? UNASSIGNED_EPIC;
     const streamKey = normalizedPrefix(stream);
     let parent = workstreams.get(streamKey);
-    if (!parent) { parent = { label: stream, epics: new Map() }; workstreams.set(streamKey, parent); }
+    if (!parent) { parent = { label: stream, epics: new Map(), desk: [], deskEmpty: [] }; workstreams.set(streamKey, parent); }
+    // A workspace carries no desk label, so only a desk workstream makes it desk work.
+    if (epic === UNASSIGNED_EPIC && workstreamRank(stream) === 0) { parent.deskEmpty.push(workspace); continue; }
     const projectKey = workspace.projectKey ?? `unknown:${workspace.id}`;
     const epicKey = JSON.stringify([projectKey, normalizedPrefix(epic)]);
     let target = parent.epics.get(epicKey);
@@ -678,9 +699,17 @@ function buildHierarchy(input: {
         nativeOrder: input.nativeOrder,
         emptyWorkspaces: epic.emptyWorkspaces,
         projectKey: epic.projectKey,
-        displayLabel: multipleProjects ? `${epic.label} · ${epic.projectName}` : epic.label,
+        displayLabel: multipleProjects ? `${epicLabel(epic.label)} · ${epic.projectName}` : epicLabel(epic.label),
       }),
     );
+    const deskWorkspaces = workspaceChildren({
+      entries: workstream.desk,
+      parentKey: workstreamKey,
+      depth: 1,
+      siblingOrder: input.siblingOrder,
+      nativeOrder: input.nativeOrder,
+      emptyWorkspaces: workstream.deskEmpty,
+    });
     const assigned = epics.filter((epic) => epic.epic !== null).length;
     groups.push(
       group({
@@ -691,8 +720,8 @@ function buildHierarchy(input: {
         parentKey: null,
         depth: 0,
         sessions: [],
-        groups: sortGroups(epics, workstreamKey, input.siblingOrder, (epic) =>
-          epic.label === UNASSIGNED_EPIC ? 1 : 0,
+        groups: sortGroups([...epics, ...deskWorkspaces], workstreamKey, input.siblingOrder, (child) =>
+          child.kind !== "epic" ? 1 : child.epic === null ? 2 : 0,
         ),
         detail: assigned > 0 ? `${assigned} epic${assigned === 1 ? "" : "s"}` : null,
       }),
@@ -724,7 +753,7 @@ function buildRoleRoot(input: {
       existing.entries.push(entry);
     } else {
       partitions.set(key, {
-        detail: `${scope.workstream} · ${scope.epic} · ${workspace.label}`,
+        detail: `${scope.workstream} · ${epicLabel(scope.epic)} · ${workspace.label}`,
         rank: workstreamRank(scope.workstream),
         entries: [entry],
       });

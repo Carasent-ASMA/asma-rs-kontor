@@ -33,11 +33,13 @@ vi.mock("@getpaseo/plugin/client/react-native", () => ({
 }));
 vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: () => ({ state: { entries: model.entries, status: "ready", live: false, lastUpdatedAt: 1, error: null, staleReason: null, pages: 1, includeArchived: false }, refresh: () => {} }) }));
 vi.mock("../client/use-organization-settings", () => ({ useOrganizationSettings: () => ({ state: { status: "ready", values: model.values, saving: false, saveError: null }, save: async () => true }) }));
-vi.mock("../client/use-read-sources", () => ({ useReadSources: () => ({ sources: model.sources, reads: model.reads, error: null, loading: false, available: true }) }));
+vi.mock("../client/use-read-sources", () => ({ useReadSources: () => ({ sources: model.sources, reads: model.reads, teamsSnapshots: {}, error: null, loading: false, available: true }) }));
 vi.mock("../client/use-workspace-directory", () => ({ useWorkspaceDirectory: () => ({ entries: [], error: null, readAt: null }) }));
 
 import { KontorScreen } from "../client/kontor-screen";
-import { DESTINATIONS, hostNavigation, navigate, readRouteView, type KontorRoute } from "../client/navigation-state";
+import { DESTINATIONS, hostNavigation, navigate, readRouteView, sessionScopeKey, type KontorRoute } from "../client/navigation-state";
+import { readSessionView } from "../client/session-view-store";
+import type { BoardSessions } from "../client/board-sessions";
 import { DEFAULT_ORGANIZATION_SETTINGS } from "../shared/organization";
 import { sessionEntry } from "./session-fixtures";
 import { GraphPage } from "../client/graph-page";
@@ -237,6 +239,19 @@ describe("Kontor shell native actions", () => {
     (board().props.onPlan as (sourceId: string) => void)("plan-a"); screen.render();
     expect(hostNavigation(screen.props.host.id).route.tab).toBe("Plan"); screen.click("Back");
     expect(board().props.initialOffset).toBe(800);
+  });
+  it("opens Sessions unscoped with a Board task's exact label join and the workspace through host navigation", () => {
+    const screen = mount(true, { tab: "Board", sourceId: "plan-a", sourceRevision: "sha-a" });
+    const sessions = screen.elements().find((element) => element.type === GraphPage)!.props.sessions as BoardSessions;
+    sessions.onOpenWorkspace!("wks_a");
+    expect(screen.props.navigation?.openWorkspace).toHaveBeenCalledWith({ workspaceId: "wks_a", serverId: screen.props.host.id });
+    const task = { jira: "ASMA-7", kontorId: null, label: "ASMA-7" };
+    sessions.onShowInSessions(task); screen.render();
+    const route = hostNavigation(screen.props.host.id).route;
+    expect(route).toMatchObject({ tab: "Sessions", projectId: null, epicKey: null });
+    expect(readSessionView(sessionScopeKey(screen.props.host.id, route))).toMatchObject({ task, query: "", status: "all", scrollOffset: 0 });
+    screen.click("Back");
+    expect(hostNavigation(screen.props.host.id).route.tab).toBe("Board");
   });
   it("keeps the native conversation and its association boundary while choosing a linked plan", () => {
     model.values = { ...DEFAULT_ORGANIZATION_SETTINGS, planAssociations: { native: ["linked-a", "linked-b"] } };

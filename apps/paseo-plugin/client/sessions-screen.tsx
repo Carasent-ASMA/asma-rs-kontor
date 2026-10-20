@@ -46,15 +46,18 @@ import {
   type StatusFilter,
 } from "./session-view";
 import {
+  isResultMode,
   patchLocalExpansion,
   patchSessionView,
   readLocalExpansion,
   readSessionView,
   resetSessionView,
+  sessionViewTransition,
   writeScrollOffset,
   type SessionGrouping,
   type SessionViewState,
 } from "./session-view-store";
+import { inWorkspace, labelledRole, matchesResultSearch, sessionAncestors, sessionProvenance, taskSessions, TASK_JIRA_LABELS, TASK_TICKET_LABEL, type SessionProvenance } from "./session-results";
 import {
   accumulateScrollDelta,
   EMPTY_SCROLL_ACCUMULATOR,
@@ -70,13 +73,18 @@ import {
 import { useSessionDirectory } from "./use-session-directory";
 import { DEFAULT_ORGANIZATION_SETTINGS, type OrganizationSettings } from "../shared/organization";
 import type { useOrganizationSettings } from "./use-organization-settings";
-import { allGroupKeys, buildOrganizationTree, defaultGroupExpanded, filterOrganizationTree, flattenOrganizationTree, inEpicScope, isDeskWork, organizationScope, sessionState, visibleSessions, workstreamRank, type OrganizationGroup, type OrganizationRow, type OrganizationWorkspace } from "./session-organization";
+import { allGroupKeys, buildOrganizationTree, defaultGroupExpanded, epicLabel, filterOrganizationTree, flattenOrganizationTree, inEpicScope, isDeskWork, organizationScope, sessionState, STATE_LABELS, visibleSessions, workstreamRank, type OrganizationGroup, type OrganizationRow, type OrganizationWorkspace } from "./session-organization";
 import { rowKey, siblingKeys, reorderSavedSiblingOrder } from "./organization-order";
 import { OrganizationRowView, StateBadge, stateColor as sessionStateColor, WORKSPACE_KINDS } from "./organization-row";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
 import { Action, COARSE_POINTER, Disclosure } from "./page-controls";
 
 type ThemeColors = PluginTheme["colors"];
+/** A tree row, or a flat match while a search, state or task filter is on. */
+type ListRow = OrganizationRow | { readonly kind: "result"; readonly entry: DirectoryEntry };
+function listRowKey(row: ListRow): string {
+  return row.kind === "result" ? `result:${row.entry.id}` : rowKey(row);
+}
 
 /** Status dot colour of a session: its highest-priority state, as on group badges. */
 export function indicatorColor(entry: DirectoryEntry, colors: ThemeColors): string {
@@ -161,6 +169,11 @@ export const OPTIONS_SPACE_SHARE = 0.7;
 export const OPTIONS_MIN_HEIGHT = 3 * FILTERS_TOUCH_TARGET;
 /** Wide screen padding above the toolbar and below the list. */
 const WIDE_SCREEN_PADDING = 16;
+/**
+ * Below this compact screen height, Show in tree folds the slim toolbar and the filter summary into
+ * its Back row: at 320pt they would otherwise fill the screen and hide the session it shows.
+ */
+export const SHORT_PEEK_HEIGHT = 420;
 
 /** Compact toolbar disclosure, kept in the local in-memory view store beside the filters. */
 export function compactToolbarOpen(view: SessionViewState): boolean {
@@ -246,9 +259,11 @@ export function activeFilterParts(input: {
   readonly shortcut: string | null;
   readonly streams: readonly string[] | null;
   readonly includeArchived: boolean;
+  readonly task?: string | null;
 }): string[] {
   const query = input.query.trim();
   return [
+    input.task ? `Task ${input.task}` : null,
     query ? `“${query}”` : null,
     input.status !== "all" ? statusFilterLabel(input.status) : null,
     input.shortcut !== null ? shortcutLabel(input.shortcut) : null,
@@ -274,6 +289,11 @@ export function pressFocus(event: unknown): boolean {
 /** Prefix of the failure note kontor-screen passes as workspaceNote. */
 const WORKSPACE_LIST_ERROR = "Workspace list unavailable";
 
+/** What the list shows: the tree, flat results, or one result in its place in the tree. */
+function listModeOf(view: SessionViewState): string {
+  return !isResultMode(view) ? "tree" : view.peek ? `peek:${view.peek.sessionId}` : "results";
+}
+
 function updatedLabel(timestamp: number | null): string {
   if (timestamp === null) {
     return "not read yet";
@@ -289,6 +309,8 @@ type SessionRowProps = {
   readonly displayTitle?: string;
   /** Placement context, shown only where the tree does not already say it (Role and Flat). */
   readonly displayContext?: string;
+  /** The result a user asked to see in the tree. */
+  readonly highlighted?: boolean;
 };
 
 const SessionRow = memo(function SessionRow({
@@ -298,6 +320,7 @@ const SessionRow = memo(function SessionRow({
   onPress,
   displayTitle,
   displayContext,
+  highlighted = false,
 }: SessionRowProps) {
   const attention = attentionLabel(entry);
   const archived = archivedLabel(entry);
@@ -319,6 +342,7 @@ const SessionRow = memo(function SessionRow({
         : null,
     archived,
     detail,
+    highlighted ? "Shown from search results" : null,
   ]
     .filter((part): part is string => part !== null && part.length > 0)
     .join(". ");
@@ -348,7 +372,9 @@ const SessionRow = memo(function SessionRow({
         alignItems: "center",
         gap: compact ? 8 : 10,
         borderRadius: 5,
-        backgroundColor: pressed || hovered ? colors.surface2 : undefined,
+        borderLeftWidth: highlighted ? 3 : 0,
+        borderLeftColor: colors.accent,
+        backgroundColor: pressed || hovered || highlighted ? colors.surface2 : undefined,
       })}
     >
       {compact ? (
@@ -393,6 +419,97 @@ const SessionRow = memo(function SessionRow({
         </>
       )}
     </Pressable>
+  );
+});
+
+function capitalized(value: string): string {
+  return value.charAt(0).toLocaleUpperCase() + value.slice(1);
+}
+
+/**
+ * Cues a result shows after its place: role, task and PR labels, and the native
+ * runtime where the state badge reports something else, such as an error
+ * reported earlier on a session that is idle now. The title is never parsed.
+ */
+export function resultCues(entry: DirectoryEntry): string[] {
+  const state = sessionState(entry);
+  const task = [...TASK_JIRA_LABELS, TASK_TICKET_LABEL].map((key) => entry.labels[key]?.trim()).find((value) => !!value);
+  const pr = entry.labels.pr?.trim().replace(/^#/, "");
+  const derived = (state === "needs_input" || state === "attention" || state === "failed") && entry.status !== "error";
+  return [
+    derived ? (entry.attentionReason === "error" ? `Earlier error · now ${entry.status}` : `Now ${entry.status}`) : null,
+    archivedLabel(entry),
+    labelledRole(entry),
+    task ?? null,
+    pr ? `PR ${pr}` : null,
+  ].filter((part): part is string => !!part);
+}
+
+export function resultAccessibilityLabel(entry: DirectoryEntry, provenance: SessionProvenance): string {
+  const role = labelledRole(entry);
+  const task = [...TASK_JIRA_LABELS, TASK_TICKET_LABEL].map((key) => entry.labels[key]?.trim()).find((value) => !!value);
+  const derived = resultCues(entry).find((cue) => cue.startsWith("Earlier error") || cue.startsWith("Now "));
+  return [
+    entry.title,
+    STATE_LABELS[sessionState(entry)],
+    derived ? `Native status ${entry.status}${derived.startsWith("Earlier") ? ", error reported earlier" : ""}` : null,
+    provenance.desk ? `Desk ${provenance.parts.join(", workspace ")}` : `Workstream ${provenance.parts[0]}, epic ${provenance.parts[1]}, workspace ${provenance.parts[2]}`,
+    role ? `Role label ${role}` : null,
+    task ? `Task label ${task}` : null,
+    entry.labels.pr?.trim() ? `PR label ${entry.labels.pr.trim()}` : null,
+    archivedLabel(entry),
+    `Native ID ${entry.id}`,
+  ].filter((part): part is string => !!part).join(". ");
+}
+
+type SessionResultRowProps = {
+  readonly entry: DirectoryEntry;
+  readonly provenance: SessionProvenance;
+  readonly colors: ThemeColors;
+  readonly compact: boolean;
+  readonly onPress: (entry: DirectoryEntry) => void;
+  readonly onShowInTree: (entry: DirectoryEntry) => void;
+  readonly treeButtonRef: (id: string, node: View | null) => void;
+};
+
+/** A flat match: the session opens from the row, and its place in the tree is a separate control beside it. */
+const SessionResultRow = memo(function SessionResultRow({ entry, provenance, colors, compact, onPress, onShowInTree, treeButtonRef }: SessionResultRowProps) {
+  const cues = resultCues(entry);
+  const coarse = compact || COARSE_POINTER;
+  return (
+    <View testID={`sessions-result-${entry.id}`} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+      <Pressable
+        testID={`sessions-row-${entry.id}`}
+        accessibilityRole="button"
+        accessibilityLabel={resultAccessibilityLabel(entry, provenance)}
+        accessibilityHint="Opens the existing Paseo session"
+        onPress={() => onPress(entry)}
+        style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => ({
+          flex: 1,
+          minWidth: 0,
+          minHeight: coarse ? 52 : 40,
+          paddingHorizontal: 8,
+          paddingVertical: coarse ? 6 : 4,
+          justifyContent: "center",
+          gap: 2,
+          borderRadius: 5,
+          backgroundColor: pressed || hovered ? colors.surface2 : undefined,
+        })}
+      >
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <Text testID="sessions-row-title" numberOfLines={1} style={{ flex: 1, minWidth: 0, color: colors.foreground, fontSize: compact ? 14 : 13, lineHeight: compact ? 20 : 18 }}>
+            {entry.title}
+          </Text>
+          <StateBadge state={sessionState(entry)} colors={colors} compact={false} />
+        </View>
+        <Text testID="sessions-result-place" numberOfLines={compact ? 2 : 1} style={{ color: colors.foregroundMuted, fontSize: compact ? 12 : 11, lineHeight: compact ? 16 : 15 }}>
+          {provenance.parts.join(" › ")}
+          {cues.length > 0 ? `  ·  ${cues.join(" · ")}` : ""}
+        </Text>
+      </Pressable>
+      <Action ref={(node) => treeButtonRef(entry.id, node)} small={!compact} colors={colors} label={compact ? "In tree" : "Show in tree"}
+        accessibilityLabel={`Show ${entry.title} in the tree`} onPress={() => onShowInTree(entry)} />
+    </View>
   );
 });
 
@@ -1113,7 +1230,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     void organization.save(patch).then((saved) => setSaveMessage(saved ? null : "Organization was not saved. Reload preferences in Settings and review the conflict; no newer revision was overwritten."));
   };
   const toast = useToast();
-  const listRef = useRef<NativeFlatList<OrganizationRow> | null>(null);
+  const listRef = useRef<NativeFlatList<ListRow> | null>(null);
   const entriesRef = useRef(state.entries);
   entriesRef.current = state.entries;
   const restoredRef = useRef(false);
@@ -1170,6 +1287,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     const nextView = readSessionView(viewScope);
     setHostView({ hostId: host.id, viewScope, view: nextView });
     restoredRef.current = false;
+    listModeRef.current = listModeOf(nextView);
+    placementRef.current += 1;
+    treeAnchorRef.current = nextView.scrollOffset;
     scrollOffsetRef.current = nextView.scrollOffset;
     lastScrollOffsetRef.current = nextView.scrollOffset;
     maxScrollOffsetRef.current = 0;
@@ -1222,12 +1342,19 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     );
   }, [state.entries]);
 
+  /** Tree offset below the compact toolbar, from the last tree scroll that moved the rows. */
+  const treeAnchorRef = useRef(scrollOffsetRef.current);
+  const listModeRef = useRef(listModeOf(readSessionView(viewScope)));
+  /** Counts list placements (a mode or scope change); a scroll retry belongs to the one that asked for it. */
+  const placementRef = useRef(0);
+  /** The compact toolbar opening scrolls to its top; that is not a new tree position. */
+  const anchorFrozenUntilRef = useRef(0);
   const updateView = useCallback(
     (patch: Partial<SessionViewState>) => {
       setHostView({
         hostId: host.id,
         viewScope,
-        view: patchSessionView(viewScope, patch),
+        view: patchSessionView(viewScope, sessionViewTransition(readSessionView(viewScope), patch, treeAnchorRef.current)),
       });
     },
     [host.id, viewScope],
@@ -1280,6 +1407,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     toolbarCollapsedRef.current = collapsed;
     scrollAccumulatorRef.current = EMPTY_SCROLL_ACCUMULATOR;
     compactAnchorRef.current = scrollOffsetRef.current;
+    if (compact && !collapsed) anchorFrozenUntilRef.current = Date.now() + 400;
     setToolbarCollapsed(collapsed);
     if (compact) {
       updateView(toolbarOpenPatch(!collapsed));
@@ -1487,6 +1615,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     pinFilterInteraction();
     updateView({
       status: "all",
+      task: null,
       includeArchived: false,
       shortcut: null,
       streams: null,
@@ -1500,6 +1629,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     updateView({
       query: "",
       status: "all",
+      task: null,
       includeArchived: false,
       shortcut: null,
       streams: null,
@@ -1509,12 +1639,15 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
 
   const handleClearAll = useCallback(() => {
     pinFilterInteraction();
-    const reset = resetSessionView(viewScope);
+    const current = readSessionView(viewScope);
+    resetSessionView(viewScope);
+    // The tree returns where it was before the search or filter.
+    const anchor = { scrollOffset: isResultMode(current) ? current.treeOffset ?? 0 : 0 };
     setHostView({
       hostId: host.id,
       viewScope,
       // Clearing filters does not also open or close the compact toolbar.
-      view: compact ? patchSessionView(viewScope, toolbarOpenPatch(!toolbarCollapsedRef.current)) : reset,
+      view: patchSessionView(viewScope, compact ? { ...anchor, ...toolbarOpenPatch(!toolbarCollapsedRef.current) } : anchor),
     });
   }, [compact, host.id, viewScope, pinFilterInteraction]);
 
@@ -1546,6 +1679,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         : offset;
       scrollOffsetRef.current = visibleOffset;
       writeScrollOffset(viewScope, visibleOffset);
+      if (listModeRef.current === "tree" && Date.now() >= anchorFrozenUntilRef.current) {
+        treeAnchorRef.current = Math.max(0, visibleOffset - (compact && !toolbarCollapsedRef.current ? compactToolbarHeight() : 0));
+      }
 
       const suppressed = Date.now() < programmaticUntilRef.current;
       if (compact) {
@@ -1621,21 +1757,21 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     [state.entries, projectId, epicKey, mappings],
   );
   const tree = useMemo(() => buildOrganizationTree({ entries: scoped, ...preferences, grouping, workspaces }), [scoped, preferences, grouping, workspaces]);
-  const tokens = view.query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
-  const filterTree = (status: StatusFilter): OrganizationGroup[] => {
-    const eligible = (entry: DirectoryEntry) => matchesStatus(entry, status, favorites) && matchesShortcut(entry, shortcut, mappings)
-      && (streams === null || streams.includes(workstreamKey(organizationScope(entry, mappings).workstream)));
-    // A matching group label shows its eligible descendants; with no search, empty workspaces stay visible.
-    return filterOrganizationTree(tree, (entry) => eligible(entry) && matchesQuery(entry, view.query),
-      (group) => tokens.length ? tokens.every((token) => group.label.toLocaleLowerCase().includes(token)) : status === "all" && shortcut === null && streams === null && group.kind === "workspace",
-      eligible);
-  };
-  const filtered = useMemo(() => filterTree(view.status), [tree, view.query, view.status, favorites, shortcut, streams, mappings]);
-  const unstated = useMemo(() => view.status === "all" ? filtered : filterTree("all"), [filtered, tree, view.query, view.status, favorites, shortcut, streams, mappings]);
-  const statusCounts = useMemo(() => {
-    const candidates = visibleSessions(unstated);
-    return Object.fromEntries([...QUICK_STATUS_FILTERS, ...MORE_STATUS_FILTERS].map((status) => [status, candidates.filter((entry) => matchesStatus(entry, status, favorites)).length])) as Record<StatusFilter, number>;
-  }, [unstated, favorites]);
+  const tokens = useMemo(() => view.query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean), [view.query]);
+  const task = view.task ?? null;
+  const resultMode = isResultMode(view);
+  const eligible = useCallback((entry: DirectoryEntry) => matchesShortcut(entry, shortcut, mappings)
+    && (streams === null || streams.includes(workstreamKey(organizationScope(entry, mappings).workstream))), [shortcut, streams, mappings]);
+  // Search and state never narrow the tree; with no desk or workstream choice, empty workspaces stay visible.
+  const filtered = useMemo(() => filterOrganizationTree(tree, eligible,
+    (group) => shortcut === null && streams === null && group.kind === "workspace", eligible), [tree, eligible, shortcut, streams]);
+  const linked = useMemo(() => task ? new Set(taskSessions(scoped, task).map(({ entry }) => entry.id)) : null, [scoped, task]);
+  // Matches before the state filter, so each state chip counts what choosing it would show.
+  const candidates = useMemo(() => scoped.filter((entry) => eligible(entry) && (linked === null || linked.has(entry.id)) && matchesResultSearch(entry, tokens, mappings)),
+    [scoped, eligible, linked, tokens, mappings]);
+  const results = useMemo(() => resultMode ? candidates.filter((entry) => matchesStatus(entry, view.status, favorites)) : [], [resultMode, candidates, view.status, favorites]);
+  const statusCounts = useMemo(() => Object.fromEntries([...QUICK_STATUS_FILTERS, ...MORE_STATUS_FILTERS].map((status) => [status, candidates.filter((entry) => matchesStatus(entry, status, favorites)).length])) as Record<StatusFilter, number>,
+    [candidates, favorites]);
   const shortcutCounts = useMemo(() => SESSION_SHORTCUTS.map(({ id }) => scoped.filter((entry) => matchesShortcut(entry, id, mappings)).length), [scoped, mappings]);
   const streamChoices = useMemo(() => {
     const labels = new Map<string, string>();
@@ -1644,10 +1780,17 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   }, [scoped, mappings]);
   const localExpansion = readLocalExpansion(host.id);
   const expanded = useMemo(() => ({ ...preferences.expandedGroups, ...localExpansion }), [preferences.expandedGroups, localExpansion]);
-  // Search and state filters reveal every match; the saved disclosure returns once they clear.
-  const reveal = tokens.length > 0 || view.status !== "all";
-  const rows = useMemo(() => flattenOrganizationTree(filtered, expanded, reveal, defaultGroupExpanded), [filtered, expanded, reveal]);
-  const rowSignature = useMemo(() => rows.map(rowKey).join("\n"), [rows]);
+  const peek = resultMode ? view.peek ?? null : null;
+  // Branches opened or closed while a result shows in the tree; never saved.
+  const [peekToggles, setPeekToggles] = useState<Readonly<Record<string, boolean>>>({});
+  const peekAncestors = useMemo(() => peek ? sessionAncestors(filtered, peek.sessionId) : null, [filtered, peek]);
+  const treeExpanded = useMemo(() => peekAncestors ? { ...expanded, ...Object.fromEntries(peekAncestors.map((key) => [key, true])), ...peekToggles } : expanded, [expanded, peekAncestors, peekToggles]);
+  const rows: readonly ListRow[] = useMemo(() => resultMode && !peek ? results.map((entry) => ({ kind: "result" as const, entry }))
+    : flattenOrganizationTree(filtered, treeExpanded, false, defaultGroupExpanded), [resultMode, peek, results, filtered, treeExpanded]);
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+  const provenance = useMemo(() => new Map(results.map((entry) => [entry.id, sessionProvenance(entry, mappings)])), [results, mappings]);
+  const rowSignature = useMemo(() => rows.map(listRowKey).join("\n"), [rows]);
   const previousRowSignatureRef = useRef(rowSignature);
   useLayoutEffect(() => {
     if (previousRowSignatureRef.current === rowSignature) {
@@ -1661,7 +1804,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       compactAnchorRef.current = Number.NaN;
     }
   }, [compact, rowSignature]);
-  const shown = useMemo(() => visibleSessions(filtered), [filtered]);
+  const shown = useMemo(() => resultMode ? results : visibleSessions(filtered), [resultMode, results, filtered]);
   const workspaceCount = new Set(shown.map((entry) => entry.workspaceId ?? entry.workspaceName ?? entry.cwd)).size;
   // The full count and read statement; Filters shows it, the visible count line only when it adds something.
   const sessionCount = `${shown.length === scoped.length ? `${scoped.length}` : `${shown.length} of ${scoped.length}`} session${scoped.length === 1 ? "" : "s"}`;
@@ -1677,6 +1820,11 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     savePreference({ expandedGroups: { ...preferences.expandedGroups, ...local } });
   };
   const setAllGroups = (open: boolean) => setExpansion(Object.fromEntries(allGroupKeys(tree).map((key) => [key, open])));
+  const toggleGroup = (row: ListRow) => {
+    if (row.kind !== "group") return;
+    if (peek) setPeekToggles((current) => ({ ...current, [row.group.key]: !row.expanded }));
+    else setExpansion({ [row.group.key]: !row.expanded });
+  };
   const chooseGrouping = (next: SessionGrouping) => {
     pinFilterInteraction();
     updateView({ grouping: next, scrollOffset: 0 });
@@ -1696,11 +1844,11 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     savePreference({ siblingOrder: { ...preferences.siblingOrder, [parent]: reorderSavedSiblingOrder(preferences.siblingOrder[parent] ?? [], siblingKeys(tree, parent), movable, rowKey(row), distance) } });
   };
   const moveSelection = (distance: number) => {
-    const row = rows.find((candidate) => rowKey(candidate) === orderSelection);
-    if (row) moveRow(row, distance);
+    const row = rows.find((candidate) => listRowKey(candidate) === orderSelection);
+    if (row && row.kind !== "result") moveRow(row, distance);
   };
 
-  const narrowed = tokens.length > 0 || view.status !== "all" || shortcut !== null || streams !== null;
+  const narrowed = resultMode || shortcut !== null || streams !== null;
   const arrangeEnabled = arranging && !narrowed && !editsDisabled;
   const optionParts = [
     grouping !== "hierarchy" ? GROUPINGS.find((choice) => choice.id === grouping)?.label : null,
@@ -1711,11 +1859,12 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   ].filter((part): part is string => !!part);
   const activeCount = optionParts.length;
   const hasOrganizationFilter = shortcut !== null || streams !== null;
-  const clearable = view.status !== "all" || view.includeArchived || hasOrganizationFilter;
-  const summaryParts = activeFilterParts({ query: view.query, status: view.status, shortcut, streams, includeArchived: view.includeArchived });
+  const clearable = view.status !== "all" || !!task || view.includeArchived || hasOrganizationFilter;
+  const taskKeys = task ? [task.jira ? `${TASK_JIRA_LABELS.join(" or ")} equal to ${task.jira}` : null, task.kontorId ? `${TASK_TICKET_LABEL} equal to ${task.kontorId}` : null].filter(Boolean).join(", or ") : "";
+  const summaryParts = activeFilterParts({ query: view.query, status: view.status, shortcut, streams, includeArchived: view.includeArchived, task: task?.label });
   // The compact slim badge also counts the state and desk chips its closed toolbar hides; search has its own button.
   const slimActiveCount = compact
-    ? [view.status !== "all", shortcut !== null, streams !== null, view.includeArchived, grouping !== "hierarchy"].filter(Boolean).length
+    ? [view.status !== "all", !!task, shortcut !== null, streams !== null, view.includeArchived, grouping !== "hierarchy"].filter(Boolean).length
     : activeCount;
   // While the compact toolbar is open, a short list still has room for the small drag that closes it.
   const scrollSlack = compact && !toolbarCollapsed && listHeight > 0 ? { minHeight: listHeight + COMPACT_SCROLL_SLACK } : {};
@@ -1741,6 +1890,65 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     }, 0);
     return () => clearTimeout(timer);
   }, [viewScope, state.entries.length]);
+
+  const treeButtonsRef = useRef(new Map<string, View>());
+  const treeButtonRef = useCallback((id: string, node: View | null) => {
+    if (node) treeButtonsRef.current.set(id, node);
+    else treeButtonsRef.current.delete(id);
+  }, []);
+  const peekBackRef = useRef<View | null>(null);
+  const focusAfterModeRef = useRef<(() => void) | null>(null);
+  const handleShowInTree = useCallback((entry: DirectoryEntry) => {
+    setPeekToggles({});
+    focusAfterModeRef.current = () => (peekBackRef.current as unknown as { focus?: () => void } | null)?.focus?.();
+    const head = compact && !toolbarCollapsedRef.current ? compactToolbarHeight() : 0;
+    updateView({ peek: { sessionId: entry.id, resultsOffset: Math.max(0, scrollOffsetRef.current - head) }, scrollOffset: 0 });
+  }, [compact, compactToolbarHeight, updateView]);
+  const handleBackToResults = useCallback(() => {
+    const current = readSessionView(viewScope).peek;
+    if (!current) return;
+    focusAfterModeRef.current = () => (treeButtonsRef.current.get(current.sessionId) as unknown as { focus?: () => void } | undefined)?.focus?.();
+    updateView({ peek: null, scrollOffset: current.resultsOffset });
+  }, [updateView, viewScope]);
+
+  // Each list mode keeps its place: results open at the top or where a peek left
+  // them, a peek scrolls to its session, and the tree returns where it was.
+  const listMode = listModeOf(view);
+  useLayoutEffect(() => {
+    const previous = listModeRef.current;
+    if (previous === listMode) {
+      return;
+    }
+    listModeRef.current = listMode;
+    placementRef.current += 1;
+    const stored = readSessionView(viewScope).scrollOffset;
+    const head = compact && !toolbarCollapsedRef.current ? compactToolbarHeight() : 0;
+    const offset = listMode === "results" && previous === "tree" ? 0 : stored > 0 ? stored + head : 0;
+    const sessionId = peek?.sessionId ?? null;
+    // Each pass finds the session's row again: a collapse or a live update can move or remove it first.
+    const place = () => {
+      const index = sessionId === null ? -1 : rowsRef.current.findIndex((row) => row.kind === "session" && row.entry.id === sessionId);
+      if (index >= 0) listRef.current?.scrollToIndex({ index, viewPosition: 0.3, animated: false });
+      return index >= 0;
+    };
+    scrollOffsetRef.current = offset;
+    lastScrollOffsetRef.current = offset;
+    scrollAccumulatorRef.current = EMPTY_SCROLL_ACCUMULATOR;
+    compactAnchorRef.current = Number.NaN;
+    programmaticUntilRef.current = Date.now() + 400;
+    if (listMode === "tree") treeAnchorRef.current = Math.max(0, offset - head);
+    writeScrollOffset(viewScope, offset);
+    const focus = focusAfterModeRef.current;
+    focusAfterModeRef.current = null;
+    const timer = setTimeout(() => {
+      if (!place()) listRef.current?.scrollToOffset({ offset, animated: false });
+      focus?.();
+    }, 0);
+    // The first pass places the session by estimated row heights, which leave out a list header
+    // such as open compact Filters; once the new rows are measured, place it again.
+    const settle = sessionId !== null ? setTimeout(place, 150) : undefined;
+    return () => { clearTimeout(timer); clearTimeout(settle); };
+  }, [listMode]);
 
   const staleMessage = state.error ?? state.staleReason;
   const showBanner =
@@ -1864,6 +2072,20 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         />
       </View>
 
+      {task ? (
+        <Pressable
+          testID="sessions-task-filter"
+          accessibilityRole="button"
+          accessibilityLabel={`Task ${task.label}: sessions with a label ${taskKeys}. Remove task filter`}
+          {...focusProps}
+          onPress={() => { pinFilterInteraction(); updateView({ task: null, scrollOffset: 0 }); }}
+          style={{ alignSelf: "flex-start", maxWidth: "100%", minHeight: compact || COARSE_POINTER ? FILTERS_TOUCH_TARGET : 30, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, borderRadius: 15, borderWidth: 1, borderColor: colors.accent, backgroundColor: colors.surface2 }}
+        >
+          <Text numberOfLines={1} style={{ flexShrink: 1, color: colors.foreground, fontSize: 12, fontWeight: "600" }}>Task {task.label}</Text>
+          <Text accessibilityElementsHidden importantForAccessibility="no" style={{ color: colors.foregroundMuted, fontSize: 12 }}>✕</Text>
+        </Pressable>
+      ) : null}
+
       <View accessibilityLabel="Frequent session state filters" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 4 }}>
         {QUICK_STATUS_FILTERS.map((status) => (
           <FilterChip
@@ -1931,8 +2153,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
             <FilterChip testID="sessions-arrange" label={arranging ? "Done arranging" : "Arrange"} compact={compact} active={arranging} colors={colors} {...focusProps} disabled={toolbarCollapsed || (!arranging && (narrowed || editsDisabled))} onPress={() => { pinFilterInteraction(); setOrderSelection(null); updateView({ arranging: !arranging }); }} />
             <View style={{ flex: 1 }} />
-            <FilterChip testID="sessions-expand-all" label="Expand all" compact={compact} active={false} colors={colors} {...focusProps} disabled={toolbarCollapsed || reveal} onPress={() => setAllGroups(true)} />
-            <FilterChip testID="sessions-collapse-all" label="Collapse all" compact={compact} active={false} colors={colors} {...focusProps} disabled={toolbarCollapsed || reveal} onPress={() => setAllGroups(false)} />
+            <FilterChip testID="sessions-expand-all" label="Expand all" compact={compact} active={false} colors={colors} {...focusProps} disabled={toolbarCollapsed || resultMode} onPress={() => setAllGroups(true)} />
+            <FilterChip testID="sessions-collapse-all" label="Collapse all" compact={compact} active={false} colors={colors} {...focusProps} disabled={toolbarCollapsed || resultMode} onPress={() => setAllGroups(false)} />
           </View>
           {arranging ? <View testID="sessions-arrange-help" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
             <Text style={{ flexBasis: "100%", color: colors.foregroundMuted, fontSize: 11 }}>{narrowed ? "Clear search and filters to arrange." : editsDisabled ? "Saved order is unavailable while organization settings are unavailable or saving." : "Select a handle, then Move up or Move down, or drag it among its siblings. Desks stay above epic work."}</Text>
@@ -2084,12 +2306,14 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     );
   }
 
-  const extraData = { colors, arrangeEnabled, orderSelection, editsDisabled, favorites };
-  const emptyMessage = hasActiveView(view) || hasOrganizationFilter
-    ? "No sessions match the current search and filters."
-    : state.status === "error"
-      ? "No sessions could be read from this host."
-      : "No sessions in this host's scope.";
+  const extraData = { colors, arrangeEnabled, orderSelection, editsDisabled, favorites, peek };
+  const emptyMessage = task && candidates.length === 0
+    ? `No session in this view is linked to ${task.label}.`
+    : hasActiveView(view) || hasOrganizationFilter || task
+      ? "No sessions match the current search and filters."
+      : state.status === "error"
+        ? "No sessions could be read from this host."
+        : "No sessions in this host's scope.";
   // Shown only when narrowed or when the read is partial or missing; group rows already carry the
   // counts. The workspace count stays in the label and, with the complete read, in Filters.
   const countLine = state.entries.length === 0 || (shown.length === scoped.length && state.inventoryComplete && state.lastUpdatedAt !== null) ? null : (
@@ -2097,13 +2321,39 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       {sessionCount}{state.inventoryComplete && state.lastUpdatedAt !== null ? "" : ` · ${inventoryRead}`}
     </Text>
   );
+  const resultWorkspaces = new Set(results.filter(inWorkspace).map((entry) => entry.workspaceId ?? entry.workspaceName)).size;
+  const unplaced = results.filter((entry) => !inWorkspace(entry)).length;
+  const resultLine = resultMode && results.length > 0 ? (
+    <Text testID="sessions-count" accessibilityLiveRegion="polite" style={{ color: colors.foregroundMuted, fontSize: 11, paddingHorizontal: 4, paddingBottom: 8 }}>
+      {`${results.length} matching session${results.length === 1 ? "" : "s"} · ${resultWorkspaces} workspace${resultWorkspaces === 1 ? "" : "s"}${unplaced ? ` · ${unplaced} without a workspace` : ""}`}
+      {state.inventoryComplete && state.lastUpdatedAt !== null ? "" : ` · ${inventoryRead}`}
+    </Text>
+  ) : null;
+  const peekTitle = peek ? state.entries.find((entry) => entry.id === peek.sessionId)?.title ?? "This session" : "";
+  const shortPeek = peek !== null && compact && rootSize.height > 0 && rootSize.height < SHORT_PEEK_HEIGHT;
+  const peekDescription = peekAncestors ? `Showing “${peekTitle}” in the tree. Branches opened here are not saved.` : `“${peekTitle}” is not in the tree under the current scope.`;
+  let peekText = peekDescription;
+  if (shortPeek) peekText = peekAncestors ? "In the tree · not saved" : "Not in this tree";
+  else if (compact) peekText = peekAncestors ? "Shown in the tree. Branches opened here are not saved." : "Not in the tree under this scope.";
+  const peekBar = peek ? (
+    <View testID="sessions-peek" style={{ flexDirection: "row", flexWrap: compact ? "nowrap" : "wrap", alignItems: "center", gap: 8, paddingHorizontal: 4 }}>
+      {/* Compact keeps the bar to one row beside Back; the highlighted row already names the session. */}
+      <Text accessibilityLiveRegion="polite" numberOfLines={shortPeek ? 1 : compact ? 2 : undefined} accessibilityLabel={peekDescription}
+        style={{ flex: 1, minWidth: compact ? 0 : 180, color: colors.foregroundMuted, fontSize: compact ? 11 : 12, lineHeight: compact ? 15 : 17 }}>
+        {peekText}
+      </Text>
+      <Action ref={peekBackRef} small={!compact} colors={colors} label={`Back to ${results.length} result${results.length === 1 ? "" : "s"}`} onPress={handleBackToResults} />
+    </View>
+  ) : null;
+  // A peek pins its way back above the list, so scrolling to the session never hides it.
+  const listLine = peek ? null : resultMode ? resultLine : countLine;
   // An element, not a component, so the search input keeps its focus across renders.
-  const listHeader = compact && fullToolbarSlot !== null ? (
+  const listHeader = compact && fullToolbarSlot !== null && !shortPeek ? (
     <View testID="sessions-list-header">
       {fullToolbarSlot}
-      {countLine}
+      {listLine}
     </View>
-  ) : countLine;
+  ) : listLine;
 
   return (
     <View
@@ -2118,15 +2368,29 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         gap: TOOLBAR_LAYOUT_GAP,
       }}
     >
-      {slimSlot}
+      {/* A short-screen peek keeps only its Back row; Back brings the toolbar and filters back. */}
+      {shortPeek ? null : slimSlot}
       {compactNotices}
       {compact ? null : fullToolbarSlot}
+      {peekBar}
       <FlatList
         ref={listRef}
         testID="sessions-list"
         data={rows}
-        keyExtractor={rowKey}
+        keyExtractor={listRowKey}
         extraData={extraData}
+        onScrollToIndexFailed={({ index, averageItemLength }) => {
+          // Rows past the rendered window have no measured offset yet: land near it, then on it. The retry
+          // belongs to the placement that asked for it, so Back, a new placement or a scope change drops it.
+          // It follows its row, not the index: a collapse or a live update can move or remove the row first.
+          const placement = placementRef.current;
+          const target = rowsRef.current[index];
+          listRef.current?.scrollToOffset({ offset: index * averageItemLength, animated: false });
+          setTimeout(() => {
+            const now = target && placementRef.current === placement ? rowsRef.current.findIndex((row) => listRowKey(row) === listRowKey(target)) : -1;
+            if (now >= 0) listRef.current?.scrollToIndex({ index: now, viewPosition: 0.3, animated: false });
+          }, 60);
+        }}
         initialNumToRender={24}
         windowSize={11}
         onLayout={compact ? handleListLayout : undefined}
@@ -2140,7 +2404,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         contentContainerStyle={rows.length === 0 ? { flexGrow: 1, ...scrollSlack } : { paddingBottom: 16, ...scrollSlack }}
         ListHeaderComponent={listHeader}
         renderItem={({ item }) => {
-          const key = rowKey(item);
+          if (item.kind === "result") return <SessionResultRow entry={item.entry} provenance={provenance.get(item.entry.id) ?? sessionProvenance(item.entry, mappings)} colors={colors} compact={compact} onPress={handleOpen} onShowInTree={handleShowInTree} treeButtonRef={treeButtonRef} />;
+          const key = listRowKey(item);
           if (item.kind === "empty") return <OrganizationRowView row={item} colors={colors} compact={compact} disabled arranging={false} selected={false} favorite={false} onFavorite={() => undefined} onToggle={() => undefined} onMove={() => undefined} onSelect={() => undefined} />;
           const epic = item.kind === "group" && item.group.kind === "epic" ? item.group.epic : null;
           const plans = epic ? planSources?.[epic.toLocaleUpperCase()] ?? [] : [];
@@ -2148,16 +2413,17 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             accessibilityLabel={`${tab} for ${epic}${plans.length > 1 ? `, choose among ${plans.length} configured plans` : ""}`} onPress={() => onEpicTab(tab, epic, plans.length === 1 ? plans[0]! : null)} />) : undefined;
           return <OrganizationRowView row={item} colors={colors} compact={compact} disabled={editsDisabled} arranging={arrangeEnabled} selected={orderSelection === key}
             favorite={item.kind === "session" && favorites.includes(item.entry.id)} actions={actions}
-            onToggle={() => { if (item.kind === "group") setExpansion({ [item.group.key]: !item.expanded }); }}
+            onToggle={() => toggleGroup(item)}
             onSelect={() => setOrderSelection(orderSelection === key ? null : key)}
             onMove={(distance) => moveRow(item, distance)} onFavorite={() => { if (item.kind === "session") savePreference({ favorites: favorites.includes(item.entry.id) ? favorites.filter((id) => id !== item.entry.id) : [...favorites, item.entry.id] }); }}>
           {item.kind === "session" ? <SessionRow
             entry={item.entry}
-            displayContext={grouping === "role" ? `${organizationScope(item.entry, mappings).workstream} · ${organizationScope(item.entry, mappings).epic} · ${item.entry.workspaceName ?? "Unassigned workspace"}`
+            displayContext={grouping === "role" ? `${organizationScope(item.entry, mappings).workstream} · ${epicLabel(organizationScope(item.entry, mappings).epic)} · ${item.entry.workspaceName ?? "Unassigned workspace"}`
               : grouping === "flat" ? [item.entry.workspaceName ?? item.entry.cwd, item.entry.projectName !== item.entry.workspaceName ? item.entry.projectName : null].filter(Boolean).join(" · ") : undefined}
             displayTitle={item.parentKey.includes("/role:") ? item.entry.title.slice(item.entry.title.indexOf("•") + 1).trim() : undefined}
             colors={colors}
             compact={compact}
+            highlighted={peek?.sessionId === item.entry.id}
             onPress={handleOpen}
           /> : null}
           </OrganizationRowView>;
@@ -2167,13 +2433,13 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             testID="sessions-empty"
             style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 8, padding: 20 }}
           >
-            <Text style={{ color: colors.foreground, fontSize: 14 }}>{emptyMessage}</Text>
-            {hasActiveView(view) || hasOrganizationFilter ? (
+            <Text style={{ color: colors.foreground, fontSize: 14, textAlign: "center" }}>{emptyMessage}</Text>
+            {hasActiveView(view) || hasOrganizationFilter || task ? (
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Clear search and filters"
                 onPress={handleClearAll}
-                style={{ paddingVertical: 6 }}
+                style={{ minHeight: compact || COARSE_POINTER ? FILTERS_TOUCH_TARGET : 32, justifyContent: "center", paddingHorizontal: 8 }}
               >
                 <Text style={{ color: colors.accent, fontSize: 13, fontWeight: "600" }}>
                   Clear search and filters
