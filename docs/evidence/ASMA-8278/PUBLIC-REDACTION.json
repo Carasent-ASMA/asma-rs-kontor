@@ -77,7 +77,7 @@
   "files": {
     "attestation-verifier-source/MANIFEST.json": {
       "bytes": 5781,
-      "derivative_sha256": "c6c6ad252026ed96e304d15891a7dc6cf8d5fc72b946a1b628c7ff80f1cef7fe",
+      "derivative_sha256": "6fcba75a3a7347c47828a5f87586113cb21d3c1417b6dcc2dd1602e616c42635",
       "original_sha256": "265a07947d00259ff5ad34a7c0843633b25f37ba513859d9fa52e4085ef1d7c3",
       "private_references_redacted": 0
     },
