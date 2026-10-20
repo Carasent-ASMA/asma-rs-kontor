@@ -26,6 +26,8 @@ export type Scenario = {
   readonly hostOfflineAfterMs?: number;
   /** Board reads SIMULATED team, workflow and risk-tier declarations (`fixtures/teams.ts`); labelled in the banner. */
   readonly simulatedTeams?: boolean;
+  /** Loads `public/key-probe.js`: Cmd key events that reach this page, kept in memory; nothing bound or prevented. */
+  readonly keyProbe?: boolean;
 };
 
 /** Role grouping saved, with only QA saved open; every other role header opens closed. */
@@ -61,5 +63,6 @@ export const SCENARIOS: readonly Scenario[] = [
   { id: "role-view", title: "Roles: one level", summary: "Role grouping: one header per role, singletons and No role included. QA gathers case and spacing variants; QA1 stays apart; two sessions disagree with their titles or labels.", inventory: "roles", sources: true, settings: ROLES },
   { id: "role-view-offline", title: "Roles: host goes offline", summary: "Role picked in this view; the host drops at 4 s, saved preferences become unavailable, and the role headers give last known counts.", inventory: "roles", sources: true, settings: ROLES, start: { grouping: "role" }, hostOfflineAfterMs: 4000 },
   { id: "host-offline", title: "Host goes offline", summary: "The host drops after 4 s: last known states, marked stale.", inventory: "base", sources: true, start: { tab: "Board", sourceId: "plan-99101" }, hostOfflineAfterMs: 4000 },
+  { id: "key-probe", title: "Key probe: Cmd shortcuts", summary: "Records the code, key and modifiers of Cmd key events that reach this page, in memory only. Nothing is bound, prevented or saved. The same file can be pasted into a Paseo console.", inventory: "base", sources: true, settings: EXPANDED, keyProbe: true },
   { id: "no-sessions", title: "No sessions", summary: "An empty host: Board tasks have no linked sessions.", inventory: "none", sources: true, start: { tab: "Board", sourceId: "plan-99101" } },
 ];

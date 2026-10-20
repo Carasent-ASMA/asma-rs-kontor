@@ -28,6 +28,8 @@ if (start?.query || start?.status || start?.grouping) {
 }
 for (const step of scenario.script ?? []) setTimeout(() => simulateUpdate(step.agentId, step.patch, `${step.note} (simulated)`), step.afterMs);
 if (scenario.hostOfflineAfterMs) setTimeout(() => { setHostStatus("offline"); logHostEvent("simulated.update", "host offline (simulated)"); }, scenario.hostOfflineAfterMs);
+// A plain script, not a module, so the same file can be pasted into a Paseo console.
+if (scenario.keyProbe) document.head.append(Object.assign(document.createElement("script"), { src: new URL("key-probe.js", document.baseURI).href }));
 
 export function HostShell() {
   const colors = shellColors();
@@ -66,7 +68,7 @@ export function HostShell() {
 
   const prototypeBar = <View testID="prototype-bar" style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10, minHeight: 28, backgroundColor: themeName === "light" ? "#fff4d6" : "#3a3220", borderBottomWidth: 1, borderColor: colors.border }}>
     <Text numberOfLines={1} style={{ flex: 1, color: colors.foreground, fontSize: 11 }}>
-      <Text style={{ fontWeight: "700" }}>PROTOTYPE</Text> · fictional fixture data · no Paseo host · {scenario.title}{scenario.script ? " · simulated updates" : ""}{scenario.simulatedTeams ? " · SIMULATED team declarations" : ""}
+      <Text style={{ fontWeight: "700" }}>PROTOTYPE</Text> · fictional fixture data · no Paseo host · {scenario.title}{scenario.script ? " · simulated updates" : ""}{scenario.simulatedTeams ? " · SIMULATED team declarations" : ""}{scenario.keyProbe ? " · key probe: Cmd keys only, in memory" : ""}
     </Text>
     <Pressable testID="prototype-log-toggle" accessibilityRole="button" accessibilityState={{ expanded: logOpen }} onPress={() => setLogOpen(!logOpen)} style={{ minHeight: 28, justifyContent: "center", paddingHorizontal: 6 }}>
       <Text style={{ color: colors.foreground, fontSize: 11, textDecorationLine: "underline" }}>Host log ({events})</Text>

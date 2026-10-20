@@ -58,6 +58,29 @@ reloads both frames from their fixtures.
 | `role-view-offline` | The same sessions, with Role picked in this view. The host drops after 4 s. Saved preferences then become unavailable, as for every view, so a grouping that was only saved would fall back to the default tree. The role headers give last known counts. |
 | `host-offline` | The host drops after 4 s. Board then shows the last known states. |
 | `no-sessions` | An empty host, so no Board task has a linked session. |
+| `key-probe` | The baseline host with the key probe box from `public/key-probe.js` (see Key probe). |
+
+## Key probe
+
+`public/key-probe.js` answers one question: does a Cmd shortcut reach a page,
+and with which `code`, `key` and modifiers? It records only key events with Cmd
+held, the Cmd key itself and the window losing or regaining focus. It keeps at
+most 16 entries in the page's memory and shows them in a box with Copy, Stop
+and Close. It binds, prevents and saves nothing, and moves no focus. Recording
+stops after two minutes, and Close or a reload removes it.
+
+The file is a plain script, so the same text runs in three places:
+
+| Where | How |
+| --- | --- |
+| A browser | Open `?embed=1&scenario=key-probe&pointer=fine` on the review build. |
+| A Paseo browser tab | In a Paseo workspace, choose New browser and open the same address. |
+| The Paseo window, where the plugin runs | View > Toggle Developer Tools, then Console. Paste the text of `key-probe.js`, served at `/key-probe.js` (the console may first ask you to type `allow pasting`). Click the Paseo window outside the developer tools before pressing keys. |
+
+The box names where it runs: the Paseo desktop renderer, another Electron page
+(such as a Paseo browser tab) or a browser page. Key events from a test driver
+are trusted too, so only a physical press shows whether the system delivers a
+shortcut. Lost focus right after a press suggests that the system switched windows.
 
 ## Shared and substituted code
 
