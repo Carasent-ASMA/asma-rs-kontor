@@ -204,7 +204,8 @@ record to cover the pinned canonical identity, the route-native launch id and
 the effort. A changed `serves` mapping or a changed canonical id/vendor under
 the same model name no longer matches the record and is refused.
 A missing or unactivated record, a hash mismatch, a malformed reference, or a
-record whose route/harness/model/effort does not cover the placement is refused
+record whose route/harness/symbolic model/canonical identity/launch id/effort
+does not cover the placement is refused
 as `route_qualification_unproven`, `route_qualification_hash_mismatch` or
 `route_qualification_malformed`. The record is separate from the fleet, so a
 new qualified route does not require a fleet policy edit.
