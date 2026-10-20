@@ -803,6 +803,28 @@ describe("SessionsScreen toolbar events", () => {
     expect(groupRows().map((row) => `${row.group.kind}:${row.expanded}`)).toEqual(["workstream:true", "epic:false"]);
   });
 
+  it("shows a desk result in its workspace under the desk, and names a missing epic elsewhere", () => {
+    directory.state = { ...(directory.state as object), entries: [
+      sessionEntry("desk", { status: "idle", labels: { desk: "Adam" } }),
+      sessionEntry("loose", { status: "running", title: "SWE • loose", labels: { workstream: "Kontor" } }),
+      sessionEntry("loose-2", { status: "idle", title: "SWE • second", labels: { workstream: "Kontor" } }),
+    ] };
+    patchSessionView("host-a", { query: "" });
+    renderScreen();
+    expect(groupRows().map((row) => `${row.group.kind}:${row.group.label}`)).toEqual(["workstream:Adam", "workspace:Workspace", "workstream:Kontor", "epic:No linked epic"]);
+    (findByTestID(harness.current(), "sessions-filter-idle").props.onPress as () => void)(); harness.flush();
+    const renderItem = (info: { item: unknown }) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)(info);
+    const results = listRows() as Extract<ListRow, { kind: "result" }>[];
+    expect(results.map((row) => (renderItem({ item: row }).props.provenance as { parts: string[] }).parts)).toEqual([["Adam desk", "Workspace"], ["Kontor", "No linked epic", "Workspace"]]);
+    (renderItem({ item: results[0] }).props.onShowInTree as (entry: unknown) => void)(results[0]!.entry); harness.flush();
+    expect(groupRows().map((row) => `${row.group.kind}:${row.group.label}:${row.expanded}`).slice(0, 2)).toEqual(["workstream:Adam:true", "workspace:Workspace:true"]);
+    expect(sessionRowIds()).toContain("desk");
+    // Role grouping names the missing epic in each session's context too.
+    harness.reset(); patchSessionView("host-a", { grouping: "role", status: "all" }); renderScreen();
+    const roleSessions = listRows().filter((row): row is Extract<ListRow, { kind: "session" }> => row.kind === "session" && row.entry.id.startsWith("loose"));
+    expect(roleSessions.map((row) => walk(renderItem({ item: row })).find((element) => "displayContext" in element.props)!.props.displayContext)).toEqual(["Kontor · No linked epic · Workspace", "Kontor · No linked epic · Workspace"]);
+  });
+
   it("shows a result in the tree without saving the branches it opens, and Back returns to the results", () => {
     const save = vi.fn(async () => true);
     directory.state = { ...(directory.state as object), entries: [

@@ -11,6 +11,7 @@ import {
   workspaceMappingKey,
   flattenOrganizationTree,
   isFavoriteSession,
+  NO_LINKED_EPIC,
   OTHER_WORKSTREAM,
   sessionKey,
   UNASSIGNED_EPIC,
@@ -132,7 +133,7 @@ describe("session organization hierarchy", () => {
   it("keeps unassigned workspace-kind siblings inside their native project boundary", () => {
     const tree = buildOrganizationTree({ entries: [entry("one", { projectKey: "A", projectName: "Project A", workspaceId: "a", workspaceName: "TSW • A" }), entry("two", { projectKey: "B", projectName: "Project B", workspaceId: "b", workspaceName: "TSW • B" })] });
     expect(allGroups(tree).filter((group) => group.kind === "workspace-kind")).toHaveLength(0);
-    expect(allGroups(tree).filter((group) => group.kind === "epic").map((group) => group.label)).toEqual(["Unassigned · Project A", "Unassigned · Project B"]);
+    expect(allGroups(tree).filter((group) => group.kind === "epic").map((group) => group.label)).toEqual(["No linked epic · Project A", "No linked epic · Project B"]);
     expect(new Set(sessionIds(flattenOrganizationTree(tree)))).toEqual(new Set(["one", "two"]));
   });
   it("retains a discovered empty workspace with zero native sessions", () => {
@@ -170,8 +171,58 @@ describe("session organization hierarchy", () => {
     expect(tree[0]?.kind).toBe("workstream");
     expect(tree[1]?.kind).toBe("workstream");
     expect(tree[2]?.kind).toBe("workstream");
-    expect(tree[2]?.groups[0]?.label).toBe(UNASSIGNED_EPIC);
+    expect(tree[2]?.groups[0]?.label).toBe(NO_LINKED_EPIC);
     expect(tree[2]?.groups[0]?.groups[0]?.label).toBe(UNASSIGNED_WORKSPACE);
+  });
+
+  it("keeps the no-linked-epic group key, so saved disclosure still applies", () => {
+    const tree = buildOrganizationTree({ entries: [entry("loose", { workspaceId: "w", workspaceName: "main", projectKey: "P", labels: { workstream: "Kontor" } })] });
+    const group = findGroup(tree, (candidate) => candidate.kind === "epic");
+    expect([group.label, group.key, group.epic]).toEqual([NO_LINKED_EPIC, `workstream:kontor/project:P/epic:${UNASSIGNED_EPIC.toLocaleLowerCase()}`, null]);
+    expect(sessionIds(flattenOrganizationTree(tree, { [group.key]: true, [group.groups[0]!.key]: true }, false, defaultGroupExpanded))).toEqual(["loose"]);
+    const roles = buildOrganizationTree({ entries: ["a", "b"].map((id) => entry(id, { title: `SWE • ${id}`, workspaceId: "w", workspaceName: "main" })), grouping: "role" });
+    expect(findGroup(roles, (candidate) => candidate.kind === "role").detail).toBe(`${OTHER_WORKSTREAM} · ${NO_LINKED_EPIC} · main`);
+  });
+
+  it("places desk work with no linked epic directly under the desk, keeping real epics", () => {
+    const tree = buildOrganizationTree({
+      entries: [
+        entry("review", { workspaceId: "r", workspaceName: "desk-review", projectKey: "P", labels: { desk: "PR Review" } }),
+        entry("review-2", { workspaceId: "r", workspaceName: "desk-review", projectKey: "P", labels: { desk: "PR Review" } }),
+        entry("epic-review", { workspaceId: "e", workspaceName: "epic-review", projectKey: "P", labels: { desk: "PR Review", epic: "ASMA-1" } }),
+        entry("adam", { workspaceId: "a", workspaceName: "desk-adam", projectKey: "Q", labels: { desk: "Adam" } }),
+        entry("custom", { workspaceId: "c", workspaceName: "desk-custom", projectKey: "P", labels: { desk: "Kontor desk" } }),
+        entry("stream", { workspaceId: "s", workspaceName: "stream-main", projectKey: "P", labels: { workstream: "Kontor desk" } }),
+      ],
+      workspaces: [{ id: "idle-desk", name: "admin-idle", projectKey: "P" }, { id: "idle-epic", name: "epic-idle", projectKey: "P" }, { id: "idle-other", name: "other-idle", projectKey: "P" }],
+      displayMappings: {
+        [workspaceMappingKey("idle-desk")]: { workstream: "PR Review" },
+        [workspaceMappingKey("idle-epic")]: { workstream: "PR Review", epic: "ASMA-1" },
+        [workspaceMappingKey("idle-other")]: { workstream: "Kontor" },
+      },
+    });
+    const children = (label: string) => findGroup(tree, (group) => group.kind === "workstream" && group.label === label).groups.map((group) => [group.kind, group.label, group.parentKey, group.totalCount]);
+    expect(children("PR Review")).toEqual([
+      ["epic", "ASMA-1", "workstream:pr review", 1],
+      // Real epics first, then the desk's workspaces, whatever their names.
+      ["workspace", "admin-idle", "workstream:pr review", 0],
+      ["workspace", "desk-review", "workstream:pr review", 2],
+    ]);
+    expect(children("Adam")).toEqual([["workspace", "desk-adam", "workstream:adam", 1]]);
+    // A desk label of any name is desk work; the same name as a plain workstream keeps its epic layer.
+    expect(children("Kontor desk")).toEqual([
+      ["workspace", "desk-custom", "workstream:kontor desk", 1],
+      ["epic", NO_LINKED_EPIC, "workstream:kontor desk", 1],
+    ]);
+    expect(children("Kontor")).toEqual([["epic", NO_LINKED_EPIC, "workstream:kontor", 0]]);
+    // An empty desk workspace mapped to an epic stays in that epic.
+    expect(findGroup(tree, (group) => group.label === "epic-idle").parentKey).toBe("workstream:pr review/project:P/epic:asma-1");
+    const review = findGroup(tree, (group) => group.label === "desk-review");
+    expect([review.key, review.depth, review.sessions.map((session) => session.id)]).toEqual(["workstream:pr review/workspace:id%3Ar", 1, ["review", "review-2"]]);
+    expect(findGroup(tree, (group) => group.label === "PR Review").totalCount).toBe(3);
+    expect(allGroups(tree).filter((group) => group.kind === "epic" && group.parentKey?.match(/pr review|adam/))).toHaveLength(1);
+    const ids = sessionIds(flattenOrganizationTree(tree, {}, true));
+    expect([ids.length, new Set(ids).size]).toEqual([6, 6]);
   });
 
   it("groups repeated workspace kinds and session roles but not singletons", () => {

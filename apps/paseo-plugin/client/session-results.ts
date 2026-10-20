@@ -1,5 +1,5 @@
 import type { DirectoryEntry } from "./session-directory";
-import { isDeskWork, organizationScope, sessionState, workspaceLabel, type OrganizationGroup, type OrganizationState } from "./session-organization";
+import { epicLabel, isDeskWork, organizationScope, sessionState, workspaceLabel, type OrganizationGroup, type OrganizationState } from "./session-organization";
 
 type Mappings = Parameters<typeof organizationScope>[1];
 
@@ -20,7 +20,7 @@ export function sessionProvenance(entry: DirectoryEntry, mappings: Mappings): Se
   const desk = isDeskWork(entry, mappings);
   // Say a working directory is not a workspace rather than pass it off as one.
   const workspace = inWorkspace(entry) ? workspaceLabel(entry) : entry.cwd ? `No workspace · ${entry.cwd}` : "No workspace";
-  return { parts: desk ? [`${scope.workstream} desk`, workspace] : [scope.workstream, scope.epic, workspace], desk, workspace };
+  return { parts: desk ? [`${scope.workstream} desk`, workspace] : [scope.workstream, epicLabel(scope.epic), workspace], desk, workspace };
 }
 
 /** Every token must appear in the session's search text or its placement labels (a mapped name counts). */
