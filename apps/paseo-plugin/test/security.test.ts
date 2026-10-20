@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { URL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_CREDENTIAL_TIER } from "../server/config";
@@ -7,6 +7,7 @@ const files = [
   "../index.server.ts",
   "../server/agent-labels.ts",
   "../server/config.ts",
+  "../server/floor.ts",
   "../server/hooks.ts",
   "../server/labels.ts",
   "../server/placement.ts",
@@ -92,5 +93,24 @@ describe("client navigation stays on the borrowed host connection", () => {
         /respondToPermission|agents\.ref\(|\.send\(|\.run\(|\.archive\(|workspaces\.(?:create|archive)|config\.patch/,
       );
     }
+  });
+});
+
+describe("floor switch", () => {
+  const pluginSources = ["../index.server.ts", "../index.client.tsx",
+    ...["server", "shared", "client"].flatMap((dir) =>
+      readdirSync(new URL(`../${dir}/`, import.meta.url)).filter((name) => /\.tsx?$/.test(name)).map((name) => `../${dir}/${name}`))];
+
+  it("never reads the superseded environment name", () => {
+    expect(pluginSources.length).toBeGreaterThan(20);
+    for (const file of pluginSources) {
+      expect(source(file), file).not.toContain("KONTOR_PLUGIN_FLOOR");
+    }
+  });
+
+  it("opens floor.json read-only and never changes it", () => {
+    const text = source("../server/floor.ts");
+    expect(text).toContain("openSync(file, constants.O_RDONLY | constants.O_NONBLOCK)");
+    expect(text).not.toMatch(/O_WRONLY|O_RDWR|O_CREAT|O_TRUNC|O_APPEND|unlink|rename|rmSync|chmod|truncate|mkdir|copyFile/);
   });
 });

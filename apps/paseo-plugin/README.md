@@ -524,6 +524,9 @@ Evidence checklist:
 | `before("agent.session_open")` | Reads the session's own labels from the local daemon and sets `KONTOR_SEAT` from the keys Kontor actually writes (`kontor.seat_binding_id`, `kontor.role_slot_id`, or `kontor.agent-run`), or `KONTOR_SEAT=unbound`. A failed or slow read sets `KONTOR_SEAT=unresolved`. The key is rewritten on every open, so an old seat never survives a resume. It never blocks the open. |
 | `before("workspace.create")` | Refuses a labelled Kontor seat's explicit workspace creation outside that seat's own placement: its bound project and canonical worktree. Both the initial agent's labels and the caller carried on the request (`agent.callerAgentId`) are checked. Interactive and unlabelled creation is unchanged, and an unreadable caller lookup with no seat labels on the request fails open. |
 
+The plugin registers these three hooks unless the operator turns the floor off
+with `floor.json` (see [Installation mode](#installation-mode-floorjson)).
+
 The hooks add no menu and no agent-creation path. The navigator adds the
 Kontor screen, sidebar row, the **Open Kontor** and **Back to Kontor** Command
 Center commands and the per-agent **← Kontor** composer pill described above.
@@ -593,7 +596,8 @@ KONTOR_PLUGIN_MCP=off paseo daemon start --home ~/.paseo
 ```
 
 The hooks and placement guard stay active; only the composed MCP server is
-skipped. Open **Kontor** from the plugin sidebar. To check the installed
+skipped. To run the navigator without the hooks, use the installation mode
+below instead. Open **Kontor** from the plugin sidebar. To check the installed
 revision and the host's scope, use the header line in the screen (host label,
 archive scope, session count and pages read).
 
@@ -628,6 +632,61 @@ All values are optional and read from the daemon environment:
 | `KONTOR_PLUGIN_SERVE_PROFILE` | none | Optional `--serve-profile` narrowing. |
 | `KONTOR_PLUGIN_PLACEMENT_ROOTS` | none | Comma-separated extra containment roots. |
 | `KONTOR_PLUGIN_LABEL_TIMEOUT_MS` | `2000` | Label-read budget before failing open. |
+
+### Installation mode (floor.json)
+
+The three hooks above are the floor. An operator can install the navigator
+without them by writing `$PASEO_HOME/plugin-config/kontor/floor.json` (default
+`~/.paseo/plugin-config/kontor/floor.json`) with owner-only permissions, then
+installing or reloading the plugin:
+
+```bash
+mkdir -p ~/.paseo/plugin-config/kontor
+(umask 077 && printf '{"floor":"off"}\n' > ~/.paseo/plugin-config/kontor/floor.json)
+chmod 600 ~/.paseo/plugin-config/kontor/floor.json
+paseo plugin reload kontor
+paseo plugin logs kontor --json
+```
+
+The server reads the file once when the plugin worker starts. A supported
+`paseo plugin install` or `paseo plugin reload` starts a new worker, which reads
+it again; there is no live toggle and no daemon restart. The plugin never
+writes, removes or watches the file, and no client, RPC or plugin setting
+changes it. The daemon environment is not read for this switch.
+
+| `floor.json` | Floor | Worker log |
+| --- | --- | --- |
+| absent | on | mode line, reason `not-configured` |
+| exactly `{"floor":"on"}` | on | mode line, reason `explicit-on` |
+| exactly `{"floor":"off"}` | **off** | mode line, reason `explicit-off` |
+| anything else | on | mode line, reason `invalid`, plus the invalid-value diagnostic |
+
+- "Exactly" is judged on the parsed JSON. Formatting whitespace around tokens
+  is allowed, so a pretty-printed file is valid. Whitespace inside the value is
+  not, nor is any other spelling (`OFF`, `false`, `0`), type, key, a repeated
+  `floor` member, a non-regular file or a file over 2 MiB.
+- When the file is off, none of `agent.create`, `agent.session_open` or
+  `workspace.create` is registered. New agents get no system-prompt line and no
+  `kontor-observer` server, opened sessions get no `KONTOR_SEAT`, and workspace
+  creation is not guarded. The navigator, settings and read-only pages work as
+  before, and existing sessions, workspaces and labels are not changed. An agent
+  created while the floor was on keeps the `kontor-observer` server and prompt
+  line stored in its config, so its session still starts with them when it is
+  reopened while off; it just gets no `KONTOR_SEAT`.
+- Off wins over `KONTOR_PLUGIN_MCP`. `KONTOR_PLUGIN_MCP=off` alone still keeps
+  all three hooks.
+- The mode line goes to stdout and the invalid-value diagnostic to stderr. Each
+  is one JSON line, `{"event":"kontor.floor.mode","floor":"enabled"|"disabled",
+  "reason":…,"file":…}` and `{"event":"kontor.floor.invalid","floor":"enabled",
+  "file":…,"error":…}`. Read the installed state from `paseo plugin logs kontor
+  --json` while the plugin is running. The host keeps the last 500 entries.
+  The mode line reports the mode the worker started in; which hooks the host
+  routes is checked separately.
+- To turn the floor back on, remove the file or set it to `on`, then reload.
+- Releases before this switch ignore `floor.json`, so their floor is always on.
+  Rolling back to one with the file in place is not a way to keep the floor
+  off. To stop the hooks on such a release, disable the plugin
+  (`paseo plugin disable kontor`); its settings and native sessions stay.
 
 ## Tests
 
@@ -668,6 +727,13 @@ variant, pins, suppression, bounce handling and compensation helpers.
 `test/security.test.ts` extends the floor checks to the client files: no Kontor
 credential, no `kontord`, no file/process access and no agent-control or
 workflow-write call.
+`test/floor.test.ts` covers the `floor.json` value table, file kinds and sizes,
+the repeated-member rule and both log lines. `test/floor-growth.test.ts` covers a
+file that grows past 2 MiB after it is opened. `test/server-entry.test.ts` starts
+the server entry for each file state and checks which hooks it registers: none
+when off, the same settings and RPCs as when on, `KONTOR_PLUGIN_MCP` precedence,
+that `KONTOR_PLUGIN_FLOOR` has no effect, one read per start, and that the file
+is never changed.
 
 The isolated closure suite's `navigator-probe.mjs` creates one disposable
 session, subscribes to the native directory, verifies a `limit: 1` complete
