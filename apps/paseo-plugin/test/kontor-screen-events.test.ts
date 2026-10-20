@@ -62,6 +62,15 @@ beforeEach(() => { vi.clearAllMocks(); model.slots = []; model.cursor = 0; model
 function pickerField(picker: ReactElement<Record<string, unknown>>): ReactElement<Record<string, unknown>> {
   return (picker.type as (props: Record<string, unknown>) => ReactElement<Record<string, unknown>>)(picker.props);
 }
+/** The open More menu's views, which must sit in a shrinkable scroll view so a short screen scrolls them instead of cutting them off. */
+function moreViews(menu: ReactElement<Record<string, unknown>> | undefined): string[] {
+  const children = [menu?.props.children].flat() as ReactElement<Record<string, unknown>>[];
+  expect(children.map((child) => child.type)).toEqual(["ScrollView"]);
+  expect(children[0]!.props).toMatchObject({ testID: "kontor-more-choices", keyboardShouldPersistTaps: "handled", style: { flexGrow: 0, flexShrink: 1 } });
+  const items = [children[0]!.props.children].flat(Infinity) as ReactElement<Record<string, unknown>>[];
+  expect(items.every((item) => item.type === MenuItem)).toBe(true);
+  return items.map((item) => String(item.props.label));
+}
 function mount(compact: boolean, initial?: Partial<KontorRoute>) {
   const props: PluginScreenProps = { host: { id: `shell-${++sequence}`, label: "Host" }, layout: { compact, platform: "ios" }, params: {}, navigation: { openAgent: vi.fn(), openWorkspace: vi.fn(), openBrowser: vi.fn() },
     theme: { colors: { surface0: "#fff", surface1: "#eee", surface2: "#ddd", foreground: "#111", foregroundMuted: "#555", border: "#aaa", accent: "#00f", accentForeground: "#fff", statusSuccess: "#080", statusWarning: "#850", statusDanger: "#b00" } } };
@@ -457,6 +466,10 @@ describe("Kontor shell native actions", () => {
         expect(screen.menu()!.props).toMatchObject({ testID: "kontor-more-menu", label: "More Kontor views", placement: { align: "stretch" } });
         expect(screen.menu()!.props.dialog).toBeUndefined();
         expect(screen.menuItems().every((item) => item.props.tall === true)).toBe(true);
+        const views = moreViews(screen.menu()), current = hostNavigation(screen.props.host.id).route.tab;
+        expect(views).toEqual(["Graph", "Delivery", "Decisions", "AI teams & sessions", "Activity", "Inbox", "Search", "Settings"]);
+        // The page that is open stays marked inside the scrolling list.
+        expect(screen.menuItems().filter((item) => item.props.selected === true).map((item) => item.props.label)).toEqual(views.includes(current) ? [current] : []);
         screen.choose(tab);
         expect(screen.menu()).toBeUndefined();
         expect(screen.action("More").props).toMatchObject({ selected: true, expanded: false, accessibilityLabel: `More Kontor views, current: ${tab}` });
@@ -471,7 +484,7 @@ describe("Kontor shell native actions", () => {
     screen.click("Graph"); expect(hostNavigation(screen.props.host.id).route.tab).toBe("Graph");
     screen.click("More");
     expect(screen.menu()!.props.placement).toEqual({ align: "end", width: 190 });
-    expect(screen.menuItems().map((item) => item.props.label)).toEqual(["Decisions", "AI teams & sessions", "Activity", "Inbox", "Search", "Settings"]);
+    expect(moreViews(screen.menu())).toEqual(["Decisions", "AI teams & sessions", "Activity", "Inbox", "Search", "Settings"]);
     screen.choose("Inbox"); expect(screen.action("More").props.selected).toBe(true);
     screen.click("More"); expect(screen.menuItems().find((item) => item.props.label === "Inbox")?.props.selected).toBe(true);
     screen.closeMenu();

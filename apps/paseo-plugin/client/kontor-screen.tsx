@@ -168,7 +168,10 @@ function HostScreen(props: PluginScreenProps) {
   const unscoped = route.projectId === null && route.epicKey === null && route.sourceId === null;
   const menus = menu === "more" ? <AnchoredMenu testID="kontor-more-menu" anchor={moreRef} root={rootRef} rootSize={rootSize} colors={colors} label="More Kontor views" onClose={() => setMenu(null)}
     placement={layout.compact ? { align: "stretch", width: 0, gap: 6, maxHeight: Math.min(rootSize.height * 0.6, 430) } : { align: "end", width: 190 }}>
-    {DESTINATIONS.filter((tab) => !primary.includes(tab)).map((tab) => <MenuItem key={tab} label={tab} tall={layout.compact} selected={route.tab === tab} colors={colors} onPress={() => tabPress(tab)} />)}
+    {/* The frame is clamped to the screen, so a short screen scrolls the views instead of cutting off the last ones. */}
+    <ScrollView testID="kontor-more-choices" keyboardShouldPersistTaps="handled" style={{ flexGrow: 0, flexShrink: 1 }}>
+      {DESTINATIONS.filter((tab) => !primary.includes(tab)).map((tab) => <MenuItem key={tab} label={tab} tall={layout.compact} selected={route.tab === tab} colors={colors} onPress={() => tabPress(tab)} />)}
+    </ScrollView>
   </AnchoredMenu> : menu === "context" ? <AnchoredMenu testID="kontor-context-menu" dialog anchor={contextRef} root={rootRef} rootSize={rootSize} colors={colors} label="Choose plan or project" onClose={() => setMenu(null)}
     placement={layout.compact ? { align: "stretch", width: 0, maxHeight: Math.min(rootSize.height * 0.7, 480) } : { align: "start", width: 380, maxHeight: 460 }}
     header={<TextInput accessibilityLabel="Search plans, epics and projects" placeholder="Search plans, epics, projects…" autoFocus={!layout.compact} value={pickerQuery} onChangeText={setPickerQuery}
