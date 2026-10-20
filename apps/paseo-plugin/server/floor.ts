@@ -95,42 +95,60 @@ export function parseFloor(raw: string): { value: "on" | "off" } | { error: stri
 
 const invalid = (file: string, error: string): FloorMode => ({ enabled: true, reason: "invalid", file, error });
 
+const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+function readOpen(file: string, descriptor: number): FloorMode {
+  const info = fstatSync(descriptor);
+  if (!info.isFile() || info.size > MAX_BYTES) {
+    return invalid(file, "must be a regular file of at most 2 MiB");
+  }
+  const buffer = Buffer.alloc(MAX_BYTES + 1);
+  let length = 0;
+  while (length < buffer.length) {
+    const count = readSync(descriptor, buffer, length, buffer.length - length, null);
+    if (!count) break;
+    length += count;
+  }
+  if (length > MAX_BYTES) return invalid(file, "exceeds 2 MiB");
+  const parsed = parseFloor(buffer.subarray(0, length).toString("utf8"));
+  if ("error" in parsed) return invalid(file, parsed.error);
+  return parsed.value === "off"
+    ? { enabled: false, reason: "explicit-off", file, error: null }
+    : { enabled: true, reason: "explicit-on", file, error: null };
+}
+
 /**
  * Read the switch once, at plugin server start; a reload starts a new worker,
  * which reads it again. The plugin only reads this file. Absent means not
- * configured. Every other doubt keeps the floor enabled and reports why; this
- * never throws, so a bad file cannot stop the plugin from starting.
+ * configured. Every other doubt, a failed close included, keeps the floor
+ * enabled and reports why; this never throws, so a bad file cannot stop the
+ * plugin from starting.
  */
 export function readFloor(file = floorFile()): FloorMode {
-  let descriptor: number | undefined;
+  let descriptor: number;
   try {
     // Non-blocking open prevents a misconfigured FIFO from blocking plugin start.
     descriptor = openSync(file, constants.O_RDONLY | constants.O_NONBLOCK);
-    const info = fstatSync(descriptor);
-    if (!info.isFile() || info.size > MAX_BYTES) {
-      return invalid(file, "must be a regular file of at most 2 MiB");
-    }
-    const buffer = Buffer.alloc(MAX_BYTES + 1);
-    let length = 0;
-    while (length < buffer.length) {
-      const count = readSync(descriptor, buffer, length, buffer.length - length, null);
-      if (!count) break;
-      length += count;
-    }
-    if (length > MAX_BYTES) return invalid(file, "exceeds 2 MiB");
-    const parsed = parseFloor(buffer.subarray(0, length).toString("utf8"));
-    if ("error" in parsed) return invalid(file, parsed.error);
-    return parsed.value === "off"
-      ? { enabled: false, reason: "explicit-off", file, error: null }
-      : { enabled: true, reason: "explicit-on", file, error: null };
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
       return { enabled: true, reason: "not-configured", file, error: null };
     }
-    return invalid(file, `cannot read: ${error instanceof Error ? error.message : String(error)}`);
-  } finally {
-    if (descriptor !== undefined) closeSync(descriptor);
+    return invalid(file, `cannot read: ${messageOf(error)}`);
   }
+  let mode: FloorMode;
+  try {
+    mode = readOpen(file, descriptor);
+  } catch (error) {
+    mode = invalid(file, `cannot read: ${messageOf(error)}`);
+  }
+  try {
+    closeSync(descriptor);
+  } catch (error) {
+    // A failed close leaves the read in doubt, so off never stands; a read error is kept.
+    const closing = `cannot close: ${messageOf(error)}`;
+    return invalid(file, mode.error ? `${mode.error}; ${closing}` : closing);
+  }
+  return mode;
 }
 
 /**

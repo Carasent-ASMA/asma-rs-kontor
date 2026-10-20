@@ -665,6 +665,9 @@ changes it. The daemon environment is not read for this switch.
   is allowed, so a pretty-printed file is valid. Whitespace inside the value is
   not, nor is any other spelling (`OFF`, `false`, `0`), type, key, a repeated
   `floor` member, a non-regular file or a file over 2 MiB.
+- A file that is present but cannot be opened, read or closed also keeps the
+  floor on, with the diagnostic. A failed close counts even when the bytes read
+  say off.
 - When the file is off, none of `agent.create`, `agent.session_open` or
   `workspace.create` is registered. New agents get no system-prompt line and no
   `kontor-observer` server, opened sessions get no `KONTOR_SEAT`, and workspace
@@ -729,7 +732,9 @@ credential, no `kontord`, no file/process access and no agent-control or
 workflow-write call.
 `test/floor.test.ts` covers the `floor.json` value table, file kinds and sizes,
 the repeated-member rule and both log lines. `test/floor-growth.test.ts` covers a
-file that grows past 2 MiB after it is opened. `test/server-entry.test.ts` starts
+file that grows past 2 MiB after it is opened, and `test/floor-close.test.ts` a
+failed read or close of the file, including a server start under a failed
+close. `test/server-entry.test.ts` starts
 the server entry for each file state and checks which hooks it registers: none
 when off, the same settings and RPCs as when on, `KONTOR_PLUGIN_MCP` precedence,
 that `KONTOR_PLUGIN_FLOOR` has no effect, one read per start, and that the file
