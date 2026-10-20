@@ -15,7 +15,36 @@ export type SessionViewState = SessionFilters & {
   readonly arranging?: boolean;
   /** Compact toolbar disclosure; local view state only, never saved to settings. */
   readonly toolbarOpen?: boolean;
+  /** Sessions whose task labels equal a Board task's keys exactly; set from Board, cleared like a filter. */
+  readonly task?: SessionTaskFilter | null;
+  /** Tree offset kept while results show, restored when the last result filter clears. */
+  readonly treeOffset?: number;
+  /** A result shown in its place in the tree; disclosure opened for it is never saved. */
+  readonly peek?: { readonly sessionId: string; readonly resultsOffset: number } | null;
 };
+
+export type SessionTaskFilter = { readonly jira: string | null; readonly kontorId: string | null; readonly label: string };
+
+/** A search, a state filter or a task lists matching sessions flat; scope, desks and workstreams keep the tree. */
+export function isResultMode(view: SessionFilters & { readonly task?: SessionTaskFilter | null }): boolean {
+  return view.query.trim().length > 0 || view.status !== "all" || !!view.task;
+}
+
+const RESULT_KEYS = ["query", "status", "task", "includeArchived", "shortcut", "streams", "grouping"] as const;
+
+/**
+ * The patch to apply for a view change. Entering results keeps the tree offset
+ * (the screen passes it measured below its own toolbar); leaving them restores
+ * it; changing what the results contain ends a peek.
+ */
+export function sessionViewTransition(current: SessionViewState, patch: Partial<SessionViewState>, treeAnchor = current.scrollOffset): Partial<SessionViewState> {
+  const next = { ...current, ...patch };
+  const was = isResultMode(current);
+  const is = isResultMode(next);
+  if (!was && is) return { ...patch, treeOffset: Math.max(0, treeAnchor), peek: null, scrollOffset: patch.scrollOffset ?? 0 };
+  if (was && !is) return { ...patch, treeOffset: undefined, peek: null, scrollOffset: current.treeOffset ?? patch.scrollOffset ?? 0 };
+  return RESULT_KEYS.some((key) => key in patch && patch[key] !== current[key]) ? { ...patch, peek: null } : patch;
+}
 
 const views = new Map<string, SessionViewState>();
 const expansions = new Map<string, Readonly<Record<string, boolean>>>();

@@ -372,16 +372,18 @@ function scroll(offset: number, contentHeight = 2000, viewportHeight = 600) {
 
 type GroupRow = Extract<import("../client/session-organization").OrganizationRow, { kind: "group" }>;
 
-function listRows(): import("../client/session-organization").OrganizationRow[] {
-  return findByTestID(harness.current(), "sessions-list").props.data as import("../client/session-organization").OrganizationRow[];
+type ListRow = import("../client/session-organization").OrganizationRow | { readonly kind: "result"; readonly entry: import("../client/session-directory").DirectoryEntry };
+function listRows(): ListRow[] {
+  return findByTestID(harness.current(), "sessions-list").props.data as ListRow[];
 }
 
 function groupRows(): GroupRow[] {
   return listRows().filter((row): row is GroupRow => row.kind === "group");
 }
 
+/** Sessions the list draws, as tree rows or as flat results. */
 function sessionRowIds(): string[] {
-  return listRows().flatMap((row) => (row.kind === "session" ? [row.entry.id] : []));
+  return listRows().flatMap((row) => (row.kind === "session" || row.kind === "result" ? [row.entry.id] : []));
 }
 
 /** Presses the disclosure of the first group of a kind through the list's own row renderer. */
@@ -445,18 +447,23 @@ describe("SessionsScreen toolbar events", () => {
     vi.useRealTimers();
   });
 
-  it("shows the count line only when narrowed or not complete, and keeps the full count and read in Filters", () => {
+  it("shows the count line only for results or an incomplete read, and keeps the full count and read in Filters", () => {
     const list = () => findByTestID(harness.current(), "sessions-list");
     const header = () => list().props.ListHeaderComponent;
     renderScreen();
+    const search = (query: string) => { (findByTestID(harness.current(), "sessions-search").props.onChangeText as (query: string) => void)(query); harness.flush(); };
+    search("");
     expect(testIDs(header())).not.toContain("sessions-count");
     expect(textOf(findByTestID(harness.current(), "sessions-options-count"))).toMatch(/^1 session · 1 workspace · complete inventory read /);
     expect(list().props.ListFooterComponent).toBeNull();
-    const search = (query: string) => { (findByTestID(harness.current(), "sessions-search").props.onChangeText as (query: string) => void)(query); harness.flush(); };
     search("no such session");
-    expect(textOf(findByTestID(header(), "sessions-count"))).toBe("0 of 1 session");
-    expect(findByTestID(header(), "sessions-count").props.accessibilityLabel).toMatch(/^0 of 1 session · 0 workspaces · complete inventory read /);
+    // No results: the empty state says so instead of a zero count.
+    expect(testIDs(header())).not.toContain("sessions-count");
+    expect(textOf(list().props.ListEmptyComponent)).toContain("No sessions match the current search and filters.");
     search("session-a");
+    expect(textOf(findByTestID(header(), "sessions-count"))).toBe("1 matching session · 1 workspace");
+    expect(findByTestID(header(), "sessions-count").props.accessibilityLiveRegion).toBe("polite");
+    search("");
     expect(testIDs(header())).not.toContain("sessions-count");
     directory.state = { ...directory.state as object, inventoryComplete: false };
     renderScreen();
@@ -778,7 +785,7 @@ describe("SessionsScreen toolbar events", () => {
     expect(save).toHaveBeenLastCalledWith({ expandedGroups: { [epic.group.key]: true } });
   });
 
-  it("reveals matching descendants for a state filter without overwriting the saved disclosure", () => {
+  it("lists a state filter's matches flat without opening or saving any branch", () => {
     directory.state = { ...(directory.state as object), entries: [
       sessionEntry("busy", { status: "running", labels: { epic: "ASMA-1" } }),
       sessionEntry("quiet", { status: "idle", labels: { epic: "ASMA-1" } }),
@@ -793,6 +800,73 @@ describe("SessionsScreen toolbar events", () => {
     (findByTestID(harness.current(), "sessions-filter-all").props.onPress as () => void)(); harness.flush();
     expect(sessionRowIds()).toEqual([]);
     expect(groupRows().map((row) => `${row.group.kind}:${row.expanded}`)).toEqual(["workstream:true", "epic:false"]);
+  });
+
+  it("shows a result in the tree without saving the branches it opens, and Back returns to the results", () => {
+    const save = vi.fn(async () => true);
+    directory.state = { ...(directory.state as object), entries: [
+      sessionEntry("busy", { status: "running", labels: { epic: "ASMA-1" } }),
+      sessionEntry("quiet", { status: "idle", labels: { epic: "ASMA-1" } }),
+    ] };
+    patchSessionView("host-a", { query: "" });
+    renderScreen({ state: { status: "ready", values: DEFAULT_ORGANIZATION_SETTINGS, revision: "revision-a", saving: false, saveError: null, save, reload: async () => {}, reset: async () => true }, save } as unknown as NonNullable<Parameters<typeof SessionsScreen>[0]["organization"]>);
+    (findByTestID(harness.current(), "sessions-filter-idle").props.onPress as () => void)(); harness.flush();
+    // The current render's row renderer, since rows read the peek from its closure.
+    const renderItem = (info: { item: unknown }) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)(info);
+    const [result] = listRows() as [Extract<ListRow, { kind: "result" }>];
+    expect((renderItem({ item: result }).props.provenance as { parts: string[] }).parts).toEqual(["Other work", "ASMA-1", "Workspace"]);
+    (renderItem({ item: result }).props.onShowInTree as (entry: unknown) => void)(result.entry); harness.flush();
+    expect(textOf(findByTestID(harness.current(), "sessions-peek"))).toContain("Branches opened here are not saved.");
+    expect(walk(findByTestID(harness.current(), "sessions-peek")).some((element) => element.props.accessibilityLabel === "Showing “Session quiet” in the tree. Branches opened here are not saved.")).toBe(true);
+    // Pinned above the list, not in its scrolling header, so the way back stays in view.
+    expect(testIDs(findByTestID(harness.current(), "sessions-list").props.ListHeaderComponent)).not.toContain("sessions-peek");
+    expect(groupRows().map((row) => `${row.group.kind}:${row.expanded}`)).toEqual(["workstream:true", "epic:true", "workspace:true"]);
+    expect(sessionRowIds()).toEqual(expect.arrayContaining(["quiet"]));
+    const target = listRows().find((row) => row.kind === "session" && row.entry.id === "quiet")!;
+    expect(walk(renderItem({ item: target })).find((element) => "highlighted" in element.props)!.props.highlighted).toBe(true);
+    toggle("workspace");
+    expect(groupRows().map((row) => `${row.group.kind}:${row.expanded}`)).toEqual(["workstream:true", "epic:true", "workspace:false"]);
+    const back = walk(findByTestID(harness.current(), "sessions-peek")).find((element) => element.props.label === "Back to 1 result")!;
+    (back.props.onPress as () => void)(); harness.flush();
+    expect(testIDs(harness.current())).not.toContain("sessions-peek");
+    expect(sessionRowIds()).toEqual(["quiet"]);
+    (findByTestID(harness.current(), "sessions-filter-all").props.onPress as () => void)(); harness.flush();
+    expect(groupRows().map((row) => `${row.group.kind}:${row.expanded}`)).toEqual(["workstream:true", "epic:false"]);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("returns to the tree position it left when the search is cleared", () => {
+    directory.state = { ...(directory.state as object), entries: [sessionEntry("busy", { status: "running" }), sessionEntry("quiet")] };
+    patchSessionView("host-a", { query: "" });
+    const { scrollToOffset } = renderScreen(undefined, false);
+    scroll(480);
+    const search = (query: string) => { (findByTestID(harness.current(), "sessions-search").props.onChangeText as (query: string) => void)(query); harness.flush(); };
+    search("quiet");
+    expect(readSessionView("host-a")).toMatchObject({ treeOffset: 480, scrollOffset: 0 });
+    vi.runOnlyPendingTimers();
+    expect(scrollToOffset).toHaveBeenLastCalledWith({ offset: 0, animated: false });
+    scroll(40);
+    search("");
+    vi.runOnlyPendingTimers();
+    expect(scrollToOffset).toHaveBeenLastCalledWith({ offset: 480, animated: false });
+    expect(readSessionView("host-a")).toMatchObject({ scrollOffset: 480, treeOffset: undefined });
+  });
+
+  it("lists a Board task's sessions by exact label and clears the task from its chip", () => {
+    directory.state = { ...(directory.state as object), entries: [
+      sessionEntry("linked", { labels: { "jira.issue": "ASMA-7" } }),
+      sessionEntry("ticket", { labels: { "kontor.ticket": "T-7" } }),
+      sessionEntry("titled", { title: "SWE • ASMA-7" }),
+    ] };
+    patchSessionView("host-a", { query: "", task: { jira: "ASMA-7", kontorId: "T-7", label: "ASMA-7" } });
+    renderScreen(undefined, false);
+    expect(sessionRowIds()).toEqual(["linked", "ticket"]);
+    const chip = findByTestID(harness.current(), "sessions-task-filter");
+    expect(textOf(chip)).toContain("Task ASMA-7");
+    (chip.props.onPress as () => void)(); harness.flush();
+    expect(readSessionView("host-a").task).toBeNull();
+    expect(testIDs(harness.current())).not.toContain("sessions-task-filter");
+    expect(listRows().every((row) => row.kind !== "result")).toBe(true);
   });
 
   it("scopes an epic through the display mapping the tree uses", () => {
@@ -1086,7 +1160,7 @@ describe("SessionsScreen compact toolbar", () => {
     expect(host(walk(tree).find((element) => (element as { type?: unknown }).type === FiltersButton)!)["aria-expanded"]).toBe(true);
 
     patchSessionView("host-a", { status: "all", streams: null });
-    renderScreen(organization);
+    harness.reset(); renderScreen(organization);
     const renderItem = findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike;
     const drawn = (row: unknown) => { const view = renderItem({ item: row }) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike }; return view.type(view.props); };
     const group = groupRows()[0]!;

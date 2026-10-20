@@ -12,6 +12,11 @@ import { GraphPage, captureDay, capturedJiraChildren, type BoardItem } from "../
 import { PlanGraph } from "../client/plan-graph/graph";
 import { SourceDetails } from "../client/source-details";
 import { Action } from "../client/page-controls";
+import { TaskSessionsChooser, TaskSessionsControl, type BoardSessions } from "../client/board-sessions";
+import { MenuItem } from "../client/anchored-menu";
+import { emptyDirectoryState, type DirectoryEntry } from "../client/session-directory";
+import { taskSessions } from "../client/session-results";
+import { sessionEntry } from "./session-fixtures";
 beforeEach(() => { model.evidence = false; });
 
 type Element = ReactElement<Record<string, unknown>>;
@@ -39,22 +44,26 @@ function text(node: ReactNode): string {
   if (isRow(node)) return text(expand(node));
   return text(node.props.children as ReactNode);
 }
-function mount(options: { selectedId?: string | null; reads?: SourceRead[]; epicKey?: string | null; compact?: boolean; mode?: "Board" | "Graph"; initialOffset?: number; onBoard?: () => void; page?: typeof GraphPage } = {}) {
+function mount(options: { selectedId?: string | null; reads?: SourceRead[]; epicKey?: string | null; compact?: boolean; mode?: "Board" | "Graph"; initialOffset?: number; onBoard?: () => void; page?: typeof GraphPage; sessions?: BoardSessions } = {}) {
   const reads = options.reads ?? [jira];
   const onPlan = vi.fn(); const onIssue = vi.fn(); const onChooseSource = vi.fn(); const onScroll = vi.fn();
   const tree = (options.page ?? GraphPage)({ mode: options.mode ?? "Board", hostId: "board-host", theme: { colors } as PluginTheme, compact: options.compact ?? true,
     sources: reads.map((read) => read.source), selectedId: options.selectedId ?? null, reads: Object.fromEntries(reads.map((read) => [read.source.id, read])),
-    available: true, error: null, epicKey: options.epicKey, onSelect: vi.fn(), onPlan, onIssue, onChooseSource, onScroll, initialOffset: options.initialOffset, onBoard: options.onBoard }) as Element;
-  const data = (tree.props.data ?? []) as BoardItem[];
-  const row = (item: BoardItem) => (tree.props.renderItem as (info: { item: BoardItem; index: number }) => Element)({ item, index: data.indexOf(item) });
-  const header = tree.props.ListHeaderComponent as ReactNode;
-  return { tree, data, row, header, onPlan, onIssue, onChooseSource, onScroll };
+    available: true, error: null, epicKey: options.epicKey, onSelect: vi.fn(), onPlan, onIssue, onChooseSource, onScroll, initialOffset: options.initialOffset, onBoard: options.onBoard, sessions: options.sessions }) as Element;
+  // Board wraps its list in a View that also holds the linked-session chooser.
+  const list = elements(tree).find((element) => element.type === "FlatList");
+  const data = (list?.props.data ?? []) as BoardItem[];
+  const row = (item: BoardItem) => (list!.props.renderItem as (info: { item: BoardItem; index: number }) => Element)({ item, index: data.indexOf(item) });
+  const header = list?.props.ListHeaderComponent as ReactNode;
+  return { tree, list, data, row, header, onPlan, onIssue, onChooseSource, onScroll };
 }
 const actions = (node: ReactNode) => elements(node).filter((element) => element.type === Action);
 const jiraRows = (data: BoardItem[]) => data.flatMap((item) => item.kind === "jira" ? [item] : []);
 const taskRows = (data: BoardItem[]) => data.flatMap((item) => item.kind === "task" ? [item] : []);
-/** The compact row's outer element: the row button (plan task) or the grouped row (captured Jira). */
-const outer = (row: Element) => expand(row);
+/** The compact row's card, holding the text column, the issue action beside it and any linked sessions below. */
+const card = (row: Element) => expand(row);
+/** The compact row's text column: the row button (plan task) or the grouped row (captured Jira); no other button sits inside it. */
+const outer = (row: Element) => elements(card(row)).find((element) => element.props.accessible === true)!;
 const label = (row: Element) => String(outer(row).props.accessibilityLabel);
 /** The row's full description: the compact row button, or the wide row's detail column. */
 const rowLabel = (row: Element) => String(elements(row).find((element) => element.props.accessible === true)!.props.accessibilityLabel);
@@ -64,8 +73,8 @@ const day = captureDay(history.generated);
 
 describe("Board without a valid canonical graph (BOARD-01)", () => {
   it("lists every captured Jira child of the context epic with status, category, capture time and source, and no title", () => {
-    const { tree, data, row, header } = mount({ epicKey: "ASMA-8371" });
-    expect(tree.type).toBe("FlatList");
+    const { tree, list, data, row, header } = mount({ epicKey: "ASMA-8371" });
+    expect(list).toBeDefined();
     expect(elements(tree).some((element) => element.type === PlanGraph)).toBe(false);
     expect(jiraRows(data).map((item) => item.record.key)).toEqual(children.map((child) => child.key));
     expect(data[0]).toMatchObject({ kind: "section", title: `Captured Jira tasks · ${children.length}` });
@@ -187,14 +196,14 @@ describe("Board without a valid canonical graph (BOARD-01)", () => {
   });
 
   it("restores the fallback list offset once and then reports user scrolling", () => {
-    const { tree, onScroll } = mount({ epicKey: "ASMA-8371", initialOffset: 640 });
-    const scrollToOffset = vi.fn(); (tree.props.ref as { current: unknown }).current = { scrollToOffset };
-    (tree.props.onScroll as (event: object) => void)({ nativeEvent: { contentOffset: { y: 0 } } });
+    const { list, onScroll } = mount({ epicKey: "ASMA-8371", initialOffset: 640 });
+    const scrollToOffset = vi.fn(); (list!.props.ref as { current: unknown }).current = { scrollToOffset };
+    (list!.props.onScroll as (event: object) => void)({ nativeEvent: { contentOffset: { y: 0 } } });
     expect(onScroll).not.toHaveBeenCalled();
-    (tree.props.onContentSizeChange as (width: number, height: number) => void)(400, 3000);
+    (list!.props.onContentSizeChange as (width: number, height: number) => void)(400, 3000);
     expect(scrollToOffset).toHaveBeenCalledWith({ offset: 640, animated: false });
-    (tree.props.onScroll as (event: object) => void)({ nativeEvent: { contentOffset: { y: 120 } } });
-    (tree.props.onContentSizeChange as (width: number, height: number) => void)(400, 3600);
+    (list!.props.onScroll as (event: object) => void)({ nativeEvent: { contentOffset: { y: 120 } } });
+    (list!.props.onContentSizeChange as (width: number, height: number) => void)(400, 3600);
     expect(onScroll.mock.calls).toEqual([[120]]); expect(scrollToOffset).toHaveBeenCalledTimes(1);
   });
 });
@@ -334,15 +343,16 @@ describe("compact Board density (iPhone 390x844)", () => {
       const rendered = row(item);
       expect(actions(rendered)).toEqual([]);
       // Expand once so element identity holds across the queries below.
-      const [shellElement, ...tree] = elements(outer(rendered));
+      const [shellElement, ...tree] = elements(card(rendered));
       const issue = tree.filter((element) => element.type === "Pressable" && String(element.props.accessibilityLabel).startsWith("Open issue"));
       const inIssue = new Set(elements(issue));
       const lines = tree.filter((element) => element.type === "Text" && element.props.numberOfLines !== undefined && !inIssue.has(element));
       expect(lines.map((element) => element.props.numberOfLines)).toEqual([2, 1]);
       const [title, meta] = lines as [Element, Element];
       const shell = shellElement!.props.style as Record<string, number>;
+      const column = tree.find((element) => element.props.accessible === true)!;
       const metaRow = tree.find((element) => element.type === "View" && [element.props.children].flat(Infinity).includes(meta))!;
-      const textHeight = 2 * (title.props.style as { lineHeight: number }).lineHeight + shell.gap! + (metaRow.props.style as { minHeight: number }).minHeight;
+      const textHeight = 2 * (title.props.style as { lineHeight: number }).lineHeight + (column.props.style as { gap: number }).gap + (metaRow.props.style as { minHeight: number }).minHeight;
       const target = issue.length ? (issue[0]!.props.style as { minHeight: number }).minHeight : 0;
       const height = 2 * shell.paddingVertical! + 2 * shell.borderWidth! + Math.max(textHeight, target);
       expect(height).toBeGreaterThanOrEqual(64); expect(height).toBeLessThanOrEqual(76);
@@ -354,10 +364,11 @@ describe("compact Board density (iPhone 390x844)", () => {
         const style = issue[0]!.props.style as { minHeight: number; minWidth: number };
         expect([style.minHeight, style.minWidth, issue[0]!.props.hitSlop]).toEqual([44, 44, undefined]);
         expect(target).toBeLessThanOrEqual(textHeight);
-        // In its own column inside the row: not in the meta line, and not over the title.
+        // In its own column beside the text: not in the meta line, not over the title, and never inside the row button.
         expect(elements(metaRow.props.children as ReactNode).includes(issue[0]!)).toBe(false);
         const columns = tree.find((element) => element.type === "View" && (element.props.style as { flexDirection?: string } | undefined)?.flexDirection === "row" && (element.props.children as ReactNode[]).includes(issue[0]!))!;
         const [textColumn] = columns.props.children as Element[];
+        expect(textColumn).toBe(column);
         expect(elements(textColumn).includes(title) && elements(textColumn).includes(metaRow)).toBe(true);
         expect(elements(textColumn).includes(issue[0]!)).toBe(false);
       }
@@ -366,21 +377,27 @@ describe("compact Board density (iPhone 390x844)", () => {
     expect(actions(wide.row(wide.data[1]!)).map((button) => [button.props.label, button.props.small])).toEqual([["Open in plan", true], ["Open issue", true]]);
   });
 
-  it("keeps the dense 22pt issue action in the meta line for a mouse or trackpad", async () => {
+  it("keeps the dense 22pt issue action level with the meta line, beside the row button, for a mouse or trackpad", async () => {
     vi.resetModules();
     vi.stubGlobal("matchMedia", (query: string) => ({ matches: query !== "(pointer: coarse)" }));
     try {
       const { GraphPage: FinePage } = await import("../client/graph-page");
       const { data, row, onIssue, onPlan } = mount({ selectedId: "plan", reads: [plan, jira], page: FinePage });
       const rendered = row(data[1]!);
-      const tree = elements(outer(rendered));
+      const tree = elements(card(rendered));
       const issue = tree.filter((element) => element.type === "Pressable" && String(element.props.accessibilityLabel).startsWith("Open issue"));
       expect(issue).toHaveLength(1);
       const style = issue[0]!.props.style as { minHeight: number; minWidth: number };
       expect([style.minHeight, style.minWidth, issue[0]!.props.hitSlop]).toEqual([22, 44, undefined]);
       const meta = tree.find((element) => element.type === "Text" && element.props.numberOfLines === 1 && (element.props.style as { flex?: number }).flex === 1)!;
       const metaRow = tree.find((element) => element.type === "View" && [element.props.children].flat(Infinity).includes(meta))!;
-      expect(elements(metaRow.props.children as ReactNode).includes(issue[0]!)).toBe(true);
+      // A sibling of the row button, bottom-aligned so it sits on the meta line's 22pt band; a button never nests in a button.
+      const column = tree.find((element) => element.props.accessible === true)!;
+      expect(elements(column).includes(issue[0]!)).toBe(false);
+      const columns = tree.find((element) => element.type === "View" && (element.props.style as { flexDirection?: string } | undefined)?.flexDirection === "row" && (element.props.children as ReactNode[]).includes(issue[0]!))!;
+      expect((columns.props.style as { alignItems: string }).alignItems).toBe("flex-end");
+      expect((metaRow.props.style as { minHeight: number }).minHeight).toBe(style.minHeight);
+      expect((columns.props.children as Element[])[0]).toBe(column);
       (issue[0]!.props.onPress as () => void)();
       (outer(rendered).props.onPress as () => void)();
       expect([onIssue.mock.calls, onPlan.mock.calls]).toEqual([[[graph.nodes[0]!.jira]], [["plan", graph.nodes[0]!.id]]]);
@@ -418,5 +435,96 @@ describe("Board and unavailable Graph disclosures (A11Y-01)", () => {
     (actions(tree).find((button) => button.props.label === "Inspect captured tasks")!.props.onPress as () => void)();
     expect(onBoard).toHaveBeenCalledTimes(1);
     expect(actions(mount({ mode: "Graph", epicKey: null, onBoard }).tree).some((button) => button.props.label === "Inspect captured tasks")).toBe(false);
+  });
+});
+
+describe("Board linked sessions", () => {
+  const sessionsOf = (entries: DirectoryEntry[], extra: Partial<BoardSessions> = {}, live = true): BoardSessions => ({
+    state: { ...emptyDirectoryState(), entries, status: "ready", live, inventoryComplete: true, lastUpdatedAt: 1 },
+    onOpen: vi.fn(), onOpenWorkspace: vi.fn(), onShowInSessions: vi.fn(), ...extra,
+  });
+  const entries = [
+    sessionEntry("swe", { status: "running", workspaceId: "wks_a", workspaceName: "tsw-a", labels: { "jira.issue": graph.nodes[0]!.jira!, role: "SWE" } }),
+    sessionEntry("qa", { status: "idle", needsInput: true, workspaceId: "wks_b", workspaceName: "tsw-b", labels: { "jira.issue": graph.nodes[0]!.jira!, role: "QA" } }),
+    sessionEntry("one", { labels: { task: graph.nodes[1]!.jira!, role: "SWE" } }),
+    sessionEntry("titled", { title: `SWE • ${graph.nodes[2]!.jira}`, labels: { epic: graph.nodes[2]!.jira! } }),
+  ];
+  const control = (rendered: Element) => elements(rendered).find((element) => element.type === TaskSessionsControl);
+  const expandControl = (element: Element) => (TaskSessionsControl as (props: Record<string, unknown>) => Element)(element.props);
+
+  it("joins rows to sessions by exact label only: nothing for 0, Open session for 1, a chooser for several", () => {
+    const sessions = sessionsOf(entries);
+    const { data, row, header } = mount({ selectedId: "plan", reads: [plan, jira], sessions });
+    expect(text(elements(header).find((element) => element.props.testID === "board-sessions-meta"))).toMatch(/^2 of \d+ tasks with sessions · exact labels$/);
+    const [first, second, third] = taskRows(data);
+    expect(control(row(third!))).toBeUndefined();
+    const single = expandControl(control(row(second!))!);
+    expect(String(single.props.accessibilityLabel)).toMatch(/^Open linked session Session one\. 1 linked session\. SWE: Idle\. Roles come from session labels; no handoff order is declared\.$/);
+    expect(text(single)).toContain("Open session ›");
+    (single.props.onPress as () => void)();
+    expect(sessions.onOpen).toHaveBeenCalledWith(entries[2]);
+    const several = expandControl(control(row(first!))!);
+    expect(String(several.props.accessibilityLabel)).toContain("2 linked sessions. SWE: Running; QA: Needs input.");
+    expect(text(several)).toContain("2 sessions ›");
+    (several.props.onPress as () => void)();
+    expect(sessions.onOpen).toHaveBeenCalledTimes(1);
+    // The setter stub stores the chosen task id; the next render draws the chooser for it.
+    const reopened = mount({ selectedId: "plan", reads: [plan, jira], sessions });
+    const chooser = elements(reopened.tree).find((element) => element.type === TaskSessionsChooser)!;
+    expect([chooser.props.taskKey, (chooser.props.links as unknown[]).length]).toEqual([graph.nodes[0]!.jira, 2]);
+    expect(elements(mount({ selectedId: "plan", reads: [plan, jira] }).header).some((element) => element.props.testID === "board-sessions-meta")).toBe(false);
+  });
+
+  it("adds one chain line to a linked compact row, a real 44pt target on touch, and nothing to an unlinked row", () => {
+    const { data, row } = mount({ selectedId: "plan", reads: [plan, jira], sessions: sessionsOf(entries) });
+    const linked = card(row(taskRows(data)[0]!));
+    const children = [linked.props.children].flat() as Element[];
+    expect(children.at(-1)!.type).toBe(TaskSessionsControl);
+    const style = (expandControl(children.at(-1)!).props.style as (state: object) => { minHeight: number })({ pressed: false });
+    expect(style.minHeight).toBe(44);
+    expect(([card(row(taskRows(data)[2]!)).props.children].flat() as unknown[]).at(-1)).toBeNull();
+  });
+
+  it("says last known when the host's live session feed is not attached", () => {
+    const { header, data, row } = mount({ selectedId: "plan", reads: [plan, jira], sessions: sessionsOf(entries, {}, false) });
+    expect(text(elements(header).find((element) => element.props.testID === "board-sessions-meta"))).toMatch(/ · last known$/);
+    const chain = expandControl(control(row(taskRows(data)[0]!))!);
+    const words = elements(chain).find((element) => typeof element.type === "function" && element.type.name === "ChainText")!;
+    expect(text(expand(words))).toMatch(/^Last known {2}SWE ●/);
+    expect(String(chain.props.accessibilityLabel)).toContain("2 linked sessions, last known states.");
+  });
+
+  it("lists the chooser by workspace with state words, the read's limits and Show in Sessions", () => {
+    const sessions = sessionsOf(entries);
+    const onClose = vi.fn();
+    const task = { jira: graph.nodes[0]!.jira, kontorId: null, label: graph.nodes[0]!.jira! };
+    const props = { taskKey: task.label, task, links: taskSessions(entries, task), live: true, archivedIncluded: false, anchor: { current: null }, root: { current: null }, rootSize: { width: 390, height: 700 }, compact: true, colors, sessions, onClose };
+    const menu = (TaskSessionsChooser as (props: Record<string, unknown>) => Element)(props);
+    expect(text(menu)).toContain("Joined by an exact jira.issue label. Team, workflow and risk tier: not declared by any configured source. Archived sessions are not read.");
+    const items = () => elements(menu).filter((element) => element.type === MenuItem);
+    expect(items().map((item) => [item.props.label, item.props.detail])).toEqual([
+      ["Open workspace", undefined], ["Session swe", "SWE · Running"], ["Open workspace", undefined], ["Session qa", "QA · Needs input"], ["Show in Sessions", undefined],
+    ]);
+    (items()[0]!.props.onPress as () => void)();
+    expect(sessions.onOpenWorkspace).toHaveBeenCalledWith("wks_a");
+    (items()[3]!.props.onPress as () => void)();
+    expect(sessions.onOpen).toHaveBeenCalledWith(entries[1]);
+    (items()[4]!.props.onPress as () => void)();
+    expect(sessions.onShowInSessions).toHaveBeenCalledWith(task);
+    expect(onClose).toHaveBeenCalledTimes(3);
+    const withoutWorkspaces = (TaskSessionsChooser as (props: Record<string, unknown>) => Element)({ ...props, sessions: { ...sessions, onOpenWorkspace: undefined } });
+    expect(elements(withoutWorkspaces).filter((element) => element.type === MenuItem).map((item) => item.props.label)).not.toContain("Open workspace");
+  });
+
+  it("puts a replaced or archived session under its own heading, apart from the current ones", () => {
+    const key = graph.nodes[0]!.jira!;
+    const history = [
+      sessionEntry("first", { status: "error", labels: { "jira.issue": key, role: "SWE" } }),
+      sessionEntry("second", { status: "running", labels: { "jira.issue": key, role: "SWE", "takeover.predecessor": "first" } }),
+    ];
+    const task = { jira: key, kontorId: null, label: key };
+    const menu = (TaskSessionsChooser as (props: Record<string, unknown>) => Element)({ taskKey: key, task, links: taskSessions(history, task), live: true, archivedIncluded: true, anchor: { current: null }, root: { current: null }, rootSize: { width: 1440, height: 900 }, compact: false, colors, sessions: sessionsOf(history), onClose: vi.fn() });
+    expect(text(menu)).toContain("Replaced or archived");
+    expect(elements(menu).filter((element) => element.type === MenuItem).map((item) => item.props.label)).toEqual(["Open workspace", "Session second", "Session first", "Show in Sessions"]);
   });
 });

@@ -9,6 +9,9 @@ import { validatePlanGraph } from "./plan-graph/contract";
 import { SourceDetails } from "./source-details";
 import { historicalPlanProgress } from "./page-data";
 import { Action, COARSE_POINTER, Copy, type Colors } from "./page-controls";
+import { sessionsLive, TaskSessionsChooser, TaskSessionsControl, type BoardSessions } from "./board-sessions";
+import { taskSessions, type TaskLink } from "./session-results";
+import type { SessionTaskFilter } from "./session-view-store";
 
 const stores = new Map<string, PlanGraphStore>();
 function retainedStore(hostId: string): PlanGraphStore {
@@ -62,7 +65,7 @@ export type BoardItem =
   | { kind: "task"; id: string; node: GraphNode }
   | { kind: "jira"; id: string; record: CapturedJiraRecord };
 
-export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, reads, available, error, epicKey, onPlan, onIssue, initialOffset = 0, onScroll, onChooseSource, onBoard, onCopy }: {
+export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, reads, available, error, epicKey, onPlan, onIssue, initialOffset = 0, onScroll, onChooseSource, onBoard, onCopy, sessions }: {
   mode: "Board" | "Graph"; hostId: string; theme: PluginTheme; compact: boolean;
   sources: readonly ReadSourceSummary[]; selectedId: string | null; reads: Readonly<Record<string, SourceRead>>;
   available: boolean; error: string | null; onSelect: (sourceId: string) => void;
@@ -76,8 +79,15 @@ export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, r
   onCopy?: (text: string, what: string) => void;
   /** Opens Board for the same context; offered when Graph has no valid canonical graph. */
   onBoard?: () => void;
+  /** Native sessions for exact task-label joins on Board rows. */
+  sessions?: BoardSessions;
 }) {
   const [evidenceOpen, setEvidenceOpen] = useState(false);
+  const [chooser, setChooser] = useState<string | null>(null);
+  const [rootSize, setRootSize] = useState({ width: 0, height: 0 });
+  const root = useRef<View | null>(null);
+  const chooserAnchor = useRef<View | null>(null);
+  const sessionButtons = useRef(new Map<string, View>());
   const list = useRef<NativeFlatList<BoardItem> | null>(null);
   const pendingRestore = useRef(initialOffset > 0);
   const store = useMemo(() => retainedStore(hostId), [hostId]);
@@ -185,7 +195,40 @@ export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, r
     </View> : null}
   </View>;
   const planSource = read?.source.id;
-  return <FlatList ref={list} data={items} keyExtractor={(item) => item.id} initialNumToRender={20} windowSize={7}
+  // Exact label joins only (see taskSessions); a row without a key to join on links nothing.
+  const live = sessions ? sessionsLive(sessions.state) : false;
+  const taskOf = (item: BoardItem): SessionTaskFilter | null => item.kind === "task"
+    ? (item.node.jira || item.node.kontor_id ? { jira: item.node.jira, kontorId: item.node.kontor_id, label: item.node.jira ?? item.node.kontor_id ?? item.node.id } : null)
+    : item.kind === "jira" ? { jira: item.record.key, kontorId: null, label: item.record.key } : null;
+  const links = new Map<string, TaskLink[]>();
+  if (sessions) for (const item of items) { const task = taskOf(item); if (task) links.set(item.id, taskSessions(sessions.state.entries, task)); }
+  const linkedTasks = [...links.values()].filter((value) => value.length > 0).length;
+  const sessionControl = (item: BoardItem) => {
+    const linked = links.get(item.id) ?? [];
+    if (!sessions || !linked.length) return null;
+    const open = () => {
+      if (linked.length === 1) { sessions.onOpen(linked[0]!.entry); return; }
+      chooserAnchor.current = sessionButtons.current.get(item.id) ?? null;
+      setChooser(item.id);
+    };
+    return <TaskSessionsControl testID={`${item.id}-sessions`} links={linked} live={live} compact={compact} colors={colors} onPress={open}
+      buttonRef={(node) => { if (node) sessionButtons.current.set(item.id, node); else sessionButtons.current.delete(item.id); }} />;
+  };
+  const chosen = typeof chooser === "string" ? items.find((item) => item.id === chooser) : undefined;
+  const chosenTask = chosen ? taskOf(chosen) : null;
+  const chooserLayer = sessions && chosen && chosenTask ? <TaskSessionsChooser taskKey={chosenTask.label} task={chosenTask} links={links.get(chosen.id) ?? []} live={live}
+    archivedIncluded={sessions.state.includeArchived} anchor={chooserAnchor} root={root} rootSize={rootSize} compact={compact} colors={colors} sessions={sessions} onClose={() => setChooser(null)} /> : null;
+  let sessionsMeta: string | null = null;
+  if (sessions && links.size) {
+    const read = sessions.state;
+    if (!read.entries.length && (read.status === "loading" || read.status === "idle")) sessionsMeta = "Linked sessions: reading…";
+    else if (!read.entries.length && read.status === "error") sessionsMeta = "Linked sessions unavailable: the session list could not be read";
+    else sessionsMeta = `${linkedTasks ? `${linkedTasks} of ${links.size} tasks with sessions` : "No task has a linked session"} · exact labels${live ? "" : " · last known"}`;
+  }
+  const sessionsHeader = sessionsMeta ? <Text testID="board-sessions-meta" numberOfLines={1}
+    accessibilityLabel={`${sessionsMeta}. A session links to a task only when its jira.issue, task or kontor.ticket label equals the task's key. Team, workflow and risk tier are not declared by any configured source.`}
+    style={{ paddingHorizontal: compact ? 8 : 12, paddingBottom: compact ? 4 : 6, color: colors.foregroundMuted, fontSize: 12, lineHeight: 16 }}>{sessionsMeta}</Text> : null;
+  const listElement = <FlatList ref={list} data={items} keyExtractor={(item) => item.id} initialNumToRender={20} windowSize={7}
     onContentSizeChange={(_width, height) => {
       if (!pendingRestore.current || height <= 0) return;
       pendingRestore.current = false;
@@ -197,7 +240,7 @@ export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, r
       if (pendingRestore.current && offset === 0) return;
       pendingRestore.current = false; onScroll?.(offset);
     }} scrollEventThrottle={100}
-    contentContainerStyle={{ paddingBottom: 24 }} ListHeaderComponent={header} renderItem={({ item }) => {
+    contentContainerStyle={{ paddingBottom: 24 }} ListHeaderComponent={sessionsHeader ? <>{header}{sessionsHeader}</> : header} extraData={{ chooser, live, sessions: sessions?.state }} renderItem={({ item }) => {
       if (item.kind === "section") return <View style={{ paddingHorizontal: compact ? 8 : 12, paddingTop: compact ? 8 : 10, paddingBottom: compact ? 4 : 6, gap: 2 }}>
         <Text accessibilityRole="header" numberOfLines={compact ? 1 : undefined} accessibilityHint={item.note} style={{ color: colors.foreground, fontWeight: "600", fontSize: 13 }}>{item.title}</Text>
       </View>;
@@ -209,8 +252,8 @@ export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, r
         const rowTitle = <>{key}<Text style={{ fontWeight: "400", color: colors.foregroundMuted }}> · title not captured</Text></>;
         const description = `${key}: title unavailable in the captured Jira projection. ${state.full}. ${declaration}.`;
         if (compact) return <CompactBoardRow testID={`board-jira-${key}`} colors={colors} tone={state.tone} meta={state.short}
-          title={rowTitle} label={description} issue={{ key, open: () => onIssue(key) }} />;
-        return <BoardRow testID={`board-jira-${key}`} colors={colors} title={rowTitle} lines={[state.short]} label={description}
+          title={rowTitle} label={description} issue={{ key, open: () => onIssue(key) }} sessions={sessionControl(item)} />;
+        return <BoardRow testID={`board-jira-${key}`} colors={colors} title={rowTitle} lines={[state.short]} label={description} footer={sessionControl(item)}
           actions={<Action colors={colors} small label="Open issue" accessibilityLabel={`Open issue ${key}`} onPress={() => onIssue(key)} />} />;
       }
       const { node } = item;
@@ -227,37 +270,49 @@ export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, r
       const description = `${node.id}: ${node.title}. ${state.full}. ${node.phase}, dependency depth ${node.wave}. ${node.depends_on.length ? `After ${node.depends_on.join(", ")}` : "No prerequisites declared"}.${issueKey ? ` Jira ${issueKey}.` : ""}`;
       if (compact) return <CompactBoardRow testID={`board-task-${node.id}`} colors={colors} tone={state.tone} title={`${issueKey ?? node.id} · ${node.title}`}
         meta={meta} onPress={openPlan} label={`Open plan task ${description}`}
-        issue={issueKey ? { key: issueKey, open: () => onIssue(issueKey) } : undefined} />;
-      return <BoardRow testID={`board-task-${node.id}`} colors={colors} title={`${issueKey ?? node.id} · ${node.title}`} lines={[meta]} label={description}
+        issue={issueKey ? { key: issueKey, open: () => onIssue(issueKey) } : undefined} sessions={sessionControl(item)} />;
+      return <BoardRow testID={`board-task-${node.id}`} colors={colors} title={`${issueKey ?? node.id} · ${node.title}`} lines={[meta]} label={description} footer={sessionControl(item)}
         actions={<>
           <Action colors={colors} small label="Open in plan" accessibilityLabel={`Open plan task ${node.id}`} onPress={openPlan} />
           {issueKey ? <Action colors={colors} small label="Open issue" accessibilityLabel={`Open issue ${issueKey}`} onPress={() => onIssue(issueKey)} /> : null}
         </>} />;
     }} />;
+  return <View ref={root} style={{ flex: 1 }} onLayout={(event) => {
+    const { width, height } = event.nativeEvent.layout;
+    if (width !== rootSize.width || height !== rootSize.height) setRootSize({ width, height });
+  }}>
+    {listElement}
+    {chooserLayer}
+  </View>;
 }
 
-/** Wide Board row: the compact meta line with the actions beside them; `label` reads the full detail. */
-function BoardRow({ testID, title, lines, label, actions, colors }: { testID: string; title: ReactNode; lines: readonly string[]; label: string; actions: ReactNode; colors: Colors }) {
-  return <View testID={testID} style={{ marginHorizontal: 12, marginBottom: 6, paddingHorizontal: 10, paddingVertical: 8, gap: 8, borderWidth: 1, borderColor: colors.border, borderRadius: 8, backgroundColor: colors.surface1,
-    flexDirection: "row", alignItems: "center" }}>
+/** Wide Board row: the compact meta line with the actions beside them; `label` reads the full detail. Linked sessions sit below. */
+function BoardRow({ testID, title, lines, label, actions, footer, colors }: { testID: string; title: ReactNode; lines: readonly string[]; label: string; actions: ReactNode; footer?: ReactNode; colors: Colors }) {
+  const content = <>
     <View accessible accessibilityLabel={label} style={{ flex: 1, minWidth: 0, gap: 2 }}>
       <Text selectable numberOfLines={2} style={{ color: colors.foreground, fontWeight: "600", fontSize: 13 }}>{title}</Text>
       {lines.map((line, index) => <Copy key={index} colors={colors} small muted>{line}</Copy>)}
     </View>
     <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>{actions}</View>
+  </>;
+  const card = { marginHorizontal: 12, marginBottom: 6, paddingHorizontal: 10, paddingVertical: 8, borderWidth: 1, borderColor: colors.border, borderRadius: 8, backgroundColor: colors.surface1 };
+  if (!footer) return <View testID={testID} style={{ ...card, gap: 8, flexDirection: "row", alignItems: "center" }}>{content}</View>;
+  return <View testID={testID} style={{ ...card, gap: 4 }}>
+    <View style={{ gap: 8, flexDirection: "row", alignItems: "center" }}>{content}</View>
+    {footer}
   </View>;
 }
 
 /**
- * Compact Board row: at most two title lines and one meta line. A plan task row is one button
- * (open the task in its plan); Open issue is a trailing action that screen readers also reach as
- * a custom action, because an accessible row hides its nested controls on iOS. A mouse keeps the
- * 22pt action in the meta line; a touch pointer gets a real 44pt action in its own column beside
- * the text, inside the row, since the web ignores a hit slop.
+ * Compact Board row: at most two title lines and one meta line. The text of a plan task row is one
+ * button (open the task in its plan); Open issue sits beside it, never inside it, and screen readers
+ * also reach it as a custom action, because an accessible row hides its controls on iOS. A mouse
+ * gets a 22pt action level with the meta line; a touch pointer a real 44pt action, since the web
+ * ignores a hit slop. Linked sessions, when there are any, add one line below.
  */
-function CompactBoardRow({ testID, title, meta, label, tone, onPress, issue, colors }: {
+function CompactBoardRow({ testID, title, meta, label, tone, onPress, issue, sessions, colors }: {
   testID: string; title: ReactNode; meta: string; label: string; tone: Tone; colors: Colors;
-  onPress?: () => void; issue?: { key: string; open: () => void };
+  onPress?: () => void; issue?: { key: string; open: () => void }; sessions?: ReactNode;
 }) {
   let dot = colors.foregroundMuted;
   if (tone === "done") dot = colors.statusSuccess;
@@ -277,14 +332,17 @@ function CompactBoardRow({ testID, title, meta, label, tone, onPress, issue, col
     <View style={{ flexDirection: "row", alignItems: "center", gap: 6, minHeight: 22 }}>
       <View testID={`${testID}-tone`} importantForAccessibility="no" accessibilityElementsHidden style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: dot }} />
       <Text numberOfLines={1} style={{ flex: 1, minWidth: 0, color: colors.foregroundMuted, fontSize: 12, lineHeight: 16 }}>{meta}</Text>
-      {COARSE_POINTER ? null : action}
     </View>
   </>;
-  const body = COARSE_POINTER && action ? <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-    <View style={{ flex: 1, minWidth: 0, gap: 2 }}>{lines}</View>
-    {action}
-  </View> : lines;
-  return onPress
-    ? <Pressable testID={testID} accessibilityRole="button" onPress={onPress} style={style} {...accessibility}>{body}</Pressable>
-    : <View testID={testID} style={style} {...accessibility}>{body}</View>;
+  const text = { flex: 1, minWidth: 0, gap: 2 };
+  const main = onPress
+    ? <Pressable testID={testID} accessibilityRole="button" onPress={onPress} style={text} {...accessibility}>{lines}</Pressable>
+    : <View testID={testID} style={text} {...accessibility}>{lines}</View>;
+  return <View testID={`${testID}-card`} style={style}>
+    <View style={{ flexDirection: "row", alignItems: COARSE_POINTER ? "center" : "flex-end", gap: 8 }}>
+      {main}
+      {action}
+    </View>
+    {sessions}
+  </View>;
 }

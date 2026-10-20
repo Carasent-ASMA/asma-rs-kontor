@@ -27,6 +27,8 @@ function render(read = source, hostId = "adapter-host", mode: "Graph" | "Board" 
   const tree = GraphPage({ mode, hostId, theme: { colors: {} } as PluginTheme, compact: true, sources: [read.source], selectedId: read.source.id, reads: { ...extraReads, [read.source.id]: read }, available: true, error: null, onSelect: vi.fn(), onPlan, onIssue });
   return { tree, onPlan, onIssue, graph: elements(tree).find((element) => element.type === PlanGraph) };
 }
+/** Board's list, inside the View that also holds the linked-session chooser. */
+const list = (tree: ReactNode) => elements(tree).find((element) => element.type === "FlatList") as ReactElement<any>;
 describe("canonical graph shell adapter", () => {
   it("renders no duplicate page header and hands provenance to the graph's single Source details disclosure", () => {
     const history = jiraHistorySchema.parse(JSON.parse(readFileSync(new URL("./fixtures/jira-history.json", import.meta.url), "utf8")));
@@ -71,7 +73,7 @@ describe("canonical graph shell adapter", () => {
   });
   it("gives Board canonical declarations without supplying invented task states", () => {
     const { tree, graph: component } = render(source, "board-host", "Board");
-    const data = tree.props.data as BoardItem[];
+    const data = elements(tree).find((element) => element.type === "FlatList")!.props.data as BoardItem[];
     expect(component).toBeUndefined();
     expect(data.flatMap((item) => item.kind === "task" ? [item.node] : [])).toEqual(graph.nodes);
     expect(data.map((item) => item.kind)).toEqual(["section", ...graph.nodes.map(() => "task")]);
@@ -80,7 +82,7 @@ describe("canonical graph shell adapter", () => {
   it("captures Board position, restores once after Plan/Back and persists the host-clamped offset", () => {
     const hostId = "aud-d549-board-return";
     const route = navigate(hostId, { tab: "Board", sourceId: "plan", sourceRevision: source.revision });
-    const mount = () => GraphPage({ mode: "Board", hostId, theme: { colors: {} } as PluginTheme, compact: true, sources: [source.source], selectedId: "plan", reads: { plan: source }, available: true, error: null, onSelect: vi.fn(), onIssue: vi.fn(), initialOffset: readRouteView(hostId, route).offset, onScroll: (offset) => writeRouteView(hostId, route, { offset }), onPlan: (sourceId) => { navigate(hostId, { tab: "Plan", sourceId }); } });
+    const mount = () => list(GraphPage({ mode: "Board", hostId, theme: { colors: {} } as PluginTheme, compact: true, sources: [source.source], selectedId: "plan", reads: { plan: source }, available: true, error: null, onSelect: vi.fn(), onIssue: vi.fn(), initialOffset: readRouteView(hostId, route).offset, onScroll: (offset) => writeRouteView(hostId, route, { offset }), onPlan: (sourceId) => { navigate(hostId, { tab: "Plan", sourceId }); } }));
     const first = mount();
     first.props.onScroll({ nativeEvent: { contentOffset: { y: 800 } } });
     const task = (first.props.data as BoardItem[]).find((value) => value.kind === "task")!;
