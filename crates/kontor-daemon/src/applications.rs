@@ -15527,7 +15527,7 @@ impl Services {
                     seat.seat_binding_id,
                     seat.occupancy_generation,
                 );
-            let authority = if seat.model_rung.provider.0 == "opencode" {
+            let authority = if provider_family(&seat.model_rung.provider.0) == "opencode" {
                 "Operator-authorized behavioral fallback Committee seat. The runtime does not \
                  assert filesystem containment; you must inspect only and must not mutate code,"
             } else {
@@ -15715,7 +15715,7 @@ impl Services {
         adapter
             .validate_consultation_model_rung(&model_rung, &route_provenance)
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-        let authority = if model_rung.provider.0 == "opencode" {
+        let authority = if provider_family(&model_rung.provider.0) == "opencode" {
             "Operator-authorized behavioral fallback Committee seat. The runtime does not assert \
              filesystem containment; you must inspect only and must not mutate code,"
         } else {
@@ -27750,7 +27750,7 @@ impl ApplicationOperations for Services {
         // this repair exists for is an OpenCode route nothing can launch, and a
         // replacement that reached for it again would recreate the wedge under
         // a new prepared_at.
-        if replacement.provider.0.eq_ignore_ascii_case("opencode")
+        if provider_family(&replacement.provider.0).eq_ignore_ascii_case("opencode")
             || superseded.provider.0 == replacement.provider.0
                 && superseded.model.0 == replacement.model.0
                 && superseded.effort == replacement.effort
