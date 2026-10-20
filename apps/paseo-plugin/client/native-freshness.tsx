@@ -25,10 +25,11 @@ export function inventoryReadLabel(state: Pick<DirectoryState, "lastUpdatedAt" |
   if (state.inventoryComplete === false) return `Last partial inventory read ${readAt}`;
   return `Last inventory read ${readAt} · completeness Unknown`;
 }
-export function NativeFreshnessPill({ state, hostStatus, colors }: { state: DirectoryState; hostStatus: PluginHostSummary["status"]; colors: Colors }) {
+/** The host is named only to assistive technology: Paseo's own header shows it whenever there is a host to choose. */
+export function NativeFreshnessPill({ state, hostStatus, hostLabel, colors }: { state: DirectoryState; hostStatus: PluginHostSummary["status"]; hostLabel?: string; colors: Colors }) {
   const label = nativeFreshnessLabel({ ...state, hostStatus });
   const color = nativeFreshnessColor(label, colors);
-  return <View accessible accessibilityRole="text" accessibilityLabel={`Native sessions: ${label}. ${inventoryReadLabel(state)}. Source freshness is reported separately.`} style={{ borderWidth: 1, borderColor: color, borderRadius: 12, paddingHorizontal: 8, paddingVertical: 5 }}>
+  return <View accessible accessibilityRole="text" accessibilityLabel={`Native sessions${hostLabel ? ` from ${hostLabel}` : ""}: ${label}. ${inventoryReadLabel(state)}. Source freshness is reported separately.`} style={{ borderWidth: 1, borderColor: color, borderRadius: 12, paddingHorizontal: 8, paddingVertical: 5 }}>
     <Text numberOfLines={1} style={{ color, fontSize: 12 }}>Native · {label}</Text>
   </View>;
 }

@@ -151,15 +151,22 @@ function HostScreen(props: PluginScreenProps) {
     else toast.error(link.reason);
   };
   const conversationReturn = route.originAgentId && props.navigation ? <Action label="Return to conversation" colors={colors} disabled={!directory.state.entries.some((entry) => entry.id === route.originAgentId)} onPress={() => { const entry = directory.state.entries.find((candidate) => candidate.id === route.originAgentId); if (entry) open(entry); }} /> : null;
+  const canGoBack = hostNavigation(host.id).back.length > 0;
+  // Desktop keeps Back in place, disabled when there is nowhere to go, so the views beside it never move.
+  const backButton = <IconButton label="Back" icon="ChevronLeft" colors={colors} disabled={!canGoBack} onPress={back} />;
+  const contextPicker = route.tab !== "Sessions" ? <ContextPicker ref={contextRef} label={heading.title} epicKey={heading.key} compact={layout.compact} expanded={menu === "context"} colors={colors} onPress={() => toggle("context")} /> : null;
+  const freshness = <NativeFreshnessPill state={directory.state} hostStatus={hostStatus} hostLabel={host.label} colors={colors} />;
   const moreActive = !primary.includes(route.tab);
   const navigationItems = <>
       {primary.map((tab) => <Action key={tab} tab stacked={layout.compact} colors={colors} icon={ICONS[tab]} label={tab} selected={route.tab === tab} onPress={() => tabPress(tab)} />)}
       <Action ref={moreRef} stacked={layout.compact} colors={colors} icon="Ellipsis" label="More" trailing={layout.compact ? undefined : "⌄"} accessibilityLabel={`More Kontor views${moreActive ? `, current: ${route.tab}` : ""}`} expanded={menu === "more"} selected={moreActive} onPress={() => toggle("more")} />
     </>;
-  // Left-grouped desktop strip and a five-column compact bottom bar, as in the prototype.
-  const navigation = <View accessibilityRole="tablist" accessibilityLabel="Kontor views" style={{ flexDirection: "row", borderTopWidth: layout.compact ? 1 : 0, borderBottomWidth: layout.compact ? 0 : 1, borderColor: colors.border, backgroundColor: colors.surface0, ...(layout.compact ? { gap: 2, paddingHorizontal: 6, paddingTop: 5, paddingBottom: 6 } : {}) }}>
-    {layout.compact ? navigationItems : <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ flexDirection: "row", alignItems: "center", gap: 3, paddingHorizontal: 12, paddingVertical: 8 }}>{navigationItems}</ScrollView>}
-  </View>;
+  // A desktop strip inside the context row and a five-column compact bottom bar, as in the prototype.
+  const navigation = layout.compact
+    ? <View accessibilityRole="tablist" accessibilityLabel="Kontor views" style={{ flexDirection: "row", borderTopWidth: 1, borderColor: colors.border, backgroundColor: colors.surface0, gap: 2, paddingHorizontal: 6, paddingTop: 5, paddingBottom: 6 }}>{navigationItems}</View>
+    : <View accessibilityRole="tablist" accessibilityLabel="Kontor views" style={{ flexShrink: 1, minWidth: 0 }}>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ flexDirection: "row", alignItems: "center", gap: 3 }}>{navigationItems}</ScrollView>
+    </View>;
   const needle = pickerQuery.trim().toLocaleLowerCase();
   const matches = (...values: (string | null | undefined)[]) => !needle || values.some((value) => value?.toLocaleLowerCase().includes(needle));
   const boundEpics = new Set(sourceState.sources.filter((source) => source.kind === "plan").map((source) => sourceState.reads[source.id]?.graph?.epic.jira ?? source.epic));
@@ -230,17 +237,26 @@ function HostScreen(props: PluginScreenProps) {
     initialOffset={readRouteView(host.id, route).offset} onScroll={(offset) => { writeRouteView(host.id, route, { offset }); }} />;
   return <SafeAreaView style={{ flex: 1, backgroundColor: colors.surface0 }}><KeyboardAvoidingView behavior={layout.platform === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
     <View ref={rootRef} style={{ flex: 1 }} onLayout={(event) => { const { width, height } = event.nativeEvent.layout; if (width !== rootSize.width || height !== rootSize.height) setRootSize({ width, height }); }}>
-    <View testID="kontor-context-row" style={{ flexDirection: "row", alignItems: "center", gap: layout.compact ? 5 : 8, paddingHorizontal: layout.compact ? 6 : 10, paddingVertical: 3, minHeight: 51, borderBottomWidth: 1, borderColor: colors.border, backgroundColor: colors.surface0 }}>
-      {hostNavigation(host.id).back.length ? <IconButton label="Back" icon="ChevronLeft" colors={colors} onPress={back} /> : null}
-      <Text accessibilityRole="header" numberOfLines={1} style={{ color: colors.foreground, fontSize: layout.compact ? 12 : 13, fontWeight: "600" }}>Kontor</Text>
-      {route.tab !== "Sessions" ? <ContextPicker ref={contextRef} label={heading.title} epicKey={heading.key} compact={layout.compact} expanded={menu === "context"} colors={colors} onPress={() => toggle("context")} /> : null}
+    {/* Paseo's own header above already names Kontor and, when there is a choice, the host; this row adds only what it cannot show. */}
+    {layout.compact ? <View testID="kontor-context-row" style={{ flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 6, paddingVertical: 3, minHeight: 51, borderBottomWidth: 1, borderColor: colors.border, backgroundColor: colors.surface0 }}>
+      {canGoBack ? backButton : null}
+      {contextPicker}
       <View style={{ flex: 1 }} />
-      {!layout.compact ? <Text numberOfLines={1} style={{ color: colors.foreground, fontSize: 12, fontWeight: "600", flexShrink: 1 }}>{host.label}</Text> : null}
-      <NativeFreshnessPill state={directory.state} hostStatus={hostStatus} colors={colors} />
-      {!layout.compact ? conversationReturn : null}
-    </View>
+      {freshness}
+    </View> : <View testID="kontor-context-row" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 12, paddingHorizontal: 10, paddingVertical: 3, minHeight: 51, borderBottomWidth: 1, borderColor: colors.border, backgroundColor: colors.surface0 }}>
+      {/* One row when it fits; on a narrow screen the context, status and return wrap below the views instead of hiding. */}
+      <View testID="kontor-views-group" style={{ flexDirection: "row", alignItems: "center", gap: 8, flexShrink: 1, minWidth: 0, maxWidth: "100%", minHeight: 44 }}>
+        {backButton}
+        {navigation}
+      </View>
+      <View testID="kontor-context-group" style={{ flexDirection: "row", alignItems: "center", gap: 8, flexGrow: 1, flexShrink: 1, minWidth: 0, minHeight: 44 }}>
+        {contextPicker}
+        <View style={{ flexGrow: 1 }} />
+        {freshness}
+        {conversationReturn}
+      </View>
+    </View>}
     {layout.compact && conversationReturn ? <View testID="kontor-conversation-return-row" style={{ minHeight: 44, flexDirection: "row", justifyContent: "flex-end" }}>{conversationReturn}</View> : null}
-    {!layout.compact ? navigation : null}
     <View style={{ flex: 1 }}>{page}</View>
     {layout.compact ? navigation : null}
     {menus}
@@ -250,7 +266,7 @@ function HostScreen(props: PluginScreenProps) {
 /** Bounded, left-aligned title-only selector; the confirmed Jira key floats on its lower border. */
 function ContextPicker({ label, epicKey, compact, expanded, colors, onPress, ref }: { label: string; epicKey: string | null; compact: boolean; expanded: boolean; colors: Colors; onPress: () => void; ref?: Ref<View> }) {
   return <Pressable ref={ref} testID="kontor-context-picker" accessibilityRole="button" accessibilityLabel={`Plan / project: ${epicKey ? `${epicKey} · ` : ""}${label}`} accessibilityHint="Choose a plan, epic or project" accessibilityState={{ expanded }} aria-expanded={expanded} onPress={onPress}
-    style={{ flexGrow: 0, flexShrink: 1, flexBasis: compact ? 180 : 320, minWidth: compact ? 44 : 100, maxWidth: 420, height: 44, justifyContent: "center", paddingLeft: 9, paddingRight: 26 }}>
+    style={{ flexGrow: 1, flexShrink: 1, flexBasis: compact ? 180 : 220, minWidth: compact ? 44 : 100, maxWidth: 420, height: 44, justifyContent: "center", paddingLeft: 9, paddingRight: 26 }}>
     <View pointerEvents="none" style={{ position: "absolute", top: 5, bottom: 8, left: 0, right: 0, borderWidth: 1, borderColor: expanded ? colors.accent : colors.border, borderRadius: 6, backgroundColor: colors.surface1 }} />
     <Text numberOfLines={1} ellipsizeMode="tail" style={{ color: colors.foreground, fontSize: 12, lineHeight: 16, fontWeight: "600", marginBottom: 3 }}>{label}</Text>
     {epicKey ? <Text testID="kontor-context-epic" accessible={false} pointerEvents="none" numberOfLines={1} style={{ position: "absolute", left: 7, bottom: 2, maxWidth: "80%", paddingHorizontal: 4, fontSize: 9, lineHeight: 12, fontFamily: "monospace", color: colors.foregroundMuted, backgroundColor: colors.surface1 }}>{epicKey}</Text> : null}
