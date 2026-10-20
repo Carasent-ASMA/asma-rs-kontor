@@ -11,7 +11,7 @@ export type Scenario = {
   readonly id: string;
   readonly title: string;
   readonly summary: string;
-  readonly inventory: "base" | "large" | "roles" | "times" | "none";
+  readonly inventory: "base" | "large" | "roles" | "times" | "none" | "usage" | "desks" | "lifecycle" | "integration";
   readonly sources: boolean;
   readonly settings?: Partial<OrganizationSettings>;
   /** The saved keyboard document; without it the Back shortcut is off, as on a new host. */
@@ -20,7 +20,7 @@ export type Scenario = {
     readonly tab?: "Sessions" | "Board" | "Overview" | "Plan";
     readonly sourceId?: string;
     readonly query?: string;
-    readonly status?: "error" | "needs_input" | "running" | "attention";
+    readonly status?: "error" | "needs_input" | "running" | "attention" | "earlier_error";
     /** Grouping chosen in this Sessions view (kept in memory, not saved). */
     readonly grouping?: SessionGrouping;
   };
@@ -43,10 +43,25 @@ const EXPANDED: Partial<OrganizationSettings> = {
 
 export const SCENARIOS: readonly Scenario[] = [
   { id: "baseline", title: "Baseline", summary: "Default inventory, Sessions tree with one epic open.", inventory: "base", sources: true, settings: EXPANDED },
+  { id: "integrated-review", title: "Combined navigator review", summary: "All applicable plugin changes: timestamps, lifecycle, native desks, compact header and model reports. Sessions and plan catalogs are fictional; 19 real-source reads are separate qualification evidence. Host title overlap is not delivered here.", inventory: "integration", sources: true, start: { grouping: "flat" } },
+  { id: "integrated-roles", title: "Combined review: Roles", summary: "Combined fictional inventory in Roles, with exact times and model/report Details.", inventory: "integration", sources: true, settings: { grouping: "role", expandedGroups: { "roles/role:SWE": true, "roles/role:QA": true, "roles/role:AUD": true, "roles/role:TPM": true } } },
+  { id: "integrated-offline", title: "Combined review: stale", summary: "The combined fictional host goes offline after 3 seconds; timestamps and reports remain explicitly last-known.", inventory: "integration", sources: true, start: { grouping: "flat" }, hostOfflineAfterMs: 3000 },
+  { id: "native-desks", title: "Native desk grouping", summary: "Fictional desks: unlabelled members, explicit other workstream, same-named projects, empty workspace and zero-workspace desk.", inventory: "desks", sources: false },
+  { id: "status-lifecycle", title: "Status and retained history", summary: "13 fictional closed/unarchived earlier errors, including ten absent from the active workspace list; one current error, one explicitly archived and one finished notice.", inventory: "lifecycle", sources: true, start: { status: "earlier_error" } },
+  { id: "model-usage", title: "Models and token reports", summary: "Fictional reports: selected and observed models, opaque routes, missing and zero counts, cache, huge counts, context-only and long IDs. No consumed session total is available.", inventory: "usage", sources: true, start: { query: "Model report" } },
+  { id: "model-usage-roles", title: "Models: Roles", summary: "The same fictional reports in Role groups; use each row's Details for source, exact model and exact token counts.", inventory: "usage", sources: true, settings: { grouping: "role", expandedGroups: { "roles/role:QA": true, "roles/role:SWE": true } } },
+  { id: "model-usage-offline", title: "Models: host offline", summary: "Fictional reports; host goes offline at 4 seconds. Details distinguish last known inventory from unknown report age.", inventory: "usage", sources: true, start: { query: "Model report" }, hostOfflineAfterMs: 4000 },
+  { id: "model-usage-updates", title: "Models: scripted updates", summary: "Simulated snapshot updates at 4/8/12/16/20 seconds: replace, duplicate, reset, model switch retaining historical counts, provider switch clearing counts. Never sums reports.", inventory: "usage", sources: true, start: { query: "Model report" }, script: [
+    { afterMs: 4000, agentId: "agt_model_report_0", patch: { lastUsage: { inputTokens: 24_800, outputTokens: 640, cachedInputTokens: 20_000 } }, note: "Replace snapshot; no accumulation" },
+    { afterMs: 8000, agentId: "agt_model_report_0", patch: { lastUsage: { inputTokens: 24_800, outputTokens: 640, cachedInputTokens: 20_000 } }, note: "Duplicate snapshot; counts unchanged" },
+    { afterMs: 12000, agentId: "agt_model_report_0", patch: { lastUsage: { inputTokens: 5, outputTokens: 0 } }, note: "Counters reset; show 5 in and explicit 0 out" },
+    { afterMs: 16000, agentId: "agt_model_report_0", patch: { model: "other-model", runtimeInfo: { sessionId: null, provider: "codex", model: "other-model" } }, note: "Configured model switched; report model attribution stays unknown" },
+    { afterMs: 20000, agentId: "agt_model_report_0", patch: { provider: "another-route", runtimeInfo: undefined, lastUsage: undefined, model: null }, note: "Provider switched; missing report and model remain unknown" },
+  ] },
   { id: "time-view", title: "Times: Sessions", summary: "Fictional recent, old, missing, invalid and future timestamps. Updated includes metadata; Details distinguishes prompt, current-turn and attention times.", inventory: "times", sources: true, start: { query: "time" } },
   { id: "time-roles", title: "Times: Roles", summary: "The same eight fictional sessions grouped by role, with the same Updated values and exact Details.", inventory: "times", sources: true, settings: ROLES, start: { grouping: "role" } },
   { id: "time-stale", title: "Times: stale inventory", summary: "The fixture host goes offline after 3 seconds. Rows switch to absolute timestamps; Details gives the last-read time.", inventory: "times", sources: true, start: { query: "time" }, hostOfflineAfterMs: 3000 },
-  { id: "filtered-errors", title: "Filtered: errors", summary: "Error filter on: runtime errors and an earlier error cue on an idle session.", inventory: "base", sources: true, settings: EXPANDED, start: { status: "error" } },
+  { id: "filtered-errors", title: "Filtered: errors", summary: "Only current native errors match. Earlier errors remain reachable through More states, including closed unarchived sessions.", inventory: "base", sources: true, settings: EXPANDED, start: { status: "error" } },
   { id: "needs-input", title: "Filtered: needs input", summary: "Needs input filter on: a task QA session and a desk reviewer.", inventory: "base", sources: true, settings: EXPANDED, start: { status: "needs_input" } },
   { id: "provenance", title: "Search: provenance", summary: "Search “swe”: matches across epics, a desk, a session without a workspace and one with no labels.", inventory: "base", sources: true, settings: EXPANDED, start: { query: "swe" } },
   { id: "empty-results", title: "Empty results", summary: "A search that matches nothing.", inventory: "base", sources: true, settings: EXPANDED, start: { query: "no such session" } },

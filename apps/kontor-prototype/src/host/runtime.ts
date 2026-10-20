@@ -1,7 +1,10 @@
 import type { PaseoApi } from "@getpaseo/client";
 import { DEFAULT_ORGANIZATION_SETTINGS, organizationSettingsSchema, type OrganizationSettings } from "../../../paseo-plugin/shared/organization";
 import { DEFAULT_KEYBOARD_SETTINGS, keyboardSettingsSchema, type KeyboardSettings } from "../../../paseo-plugin/shared/keyboard";
-import { baseSessions, roleSessions, scrollSessions, timeSessions, WORKSPACES, type FixtureSession } from "../fixtures/sessions";
+import { baseSessions, deskSessions, DESK_PROJECTS, DESK_WORKSPACES, roleSessions, scrollSessions, timeSessions, WORKSPACES, type FixtureSession } from "../fixtures/sessions";
+import { modelUsageSessions } from "../fixtures/model-usage";
+import { lifecycleSessions } from "../fixtures/lifecycle";
+import { integrationSessions } from "../fixtures/integration";
 import { SOURCE_READS } from "../fixtures/sources";
 import { SCENARIOS, type Scenario } from "../scenarios";
 import { logHostEvent } from "./event-log";
@@ -33,7 +36,7 @@ export function subscribeHost(listener: () => void): () => void {
 // Sessions ------------------------------------------------------------------
 
 const sessions = new Map<string, FixtureSession>();
-const inventory = { none: () => [], large: scrollSessions, roles: roleSessions, times: timeSessions, base: baseSessions }[scenario.inventory];
+const inventory = { none: () => [], large: scrollSessions, roles: roleSessions, times: timeSessions, base: baseSessions, usage: modelUsageSessions, desks: deskSessions, lifecycle: lifecycleSessions, integration: integrationSessions }[scenario.inventory];
 for (const value of inventory()) sessions.set(value.agent.id, value);
 
 type Observer = { snapshot?: (value: unknown) => void; update?: (message: unknown) => void; error?: (error: unknown) => void };
@@ -87,12 +90,12 @@ function listWorkspaces(options: { page?: { limit?: number; cursor?: string } } 
   if (hostStatus !== "online") return Promise.reject(new Error("Prototype host is offline (simulated)."));
   const limit = options.page?.limit ?? 200;
   const start = Number(options.page?.cursor ?? 0);
-  const rows = scenario.inventory === "none" ? [] : WORKSPACES;
+  const rows = scenario.inventory === "none" ? [] : scenario.inventory === "desks" ? DESK_WORKSPACES : scenario.inventory === "integration" ? [...WORKSPACES, ...DESK_WORKSPACES] : WORKSPACES;
   const hasMore = start + limit < rows.length;
   return Promise.resolve({ requestId: `req_${Date.now()}`, entries: rows.slice(start, start + limit), pageInfo: { hasMore, nextCursor: hasMore ? String(start + limit) : null } });
 }
 
-/** Only the two reads the plugin performs; any other call is logged and refused. */
+/** Only the native reads the plugin performs; any other call is logged and refused. */
 function unsupported(path: string): never {
   logHostEvent("paseo.unsupported", path);
   throw new Error(`${path} is not available in the review prototype.`);
@@ -108,6 +111,13 @@ function refusingProxy(path: string, known: Record<string, unknown>): unknown {
   });
 }
 export const fakePaseo = refusingProxy("paseo", {
+  projects: refusingProxy("paseo.projects", { list: async () => {
+    if (hostStatus !== "online") throw new Error("Prototype host is offline (simulated).");
+    const base = [...new Map(WORKSPACES.map(workspace => [workspace.projectId, { projectId: workspace.projectId,
+      projectKey: workspace.projectId, projectDisplayName: workspace.projectDisplayName, projectCustomName: workspace.projectCustomName,
+      projectRootPath: `/fixture/${workspace.projectId}`, projectKind: "non_git", projectCustomIconRevision: null, projectIconRevision: "automatic:none:v1" }])).values()];
+    return { requestId: "fixture-projects", projects: scenario.inventory === "none" ? [] : scenario.inventory === "desks" ? DESK_PROJECTS : scenario.inventory === "integration" ? [...base, ...DESK_PROJECTS] : base };
+  } }),
   agents: refusingProxy("paseo.agents", { list: listAgents }),
   workspaces: refusingProxy("paseo.workspaces", { list: listWorkspaces }),
 }) as PaseoApi;

@@ -202,3 +202,9 @@ unit tests (with an injected reader) and the simulated scenarios reach it.
   (`_docs/ux/architecture/2026-09-29-19-34-architecture-executable-ux-prototyping.md`)
   is In Review, not accepted. Nothing here was checked on iOS or Android; see
   "Native preview path".
+
+## Combined navigator review
+
+`?scenario=integrated-review` uses the integrated plugin source with fictional timestamp, model-report, lifecycle and native-desk inventories. `integrated-roles` and `integrated-offline` show the same inventory in Roles and as stale. Individual `status-lifecycle`, `native-desks`, `model-usage` and `time-view` scenarios remain selectable. Earlier errors are neutral history; Include archived adds only explicitly archived sessions.
+
+Plan, Board, Graph, Overview and Delivery use the fictional ASMA-991xx/992xx catalog. The separately qualified 19 real source reads across 27 epics are evidence outside this app; no real catalog, private sessions or Jira capture is copied here. The simulated host title row permits compact-header review; it does not deliver the separate Paseo sidebar/title-overlap correction. This preview is not an installed-host, packaged Electron, physical-device or VoiceOver pass.

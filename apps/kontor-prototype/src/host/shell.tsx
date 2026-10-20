@@ -72,12 +72,12 @@ export function HostShell() {
       <Text style={{ color: colors.foreground, fontSize: 11, textDecorationLine: "underline" }}>Host log ({events})</Text>
     </Pressable>
   </View>;
-  const hostHeader = stack.length > 1 || route.kind !== "screen" ? <View style={{ flexDirection: "row", alignItems: "center", gap: 6, minHeight: 44, paddingHorizontal: 6, borderBottomWidth: 1, borderColor: colors.border, backgroundColor: colors.surface0 }}>
-    <Pressable testID="host-back" accessibilityRole="button" accessibilityLabel="Back (host)" onPress={back} style={{ minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" }}>
+  const hostHeader = <View testID="host-header" style={{ flexDirection: "row", alignItems: "center", gap: 6, minHeight: 44, paddingHorizontal: 6, borderBottomWidth: 1, borderColor: colors.border, backgroundColor: colors.surface0 }}>
+    {stack.length > 1 ? <Pressable testID="host-back" accessibilityRole="button" accessibilityLabel="Back (host)" onPress={back} style={{ minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" }}>
       <Icon name="ArrowLeft" size={18} color={colors.foreground} />
-    </Pressable>
+    </Pressable> : null}
     <Text numberOfLines={1} style={{ flex: 1, color: colors.foreground, fontSize: 14, fontWeight: "600" }}>{title}</Text>
-  </View> : null;
+  </View>;
 
   return <QueryClientProvider client={queryClient}><PaseoApiProvider paseo={fakePaseo}><PluginRpcProvider invoke={invokeRpc}>
     <View style={{ height: "100%", backgroundColor: colors.surface0 }}>

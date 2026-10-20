@@ -7,7 +7,8 @@
  * `jira.epic`, `kontor.role`, `kontor.team_run`, `takeover.predecessor`).
  * They are unenforced session labels, and the prototype shows them as such.
  */
-export type FixtureAgent = {
+type NativeTelemetry = Pick<import("../../../paseo-plugin/client/session-directory").AgentDirectoryPage["agent"], "runtimeInfo" | "lastUsage" | "thinkingOptionId" | "effectiveThinkingOptionId">;
+export type FixtureAgent = NativeTelemetry & {
   id: string;
   title: string;
   status: "initializing" | "idle" | "running" | "error" | "closed";
@@ -188,4 +189,35 @@ export function timeSessions(): FixtureSession[] {
     if (seed.id === "agt_time_invalid") Object.assign(value.agent, { updatedAt: "invalid", createdAt: "invalid", lastUserMessageAt: "invalid" });
     return value;
   });
+}
+
+
+// Desk grouping proof: fictional native projects, no live inventory.
+const DESK_ADAM = { projectKey: "prj_proof_adam", projectName: "DESK • ADAM" };
+const DESK_TWIN = { projectKey: "prj_proof_twin", projectName: "DESK • ADAM" };
+const DESK_REVIEW = { projectKey: "prj_proof_review", projectName: "DESK • PR REVIEW" };
+const PROOF_EPIC = { projectKey: "prj_proof_epic", projectName: "ESW • ASMA-99101" };
+export const DESK_PROJECTS = [DESK_ADAM, DESK_TWIN, DESK_REVIEW, PROOF_EPIC,
+  { projectKey: "prj_proof_empty", projectName: "DESK • RESEARCH" },
+].map((project) => ({ projectId: project.projectKey, projectKey: project.projectKey,
+  projectDisplayName: project.projectName, projectCustomName: project.projectName,
+  projectRootPath: `/fixture/${project.projectKey}`, projectKind: "non_git" as const,
+  projectCustomIconRevision: null, projectIconRevision: "automatic:none:v1" }));
+export const DESK_WORKSPACES = [
+  ws("wks_proof_adam", "ADAM", DESK_ADAM), ws("wks_proof_review", "ADAM", DESK_REVIEW),
+  ws("wks_proof_twin", "ADAM", DESK_TWIN), ws("wks_proof_epic", "TSW • ASMA-99101", PROOF_EPIC),
+  ws("wks_proof_idle", "CSW • empty desk workspace", DESK_ADAM),
+];
+export function deskSessions(): FixtureSession[] {
+  const seeds: { id: string; title: string; project: { projectKey: string; projectName: string }; workspace: string; labels: Record<string, string> }[] = [
+    { id: "proof_lsa", title: "LSA • Research", project: DESK_ADAM, workspace: "wks_proof_adam", labels: {} },
+    { id: "proof_declared", title: "TPM • ASMA-99101 • Declared workstream", project: DESK_ADAM, workspace: "wks_proof_adam", labels: { epic: "ASMA-99101", workstream: "kontor" } },
+    { id: "proof_review", title: "LSA • General", project: DESK_REVIEW, workspace: "wks_proof_review", labels: {} },
+    { id: "proof_review_labelled", title: "TPM • PR review", project: DESK_REVIEW, workspace: "wks_proof_review", labels: { desk: "pr-review" } },
+    { id: "proof_twin", title: "LSA • Same-name desk", project: DESK_TWIN, workspace: "wks_proof_twin", labels: {} },
+    { id: "proof_epic", title: "SWE • ASMA-99102 • No workstream", project: PROOF_EPIC, workspace: "wks_proof_epic", labels: { epic: "ASMA-99101" } },
+  ];
+  return seeds.map((seed) => ({ agent: { id: seed.id, title: seed.title, status: "idle", createdAt: at(20), updatedAt: at(1), cwd: `/fixture/${seed.project.projectKey}`,
+    workspaceId: seed.workspace, provider: "fixture/model", model: "fictional-model", labels: seed.labels },
+    project: { ...seed.project, workspaceName: DESK_WORKSPACES.find((workspace) => workspace.id === seed.workspace)!.name } }));
 }
