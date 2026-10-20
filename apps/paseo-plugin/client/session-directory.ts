@@ -59,7 +59,12 @@ export type DirectoryEntry = {
   readonly needsInput: boolean;
   readonly archivedAt: string | null;
   readonly createdAt: string;
+  /** Paseo's last change to the session, metadata included; not activity alone (see session-time). */
   readonly updatedAt: string;
+  /** When the last prompt was submitted; absent from entries built before it was read. */
+  readonly lastUserMessageAt?: string | null;
+  /** When the running turn started; Paseo loses it on a restart. */
+  readonly activeTurnStartedAt?: string | null;
   readonly cwd: string;
   readonly workspaceId: string | null;
   readonly provider: string;
@@ -200,6 +205,8 @@ export function toDirectoryEntry(
     archivedAt: agent.archivedAt ?? null,
     createdAt: agent.createdAt,
     updatedAt: agent.updatedAt,
+    lastUserMessageAt: agent.lastUserMessageAt ?? null,
+    activeTurnStartedAt: agent.activeTurn?.startedAt ?? null,
     cwd,
     workspaceId: agent.workspaceId ?? null,
     provider: agent.provider,

@@ -80,6 +80,8 @@ import { rowKey, siblingKeys, reorderSavedSiblingOrder } from "./organization-or
 import { OrganizationRowView, StateBadge, stateColor as sessionStateColor, WORKSPACE_KINDS } from "./organization-row";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
 import { Action, COARSE_POINTER, Disclosure } from "./page-controls";
+import { nativeFreshnessLabel } from "./native-freshness";
+import { sessionTimeLines, useClock, useUpdatedTime, type RowTime, type TimeFreshness } from "./session-time";
 
 type ThemeColors = PluginTheme["colors"];
 /** A tree row, or a flat match while a search, state or task filter is on. */
@@ -317,7 +319,18 @@ type SessionRowProps = {
   readonly accessibilityContext?: string;
   /** The result a user asked to see in the tree. */
   readonly highlighted?: boolean;
+  /** The list is reading live: only then does the row give its Updated time as an age. */
+  readonly live?: boolean;
 };
+
+/** A row's Updated time, kept whole while the title beside it truncates. */
+function rowAge(time: RowTime, compact: boolean, colors: ThemeColors) {
+  return (
+    <Text testID="sessions-row-age" numberOfLines={1} style={{ flexShrink: 0, color: colors.foregroundMuted, fontSize: compact ? 12 : 11 }}>
+      {compact ? time.compact : time.wide}
+    </Text>
+  );
+}
 
 export const SessionRow = memo(function SessionRow({
   entry,
@@ -329,7 +342,10 @@ export const SessionRow = memo(function SessionRow({
   compactContext,
   accessibilityContext,
   highlighted = false,
+  live = false,
 }: SessionRowProps) {
+  const time = useUpdatedTime(entry.updatedAt, live);
+  const age = time ? rowAge(time, compact, colors) : null;
   const attention = attentionLabel(entry);
   const archived = archivedLabel(entry);
   const state = sessionState(entry);
@@ -348,6 +364,7 @@ export const SessionRow = memo(function SessionRow({
       : attention
         ? `Needs attention: ${attention}`
         : null,
+    time?.spoken ?? null,
     archived,
     accessibilityContext ?? detail,
     highlighted ? "Shown from search results" : null,
@@ -395,6 +412,7 @@ export const SessionRow = memo(function SessionRow({
             <Text testID="sessions-row-meta" numberOfLines={1} style={{ flexShrink: 0, maxWidth: "55%", color: colors.foregroundMuted, fontSize: 12 }}>
               {compactMeta}
             </Text>
+            {age}
           </View>
           <StateBadge state={state} colors={colors} compact={false} />
         </>
@@ -412,17 +430,21 @@ export const SessionRow = memo(function SessionRow({
               </Text>
             ) : null}
           </Text>
+          {age}
           <StateBadge state={state} colors={colors} compact={false} />
         </>
       ) : (
         <>
           <View style={{ flex: 1, minWidth: 0 }}>
-            <Text
-              numberOfLines={1}
-              style={{ color: colors.foreground, fontSize: 13, lineHeight: 18 }}
-            >
-              {displayTitle ?? entry.title}
-            </Text>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <Text
+                numberOfLines={1}
+                style={{ flex: 1, minWidth: 0, color: colors.foreground, fontSize: 13, lineHeight: 18 }}
+              >
+                {displayTitle ?? entry.title}
+              </Text>
+              {age}
+            </View>
             {meta ? (
               <Text numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 11, marginTop: 1 }}>
                 {meta}
@@ -513,17 +535,32 @@ export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<t
     { label: "Workspace", value: provenance.workspace }];
 }
 
-/** Opens a Role row's details. It sits beside the row's button, which still opens the session. */
+/** Opens a session row's details. It sits beside the row's button, which still opens the session. */
 export function SessionDetailsButton({ title, expanded, compact, colors, onPress, ref }: {
   readonly title: string; readonly expanded: boolean; readonly compact: boolean; readonly colors: ThemeColors; readonly onPress: () => void; readonly ref?: Ref<View>;
 }) {
   const size = compact || COARSE_POINTER ? 44 : 30;
   return (
-    <Pressable ref={ref} testID="sessions-row-details" accessibilityRole="button" accessibilityLabel={`Details: ${title}`} accessibilityHint="Shows the full role, workstream, epic and workspace"
+    <Pressable ref={ref} testID="sessions-row-details" accessibilityRole="button" accessibilityLabel={`Details: ${title}`} accessibilityHint="Shows the exact times with their time zone, and the full role, workstream, epic and workspace"
       accessibilityState={{ expanded }} aria-expanded={expanded} onPress={onPress}
       style={({ pressed, hovered, focused }: { pressed: boolean; hovered?: boolean; focused?: boolean }) => ({ width: size, height: size, borderRadius: 6, alignItems: "center", justifyContent: "center", backgroundColor: pressed || hovered || focused ? colors.surface2 : undefined })}>
       <Icon name="Info" size={compact ? 16 : 14} color={colors.foregroundMuted} />
     </Pressable>
+  );
+}
+
+/** A session's times at the top of its details, redrawn by the shared clock while they are open. */
+export function SessionTimeLines({ entry, freshness, colors }: { readonly entry: DirectoryEntry; readonly freshness: TimeFreshness; readonly colors: ThemeColors }) {
+  const clock = useClock();
+  return (
+    <View testID="sessions-details-times">
+      {sessionTimeLines(entry, clock, freshness).map(({ label, value }) => (
+        <View key={label} style={{ paddingHorizontal: 6, paddingVertical: 4 }}>
+          <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>{label}</Text>
+          <Text selectable style={{ color: colors.foreground, fontSize: 13, lineHeight: 18 }}>{value}</Text>
+        </View>
+      ))}
+    </View>
   );
 }
 
@@ -552,18 +589,23 @@ type SessionResultRowProps = {
   readonly onPress: (entry: DirectoryEntry) => void;
   readonly onShowInTree: (entry: DirectoryEntry) => void;
   readonly treeButtonRef: (id: string, node: View | null) => void;
+  /** The list is reading live: only then does the row give its Updated time as an age. */
+  readonly live: boolean;
+  /** The session's details button, beside the row's own button. */
+  readonly details?: ReactNode;
 };
 
 /** A flat match: the session opens from the row, and its place in the tree is a separate control beside it. */
-const SessionResultRow = memo(function SessionResultRow({ entry, provenance, colors, compact, onPress, onShowInTree, treeButtonRef }: SessionResultRowProps) {
+const SessionResultRow = memo(function SessionResultRow({ entry, provenance, colors, compact, onPress, onShowInTree, treeButtonRef, live, details }: SessionResultRowProps) {
   const cues = resultCues(entry);
   const coarse = compact || COARSE_POINTER;
+  const time = useUpdatedTime(entry.updatedAt, live);
   return (
     <View testID={`sessions-result-${entry.id}`} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
       <Pressable
         testID={`sessions-row-${entry.id}`}
         accessibilityRole="button"
-        accessibilityLabel={resultAccessibilityLabel(entry, provenance)}
+        accessibilityLabel={[resultAccessibilityLabel(entry, provenance), time?.spoken].filter(Boolean).join(". ")}
         accessibilityHint="Opens the existing Paseo session"
         onPress={() => onPress(entry)}
         style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => ({
@@ -582,6 +624,7 @@ const SessionResultRow = memo(function SessionResultRow({ entry, provenance, col
           <Text testID="sessions-row-title" numberOfLines={1} style={{ flex: 1, minWidth: 0, color: colors.foreground, fontSize: compact ? 14 : 13, lineHeight: compact ? 20 : 18 }}>
             {entry.title}
           </Text>
+          {time ? rowAge(time, compact, colors) : null}
           <StateBadge state={sessionState(entry)} colors={colors} compact={false} />
         </View>
         <Text testID="sessions-result-place" numberOfLines={compact ? 2 : 1} style={{ color: colors.foregroundMuted, fontSize: compact ? 12 : 11, lineHeight: compact ? 16 : 15 }}>
@@ -589,6 +632,7 @@ const SessionResultRow = memo(function SessionResultRow({ entry, provenance, col
           {cues.length > 0 ? `  ·  ${cues.join(" · ")}` : ""}
         </Text>
       </Pressable>
+      {details}
       <Action ref={(node) => treeButtonRef(entry.id, node)} small={!compact} colors={colors} label={compact ? "In tree" : "Show in tree"}
         accessibilityLabel={`Show ${entry.title} in the tree`} onPress={() => onShowInTree(entry)} />
     </View>
@@ -1980,11 +2024,13 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     if (node) treeButtonsRef.current.set(id, node);
     else treeButtonsRef.current.delete(id);
   }, []);
-  // One Role row's details at a time. The anchor reads the row's current button, so focus
+  // One session's details at a time. The anchor reads the row's current button, so focus
   // returns to it even if the list drew the row again while the details were open.
   const [detailsId, setDetailsId] = useState<string | null>(null);
   const detailsIdRef = useRef(detailsId);
   detailsIdRef.current = detailsId;
+  // The grouping and list mode the details opened in; another one draws the row elsewhere, or not at all.
+  const detailsWhereRef = useRef("");
   const detailsButtonsRef = useRef(new Map<string, View>());
   const detailsButtonRef = useCallback((id: string, node: View | null) => {
     if (node) detailsButtonsRef.current.set(id, node);
@@ -2057,6 +2103,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   }, [listMode]);
 
   const staleMessage = state.error ?? state.staleReason;
+  // Ages tick only on a live list; otherwise rows give the time itself, and Details says as of when.
+  const timesLive = nativeFreshnessLabel({ hostStatus: hostSummary?.status ?? "offline", status: state.status, live: state.live }) === "Live";
   const showBanner =
     state.status === "stale" ||
     state.status === "error" ||
@@ -2297,13 +2345,18 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       </ScrollView>
     </AnchoredMenu>
   );
-  const detailsEntry = detailsId === null || grouping !== "role" ? null : state.entries.find((entry) => entry.id === detailsId) ?? null;
+  const detailsWhere = `${grouping}|${listMode}`;
+  const openDetails = (id: string) => {
+    detailsWhereRef.current = detailsWhere;
+    setDetailsId(id);
+  };
+  const detailsEntry = detailsId === null || detailsWhereRef.current !== detailsWhere ? null : state.entries.find((entry) => entry.id === detailsId) ?? null;
   const closeDetails = () => {
     const target = detailsReturn();
     setDetailsId(null);
     target?.focus?.();
   };
-  // Details whose session has left, or that Role grouping no longer shows, close. Focus they held,
+  // Details whose session has left, or whose grouping or list mode has changed, close. Focus they held,
   // which the page has now dropped, goes where Close would send it; focus elsewhere stays put.
   useEffect(() => {
     if (detailsId === null || detailsEntry !== null) return;
@@ -2322,9 +2375,10 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         <Action ref={detailsCloseRef} small={!compact} colors={colors} label="Close" accessibilityLabel={`Close details: ${detailsEntry.title}`} onPress={closeDetails} />
       </View>}>
       {/* On web the lines are a named stop of their own, so a keyboard can scroll a chain longer than the screen. */}
-      <ScrollView testID="sessions-details-lines" {...(pageDocument() ? { tabIndex: 0, role: "region", accessibilityLabel: "Role and placement" } as const : {})}
+      <ScrollView testID="sessions-details-lines" {...(pageDocument() ? { tabIndex: 0, role: "region", accessibilityLabel: "Times, role and placement" } as const : {})}
         onFocus={() => setDetailsLinesFocused(true)} onBlur={() => setDetailsLinesFocused(false)}
         style={{ flexGrow: 0, flexShrink: 1, borderRadius: 6, ...(detailsLinesFocused ? { outlineColor: colors.accent, outlineStyle: "solid", outlineWidth: 2 } as const : null) }}>
+        <SessionTimeLines entry={detailsEntry} freshness={{ live: timesLive, readAt: state.lastUpdatedAt }} colors={colors} />
         {sessionDetailLines(detailsEntry, mappings).map(({ label, value }) => (
           <View key={label} style={{ paddingHorizontal: 6, paddingVertical: 4 }}>
             <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>{label}</Text>
@@ -2449,7 +2503,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     );
   }
 
-  const extraData = { colors, arrangeEnabled, orderSelection, editsDisabled, favorites, peek, showBanner };
+  const extraData = { colors, arrangeEnabled, orderSelection, editsDisabled, favorites, peek, showBanner, timesLive };
   const emptyMessage = task && candidates.length === 0
     ? `No session in this view is linked to ${task.label}.`
     : hasActiveView(view) || hasOrganizationFilter || task
@@ -2548,7 +2602,10 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         contentContainerStyle={rows.length === 0 ? { flexGrow: 1, ...scrollSlack } : { paddingBottom: 16, ...scrollSlack }}
         ListHeaderComponent={listHeader}
         renderItem={({ item }) => {
-          if (item.kind === "result") return <SessionResultRow entry={item.entry} provenance={provenance.get(item.entry.id) ?? sessionProvenance(item.entry, mappings)} colors={colors} compact={compact} onPress={handleOpen} onShowInTree={handleShowInTree} treeButtonRef={treeButtonRef} />;
+          const details = item.kind === "result" || item.kind === "session"
+            ? <SessionDetailsButton ref={(node) => detailsButtonRef(item.entry.id, node)} title={item.entry.title} expanded={detailsId === item.entry.id} compact={compact} colors={colors} onPress={() => openDetails(item.entry.id)} />
+            : undefined;
+          if (item.kind === "result") return <SessionResultRow entry={item.entry} provenance={provenance.get(item.entry.id) ?? sessionProvenance(item.entry, mappings)} colors={colors} compact={compact} onPress={handleOpen} onShowInTree={handleShowInTree} treeButtonRef={treeButtonRef} live={timesLive} details={details} />;
           const key = listRowKey(item);
           if (item.kind === "empty") return <OrganizationRowView row={item} colors={colors} compact={compact} disabled arranging={false} selected={false} favorite={false} onFavorite={() => undefined} onToggle={() => undefined} onMove={() => undefined} onSelect={() => undefined} />;
           const epic = item.kind === "group" && item.group.kind === "epic" ? item.group.epic : null;
@@ -2557,7 +2614,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             accessibilityLabel={`${tab} for ${epic}${plans.length > 1 ? `, choose among ${plans.length} configured plans` : ""}`} onPress={() => onEpicTab(tab, epic, plans.length === 1 ? plans[0]! : null)} />) : undefined;
           const role = item.kind === "session" && grouping === "role" ? roleRowContext(item.entry, mappings) : null;
           return <OrganizationRowView row={item} colors={colors} compact={compact} disabled={editsDisabled} arranging={arrangeEnabled} selected={orderSelection === key}
-            details={role && item.kind === "session" ? <SessionDetailsButton ref={(node) => detailsButtonRef(item.entry.id, node)} title={item.entry.title} expanded={detailsId === item.entry.id} compact={compact} colors={colors} onPress={() => setDetailsId(item.entry.id)} /> : undefined}
+            details={details}
             favorite={item.kind === "session" && favorites.includes(item.entry.id)} stale={showBanner} actions={actions}
             onToggle={() => toggleGroup(item)}
             onSelect={() => setOrderSelection(orderSelection === key ? null : key)}
@@ -2572,6 +2629,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             colors={colors}
             compact={compact}
             highlighted={peek?.sessionId === item.entry.id}
+            live={timesLive}
             onPress={handleOpen}
           /> : null}
           </OrganizationRowView>;
