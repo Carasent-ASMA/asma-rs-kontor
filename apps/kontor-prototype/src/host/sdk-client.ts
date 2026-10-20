@@ -7,7 +7,7 @@
  */
 import { useCallback, useSyncExternalStore } from "react";
 import type { ZodType } from "zod";
-import { currentHostStatus, fakePaseo, HOST_ID, HOST_LABEL, saveSettings, settingsSnapshot, subscribeHost, subscribeSettings } from "./runtime";
+import { currentHostStatus, fakePaseo, HOST_ID, HOST_LABEL, keyboardSnapshot, saveKeyboard, saveSettings, settingsSnapshot, subscribeHost, subscribeKeyboard, subscribeSettings } from "./runtime";
 import { logHostEvent } from "./event-log";
 
 export { usePaseo, useAgent, useWorkspace, useRpc } from "paseo-sdk/client";
@@ -34,18 +34,28 @@ export async function openExternalUrl(url: string): Promise<void> {
 }
 
 type SettingsDefinition = { id: string; schema: ZodType };
-let settingsCache: { revision: string; saving: boolean; value: ReturnType<typeof settingsSnapshot> } | null = null;
-function settingsValue() {
-  const next = settingsSnapshot();
-  if (settingsCache?.revision !== next.revision || settingsCache.saving !== next.saving) settingsCache = { revision: next.revision, saving: next.saving, value: next };
-  return settingsCache.value;
+type SettingsSnapshot = { values: unknown; revision: string; saving: boolean };
+type SettingsDocument = { snapshot(): SettingsSnapshot; subscribe(listener: () => void): () => void; save(values: unknown, revision: string): Promise<boolean> };
+/** A stable snapshot per document, replaced only when its revision or saving state changes. */
+function cachedSnapshot(read: () => SettingsSnapshot): () => SettingsSnapshot {
+  let cache: SettingsSnapshot | null = null;
+  return () => {
+    const next = read();
+    if (cache?.revision !== next.revision || cache.saving !== next.saving) cache = next;
+    return cache;
+  };
 }
+const DOCUMENTS: Record<string, SettingsDocument> = {
+  organization: { snapshot: cachedSnapshot(settingsSnapshot), subscribe: subscribeSettings, save: saveSettings },
+  keyboard: { snapshot: cachedSnapshot(keyboardSnapshot), subscribe: subscribeKeyboard, save: saveKeyboard },
+};
 
-/** Only the plugin's one settings document exists in the fixture host. */
+/** The plugin's two settings documents, organization and keyboard, exist in the fixture host. */
 export function useSettings(definition: SettingsDefinition) {
-  if (definition.id !== "organization") throw new Error(`Unknown settings ${definition.id}`);
-  const snapshot = useSyncExternalStore(subscribeSettings, settingsValue);
-  const save = useCallback((values: unknown, revision: string) => saveSettings(values, revision), []);
+  const document = DOCUMENTS[definition.id];
+  if (!document) throw new Error(`Unknown settings ${definition.id}`);
+  const snapshot = useSyncExternalStore(document.subscribe, document.snapshot);
+  const save = useCallback((values: unknown, revision: string) => document.save(values, revision), [document]);
   return {
     status: "ready" as const, values: snapshot.values, revision: snapshot.revision,
     saving: snapshot.saving, saveError: null, save,

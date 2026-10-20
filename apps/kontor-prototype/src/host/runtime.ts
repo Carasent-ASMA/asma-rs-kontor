@@ -1,5 +1,6 @@
 import type { PaseoApi } from "@getpaseo/client";
 import { DEFAULT_ORGANIZATION_SETTINGS, organizationSettingsSchema, type OrganizationSettings } from "../../../paseo-plugin/shared/organization";
+import { DEFAULT_KEYBOARD_SETTINGS, keyboardSettingsSchema, type KeyboardSettings } from "../../../paseo-plugin/shared/keyboard";
 import { baseSessions, roleSessions, scrollSessions, WORKSPACES, type FixtureSession } from "../fixtures/sessions";
 import { SOURCE_READS } from "../fixtures/sources";
 import { SCENARIOS, type Scenario } from "../scenarios";
@@ -158,5 +159,29 @@ export async function saveSettings(values: unknown, revision: string): Promise<b
   settingsValues = parsed.data; settingsRevision += 1; saving = false;
   logHostEvent("settings.save", `rev-${settingsRevision} · changed ${changed.join(", ") || "nothing"}${changed.includes("expandedGroups") ? ` · expandedGroups ${JSON.stringify(parsed.data.expandedGroups)}` : ""}`);
   for (const listener of settingsListeners) listener();
+  return true;
+}
+
+// The keyboard document is a second settings file, as on the host: saving one leaves the other alone.
+let keyboardValues: KeyboardSettings = keyboardSettingsSchema.parse({ ...DEFAULT_KEYBOARD_SETTINGS, ...scenario.keyboard });
+let keyboardRevision = 1;
+let keyboardSaving = false;
+const keyboardListeners = new Set<SettingsListener>();
+export function keyboardSnapshot() {
+  return { values: keyboardValues, revision: `rev-${keyboardRevision}`, saving: keyboardSaving };
+}
+export function subscribeKeyboard(listener: SettingsListener): () => void {
+  keyboardListeners.add(listener);
+  return () => keyboardListeners.delete(listener);
+}
+export async function saveKeyboard(values: unknown, revision: string): Promise<boolean> {
+  if (revision !== `rev-${keyboardRevision}`) return false;
+  const parsed = keyboardSettingsSchema.safeParse(values);
+  if (!parsed.success) return false;
+  keyboardSaving = true; for (const listener of keyboardListeners) listener();
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  keyboardValues = parsed.data; keyboardRevision += 1; keyboardSaving = false;
+  logHostEvent("keyboard.save", `rev-${keyboardRevision} · backShortcut ${parsed.data.backShortcut}`);
+  for (const listener of keyboardListeners) listener();
   return true;
 }

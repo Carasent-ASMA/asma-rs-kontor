@@ -57,6 +57,7 @@ reloads both frames from their fixtures.
 | `role-view` | Role grouping is saved, and only QA is saved open. There is one header per role, including singletons (LSA, TPM, SA, JUDGE, ADAM) and No role last. QA gathers `qa`, `QA`, `Qa` and a padded `  qa ` across workstreams and workspaces, while QA1 has its own header. "AUD • …" labelled `qa` sits under QA with a conflict cue. A session labelled `kontor.role` SWE and `role` tpm sits under SWE. `rev_b` and the title "REV B • …" meet under REV B. Each session row's Details button shows its full role and place; an AUD session with a long title and workstream shows how they wrap. |
 | `role-view-offline` | The same sessions, with Role picked in this view. The host drops after 4 s. Saved preferences then become unavailable, as for every view, so a grouping that was only saved would fall back to the default tree. The role headers give last known counts. |
 | `host-offline` | The host drops after 4 s. Board then shows the last known states. |
+| `keyboard-back` | The Back shortcut is saved as Cmd+` (Cmd+< on Norwegian), in its own keyboard document. Board for plan ASMA-99101 opens first. Open another view and press the shortcut to go back one view; it does nothing while typing in Search or with a menu or dialog open. Settings › Keyboard switches it off or on and has **Test shortcut**, which says what key reached Kontor. In a browser the page sees the key unless macOS takes it first. Every other scenario starts with the shortcut off. |
 | `no-sessions` | An empty host, so no Board task has a linked session. |
 
 ## Shared and substituted code
@@ -77,7 +78,8 @@ These are substitutes in `src/host`:
 - `sdk-ui.tsx`: a `SidebarRow` drawn roughly like Paseo's own.
 - `react-native.ts`: react-native-web, with `Linking` sending links to the host log.
 - `runtime.ts`: the fixture RPC server for settings, sources and Jira captures. It
-  also runs the scripted simulated updates.
+  keeps the organization and keyboard settings as two documents, as the host does,
+  and runs the scripted simulated updates.
 - `theme.ts`: Paseo dark and light colours, copied from the host theme. The
   colours and fonts are an approximation.
 - `task-team-source.ts`: a stand-in for the plugin's `client/task-team-source.ts`.

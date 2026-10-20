@@ -8,6 +8,7 @@ export type HostEvent = {
   readonly at: string;
   readonly kind:
     | "settings.save"
+    | "keyboard.save"
     | "navigation.openAgent"
     | "navigation.openWorkspace"
     | "openScreen"

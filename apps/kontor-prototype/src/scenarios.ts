@@ -1,4 +1,5 @@
 import type { OrganizationSettings } from "../../paseo-plugin/shared/organization";
+import type { KeyboardSettings } from "../../paseo-plugin/shared/keyboard";
 import type { SessionGrouping } from "../../paseo-plugin/client/session-view-store";
 
 /**
@@ -13,6 +14,8 @@ export type Scenario = {
   readonly inventory: "base" | "large" | "roles" | "none";
   readonly sources: boolean;
   readonly settings?: Partial<OrganizationSettings>;
+  /** The saved keyboard document; without it the Back shortcut is off, as on a new host. */
+  readonly keyboard?: Partial<KeyboardSettings>;
   readonly start?: {
     readonly tab?: "Sessions" | "Board" | "Overview" | "Plan";
     readonly sourceId?: string;
@@ -61,5 +64,6 @@ export const SCENARIOS: readonly Scenario[] = [
   { id: "role-view", title: "Roles: one level", summary: "Role grouping: one header per role, singletons and No role included. QA gathers case and spacing variants; QA1 stays apart; two sessions disagree with their titles or labels. A session row's Details button gives its full place; one AUD session has a long title and workstream.", inventory: "roles", sources: true, settings: ROLES },
   { id: "role-view-offline", title: "Roles: host goes offline", summary: "Role picked in this view; the host drops at 4 s, saved preferences become unavailable, and the role headers give last known counts.", inventory: "roles", sources: true, settings: ROLES, start: { grouping: "role" }, hostOfflineAfterMs: 4000 },
   { id: "host-offline", title: "Host goes offline", summary: "The host drops after 4 s: last known states, marked stale.", inventory: "base", sources: true, start: { tab: "Board", sourceId: "plan-99101" }, hostOfflineAfterMs: 4000 },
+  { id: "keyboard-back", title: "Keyboard: Back shortcut", summary: "The Back shortcut is saved as Cmd+` (Cmd+< on Norwegian). Open another view, then press it to go back one view. It does nothing while you type in Search or with a menu open. Settings › Keyboard changes it and has Test shortcut.", inventory: "base", sources: true, settings: EXPANDED, keyboard: { backShortcut: "cmd-backquote" }, start: { tab: "Board", sourceId: "plan-99101" } },
   { id: "no-sessions", title: "No sessions", summary: "An empty host: Board tasks have no linked sessions.", inventory: "none", sources: true, start: { tab: "Board", sourceId: "plan-99101" } },
 ];
