@@ -182,7 +182,7 @@ export function sessionTimeLines(entry: DirectoryEntry, clock: Clock, freshness:
   const archived = parseTime(entry.archivedAt);
   const lines: TimeLine[] = [
     { label: "Updated", value: updated === null ? unavailableTime(entry.updatedAt, "Not reported") : timed(updated, clock, "Paseo's last change to the session: activity or a prompt, and also a rename, a label change, a restore from archive, or attention being raised or cleared") },
-    { label: "Last activity", value: "Not recorded separately. Updated includes changes to the session's name, labels and attention" },
+    { label: "Last activity", value: "Not supplied separately. Updated includes changes to the session's name, labels and attention" },
     stateSinceLine(entry, clock),
     { label: "Last prompt", value: prompt === null ? unavailableTime(entry.lastUserMessageAt, "None reported") : timed(prompt, clock) },
     { label: "Created", value: created === null ? unavailableTime(entry.createdAt, "Not reported") : timed(created, clock) },

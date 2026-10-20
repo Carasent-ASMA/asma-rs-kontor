@@ -173,7 +173,7 @@ describe("sessionTimeLines", () => {
     const value = entry("a", { updatedAt: ago(3 * HOUR), lastUserMessageAt: ago(4 * HOUR), createdAt: ago(2 * DAY), archivedAt: ago(HOUR) });
     expect(sessionTimeLines(value, OSLO, { live: true, readAt: NOW })).toEqual([
       { label: "Updated", value: `${exact(3 * HOUR)} · 3 hours ago\nPaseo's last change to the session: activity or a prompt, and also a rename, a label change, a restore from archive, or attention being raised or cleared` },
-      { label: "Last activity", value: "Not recorded separately. Updated includes changes to the session's name, labels and attention" },
+      { label: "Last activity", value: "Not supplied separately. Updated includes changes to the session's name, labels and attention" },
       { label: "Idle since", value: "Not recorded: Paseo keeps no time for a session becoming idle" },
       { label: "Last prompt", value: `${exact(4 * HOUR)} · 4 hours ago` },
       { label: "Created", value: `${exact(2 * DAY)} · 2 days ago` },
@@ -186,7 +186,7 @@ describe("sessionTimeLines", () => {
     const value = entry("b", { updatedAt: "", lastUserMessageAt: undefined, createdAt: "garbage" });
     const labelled = (freshness: Parameters<typeof sessionTimeLines>[2]) => Object.fromEntries(sessionTimeLines(value, OSLO, freshness).map(({ label, value: text }) => [label, text]));
     expect(labelled({ live: true, readAt: NOW })).toEqual({
-      Updated: "Not reported", "Last activity": "Not recorded separately. Updated includes changes to the session's name, labels and attention", "Idle since": "Not recorded: Paseo keeps no time for a session becoming idle", "Last prompt": "None reported", Created: "Invalid timestamp reported", "Time zone": "Europe/Oslo, this device's time zone",
+      Updated: "Not reported", "Last activity": "Not supplied separately. Updated includes changes to the session's name, labels and attention", "Idle since": "Not recorded: Paseo keeps no time for a session becoming idle", "Last prompt": "None reported", Created: "Invalid timestamp reported", "Time zone": "Europe/Oslo, this device's time zone",
     });
     expect(labelled({ live: false, readAt: NOW - 5 * MINUTE })["As of"]).toBe(`Last read ${exact(5 * MINUTE)}; Paseo may have changed the session since`);
     expect(labelled({ live: false, readAt: null })["As of"]).toBe("Sessions not read yet; these times may be out of date");
