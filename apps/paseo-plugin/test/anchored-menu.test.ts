@@ -25,6 +25,12 @@ describe("anchored menu placement", () => {
     });
   });
 
+  it("covers the root's height inside its margins when asked, wherever the trigger sits", () => {
+    const short = { width: 390, height: 210 };
+    expect(menuFrame({ x: 330, y: 150, width: 44, height: 44 }, short, { align: "stretch", width: 0, cover: true })).toEqual({ left: 6, width: 378, top: 6, bottom: null, maxHeight: 198 });
+    expect(menuFrame({ x: 330, y: 10, width: 44, height: 44 }, short, { align: "stretch", width: 0, cover: true, maxHeight: 120 })).toEqual({ left: 6, width: 378, top: 6, bottom: null, maxHeight: 120 });
+  });
+
   it("opens upward only when the space below is the smaller and too short", () => {
     const low = menuFrame({ x: 10, y: 560, width: 100, height: 44 }, root, { align: "start", width: 200 });
     expect(low).toMatchObject({ top: null, bottom: 700 - 560 + 4, maxHeight: 560 - 4 - 6 });

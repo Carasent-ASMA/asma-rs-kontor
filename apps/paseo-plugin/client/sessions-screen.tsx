@@ -2,6 +2,7 @@ import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { useHosts } from "@getpaseo/plugin/client";
 import {
   FlatList,
+  Icon,
   ScrollView,
   TextInput,
   useToast,
@@ -17,6 +18,7 @@ import {
   useState,
   type ComponentRef,
   type ReactNode,
+  type Ref,
   type RefObject,
 } from "react";
 import {
@@ -73,7 +75,7 @@ import {
 import { useSessionDirectory } from "./use-session-directory";
 import { DEFAULT_ORGANIZATION_SETTINGS, type OrganizationSettings } from "../shared/organization";
 import type { useOrganizationSettings } from "./use-organization-settings";
-import { allGroupKeys, buildOrganizationTree, defaultGroupExpanded, filterOrganizationTree, flattenOrganizationTree, inEpicScope, isDeskWork, NO_ROLE_KEY, organizationScope, ROLE_ROOT_KEY, sessionRole, sessionState, STATE_LABELS, titleRoleCode, UNASSIGNED_EPIC, visibleSessions, workstreamRank, type OrganizationGroup, type OrganizationRow, type OrganizationWorkspace, type RoleSource } from "./session-organization";
+import { allGroupKeys, buildOrganizationTree, defaultGroupExpanded, filterOrganizationTree, flattenOrganizationTree, inEpicScope, isDeskWork, NO_ROLE_KEY, organizationScope, OTHER_WORKSTREAM, ROLE_ROOT_KEY, sessionRole, sessionState, STATE_LABELS, titleRoleCode, UNASSIGNED_EPIC, visibleSessions, workstreamRank, type OrganizationGroup, type OrganizationRow, type OrganizationWorkspace, type RoleSource } from "./session-organization";
 import { rowKey, siblingKeys, reorderSavedSiblingOrder } from "./organization-order";
 import { OrganizationRowView, StateBadge, stateColor as sessionStateColor, WORKSPACE_KINDS } from "./organization-row";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
@@ -317,7 +319,7 @@ type SessionRowProps = {
   readonly highlighted?: boolean;
 };
 
-const SessionRow = memo(function SessionRow({
+export const SessionRow = memo(function SessionRow({
   entry,
   colors,
   compact,
@@ -370,7 +372,7 @@ const SessionRow = memo(function SessionRow({
       accessibilityHint="Opens the existing Paseo session"
       onPress={() => onPress(entry)}
       style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => ({
-        minHeight: compact ? 44 : 40,
+        minHeight: compact || COARSE_POINTER ? 44 : 40,
         paddingLeft: 8,
         paddingRight: 4,
         paddingVertical: compact ? 4 : 5,
@@ -486,6 +488,39 @@ export function roleRowContext(entry: DirectoryEntry, mappings: Parameters<typeo
     compact: [...cues, place, provenance.workspace].join(" · "),
     spoken: [role.code === null ? "No role" : `Role ${role.code} from the ${ROLE_SOURCE_NAMES[role.source!]}`, ...cues, spokenProvenance(provenance)].join(". "),
   };
+}
+
+/**
+ * Everything a Role row shortens, for its details: the role and where it came from, every other
+ * declaration, and the whole desk or workstream, epic and workspace chain, with absent values named.
+ */
+export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<typeof organizationScope>[1]): { label: string; value: string }[] {
+  const role = sessionRole(entry);
+  const provenance = sessionProvenance(entry, mappings);
+  const lines = [
+    { label: "Role", value: role.code === null ? "No role: no kontor.role or role label, and no role prefix in the title" : `${role.code}, from the ${ROLE_SOURCE_NAMES[role.source!]}` },
+    { label: "Other role declarations", value: role.conflicts.length ? role.conflicts.map(({ source, code }) => `${ROLE_SOURCE_NAMES[source]} says ${code}`).join("; ") : "None" },
+  ];
+  if (provenance.desk) return [...lines, { label: "Desk", value: provenance.parts[0]! }, { label: "Workspace", value: provenance.workspace }];
+  const workstream = provenance.parts[0]!;
+  return [...lines,
+    { label: "Workstream", value: workstream === OTHER_WORKSTREAM ? `${workstream}: no workstream or desk label and no display mapping` : workstream },
+    { label: "Epic", value: provenance.parts[1]! },
+    { label: "Workspace", value: provenance.workspace }];
+}
+
+/** Opens a Role row's details. It sits beside the row's button, which still opens the session. */
+export function SessionDetailsButton({ title, expanded, compact, colors, onPress, ref }: {
+  readonly title: string; readonly expanded: boolean; readonly compact: boolean; readonly colors: ThemeColors; readonly onPress: () => void; readonly ref?: Ref<View>;
+}) {
+  const size = compact || COARSE_POINTER ? 44 : 30;
+  return (
+    <Pressable ref={ref} testID="sessions-row-details" accessibilityRole="button" accessibilityLabel={`Details: ${title}`} accessibilityHint="Shows the full role, workstream, epic and workspace"
+      accessibilityState={{ expanded }} aria-expanded={expanded} onPress={onPress}
+      style={({ pressed, hovered, focused }: { pressed: boolean; hovered?: boolean; focused?: boolean }) => ({ width: size, height: size, borderRadius: 6, alignItems: "center", justifyContent: "center", backgroundColor: pressed || hovered || focused ? colors.surface2 : undefined })}>
+      <Icon name="Info" size={compact ? 16 : 14} color={colors.foregroundMuted} />
+    </Pressable>
+  );
 }
 
 export function resultAccessibilityLabel(entry: DirectoryEntry, provenance: SessionProvenance): string {
@@ -1941,6 +1976,24 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     if (node) treeButtonsRef.current.set(id, node);
     else treeButtonsRef.current.delete(id);
   }, []);
+  // One Role row's details at a time. The anchor reads the row's current button, so focus
+  // returns to it even if the list drew the row again while the details were open.
+  const [detailsId, setDetailsId] = useState<string | null>(null);
+  const detailsIdRef = useRef(detailsId);
+  detailsIdRef.current = detailsId;
+  const detailsButtonsRef = useRef(new Map<string, View>());
+  const detailsButtonRef = useCallback((id: string, node: View | null) => {
+    if (node) detailsButtonsRef.current.set(id, node);
+    else detailsButtonsRef.current.delete(id);
+  }, []);
+  const detailsAnchor = useMemo<RefObject<View | null>>(() => ({
+    get current() { return detailsIdRef.current === null ? null : detailsButtonsRef.current.get(detailsIdRef.current) ?? null; },
+    set current(_node) {},
+  }), []);
+  const detailsCloseRef = useRef<View | null>(null);
+  useEffect(() => {
+    if (detailsId !== null) (detailsCloseRef.current as unknown as { focus?: () => void } | null)?.focus?.();
+  }, [detailsId]);
   const peekBackRef = useRef<View | null>(null);
   const focusAfterModeRef = useRef<(() => void) | null>(null);
   const handleShowInTree = useCallback((entry: DirectoryEntry) => {
@@ -2236,6 +2289,31 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       </ScrollView>
     </AnchoredMenu>
   );
+  const detailsEntry = detailsId === null || grouping !== "role" ? null : state.entries.find((entry) => entry.id === detailsId) ?? null;
+  const closeDetails = () => {
+    const anchor = detailsAnchor.current as unknown as { focus?: () => void } | null;
+    setDetailsId(null);
+    anchor?.focus?.();
+  };
+  // Over the list on a compact screen, so a short one still shows the title, Close and a scrolling chain.
+  const detailsLayer = detailsEntry === null ? null : (
+    <AnchoredMenu testID="sessions-details" dialog anchor={detailsAnchor} root={rootRef} rootSize={rootSize} colors={colors}
+      label={`Details: ${detailsEntry.title}`} onClose={() => setDetailsId(null)}
+      placement={compact ? { align: "stretch", width: 0, cover: true } : { align: "end", width: 360, maxHeight: 440 }}
+      header={<View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8, paddingLeft: 6, paddingBottom: 4 }}>
+        <Text testID="sessions-details-title" selectable style={{ flex: 1, minWidth: 0, paddingTop: 6, color: colors.foreground, fontSize: 13, fontWeight: "600" }}>{detailsEntry.title}</Text>
+        <Action ref={detailsCloseRef} small={!compact} colors={colors} label="Close" accessibilityLabel={`Close details: ${detailsEntry.title}`} onPress={closeDetails} />
+      </View>}>
+      <ScrollView testID="sessions-details-lines" style={{ flexGrow: 0, flexShrink: 1 }}>
+        {sessionDetailLines(detailsEntry, mappings).map(({ label, value }) => (
+          <View key={label} style={{ paddingHorizontal: 6, paddingVertical: 4 }}>
+            <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>{label}</Text>
+            <Text selectable style={{ color: colors.foreground, fontSize: 13, lineHeight: 18 }}>{value}</Text>
+          </View>
+        ))}
+      </ScrollView>
+    </AnchoredMenu>
+  );
   const handleRootLayout = (event: LayoutChangeEvent) => {
     const { width, height } = event.nativeEvent.layout;
     if (width !== rootSize.width || height !== rootSize.height) setRootSize({ width, height });
@@ -2458,6 +2536,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             accessibilityLabel={`${tab} for ${epic}${plans.length > 1 ? `, choose among ${plans.length} configured plans` : ""}`} onPress={() => onEpicTab(tab, epic, plans.length === 1 ? plans[0]! : null)} />) : undefined;
           const role = item.kind === "session" && grouping === "role" ? roleRowContext(item.entry, mappings) : null;
           return <OrganizationRowView row={item} colors={colors} compact={compact} disabled={editsDisabled} arranging={arrangeEnabled} selected={orderSelection === key}
+            details={role && item.kind === "session" ? <SessionDetailsButton ref={(node) => detailsButtonRef(item.entry.id, node)} title={item.entry.title} expanded={detailsId === item.entry.id} compact={compact} colors={colors} onPress={() => setDetailsId(item.entry.id)} /> : undefined}
             favorite={item.kind === "session" && favorites.includes(item.entry.id)} stale={showBanner} actions={actions}
             onToggle={() => toggleGroup(item)}
             onSelect={() => setOrderSelection(orderSelection === key ? null : key)}
@@ -2520,6 +2599,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         }
       />
       {optionMenuLayer}
+      {detailsLayer}
     </View>
   );
 }

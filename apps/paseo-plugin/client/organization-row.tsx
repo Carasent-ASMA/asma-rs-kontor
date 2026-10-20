@@ -3,7 +3,7 @@ import { PanResponder, Pressable, Text, View } from "react-native";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { aggregateState, aggregateSummary, leadingStates, ROLE_ROOT_KEY, STATE_LABELS, type OrganizationAggregate, type OrganizationGroup, type OrganizationGroupKind, type OrganizationRow, type OrganizationState } from "./session-organization";
 import { CHAIN_STATE_GLYPHS } from "./session-results";
-import type { Colors } from "./page-controls";
+import { COARSE_POINTER, type Colors } from "./page-controls";
 
 /** Display glossary for repeated workspace-name prefixes; grouping by prefix establishes no authority. */
 export const WORKSPACE_KINDS: Readonly<Record<string, string>> = {
@@ -74,8 +74,10 @@ export function groupDisplayLabel(group: OrganizationGroup): string {
   return group.kind === "workspace" && group.parentKey?.includes("/kind:") ? group.label.slice(group.label.indexOf("•") + 1).trim() : group.label;
 }
 
-export function OrganizationRowView({ row, colors, compact, children, disabled, arranging, selected, favorite, stale = false, actions, onFavorite, onToggle, onMove, onSelect }: {
+export function OrganizationRowView({ row, colors, compact, children, details, disabled, arranging, selected, favorite, stale = false, actions, onFavorite, onToggle, onMove, onSelect }: {
   row: OrganizationRow; colors: Colors; compact: boolean; children?: ReactNode;
+  /** A session's own control beside its row button, never inside it. */
+  details?: ReactNode;
   /** Saved-preference writes are unavailable; disclosure still works. */
   disabled: boolean;
   arranging: boolean; selected: boolean; favorite: boolean;
@@ -92,7 +94,9 @@ export function OrganizationRowView({ row, colors, compact, children, disabled, 
     </View>;
   }
   const label = row.kind === "group" ? groupDisplayLabel(row.group) : row.entry.title;
-  const handleHeight = compact ? 44 : 32;
+  // A finger gets 44pt targets at any width; a mouse keeps the dense ones.
+  const coarse = compact || COARSE_POINTER;
+  const handleHeight = coarse ? 44 : 32;
   const responder = useMemo(() => PanResponder.create({
     onStartShouldSetPanResponder: () => false,
     onMoveShouldSetPanResponder: (_, gesture) => arranging && !disabled && Math.abs(gesture.dy) > 8,
@@ -105,7 +109,7 @@ export function OrganizationRowView({ row, colors, compact, children, disabled, 
       accessibilityState={{ selected, disabled }} accessibilityActions={[{ name: "increment", label: "Move down" }, { name: "decrement", label: "Move up" }]}
       onAccessibilityAction={(event) => { if (disabled) return; if (event.nativeEvent.actionName === "increment") onMove(1); else if (event.nativeEvent.actionName === "decrement") onMove(-1); }}
       disabled={disabled} onPress={onSelect}
-      style={{ width: compact ? 44 : 28, minHeight: handleHeight, alignItems: "center", justifyContent: "center", borderRadius: 4, borderWidth: selected ? 1 : 0, borderColor: colors.accent, backgroundColor: selected ? colors.surface2 : undefined, opacity: disabled ? 0.4 : 1 }}>
+      style={{ width: coarse ? 44 : 28, minHeight: handleHeight, alignItems: "center", justifyContent: "center", borderRadius: 4, borderWidth: selected ? 1 : 0, borderColor: colors.accent, backgroundColor: selected ? colors.surface2 : undefined, opacity: disabled ? 0.4 : 1 }}>
       <Text style={{ color: colors.foregroundMuted, fontSize: 17 }}>⠿</Text>
     </Pressable>
   </View> : null;
@@ -114,8 +118,9 @@ export function OrganizationRowView({ row, colors, compact, children, disabled, 
       <Guides depth={row.depth} compact={compact} colors={colors} />
       {handle}
       <View style={{ flex: 1, minWidth: 0 }}>{children}</View>
+      {details}
       <Pressable accessibilityRole="button" accessibilityLabel={`${favorite ? "Unfavorite" : "Favorite"} ${label}`} accessibilityState={{ selected: favorite, disabled }} aria-pressed={favorite} disabled={disabled} onPress={onFavorite}
-        style={{ width: compact ? 44 : 30, height: compact ? 44 : 30, alignItems: "center", justifyContent: "center", opacity: disabled ? 0.4 : 1 }}>
+        style={{ width: coarse ? 44 : 30, height: coarse ? 44 : 30, alignItems: "center", justifyContent: "center", opacity: disabled ? 0.4 : 1 }}>
         <Text style={{ color: favorite ? colors.statusWarning : colors.foregroundMuted, fontSize: compact ? 18 : 16 }}>{favorite ? "★" : "☆"}</Text>
       </Pressable>
     </View>;

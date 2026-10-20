@@ -117,6 +117,20 @@ creation time and ID, so an update alone never moves a row. A header shows up
 to two non-zero states, each with shape, count and word, apart from its total.
 Headers start closed. Saved disclosure and Expand all still apply.
 
+A Role row shows a short place. The **Details** button beside it shows the
+whole of it:
+- the role and where it came from, and every other role declaration;
+- the full desk, or workstream, epic and workspace chain;
+- absent values by name, such as "No linked epic" or "No workspace · <cwd>".
+
+On a compact screen the details cover the session list and scroll. On a wide
+screen they open beside the row. Escape, a tap outside, or Close dismisses them
+and returns focus to the button. The row itself still opens the session.
+
+On a touch screen, session rows, Details, favorites and the Arrange handle are
+44 pt at any width. A mouse keeps the denser sizes: 40 pt rows and 30 pt
+controls.
+
 The Role header keys (`roles/role:<code>`, `roles/no-role`) are new. Disclosure
 and order saved for the former per-placement Role groups (`roles/scope:…/role:…`)
 and the former Roles row (`roles`) therefore match no row, and Role headers start
