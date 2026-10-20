@@ -97,9 +97,32 @@ project, epic, exact source identity and revision. Organization placement uses
 explicit display mapping, then desk, then workstream. Back retains the previous query, position and session
 filters; the native **← Kontor** control returns to the last host-local view.
 
-Sessions supports Hierarchy, Role and Flat views. Repeated workspace-kind and
-session-role prefixes before the first `•` become groups within their original
-parent. Unclassified sessions and empty native workspaces remain visible.
+Sessions supports Hierarchy, Role and Flat views. In Hierarchy, repeated
+workspace-kind and session-role prefixes before the first `•` become groups within
+their original parent. Unclassified sessions and empty native workspaces remain visible.
+
+Role shows one header per role across the visible scope, including roles with a
+single session, and **No role** last; each session appears under exactly one.
+A session's role is its `kontor.role` label, else its `role` label, else its
+title prefix before the first `•`. A label wins over the title. A source that
+names another role stays visible on the row as a cue, such as "title says QA".
+Codes match across case, Unicode whitespace and NFC, using locale-independent
+upper case; this is not full Unicode case folding. Role labels read `-` and `_`
+as spaces. Punctuation and suffixes otherwise stay distinct (QA1 is not QA, and
+REV A is not REV B). The title fallback is for display only: Board task links and
+lanes read labels, never titles. Headers follow LSA, TPM, SA, SWE, QA, AUD, UAT,
+SEC, REV A, REV B, JUDGE, then other roles by name, unless Arrange saved another
+order. Within a role, sessions sort by state, then workstream, epic, workspace,
+creation time and ID, so an update alone never moves a row. A header shows up
+to two non-zero states, each with shape, count and word, apart from its total.
+Headers start closed. Saved disclosure and Expand all still apply.
+
+The Role header keys (`roles/role:<code>`, `roles/no-role`) are new. Disclosure
+and order saved for the former per-placement Role groups (`roles/scope:…/role:…`)
+and the former Roles row (`roles`) therefore match no row, and Role headers start
+closed and in the default order once. Those saved entries stay in the settings
+document; nothing is migrated or deleted.
+
 Favorites, expansion, sibling order, appearance and explicit display mappings are
 stored in one native host settings document (`organization`, schema version 1).
 The reorder handle accepts vertical sibling moves and opens accessible Move up /

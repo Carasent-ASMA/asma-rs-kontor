@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { DirectoryEntry } from "../client/session-directory";
 import {
   aggregateState,
@@ -19,8 +19,14 @@ import {
   workspaceKindPrefix,
   sessionRolePrefix,
   organizationScope,
+  leadingStates,
+  NO_ROLE,
+  NO_ROLE_KEY,
+  ROLE_ROOT_KEY,
+  sessionRole,
   type OrganizationGroup,
 } from "../client/session-organization";
+import { siblingKeys } from "../client/organization-order";
 import { sessionEntry } from "./session-fixtures";
 
 function entry(
@@ -180,8 +186,6 @@ describe("session organization hierarchy", () => {
     const group = findGroup(tree, (candidate) => candidate.kind === "epic");
     expect([group.label, group.key, group.epic]).toEqual([NO_LINKED_EPIC, `workstream:kontor/project:P/epic:${UNASSIGNED_EPIC.toLocaleLowerCase()}`, null]);
     expect(sessionIds(flattenOrganizationTree(tree, { [group.key]: true, [group.groups[0]!.key]: true }, false, defaultGroupExpanded))).toEqual(["loose"]);
-    const roles = buildOrganizationTree({ entries: ["a", "b"].map((id) => entry(id, { title: `SWE • ${id}`, workspaceId: "w", workspaceName: "main" })), grouping: "role" });
-    expect(findGroup(roles, (candidate) => candidate.kind === "role").detail).toBe(`${OTHER_WORKSTREAM} · ${NO_LINKED_EPIC} · main`);
   });
 
   it("places desk work with no linked epic directly under the desk, keeping real epics", () => {
@@ -496,10 +500,7 @@ describe("session organization hierarchy", () => {
       entry("tpm-a", { title: "TPM • a", labels: { desk: "QA", epic: "ASMA-5" } }),
     ];
     const role = buildOrganizationTree({ entries, grouping: "role" });
-    expect(role).toHaveLength(1);
-    expect(role[0]?.label).toBe("Roles");
-    expect(role[0]?.groups[0]?.label).toBe("SWE");
-    expect(role[0]?.sessions.map((session) => session.id)).toEqual(["tpm-a"]);
+    expect(role.map((group) => [group.label, group.sessions.map((session) => session.id)])).toEqual([["TPM", ["tpm-a"]], ["SWE", ["swe-a", "swe-b"]]]);
     const flat = buildOrganizationTree({ entries, grouping: "flat" });
     expect(flat[0]?.label).toBe("All sessions");
     expect(flat[0]?.sessions).toHaveLength(3);
@@ -557,26 +558,110 @@ describe("session organization hierarchy", () => {
 });
 
 describe("session organization parity", () => {
-  it("partitions Role groups by native placement and display scope", () => {
-    const tree = buildOrganizationTree({
-      entries: [
-        entry("a1", { title: "SWE • one", workspaceId: "w1", workspaceName: "TSW • one", labels: { epic: "ASMA-1" } }),
-        entry("a2", { title: "SWE • two", workspaceId: "w1", workspaceName: "TSW • one", labels: { epic: "ASMA-1" } }),
-        entry("b1", { title: "SWE • three", workspaceId: "w2", workspaceName: "TSW • two", labels: { epic: "ASMA-1" } }),
-        entry("b2", { title: "SWE • four", workspaceId: "w2", workspaceName: "TSW • two", labels: { epic: "ASMA-1" } }),
-        entry("c1", { title: "QA • lonely", workspaceId: "w2", workspaceName: "TSW • two", labels: { epic: "ASMA-1" } }),
-      ],
-      grouping: "role",
-    });
-    const roles = allGroups(tree).filter((group) => group.kind === "role");
-    expect(roles.map((group) => group.sessions.map((session) => session.id))).toEqual([["a1", "a2"], ["b1", "b2"]]);
-    expect(new Set(roles.map((group) => group.key)).size).toBe(2);
-    expect(roles.every((group) => group.parentKey === "roles")).toBe(true);
-    expect(roles.map((group) => group.detail)).toEqual([
-      "Other work · ASMA-1 · TSW • one",
-      "Other work · ASMA-1 · TSW • two",
+  it("shows one Role header per role across the scope, singletons and No role included, each session once", () => {
+    const entries = [
+      entry("a1", { title: "SWE • one", workspaceId: "w1", workspaceName: "TSW • one", labels: { epic: "ASMA-1" } }),
+      entry("b1", { title: "SWE • three", workspaceId: "w2", workspaceName: "TSW • two", projectKey: "other", labels: { workstream: "Mobile", epic: "ASMA-2" } }),
+      entry("c1", { title: "QA • lonely", workspaceId: "w2", workspaceName: "TSW • two", labels: { epic: "ASMA-1" } }),
+      entry("d1", { title: "Explore SWE graph layout options", labels: { desk: "Adam" } }),
+      entry("e1", { title: "Notes", labels: { "kontor.role": "tpm" } }),
+    ];
+    const tree = buildOrganizationTree({ entries, grouping: "role" });
+    expect(tree.map((group) => [group.key, group.label, group.sessions.map((session) => session.id)])).toEqual([
+      [`${ROLE_ROOT_KEY}/role:TPM`, "TPM", ["e1"]],
+      // Both idle: the Mobile workstream sorts before Other work.
+      [`${ROLE_ROOT_KEY}/role:SWE`, "SWE", ["b1", "a1"]],
+      [`${ROLE_ROOT_KEY}/role:QA`, "QA", ["c1"]],
+      [NO_ROLE_KEY, NO_ROLE, ["d1"]],
     ]);
-    expect(tree[0]!.sessions.map((session) => session.id)).toEqual(["c1"]);
+    expect(tree.every((group) => group.kind === "role" && group.parentKey === ROLE_ROOT_KEY && group.depth === 0 && group.groups.length === 0 && group.detail === null)).toBe(true);
+    const members = tree.flatMap((group) => group.sessions.map((session) => session.id));
+    expect([members.length, new Set(members).size, tree.reduce((sum, group) => sum + group.totalCount, 0)]).toEqual([5, 5, 5]);
+    expect(sessionIds(flattenOrganizationTree(tree, {}, false, defaultGroupExpanded))).toEqual([]);
+  });
+
+  it("resolves a role from kontor.role, then role, then the title prefix, keeping a losing source as a cue", () => {
+    const role = (title: string, labels: Record<string, string> = {}) => sessionRole(entry("r", { title, labels }));
+    expect(role("QA • check", { "kontor.role": "AUD" })).toEqual({ code: "AUD", source: "kontor.role", conflicts: [{ source: "title", code: "QA" }] });
+    expect(role("QA • check", { "kontor.role": "AUD", role: "qa" })).toEqual({ code: "AUD", source: "kontor.role", conflicts: [{ source: "role", code: "QA" }] });
+    expect(role("SWE • work", { "kontor.role": " ", role: "rev_a" })).toEqual({ code: "REV A", source: "role", conflicts: [{ source: "title", code: "SWE" }] });
+    expect(role("qa • work", { role: "QA" })).toEqual({ code: "QA", source: "role", conflicts: [] });
+    expect(role("rev a • work")).toEqual({ code: "REV A", source: "title", conflicts: [] });
+    expect(role("Explore SWE graph layout options")).toEqual({ code: null, source: null, conflicts: [] });
+  });
+
+  it("matches role codes across case, Unicode whitespace and NFC, but never merges punctuation, suffixes or other roles", () => {
+    const code = (title: string, labels: Record<string, string> = {}) => sessionRole(entry("r", { title, labels })).code;
+    expect(["qa • x", "QA • y", "\u00a0Qa • z", "Qa\u2003• w"].map((title) => code(title))).toEqual(["QA", "QA", "QA", "QA"]);
+    expect(["REV  A • x", "rev\u00a0a • y", "Rev\tA • z"].map((title) => code(title))).toEqual(["REV A", "REV A", "REV A"]);
+    expect(code("Re\u0301v • x")).toBe(code("R\u00e9v • y"));
+    expect(["QA1 • x", "\uff31\uff21 • y", "AUD • z", "REV B • w", "REV-A • v", "QA. • u"].map((title) => code(title))).toEqual(["QA1", "\uff31\uff21", "AUD", "REV B", "REV-A", "QA."]);
+    // Role labels read "-" and "_" as spaces, as they always have; a title prefix keeps them.
+    expect([code("x", { role: "rev-a" }), code("x", { role: "rev__a" })]).toEqual(["REV A", "REV A"]);
+  });
+
+  it("reads role codes the same under a Turkish locale", () => {
+    const upper = vi.spyOn(String.prototype, "toLocaleUpperCase").mockImplementation(function (this: string) { return this.replace(/i/g, "\u0130").toUpperCase(); });
+    const lower = vi.spyOn(String.prototype, "toLocaleLowerCase").mockImplementation(function (this: string) { return this.replace(/I/g, "\u0131").toLowerCase(); });
+    try {
+      const tree = buildOrganizationTree({ entries: [entry("a", { title: "qi • x" }), entry("b", { title: "QI • y" }), entry("c", { title: "x", labels: { role: "qi" } })], grouping: "role" });
+      expect(tree.map((group) => [group.label, group.totalCount])).toEqual([["QI", 3]]);
+    } finally {
+      upper.mockRestore();
+      lower.mockRestore();
+    }
+  });
+
+  it("orders Role headers by the role order, then by label, No role last, and lets a saved order win", () => {
+    const entries = ["Zeta", "", "QA", "Alpha", "REV B", "LSA", "REV A", "QA1"].map((prefix, index) => entry(`s${index}`, { title: prefix ? `${prefix} • work` : "Untitled" }));
+    expect(buildOrganizationTree({ entries, grouping: "role" }).map((group) => group.label)).toEqual(["LSA", "QA", "REV A", "REV B", "ALPHA", "QA1", "ZETA", NO_ROLE]);
+    const saved = { [ROLE_ROOT_KEY]: [NO_ROLE_KEY, `${ROLE_ROOT_KEY}/role:ZETA`, `${ROLE_ROOT_KEY}/role:QA`] };
+    expect(buildOrganizationTree({ entries, grouping: "role", siblingOrder: saved }).map((group) => group.label)).toEqual(["ZETA", "QA", "LSA", "REV A", "REV B", "ALPHA", "QA1", NO_ROLE]);
+    expect(siblingKeys(buildOrganizationTree({ entries, grouping: "role" }), ROLE_ROOT_KEY)).toEqual(["LSA", "QA", "REV A", "REV B", "ALPHA", "QA1", "ZETA"].map((code) => `${ROLE_ROOT_KEY}/role:${encodeURIComponent(code)}`).concat(NO_ROLE_KEY));
+  });
+
+  it("orders sessions in a role by state, then placement and identity, so an update alone never moves one", () => {
+    const make = (updated: (id: string) => string, needs: string | null = null) => [
+      entry("b-idle", { title: "SWE • b", status: "idle", labels: { workstream: "Beta" } }),
+      // Same state and place: the earlier-created one leads, though its ID sorts later.
+      entry("a-run-1", { title: "SWE • a", status: "running", labels: { workstream: "Alpha" } }),
+      entry("a-run-2", { title: "SWE • c", status: "running", labels: { workstream: "Alpha" } }),
+      entry("z-run", { title: "SWE • z", status: "running", labels: { workstream: "Zulu" } }),
+    ].map((value) => ({
+      ...value,
+      updatedAt: updated(value.id),
+      createdAt: value.id === "a-run-1" ? "2026-10-18T09:30:00.000Z" : value.createdAt,
+      needsInput: value.id === needs,
+    }));
+    const order = (entries: ReturnType<typeof make>) => buildOrganizationTree({ entries, grouping: "role" })[0]!.sessions.map((session) => session.id);
+    const before = order(make(() => "2026-10-18T10:00:00.000Z"));
+    expect(before).toEqual(["a-run-2", "a-run-1", "z-run", "b-idle"]);
+    expect(order(make((id) => id === "z-run" ? "2026-10-18T11:00:00.000Z" : "2026-10-18T10:00:00.000Z").reverse())).toEqual(before);
+    expect(order(make(() => "2026-10-18T10:00:00.000Z", "b-idle"))).toEqual(["b-idle", "a-run-2", "a-run-1", "z-run"]);
+    const saved = buildOrganizationTree({ entries: make(() => "x"), grouping: "role", siblingOrder: { [`${ROLE_ROOT_KEY}/role:SWE`]: [sessionKey("z-run")] } });
+    expect(saved[0]!.sessions[0]!.id).toBe("z-run");
+  });
+
+  it("closes Role headers on a first visit but keeps local role groups open, and lets saved state win", () => {
+    const entries = [entry("a", { title: "SWE • a" }), entry("b", { title: "SWE • b" })];
+    const [role] = buildOrganizationTree({ entries, grouping: "role" });
+    expect(defaultGroupExpanded(role!)).toBe(false);
+    expect(sessionIds(flattenOrganizationTree([role!], { [role!.key]: true }, false, defaultGroupExpanded))).toEqual(["a", "b"]);
+    const local = findGroup(buildOrganizationTree({ entries }), (group) => group.kind === "role");
+    expect([local.parentKey === ROLE_ROOT_KEY, defaultGroupExpanded(local)]).toEqual([false, true]);
+  });
+
+  it("counts a narrowed Role header as n of m and its leading states", () => {
+    const entries = [
+      entry("n", { title: "QA • n", pendingPermissionCount: 1, labels: { desk: "PR Review" } }),
+      entry("e", { title: "QA • e", status: "error" }),
+      ...["r1", "r2", "r3"].map((id) => entry(id, { title: `QA • ${id}`, status: "running", labels: { desk: "PR Review" } })),
+    ];
+    const [qa] = buildOrganizationTree({ entries, grouping: "role" });
+    expect(leadingStates(qa!.aggregate)).toEqual([{ state: "needs_input", count: 1 }, { state: "failed", count: 1 }]);
+    expect(leadingStates(qa!.aggregate, 3).map(({ state, count }) => `${state}:${count}`)).toEqual(["needs_input:1", "failed:1", "running:3"]);
+    const [narrowed] = filterOrganizationTree([qa!], (session) => session.labels.desk === "PR Review");
+    expect([narrowed!.visibleCount, narrowed!.totalCount, leadingStates(narrowed!.aggregate)]).toEqual([4, 5, [{ state: "needs_input", count: 1 }, { state: "running", count: 3 }]]);
   });
 
   it("opens workstreams and desks but not epics or workspaces on a first visit, and lets saved or forced state win", () => {

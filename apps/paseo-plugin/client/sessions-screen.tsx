@@ -73,7 +73,7 @@ import {
 import { useSessionDirectory } from "./use-session-directory";
 import { DEFAULT_ORGANIZATION_SETTINGS, type OrganizationSettings } from "../shared/organization";
 import type { useOrganizationSettings } from "./use-organization-settings";
-import { allGroupKeys, buildOrganizationTree, defaultGroupExpanded, epicLabel, filterOrganizationTree, flattenOrganizationTree, inEpicScope, isDeskWork, organizationScope, sessionState, STATE_LABELS, visibleSessions, workstreamRank, type OrganizationGroup, type OrganizationRow, type OrganizationWorkspace } from "./session-organization";
+import { allGroupKeys, buildOrganizationTree, defaultGroupExpanded, filterOrganizationTree, flattenOrganizationTree, inEpicScope, isDeskWork, NO_ROLE_KEY, organizationScope, ROLE_ROOT_KEY, sessionRole, sessionState, STATE_LABELS, titleRoleCode, UNASSIGNED_EPIC, visibleSessions, workstreamRank, type OrganizationGroup, type OrganizationRow, type OrganizationWorkspace, type RoleSource } from "./session-organization";
 import { rowKey, siblingKeys, reorderSavedSiblingOrder } from "./organization-order";
 import { OrganizationRowView, StateBadge, stateColor as sessionStateColor, WORKSPACE_KINDS } from "./organization-row";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
@@ -309,6 +309,10 @@ type SessionRowProps = {
   readonly displayTitle?: string;
   /** Placement context, shown only where the tree does not already say it (Role and Flat). */
   readonly displayContext?: string;
+  /** A shorter context that compact keeps beside the title instead of after it, so it stays in view (Role). */
+  readonly compactContext?: string;
+  /** Spoken in place of displayContext. */
+  readonly accessibilityContext?: string;
   /** The result a user asked to see in the tree. */
   readonly highlighted?: boolean;
 };
@@ -320,6 +324,8 @@ const SessionRow = memo(function SessionRow({
   onPress,
   displayTitle,
   displayContext,
+  compactContext,
+  accessibilityContext,
   highlighted = false,
 }: SessionRowProps) {
   const attention = attentionLabel(entry);
@@ -341,7 +347,7 @@ const SessionRow = memo(function SessionRow({
         ? `Needs attention: ${attention}`
         : null,
     archived,
-    detail,
+    accessibilityContext ?? detail,
     highlighted ? "Shown from search results" : null,
   ]
     .filter((part): part is string => part !== null && part.length > 0)
@@ -352,7 +358,7 @@ const SessionRow = memo(function SessionRow({
   // Compact: one line. The title leads, runtime/context/archived follow muted in
   // the same truncating line, and the state badge stays visible at the end. The
   // native ID stays in the accessible label only (review ST-02).
-  const compactMeta = [runtime ? runtimeLabel : null, displayContext, archived]
+  const compactMeta = [runtime ? runtimeLabel : null, compactContext ?? displayContext, archived]
     .filter((part): part is string => !!part)
     .join(" · ");
 
@@ -377,7 +383,20 @@ const SessionRow = memo(function SessionRow({
         backgroundColor: pressed || hovered || highlighted ? colors.surface2 : undefined,
       })}
     >
-      {compact ? (
+      {compact && compactContext !== undefined ? (
+        <>
+          {/* The context keeps up to about half the line; the title gives way first. */}
+          <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <Text testID="sessions-row-title" numberOfLines={1} style={{ flexShrink: 1, color: colors.foreground, fontSize: 14, lineHeight: 20 }}>
+              {displayTitle ?? entry.title}
+            </Text>
+            <Text testID="sessions-row-meta" numberOfLines={1} style={{ flexShrink: 0, maxWidth: "55%", color: colors.foregroundMuted, fontSize: 12 }}>
+              {compactMeta}
+            </Text>
+          </View>
+          <StateBadge state={state} colors={colors} compact={false} />
+        </>
+      ) : compact ? (
         <>
           <Text
             testID="sessions-row-title"
@@ -445,6 +464,30 @@ export function resultCues(entry: DirectoryEntry): string[] {
   ].filter((part): part is string => !!part);
 }
 
+function spokenProvenance(provenance: SessionProvenance): string {
+  return provenance.desk ? `Desk ${provenance.parts.join(", workspace ")}` : `Workstream ${provenance.parts[0]}, epic ${provenance.parts[1]}, workspace ${provenance.parts[2]}`;
+}
+
+const ROLE_SOURCE_NAMES: Readonly<Record<RoleSource, string>> = { "kontor.role": "kontor.role label", role: "role label", title: "title" };
+
+/**
+ * A Role view row: a source that names another role comes first as a cue, then where the session
+ * sits. The title loses its prefix only when the prefix names the role it is shown under.
+ */
+export function roleRowContext(entry: DirectoryEntry, mappings: Parameters<typeof organizationScope>[1]) {
+  const role = sessionRole(entry);
+  const cues = role.conflicts.map(({ source, code }) => `${ROLE_SOURCE_NAMES[source]} says ${code}`);
+  const provenance = sessionProvenance(entry, mappings);
+  const scope = organizationScope(entry, mappings);
+  const place = provenance.desk ? provenance.parts[0]! : scope.epic === UNASSIGNED_EPIC ? scope.workstream : scope.epic;
+  return {
+    title: role.code !== null && titleRoleCode(entry.title) === role.code ? entry.title.slice(entry.title.indexOf("•") + 1).trim() : undefined,
+    context: [...cues, ...provenance.parts].join(" · "),
+    compact: [...cues, place, provenance.workspace].join(" · "),
+    spoken: [role.code === null ? "No role" : `Role ${role.code} from the ${ROLE_SOURCE_NAMES[role.source!]}`, ...cues, spokenProvenance(provenance)].join(". "),
+  };
+}
+
 export function resultAccessibilityLabel(entry: DirectoryEntry, provenance: SessionProvenance): string {
   const role = labelledRole(entry);
   const task = [...TASK_JIRA_LABELS, TASK_TICKET_LABEL].map((key) => entry.labels[key]?.trim()).find((value) => !!value);
@@ -453,7 +496,7 @@ export function resultAccessibilityLabel(entry: DirectoryEntry, provenance: Sess
     entry.title,
     STATE_LABELS[sessionState(entry)],
     derived ? `Native status ${entry.status}${derived.startsWith("Earlier") ? ", error reported earlier" : ""}` : null,
-    provenance.desk ? `Desk ${provenance.parts.join(", workspace ")}` : `Workstream ${provenance.parts[0]}, epic ${provenance.parts[1]}, workspace ${provenance.parts[2]}`,
+    spokenProvenance(provenance),
     role ? `Role label ${role}` : null,
     task ? `Task label ${task}` : null,
     entry.labels.pr?.trim() ? `PR label ${entry.labels.pr.trim()}` : null,
@@ -1840,7 +1883,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const moveRow = (row: OrganizationRow, distance: number) => {
     const parent = row.kind === "group" ? row.group.parentKey ?? "root" : row.parentKey;
     const peers = siblingKeys(tree, parent).filter((key) => (row.kind === "session") === key.startsWith("session:"));
-    const movable = parent === "root" && row.kind === "group" ? peers.filter((key) => workstreamRank(tree.find((group) => group.key === key)?.label ?? "") === workstreamRank(row.group.label)) : peers;
+    const movable = parent === "root" && row.kind === "group" ? peers.filter((key) => workstreamRank(tree.find((group) => group.key === key)?.label ?? "") === workstreamRank(row.group.label))
+      // No role stays last.
+      : parent === ROLE_ROOT_KEY && row.kind === "group" ? peers.filter((key) => (key === NO_ROLE_KEY) === (row.group.key === NO_ROLE_KEY)) : peers;
     savePreference({ siblingOrder: { ...preferences.siblingOrder, [parent]: reorderSavedSiblingOrder(preferences.siblingOrder[parent] ?? [], siblingKeys(tree, parent), movable, rowKey(row), distance) } });
   };
   const moveSelection = (distance: number) => {
@@ -2164,7 +2209,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           <Text testID="sessions-options-count" style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 18 }}>{countSummary}{workspaceNote ? `. ${workspaceNote}.` : ""}</Text>
           <Disclosure small label="Legend" colors={colors}>
             <Text style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 18 }}>
-              Icons mark a workstream, epic, workspace or native project. {Object.entries(WORKSPACE_KINDS).map(([code, meaning]) => `${code} · ${meaning}`).join("  ")}. Repeated title prefixes group siblings for display only; they do not establish an authorized role.
+              Icons mark a workstream, epic, workspace or native project. {Object.entries(WORKSPACE_KINDS).map(([code, meaning]) => `${code} · ${meaning}`).join("  ")}. Role groups by the kontor.role or role label, else the title prefix before •; repeated title prefixes also group siblings in a workspace. Both are for display only and establish no authorized role.
             </Text>
           </Disclosure>
         </ScrollView>
@@ -2306,7 +2351,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     );
   }
 
-  const extraData = { colors, arrangeEnabled, orderSelection, editsDisabled, favorites, peek };
+  const extraData = { colors, arrangeEnabled, orderSelection, editsDisabled, favorites, peek, showBanner };
   const emptyMessage = task && candidates.length === 0
     ? `No session in this view is linked to ${task.label}.`
     : hasActiveView(view) || hasOrganizationFilter || task
@@ -2411,16 +2456,19 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           const plans = epic ? planSources?.[epic.toLocaleUpperCase()] ?? [] : [];
           const actions = epic && onEpicTab && plans.length > 0 ? (["Plan", "Board", "Graph"] as const).map((tab) => <Action key={tab} small={!compact} colors={colors} label={tab}
             accessibilityLabel={`${tab} for ${epic}${plans.length > 1 ? `, choose among ${plans.length} configured plans` : ""}`} onPress={() => onEpicTab(tab, epic, plans.length === 1 ? plans[0]! : null)} />) : undefined;
+          const role = item.kind === "session" && grouping === "role" ? roleRowContext(item.entry, mappings) : null;
           return <OrganizationRowView row={item} colors={colors} compact={compact} disabled={editsDisabled} arranging={arrangeEnabled} selected={orderSelection === key}
-            favorite={item.kind === "session" && favorites.includes(item.entry.id)} actions={actions}
+            favorite={item.kind === "session" && favorites.includes(item.entry.id)} stale={showBanner} actions={actions}
             onToggle={() => toggleGroup(item)}
             onSelect={() => setOrderSelection(orderSelection === key ? null : key)}
             onMove={(distance) => moveRow(item, distance)} onFavorite={() => { if (item.kind === "session") savePreference({ favorites: favorites.includes(item.entry.id) ? favorites.filter((id) => id !== item.entry.id) : [...favorites, item.entry.id] }); }}>
           {item.kind === "session" ? <SessionRow
             entry={item.entry}
-            displayContext={grouping === "role" ? `${organizationScope(item.entry, mappings).workstream} · ${epicLabel(organizationScope(item.entry, mappings).epic)} · ${item.entry.workspaceName ?? "Unassigned workspace"}`
+            displayContext={role ? role.context
               : grouping === "flat" ? [item.entry.workspaceName ?? item.entry.cwd, item.entry.projectName !== item.entry.workspaceName ? item.entry.projectName : null].filter(Boolean).join(" · ") : undefined}
-            displayTitle={item.parentKey.includes("/role:") ? item.entry.title.slice(item.entry.title.indexOf("•") + 1).trim() : undefined}
+            compactContext={role?.compact}
+            accessibilityContext={role?.spoken}
+            displayTitle={role ? role.title : item.parentKey.includes("/role:") ? item.entry.title.slice(item.entry.title.indexOf("•") + 1).trim() : undefined}
             colors={colors}
             compact={compact}
             highlighted={peek?.sessionId === item.entry.id}
