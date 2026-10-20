@@ -1,0 +1,24 @@
+{
+  "consumers": [
+    "PUBLIC-REDACTION.md"
+  ],
+  "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+  "files": {
+    "2026-10-03-10-02-report-independent-refusal-diagnostics-acceptance.md": {
+      "bytes": 9631,
+      "derivative_sha256": "82286a23fc193dbbda99f56d3d7a3b0bd473e749ab41e9d540fd77e29c567ed5",
+      "original_sha256": "347d14c4090ed3b807b4df5b183dbc8a80faca56e7a344824c1214b9daf771bc"
+    }
+  },
+  "model": "The public copy is a redacted derivative. Original bytes and SHA-256 are retained in the access-controlled evidence store; the TPM owns the exact-path disposition ledger.",
+  "original_archive": "access-controlled evidence store outside the public repo; TPM-owned disposition ledger",
+  "placeholders": {
+    "[deployment-manifests]": "private deployment manifest path",
+    "[parent-plan]": "private parent plan path",
+    "[parent-report]": "private parent report path",
+    "[parent-repository]": "private parent repository",
+    "[project-cli-checkout]": "private project CLI path",
+    "[task-workspace]": "private task workspace path"
+  },
+  "scope": "docs/evidence/ASMA-8234"
+}

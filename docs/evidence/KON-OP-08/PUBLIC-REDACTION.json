@@ -1,9 +1,22 @@
 {
   "consumers": [
-    "QA-REPORT-2026-08-22.md"
+    "QA-REPORT-2026-08-22.md",
+    "PUBLIC-REDACTION.md"
   ],
   "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
   "files": {
+    "2026-08-19-11-39-architecture-kontor-operational-control-surfaces.md": {
+      "bytes": 44940,
+      "derivative_sha256": "2adec721582fa28b3d7744b7b143a07c01fe3b4bd1097867e8f4c3daf494fdb9",
+      "original_sha256": "878b9d33b78dedd00978e3166fa522911480f9d009a2185ddba87b016695aa60",
+      "private_references_redacted": 1
+    },
+    "2026-08-20-23-07-report-qnr-control-surface-escalation.md": {
+      "bytes": 14172,
+      "derivative_sha256": "b9969e87b80e3713e07dc42f51ba895f3ad7d20db5df64f51c830a0682b7fbb9",
+      "original_sha256": "ae273ef09741f39e7b374193baa9ee72f7555a277bfbb33d7d0deb536fcb638e",
+      "private_references_redacted": 1
+    },
     "QA-REPORT-2026-08-22.md": {
       "bytes": 5520,
       "derivative_sha256": "1919daf44e4cd35ada05d7a09420fe2ad2a451405d9d1a5f2dcced78f7d843f6",

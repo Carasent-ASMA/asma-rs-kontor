@@ -1,6 +1,6 @@
 {
   "recorded_at": "2026-09-04",
-  "source_checkout": "[parent-workspace]/_tools/asma-rs-kontor",
+  "source_checkout": "[parent-checkout]",
   "source_head": "e6da2708e455",
   "source_file_sha256": {
     "docs/RECOMMENDED-TEAMS-AND-SEATS.md": "6f57d97a8896a70829387cc105eed9baee5cce7955da9ae35fed21a83b39e1f5",

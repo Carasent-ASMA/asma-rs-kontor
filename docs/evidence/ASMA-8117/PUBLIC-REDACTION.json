@@ -1,0 +1,29 @@
+{
+  "consumers": [
+    "PUBLIC-REDACTION.md"
+  ],
+  "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+  "files": {
+    "HIGH-SCOPE-RECORD.md": {
+      "bytes": 12673,
+      "derivative_sha256": "8ca234f57c9b94d15be1a6424bb908bad3ea6747ef0fbc504503ff72a3b69b7d",
+      "original_sha256": "74592cdeeab6eb609b2bb69f5909a4a5fdfe4a1b2072a06f3c07652f258bc29c"
+    },
+    "IMPLEMENTATION.md": {
+      "bytes": 24379,
+      "derivative_sha256": "15f82d1266a16eb2359fdf71f4caa6906f8a9c8f13d24b040aa978d8aafb9b40",
+      "original_sha256": "11614142859cbd59e3196fd7a7a447da1e731f4d54853363b2097f928afe78ce"
+    }
+  },
+  "model": "The public copy is a redacted derivative. Original bytes and SHA-256 are retained in the access-controlled evidence store; the TPM owns the exact-path disposition ledger.",
+  "original_archive": "access-controlled evidence store outside the public repo; TPM-owned disposition ledger",
+  "placeholders": {
+    "[deployment-manifests]": "private deployment manifest path",
+    "[parent-plan]": "private parent plan path",
+    "[parent-report]": "private parent report path",
+    "[parent-repository]": "private parent repository",
+    "[project-cli-checkout]": "private project CLI path",
+    "[task-workspace]": "private task workspace path"
+  },
+  "scope": "docs/evidence/ASMA-8117"
+}

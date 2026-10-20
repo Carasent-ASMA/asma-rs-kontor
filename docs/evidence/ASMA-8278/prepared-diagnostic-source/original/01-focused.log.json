@@ -17,5 +17,11 @@
   "elapsed_seconds": 55.002,
   "exit_code": 0,
   "log": "logs/01-focused.log",
-  "sha256": "8e7f381929c92914f05456d1c965addd1e14d9e6f2d864dd295ca30b029214eb"
+  "sha256": "8e7f381929c92914f05456d1c965addd1e14d9e6f2d864dd295ca30b029214eb",
+  "public_derivative": {
+    "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+    "ledger": "../../PUBLIC-REDACTION.json",
+    "note": "Custody pointer added; this file is unchanged. Any certified source hash describes the original; public candidate files are redacted derivatives."
+  },
+  "derivatives": {}
 }

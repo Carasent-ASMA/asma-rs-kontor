@@ -12,7 +12,7 @@
 //! without JSON reserialization or the credential-scanning canonicalizer.
 //!
 //! Requirements: REQ-001–003, SEC-001–004 and CON-001–003 in
-//! `[parent-repository]/_docs/ai-orchestration/specs/spec-orchestration-seat-attestation.md:49`.
+//! The parent-workspace seat-attestation specification (line 49).
 
 use std::collections::BTreeSet;
 

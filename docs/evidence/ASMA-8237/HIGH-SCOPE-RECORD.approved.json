@@ -41,7 +41,7 @@
         "asma-8237-catalog-review-approval-20260919@01a0b78b-1da0-7171-84f2-5a9bf1d77f4a"
       ],
       "assertion": "jq exact ordered-chain check exited 0",
-      "config_path": "_docs/ai-orchestration/config/watchdogs/watchdog-1f9cedad.json",
+      "config_path": "[parent-workspace watchdog configuration path]",
       "fallback_order": [
         "codex/gpt-5.6-luna@xhigh",
         "opencode/openrouter/z-ai/glm-5.3-flash@high",

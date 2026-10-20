@@ -20,7 +20,7 @@ fi
 # Second rule (ASMA-8101): an agent may only publish a branch the ASMA CLI or
 # Kontor would have derived — `<type>/ASMA-<number>-<slug>` — or a hotpatch
 # line `releases/v<major>.<minor>.<patch>`. Same grammar as
-# the parent workspace `_tools/asma-cli/src/asma_cli/publication_policy.py` and kontor-core
+# asma-modules `_tools/asma-cli/src/asma_cli/publication_policy.py` and kontor-core
 # `branch.rs`; keep the three in step.
 branch_is_canonical() {
   printf '%s\n' "$1" | grep -Eq \

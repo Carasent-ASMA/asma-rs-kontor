@@ -1,0 +1,40 @@
+{
+  "consumers": [
+    "PUBLIC-REDACTION.md"
+  ],
+  "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+  "files": {
+    "COMMITTEE-CAP-HANDOFF.md": {
+      "bytes": 32595,
+      "derivative_sha256": "9e5db790627011e1fb4cdce3b2b879af90e94ee7ee3e0ba6cba0c5fd4e3681be",
+      "original_sha256": "bb30cc477979246b3b115524bd30853a48537390cb085f42445bbd3f910e9ccb",
+      "private_references_redacted": 1
+    },
+    "DIRECT-MODE-HANDOFF.md": {
+      "bytes": 53800,
+      "derivative_sha256": "5f5d6c0bdc0d2dc9f41345e73e77d6a8da5f2ecf4f07360ce17d2e6ab90c9d4a",
+      "original_sha256": "4dc2d9699a715a8648e0378930cd7e54eeac33364addadbb675b85526e54783f"
+    },
+    "HIGH-AUDIT-REPORT.md": {
+      "bytes": 5177,
+      "derivative_sha256": "381388924a56b83a102065db9b33a2d714d9a15dde51c3b178af63f39351e197",
+      "original_sha256": "6d2c44683bd4c9cacaabff551f48c59d5cc95c1554f634a09f21960eb87343c7"
+    },
+    "HIGH-VERIFICATION-REPORT.md": {
+      "bytes": 8158,
+      "derivative_sha256": "53a7f2a532628c353933d9f9c18ecf4ce36c0ec9e7aff089dcd83815257bcfe6",
+      "original_sha256": "b0a3a68c87c7c9db94fd1bab135b4f925cda32ce936968fd962fd613c5474272"
+    }
+  },
+  "model": "The public copy is a redacted derivative. Original bytes and SHA-256 are retained in the access-controlled evidence store; the TPM owns the exact-path disposition ledger.",
+  "original_archive": "access-controlled evidence store outside the public repo; TPM-owned disposition ledger",
+  "placeholders": {
+    "[deployment-manifests]": "private deployment manifest path",
+    "[parent-plan]": "private parent plan path",
+    "[parent-report]": "private parent report path",
+    "[parent-repository]": "private parent repository",
+    "[project-cli-checkout]": "private project CLI path",
+    "[task-workspace]": "private task workspace path"
+  },
+  "scope": "docs/evidence/ASMA-8280"
+}

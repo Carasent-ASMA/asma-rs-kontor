@@ -15,8 +15,8 @@
   "status": "high_scope_handoff",
   "recorded_at": "2026-08-30T17:21:08Z",
   "authoritative_inputs": {
-    "plan": "../../../../../_docs/ai-orchestration/plans/2026-08-30-19-51-plan-kontor-backlog-identities.md",
-    "operational_gap": "../../../../../_docs/ai-orchestration/reports/2026-08-30-20-15-report-kbi-jira-connector-operational-gap.md",
+    "plan": "[parent-plan]",
+    "operational_gap": "[parent-report]",
     "jira_scope": "ASMA only"
   },
   "governed_baseline": {

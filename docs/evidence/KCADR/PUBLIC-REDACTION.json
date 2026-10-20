@@ -4,15 +4,20 @@
   "consumers": [
     "qualification-71e3c6f.json",
     "qualification-d30e0df.json",
-    "README.md"
+    "README.md",
+    "PUBLIC-REDACTION.md"
   ],
   "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
   "files": {
     "README.md": {
       "bytes": 18916,
       "derivative_sha256": "702cfb75f02597109a429579bb72b8d6b7ea0294f1b5cbd97688cb2552125916",
-      "original_sha256": "d81721a79f01256a92e82d05c3b67c613a5b32d972f57b8095b2335507c8ed39",
-      "private_references_redacted": 0
+      "intermediate_bytes": 18889,
+      "intermediate_sha256": "d81721a79f01256a92e82d05c3b67c613a5b32d972f57b8095b2335507c8ed39",
+      "mapping_note": "True pre-WP-01 original at 0fbe9253; a6445a04 intermediate is retained in intermediate_sha256.",
+      "original_bytes": 19371,
+      "original_sha256": "b05a8c7bb5c93e500ef7b292ef39732fdb233ce87cde88fb5e26d1dd4781f2cb",
+      "private_references_redacted": 8
     },
     "adapter-review-green.log": {
       "bytes": 24506,
@@ -209,10 +214,10 @@
       "private_references_redacted": 1
     },
     "recovery-provenance.json": {
-      "bytes": 1115,
-      "derivative_sha256": "8b17abe25801044f021f5cd254e40b1be3c72683b6c22079ad21c395c3a80ece",
+      "bytes": 1092,
+      "derivative_sha256": "9979645b55b98b23de0c8527a3bf64788262516b17e41d3044733815f1b960a3",
       "original_sha256": "774c7c0e482c73d533bbe60c613c42f6e03a1d9ccf46361b738b00caf775d8d8",
-      "private_references_redacted": 1
+      "private_references_redacted": 2
     },
     "release-block-readback.json": {
       "bytes": 5467,
@@ -289,6 +294,7 @@
     "[compat-docs-workspace]": "private compatibility docs worktree path",
     "[compat-workspace]": "private compatibility worktree path",
     "[kon-op-08-workspace]": "private KON-OP-08 worktree path",
+    "[parent-checkout]": "private parent checkout path",
     "[parent-repository]": "private parent-repository slug",
     "[parent-workspace]": "private parent workspace path",
     "[qualification-workspace]": "private qualification worktree path"

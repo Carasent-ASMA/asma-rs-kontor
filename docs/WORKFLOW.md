@@ -193,13 +193,17 @@ Every hold records four fields:
 | **Lift condition** | A checkable condition; when it is met, the hold lifts by itself |
 | **Review date** | At most 30 days ahead |
 
-A hold stays in force until its recorded lift condition is met or the operator
-lifts it. Elapsed time and silence never lift or extend a hold. At the review
-date the owner resumes the work only if the lift condition is met, closes it
-with a reason, or renews the hold once with new evidence. A second renewal goes
-to the authorized owner as one alert with a recommendation. If the review date
-passes without a met condition or an operator decision, the hold remains in
-force; the owner records the overdue review and escalates once. A scope cut
+For a hold within existing standing authorization, a met lift condition lifts
+it. At the review date the owner resumes the work, closes it with a reason, or
+renews the hold once with new evidence. A second renewal goes to the authorized
+owner as one alert with a recommendation. Silence never extends such a hold:
+after seven days without an answer, the reversible recommendation (resume)
+applies by itself, but only within existing standing authorization. It never
+overrides an explicit operator stop, pause or withdrawal, and it never supplies
+a reserved approval or new authorization. An explicit stop, pause, withdrawal
+or withheld authorization remains in force until the operator lifts it; a
+conditional lift applies only when that operator expressly authorized that
+condition in advance. Elapsed time alone is not that condition. A scope cut
 stays an open gap row.
 
 A plan with status `On Hold`, a paused epic, a held issue, an authorization

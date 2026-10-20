@@ -873,7 +873,7 @@ implementation, QA and release evidence; the OP-08 plan contract; the
 integrated source registry and completion implementation; and current official
 MCP client configuration contracts. The architect session timeline itself
 returned the already-recorded `timeline_refetch_required` failure documented in
-`_docs/ai-orchestration/reports/2026-08-19-10-40-report-kontor-op07-timeline-refetch-gap.md`.
+the parent-workspace OP-07 timeline-refetch gap report.
 No direct Paseo fallback, replacement seat or duplicate operational-gap report
 was used. Durable Kontor task/dependency reads and repository evidence remained
 available and were used instead.

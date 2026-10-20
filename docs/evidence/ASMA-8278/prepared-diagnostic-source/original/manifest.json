@@ -573,5 +573,15 @@
     "compiler targets",
     "full source fixture copy, whose owned3 bytes are independently pinned",
     "manifest self-hash emitted separately"
-  ]
+  ],
+  "public_derivative": {
+    "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+    "ledger": "../../PUBLIC-REDACTION.json",
+    "note": "The artifact inventory hashes for graph-verify-trace.json and the two candidate source files describe the originals; the public copies are redacted derivatives."
+  },
+  "derivatives": {
+    "crates/kontor-runtime/src/planning_pair/attestation.rs": "a6e46758a48ae9d48cb2e719541fc055288126621370820a58418f7d0e9f8779",
+    "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic.rs": "48a5baf647c4e0d10f45d5a0fb176ce389a14a09d342e22b77800ec9096a986f",
+    "graph-verify-trace.json": "12981f6d93d8f9d8aa47c0d652e286d87025b1b8c01e508f1ce09bb79dde736c"
+  }
 }

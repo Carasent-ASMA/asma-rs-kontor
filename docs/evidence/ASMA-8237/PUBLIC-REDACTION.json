@@ -5,10 +5,10 @@
   "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
   "files": {
     "HIGH-SCOPE-RECORD.approved.json": {
-      "bytes": 7390,
-      "derivative_sha256": "f7c9b5238fae997fe2fcdec8ebec731bf5defd38c51343cf09f2a725e332b3de",
+      "bytes": 7374,
+      "derivative_sha256": "647cf8998e0fedba3541b4f4ce4e4d24254a2787fd21e449cb118591068a1d05",
       "original_sha256": "42a13bbf083dcf1f361c7f57e28ea82f1e62c7fee7dec47209dcf00e6225f961",
-      "private_references_redacted": 1
+      "private_references_redacted": 2
     },
     "IMPLEMENT-TO-VERIFY-HANDOFF.md": {
       "bytes": 7053,
@@ -31,6 +31,7 @@
     "[parent-project]": "private parent project slug",
     "[parent-repository]": "private parent repository",
     "[parent-tools]": "private parent tools path",
+    "[parent-workspace watchdog configuration path]": "private parent watchdog configuration path",
     "[parent-workspace]": "private parent workspace path",
     "[task-workspace]": "private task workspace path"
   },

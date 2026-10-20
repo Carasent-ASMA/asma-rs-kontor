@@ -1,7 +1,7 @@
 {
   "date": "2026-10-11",
   "decision": "coordinator accepted advisor verdict and user explicitly authorized bounded repair; no new Igor scope decision",
-  "verdict_path": "[parent-workspace]/.worktrees/plans/kontord-durable-desks-20261008/_docs/ai-orchestration/assets/kontord-durable-desks/2026-10-11-advisor-verdict-desk-seat-mcp-composition.md",
+  "verdict_path": "[parent-verdict]",
   "verdict_sha256": "e45ac3a7a3ad42ba60fc77a82abaf6e07d4605328d3f7d8818784ad0e319c1ec",
   "policy_path_sha256": {
     ".agents/skills/mutation-testing/SKILL.md": "6de1a43ec25aceca79f06066579454b8771d3a0e095b49aa2771fe0b3b42cdf1",

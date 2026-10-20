@@ -1,10 +1,10 @@
 {
   "plan": {
-    "path": "[parent-workspace]/.worktrees/plans/kontord-durable-desks-20261008/_docs/ai-orchestration/plans/2026-10-08-22-47-plan-kontord-durable-desks.md",
+    "path": "[parent-plan]",
     "sha256": "fa5eded4d247347b72ff002d077f42bbda84a3dccbe74b043d4384bac903e472"
   },
   "advisor": {
-    "path": "[parent-workspace]/.worktrees/plans/kontord-durable-desks-20261008/_docs/ai-orchestration/assets/kontord-durable-desks/2026-10-11-advisor-verdict-adam-subject.md",
+    "path": "[parent-verdict]",
     "sha256": "d4c578009b5125a47ffa815bac467b10eb62249046493d79af44b481b2672cac"
   },
   "handoff_skill": {
@@ -16,7 +16,7 @@
     "sha256": "6de1a43ec25aceca79f06066579454b8771d3a0e095b49aa2771fe0b3b42cdf1"
   },
   "alignment_contract": {
-    "path": "[qualification-workspace]/.asma/workspace/_docs/ai-orchestration/reference/2026-09-27-19-35-reference-orchestration-skills-alignment.md",
+    "path": "[qualification-reference]",
     "sha256": "4764403eccfcd44adbb776c7e73735ea7728c26a21f76bbcbb36a99bfce9ab66"
   },
   "surface_transition": {

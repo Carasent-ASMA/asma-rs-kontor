@@ -20,7 +20,7 @@ defective one.
 ## Authority used
 
 Authoritative plan:
-`_docs/ai-orchestration/plans/2026-08-14-23-21-plan-kontor-operational-mvp.md`
+the parent-workspace Kontor operational MVP plan
 read from superproject **master `6e30536`**, not from this worktree.
 
 The worktree's own copy is stale at merge-base `4480dae` and states the
@@ -300,8 +300,7 @@ evidence.
 
 ```
 # Ground truth — authoritative plan
-$ git -C [parent-workspace] show 6e30536:_docs/ai-orchestration/plans/\
-2026-08-14-23-21-plan-kontor-operational-mvp.md          → 507 lines
+$ git -C [parent-workspace] show 6e30536:[parent-plan]          → 507 lines
 
 # Cleanliness and attribution
 $ git status --short                                      → (clean, misleading)

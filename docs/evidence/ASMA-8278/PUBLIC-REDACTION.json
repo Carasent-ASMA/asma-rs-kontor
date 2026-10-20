@@ -1,6 +1,21 @@
 {
   "consumers": [
-    "PUBLIC-REDACTION.md"
+    "PUBLIC-REDACTION.md",
+    "attestation-verifier-source/MANIFEST.json",
+    "prepared-diagnostic-source/ROOT-PROVENANCE.json",
+    "prepared-diagnostic-source/original/01-focused.log.json",
+    "prepared-diagnostic-source/original/01-source-hashes.json",
+    "prepared-diagnostic-source/original/02-runtime-regression.log.json",
+    "prepared-diagnostic-source/original/03-clippy.log.json",
+    "prepared-diagnostic-source/original/04-fmt.log.json",
+    "prepared-diagnostic-source/original/07-diff-check.log.json",
+    "prepared-diagnostic-source/original/final-owned-hashes.json",
+    "prepared-diagnostic-source/original/manifest.json",
+    "prepared-diagnostic-source/original/mutation-baseline-hashes.json",
+    "prepared-diagnostic-source/original/mutation-report.json",
+    "prepared-diagnostic-source/original/temporal-provenance.json",
+    "prepared-diagnostic-source/original/final-owned-hashes.tsv",
+    "prepared-diagnostic-source/original/logs/08-size-check.log"
   ],
   "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
   "files": {
@@ -11,22 +26,28 @@
       "private_references_redacted": 1
     },
     "prepared-diagnostic-source/candidate-files/crates/kontor-runtime/src/planning_pair/attestation.rs": {
-      "bytes": 14921,
-      "derivative_sha256": "6289cb9b1497387795e70b1b4728a2e1767065afc6c4be7d5401b9fea12e83cd",
+      "bytes": 14890,
+      "derivative_sha256": "a6e46758a48ae9d48cb2e719541fc055288126621370820a58418f7d0e9f8779",
       "original_sha256": "4902114724206f4581ca055b47a1e7c18444c449b7ae61094df46d8380e57260",
-      "private_references_redacted": 1
+      "private_references_redacted": 2
     },
     "prepared-diagnostic-source/candidate-files/crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic.rs": {
-      "bytes": 8306,
-      "derivative_sha256": "38a0f76f15e9bc1eaffe0c01532b1789093ed69c6bbf985c84d9d96d92e469b8",
+      "bytes": 8250,
+      "derivative_sha256": "48a5baf647c4e0d10f45d5a0fb176ce389a14a09d342e22b77800ec9096a986f",
       "original_sha256": "8d4b5040642c68b58986fb8d3d8614584e48bb70ff5ac3ba7728b9679efd1a2d",
-      "private_references_redacted": 2
+      "private_references_redacted": 4
     },
     "prepared-diagnostic-source/original/graph-verify-trace.json": {
       "bytes": 1270,
       "derivative_sha256": "12981f6d93d8f9d8aa47c0d652e286d87025b1b8c01e508f1ce09bb79dde736c",
       "original_sha256": "e7ecb4476da6b822bf9027c782afbde38c87813392c4aa376df8505b8cffa69a",
       "private_references_redacted": 7
+    },
+    "prepared-token-metadata-source/candidate-files/crates/kontor-store/tests/schema_v1.rs": {
+      "bytes": 280687,
+      "derivative_sha256": "87ed9943e5d500a74558d707e96a10f4e9de2520479750968b45b114b64b69bd",
+      "original_sha256": "4678b0929e8d2ea12340aa1329d7e5c0b3f3f35eab0145ed7c8c3f6321168cc3",
+      "private_references_redacted": 1
     }
   },
   "model": "The public copy is a redacted derivative. Original bytes and SHA-256 are retained in the access-controlled evidence store; the TPM owns the exact-path disposition ledger.",

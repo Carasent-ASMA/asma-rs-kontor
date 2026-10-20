@@ -17,7 +17,7 @@ workstream: kontor
 > **Category:** plan
 > **Scope:** `_tools/asma-rs-kontor` build configuration, test harnesses, verification scripts and contributor policy, plus the operator Mac's cargo and sccache configuration
 > **Summary:** Verification of one Kontor change costs 40 to 50 minutes because every seat compiles the workspace cold for the archive gate and because the bundled SQLite is built unoptimised with its allocation mutex on, which makes the heavy store suites 10 to 30 times slower than they need to be. This plan fixes the build configuration first, then the runner, fixtures and binaries, then the verification policy, so an affected-package check takes under two minutes and the full gate runs once per candidate commit.
-> **Jira:** [`ASMA-8258`](https://carasent.atlassian.net/browse/ASMA-8258)
+> **Jira:** `ASMA-8258`
 > **Orchestration:** Paseo direct, one delivery team, managed manually by Igor. The Kontor control plane is deliberately not used for this work (operator decision, 2026-09-25); no Kontor epic, task or receipt exists for it.
 
 ---
@@ -195,7 +195,7 @@ written decision inside this document before any task in it starts.
 |------|-------------|-----------|------|
 | TASK-039 | Re-record `scripts/test-timings.json` from one full nextest run (`--record-timings` on the JUnit file). Confirm no target other than `kontor-tests-e2e` exceeds the 20 s threshold; list any that does in §7 as a residual. | | |
 | TASK-040 | Update the `scripts/test-lanes.py` module docstring, `CONTRIBUTING.md` "Tests and evidence", `README.md` and `_docs/index.md` (this plan's router row and the policy row). | | |
-| TASK-041 | Add one paragraph to `../../../_docs/ai-orchestration/index.md` "Kontor repository" section pointing seat instructions at the lane commands, so fleet plans stop prescribing `cargo test --workspace` per task. | | |
+| TASK-041 | Add one paragraph to the parent workspace index "Kontor repository" section pointing seat instructions at the lane commands, so fleet plans stop prescribing `cargo test --workspace` per task. | | |
 
 ### Implementation Phase 9: mutation validation (FV-10)
 
@@ -289,7 +289,7 @@ All ten nodes are children of the single Jira task; the work-item code and the c
 - **FILE-008**: `crates/kontor-daemon/tests/harness/mod.rs`, `crates/kontor-daemon/Cargo.toml` (dev-dependency feature).
 - **FILE-009**: `crates/kontor-jira/src/*` (request timeout parameter), `crates/kontor-jira/tests/native_connector.rs`.
 - **FILE-010**: `CONTRIBUTING.md`, `README.md`, `docs/DEVELOPMENT-MACHINE.md` (new), `_docs/index.md`, `_docs/architecture/2026-09-01-13-25-architecture-kontor-local-verification-policy.md` (superseded under option A), new architecture decision (option A), `.github/workflows/verify.yml` (new, option A).
-- **FILE-011**: `../../../_docs/ai-orchestration/index.md` (one paragraph).
+- **FILE-011**: the parent workspace index (one paragraph).
 - **FILE-012**: `~/.cargo/config.toml` on the operator Mac (not versioned).
 
 ## 6. Testing
@@ -334,7 +334,7 @@ All ten nodes are children of the single Jira task; the work-item code and the c
 ## 8. Related Specifications / Further Reading
 
 - [Local verification policy (2026-09-01)](../architecture/2026-09-01-13-25-architecture-kontor-local-verification-policy.md), superseded under FV-08 option A.
-- [Jira ASMA-8258](https://carasent.atlassian.net/browse/ASMA-8258).
+- Jira `ASMA-8258`.
 - Commit `65fe8af8`: test lanes, stable lock check, migrated template for the store suite.
 - [SQLite compile-time options, recommended list](https://www.sqlite.org/compile.html).
 - [cargo-nextest: how it works](https://nexte.st/docs/design/how-it-works/), [setup scripts](https://nexte.st/docs/configuration/setup-scripts/), [archiving builds](https://nexte.st/docs/ci-features/archiving/).

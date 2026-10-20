@@ -14,5 +14,11 @@
   "elapsed_seconds": 5.308,
   "exit_code": 0,
   "log": "logs/02-runtime-regression.log",
-  "sha256": "a42770059e58d4ce8237d863904eb42f669c6ed7fada771930739ef23b4fb347"
+  "sha256": "a42770059e58d4ce8237d863904eb42f669c6ed7fada771930739ef23b4fb347",
+  "public_derivative": {
+    "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+    "ledger": "../../PUBLIC-REDACTION.json",
+    "note": "Custody pointer added; this file is unchanged. Any certified source hash describes the original; public candidate files are redacted derivatives."
+  },
+  "derivatives": {}
 }

@@ -390,4 +390,4 @@ its regression tests demonstrate that check.
 - Deployment-side policy and historical instantiation references: `[parent-plan]` §0
   and `[deployment-manifests]`.
 - Seat context classes: the seat context-window and compaction policy in the
-  deployment repo's `_docs/ai-orchestration/architecture/`.
+  deployment repo's architecture records.

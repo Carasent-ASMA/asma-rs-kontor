@@ -22,6 +22,12 @@
       "original_sha256": "ffb577b173e277a254c422f4c112cb3824a95ad56348a5a40ab6b648c7035276",
       "private_references_redacted": 1
     },
+    "production-prep/2026-10-03-10-55-report-composed-production-prep.md": {
+      "bytes": 27695,
+      "derivative_sha256": "d0962a06f43b4e1c515a1dc20a48d412cb22252eaa2a30aaf7421e149ed9c043",
+      "original_sha256": "7cb9d3131bcbbb46be84cb121a57dd6991f2df28a2456a4fcac155c04d6e840d",
+      "private_references_redacted": 1
+    },
     "production-prep/inspect-integration.py": {
       "bytes": 2452,
       "derivative_sha256": "985b1b49f603b5030f947a2333c2443ac695303d3ad64876fc2c6994d0c67f5a",
@@ -29,10 +35,10 @@
       "private_references_redacted": 1
     },
     "slot5-additive-join-conflict-2026-10-04.json": {
-      "bytes": 78689,
-      "derivative_sha256": "064a6587f46a5fba8150902f4b08575937581c9bc9938e74671c33294c38e071",
+      "bytes": 78605,
+      "derivative_sha256": "21de5613b4eb1ba909aa5867792099f819037671de64da4a66dd8d71930b663e",
       "original_sha256": "8b53ff45e5f5d78caef0983b892da0f6c3879face57731f3b3d8df904248c92d",
-      "private_references_redacted": 1
+      "private_references_redacted": 2
     },
     "verify-boundary-stop.py": {
       "bytes": 5871,
@@ -49,6 +55,7 @@
     "[parent-project]": "private parent project slug",
     "[parent-repository]": "private parent repository",
     "[parent-tools]": "private parent tools path",
+    "[parent-workspace merge-head path]": "private parent git-internal merge-head path",
     "[parent-workspace]": "private parent workspace path",
     "[task-workspace]": "private task workspace path"
   },
