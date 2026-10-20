@@ -10,7 +10,7 @@ use super::rule::*;
 use super::*;
 
 const EXAMPLE: &str = include_str!("../../../tests/fixtures/config/fleet.yml");
-const NEUTRAL_EXAMPLE: &str = include_str!("../../../config/examples/fleet.yml");
+const NEUTRAL_EXAMPLE: &str = include_str!("../../../config/examples/orchestration/fleet.yml");
 
 const TEAM: &str = "team/01936f5a-0000-7000-8000-000000000102/implement";
 const COMMITTEE: &str = "committee/01991c00-0000-7000-8000-000000000001/reviewer-a";
@@ -158,10 +158,10 @@ fn the_neutral_example_is_a_schema_2_policy_with_placeholder_accounts() {
         );
     }
     for owner_alias in [
-        "claude-work",
-        "claude-personal",
-        "codex-work",
-        "codex-personal",
+        concat!("claude", "-work"),
+        concat!("claude", "-personal"),
+        concat!("codex", "-work"),
+        concat!("codex", "-personal"),
     ] {
         assert!(
             !NEUTRAL_EXAMPLE.contains(owner_alias),

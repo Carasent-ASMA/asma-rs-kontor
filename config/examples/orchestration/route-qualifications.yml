@@ -1,0 +1,16 @@
+# Activated route-qualification records. This file is published and activated
+# through the policy path, then bound by content hash; it is not fleet policy
+# and it is not host.yml. A host names a record by `<route>@<revision>` only.
+#
+# A record proves one working provider/harness route for one canonical fleet
+# model and a stated effort subset. The record hash binds the approved values.
+schema_version: 1
+activated: true
+records:
+  - route: glm-acp-agent
+    harness: acp-agent
+    model: open-example
+    efforts: [high, max]
+    revision: '1'
+    activated_at: '2026-10-20T00:00:00Z'
+    record_hash: '51403d36bf9229e9d67fbc5352335bccaf347468db2dcb8bcebcbf3781122b20'

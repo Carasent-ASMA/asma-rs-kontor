@@ -1,13 +1,13 @@
 # Neutral orchestration example. It is the entry file of one explicitly
-# selected config folder: every relative path below resolves from the folder
-# root, never from the consumer's current directory.
+# selected config folder: every relative config reference below resolves from
+# the folder root, never from the consumer's current directory.
 #
 # `schema_version`, `fleet` and `core_team` are the existing bundle selector.
 # The `project:` block is the parameter block the workflow pack renders from;
 # WP-08 extends the bundle reader to read it. Until then this file is a schema
 # fixture, not a live bundle: the current reader accepts only the selector.
 schema_version: 1
-fleet: fleet.yml
+fleet: orchestration/fleet.yml
 core_team: orchestration/teams/core-team.yml
 
 project:
@@ -17,10 +17,15 @@ project:
   name: Example Project
   owner: Platform Owner
 
+  # Project resource paths begin with one of these logical roots. Each root is
+  # a repository checkout the consumer supplies; no root is the config folder.
+  resource_roots:
+    project: example-org/example-project
+
   decision_authorities:
     platform: Platform Owner
     architecture: Architecture Review
-    decision_records_root: docs/decisions/
+    decision_records_root: project/docs/decisions/
 
   tracker:
     kind: jira
@@ -43,12 +48,16 @@ project:
       - example-org/example-project
     base_branch: main
 
-  # Provider/harness combinations this project may launch. Model ids, effort
-  # and vendor independence live in fleet.yml, not here.
+  # Allowlist of provider/harness pairs this project may launch. It never
+  # owns model ids, effort or vendor independence; those stay in fleet.yml.
+  # A host route whose pair is absent here is refused before placement.
   runtime:
     matrix:
-      - {name: default, harness: paseo, provider: opencode}
-      - {name: review, harness: paseo, provider: codex}
+      - {name: claude, harness: paseo, provider: claude}
+      - {name: codex, harness: paseo, provider: codex}
+      - {name: cursor, harness: paseo, provider: cursor}
+      - {name: opencode, harness: opencode, provider: opencode}
+      - {name: glm-acp, harness: acp-agent, provider: glm-acp-agent}
 
   # The project's CLI verbs, for text and checks that must not hard-code one
   # tool's command set.
@@ -57,17 +66,17 @@ project:
     verbs: [status, epic, task, git, fleet]
 
   team_pack: packs/team.yml
-  fleet: fleet.yml
+  fleet: orchestration/fleet.yml
   supervision: paseo-supervision.yml
 
   merge_authority:
     role: Platform Owner
     policy: independent-review-then-owner
 
-  documentation_roots: [docs]
-  gap_ledger: docs/GAPS.md
+  documentation_roots: [project/docs]
+  gap_ledger: project/docs/GAPS.md
   attention_channel: 'attention:platform-owner'
-  glossary: docs/GLOSSARY.md
+  glossary: project/docs/GLOSSARY.md
   worktree_layout: '.worktrees/<key-slug>/<module>'
   check_runs: [publication-branch-title]
 

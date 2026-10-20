@@ -168,7 +168,7 @@ class NeutralExampleTests(unittest.TestCase):
                 )
 
     def test_the_neutral_fleet_holds_only_placeholder_accounts(self) -> None:
-        text = read(EXAMPLES / "fleet.yml")
+        text = read(EXAMPLES / "orchestration" / "fleet.yml")
         for alias in ("claude-primary", "claude-secondary", "codex-primary"):
             self.assertIn(alias, text)
         for owner_alias in (
@@ -188,11 +188,21 @@ class NeutralExampleTests(unittest.TestCase):
 
     def test_the_github_app_docs_example_uses_placeholders(self) -> None:
         text = read(REPO_ROOT / "docs" / "CONFIGURATION.md")
-        self.assertIn('"app_id": "<github-app-id>"', text)
-        self.assertIn('"project_id": "<kontor-project-id>"', text)
-        self.assertIn('"repositories": ["<owner>/<repository>"]', text)
-        self.assertNotIn('"app_id": 123456', text)
+        self.assertIn("app_id: 123456", text)
+        self.assertIn("installation_id: 654321", text)
+        self.assertIn("project_id: <kontor-project-id>", text)
+        self.assertIn("repositories: [<owner>/<repository>]", text)
         self.assertNotIn('"project_id": "01a0064a-e056', text)
+        self.assertTrue(
+            (EXAMPLES / "forge" / "github-app.example.yml").is_file(),
+            "the forge directory named by the inventory has its committed example",
+        )
+
+    def test_the_route_qualifications_example_is_activated_and_hash_bound(self) -> None:
+        text = read(EXAMPLES / "orchestration" / "route-qualifications.yml")
+        self.assertIn("activated: true", text)
+        self.assertIn("record_hash:", text)
+        self.assertIn("glm-acp-agent", text)
 
 
 if __name__ == "__main__":

@@ -36,31 +36,36 @@ provider_accounts:
     native_alias: desktop-claude-a
     harness: paseo
     credential: keychain:desktop/claude-primary
-    serves: [opus-example]
+    serves:
+      opus-example: claude-opus-example
   claude-secondary:
     provider: claude
     native_alias: desktop-claude-b
     harness: paseo
     credential: keychain:desktop/claude-secondary
-    serves: [opus-example]
+    serves:
+      opus-example: claude-opus-example
   codex-primary:
     provider: codex
     native_alias: desktop-codex-a
     harness: paseo
     credential: keychain:desktop/codex-primary
-    serves: [sol-example]
+    serves:
+      sol-example: gpt-example
   cursor:
     provider: cursor
     native_alias: desktop-cursor-a
     harness: paseo
     credential: keychain:desktop/cursor
-    serves: [grok-example]
+    serves:
+      grok-example: grok-example
   opencode:
     provider: opencode
     native_alias: desktop-open-model-a
     harness: opencode
     credential: keychain:desktop/opencode
-    serves: [open-example]
+    serves:
+      open-example: example/model
 
 # The desktop prefers the secondary Claude slot.
 routes:

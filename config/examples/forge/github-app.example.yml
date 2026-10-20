@@ -1,0 +1,10 @@
+# Placeholder GitHub App projection for one organisation. The App id and
+# installation id are integers; the PEM stays outside every repository.
+schema_version: 1
+app_id: 123456
+installation_id: 654321
+private_key_path: /absolute/path/outside/every/repository/github-app.pem
+project_id: 00000000-0000-0000-0000-000000000000
+repositories: [example-org/example-project]
+check_name: publication-identity
+poll_seconds: 60

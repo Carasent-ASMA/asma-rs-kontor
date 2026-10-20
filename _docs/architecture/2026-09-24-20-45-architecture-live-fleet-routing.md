@@ -206,7 +206,7 @@ Operator detail is in [`docs/CONFIGURATION.md`](../../docs/CONFIGURATION.md).
 
 - [`docs/CONFIGURATION.md`](../../docs/CONFIGURATION.md) — operator guide for the
   file, its schema, the three rules, readback and the removal order.
-- [`config/examples/fleet.yml`](../../config/examples/fleet.yml) — the shipped
+- [`config/examples/orchestration/fleet.yml`](../../config/examples/orchestration/fleet.yml) — the shipped
   example, also the first live file.
 - [Plan: Kontor Live Fleet Configuration Implementation Plan](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/plans/2026-09-24-07-30-plan-kontor-live-fleet-configuration.md) —
   the binding implementation plan and its decisions DEC-001…DEC-017.

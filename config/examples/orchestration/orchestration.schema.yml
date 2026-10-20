@@ -18,6 +18,7 @@ project:
     - key
     - name
     - owner
+    - resource_roots
     - decision_authorities
     - tracker
     - branch
@@ -71,8 +72,9 @@ paths:
       - project.supervision
       - project.tracker.spec
   project_resource_paths:
-    base: project root
-    rule: relative to the project root the consumer is given; never resolved or containment-checked from the config folder
+    base: a declared project.resource_roots entry
+    rule: the first path segment is a resource-root key; it maps to a repository in project.forge.repositories, and the rest resolves inside that checkout. Absolute paths and `..` segments are refused.
+    roots_key: project.resource_roots
     keys:
       - project.documentation_roots
       - project.gap_ledger
@@ -102,16 +104,24 @@ route_binding:
     note: domains.<domain>.provider is the canonical/native family, not a host restriction
   host_route:
     fields: [provider, harness, native_alias, credential, serves, efforts, qualification]
-    serves: the fleet model names this route is proved to serve
+    serves: mapping from canonical fleet model name to the model id this route launches (route_model_id)
     efforts: optional subset of the fleet model's efforts
-    qualification: required when provider differs from the fleet domain provider
+    qualification: reference `<route>@<revision>`; required when provider differs from the fleet domain provider
+  runtime_matrix:
+    owner: project
+    rule: project.runtime.matrix is an allowlist of provider/harness pairs; a host route not listed is refused before placement
+  qualification:
+    source: orchestration/route-qualifications.yml
+    activation: published and activated through the policy path, bound by content hash; not fleet policy and not host.yml
+    record_fields: [route, harness, model, efforts, revision, activated_at, record_hash]
+    rule: the record must be activated, hash-match, and cover the pinned canonical model and effort; `<route>@<revision>` is split exactly and compared for equality
   compatibility:
-    rule: the route lists the canonical model in serves and supports the pinned effort; a cross-provider route needs a qualification
-    refusal: an unproven cross-provider route is refused; a different provider is never substituted merely because it is available
+    rule: the route maps the canonical model to a route-native id in serves and supports the pinned effort; a cross-provider route needs a matching activated qualification record
+    refusal: an unproven or malformed cross-provider route is refused; a different provider is never substituted merely because it is available
     fleet_edit: a host route change never requires a fleet policy edit
-  fallback: skip an incompatible route, continue routes.<domain>, then descend to the next chain step; never change the canonical model or effort to fit a route
-  vendor_independence: the canonical fleet vendor, not the working provider or harness
-  migration: schema_version 2 accounts become logical slots; legacy native aliases map to host routes; active-run snapshots are preserved; no daemon change before KR-14
+  fallback: skip an incompatible route, continue routes.<domain>, then descend to the next chain step; never change the canonical model or effort to fit a route; a fallback never lands on a vendor excluded by rules.independent_of
+  vendor_independence: the canonical fleet vendor, not the working provider or harness; if no route preserves it, placement is refused
+  migration: schema_version 2 accounts become logical slots; legacy native aliases map to host routes; active-run snapshots are preserved; the current bundle base config/orchestration/ moves to the selected-folder root with manifest-name equivalence; no daemon change before KR-14
 
 # A placement freezes this record. A later host edit changes new placements,
 # never the snapshot an active run already holds.
@@ -124,6 +134,7 @@ route_snapshot:
     - route_harness
     - native_alias
     - qualification
+    - route_model_id
     - canonical_model
     - canonical_effort
     - canonical_vendor

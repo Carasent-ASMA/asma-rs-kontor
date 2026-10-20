@@ -1,26 +1,29 @@
 # ASMA's values as the schema's test case. This is test data, not a live config
-# folder: the paths below belong to the asma-modules checkout, not to this
-# repository. The schema test asserts that the same project: block accepts a
-# concrete project as well as the neutral example.
+# folder: the paths below describe the declared asma-modules and
+# asma-rs-kontor checkouts. The schema test asserts that the same project: block
+# accepts a concrete project as well as the neutral example.
 schema_version: 1
-fleet: fleet.yml
+fleet: orchestration/fleet.yml
 core_team: orchestration/teams/core-team.yml
 
 project:
   key: ASMA
   name: ASMA
   owner: platform owner
+  resource_roots:
+    modules: Carasent-ASMA/asma-modules
+    kontor: Carasent-ASMA/asma-rs-kontor
   decision_authorities:
     platform: platform owner
     architecture: Architecture Review
-    decision_records_root: _docs/adr/
+    decision_records_root: modules/_docs/adr/
   tracker:
     kind: jira
     site: https://carasent.atlassian.net
     project_key: ASMA
     key_pattern: '^ASMA-[0-9]+$'
     credential_alias: jira-api-token
-    spec: config/tracker/jira.yml
+    spec: tracker/jira.yml
   branch:
     types: [feat, fix, docs, refactor, test, chore, ci, build, perf]
     pattern: '^(feat|fix|docs|refactor|test|chore|ci|build|perf)/ASMA-<number>-<slug>$'
@@ -34,21 +37,23 @@ project:
     base_branch: master
   runtime:
     matrix:
-      - {name: default, harness: paseo, provider: opencode}
-      - {name: review, harness: paseo, provider: codex}
+      - {name: claude, harness: paseo, provider: claude}
+      - {name: codex, harness: paseo, provider: codex}
+      - {name: cursor, harness: paseo, provider: cursor}
+      - {name: opencode, harness: opencode, provider: opencode}
   cli:
     command: asma
     verbs: [status, epic, task, git, fleet]
   team_pack: packs/team.yml
-  fleet: fleet.yml
-  supervision: tpm-supervision.yml
+  fleet: orchestration/fleet.yml
+  supervision: orchestration/tpm-supervision.yml
   merge_authority:
     role: platform owner
     policy: independent-review-then-owner
-  documentation_roots: [_docs, docs]
-  gap_ledger: _docs/ai-orchestration/index.md
+  documentation_roots: [modules/_docs, kontor/docs]
+  gap_ledger: modules/_docs/ai-orchestration/index.md
   attention_channel: 'desk:adam'
-  glossary: UBIQUITOUS_LANGUAGE.md
+  glossary: modules/UBIQUITOUS_LANGUAGE.md
   worktree_layout: '.worktrees/<key-slug>/<module>'
   check_runs: [asma/publication-branch-title, asma/publication-identity]
   capacity:

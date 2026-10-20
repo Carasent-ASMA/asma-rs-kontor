@@ -37,25 +37,29 @@ provider_accounts:
     native_alias: cross-claude-a
     harness: paseo
     credential: keychain:cross/claude-primary
-    serves: [opus-example]
+    serves:
+      opus-example: claude-opus-example
   claude-secondary:
     provider: claude
     native_alias: cross-claude-b
     harness: paseo
     credential: keychain:cross/claude-secondary
-    serves: [opus-example]
+    serves:
+      opus-example: claude-opus-example
   codex-primary:
     provider: codex
     native_alias: cross-codex-a
     harness: paseo
     credential: keychain:cross/codex-primary
-    serves: [sol-example]
+    serves:
+      sol-example: gpt-example
   cursor:
     provider: cursor
     native_alias: cross-cursor-a
     harness: paseo
     credential: keychain:cross/cursor
-    serves: [grok-example]
+    serves:
+      grok-example: grok-example
   opencode:
     # A different provider and harness for the same canonical model. The
     # qualification names the contract revision that proved the route; without
@@ -64,7 +68,8 @@ provider_accounts:
     native_alias: cross-glm-acp-a
     harness: acp-agent
     credential: keychain:cross/glm-acp-agent
-    serves: [open-example]
+    serves:
+      open-example: glm-5.3
     efforts: [high, max]
     qualification: 'glm-acp-agent@1'
 
