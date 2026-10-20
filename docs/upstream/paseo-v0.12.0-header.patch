@@ -1,0 +1,133 @@
+--- a/packages/app/src/plugins/surface-screen.tsx
++++ b/packages/app/src/plugins/surface-screen.tsx
+@@ -8,6 +8,7 @@
+ import { HeaderIconBadge } from "@/components/headers/header-icon-badge";
+ import { HeaderToggleButton } from "@/components/headers/header-toggle-button";
+ import { CompactHeader } from "@/components/headers/compact-header";
++import { SidebarMenuToggle } from "@/components/headers/sidebar-menu-toggle";
+ import { ScreenHeader } from "@/components/headers/screen-header";
+ import { ScreenTitle } from "@/components/headers/screen-title";
+ import { HostFilter } from "@/components/hosts/host-filter";
+@@ -172,6 +173,7 @@
+   const headerLeft = useMemo(
+     () => (
+       <>
++        <SidebarMenuToggle />
+         {Icon ? (
+           <HeaderIconBadge>
+             <ThemedPluginHeaderIcon Icon={Icon} uniProps={mutedColorMapping} />
+--- a/packages/app/e2e/browser/plugin-sidebar-items.spec.ts
++++ b/packages/app/e2e/browser/plugin-sidebar-items.spec.ts
+@@ -241,6 +241,112 @@
+     });
+   });
+ 
++  test("a macOS plugin title clears the window toggle after collapsing and resizing", async ({
++    page,
++  }) => {
++    test.setTimeout(120_000);
++    // This exercises desktop renderer layout in Chromium, not native window dragging.
++    await page.addInitScript(() => {
++      const desktopWindow = {
++        isFullscreen: async () => false,
++        isMaximized: async () => false,
++        onResized: async () => () => {},
++        updateChrome: async () => {},
++      };
++      Object.defineProperty(window, "paseoDesktop", {
++        value: {
++          platform: "darwin",
++          windowChromeMode: "native-mac",
++          events: { on: async () => () => {} },
++          window: { getCurrentWindow: () => desktopWindow },
++          invoke: async (command: string) => {
++            if (command === "get_desktop_settings") {
++              return { daemon: { manageBuiltInDaemon: false, keepRunningAfterQuit: false } };
++            }
++            if (command === "desktop_local_credential") return null;
++            throw new Error(`Desktop layout fixture cannot invoke ${command}`);
++          },
++        },
++      });
++    });
++    await page.setViewportSize(WIDE);
++    await gotoWorkspace(page, workspaceId);
++    const row = headerRow(page, SHOWCASE_PLUGIN_ID, "deploys");
++    await row.click();
++    await expect(screenTitle(page)).toHaveText("Deploys");
++    await expect(page.getByText("Deploys screen body", { exact: true })).toBeVisible();
++    const toggle = visibleTestId(page, "menu-button");
++
++    async function expectClearHeader() {
++      await expect(toggle).toHaveCount(1);
++      await expect
++        .poll(async () => {
++          const title = await boxOf(screenTitle(page));
++          const button = await boxOf(toggle);
++          return title.x - (button.x + button.width);
++        })
++        .toBeGreaterThanOrEqual(8);
++    }
++
++    await expectClearHeader();
++    await qaScreenshot(page, "plugin-header-mac-expanded");
++    await toggle.click();
++    await expect(row).not.toBeVisible();
++    await expect(page.getByText("Deploys screen body", { exact: true })).toBeVisible();
++    await qaScreenshot(page, "plugin-header-mac-collapsed");
++    await expectClearHeader();
++
++    // The placeholder must not introduce a second button or a keyboard stop.
++    await toggle.focus();
++    await expect(toggle).toBeFocused();
++    await page.keyboard.press("Enter");
++    await expect(row).toBeVisible();
++    await page.keyboard.press("Space");
++    await expect(row).not.toBeVisible();
++    await expect(toggle).toBeFocused();
++
++    for (const viewport of [
++      { width: 1024, height: 768 },
++      { width: 800, height: 600 },
++      { width: 1728, height: 849 },
++    ]) {
++      await page.setViewportSize(viewport);
++      await expectClearHeader();
++      await toggle.click();
++      await expect(row).toBeVisible();
++      await expectClearHeader();
++      await toggle.click();
++      await expect(row).not.toBeVisible();
++    }
++
++    const dragRegions = await page
++      .locator('[style*="app-region: drag"]')
++      .evaluateAll((elements) => {
++        const regions = [];
++        for (const element of elements) {
++          const bounds = element.getBoundingClientRect();
++          if (bounds.y === 0 && bounds.width > 100 && bounds.height > 20) {
++            regions.push({
++              x: bounds.x,
++              y: bounds.y,
++              width: bounds.width,
++              height: bounds.height,
++              region: getComputedStyle(element).getPropertyValue("-webkit-app-region"),
++            });
++          }
++        }
++        return regions;
++      });
++    expect(dragRegions.length).toBeGreaterThan(0);
++    expect(dragRegions.every((region) => region.region === "drag")).toBe(true);
++    await expect(toggle).toHaveCSS("-webkit-app-region", "no-drag");
++
++    await page.setViewportSize(COMPACT);
++    await expect(screenTitle(page)).toHaveText("Deploys");
++    await expect(visibleTestId(page, "plugin-surface-close")).toHaveCount(0);
++    await qaScreenshot(page, "plugin-header-mac-compact");
++  });
++
+   test("a header row's shortcut hint presses the row", async ({ page }) => {
+     await page.setViewportSize(WIDE);
+     await gotoWorkspace(page, workspaceId);
