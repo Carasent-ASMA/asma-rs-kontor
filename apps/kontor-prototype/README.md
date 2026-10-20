@@ -22,13 +22,19 @@ rest of the workspace. Then:
 
 Both servers bind to 127.0.0.1, so they are reachable only from this machine.
 
-The studio page shows the scenario list, a phone frame (390×844, touch pointer)
-and a desktop frame (1440×900, mouse pointer).
+The studio page shows one toolbar above a phone frame (390×844, touch pointer)
+and a desktop frame (1440×900, mouse pointer). **Scenario** names the current
+scenario and opens a searchable list, with the highlighted scenario's
+description under it. **Prototype · fixtures ⓘ** gives the current scenario's
+description, where the data comes from and a link to the bare embed. Escape, a
+press outside, or ✕ closes either panel, and focus returns to the button that
+opened it.
 
-Query parameters:
+Query parameters (each change is a browser history entry, so Back and Forward
+restore it):
 - `scenario=<id>`
 - `theme=dark|light`
-- `layout=both|phone|desktop`
+- `layout=both|phone|desktop`: the default is `both`
 
 A single frame opens with `?embed=1&scenario=<id>&pointer=coarse|fine`. **Reset frames**
 reloads both frames from their fixtures.
