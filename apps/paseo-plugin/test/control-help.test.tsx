@@ -63,12 +63,14 @@ describe("hover and focus help", () => {
     expect(style.left).toBeGreaterThanOrEqual(6); expect(style.left + style.width).toBeLessThanOrEqual(width - 6); expect(style.bottom).toBeGreaterThan(0); expect(style.maxHeight).toBeLessThanOrEqual(height - 12);
     expect(all(screen.tooltip()).some(e => e.props.accessibilityRole === "button")).toBe(false);
   });
-  it("dismisses on source scroll and resize, while scrolling the tooltip remains possible", () => {
+  it("keeps focus help through source scrolling; hover help closes and tooltip scrolling stays usable", () => {
     const screen = mount(); screen.control.bindings.onFocus(); screen.render();
     const panel = screen.tooltip()!; const child = {};
     (panel.props.ref as { current: unknown }).current = { contains: (target: unknown) => target === child };
     handlers.get("scroll")!({ target: child } as never); screen.render(); expect(screen.tooltip()).toBeDefined();
-    handlers.get("scroll")!({ target: {} } as never); screen.render(); expect(screen.tooltip()).toBeUndefined();
+    handlers.get("scroll")!({ target: {} } as never); screen.render(); expect(screen.tooltip()).toBeDefined();
+    screen.control.bindings.onBlur(); vi.advanceTimersByTime(160); screen.render();
+    screen.control.bindings.onHoverIn(); screen.render(); handlers.get("scroll")!({ target: {} } as never); screen.render(); expect(screen.tooltip()).toBeUndefined();
     screen.control.bindings.onHoverIn(); screen.render(); handlers.get("resize")!({} as never); screen.render(); expect(screen.tooltip()).toBeUndefined();
   });
   it("keeps touch labels and normal activation; it never makes an action a help-only tap", () => {

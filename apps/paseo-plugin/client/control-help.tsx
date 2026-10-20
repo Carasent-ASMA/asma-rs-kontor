@@ -36,6 +36,7 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
         current.current = next;
         root.current?.measureInWindow((rootX, rootY, width, height) => anchor.current?.measureInWindow((x, y, w, h) => {
           if (token !== revision.current || !w || !h || !width || !height) return;
+          if (x + w < rootX || x > rootX + width || y + h < rootY || y > rootY + height) { setHelp(null); setFrame(null); return; }
           setFrame(menuFrame({ x: x - rootX, y: y - rootY, width: w, height: h }, { width, height }, { align: "start", width: 360, gap: 0, margin: 6, maxHeight: Math.min(220, height - 12) }));
           setHelp(next);
         }));
@@ -55,8 +56,14 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
       if (event.key !== "Escape" || !current.current) return;
       event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation?.(); controller.dismiss();
     };
-    // A scrolled trigger has moved. Scrolling the explanation itself must remain usable.
-    const scroll = (event: KeyEvent) => { if (!(panel.current as Contains | null)?.contains?.(event.target)) controller.dismiss(); };
+    // Focus can scroll a row into view after its focus event. Re-measure its help;
+    // hover-only help closes when its source moves. Scrolling help itself stays usable.
+    const scroll = (event: KeyEvent) => {
+      if ((panel.current as Contains | null)?.contains?.(event.target)) return;
+      const value = current.current;
+      if (value?.focused) controller.show(value.anchor, value.text, true);
+      else controller.dismiss();
+    };
     const moved = () => controller.dismiss();
     document?.addEventListener("keydown", key, true); document?.addEventListener("scroll", scroll, true);
     window?.addEventListener("resize", moved);
