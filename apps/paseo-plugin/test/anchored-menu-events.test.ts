@@ -38,18 +38,33 @@ const press = (key: Key): Event => {
 };
 const mounted: (() => void)[] = [];
 
+type Options = { panel: Node; dialog?: boolean; anchor?: Node; onClose?: () => void };
+const menuOf = ({ dialog, anchor = node(), onClose = vi.fn() }: Options) => AnchoredMenu({ anchor: { current: anchor } as never,
+  root: { current: { contains: (target: unknown) => target !== page.body && target !== host, measureInWindow: () => {} } } as never, rootSize: { width: 800, height: 600 },
+  placement: { align: "start", width: 200 }, onClose, colors: {} as never, label: "Choices", dialog, children: null }) as ReactElement<Record<string, unknown>>;
+
 /** Draws the menu once, attaches its panel and runs its mount effects; the returned function unmounts it. */
-function mount({ panel, dialog, anchor = node(), onClose = vi.fn() }: { panel: Node; dialog?: boolean; anchor?: Node; onClose?: () => void }) {
+function mount(options: Options) {
   effects.length = 0;
-  const tree = AnchoredMenu({ anchor: { current: anchor } as never, root: { current: { contains: (target: unknown) => target !== page.body && target !== host, measureInWindow: () => {} } } as never, rootSize: { width: 800, height: 600 },
-    placement: { align: "start", width: 200 }, onClose, colors: {} as never, label: "Choices", dialog, children: null }) as ReactElement<{ children: ReactElement<Record<string, unknown>>[] }>;
+  const menu = menuOf(options);
+  const tree = (menu.type as (props: Record<string, unknown>) => ReactElement<{ children: ReactElement<Record<string, unknown>>[] }>)(menu.props);
   const shown = tree.props.children[1]!;
+  const { panel } = options;
   (shown.props.ref as { current: unknown }).current = panel;
   const cleanups = effects.map((effect) => effect()).filter((cleanup): cleanup is () => void => typeof cleanup === "function");
   let done = false;
   const unmount = () => { if (!done) { done = true; cleanups.forEach((cleanup) => cleanup()); } };
   mounted.push(unmount);
-  return { panel: shown.props, backdrop: tree.props.children[0]!.props, unmount };
+  return { key: menu.key, panel: shown.props, backdrop: tree.props.children[0]!.props, unmount };
+}
+/** One conditional slot drawn again with other props: as React does, the same key keeps the mounted panel and its effects, and a new key mounts afresh. */
+function slot() {
+  let current: ReturnType<typeof mount> | null = null;
+  return (options: Options) => {
+    if (current?.key === menuOf(options).key) return current;
+    current?.unmount();
+    return current = mount(options);
+  };
 }
 
 describe("anchored menu keys on web", () => {
@@ -117,6 +132,25 @@ describe("anchored menu keys on web", () => {
     expect([lower.focus.mock.calls.length, top.focus.mock.calls.length]).toEqual([1, 1]);
     mounted.splice(0).forEach((unmount) => unmount());
     expect(listeners.size).toBe(0);
+    expect(press({ key: "Tab" }).preventDefault).not.toHaveBeenCalled();
+  });
+
+  it("opens a dialog afresh when its slot swaps a menu for it, and a menu afresh the other way", () => {
+    const draw = slot();
+    const [more, picker, item, input, last] = [node(), node(), node(), node(), node()];
+    draw({ panel: panelOf([item]), anchor: more });
+    page.activeElement = item;
+    expect(press({ key: "Tab" }).preventDefault).not.toHaveBeenCalled();
+    // From the open menu, Tab reaches the picker behind it, which opens in the same slot.
+    const dialog = draw({ panel: panelOf([input, last]), dialog: true, anchor: picker });
+    expect(dialog.panel).toMatchObject({ role: "dialog", "aria-modal": true });
+    page.activeElement = last;
+    expect(press({ key: "Tab" }).preventDefault).toHaveBeenCalledTimes(1);
+    expect(input.focus).toHaveBeenCalledTimes(1);
+    press({ key: "Escape" });
+    expect([picker.focus.mock.calls.length, more.focus.mock.calls.length]).toEqual([1, 0]);
+    draw({ panel: panelOf([item]), anchor: more });
+    page.activeElement = item;
     expect(press({ key: "Tab" }).preventDefault).not.toHaveBeenCalled();
   });
 

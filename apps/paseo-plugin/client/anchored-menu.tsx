@@ -54,16 +54,24 @@ export function measureMenu(root: Measurable | null, anchor: Measurable | null, 
   }));
 }
 
+type AnchoredMenuProps = {
+  anchor: RefObject<View | null>; root: RefObject<View | null>; rootSize: MenuSize; placement: MenuPlacement;
+  onClose: () => void; colors: Colors; label: string; dialog?: boolean; testID?: string; header?: ReactNode; children: ReactNode;
+};
+
 /**
  * Plugin-owned popover in the screen root: the SDK offers no anchored screen menu,
  * so this draws its own backdrop for outside presses and handles Escape/arrow keys on web
  * and the Android back button. Mounted only while open. A `dialog` is modal: on web, Tab and
  * Shift+Tab cycle inside the top open one, and with nothing to reach the panel itself holds focus.
  */
-export function AnchoredMenu({ anchor, root, rootSize, placement, onClose, colors, label, dialog = false, testID, header, children }: {
-  anchor: RefObject<View | null>; root: RefObject<View | null>; rootSize: MenuSize; placement: MenuPlacement;
-  onClose: () => void; colors: Colors; label: string; dialog?: boolean; testID?: string; header?: ReactNode; children: ReactNode;
-}) {
+export function AnchoredMenu(props: AnchoredMenuProps) {
+  // A slot that swaps a menu for a dialog without closing (More, then the context picker) opens the new one afresh,
+  // so it joins or leaves the dialogs and Escape returns focus to its own trigger.
+  return <AnchoredPanel key={props.dialog ? "dialog" : "menu"} {...props} />;
+}
+
+function AnchoredPanel({ anchor, root, rootSize, placement, onClose, colors, label, dialog = false, testID, header, children }: AnchoredMenuProps) {
   const [frame, setFrame] = useState<MenuFrame | null>(null);
   const token = useRef(0);
   const panel = useRef<View | null>(null);
