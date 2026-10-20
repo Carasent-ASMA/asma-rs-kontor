@@ -16,12 +16,12 @@ describe("production task team reader", () => {
     const adapter = createTeamsSourceAdapter(catalog, teamsSourceBindings(catalog.sources).formats);
     const snapshots = Object.fromEntries(await Promise.all(catalog.sources.map(async (source) => [source.id, await adapter.read({ sourceId: source.id })])));
     const read = taskTeamReader([summary("plan", "plan"), ...catalog.sources, summary("jira", "jira"), summary("decisions", "decisions"), summary("delivery", "delivery")], snapshots)(task);
-    expect(read).toEqual({ state: "not-provided", coverage: "No configured source assigns a team, workflow or risk tier to a task (6 read). Plans declare tasks and dependencies; Teams configuration declares team templates (Plan, build and verify; Research spike), model bindings and roster seats, none of them for a task; Jira history records status; decision records hold decisions; delivery records hold pull requests, checks and releases." });
+    expect(read).toEqual({ state: "not-provided", coverage: "No configured source assigns a team, workflow or risk tier to a task (6 configured sources). Plans declare tasks and dependencies; Teams configuration declares team templates (Plan, build and verify; Research spike), model bindings and roster seats, none of them for a task; Jira history records status; decision records hold decisions; delivery records hold pull requests, checks and releases." });
   });
 
   it("gives every task the same answer, whatever the task", () => {
     const read = taskTeamReader([summary("plan", "plan")], {});
-    const answer = { state: "not-provided", coverage: "No configured source assigns a team, workflow or risk tier to a task (1 read). Plans declare tasks and dependencies." };
+    const answer = { state: "not-provided", coverage: "No configured source assigns a team, workflow or risk tier to a task (1 configured source). Plans declare tasks and dependencies." };
     expect([read(task), read({ jira: "ASMA-2", kontorId: null, label: "ASMA-2" }), read({ jira: null, kontorId: "K-9", label: "K-9" })]).toEqual([answer, answer, answer]);
   });
 
@@ -30,6 +30,6 @@ describe("production task team reader", () => {
   });
 
   it("names Teams configuration generally while its templates are unread", () => {
-    expect(taskTeamReader(catalog.sources, {})(task)).toMatchObject({ coverage: "No configured source assigns a team, workflow or risk tier to a task (2 read). Teams configuration declares team templates, model bindings and roster seats." });
+    expect(taskTeamReader(catalog.sources, {})(task)).toMatchObject({ coverage: "No configured source assigns a team, workflow or risk tier to a task (2 configured sources). Teams configuration declares team templates, model bindings and roster seats." });
   });
 });
