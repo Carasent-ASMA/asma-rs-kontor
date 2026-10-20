@@ -1,30 +1,5 @@
 {
-  "additional_redactions": [
-    {
-      "bytes": 4451,
-      "derivative_sha256": "4acc05b7a3ed044466b25db25ca4b81435412d8f522de7597ec724ec57e5becb",
-      "path": "admission-readback.json",
-      "previous_derivative_sha256": "ed3153eb2ca489e4b036dd227555faaa5dc3c19d4267861cb07a6a0ebf3476b6",
-      "private_references_redacted": 1,
-      "reason": "complete neutralization of remaining private repository identifiers (LSA-WP01-PUBLIC-EVIDENCE-001)"
-    },
-    {
-      "bytes": 5299,
-      "derivative_sha256": "5c87ce055f952d0eec6e2f557384927803fc01bba74107ccf6b73b7fd5fba299",
-      "path": "final-control-plane-readback.json",
-      "previous_derivative_sha256": "af7ccee122d309cb7abf1debbfb958775025bcb1c8e97e769f4073488041f625",
-      "private_references_redacted": 1,
-      "reason": "complete neutralization of remaining private repository identifiers (LSA-WP01-PUBLIC-EVIDENCE-001)"
-    },
-    {
-      "bytes": 5467,
-      "derivative_sha256": "bee562054fa9069fc37fccc0521878f57aa62ba30d7bb7fddd0cb1c4de05d1be",
-      "path": "release-block-readback.json",
-      "previous_derivative_sha256": "490577cfc114b54a098ce10fbabb2fb493aa51f5312db1fb5542068b6b01b199",
-      "private_references_redacted": 1,
-      "reason": "complete neutralization of remaining private repository identifiers (LSA-WP01-PUBLIC-EVIDENCE-001)"
-    }
-  ],
+  "additional_redactions": [],
   "additional_redactions_note": "additional_redactions supersedes derivative_sha256 in files for the named paths; files retains the original first-pass pair unchanged.",
   "consumers": [
     "qualification-71e3c6f.json",
@@ -58,9 +33,10 @@
       "private_references_redacted": 4
     },
     "admission-readback.json": {
-      "bytes": 4444,
-      "derivative_sha256": "ed3153eb2ca489e4b036dd227555faaa5dc3c19d4267861cb07a6a0ebf3476b6",
+      "bytes": 4451,
+      "derivative_sha256": "4acc05b7a3ed044466b25db25ca4b81435412d8f522de7597ec724ec57e5becb",
       "original_sha256": "679725c11919b8e6a263b94e496f4c18713abdfba59c460e399d31ac0e5f49e0",
+      "previous_derivative_sha256": "ed3153eb2ca489e4b036dd227555faaa5dc3c19d4267861cb07a6a0ebf3476b6",
       "private_references_redacted": 2
     },
     "admission-red.log": {
@@ -106,9 +82,10 @@
       "private_references_redacted": 2
     },
     "final-control-plane-readback.json": {
-      "bytes": 5292,
-      "derivative_sha256": "af7ccee122d309cb7abf1debbfb958775025bcb1c8e97e769f4073488041f625",
+      "bytes": 5299,
+      "derivative_sha256": "5c87ce055f952d0eec6e2f557384927803fc01bba74107ccf6b73b7fd5fba299",
       "original_sha256": "dc33bd82bbc5935607da0e78ccc0b17974785112920b535515c6f4fab2d629dc",
+      "previous_derivative_sha256": "af7ccee122d309cb7abf1debbfb958775025bcb1c8e97e769f4073488041f625",
       "private_references_redacted": 2
     },
     "gate-replay-green.log": {
@@ -238,9 +215,10 @@
       "private_references_redacted": 1
     },
     "release-block-readback.json": {
-      "bytes": 5460,
-      "derivative_sha256": "490577cfc114b54a098ce10fbabb2fb493aa51f5312db1fb5542068b6b01b199",
+      "bytes": 5467,
+      "derivative_sha256": "bee562054fa9069fc37fccc0521878f57aa62ba30d7bb7fddd0cb1c4de05d1be",
       "original_sha256": "82674d3d6f590bf381e926bb25a5e80d3c6b8818b82f2b76ff8f450105b439f9",
+      "previous_derivative_sha256": "490577cfc114b54a098ce10fbabb2fb493aa51f5312db1fb5542068b6b01b199",
       "private_references_redacted": 2
     },
     "release-build.json": {

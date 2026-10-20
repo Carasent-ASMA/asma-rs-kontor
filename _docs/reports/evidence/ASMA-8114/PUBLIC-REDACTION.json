@@ -7,14 +7,6 @@
       "previous_derivative_sha256": "4f189f62d56e1864e70005db9efe9b3348ed551499dca9d8c59f49e203f57cf5",
       "private_references_redacted": 1,
       "reason": "remove remaining owner-directory prefix (LSA-WP01-PUBLIC-EVIDENCE-001)"
-    },
-    {
-      "bytes": 6276,
-      "derivative_sha256": "7ab6cd8de42493160e5277ad432566ae169f176eec26f19bc8134bdccf18a8cd",
-      "path": "legacy-consultation-read/SHA256SUMS.json",
-      "previous_derivative_sha256": "88e4e97418b7951193b626c0cd8a7482d85c86a36a8076a055b8727578ed84ee",
-      "private_references_redacted": 0,
-      "reason": "update custody manifest derivative to current hashes after evidence redaction (LSA-WP01-PUBLIC-EVIDENCE-001)"
     }
   ],
   "additional_redactions_note": "additional_redactions supersedes derivative_sha256 in files for the named paths; files retains the original first-pass pair unchanged.",
@@ -26,8 +18,9 @@
   "files": {
     "legacy-consultation-read/SHA256SUMS.json": {
       "bytes": 6276,
-      "derivative_sha256": "88e4e97418b7951193b626c0cd8a7482d85c86a36a8076a055b8727578ed84ee",
-      "original_sha256": "4fd09764a3b7716e564f9a37d6b1dce4ecc19d7f6996d8717bafc40ddcb4c37c"
+      "derivative_sha256": "7ab6cd8de42493160e5277ad432566ae169f176eec26f19bc8134bdccf18a8cd",
+      "original_sha256": "4fd09764a3b7716e564f9a37d6b1dce4ecc19d7f6996d8717bafc40ddcb4c37c",
+      "previous_derivative_sha256": "88e4e97418b7951193b626c0cd8a7482d85c86a36a8076a055b8727578ed84ee"
     },
     "legacy-consultation-read/focused-runner.py": {
       "bytes": 2378,

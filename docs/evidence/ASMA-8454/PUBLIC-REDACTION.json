@@ -7,14 +7,6 @@
       "previous_derivative_sha256": "d170fb8a643b1103ab78836a6301ca2fa6fac94ca15e84be53e917259af1652d",
       "private_references_redacted": 0,
       "reason": "correct derivative-to-ledger reference to ../PUBLIC-REDACTION.json"
-    },
-    {
-      "bytes": 32440,
-      "derivative_sha256": "e4c255941afe8d64e51e66435bae13a41f35f8a8c14160af583cc1b597e9e60b",
-      "path": "package-manifest.json",
-      "previous_derivative_sha256": "db0ca88477804594189656fb29c54c70395644fc83f9f47f9867f374bd94917c",
-      "private_references_redacted": 0,
-      "reason": "update custody manifest derivative to current hashes after evidence redaction (LSA-WP01-PUBLIC-EVIDENCE-001)"
     }
   ],
   "additional_redactions_note": "additional_redactions supersedes derivative_sha256 in files for the named paths; files retains the original first-pass pair unchanged.",
@@ -1620,8 +1612,9 @@
     },
     "package-manifest.json": {
       "bytes": 32440,
-      "derivative_sha256": "db0ca88477804594189656fb29c54c70395644fc83f9f47f9867f374bd94917c",
+      "derivative_sha256": "e4c255941afe8d64e51e66435bae13a41f35f8a8c14160af583cc1b597e9e60b",
       "original_sha256": "e419787217301911299714419f1a9bfc810932902a278ed1fbac6b5edb4d98d7",
+      "previous_derivative_sha256": "db0ca88477804594189656fb29c54c70395644fc83f9f47f9867f374bd94917c",
       "private_references_redacted": 0
     },
     "repairs/completion-strengthened.log": {
