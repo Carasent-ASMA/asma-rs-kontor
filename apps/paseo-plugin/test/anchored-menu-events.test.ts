@@ -137,21 +137,46 @@ describe("anchored menu keys on web", () => {
 
   it("opens a dialog afresh when its slot swaps a menu for it, and a menu afresh the other way", () => {
     const draw = slot();
-    const [more, picker, item, input, last] = [node(), node(), node(), node(), node()];
+    const [more, picker, item, input, last, below] = [node(), node(), node(), node(), node(), node()];
+    // A dialog open lower down (Details, say) keeps Tab while the slot holds a menu.
+    mount({ panel: panelOf([below]), dialog: true });
     draw({ panel: panelOf([item]), anchor: more });
-    page.activeElement = item;
-    expect(press({ key: "Tab" }).preventDefault).not.toHaveBeenCalled();
-    // From the open menu, Tab reaches the picker behind it, which opens in the same slot.
+    page.activeElement = page.body;
+    press({ key: "Tab" });
+    expect([below.focus.mock.calls.length, listeners.size]).toEqual([1, 2]);
+    // From the open menu, Tab reaches the picker behind it, which opens in the same slot and takes Tab over.
     const dialog = draw({ panel: panelOf([input, last]), dialog: true, anchor: picker });
     expect(dialog.panel).toMatchObject({ role: "dialog", "aria-modal": true });
+    expect(listeners.size).toBe(2);
     page.activeElement = last;
     expect(press({ key: "Tab" }).preventDefault).toHaveBeenCalledTimes(1);
-    expect(input.focus).toHaveBeenCalledTimes(1);
+    expect([input.focus.mock.calls.length, below.focus.mock.calls.length]).toEqual([1, 1]);
     press({ key: "Escape" });
     expect([picker.focus.mock.calls.length, more.focus.mock.calls.length]).toEqual([1, 0]);
+    // Back to the menu: the lower dialog has Tab again, as under any menu, and one handler remains each.
     draw({ panel: panelOf([item]), anchor: more });
+    expect(listeners.size).toBe(2);
     page.activeElement = item;
-    expect(press({ key: "Tab" }).preventDefault).not.toHaveBeenCalled();
+    press({ key: "Tab" });
+    expect([below.focus.mock.calls.length, input.focus.mock.calls.length]).toEqual([2, 1]);
+    press({ key: "Escape" });
+    expect([more.focus.mock.calls.length, picker.focus.mock.calls.length]).toEqual([1, 1]);
+  });
+
+  it("opens afresh when one trigger's opening changes mode, or the slot moves to another trigger", () => {
+    const draw = slot();
+    const [trigger, other, item, stop] = [node(), node(), node(), node()];
+    draw({ panel: panelOf([item]), anchor: trigger });
+    draw({ panel: panelOf([stop]), dialog: true, anchor: trigger });
+    page.activeElement = page.body;
+    expect(press({ key: "Tab" }).preventDefault).toHaveBeenCalledTimes(1);
+    expect(stop.focus).toHaveBeenCalledTimes(1);
+    draw({ panel: panelOf([item]), anchor: trigger });
+    // Group by open, then the workspace scope: Escape returns focus to the scope, not to Group by.
+    draw({ panel: panelOf([item]), anchor: other });
+    expect(listeners.size).toBe(1);
+    press({ key: "Escape" });
+    expect([other.focus.mock.calls.length, trigger.focus.mock.calls.length]).toEqual([1, 0]);
   });
 
   it("keeps Tab with a dialog when a menu opens over it", () => {

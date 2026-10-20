@@ -30,6 +30,10 @@ const TABBABLE = ':is(a[href], button:not([disabled]), input:not([disabled]), se
 const drawn = (node: FocusTarget) => !node.getClientRects || node.getClientRects().length > 0;
 /** Open dialogs, newest last: only the top one keeps Tab inside it. */
 const dialogs: object[] = [];
+/** A number for each trigger ref, so a swap to another trigger reads as another opening. */
+const triggers = new WeakMap<object, number>();
+let triggerCount = 0;
+const triggerKey = (anchor: object) => { let key = triggers.get(anchor); if (key === undefined) triggers.set(anchor, key = ++triggerCount); return key; };
 
 /**
  * Where Tab (Shift+Tab when `back`) must move focus to stay in a modal panel, or null where the browser's own
@@ -66,9 +70,10 @@ type AnchoredMenuProps = {
  * Shift+Tab cycle inside the top open one, and with nothing to reach the panel itself holds focus.
  */
 export function AnchoredMenu(props: AnchoredMenuProps) {
-  // A slot that swaps a menu for a dialog without closing (More, then the context picker) opens the new one afresh,
-  // so it joins or leaves the dialogs and Escape returns focus to its own trigger.
-  return <AnchoredPanel key={props.dialog ? "dialog" : "menu"} {...props} />;
+  // A slot that swaps one opening for another without closing (More, then the context picker; Group by, then the
+  // workspace scope) mounts the new one afresh: it joins or leaves the dialogs, measures against its own trigger,
+  // focuses its first item and returns focus to that trigger.
+  return <AnchoredPanel key={`${props.dialog ? "dialog" : "menu"}:${triggerKey(props.anchor)}`} {...props} />;
 }
 
 function AnchoredPanel({ anchor, root, rootSize, placement, onClose, colors, label, dialog = false, testID, header, children }: AnchoredMenuProps) {
