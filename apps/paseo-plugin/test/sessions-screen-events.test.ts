@@ -1135,6 +1135,9 @@ describe("SessionsScreen toolbar events", () => {
     directory.state = { ...(directory.state as object), status: "stale", live: false, staleReason: "Host offline" };
     harness.flush();
     expect(label()).toContain("5 sessions. Last known: 1 needs input · 1 error · 3 running.");
+    const staleCounts = walk(drawn(groupRows()[0])).find((element) => "aggregate" in element.props) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike };
+    expect(walk(staleCounts.type(staleCounts.props)).map((element) => element.props.children).filter((child) => typeof child === "string" || typeof child === "number"))
+      .toEqual(["Last known", "▲", 1, "needs input", "✕", 1, "error"]);
   });
 
   it("shows a Role row's conflict cue and place, keeping the place beside the title on compact", () => {

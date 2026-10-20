@@ -37,11 +37,13 @@ export function StateBadge({ state, colors, compact }: { state: OrganizationStat
 /**
  * A Role header's states: up to two non-zero ones, most urgent first, each as shape, count and
  * word, so one error among five sessions reads as one. The total stays in its own column.
+ * While the inventory is stale they follow "Last known", as on the Board.
  */
-function StateCounts({ aggregate, colors, compact }: { aggregate: OrganizationAggregate; colors: Colors; compact: boolean }) {
+function StateCounts({ aggregate, colors, compact, stale }: { aggregate: OrganizationAggregate; colors: Colors; compact: boolean; stale: boolean }) {
   const states = leadingStates(aggregate);
   if (!states.length) return <StateBadge state={null} colors={colors} compact={compact} />;
   return <View testID="organization-state-counts" style={{ flexDirection: "row", alignItems: "center", gap: compact ? 6 : 10, flexShrink: 1, minWidth: 0 }}>
+    {stale ? <Text numberOfLines={1} style={{ flexShrink: 1, color: colors.foregroundMuted, fontSize: compact ? 9 : 10 }}>Last known</Text> : null}
     {states.map(({ state, count }) => <View key={state} style={{ flexDirection: "row", alignItems: "center", gap: 3, flexShrink: 1, minWidth: 0 }}>
       <Text style={{ color: stateColor(state, colors), fontSize: compact ? 10 : 11, opacity: state === "closed" ? 0.6 : 1 }}>{CHAIN_STATE_GLYPHS[state]}</Text>
       <Text style={{ color: colors.foreground, fontSize: compact ? 10 : 11, fontVariant: ["tabular-nums"] }}>{count}</Text>
@@ -140,7 +142,7 @@ export function OrganizationRowView({ row, colors, compact, children, disabled, 
         <Text numberOfLines={1} style={{ flexShrink: 1, color: colors.foreground, fontSize: top ? 13 : 12.5, fontWeight: "600", fontFamily: group.kind === "workspace-kind" || (group.kind === "role" && group.shortCode !== null) ? "monospace" : undefined }}>{label}</Text>
         {group.detail && !compact ? <Text numberOfLines={1} style={{ flexShrink: 2, color: colors.foregroundMuted, fontSize: 11 }}>{group.detail}</Text> : null}
         <View style={{ flex: 1 }} />
-        {roleView ? <StateCounts aggregate={group.aggregate} colors={colors} compact={compact} /> : <StateBadge state={state} colors={colors} compact={compact} />}
+        {roleView ? <StateCounts aggregate={group.aggregate} colors={colors} compact={compact} stale={stale} /> : <StateBadge state={state} colors={colors} compact={compact} />}
         {/* "No sessions" already says zero; the empty slot keeps the count column aligned. */}
         {state === null && groupCount(group) === "0" ? <View style={{ minWidth: compact ? 22 : 28 }} />
           : <Text style={{ minWidth: compact ? 22 : 28, textAlign: "center", color: colors.foregroundMuted, fontSize: 11, fontVariant: ["tabular-nums"] }}>{groupCount(group)}</Text>}
