@@ -260,8 +260,10 @@ import {
   OPTIONS_MIN_HEIGHT,
   OPTIONS_SPACE_SHARE,
   SCOPE_SUMMARY_TEST_ID,
+  SessionDetailsButton,
   sessionDetailLines,
   SessionsScreen,
+  SessionTimeLines,
   SHORT_PEEK_HEIGHT,
   SlimActionButton,
   SlimToolbar,
@@ -1115,11 +1117,14 @@ describe("SessionsScreen toolbar events", () => {
     const row = (id: string) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: listRows().find((candidate) => candidate.kind === "session" && candidate.entry.id === id) });
     const details = (id: string) => row(id).props.details as ElementLike;
     const dialog = () => walk(harness.current()).find((element) => element.props.testID === "sessions-details");
-    const lines = () => (findByTestID(dialog()!.props.children, "sessions-details-lines").props.children as ElementLike[])
+    const content = () => (findByTestID(dialog()!.props.children, "sessions-details-lines").props.children as unknown[]).flat() as (ElementLike & { readonly type: unknown })[];
+    // The times come first, drawn by their own clock-driven component; the role and place lines follow.
+    const times = () => content()[0]!;
+    const lines = () => content().filter((line) => line.type === "View")
       .map((line) => (line.props.children as ElementLike[]).map(textOf).join(": "));
     const close = () => walk(dialog()!.props.header).find((element) => element.props.label === "Close")!;
     const open = (id: string) => { (details(id).props.onPress as () => void)(); harness.flush(); };
-    return { openAgent, save, row, details, dialog, lines, close, open };
+    return { openAgent, save, row, details, dialog, times, lines, close, open };
   }
 
   const placeEntries = () => [
@@ -1183,7 +1188,7 @@ describe("SessionsScreen toolbar events", () => {
     expect(screen.save).not.toHaveBeenCalled();
   });
 
-  it("anchors the details beside the row on a wide screen, closes them when the view leaves Role, and draws no details elsewhere", () => {
+  it("anchors the details beside the row on a wide screen, closes them when the grouping changes, and gives every row its details", () => {
     const screen = renderDetails(placeEntries(), false);
     screen.open("desk");
     expect(screen.dialog()!.props.placement).toEqual({ align: "end", width: 360, maxHeight: 440 });
@@ -1193,7 +1198,11 @@ describe("SessionsScreen toolbar events", () => {
     expandAll();
     const sessions = listRows().filter((row) => row.kind === "session");
     expect(sessions).toHaveLength(5);
-    expect(sessions.map((row) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: row }).props.details)).toEqual(sessions.map(() => undefined));
+    const buttons = sessions.map((row) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: row }).props.details as ElementLike);
+    expect(buttons.map((button) => [button.type, button.props.title, button.props.expanded])).toEqual(sessions.map((row) => [SessionDetailsButton, row.kind === "session" ? row.entry.title : null, false]));
+    // Workstreams details open the same way, with the same lines.
+    (buttons[0]!.props.onPress as () => void)(); harness.flush();
+    expect(screen.dialog()!.props.label).toBe(`Details: ${(sessions[0] as { entry: { title: string } }).entry.title}`);
   });
 
   it("names a declared Other work workstream or Unassigned epic as declared, and only a missing one as absent", () => {
@@ -1208,6 +1217,83 @@ describe("SessionsScreen toolbar events", () => {
     expect(chain(sessionEntry("blank", { labels: { workstream: " ", epic: "" } }))).toEqual(absent);
   });
 
+  it("starts the details with the session's times, told whether the list is live and when it was read", () => {
+    const screen = renderDetails(placeEntries());
+    screen.open("long");
+    expect(screen.times().type).toBe(SessionTimeLines);
+    expect(screen.times().props).toMatchObject({ entry: { id: "long" }, freshness: { live: true, readAt: 0 } });
+    directory.state = { ...(directory.state as object), live: false, staleReason: "Live updates stopped.", lastUpdatedAt: 5 };
+    harness.flush();
+    expect(screen.times().props).toMatchObject({ entry: { id: "long" }, freshness: { live: false, readAt: 5 } });
+    directory.state = { ...(directory.state as object), status: "stale", live: true };
+    harness.flush();
+    expect(screen.times().props.freshness).toEqual({ live: false, readAt: 5 });
+  });
+
+  /** Search results for a few sessions, with the Updated time three hours back on a live list. */
+  function renderResults(compact: boolean, query = "found") {
+    vi.setSystemTime(Date.parse("2026-10-18T13:00:00.000Z"));
+    const openAgent = vi.fn();
+    directory.state = { ...(directory.state as object), entries: [
+      sessionEntry("found", { title: "SWE • found", updatedAt: "2026-10-18T10:00:00.000Z" }),
+      sessionEntry("found-too", { title: "QA • found too", status: "running", updatedAt: "2026-10-18T12:59:30.000Z" }),
+    ] };
+    patchSessionView("host-a", { query, grouping: "hierarchy", status: "all" });
+    harness.render(() => SessionsScreen({ host: { id: "host-a", label: "Host" }, layout: { compact, platform: compact ? "ios" : "web" },
+      navigation: { openAgent, openBrowser: () => undefined, openWorkspace: () => undefined }, theme: { colors } as PluginTheme, params: {} } as unknown as PluginScreenProps));
+    const result = (id: string) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike & { readonly type: (props: unknown) => ElementLike })({ item: listRows().find((row) => row.kind === "result" && row.entry.id === id) });
+    return { openAgent, result, drawn: (id: string) => { const element = result(id); return element.type(element.props); } };
+  }
+
+  it.each([[true, "3h ago"], [false, "Updated 3 hours ago"]] as const)("gives each result its Updated time and its details beside the row, and keeps open and Show in tree (compact %s)", (compact, shown) => {
+    const screen = renderResults(compact);
+    expect(listRows().map((row) => row.kind)).toEqual(["result", "result"]);
+    const drawn = screen.drawn("found");
+    expect(textOf(findByTestID(drawn, "sessions-row-age"))).toBe(shown);
+    expect(textOf(findByTestID(screen.drawn("found-too"), "sessions-row-age"))).toBe(compact ? "just now" : "Updated just now");
+    const row = findByTestID(drawn, "sessions-row-found");
+    expect(String(row.props.accessibilityLabel).endsWith(". Updated 3 hours ago")).toBe(true);
+    // The details button sits between the row and Show in tree, and opens the details only.
+    const parts = drawn.props.children as ElementLike[];
+    const details = parts[1]!;
+    expect((details as ElementLike & { type: unknown }).type).toBe(SessionDetailsButton);
+    expect(details.props).toMatchObject({ title: "SWE • found", expanded: false });
+    expect(String(parts[2]!.props.accessibilityLabel)).toBe("Show SWE • found in the tree");
+    (details.props.onPress as () => void)(); harness.flush();
+    const dialog = walk(harness.current()).find((element) => element.props.testID === "sessions-details")!;
+    expect(dialog.props.label).toBe("Details: SWE • found");
+    expect(screen.openAgent).not.toHaveBeenCalled();
+    expect((screen.result("found").props.details as ElementLike).props.expanded).toBe(true);
+    (row.props.onPress as () => void)(); harness.flush();
+    expect(screen.openAgent).toHaveBeenCalledTimes(1);
+    expect(screen.openAgent.mock.calls[0]![0]).toMatchObject({ agentId: "found" });
+    // Show in tree leaves the results, and the details opened there close.
+    (screen.result("found").props.onShowInTree as (entry: unknown) => void)(screen.result("found").props.entry); harness.flush();
+    expect(walk(harness.current()).find((element) => element.props.testID === "sessions-details")).toBeUndefined();
+  });
+
+  it("gives rows the Updated time itself, not an age, while the list is not live", () => {
+    const screen = renderResults(true);
+    expect(screen.result("found").props.live).toBe(true);
+    directory.state = { ...(directory.state as object), live: false, staleReason: "Live updates stopped." };
+    harness.flush();
+    expect(screen.result("found").props.live).toBe(false);
+    const time = new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(Date.parse("2026-10-18T10:00:00.000Z"));
+    expect(textOf(findByTestID(screen.drawn("found"), "sessions-row-age"))).toBe(time);
+    expect(String(findByTestID(screen.drawn("found"), "sessions-row-found").props.accessibilityLabel).endsWith(`. Updated today at ${time}`)).toBe(true);
+    // A tree row is told the same, and its details button sits beside it.
+    harness.unmount();
+    harness.reset();
+    renderResults(true, "");
+    directory.state = { ...(directory.state as object), live: false, staleReason: "Live updates stopped." };
+    harness.flush();
+    expandAll();
+    const session = listRows().find((row) => row.kind === "session" && row.entry.id === "found")!;
+    const drawnRow = (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: session });
+    expect((drawnRow.props.children as ElementLike).props.live).toBe(false);
+    expect((drawnRow.props.details as ElementLike).props.title).toBe("SWE • found");
+  });
+
   it("makes the lines a named stop with a visible focus on web only, and returns focus to the list once the row has left", () => {
     const screen = renderDetails(placeEntries());
     const region = () => findByTestID(screen.dialog()!.props.children, "sessions-details-lines");
@@ -1219,7 +1305,7 @@ describe("SessionsScreen toolbar events", () => {
     vi.stubGlobal("document", { activeElement: null, body: {} });
     try {
       screen.open("long");
-      expect(region().props).toMatchObject({ tabIndex: 0, role: "region", accessibilityLabel: "Role and placement" });
+      expect(region().props).toMatchObject({ tabIndex: 0, role: "region", accessibilityLabel: "Times, role and placement" });
       expect(list().props.tabIndex).toBe(-1);
       expect(region().props.style).not.toHaveProperty("outlineWidth");
       (region().props.onFocus as () => void)(); harness.flush();
@@ -1804,7 +1890,7 @@ describe("SessionsScreen compact toolbar", () => {
     expect(banner.props.actionLabel).toBe("Retry");
   });
 
-  it("renders a compact session row as one line: title, muted context and the state badge", () => {
+  it("renders a compact session row as one line: title, muted context, the Updated time and the state badge", () => {
     directory.state = { ...(directory.state as object), entries: [sessionEntry("0123456789abcdef", {
       title: "A deliberately long session title that would otherwise wrap onto a second line on a phone",
       status: "running", pendingPermissionCount: 1, archivedAt: "2026-10-18T11:00:00.000Z", workspaceName: "RSW • review",
@@ -1819,7 +1905,12 @@ describe("SessionsScreen compact toolbar", () => {
     expect(walk(title).some((element) => element.props?.testID === "sessions-row-meta")).toBe(true);
     expect(textOf(findByTestID(leaf, "sessions-row-meta"))).toBe("  Running · RSW • review · Project · Archived");
     const lines = walk(leaf).filter((element) => (element as { type?: unknown }).type === "Text" && element.props.numberOfLines === 1);
-    expect(lines.filter((line) => !walk(title).includes(line) || line === title)).toEqual([title]);
+    // The Updated time is the only other text, beside the title on the same line and never cut short.
+    const age = findByTestID(leaf, "sessions-row-age");
+    expect(lines.filter((line) => !walk(title).includes(line) || line === title)).toEqual([title, age]);
+    // The row's own children (a fragment): title, time and badge side by side.
+    expect(((leaf.props.children as ElementLike).props.children as unknown[]).flat()).toContain(age);
+    expect(age.props.style).toMatchObject({ flexShrink: 0 });
     expect(walk(leaf).some((element) => (element as { type?: unknown }).type === StateBadge && element.props.state === "needs_input")).toBe(true);
     // ST-02: the native ID is in the accessible label, never in the visible row.
     expect(textOf(leaf)).not.toContain("01234567");

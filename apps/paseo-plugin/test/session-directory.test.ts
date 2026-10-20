@@ -329,6 +329,17 @@ describe("collectDirectory", () => {
 });
 
 describe("SessionDirectory", () => {
+  it("keeps prompt and current-turn times separate from metadata updates, and clears a lost turn start", () => {
+    const seed = entry("times", { status: "running" });
+    const prompt = "2026-10-18T08:00:00.000Z";
+    const startedAt = "2026-10-18T08:01:00.000Z";
+    const first = toDirectoryEntry({ ...seed, agent: { ...seed.agent, lastUserMessageAt: prompt, activeTurn: { turnId: "turn-times", startedAt } } });
+    expect(first).toMatchObject({ updatedAt: seed.agent.updatedAt, lastUserMessageAt: prompt, activeTurnStartedAt: startedAt });
+    const renamed = toDirectoryEntry({ ...seed, agent: { ...seed.agent, title: "Renamed", updatedAt: "2026-10-18T12:00:00.000Z", lastUserMessageAt: prompt, activeTurn: undefined } }, first);
+    expect(renamed).toMatchObject({ updatedAt: "2026-10-18T12:00:00.000Z", lastUserMessageAt: prompt, activeTurnStartedAt: null });
+    expect(toDirectoryEntry(seed).lastUserMessageAt).toBeNull();
+  });
+
   it("searches recognized epic and workstream label values", () => {
     const directoryEntry = toDirectoryEntry(
       entry("labeled", {
