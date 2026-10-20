@@ -1,4 +1,7 @@
 import { fileURLToPath, URL } from "node:url";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { isValidElement, type ReactNode } from "react";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -25,12 +28,18 @@ const legacy = { ...catalog.sources[0]!, id: "legacy-json", path: "/configured/l
 const colors = {} as Parameters<typeof TeamsSourcePage>[0]["colors"];
 let snapshots: Record<string, TeamsSourceSnapshot>;
 let view: TeamsView = DEFAULT_TEAMS_VIEW;
+let testHome: string;
 beforeEach(async () => {
+  testHome = mkdtempSync(join(tmpdir(), "kontor-teams-integration-"));
+  vi.stubEnv("PASEO_HOME", testHome);
   view = DEFAULT_TEAMS_VIEW; model.rpc.clear();
   const adapter = createTeamsSourceAdapter(catalog, teamsSourceBindings(catalog.sources).formats);
   snapshots = Object.fromEntries(await Promise.all(catalog.sources.map(async (source) => [source.id, await adapter.read({ sourceId: source.id })])));
 });
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => {
+  vi.unstubAllEnvs();
+  rmSync(testHome, { recursive: true, force: true });
+});
 function visible(node: ReactNode): string {
   if (typeof node === "string" || typeof node === "number") return String(node);
   if (Array.isArray(node)) return node.map(visible).join("");
