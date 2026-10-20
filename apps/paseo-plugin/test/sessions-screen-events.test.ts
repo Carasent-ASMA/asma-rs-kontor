@@ -20,6 +20,7 @@ type HookQueueItem = {
 };
 
 const accessibility = vi.hoisted(() => ({ screenReader: false }));
+const controlHelp = vi.hoisted(() => ({ current: null as null | { dismiss(): void } }));
 const { harness, directory } = vi.hoisted(() => {
   const slots: HookSlot[] = [];
   let cursor = 0;
@@ -189,7 +190,7 @@ const { harness, directory } = vi.hoisted(() => {
 vi.mock("react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react")>();
   return {
-    ...actual, useContext: () => null,
+    ...actual, useContext: () => controlHelp.current,
     memo: (component: unknown) => component,
     useCallback: harness.useCallback,
     useEffect: harness.useEffect,
@@ -1250,6 +1251,36 @@ describe("SessionsScreen toolbar events", () => {
     expect(screen.openAgent.mock.calls[0]![0]).toMatchObject({ agentId: "long" });
     expect(screen.dialog()).toBeUndefined();
     expect(screen.save).not.toHaveBeenCalled();
+  });
+
+  it("keeps restored Details focus without help blocking the next session action", () => {
+    let helpVisible = false;
+    controlHelp.current = { dismiss: () => { helpVisible = false; } };
+    try {
+      const screen = renderDetails(placeEntries());
+      const button = { focus: vi.fn(() => { helpVisible = true; }) };
+      (screen.details("long").props.ref as (node: unknown) => void)(button);
+      screen.open("long");
+      (screen.close().props.onPress as () => void)(); harness.flush();
+      expect(button.focus).toHaveBeenCalledOnce();
+      expect(helpVisible).toBe(false);
+      const next = screen.row("conflict").props.children as ElementLike;
+      (next.props.onPress as (entry: unknown) => void)(next.props.entry);
+      expect(screen.openAgent).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ agentId: "conflict" }));
+
+      screen.open("long");
+      const scroller = { focus: vi.fn(() => { helpVisible = true; }) };
+      (findByTestID(harness.current(), "sessions-list").props.ref as RefLike).current = { getScrollableNode: () => scroller };
+      (screen.details("long").props.ref as (node: unknown) => void)(null);
+      vi.stubGlobal("document", { activeElement: null, body: {} });
+      directory.state = { ...(directory.state as object), entries: placeEntries().filter(entry => entry.id !== "long") };
+      harness.flush();
+      expect(scroller.focus).toHaveBeenCalledOnce();
+      expect(helpVisible).toBe(false);
+    } finally {
+      controlHelp.current = null;
+      vi.unstubAllGlobals();
+    }
   });
 
   it("anchors the details beside the row on a wide screen, closes them when the grouping changes, and gives every row its details", () => {

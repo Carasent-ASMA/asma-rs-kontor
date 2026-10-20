@@ -2042,6 +2042,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   // One session's details at a time. The anchor reads the row's current button, so focus
   // returns to it even if the list drew the row again while the details were open.
   const [detailsId, setDetailsId] = useState<string | null>(null);
+  const detailsHelp = useControlHelp("");
   const detailsIdRef = useRef(detailsId);
   detailsIdRef.current = detailsId;
   // The grouping and list mode the details opened in; another one draws the row elsewhere, or not at all.
@@ -2370,6 +2371,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     const target = detailsReturn();
     setDetailsId(null);
     target?.focus?.();
+    // Restoring focus must not cover the next touch target with help.
+    detailsHelp.dismiss();
   };
   // Details whose session has left, or whose grouping or list mode has changed, close. Focus they held,
   // which the page has now dropped, goes where Close would send it; focus elsewhere stays put.
@@ -2379,6 +2382,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     const target = document && (document.activeElement == null || document.activeElement === document.body) ? detailsReturn() : null;
     setDetailsId(null);
     target?.focus?.();
+    if (target) detailsHelp.dismiss();
   }, [detailsId, detailsEntry === null]);
   // Over the list on a compact screen, so a short one still shows the title, Close and a scrolling chain.
   const detailsLayer = detailsEntry === null ? null : (
