@@ -5,7 +5,7 @@ import { COARSE_POINTER, type Colors } from "./page-controls";
 export type MenuRect = { x: number; y: number; width: number; height: number };
 export type MenuSize = { width: number; height: number };
 export type MenuFrame = { left: number; width: number; top: number | null; bottom: number | null; maxHeight: number };
-/** `cover` spans the root's height inside its margins instead of opening beside the trigger, so a short screen keeps all of it. */
+/** `cover` opens at the root's top margin and may use all of its height inside the margins, instead of opening beside the trigger, so a short screen can show all it fits. */
 export type MenuPlacement = { align: "start" | "end" | "stretch"; width: number; gap?: number; margin?: number; maxHeight?: number; cover?: boolean };
 
 /** Places a menu against its trigger inside the screen root, clamped to the visible bounds; opens upward only when below is the smaller space. */
