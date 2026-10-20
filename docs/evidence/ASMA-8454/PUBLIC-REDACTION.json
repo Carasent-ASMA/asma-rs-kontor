@@ -1,4 +1,12 @@
 {
+  "consumers": [
+    "package-manifest.json",
+    "archive-failure/base-provenance.json",
+    "mcp-repair/manifest.json",
+    "mcp-repair/source-manifest.json",
+    "mcp-rework/manifest.json",
+    "mcp-rework/source-manifest.json"
+  ],
   "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
   "files": {
     "archive-failure/archive-environment.json": {
@@ -1629,6 +1637,7 @@
     }
   },
   "model": "The public copy is a redacted derivative. Original bytes and SHA-256 are retained in the access-controlled evidence store; the TPM owns the exact-path disposition ledger.",
+  "original_archive": "access-controlled evidence store outside the public repo; TPM-owned disposition ledger",
   "placeholders": {
     "[archived-private-evidence]": "private parent-repository evidence URL",
     "[compat-docs-workspace]": "private compatibility docs worktree path",

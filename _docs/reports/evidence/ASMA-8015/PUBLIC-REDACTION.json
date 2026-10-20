@@ -1,4 +1,7 @@
 {
+  "consumers": [
+    "SHA256SUMS.json"
+  ],
   "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
   "files": {
     "credential-authority-correction/SHA256SUMS.json": {
@@ -38,6 +41,7 @@
     }
   },
   "model": "The public copy is a redacted derivative. Original bytes and SHA-256 are retained in the access-controlled evidence store; the TPM owns the exact-path disposition ledger.",
+  "original_archive": "access-controlled evidence store outside the public repo; TPM-owned disposition ledger",
   "placeholders": {
     "[archived-private-evidence]": "private parent-repository evidence URL",
     "[parent-plan]": "private parent plan path",
