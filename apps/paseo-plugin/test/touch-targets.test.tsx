@@ -1,6 +1,7 @@
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SourceRead } from "../shared/read-sources";
+import type { Colors } from "../client/page-controls";
 vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useContext: () => null, useRef: (current: unknown) => ({ current }), useState: (initial: unknown) => [initial, () => {}], useMemo: (factory: () => unknown) => factory(), useEffect: () => undefined }));
 vi.mock("react-native", () => ({ PanResponder: { create: () => ({ panHandlers: {} }) }, Pressable: "Pressable", Text: "Text", View: "View" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
@@ -12,7 +13,11 @@ function elements(node: ReactNode): Element[] {
   if (typeof node.type === "function") return elements((node.type as (props: Record<string, unknown>) => ReactNode)(node.props));
   return [node, ...elements(node.props.children as ReactNode)];
 }
-const colors = {} as never;
+const colors: Colors = {
+  surface0: "#ffffff", surface1: "#fafafa", surface2: "#f4f4f5", border: "#e4e4e7",
+  foreground: "#1a1a1e", foregroundMuted: "#71717a", accent: "#20744A", accentForeground: "#ffffff",
+  statusSuccess: "#3e704a", statusWarning: "#7b5d39", statusDanger: "#9d433b",
+};
 const read: SourceRead = { source: { id: "plan", title: "Plan", kind: "plan", path: "/configured/plan.md", projectId: null, epic: null, workstream: null, revisionKind: "working copy" }, status: "ready", revision: "a".repeat(64), readAt: "2026-10-19T10:00:00Z", modifiedAt: null, content: "# Plan", graph: null, records: null, diagnostics: [] };
 /** Loads the controls fresh, so the pointer probe runs against the stubbed environment. */
 async function heights(pointer: "none" | "coarse" | "fine") {

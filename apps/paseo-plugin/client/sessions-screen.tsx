@@ -78,13 +78,14 @@ import { DEFAULT_ORGANIZATION_SETTINGS, type OrganizationSettings } from "../sha
 import type { useOrganizationSettings } from "./use-organization-settings";
 import { allGroupKeys, buildOrganizationTree, declaredScope, defaultGroupExpanded, deriveDeskScopes, filterOrganizationTree, flattenOrganizationTree, inEpicScope, matchesScope, nativeDesk, NO_LINKED_EPIC, NO_ROLE_KEY, organizationScope, OTHER_WORKSTREAM, ROLE_ROOT_KEY, scopeKeepsGroup, sessionRole, sessionState, STATE_LABELS, titleRoleCode, UNASSIGNED_EPIC, visibleSessions, workstreamRank, type OrganizationGroup, type OrganizationRow, type OrganizationWorkspace, type OrganizationProject, type RoleSource } from "./session-organization";
 import { rowKey, siblingKeys, reorderSavedSiblingOrder } from "./organization-order";
-import { OrganizationRowView, StateBadge, stateColor as sessionStateColor, WORKSPACE_KINDS } from "./organization-row";
+import { OrganizationRowView, stateColor as sessionStateColor, WORKSPACE_KINDS } from "./organization-row";
+import { SessionStateMarker } from "./session-state-marker";
+import type { OrganizationState } from "./session-organization";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
 import { Action, COARSE_POINTER, Disclosure } from "./page-controls";
 import { nativeFreshnessLabel } from "./native-freshness";
 import { sessionTimeLines, useClock, useUpdatedTime, type RowTime, type TimeFreshness } from "./session-time";
 import { sessionUsageLabel } from "./session-usage";
-import { compactUsage } from "./session-usage-density";
 import { useControlHelp } from "./control-help";
 import { SessionUsage, SessionUsageLines } from "./session-usage-view";
 
@@ -121,7 +122,7 @@ const GROUPINGS: readonly { readonly id: SessionGrouping; readonly label: string
   { id: "role", label: "Role" },
   { id: "flat", label: "Flat" },
 ];
-const STATUS_DOTS: Partial<Record<StatusFilter, Parameters<typeof sessionStateColor>[0]>> = {
+const STATUS_DOTS: Partial<Record<StatusFilter, OrganizationState>> = {
   running: "running", idle: "idle", error: "failed", needs_input: "needs_input", attention: "attention", initializing: "initializing", closed: "closed",
 };
 
@@ -335,13 +336,13 @@ export const SessionRow = memo(function SessionRow({
   highlighted = false,
   live = false,
 }: SessionRowProps) {
-  const usageHint = useControlHelp(compactUsage(entry).help);
+  const state = sessionState(entry);
+  const stateHint = useControlHelp(STATE_LABELS[state]);
   const time = useUpdatedTime(entry.updatedAt, live);
   const age = time ? rowAge(time, compact, colors) : null;
   const attention = attentionLabel(entry);
   const archived = archivedLabel(entry);
   const history = earlierErrorLabel(entry);
-  const state = sessionState(entry);
   const context = entry.workspaceName ?? entry.projectName ?? entry.cwd;
   const project =
     entry.projectName && entry.projectName !== entry.workspaceName
@@ -370,19 +371,20 @@ export const SessionRow = memo(function SessionRow({
   const runtime = (state === "needs_input" || state === "attention" || state === "failed") && entry.status !== "error";
   const runtimeLabel = entry.status.charAt(0).toLocaleUpperCase() + entry.status.slice(1);
   // Compact: the title and context lead, then model/report metadata can wrap.
-  // The state badge stays visible; the native ID remains in the accessible label.
+  // The state marker stays visible; the native ID remains in the accessible label.
   const compactMeta = [runtime ? runtimeLabel : null, compactContext ?? displayContext, archived, history]
     .filter((part): part is string => !!part)
     .join(" · ");
 
   return (
     <Pressable
-      ref={usageHint.bindings.ref} onFocus={usageHint.bindings.onFocus} onBlur={usageHint.bindings.onBlur} aria-describedby={usageHint.bindings["aria-describedby"]}
+      ref={stateHint.bindings.ref} onFocus={stateHint.bindings.onFocus} onBlur={stateHint.bindings.onBlur}
+      onHoverIn={stateHint.bindings.onHoverIn} onHoverOut={stateHint.bindings.onHoverOut}
       testID={`sessions-row-${entry.id}`}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
       accessibilityHint="Opens the existing Paseo session"
-      onPress={() => { usageHint.dismiss(); onPress(entry); }}
+      onPress={() => { stateHint.dismiss(); onPress(entry); }}
       style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => ({
         minHeight: compact || COARSE_POINTER ? 44 : 40,
         paddingLeft: 8,
@@ -412,7 +414,7 @@ export const SessionRow = memo(function SessionRow({
           </View>
           <SessionUsage entry={entry} colors={colors} />
           </View>
-          <StateBadge state={state} colors={colors} compact={false} />
+          <SessionStateMarker state={state} colors={colors} />
         </>
       ) : compact ? (
         <>
@@ -432,7 +434,7 @@ export const SessionRow = memo(function SessionRow({
           {age}
           <SessionUsage entry={entry} colors={colors} />
           </View>
-          <StateBadge state={state} colors={colors} compact={false} />
+          <SessionStateMarker state={state} colors={colors} />
         </>
       ) : (
         <>
@@ -453,8 +455,8 @@ export const SessionRow = memo(function SessionRow({
             ) : null}
           </View>
           <View style={{ maxWidth: 340, minWidth: 0, flexShrink: 1 }}><SessionUsage entry={entry} colors={colors} /></View>
-          <View style={{ width: 95, gap: 2 }}>
-            <StateBadge state={state} colors={colors} compact={false} />
+          <View style={{ alignItems: "flex-end", gap: 2 }}>
+            <SessionStateMarker state={state} colors={colors} />
             {runtime ? (
               <Text style={{ color: colors.foregroundMuted, fontSize: 9 }}>
                 {runtimeLabel}
@@ -603,17 +605,19 @@ type SessionResultRowProps = {
 const SessionResultRow = memo(function SessionResultRow({ entry, provenance, colors, compact, onPress, onShowInTree, treeButtonRef, live, details }: SessionResultRowProps) {
   const cues = resultCues(entry);
   const coarse = compact || COARSE_POINTER;
-  const usageHint = useControlHelp(compactUsage(entry).help);
+  const state = sessionState(entry);
+  const stateHint = useControlHelp(STATE_LABELS[state]);
   const time = useUpdatedTime(entry.updatedAt, live);
   return (
     <View testID={`sessions-result-${entry.id}`} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
       <Pressable
-        ref={usageHint.bindings.ref} onFocus={usageHint.bindings.onFocus} onBlur={usageHint.bindings.onBlur} aria-describedby={usageHint.bindings["aria-describedby"]}
+        ref={stateHint.bindings.ref} onFocus={stateHint.bindings.onFocus} onBlur={stateHint.bindings.onBlur}
+        onHoverIn={stateHint.bindings.onHoverIn} onHoverOut={stateHint.bindings.onHoverOut}
       testID={`sessions-row-${entry.id}`}
         accessibilityRole="button"
         accessibilityLabel={[resultAccessibilityLabel(entry, provenance), time?.spoken].filter(Boolean).join(". ")}
         accessibilityHint="Opens the existing Paseo session"
-        onPress={() => { usageHint.dismiss(); onPress(entry); }}
+        onPress={() => { stateHint.dismiss(); onPress(entry); }}
         style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => ({
           flex: 1,
           minWidth: 0,
@@ -632,7 +636,7 @@ const SessionResultRow = memo(function SessionResultRow({ entry, provenance, col
           </Text>
           {time ? rowAge(time, compact, colors) : null}
           {compact ? null : <View style={{ maxWidth: 340, minWidth: 0, flexShrink: 1 }}><SessionUsage entry={entry} colors={colors} /></View>}
-          <StateBadge state={sessionState(entry)} colors={colors} compact={false} />
+          <SessionStateMarker state={state} colors={colors} />
         </View>
         <Text testID="sessions-result-place" numberOfLines={compact ? 2 : 1} style={{ color: colors.foregroundMuted, fontSize: compact ? 12 : 11, lineHeight: compact ? 16 : 15 }}>
           {provenance.parts.join(" › ")}
@@ -1051,6 +1055,7 @@ export function FilterChip({
   compact = false,
   count,
   dot,
+  state,
   checkbox = false,
   disabled = false,
   onBlur,
@@ -1065,6 +1070,8 @@ export function FilterChip({
   /** Matching sessions under the other active filters. */
   count?: number;
   dot?: string;
+  /** Same shape as session rows; the existing label supplies its meaning. */
+  state?: OrganizationState;
   /** Multi-select choice rather than one of a set. */
   checkbox?: boolean;
   disabled?: boolean;
@@ -1097,7 +1104,7 @@ export function FilterChip({
         opacity: disabled ? 0.5 : 1,
       }}
     >
-      {dot ? <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: dot }} /> : null}
+      {state ? <SessionStateMarker state={state} colors={colors} /> : dot ? <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: dot }} /> : null}
       <Text style={{ color: colors.foreground, fontSize: compact ? 12 : 11, fontWeight: active ? "600" : "400" }}>
         {label}
       </Text>
@@ -2262,7 +2269,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             testID={`sessions-filter-${status}`}
             label={statusFilterLabel(status)}
             count={statusCounts[status]}
-            dot={STATUS_DOTS[status] ? sessionStateColor(STATUS_DOTS[status], colors) : undefined}
+            state={STATUS_DOTS[status]}
             compact={compact}
             active={view.status === status}
             colors={colors}
@@ -2308,7 +2315,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>Not captured in session data; no lifecycle is inferred from idle or closed sessions.</Text>
           </OptionLine>
           <OptionLine label="More states" colors={colors}>
-            {MORE_STATUS_FILTERS.map((status) => <FilterChip key={status} testID={`sessions-filter-${status}`} label={statusFilterLabel(status)} count={statusCounts[status]} dot={sessionStateColor(STATUS_DOTS[status] ?? null, colors)} compact={compact} active={view.status === status} colors={colors} {...focusProps} onPress={() => updateFilter({ status })} />)}
+            {MORE_STATUS_FILTERS.map((status) => <FilterChip key={status} testID={`sessions-filter-${status}`} label={statusFilterLabel(status)} count={statusCounts[status]} state={STATUS_DOTS[status]} dot={sessionStateColor(STATUS_DOTS[status] ?? null, colors)} compact={compact} active={view.status === status} colors={colors} {...focusProps} onPress={() => updateFilter({ status })} />)}
           </OptionLine>
           <ToggleRow
             testID="sessions-advanced-archived"

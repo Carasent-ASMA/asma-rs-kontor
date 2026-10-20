@@ -272,6 +272,7 @@ import {
   toolbarOpenPatch,
 } from "../client/sessions-screen";
 import { StateBadge } from "../client/organization-row";
+import { SessionStateMarker } from "../client/session-state-marker";
 import { SessionUsage, SessionUsageLines } from "../client/session-usage-view";
 import { AnchoredMenu, MenuItem } from "../client/anchored-menu";
 import { nativeFreshnessLabel } from "../client/native-freshness";
@@ -484,13 +485,42 @@ describe("SessionsScreen toolbar events", () => {
     expect(pressable.props.accessibilityLabel).toContain("Native status closed");
     expect(pressable.props.accessibilityLabel).toContain("Earlier error · now closed");
     expect(pressable.props.accessibilityLabel).not.toContain("Needs attention");
-    expect(walk(row).find((element) => element.type === StateBadge)!.props.state).toBe("closed");
+    expect(walk(row).find((element) => element.type === SessionStateMarker)!.props.state).toBe("closed");
     // Archive remains an explicit independent option, and never hides closed-unarchived history.
     (findByTestID(harness.current(), "sessions-advanced-archived").props.onPress as () => void)(); harness.flush();
     expect(directory.inputs.at(-1)?.includeArchived).toBe(true);
     expect(sessionRowIds()).toHaveLength(13);
     (findByTestID(harness.current(), "sessions-filter-error").props.onPress as () => void)(); harness.flush();
     expect(sessionRowIds()).toEqual(["current"]);
+  });
+
+  it.each([true, false])("updates the same row marker through native transitions without changing its accessible name or adding controls, compact=%s", compact => {
+    patchSessionView("host-a", { query: "", grouping: "flat", status: "all", includeArchived: false });
+    renderScreen(undefined, compact);
+    const transitions = [
+      [sessionEntry("live", { status: "initializing" }), "initializing"],
+      [sessionEntry("live"), "idle"],
+      [sessionEntry("live", { status: "running" }), "running"],
+      [sessionEntry("live", { status: "running", pendingPermissionCount: 1 }), "needs_input"],
+      [sessionEntry("live", { status: "error", requiresAttention: true, attentionReason: "error" }), "failed"],
+      [sessionEntry("live", { status: "closed", requiresAttention: true, attentionReason: "error" }), "closed"],
+      [sessionEntry("live", { requiresAttention: true, attentionReason: "finished" }), "attention"],
+      [sessionEntry("live"), "idle"],
+    ] as const;
+    for (const [entry, state] of transitions) {
+      directory.state = { ...(directory.state as object), entries: [entry] };
+      harness.flush();
+      const row = renderSessionLeaf();
+      expect(walk(row).filter(element => element.type === SessionStateMarker).map(element => element.props.state)).toEqual([state]);
+      expect(walk(row).filter(element => element.type === "Pressable")).toHaveLength(1);
+      expect(row.props.accessibilityLabel).toContain(`Native status ${entry.status}`);
+      expect(row.props.accessibilityLabel).toContain("Session live");
+      expect(row.props["aria-describedby"]).toBeUndefined();
+      expect(walk(row).some(element => element.type === StateBadge)).toBe(false);
+    }
+    // Labeled filters teach the same shapes, keeping their labels and exact counts.
+    expect(findByTestID(harness.current(), "sessions-filter-idle").props).toMatchObject({ state: "idle", label: "Idle", count: 1 });
+    expect(findByTestID(harness.current(), "sessions-filter-error").props).toMatchObject({ state: "failed", label: "Error", count: 0 });
   });
 
   it("shows the count line only for results or an incomplete read, and keeps the full count and read in Filters", () => {
@@ -1993,7 +2023,7 @@ describe("SessionsScreen compact toolbar", () => {
     expect(leaf.props.accessibilityLabel).toContain("Reported input tokens: 100");
     expect(leaf.props.accessibilityLabel).toContain("Reported output tokens: 20");
     expect(age.props.style).toMatchObject({ flexShrink: 0 });
-    expect(walk(leaf).some((element) => (element as { type?: unknown }).type === StateBadge && element.props.state === "needs_input")).toBe(true);
+    expect(walk(leaf).some((element) => (element as { type?: unknown }).type === SessionStateMarker && element.props.state === "needs_input")).toBe(true);
     // ST-02: the native ID is in the accessible label, never in the visible row.
     expect(textOf(leaf)).not.toContain("01234567");
     expect(leaf.props.accessibilityLabel).toContain("Native ID 0123456789abcdef");
@@ -2123,11 +2153,11 @@ describe("SessionsScreen compact toolbar", () => {
     const root = harness.current() as ElementLike;
     expect((root.props.children as unknown[]).some((child) => (child as ElementLike | null)?.props?.testID === "sessions-full-toolbar-slot")).toBe(true);
     expect(findByTestID(root, "sessions-list").props.ListHeaderComponent).toBeNull();
-    // Wide session rows keep the title and the right-hand state column.
+    // Wide session rows keep their status in a compact trailing marker.
     const leaf = renderSessionLeaf();
     expect(testIDs(leaf)).not.toContain("sessions-row-meta");
-    const column = walk(leaf).find((element) => (element.props.style as { width?: number } | undefined)?.width === 95);
-    expect(column && walk(column).some((element) => (element as { type?: unknown }).type === StateBadge)).toBe(true);
+    expect(walk(leaf).some((element) => element.type === SessionStateMarker)).toBe(true);
+    expect(walk(leaf).some((element) => (element.props.style as { width?: number } | undefined)?.width === 95)).toBe(false);
 
     compact = true; harness.flush();
     expect(fullToolbarShown()).toBe(false);
