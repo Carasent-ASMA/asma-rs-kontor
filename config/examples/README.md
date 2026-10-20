@@ -28,7 +28,7 @@ may sit anywhere on the machine and have any name.
     orchestration.yml          entry: schema_version, fleet/core_team selectors, project: block
     orchestration.schema.yml   required-key schema for the project: block
     fleet.yml                  fleet policy, schema_version 2
-    route-qualifications.yml   activated, hash-bound cross-provider records
+    route-qualifications.yml   hash-bound route qualification records
     teams/core-team.yml        pinned Core Team roster
   packs/team.yml               project team/profile overlay
   tracker/jira.yml             tracker connection and credential reference
@@ -104,20 +104,24 @@ A fleet domain's `accounts` are logical slots. `host.example.yml`
 `provider_accounts.<slot>` binds a slot to this host's working route:
 `provider`, `harness`, `native_alias`, `credential` and `serves` (a mapping from
 each canonical fleet model to the model id this route actually launches), with
-optional `efforts` and, for a cross-provider route, a `qualification` reference
-(`<route>@<revision>`). `host.routes.<domain>` orders the slots this host
-enables.
+optional `efforts` and, for a cross-provider route or a different launch id, a
+`qualification` reference (`<route>@<revision>`). `host.routes.<domain>` orders
+the slots this host enables.
 
-A route is eligible only when its `serves` mapping contains the canonical model,
-its route-native id is non-empty, and it supports the pinned effort. A
-cross-provider route also needs an activated, hash-bound record in
+A route is eligible only when its `serves` mapping contains the canonical model
+and it supports the pinned effort. Without a qualification record,
+`serves[model]` must equal the canonical model id; otherwise placement is
+refused with `route_model_id_unproven`. A different launch id or a
+cross-provider route also needs a hash-bound record in
 `orchestration/route-qualifications.yml` covering that route, harness, symbolic
-model, canonical id/vendor, route-native launch id and effort; a missing,
-malformed or unproven reference is refused. The canonical
-model id, effort and vendor are unchanged, `route_model_id` is the route's own
-launch id, and vendor independence uses the canonical vendor. An incompatible
-route is skipped and the configured chain falls through; if no step is
-compatible, or no route preserves vendor independence, the placement is refused.
+model, canonical id/vendor, route-native launch id and effort. The authored
+file has no activation flag: a generated activation record binds its exact
+bytes with `source_hash` and carries `activated_at`. A missing, malformed or
+unproven reference is refused. The canonical model id, effort and vendor are
+unchanged, `route_model_id` is the route's own launch id, and vendor
+independence uses the canonical vendor. An incompatible route is skipped and
+the configured chain falls through; if no step is compatible, or no route
+preserves vendor independence, the placement is refused.
 `project.runtime.matrix` is an allowlist of provider/harness pairs, so a host
 route pair absent from it is refused before placement. A native alias or working
 provider changes only in `host.yml` and never requires a fleet edit.

@@ -200,10 +200,14 @@ class NeutralExampleTests(unittest.TestCase):
             "the forge directory named by the inventory has its committed example",
         )
 
-    def test_the_route_qualifications_example_is_activated_and_hash_bound(self) -> None:
+    def test_the_route_qualifications_example_is_content_bound(self) -> None:
         text = read(EXAMPLES / "orchestration" / "route-qualifications.yml")
-        self.assertIn("activated: true", text)
+        self.assertIn("schema_version: 1", text)
+        self.assertNotIn("activated:", text)
+        self.assertNotIn("activated_at:", text)
         self.assertIn("record_hash:", text)
+        self.assertIn("canonical_model_id:", text)
+        self.assertIn("route_model_id:", text)
         self.assertIn("glm-acp-agent", text)
 
 

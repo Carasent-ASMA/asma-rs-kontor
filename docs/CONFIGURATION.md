@@ -49,7 +49,7 @@ Kontor YAML; a harness-owned file is a generated projection instead.
   orchestration/orchestration.yml   entry: schema_version, bundle selectors, project: block
   orchestration/orchestration.schema.yml  the project: block's required-key schema
   orchestration/fleet.yml           fleet policy (schema_version 2)
-  orchestration/route-qualifications.yml  activated, hash-bound cross-provider records
+  orchestration/route-qualifications.yml  hash-bound route qualification records
   orchestration/teams/core-team.yml one pinned Core Team roster
   orchestration/*.yml               workstreams and other project policy
   tracker/*.yml                     tracker connection, field/workflow specs and credential references
@@ -127,7 +127,7 @@ It is a bootstrap input, never an activated policy.
 | `binaries` | mapping | Absolute or `PATH`-resolved host commands for `paseo`, `git`, `gh`, `python`, `cargo`. |
 | `project_cli` | mapping | `project.cli.command` → this host's executable. A new project supplies its own name; no tool name is assumed. |
 | `runtime` | mapping | `kontord.endpoint`, `kontord.port`, `paseo.endpoint`, `paseo.port`; loopback addresses only. |
-| `provider_accounts` | mapping | Logical fleet slot → `{provider, native_alias, harness, credential, serves, efforts?, qualification?}`. `native_alias` is this host's runtime account id; `credential` is a reference, never a value; `serves` maps each canonical fleet model to the model id this route launches (`route_model_id`); a cross-provider route also states `qualification`. |
+| `provider_accounts` | mapping | Logical fleet slot → `{provider, native_alias, harness, credential, serves, efforts?, qualification?}`. `native_alias` is this host's runtime account id; `credential` is a reference, never a value; `serves` maps each canonical fleet model to the model id this route launches (`route_model_id`); a cross-provider route, or a route with a different launch id, also states `qualification`. |
 | `routes` | mapping | Fleet domain → ordered logical slots this host enables. A slot omitted here is unavailable on this host. |
 | `keychain` | mapping | `service_prefix` for credential references. |
 | `launchd` | mapping | Service labels for the daemon and desk. |
@@ -144,8 +144,9 @@ working route. They meet on two keys: the logical slot and the canonical model.
    (a mapping from each canonical fleet model to the model id this route
    actually launches), optional `efforts` (a subset of the fleet model's
    efforts), and `qualification` (required when the working provider differs
-   from the fleet domain's provider; the exact reference `<route>@<revision>`
-   into the activated qualification records described below).
+   from the fleet domain's provider or the route-native launch id differs from
+   the canonical model id; the exact reference `<route>@<revision>` into the
+   activated qualification records described below).
 3. `host.yml` `routes.<domain>` selects and orders the slots this host enables.
    Every route slot must exist in `provider_accounts` and belong to that
    domain. A domain omitted from `routes` is unavailable on this host, so its
@@ -154,17 +155,18 @@ working route. They meet on two keys: the logical slot and the canonical model.
    it; the working route may still be a different provider.
 4. Compatibility is checked against the canonical policy, not assumed from the
    slot name. A route is eligible only when its `serves` mapping contains the
-   canonical model, maps it to a non-empty route-native model id, supports the
-   pinned effort (the route's `efforts`, when stated, contains it), and, for a
-   cross-provider route, carries a qualification reference that matches an
-   activated, hash-bound record covering that exact route, harness, symbolic
-   model, canonical id/vendor, route-native launch id and effort.
-   `<route>@<revision>` is split exactly once and compared for equality; a
-   malformed reference, a missing record, an unactivated record, a hash
-   mismatch or a record that does not cover the pinned identity, launch id or
-   effort is refused. The resolver never substitutes a different provider
-   merely because it is available, and never requires a fleet edit to make a
-   host route work.
+   canonical model, maps it to a route-native model id, and supports the pinned
+   effort (the route's `efforts`, when stated, contains it). Without a
+   qualification record, `serves[model]` must equal `models.<model>.id`;
+   otherwise placement is refused with `route_model_id_unproven`. Any other
+   launch id, and every cross-provider route, carries a qualification reference
+   that matches an activation-bound, hash-bound record covering that exact route,
+   harness, symbolic model, canonical id/vendor, route-native launch id and
+   effort. `<route>@<revision>` is split exactly once and compared for equality;
+   a malformed reference, a missing activation record, a record hash mismatch or
+   a record that does not cover the pinned identity, launch id or effort is
+   refused. The resolver never substitutes a different provider merely because
+   it is available, and never requires a fleet edit to make a host route work.
 5. `project.runtime.matrix` is an allowlist of `{harness, provider}` pairs the
    project may launch. A host route whose pair is absent is refused with
    `runtime_pair_not_allowed` before placement; the matrix does not own model
@@ -191,24 +193,33 @@ working route. They meet on two keys: the logical slot and the canonical model.
    fleet changes only when the canonical model policy or a logical slot
    changes.
 
-**Qualification records.** A cross-provider route is enabled by an activated
-record in `orchestration/route-qualifications.yml`, not by a string in
-`host.yml`. The file is published and activated through the same policy path as
-the other project policy, then bound by content hash; it is not the fleet policy
-and not the host bootstrap file. Each record binds `route`, `harness`, the
-symbolic `model`, `canonical_model_id`, `canonical_vendor`, `route_model_id`,
-`efforts`, `revision`, `activated_at` and `record_hash`. A host reference is
-exactly `<route>@<revision>`; the resolver splits once, compares both parts
-exactly, requires `activated: true`, verifies the record hash, and requires the
-record to cover the pinned canonical identity, the route-native launch id and
-the effort. A changed `serves` mapping or a changed canonical id/vendor under
-the same model name no longer matches the record and is refused.
-A missing or unactivated record, a hash mismatch, a malformed reference, or a
-record whose route/harness/symbolic model/canonical identity/launch id/effort
-does not cover the placement is refused
-as `route_qualification_unproven`, `route_qualification_hash_mismatch` or
-`route_qualification_malformed`. The record is separate from the fleet, so a
-new qualified route does not require a fleet policy edit.
+**Qualification records.** A cross-provider route, or a same-provider route
+whose launch id differs from the canonical id, is enabled by a record in
+`orchestration/route-qualifications.yml`, not by a string in `host.yml`. The
+authored file has no activation flag or timestamp. It is published and
+activated through the same policy path as the other project policy; a generated
+activation record names `source`, binds the exact file bytes with `source_hash`
+(SHA-256) and carries `activated_at`. The file is not the fleet policy and not
+the host bootstrap file. Each record binds `route`, `harness`, the symbolic
+`model`, `canonical_model_id`, `canonical_vendor`, `route_model_id`, `efforts`,
+`revision` and `record_hash`. The record hash is SHA-256 over ordered
+`key=value` lines joined by newlines, with no trailing newline: `route`,
+`harness`, `model`, `canonical_model_id`, `canonical_vendor`, `route_model_id`,
+`efforts` in declared order
+comma-separated, and `revision`. Activation time is not part of that hash.
+A host reference is exactly `<route>@<revision>`; the resolver splits once,
+compares both parts exactly, requires the activation record's `source_hash` to
+match the file bytes and `activated_at` to be present, verifies the record hash,
+and requires the record to cover the pinned canonical identity, the
+route-native launch id and the effort. A changed `serves` mapping or a changed
+canonical id/vendor under the same model name no longer matches the record and
+is refused. A missing or mismatched activation record, a record hash mismatch,
+a malformed reference, or a record whose route/harness/symbolic
+model/canonical identity/launch id/effort does not cover the placement is
+refused as `route_qualification_unproven`,
+`route_qualification_hash_mismatch` or `route_qualification_malformed`. The
+record is separate from the fleet, so a new qualified route does not require a
+fleet policy edit.
 
 **Successor and migration contract.** The current `schema_version: 2` parser
 still validates `domains.accounts` with the provider-prefix rule and has no
@@ -363,7 +374,7 @@ recorded as such instead of being migrated.
 | `opencode.json`, `.github/mcp.json` | harness-native files (ASMA) | Generated projections from YAML. | Q-03: no handwritten JSON exception; render deterministically and record the YAML source. | WP-11 |
 | `.github/agent-policy-inventory.json` | generated inventory read by agent-policy checks | Keep generated. | Render deterministically from the source metadata; never hand-edit. | WP-11 |
 | `.cursor/agent-policy-inventory.json` | generated inventory read by Cursor adapter checks | Keep generated. | Same generated-projection rule as the GitHub inventory. | WP-11 |
-| `.cursor/mcp.json` | generated Cursor MCP projection | Keep generated. | Render from the YAML MCP source with provenance; no handwritten JSON exception. | WP-11 |
+| `.cursor/mcp.json` | symlink to `.github/mcp.json` in ASMA, not a separate projection | Keep the symlink; the target is the generated projection. | Regenerate the target from the YAML MCP source with provenance; no handwritten JSON exception. | WP-11 |
 | `.claude/settings.json` | tool-native Claude harness settings | Keep; not Kontor authoring configuration. | No Kontor migration; WP-11 reviews any project value it carries. | Not a WP-02 migration |
 | `.agentsroom/project.json` | tool-native AgentsRoom project settings | Keep; not Kontor authoring configuration. | No Kontor migration; WP-11 reviews any project value it carries. | Not a WP-02 migration |
 | `apps/paseo-plugin/paseo-plugin.json`, `package.json`, `tsconfig.json`, `apps/desktop/src-tauri/tauri.conf.json`, `capabilities/default.json` | tool-native manifests and build metadata | Keep; not Kontor authoring configuration. | None. | Not a WP-02 migration |

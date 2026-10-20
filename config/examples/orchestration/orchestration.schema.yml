@@ -104,20 +104,22 @@ route_binding:
     note: domains.<domain>.provider is the canonical/native family, not a host restriction
   host_route:
     fields: [provider, harness, native_alias, credential, serves, efforts, qualification]
-    serves: mapping from canonical fleet model name to the model id this route launches (route_model_id)
+    serves: mapping from canonical fleet model name to the model id this route launches (route_model_id); without a qualification it must equal models.<model>.id
     efforts: optional subset of the fleet model's efforts
-    qualification: reference `<route>@<revision>`; required when provider differs from the fleet domain provider
+    qualification: reference `<route>@<revision>`; required when provider differs from the fleet domain provider or the route-native launch id differs from the canonical model id
   runtime_matrix:
     owner: project
     rule: project.runtime.matrix is an allowlist of provider/harness pairs; a host route not listed is refused before placement
   qualification:
     source: orchestration/route-qualifications.yml
-    activation: published and activated through the policy path, bound by content hash; not fleet policy and not host.yml
-    record_fields: [route, harness, model, canonical_model_id, canonical_vendor, route_model_id, efforts, revision, activated_at, record_hash]
-    rule: the record must be activated, hash-match, and cover the pinned canonical identity, route-native launch id and effort; `<route>@<revision>` is split exactly and compared for equality
+    activation: a generated activation record names this source, its exact SHA-256 source_hash and activated_at; the authored source carries no activation flag
+    activation_record_fields: [schema_version, source, source_hash, activated_at]
+    record_fields: [route, harness, model, canonical_model_id, canonical_vendor, route_model_id, efforts, revision, record_hash]
+    record_hash: SHA-256 over ordered key=value lines joined by newlines with no trailing newline, listing route, harness, model, canonical_model_id, canonical_vendor, route_model_id, efforts (declared order, comma-separated), revision
+    rule: the activation source_hash must match the exact file bytes and the record must hash-match and cover the pinned canonical identity, route-native launch id and effort; `<route>@<revision>` is split exactly and compared for equality
   compatibility:
-    rule: the route maps the canonical model to a route-native id in serves and supports the pinned effort; a cross-provider route needs a matching activated qualification record
-    refusal: an unproven or malformed cross-provider route is refused; a different provider is never substituted merely because it is available
+    rule: the route maps the canonical model to a route-native id in serves and supports the pinned effort; a different launch id or a cross-provider route needs a matching activated qualification record
+    refusal: an unproven or malformed cross-provider route, or a same-provider route that changes the launch id without proof, is refused with route_model_id_unproven, route_unqualified or route_qualification_*; a different provider is never substituted merely because it is available
     fleet_edit: a host route change never requires a fleet policy edit
   fallback: skip an incompatible route, continue routes.<domain>, then descend to the next chain step; never change the canonical model or effort to fit a route; a fallback never lands on a vendor excluded by rules.independent_of
   vendor_independence: the canonical fleet vendor, not the working provider or harness; if no route preserves it, placement is refused
