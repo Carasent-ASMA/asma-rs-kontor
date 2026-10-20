@@ -9,7 +9,8 @@ use std::collections::BTreeSet;
 use super::rule::*;
 use super::*;
 
-const EXAMPLE: &str = include_str!("../../../config/examples/fleet.yml");
+const EXAMPLE: &str = include_str!("../../../tests/fixtures/config/fleet.yml");
+const NEUTRAL_EXAMPLE: &str = include_str!("../../../config/examples/fleet.yml");
 
 const TEAM: &str = "team/01936f5a-0000-7000-8000-000000000102/implement";
 const COMMITTEE: &str = "committee/01991c00-0000-7000-8000-000000000001/reviewer-a";
@@ -136,6 +137,47 @@ fn accounts(resolution: &FleetResolution) -> Vec<(&str, &str, u16, u16)> {
             )
         })
         .collect()
+}
+
+#[test]
+fn the_neutral_example_is_a_schema_2_policy_with_placeholder_accounts() {
+    let snapshot =
+        FleetSnapshot::parse_policy(NEUTRAL_EXAMPLE).expect("the neutral example is valid");
+    assert_eq!(snapshot.schema_version(), 2);
+    assert!(NEUTRAL_EXAMPLE.contains("leadership/"));
+    for alias in [
+        "claude-primary",
+        "claude-secondary",
+        "codex-primary",
+        "cursor",
+        "opencode",
+    ] {
+        assert!(
+            NEUTRAL_EXAMPLE.contains(alias),
+            "the neutral example names {alias}"
+        );
+    }
+    for owner_alias in [
+        "claude-work",
+        "claude-personal",
+        "codex-work",
+        "codex-personal",
+    ] {
+        assert!(
+            !NEUTRAL_EXAMPLE.contains(owner_alias),
+            "the neutral example must not name {owner_alias}"
+        );
+    }
+    for key in [
+        "team/01936f5a-0000-7000-8000-000000000001/implement",
+        "committee/01991c00-0000-7000-8000-000000000001/reviewer-a",
+        "advisor/01a02d00-0000-7000-8000-00000000ad01",
+    ] {
+        assert!(
+            snapshot.routes_for(key).is_some(),
+            "the neutral example binds {key}"
+        );
+    }
 }
 
 #[test]

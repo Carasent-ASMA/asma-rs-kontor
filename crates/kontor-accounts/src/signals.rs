@@ -203,7 +203,9 @@ mod tests {
     use kontor_core::id::parse_utc_timestamp;
     use kontor_core::spec::ProviderQuotaKind;
 
-    const EXAMPLE: &str = include_str!("../../../config/examples/quota-signals.yml");
+    const EXAMPLE: &str = include_str!("../../../tests/fixtures/config/quota-signals.yml");
+
+    const NEUTRAL_EXAMPLE: &str = include_str!("../../../config/examples/quota-signals.yml");
 
     /// The message Claude actually produced on 2026-08-30, verbatim.
     const CLAUDE_LIMIT: &str = "You've hit your individual spend limit · ask your admin to raise \
@@ -214,6 +216,31 @@ mod tests {
     const CODEX_LIMIT: &str = "[System Error] You've hit your usage limit. Visit \
          https://chatgpt.com/codex/settings/usage to purchase more credits or try \
          again at Aug 23rd, 2026 9:35 AM.";
+
+    #[test]
+    fn the_neutral_example_parses_without_real_vendor_copy() {
+        let document = parse(NEUTRAL_EXAMPLE).expect("the neutral example is valid");
+        assert_eq!(document.schema_version, 1);
+        assert!(!document.signals.is_empty());
+        for signal in &document.signals {
+            assert!(
+                signal
+                    .markers
+                    .iter()
+                    .all(|marker| !marker.contains("claude.ai")),
+                "the neutral example carries no captured vendor wording"
+            );
+        }
+        for provider in ["claude-primary", "codex-primary", "opencode"] {
+            assert!(
+                document
+                    .signals
+                    .iter()
+                    .any(|signal| signal.provider == provider),
+                "the neutral example declares {provider}"
+            );
+        }
+    }
 
     #[test]
     fn the_shipped_example_names_exact_catalog_aliases_not_vendor_families() {

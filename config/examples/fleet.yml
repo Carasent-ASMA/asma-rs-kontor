@@ -1,144 +1,106 @@
-# Kontor fleet configuration. Kontor re-reads this file on every seat placement.
-# Owner-only (chmod 600). An invalid edit is ignored and reported in fleet-status.json.
-schema_version: 1
+# Neutral fleet policy example. Copy it into a selected config folder and
+# replace the placeholder accounts, model ids and seat ids with the project's
+# own values. It is schema_version 2, the successor that adds leadership
+# bindings; schema_version 1 documents remain readable by the live fleet file.
+#
+# Accounts are aliases only. Never put a credential, a provider home or an
+# email address in this file: a published policy refuses all three, and the
+# account mapping belongs in host.example.yml (host.yml is not committed).
+schema_version: 2
 
 # A domain is one failure domain: accounts that go down together.
 domains:
-  claude:     { provider: claude,   accounts: [claude-a, claude-b] }   # exact aliases only; never the bare `claude` login
-  codex:      { provider: codex,    accounts: [codex-b, codex-a] }
-  cursor:     { provider: cursor,   accounts: [cursor] }
-  openrouter: { provider: opencode, accounts: [opencode], model_prefix: "openrouter/" }
-  deepseek:   { provider: opencode, accounts: [opencode], model_prefix: "deepseek/" }
+  claude:
+    provider: claude
+    accounts: [claude-primary, claude-secondary]
+  codex:
+    provider: codex
+    accounts: [codex-primary]
+  cursor:
+    provider: cursor
+    accounts: [cursor]
+  opencode:
+    provider: opencode
+    accounts: [opencode]
+    model_prefix: "example/"
 
 # For providers that do not work at all. Quota exhaustion needs no entry.
 unavailable:
-  domains: [openrouter, deepseek] # DEC-010: remove after drills D-8 (delivery launch, G6) and D-4 (consultation, G20) pass
-  accounts: [claude-b]         # one switched-off login; remove when it is back
+  domains: []
+  accounts: []
 
 models:
-  opus-5.5:       { domain: claude,     id: claude-opus-5-5, vendor: anthropic, efforts: [low, medium, high, xhigh, max, ultracode],        vision: true,  calibrated: false }
-  opus-5:         { domain: claude,     id: claude-opus-5,   vendor: anthropic, efforts: ["off", low, medium, high, xhigh, max, ultracode], vision: true,  calibrated: true }
-  opus-4.8:       { domain: claude,     id: claude-opus-4-8, vendor: anthropic, efforts: ["off", low, medium, high, xhigh, max, ultracode], vision: true,  calibrated: true }    # DEC-016: approved by Igor, no calibration ticket
-  sol:            { domain: codex,      id: gpt-5.6-sol,     vendor: openai,    efforts: [low, medium, high, xhigh, max, ultra],            vision: true,  calibrated: true }
-  grok-4.7:       { domain: cursor,     id: grok-4.7,        vendor: xai,       efforts: [low, medium, high, xhigh],                        vision: true,  calibrated: false }
-  grok-4.6:       { domain: cursor,     id: grok-4.6,        vendor: xai,       efforts: [low, medium, high, xhigh],                        vision: true,  calibrated: true }
-  grok-4.5:       { domain: cursor,     id: grok-4.5,        vendor: xai,       efforts: [low, medium, high],                               vision: true,  calibrated: false }
-  composer-2.5:   { domain: cursor,     id: composer-2.5,    vendor: cursor,                                                                vision: false, calibrated: false }
-  cursor-auto:    { domain: cursor,     id: auto-smart,      vendor: unknown,                                                               vision: false, calibrated: false }   # listed for bridge moves only; V-25 keeps it out of independent seats
-  glm-5.3-flash:  { domain: openrouter, id: openrouter/z-ai/glm-5.3-flash, vendor: zhipu,  efforts: [low, high, max],                       vision: true,  calibrated: true }
-  deepseek-flash: { domain: deepseek,   id: deepseek/deepseek-flash,       vendor: deepseek, efforts: [low, high, max],                     vision: false, calibrated: false }   # DEC-017: until its calibration research verdict
+  opus-example:
+    domain: claude
+    id: claude-opus-example
+    vendor: anthropic
+    efforts: [low, medium, high, xhigh, max]
+    vision: true
+    calibrated: true
+  sol-example:
+    domain: codex
+    id: gpt-example
+    vendor: openai
+    efforts: [low, medium, high, xhigh, max]
+    vision: true
+    calibrated: true
+  grok-example:
+    domain: cursor
+    id: grok-example
+    vendor: xai
+    efforts: [low, high, xhigh]
+    vision: true
+    calibrated: true
+  open-example:
+    domain: opencode
+    id: example/model
+    vendor: example
+    efforts: [low, high, max]
+    vision: false
+    calibrated: false
 
-# A chain is a list of steps; each step is one domain; entries are `model@effort`.
+# A chain is an ordered list of steps. Every model on every account of one
+# domain is tried before placement descends to the next step.
 chains:
-  review-a:
-    - [sol@xhigh]
-    - [grok-4.7@xhigh, grok-4.6@high]
-    - [deepseek-flash@max]
-    - [opus-5.5@xhigh, opus-5@xhigh, opus-4.8@xhigh]
-    - [glm-5.3-flash@max]
-  review-b:
-    - [opus-5.5@xhigh, opus-5@xhigh, opus-4.8@xhigh]
-    - [grok-4.7@xhigh, grok-4.6@high]
-    - [glm-5.3-flash@max]
-    - [sol@xhigh]
-    - [deepseek-flash@max]
   claude-first:
-    - [opus-5.5@xhigh, opus-5@xhigh, opus-4.8@xhigh]
-    - [sol@xhigh]
-    - [grok-4.7@xhigh, grok-4.6@high]
-    - [deepseek-flash@max]
-    - [glm-5.3-flash@max]
-  claude-first-build:
-    - [opus-5.5@xhigh, opus-5@xhigh, opus-4.8@xhigh]
-    - [sol@xhigh]
-    - [composer-2.5, grok-4.5@high]
-    - [glm-5.3-flash@max]
-    - [deepseek-flash@max]
+    - [opus-example@xhigh]
+    - [sol-example@xhigh]
+    - [grok-example@high]
   codex-first:
-    - [sol@xhigh]
-    - [opus-5.5@xhigh, opus-5@xhigh, opus-4.8@xhigh]
-    - [grok-4.6@high, grok-4.5@high]
-    - [deepseek-flash@max]
-    - [glm-5.3-flash@max]
-  open-first-build:
-    - [deepseek-flash@max]
-    - [composer-2.5]
-    - [glm-5.3-flash@max]
-    - [sol@high]
-    - [opus-4.8@xhigh]
-  open-first-verify:
-    - [glm-5.3-flash@max]
-    - [deepseek-flash@max]
-    - [grok-4.6@high, composer-2.5]
-    - [sol@high]
-    - [opus-5@high, opus-4.8@xhigh]
+    - [sol-example@xhigh]
+    - [opus-example@xhigh]
+    - [grok-example@high]
+  independent-review:
+    - [sol-example@xhigh]
+    - [opus-example@xhigh]
+    - [grok-example@high]
+    - [open-example@max]
 
+# Bindings name chains. Replace the team, committee, advisor and leadership
+# ids with the ids the project publishes; leadership keys name a pinned Core
+# Team revision hash, not a role code.
 bindings:
-  # ASMA standard
-  team/01936f5a-0000-7000-8000-000000000101/scope: codex-first
-  team/01936f5a-0000-7000-8000-000000000101/implement: open-first-build
-  team/01936f5a-0000-7000-8000-000000000101/verify: open-first-verify
-  team/01936f5a-0000-7000-8000-000000000101/audit: codex-first
-  # high-stakes
-  team/01936f5a-0000-7000-8000-000000000102/scope: codex-first
-  team/01936f5a-0000-7000-8000-000000000102/implement: claude-first-build
-  team/01936f5a-0000-7000-8000-000000000102/verify: open-first-verify
-  team/01936f5a-0000-7000-8000-000000000102/audit: codex-first
-  # UX
-  team/01936f5a-0000-7000-8000-000000000103/research-design: claude-first
-  team/01936f5a-0000-7000-8000-000000000103/prototype: open-first-build
-  team/01936f5a-0000-7000-8000-000000000103/browser-verify: open-first-verify
-  team/01936f5a-0000-7000-8000-000000000103/audit: codex-first
-  # PR check
-  team/01936f5a-0000-7000-8000-000000000104/pr-check: open-first-verify
-  # Plan, build and verify
-  team/01936f5a-0000-7000-8000-000000000001/architect: codex-first
-  team/01936f5a-0000-7000-8000-000000000001/builder: claude-first-build
-  team/01936f5a-0000-7000-8000-000000000001/tester: open-first-verify
-  team/01936f5a-0000-7000-8000-000000000001/inspector: codex-first
-  team/01936f5a-0000-7000-8000-000000000001/verifier: open-first-verify
-  # Research spike
-  team/01936f5a-0000-7000-8000-000000000002/researcher-a: codex-first
-  team/01936f5a-0000-7000-8000-000000000002/researcher-b: claude-first
-  team/01936f5a-0000-7000-8000-000000000002/judge: claude-first
-  team/01936f5a-0000-7000-8000-000000000002/synthesizer: claude-first
-  team/01936f5a-0000-7000-8000-000000000002/final-reviewer: codex-first
-  # Independent review Committee
-  committee/01991c00-0000-7000-8000-000000000001/reviewer-a: review-a
-  committee/01991c00-0000-7000-8000-000000000001/reviewer-b: review-b
-  committee/01991c00-0000-7000-8000-000000000001/judge: claude-first
-  # Advisors
+  team/01936f5a-0000-7000-8000-000000000001/scope: codex-first
+  team/01936f5a-0000-7000-8000-000000000001/implement: claude-first
+  team/01936f5a-0000-7000-8000-000000000001/verify: independent-review
+  team/01936f5a-0000-7000-8000-000000000001/audit: codex-first
+  committee/01991c00-0000-7000-8000-000000000001/reviewer-a: independent-review
+  committee/01991c00-0000-7000-8000-000000000001/reviewer-b: claude-first
+  committee/01991c00-0000-7000-8000-000000000001/judge: codex-first
   advisor/01a02d00-0000-7000-8000-00000000ad01: codex-first
+  leadership/0000000000000000000000000000000000000000000000000000000000000000/lsa: codex-first
+  leadership/0000000000000000000000000000000000000000000000000000000000000000/tpm: claude-first
 
 rules:
-  # Verdict seats: skip models not marked `calibrated: true` (operator-approved for verdicts; DEC-001, DEC-015; empty the list to waive).
+  # Verdict seats skip models not marked calibrated: true.
   calibration_required:
-    - team/01936f5a-0000-7000-8000-000000000101/verify
-    - team/01936f5a-0000-7000-8000-000000000101/audit
-    - team/01936f5a-0000-7000-8000-000000000102/verify
-    - team/01936f5a-0000-7000-8000-000000000102/audit
-    - team/01936f5a-0000-7000-8000-000000000103/browser-verify
-    - team/01936f5a-0000-7000-8000-000000000103/audit
-    - team/01936f5a-0000-7000-8000-000000000104/pr-check
-    - team/01936f5a-0000-7000-8000-000000000001/tester
-    - team/01936f5a-0000-7000-8000-000000000001/inspector
-    - team/01936f5a-0000-7000-8000-000000000001/verifier
-    - team/01936f5a-0000-7000-8000-000000000002/judge
-    - team/01936f5a-0000-7000-8000-000000000002/final-reviewer
+    - team/01936f5a-0000-7000-8000-000000000001/verify
+    - team/01936f5a-0000-7000-8000-000000000001/audit
     - committee/01991c00-0000-7000-8000-000000000001/reviewer-a
     - committee/01991c00-0000-7000-8000-000000000001/reviewer-b
     - committee/01991c00-0000-7000-8000-000000000001/judge
-  vision_required:
-    - team/01936f5a-0000-7000-8000-000000000103/browser-verify
-  # Seat: the seat whose vendor it must avoid in the same team run.
+  vision_required: []
+  # A reviewer's routes must avoid the vendor its partner ran on.
   independent_of:
-    team/01936f5a-0000-7000-8000-000000000101/verify: team/01936f5a-0000-7000-8000-000000000101/implement
-    team/01936f5a-0000-7000-8000-000000000101/audit: team/01936f5a-0000-7000-8000-000000000101/implement
-    team/01936f5a-0000-7000-8000-000000000102/verify: team/01936f5a-0000-7000-8000-000000000102/implement
-    team/01936f5a-0000-7000-8000-000000000102/audit: team/01936f5a-0000-7000-8000-000000000102/implement
-    team/01936f5a-0000-7000-8000-000000000103/browser-verify: team/01936f5a-0000-7000-8000-000000000103/prototype
-    team/01936f5a-0000-7000-8000-000000000103/audit: team/01936f5a-0000-7000-8000-000000000103/prototype
-    team/01936f5a-0000-7000-8000-000000000001/tester: team/01936f5a-0000-7000-8000-000000000001/builder
-    team/01936f5a-0000-7000-8000-000000000001/inspector: team/01936f5a-0000-7000-8000-000000000001/builder
-    team/01936f5a-0000-7000-8000-000000000001/verifier: team/01936f5a-0000-7000-8000-000000000001/builder
-    team/01936f5a-0000-7000-8000-000000000002/researcher-b: team/01936f5a-0000-7000-8000-000000000002/researcher-a
+    team/01936f5a-0000-7000-8000-000000000001/verify: team/01936f5a-0000-7000-8000-000000000001/implement
+    team/01936f5a-0000-7000-8000-000000000001/audit: team/01936f5a-0000-7000-8000-000000000001/implement
