@@ -136,13 +136,10 @@ describe("stateSinceLine", () => {
   it("gives Attention the time Paseo raised it, never the Updated time", () => {
     const raised = entry("finished", { status: "idle", requiresAttention: true, attentionReason: "finished", attentionTimestamp: ago(2 * HOUR), updatedAt: ago(5 * MINUTE) });
     expect(stateSinceLine(raised, OSLO)).toEqual({ label: "Attention since", value: `${exact(2 * HOUR)} · 2 hours ago\nWhen Paseo raised it, at a finished turn or Mark as unread; it has stayed raised since, through any later turn` });
-    // A reason Paseo no longer marks as raised, or a missing time, is not recorded; Updated never stands in.
-    for (const unrecorded of [
-      entry("cleared", { status: "idle", requiresAttention: false, attentionReason: "finished", attentionTimestamp: ago(2 * HOUR), updatedAt: ago(5 * MINUTE) }),
-      entry("timeless", { status: "idle", requiresAttention: true, attentionReason: "finished", attentionTimestamp: null, updatedAt: ago(5 * MINUTE) }),
-    ]) {
-      expect(stateSinceLine(unrecorded, OSLO)).toEqual({ label: "Attention since", value: "Not recorded: Paseo reported no time for this attention" });
-    }
+    const cleared = entry("cleared", { status: "idle", requiresAttention: false, attentionReason: "finished", attentionTimestamp: ago(2 * HOUR), updatedAt: ago(5 * MINUTE) });
+    expect(stateSinceLine(cleared, OSLO)).toEqual({ label: "Idle since", value: "Not recorded: Paseo keeps no time for a session becoming idle" });
+    const timeless = entry("timeless", { status: "idle", requiresAttention: true, attentionReason: "finished", attentionTimestamp: null, updatedAt: ago(5 * MINUTE) });
+    expect(stateSinceLine(timeless, OSLO)).toEqual({ label: "Attention since", value: "Not recorded: Paseo reported no time for this attention" });
   });
 
   it("never uses sticky error attention as the start of a current error", () => {

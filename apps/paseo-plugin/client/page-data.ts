@@ -1,4 +1,4 @@
-import type { DirectoryEntry } from "./session-directory";
+import { hasSessionAttention, type DirectoryEntry } from "./session-directory";
 import type { SourceRead } from "../shared/read-sources";
 export function jiraIssueUrl(key: string): string | null {
   return /^ASMA-[1-9]\d*$/.test(key) ? `https://carasent.atlassian.net/browse/${key}` : null;
@@ -30,7 +30,7 @@ export function nativeSummary(entries: readonly DirectoryEntry[]) {
   return { total: entries.length, running: entries.filter((entry) => entry.status === "running").length,
     idle: entries.filter((entry) => entry.status === "idle").length,
     closed: entries.filter((entry) => entry.status === "closed").length,
-    attention: entries.filter((entry) => entry.requiresAttention).length,
+    attention: entries.filter(hasSessionAttention).length,
     needsInput: entries.filter((entry) => entry.needsInput).length,
     errors: entries.filter((entry) => entry.status === "error").length };
 }
@@ -94,7 +94,7 @@ export function portfolioFilter(row: PortfolioRow, filter: PortfolioFilter): boo
   return true;
 }
 export function inboxEntries(entries: readonly DirectoryEntry[]): DirectoryEntry[] {
-  return entries.filter((entry) => entry.needsInput || entry.status === "error" || entry.requiresAttention || entry.attentionReason !== null);
+  return entries.filter((entry) => entry.needsInput || entry.status === "error" || hasSessionAttention(entry));
 }
 export function searchRecords(entries: readonly DirectoryEntry[], reads: readonly SourceRead[], query: string) {
   const needle = query.trim().toLocaleLowerCase();

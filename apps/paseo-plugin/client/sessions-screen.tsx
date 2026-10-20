@@ -38,6 +38,7 @@ import { type DirectoryEntry } from "./session-directory";
 import {
   attentionLabel,
   archivedLabel,
+  earlierErrorLabel,
   hasActiveView,
   matchesQuery,
   matchesStatus,
@@ -348,6 +349,7 @@ export const SessionRow = memo(function SessionRow({
   const age = time ? rowAge(time, compact, colors) : null;
   const attention = attentionLabel(entry);
   const archived = archivedLabel(entry);
+  const history = earlierErrorLabel(entry);
   const state = sessionState(entry);
   const context = entry.workspaceName ?? entry.projectName ?? entry.cwd;
   const project =
@@ -366,18 +368,19 @@ export const SessionRow = memo(function SessionRow({
         : null,
     time?.spoken ?? null,
     archived,
+    history,
     accessibilityContext ?? detail,
     highlighted ? "Shown from search results" : null,
   ]
     .filter((part): part is string => part !== null && part.length > 0)
     .join(". ");
-  const meta = [displayContext, archived].filter((part): part is string => !!part).join(" · ");
+  const meta = [displayContext, archived, history].filter((part): part is string => !!part).join(" · ");
   const runtime = (state === "needs_input" || state === "attention" || state === "failed") && entry.status !== "error";
   const runtimeLabel = entry.status.charAt(0).toLocaleUpperCase() + entry.status.slice(1);
   // Compact: one line. The title leads, runtime/context/archived follow muted in
   // the same truncating line, and the state badge stays visible at the end. The
   // native ID stays in the accessible label only (review ST-02).
-  const compactMeta = [runtime ? runtimeLabel : null, compactContext ?? displayContext, archived]
+  const compactMeta = [runtime ? runtimeLabel : null, compactContext ?? displayContext, archived, history]
     .filter((part): part is string => !!part)
     .join(" · ");
 
@@ -480,7 +483,7 @@ export function resultCues(entry: DirectoryEntry): string[] {
   const pr = entry.labels.pr?.trim().replace(/^#/, "");
   const derived = (state === "needs_input" || state === "attention" || state === "failed") && entry.status !== "error";
   return [
-    derived ? (entry.attentionReason === "error" ? `Earlier error · now ${entry.status}` : `Now ${entry.status}`) : null,
+    earlierErrorLabel(entry) ?? (derived ? `Now ${entry.status}` : null),
     archivedLabel(entry),
     labelledRole(entry),
     task ?? null,

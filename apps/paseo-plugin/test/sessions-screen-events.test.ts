@@ -262,6 +262,8 @@ import {
   SCOPE_SUMMARY_TEST_ID,
   SessionDetailsButton,
   sessionDetailLines,
+  SessionRow,
+  resultCues,
   SessionsScreen,
   SessionTimeLines,
   SHORT_PEEK_HEIGHT,
@@ -451,6 +453,42 @@ describe("SessionsScreen toolbar events", () => {
   afterEach(() => {
     harness.unmount();
     vi.useRealTimers();
+  });
+
+  it.each([true, false])("keeps history neutral in rows and filters on compact=%s", (compact) => {
+    const history = Array.from({ length: 13 }, (_, n) => sessionEntry(`history-${n}`, {
+      title: `Closed review ${n}`, status: "closed", requiresAttention: true, attentionReason: "error",
+      workspaceName: n < 10 ? "Archived workspace" : "Current workspace",
+    }));
+    directory.state = { ...(directory.state as object), entries: [...history,
+      sessionEntry("current", { status: "error", requiresAttention: true, attentionReason: "error" }),
+      sessionEntry("unread", { requiresAttention: true, attentionReason: "finished" }),
+    ], includeArchived: false };
+    patchSessionView("host-a", { query: "", includeArchived: false });
+    renderScreen(undefined, compact);
+    expect(findByTestID(harness.current(), "sessions-filter-error").props.count).toBe(1);
+    expect(findByTestID(harness.current(), "sessions-filter-attention").props.count).toBe(2);
+    expect(findByTestID(harness.current(), "sessions-filter-closed").props.count).toBe(13);
+    const earlier = findByTestID(harness.current(), "sessions-filter-earlier_error");
+    expect(earlier.props.label).toBe("Earlier errors");
+    expect(earlier.props.count).toBe(13);
+    expect(earlier.props.dot).not.toBe(colors.statusDanger);
+    (earlier.props.onPress as () => void)(); harness.flush();
+    expect(sessionRowIds().sort()).toEqual(history.map((entry) => entry.id).sort());
+    expect(resultCues(history[0]!)).toContain("Earlier error · now closed");
+    const row = SessionRow({ entry: history[0]!, colors, compact, onPress: () => {}, displayContext: "Archived workspace" });
+    expect(textOf(row)).toContain("Earlier error · now closed");
+    const pressable = walk(row).find((element) => element.props.testID === "sessions-row-history-0")!;
+    expect(pressable.props.accessibilityLabel).toContain("Native status closed");
+    expect(pressable.props.accessibilityLabel).toContain("Earlier error · now closed");
+    expect(pressable.props.accessibilityLabel).not.toContain("Needs attention");
+    expect(walk(row).find((element) => element.type === StateBadge)!.props.state).toBe("closed");
+    // Archive remains an explicit independent option, and never hides closed-unarchived history.
+    (findByTestID(harness.current(), "sessions-advanced-archived").props.onPress as () => void)(); harness.flush();
+    expect(directory.inputs.at(-1)?.includeArchived).toBe(true);
+    expect(sessionRowIds()).toHaveLength(13);
+    (findByTestID(harness.current(), "sessions-filter-error").props.onPress as () => void)(); harness.flush();
+    expect(sessionRowIds()).toEqual(["current"]);
   });
 
   it("shows the count line only for results or an incomplete read, and keeps the full count and read in Filters", () => {

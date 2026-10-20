@@ -1,4 +1,5 @@
 import type { DirectoryEntry } from "./session-directory";
+import { earlierErrorLabel } from "./session-view";
 import { epicLabel, isDeskWork, labelRoleCode, organizationScope, ROLE_ORDER, sessionState, workspaceLabel, type OrganizationGroup, type OrganizationState } from "./session-organization";
 
 type Mappings = Parameters<typeof organizationScope>[1];
@@ -114,7 +115,8 @@ export const CHAIN_STATE_GLYPHS: Readonly<Record<ChainState, string>> = {
 /** The state word, keeping the runtime apart from a reported cue: an error reported on a session that is idle now. */
 export function chainLabel(entry: DirectoryEntry): string {
   const state = chainState(entry);
-  return state === "failed" && entry.status !== "error" ? `Error reported, ${entry.status} now` : CHAIN_STATE_LABELS[state];
+  const history = earlierErrorLabel(entry);
+  return history ? `${CHAIN_STATE_LABELS[state]} · ${history}` : CHAIN_STATE_LABELS[state];
 }
 
 /** Spoken summary of a task's lanes, e.g. "SWE: Running; QA: Needs input and Idle". */

@@ -16,7 +16,8 @@ import {
   type DirectoryEntry,
   type DirectoryState,
 } from "../client/session-directory";
-import { matchesQuery } from "../client/session-view";
+import { attentionLabel, earlierErrorLabel, matchesQuery, matchesStatus } from "../client/session-view";
+import { sessionState } from "../client/session-organization";
 
 type Observer = {
   snapshot: (snapshot: PaseoAgentListResult & { subscriptionId: string }) => void;
@@ -338,6 +339,56 @@ describe("SessionDirectory", () => {
     const renamed = toDirectoryEntry({ ...seed, agent: { ...seed.agent, title: "Renamed", updatedAt: "2026-10-18T12:00:00.000Z", lastUserMessageAt: prompt, activeTurn: undefined } }, first);
     expect(renamed).toMatchObject({ updatedAt: "2026-10-18T12:00:00.000Z", lastUserMessageAt: prompt, activeTurnStartedAt: null });
     expect(toDirectoryEntry(seed).lastUserMessageAt).toBeNull();
+  });
+
+  it("retains closed unarchived history across pages, subscriptions, stale cache and archive toggles", async () => {
+    const history = Array.from({ length: 13 }, (_, n) => entry(`history-${n}`, {
+      status: "closed", requiresAttention: true, attentionReason: "error",
+      workspaceName: n < 10 ? "Archived workspace" : "Current workspace",
+    }));
+    const archived = entry("archived", { status: "closed", attentionReason: "error", archivedAt: "2026-10-18T11:00:00Z" });
+    const fake = fakeDirectory([
+      Array.from({ length: 200 }, (_, n) => entry(`filler-${n}`)),
+      [...history, archived, entry("current", { status: "error", requiresAttention: true, attentionReason: "error" })],
+    ]);
+    const directory = new SessionDirectory({ client: () => fake.client, includeArchived: false, onChange: () => {} });
+    const matching = (status: Parameters<typeof matchesStatus>[1]) => directory.getState().entries.filter((item) => matchesStatus(item, status));
+    await directory.start();
+    expect(directory.getState().pages).toBe(2);
+    expect(directory.getState().entries).toHaveLength(214);
+    expect(matching("earlier_error")).toHaveLength(13);
+    expect(matching("closed")).toHaveLength(13);
+    expect(matching("error").map((item) => item.id)).toEqual(["current"]);
+    expect(matching("attention").map((item) => item.id)).toEqual(["current"]);
+    expect(directory.getState().entries.find((item) => item.id === "history-0")?.archivedAt).toBeNull();
+
+    for (const status of ["running", "idle", "closed"] as const) {
+      fake.emitUpdate({ kind: "upsert", ...entry("current", { status, requiresAttention: true, attentionReason: "error" }) });
+      const changed = directory.getState().entries.find((item) => item.id === "current")!;
+      expect(matching("error")).toEqual([]);
+      expect(matching("attention")).toEqual([]);
+      expect(matching("earlier_error")).toHaveLength(14);
+      expect(sessionState(changed)).toBe(status);
+      expect(attentionLabel(changed)).toBeNull();
+      expect(earlierErrorLabel(changed)).toBe(`Earlier error · now ${status}`);
+    }
+    fake.emitUpdate({ kind: "upsert", ...entry("current", { status: "error", requiresAttention: false, attentionReason: "error" }) });
+    expect(matching("error").map((item) => item.id)).toEqual(["current"]);
+
+    directory.markHostOffline();
+    expect(directory.getState().status).toBe("stale");
+    expect(matching("earlier_error")).toHaveLength(13);
+    await directory.reconnect();
+    expect(directory.getState().live).toBe(true);
+    expect(matching("earlier_error")).toHaveLength(13);
+    await directory.setIncludeArchived(true);
+    expect(directory.getState().entries).toHaveLength(215);
+    expect(matching("earlier_error")).toHaveLength(14);
+    expect(directory.getState().entries.find((item) => item.id === "archived")?.archivedAt).not.toBeNull();
+    await directory.setIncludeArchived(false);
+    expect(directory.getState().entries).toHaveLength(214);
+    expect(matching("earlier_error")).toHaveLength(13);
+    await directory.dispose();
   });
 
   it("searches recognized epic and workstream label values", () => {
