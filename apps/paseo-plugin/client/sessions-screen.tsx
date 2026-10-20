@@ -1328,6 +1328,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const [mobileFilterScope, setMobileFilterScope] = useState<string | null>(null);
   const mobileFiltersOpen = compact && mobileFilterScope === `${host.id}:${viewScope}`;
   const filtersTriggerRef = useRef<View | null>(null);
+  const quickHelpDismissRef = useRef<(() => void) | null>(null);
   const quickChooserRef = useRef<View | null>(null);
   const [quickChooserScope, setQuickChooserScope] = useState<string | null>(null);
   useEffect(() => { setQuickChooserScope(null); }, [compact, viewScope, mobileFiltersOpen]);
@@ -2387,7 +2388,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const mobileToolbar = <MobileQuickToolbar key={viewScope} colors={colors} width={Math.max(0, rootSize.width - 24)}
     query={view.query} status={view.status} counts={statusCounts} activeCount={slimActiveCount}
     summary={[scopeLabel, ...summaryParts, grouping !== "hierarchy" ? `Group: ${GROUPINGS.find((choice) => choice.id === grouping)?.label}` : null].filter(Boolean).join(" · ")}
-    searchInputRef={searchInputRef} filtersTriggerRef={filtersTriggerRef} chooserRef={quickChooserRef} chooserOpen={quickChooserScope === viewScope}
+    searchInputRef={searchInputRef} filtersTriggerRef={filtersTriggerRef} chooserRef={quickChooserRef} chooserOpen={quickChooserScope === viewScope} helpDismissRef={quickHelpDismissRef}
     onQuery={(query) => updateFilter({ query })} onStatus={(status) => updateFilter({ status })} onFilters={handleRevealFilters}
     onClear={handleClearFilters}
     onChooser={() => { searchInputRef.current?.blur(); setQuickChooserScope(viewScope); }} />;
@@ -2480,7 +2481,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   useLayoutEffect(() => {
     if (mobileFiltersOpen || !returnFromFiltersRef.current) return;
     returnFromFiltersRef.current = false;
-    const timer = setTimeout(() => focusControl(filtersTriggerRef.current), 0);
+    const timer = setTimeout(() => { focusControl(filtersTriggerRef.current); quickHelpDismissRef.current?.(); }, 0);
     return () => clearTimeout(timer);
   }, [mobileFiltersOpen]);
   // An open page becomes the existing desktop controls on resize; selections already live in the scoped view.
@@ -2489,7 +2490,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     setMobileFilterScope(null);
     restoredRef.current = false;
     returnFromFiltersRef.current = true;
-    const timer = setTimeout(() => focusControl(filtersTriggerRef.current), 0);
+    const timer = setTimeout(() => { focusControl(filtersTriggerRef.current); quickHelpDismissRef.current?.(); }, 0);
     return () => clearTimeout(timer);
   }, [compact]);
 

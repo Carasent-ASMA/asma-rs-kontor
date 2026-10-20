@@ -2039,12 +2039,17 @@ describe("SessionsScreen mobile filter page", () => {
     patchSessionView("host-a", { grouping: "flat", scrollOffset: 370 });
     renderCompact(); vi.runAllTimers();
     const ref = walk(harness.current()).find((node) => node.type === MobileQuickToolbar)!.props.filtersTriggerRef as RefLike;
-    const focus = vi.fn(); ref.current = { focus };
+    const calls: string[] = [];
+    const focus = vi.fn(() => calls.push("focus")); ref.current = { focus };
+    const dismiss = vi.fn(() => calls.push("dismiss"));
+    const helpRef = walk(harness.current()).find((node) => node.type === MobileQuickToolbar)!.props.helpDismissRef as { current: (() => void) | null };
+    helpRef.current = dismiss;
     openMobileFilters(); closeMobileFilters();
     const scrollToOffset = vi.fn();
     (findByTestID(harness.current(), "sessions-list").props.ref as RefLike).current = { scrollToOffset };
     vi.runAllTimers();
     expect(focus).toHaveBeenCalledOnce();
+    expect(calls).toEqual(["focus", "dismiss"]);
     expect(scrollToOffset).toHaveBeenCalledWith({ offset: 370, animated: false });
   });
 

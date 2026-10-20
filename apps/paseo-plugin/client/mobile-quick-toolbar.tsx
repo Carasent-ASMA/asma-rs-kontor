@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ComponentRef, type Ref, type RefObject } from "react";
+import { useEffect, useImperativeHandle, useRef, useState, type ComponentRef, type Ref, type RefObject } from "react";
 import { Pressable, Text, View, useWindowDimensions } from "react-native";
 import { Icon, TextInput } from "@getpaseo/plugin/client/react-native";
 import { useControlHelp } from "./control-help";
@@ -30,6 +30,7 @@ type ToolbarProps = {
   colors: Colors; width: number; query: string; status: StatusFilter; counts: Readonly<Record<StatusFilter, number>>;
   activeCount: number; summary: string; searchInputRef: RefObject<ComponentRef<typeof TextInput> | null>;
   filtersTriggerRef: RefObject<View | null>; chooserRef: RefObject<View | null>; chooserOpen: boolean;
+  helpDismissRef: Ref<() => void>;
   onQuery(query: string): void; onStatus(status: StatusFilter): void; onFilters(): void; onChooser(): void; onClear(): void;
 };
 
@@ -39,6 +40,7 @@ export function MobileQuickToolbar(props: ToolbarProps) {
   const { fontScale } = useWindowDimensions();
   const [searchOpen, setSearchOpen] = useState(false);
   const help = useControlHelp("");
+  useImperativeHandle(props.helpDismissRef, () => help.dismiss, [help.dismiss]);
   const searchTriggerRef = useRef<View | null>(null);
   const target = Math.max(44, Math.ceil(36 * fontScale));
   const choices = visibleQuickFilters(width || 296, status, target);
