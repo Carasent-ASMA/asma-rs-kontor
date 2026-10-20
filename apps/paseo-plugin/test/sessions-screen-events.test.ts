@@ -272,6 +272,7 @@ import {
   toolbarOpenPatch,
 } from "../client/sessions-screen";
 import { StateBadge } from "../client/organization-row";
+import { SessionUsage, SessionUsageLines } from "../client/session-usage-view";
 import { AnchoredMenu, MenuItem } from "../client/anchored-menu";
 import { nativeFreshnessLabel } from "../client/native-freshness";
 import {
@@ -1182,11 +1183,12 @@ describe("SessionsScreen toolbar events", () => {
     const content = () => (findByTestID(dialog()!.props.children, "sessions-details-lines").props.children as unknown[]).flat() as (ElementLike & { readonly type: unknown })[];
     // The times come first, drawn by their own clock-driven component; the role and place lines follow.
     const times = () => content()[0]!;
+    const usage = () => content().find((line) => line.type === SessionUsageLines)!;
     const lines = () => content().filter((line) => line.type === "View")
       .map((line) => (line.props.children as ElementLike[]).map(textOf).join(": "));
     const close = () => walk(dialog()!.props.header).find((element) => element.props.label === "Close")!;
     const open = (id: string) => { (details(id).props.onPress as () => void)(); harness.flush(); };
-    return { openAgent, save, row, details, dialog, times, lines, close, open };
+    return { openAgent, save, row, details, dialog, times, usage, lines, close, open };
   }
 
   const placeEntries = () => [
@@ -1265,6 +1267,11 @@ describe("SessionsScreen toolbar events", () => {
     // Workstreams details open the same way, with the same lines.
     (buttons[0]!.props.onPress as () => void)(); harness.flush();
     expect(screen.dialog()!.props.label).toBe(`Details: ${(sessions[0] as { entry: { title: string } }).entry.title}`);
+    const renderItem = findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike;
+    const result = renderItem({ item: { kind: "result", entry: placeEntries()[0]! } });
+    expect((result.props.details as ElementLike).props.title).toBe(placeEntries()[0]!.title);
+    ((result.props.details as ElementLike).props.onPress as () => void)(); harness.flush();
+    expect(screen.dialog()).toBeDefined();
   });
 
   it("names the native desk workstream in Details when a desk member also has an epic", () => {
@@ -1287,14 +1294,16 @@ describe("SessionsScreen toolbar events", () => {
     expect(chain(sessionEntry("blank", { labels: { workstream: " ", epic: "" } }))).toEqual(absent);
   });
 
-  it("starts the details with the session's times, told whether the list is live and when it was read", () => {
+  it("keeps exact times and usage details on the same session, with each informed when the list becomes stale", () => {
     const screen = renderDetails(placeEntries());
     screen.open("long");
     expect(screen.times().type).toBe(SessionTimeLines);
     expect(screen.times().props).toMatchObject({ entry: { id: "long" }, freshness: { live: true, readAt: 0 } });
+    expect(screen.usage().props).toMatchObject({ entry: { id: "long" }, stale: false });
     directory.state = { ...(directory.state as object), live: false, staleReason: "Live updates stopped.", lastUpdatedAt: 5 };
     harness.flush();
     expect(screen.times().props).toMatchObject({ entry: { id: "long" }, freshness: { live: false, readAt: 5 } });
+    expect(screen.usage().props).toMatchObject({ entry: { id: "long" }, stale: true });
     directory.state = { ...(directory.state as object), status: "stale", live: true };
     harness.flush();
     expect(screen.times().props.freshness).toEqual({ live: false, readAt: 5 });
@@ -1375,7 +1384,7 @@ describe("SessionsScreen toolbar events", () => {
     vi.stubGlobal("document", { activeElement: null, body: {} });
     try {
       screen.open("long");
-      expect(region().props).toMatchObject({ tabIndex: 0, role: "region", accessibilityLabel: "Times, role and placement" });
+      expect(region().props).toMatchObject({ tabIndex: 0, role: "region", accessibilityLabel: "Times, role, placement, model and token report" });
       expect(list().props.tabIndex).toBe(-1);
       expect(region().props.style).not.toHaveProperty("outlineWidth");
       (region().props.onFocus as () => void)(); harness.flush();
@@ -1960,11 +1969,11 @@ describe("SessionsScreen compact toolbar", () => {
     expect(banner.props.actionLabel).toBe("Retry");
   });
 
-  it("renders a compact session row as one line: title, muted context, the Updated time and the state badge", () => {
-    directory.state = { ...(directory.state as object), entries: [sessionEntry("0123456789abcdef", {
+  it("keeps a compact title and context together, with its Updated time, wrapped report metadata and state badge", () => {
+    directory.state = { ...(directory.state as object), entries: [{ ...sessionEntry("0123456789abcdef", {
       title: "A deliberately long session title that would otherwise wrap onto a second line on a phone",
       status: "running", pendingPermissionCount: 1, archivedAt: "2026-10-18T11:00:00.000Z", workspaceName: "RSW • review",
-    })] };
+    }), provider: "codex", model: "gpt-6.1-sol", telemetry: { lastUsage: { inputTokens: 100, outputTokens: 20 } } }] };
     patchSessionView("host-a", { grouping: "flat", includeArchived: true });
     renderCompact();
     const leaf = renderSessionLeaf();
@@ -1975,11 +1984,14 @@ describe("SessionsScreen compact toolbar", () => {
     expect(walk(title).some((element) => element.props?.testID === "sessions-row-meta")).toBe(true);
     expect(textOf(findByTestID(leaf, "sessions-row-meta"))).toBe("  Running · RSW • review · Project · Archived");
     const lines = walk(leaf).filter((element) => (element as { type?: unknown }).type === "Text" && element.props.numberOfLines === 1);
-    // The Updated time is the only other text, beside the title on the same line and never cut short.
+    // The Updated value stays untruncated; model/report metadata can wrap beneath the title.
     const age = findByTestID(leaf, "sessions-row-age");
     expect(lines.filter((line) => !walk(title).includes(line) || line === title)).toEqual([title, age]);
-    // The row's own children (a fragment): title, time and badge side by side.
-    expect(((leaf.props.children as ElementLike).props.children as unknown[]).flat()).toContain(age);
+    const content = ((leaf.props.children as ElementLike).props.children as ElementLike[])[0]!;
+    expect(walk(content)).toContain(age);
+    expect(walk(content).some((element) => element.type === SessionUsage && (element.props.entry as { id: string }).id === "0123456789abcdef")).toBe(true);
+    expect(leaf.props.accessibilityLabel).toContain("Reported input tokens: 100");
+    expect(leaf.props.accessibilityLabel).toContain("Reported output tokens: 20");
     expect(age.props.style).toMatchObject({ flexShrink: 0 });
     expect(walk(leaf).some((element) => (element as { type?: unknown }).type === StateBadge && element.props.state === "needs_input")).toBe(true);
     // ST-02: the native ID is in the accessible label, never in the visible row.
