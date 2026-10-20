@@ -331,7 +331,8 @@ function BoardRow({ testID, title, lines, label, actions, footer, colors }: { te
  * button (open the task in its plan); Open issue sits beside it, never inside it, and screen readers
  * also reach it as a custom action, because an accessible row hides its controls on iOS. A mouse
  * gets a 22pt action level with the meta line; a touch pointer a real 44pt action, since the web
- * ignores a hit slop. Linked sessions, when there are any, add one line below.
+ * ignores a hit slop, and a row button at least 44pt tall even when the title takes one line.
+ * Linked sessions, when there are any, add one line below.
  */
 function CompactBoardRow({ testID, title, meta, label, tone, onPress, issue, sessions, colors }: {
   testID: string; title: ReactNode; meta: string; label: string; tone: Tone; colors: Colors;
@@ -359,7 +360,7 @@ function CompactBoardRow({ testID, title, meta, label, tone, onPress, issue, ses
   </>;
   const text = { flex: 1, minWidth: 0, gap: 2 };
   const main = onPress
-    ? <Pressable testID={testID} accessibilityRole="button" onPress={onPress} style={text} {...accessibility}>{lines}</Pressable>
+    ? <Pressable testID={testID} accessibilityRole="button" onPress={onPress} style={{ ...text, justifyContent: "center", minHeight: COARSE_POINTER ? 44 : 0 }} {...accessibility}>{lines}</Pressable>
     : <View testID={testID} style={text} {...accessibility}>{lines}</View>;
   return <View testID={`${testID}-card`} style={style}>
     <View style={{ flexDirection: "row", alignItems: COARSE_POINTER ? "center" : "flex-end", gap: 8 }}>
