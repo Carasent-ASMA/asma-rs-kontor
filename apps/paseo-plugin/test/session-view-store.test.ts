@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   clearSessionViews,
+  isResultMode,
   patchSessionView,
   readSessionView,
   resetSessionView,
+  sessionViewTransition,
 } from "../client/session-view-store";
 import { DEFAULT_SESSION_FILTERS } from "../client/session-view";
 
@@ -48,5 +50,45 @@ describe("host-scoped session view state", () => {
       scrollOffset: 0,
     });
     expect(readSessionView("host-b").query).toBe("other");
+  });
+});
+
+describe("filtered results and the tree position", () => {
+  beforeEach(() => {
+    clearSessionViews();
+  });
+
+  const task = { jira: "ASMA-7", kontorId: null, label: "ASMA-7" };
+
+  it("treats a query, a state filter or a task as results; a shortcut alone keeps the tree", () => {
+    const base = readSessionView("host-a");
+    expect(isResultMode(base)).toBe(false);
+    expect(isResultMode({ ...base, query: "  " })).toBe(false);
+    patchSessionView("host-a", { shortcut: "Adam" });
+    expect(isResultMode(readSessionView("host-a"))).toBe(false);
+    expect(isResultMode({ ...base, query: "qa" })).toBe(true);
+    expect(isResultMode({ ...base, status: "idle" })).toBe(true);
+    expect(isResultMode({ ...base, task })).toBe(true);
+  });
+
+  it("remembers the tree position on entering results and restores it on leaving", () => {
+    patchSessionView("host-a", { scrollOffset: 640 });
+    const enter = sessionViewTransition(readSessionView("host-a"), { query: "qa" }, 600);
+    expect(enter).toEqual({ query: "qa", treeOffset: 600, peek: null, scrollOffset: 0 });
+    patchSessionView("host-a", { ...enter, scrollOffset: 90 });
+    // Narrowing within results keeps the remembered tree position.
+    const narrow = sessionViewTransition(readSessionView("host-a"), { status: "running" });
+    expect(narrow).toEqual({ status: "running", peek: null });
+    patchSessionView("host-a", narrow);
+    const leave = sessionViewTransition(readSessionView("host-a"), { query: "", status: "all" });
+    expect(leave).toEqual({ query: "", status: "all", treeOffset: undefined, peek: null, scrollOffset: 600 });
+  });
+
+  it("ends a tree peek when the results change, but not on a scroll", () => {
+    patchSessionView("host-a", { query: "qa", treeOffset: 0, peek: { sessionId: "s", resultsOffset: 40 } });
+    const current = readSessionView("host-a");
+    expect(sessionViewTransition(current, { scrollOffset: 300 })).toEqual({ scrollOffset: 300 });
+    expect(sessionViewTransition(current, { query: "qa swe" })).toEqual({ query: "qa swe", peek: null });
+    expect(sessionViewTransition(current, { task })).toEqual({ task, peek: null });
   });
 });

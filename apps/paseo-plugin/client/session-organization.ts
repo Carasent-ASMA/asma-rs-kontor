@@ -240,6 +240,11 @@ function workspaceOf(entry: DirectoryEntry): {
   return { key: "unassigned", label: UNASSIGNED_WORKSPACE };
 }
 
+/** The workspace label the tree shows for a session. */
+export function workspaceLabel(entry: DirectoryEntry): string {
+  return workspaceOf(entry).label;
+}
+
 export function sessionState(entry: DirectoryEntry): OrganizationState {
   if (entry.needsInput) {
     return "needs_input";
