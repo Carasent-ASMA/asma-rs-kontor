@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { TextInput } from "@getpaseo/plugin/client/react-native";
 import type { OrganizationSettings } from "../shared/organization";
@@ -26,7 +26,7 @@ function sourceSummary(read: SourceRead, colors: Colors) {
   const full = `${read.source.title} · ${read.status} · ${read.source.kind === "jira" ? "Historical Jira snapshot" : read.source.revisionKind}. ${read.source.kind === "jira" ? `Observed ${read.jiraHistory?.generated ?? "Unknown"} · not live` : `Read ${read.readAt}`}`;
   return <Text selectable accessibilityLabel={full} style={{ color: colors.foreground, fontSize: 13, lineHeight: 20 }}>{parts.filter(Boolean).join(" · ")}</Text>;
 }
-export function OrganizationSettingsPage({ state, colors, entries, workspaces, sources, reads, sourceError, teamsSnapshots = {}, teamsErrors = {}, sourcesAvailable = false, refresh, onOpenTeams }: {
+export function OrganizationSettingsPage({ state, colors, entries, workspaces, sources, reads, sourceError, teamsSnapshots = {}, teamsErrors = {}, sourcesAvailable = false, refresh, onOpenTeams, keyboard }: {
   state: OrganizationSettingsState; colors: Colors; entries: readonly DirectoryEntry[];
   sources: readonly ReadSourceSummary[]; sourceError: string | null; refresh: () => void;
   workspaces: readonly OrganizationWorkspace[];
@@ -36,6 +36,8 @@ export function OrganizationSettingsPage({ state, colors, entries, workspaces, s
   sourcesAvailable?: boolean;
   /** Opens the configured teams & templates browser; omitted when the host cannot navigate there. */
   onOpenTeams?: () => void;
+  /** The Keyboard card, kept in its own settings document. */
+  keyboard?: ReactNode;
 }) {
   // A draft holds its opening revision across incoming saves from another device.
   const [draft, setDraft] = useState<{ values: OrganizationSettings; base: OrganizationSettings; revision: string } | null>(null);
@@ -104,6 +106,7 @@ export function OrganizationSettingsPage({ state, colors, entries, workspaces, s
         </View>
       </> : null}
     </Card>
+    {keyboard}
     <Card title="Configured sources" colors={colors}>
       <View testID="settings-catalog-note"><Disclosure small label="Read-only · configured on the server" colors={colors}><Copy colors={colors} muted small>{CATALOG_NOTE}</Copy></Disclosure></View>
       {sourceError || reading ? <Copy colors={colors}>{sourceError ?? "Reading configured sources…"}</Copy> : null}

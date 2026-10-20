@@ -17,6 +17,7 @@ vi.mock("@tanstack/react-query", () => ({ useQuery: (options: typeof model.query
 vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: () => ({ state: { entries: [], status: "ready", live: true, lastUpdatedAt: 1, error: null, staleReason: null, pages: 1, includeArchived: false }, refresh: vi.fn() }) }));
 vi.mock("../client/use-workspace-directory", () => ({ useWorkspaceDirectory: () => ({ entries: [], error: null, readAt: null }) }));
 vi.mock("../client/use-organization-settings", () => ({ useOrganizationSettings: () => ({ state: { status: "ready", values: DEFAULT_ORGANIZATION_SETTINGS, saving: false, saveError: null } }) }));
+vi.mock("../client/use-keyboard-settings", () => ({ useKeyboardSettings: () => ({ state: { status: "loading" }, save: async () => true }) }));
 import { KontorScreen } from "../client/kontor-screen";
 import { NativeFreshnessPill } from "../client/native-freshness";
 import { ReadOnlyPage } from "../client/read-only-pages";

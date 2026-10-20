@@ -30,6 +30,9 @@ const TABBABLE = ':is(a[href], button:not([disabled]), input:not([disabled]), se
 const drawn = (node: FocusTarget) => !node.getClientRects || node.getClientRects().length > 0;
 /** Open dialogs, newest last: only the top one keeps Tab inside it. */
 const dialogs: object[] = [];
+/** Mounted menus and dialogs, so a page shortcut leaves its key to an open one. */
+let openPanels = 0;
+export const anchoredPanelOpen = () => openPanels > 0;
 /** A number for each trigger ref, so a swap to another trigger reads as another opening. */
 const triggers = new WeakMap<object, number>();
 let triggerCount = 0;
@@ -96,6 +99,7 @@ function AnchoredPanel({ anchor, root, rootSize, placement, onClose, colors, lab
     const back = BackHandler.addEventListener("hardwareBackPress", () => { close.current(); return true; });
     const document = (globalThis as { document?: KeyTarget }).document;
     const self = {};
+    openPanels++;
     if (dialog) dialogs.push(self);
     const onKey = (event: KeyEvent) => {
       if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close.current(); restoreFocus(); return; }
@@ -118,6 +122,7 @@ function AnchoredPanel({ anchor, root, rootSize, placement, onClose, colors, lab
     document?.addEventListener("keydown", onKey, true);
     return () => {
       back.remove(); document?.removeEventListener("keydown", onKey, true);
+      openPanels--;
       const index = dialogs.indexOf(self); if (index >= 0) dialogs.splice(index, 1);
     };
   }, []);
