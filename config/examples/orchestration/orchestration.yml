@@ -1,0 +1,80 @@
+# Neutral orchestration example. It is the entry file of one explicitly
+# selected config folder: every relative path below resolves from the folder
+# root, never from the consumer's current directory.
+#
+# `schema_version`, `fleet` and `core_team` are the existing bundle selector.
+# The `project:` block is the parameter block the workflow pack renders from;
+# WP-08 extends the bundle reader to read it. Until then this file is a schema
+# fixture, not a live bundle: the current reader accepts only the selector.
+schema_version: 1
+fleet: fleet.yml
+core_team: orchestration/teams/core-team.yml
+
+project:
+  # The confirmed tracker key. It is the public identifier; internal ids stay
+  # internal.
+  key: EXM
+  name: Example Project
+  owner: Platform Owner
+
+  decision_authorities:
+    platform: Platform Owner
+    architecture: Architecture Review
+    decision_records_root: docs/decisions/
+
+  tracker:
+    kind: jira
+    site: https://example.atlassian.invalid
+    project_key: EXM
+    # A key-shaped identifier, not a UUID, slug or legacy code.
+    key_pattern: '^[A-Z][A-Z0-9]{1,9}-[0-9]+$'
+    credential_alias: tracker-api-token
+    spec: tracker/jira.yml
+
+  branch:
+    types: [feat, fix, docs, refactor, test, chore, ci, build, perf]
+    pattern: '^(feat|fix|docs|refactor|test|chore|ci|build|perf)/<KEY>-<number>-<slug>$'
+    commit_pattern: '^<KEY>-<number> <summary>$'
+
+  forge:
+    kind: github
+    organization: example-org
+    repositories:
+      - example-org/example-project
+    base_branch: main
+
+  # Provider/harness combinations this project may launch. Model ids, effort
+  # and vendor independence live in fleet.yml, not here.
+  runtime:
+    matrix:
+      - {name: default, harness: paseo, provider: opencode}
+      - {name: review, harness: paseo, provider: codex}
+
+  # The project's CLI verbs, for text and checks that must not hard-code one
+  # tool's command set.
+  cli:
+    command: example
+    verbs: [status, epic, task, git, fleet]
+
+  team_pack: packs/team.yml
+  fleet: fleet.yml
+  supervision: paseo-supervision.yml
+
+  merge_authority:
+    role: Platform Owner
+    policy: independent-review-then-owner
+
+  documentation_roots: [docs]
+  gap_ledger: docs/GAPS.md
+  attention_channel: 'attention:platform-owner'
+  glossary: docs/GLOSSARY.md
+  worktree_layout: '.worktrees/<key-slug>/<module>'
+  check_runs: [publication-branch-title]
+
+  capacity:
+    max_delivery_seats: 1
+    max_parallel_tasks: 2
+
+  time_zone: Europe/Oslo
+  holiday_countries: [NO]
+  currency: NOK

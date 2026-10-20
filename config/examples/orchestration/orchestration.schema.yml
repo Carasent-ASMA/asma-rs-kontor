@@ -1,0 +1,116 @@
+# Machine-readable companion to the `project:` block documented in
+# docs/CONFIGURATION.md. It states required key presence, not value types or
+# cross-field rules; the schema tests in
+# crates/kontor-fleet/tests/config_examples.rs prove those against both the
+# neutral example and ASMA's concrete values.
+schema_version: 1
+kind: kontor-orchestration-project
+description: The project parameter block of orchestration.yml.
+
+required:
+  - schema_version
+  - fleet
+  - core_team
+  - project
+
+project:
+  required:
+    - key
+    - name
+    - owner
+    - decision_authorities
+    - tracker
+    - branch
+    - forge
+    - runtime
+    - cli
+    - team_pack
+    - fleet
+    - supervision
+    - merge_authority
+    - documentation_roots
+    - gap_ledger
+    - attention_channel
+    - glossary
+    - worktree_layout
+    - check_runs
+    - capacity
+    - time_zone
+    - holiday_countries
+    - currency
+  nested:
+    decision_authorities:
+      required: [platform, architecture, decision_records_root]
+    tracker:
+      required: [kind, site, project_key, key_pattern, credential_alias, spec]
+    branch:
+      required: [types, pattern, commit_pattern]
+    forge:
+      required: [kind, organization, repositories, base_branch]
+    runtime:
+      required: [matrix]
+    cli:
+      required: [command, verbs]
+    merge_authority:
+      required: [role, policy]
+    capacity:
+      required: [max_delivery_seats, max_parallel_tasks]
+
+# Path classes. Only config_file_references are contained by the selected
+# config folder; project resource paths belong to the project root, and host
+# paths belong to this machine.
+paths:
+  config_file_references:
+    base: selected config folder
+    rule: relative, contained, must exist
+    keys:
+      - fleet
+      - core_team
+      - project.team_pack
+      - project.fleet
+      - project.supervision
+      - project.tracker.spec
+  project_resource_paths:
+    base: project root
+    rule: relative to the project root the consumer is given; never resolved or containment-checked from the config folder
+    keys:
+      - project.documentation_roots
+      - project.gap_ledger
+      - project.glossary
+      - project.decision_authorities.decision_records_root
+  host_paths:
+    base: host filesystem
+    rule: absolute or PATH-resolved host state; not a config reference
+    keys:
+      - host.paths.*
+      - host.binaries.*
+      - host.project_cli.*
+  conventions:
+    project.worktree_layout: a pattern with <key-slug> and <module>, not a resolved path
+
+# The fleet/host join. The logical slot is the only join key; native aliases
+# are host-local and never appear in the shared fleet policy.
+route_binding:
+  slot_universe: fleet.domains.<domain>.accounts[]
+  host_slot: host.provider_accounts.<slot>
+  host_order: host.routes.<domain>[]
+  join_key: slot
+  resolution: walk the chain step, then host.routes.<domain> in order; take the first available slot's native_alias
+  fallback: skip an unavailable slot, then descend to the next chain step
+  invariants: [model_id, effort, vendor]
+  host_local: [native_alias, provider, harness, credential]
+
+# A placement freezes this record. A later host edit changes new placements,
+# never the snapshot an active run already holds.
+route_snapshot:
+  fields:
+    - policy_hash
+    - host_route_hash
+    - slot
+    - native_alias
+    - provider
+    - harness
+    - model
+    - effort
+    - vendor
+    - resolved_at
