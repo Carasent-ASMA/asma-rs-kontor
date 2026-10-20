@@ -23,6 +23,7 @@ const work = await mkdtemp(join(tmpdir(), "kontor-host-settings-"));
 const output = resolve(outputPath);
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 const originalCatalog = process.env.KONTOR_PLUGIN_READ_SOURCES;
+const originalPaseoHome = process.env.PASEO_HOME;
 let cleanup;
 try {
   await mkdir(output, { recursive: true });
@@ -60,13 +61,51 @@ try {
   const store = new PluginSettingsStore(work, (id) => changes.push(id));
   const evaluate = (0, eval)(compiled.serverBundle);
   const serverModule = evaluate(hostRequire);
+  // floor.json is read from this disposable home, never the runner's ~/.paseo.
+  const paseoHome = join(work, "paseo-home");
+  const floorPath = join(paseoHome, "plugin-config/kontor/floor.json");
+  process.env.PASEO_HOME = paseoHome;
+  // The server's floor lines go to stdout/stderr; record them while it starts.
+  const floorLines = (start) => {
+    const lines = { info: [], errors: [] };
+    const { log, error } = console;
+    console.log = (line) => lines.info.push(JSON.parse(line));
+    console.error = (line) => lines.errors.push(JSON.parse(line));
+    try { return { ...lines, stop: start() }; } finally { console.log = log; console.error = error; }
+  };
   let definition;
-  cleanup = serverModule.default({
+  const absent = floorLines(() => serverModule.default({
     registerSettings(value) { if (value.id === "organization") definition = value; const registration = store.register(value); settings.set(value.id, registration); return registration.settings; },
     handle(contract, handler) { handlers.set(contract.name, handler); },
     before(name) { hooks.push(name); return () => {}; },
-  });
+  }));
+  cleanup = absent.stop;
   assert.deepEqual(hooks, ["agent.create", "agent.session_open", "workspace.create"]);
+  assert.deepEqual(absent.info, [{ event: "kontor.floor.mode", floor: "enabled", reason: "not-configured", file: floorPath }]);
+  assert.deepEqual(absent.errors, []);
+  // The same server bundle in a new start with the operator's file off, then non-conforming.
+  const floorStart = async (label, content) => {
+    await mkdir(dirname(floorPath), { recursive: true });
+    await writeFile(floorPath, content, { mode: 0o600 });
+    const floorStore = new PluginSettingsStore(join(work, `floor-${label}`), () => {});
+    const started = { hooks: [], handlers: [] };
+    const lines = floorLines(() => serverModule.default({
+      registerSettings: (value) => floorStore.register(value).settings,
+      handle(contract) { started.handlers.push(contract.name); },
+      before(name) { started.hooks.push(name); return () => {}; },
+    }));
+    lines.stop();
+    return { ...started, info: lines.info, errors: lines.errors };
+  };
+  const floorOff = await floorStart("off", '{\n  "floor": "off"\n}\n');
+  assert.deepEqual(floorOff.hooks, []);
+  assert.deepEqual(floorOff.handlers, [...handlers.keys()]);
+  assert.deepEqual(floorOff.info, [{ event: "kontor.floor.mode", floor: "disabled", reason: "explicit-off", file: floorPath }]);
+  assert.deepEqual(floorOff.errors, []);
+  const floorInvalid = await floorStart("invalid", '{"floor":"OFF"}');
+  assert.deepEqual(floorInvalid.hooks, ["agent.create", "agent.session_open", "workspace.create"]);
+  assert.deepEqual(floorInvalid.errors.map((line) => [line.event, line.floor]), [["kontor.floor.invalid", "enabled"]]);
+  await rm(floorPath);
   const registration = settings.get("organization");
   assert.ok(registration);
   const notices = [];
@@ -166,6 +205,7 @@ try {
   stopNotices();
   const report = { hostVersion: JSON.parse(await readFile(join(hostRoot, "package.json"), "utf8")).version,
     installation: "none; offline compiler and disposable settings store only", hooks,
+    floor: { absent: hooks, off: floorOff.hooks, invalid: floorInvalid.hooks, offModeLine: floorOff.info[0], invalidDiagnostic: floorInvalid.errors[0] },
     clientBytes: Buffer.byteLength(compiled.clientBundle), clientSha256: hash(compiled.clientBundle),
     serverBytes: Buffer.byteLength(compiled.serverBundle), serverSha256: hash(compiled.serverBundle),
     hermesExit: 0, bytecodeVersion: 96, bytecodeBytes: bytecode.length, bytecodeSha256: hash(bytecode), bytecodeSourcePath: clientPath,
@@ -179,5 +219,6 @@ try {
 } finally {
   cleanup?.();
   if (originalCatalog === undefined) delete process.env.KONTOR_PLUGIN_READ_SOURCES; else process.env.KONTOR_PLUGIN_READ_SOURCES = originalCatalog;
+  if (originalPaseoHome === undefined) delete process.env.PASEO_HOME; else process.env.PASEO_HOME = originalPaseoHome;
   await rm(work, { recursive: true, force: true });
 }
