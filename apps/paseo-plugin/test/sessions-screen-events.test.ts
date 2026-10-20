@@ -920,33 +920,113 @@ describe("SessionsScreen toolbar events", () => {
     expect(scrollToIndex).toHaveBeenCalledTimes(2);
   });
 
-  it("drops a scroll retry once Back has swapped the tree for the shorter results list", () => {
+  /**
+   * Forty running sessions and one idle one in a workspace. The Idle filter's one result, shown in the
+   * tree, is tree row 43: past the rendered window, so its scroll fails and is retried 60ms later.
+   */
+  function showQuietInTree(render: () => void = () => { renderScreen(); }) {
     directory.state = { ...(directory.state as object), entries: [
-      sessionEntry("busy", { status: "running", labels: { epic: "ASMA-1" } }),
+      ...Array.from({ length: 40 }, (_, n) => sessionEntry(`busy-${String(n).padStart(2, "0")}`, { status: "running", labels: { epic: "ASMA-1" } })),
       sessionEntry("quiet", { status: "idle", labels: { epic: "ASMA-1" } }),
     ] };
     patchSessionView("host-a", { query: "" });
-    renderScreen();
+    render();
     const scrollToIndex = vi.fn();
     (findByTestID(harness.current(), "sessions-list").props.ref as RefLike).current = { scrollToOffset: vi.fn(), scrollToIndex };
     (findByTestID(harness.current(), "sessions-filter-idle").props.onPress as () => void)(); harness.flush();
-    const [result] = listRows() as [Extract<ListRow, { kind: "result" }>];
-    ((findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: result }).props.onShowInTree as (entry: unknown) => void)(result.entry);
-    harness.flush();
-    // A tree row past the rendered window has no measured offset, so its scroll fails and is retried.
-    const failed = () => (findByTestID(harness.current(), "sessions-list").props.onScrollToIndexFailed as (info: { index: number; averageItemLength: number }) => void)({ index: 43, averageItemLength: 40 });
-    const retries = () => scrollToIndex.mock.calls.filter(([place]) => (place as { index: number }).index === 43).length;
-    failed();
-    vi.advanceTimersByTime(60);
-    expect(retries()).toBe(1);
-    // Back before the retry: the one-row results list must never be asked for tree row 43.
-    failed();
-    (walk(findByTestID(harness.current(), "sessions-peek")).find((element) => element.props.label === "Back to 1 result")!.props.onPress as () => void)();
-    harness.flush();
-    expect(listRows()).toHaveLength(1);
-    vi.advanceTimersByTime(60);
+    const showInTree = () => {
+      const [result] = listRows() as [Extract<ListRow, { kind: "result" }>];
+      ((findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: result }).props.onShowInTree as (entry: unknown) => void)(result.entry);
+      harness.flush();
+    };
+    showInTree();
     vi.runOnlyPendingTimers();
-    expect(retries()).toBe(1);
+    scrollToIndex.mockClear();
+    const quietRow = () => listRows().findIndex((row) => row.kind === "session" && row.entry.id === "quiet");
+    const failed = () => (findByTestID(harness.current(), "sessions-list").props.onScrollToIndexFailed as (info: { index: number; averageItemLength: number }) => void)({ index: quietRow(), averageItemLength: 40 });
+    const back = () => {
+      (walk(findByTestID(harness.current(), "sessions-peek")).find((element) => element.props.label === "Back to 1 result")!.props.onPress as () => void)();
+      harness.flush();
+    };
+    const indexes = () => scrollToIndex.mock.calls.map(([place]) => (place as { index: number }).index);
+    return { failed, back, showInTree, quietRow, indexes };
+  }
+
+  it("retries a failed scroll to a tree row once, on that row", () => {
+    const { failed, quietRow, indexes } = showQuietInTree();
+    expect(quietRow()).toBe(43);
+    failed();
+    vi.advanceTimersByTime(60);
+    expect(indexes()).toEqual([43]);
+    vi.runOnlyPendingTimers();
+    expect(indexes()).toEqual([43]);
+  });
+
+  it("drops a scroll retry once Back has swapped the tree for the shorter results list", () => {
+    const { failed, back, indexes } = showQuietInTree();
+    failed();
+    back();
+    expect(listRows()).toHaveLength(1);
+    vi.runOnlyPendingTimers();
+    expect(indexes()).toEqual([]);
+  });
+
+  it("drops a scroll retry whose row a collapse removed, though the list mode is unchanged", () => {
+    const { failed, indexes } = showQuietInTree();
+    failed();
+    // The workspace closes before the retry: three rows remain, and the list still shows the same session's tree.
+    toggle("workspace");
+    expect(listRows()).toHaveLength(3);
+    vi.runOnlyPendingTimers();
+    expect(indexes()).toEqual([]);
+  });
+
+  it("moves a scroll retry with its row when a live update shifts the tree", () => {
+    const { failed, quietRow, indexes } = showQuietInTree();
+    failed();
+    const { entries } = directory.state as { entries: readonly unknown[] };
+    directory.state = { ...(directory.state as object), entries: [sessionEntry("busy-40", { status: "running", labels: { epic: "ASMA-1" } }), ...entries] };
+    harness.flush();
+    expect(quietRow()).toBe(44);
+    vi.runOnlyPendingTimers();
+    expect(indexes()).toEqual([44]);
+  });
+
+  it("drops a scroll retry when Back and Show in tree place the same session again first", () => {
+    const { failed, back, showInTree, indexes } = showQuietInTree();
+    failed();
+    back();
+    showInTree();
+    // The new placement scrolls at once and again at 150ms; the old retry at 60ms adds nothing.
+    vi.advanceTimersByTime(0);
+    expect(indexes()).toEqual([43]);
+    vi.advanceTimersByTime(60);
+    expect(indexes()).toEqual([43]);
+    vi.runOnlyPendingTimers();
+    expect(indexes()).toEqual([43, 43]);
+  });
+
+  it("drops a scroll retry when the screen moves to another host showing the same tree", () => {
+    let activeHost = "host-a";
+    const { failed, indexes } = showQuietInTree(() => {
+      harness.render(() =>
+        SessionsScreen({
+          host: { id: activeHost, label: `srv_${activeHost}` },
+          layout: { compact: true, platform: "ios" },
+          navigation: { openAgent: () => undefined, openBrowser: () => undefined, openWorkspace: () => undefined },
+          theme: { colors } as PluginTheme,
+          params: {},
+        } as PluginScreenProps),
+      );
+    });
+    // host-b reads the same sessions and shows the same session in its tree, so only the host differs.
+    patchSessionView("host-b", { ...readSessionView("host-a") });
+    failed();
+    activeHost = "host-b";
+    harness.flush();
+    expect(readSessionView("host-b").peek?.sessionId).toBe("quiet");
+    vi.runOnlyPendingTimers();
+    expect(indexes()).toEqual([]);
   });
 
   it("returns to the tree position it left when the search is cleared", () => {

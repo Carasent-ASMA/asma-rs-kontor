@@ -1288,6 +1288,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     setHostView({ hostId: host.id, viewScope, view: nextView });
     restoredRef.current = false;
     listModeRef.current = listModeOf(nextView);
+    placementRef.current += 1;
     treeAnchorRef.current = nextView.scrollOffset;
     scrollOffsetRef.current = nextView.scrollOffset;
     lastScrollOffsetRef.current = nextView.scrollOffset;
@@ -1344,6 +1345,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   /** Tree offset below the compact toolbar, from the last tree scroll that moved the rows. */
   const treeAnchorRef = useRef(scrollOffsetRef.current);
   const listModeRef = useRef(listModeOf(readSessionView(viewScope)));
+  /** Counts list placements (a mode or scope change); a scroll retry belongs to the one that asked for it. */
+  const placementRef = useRef(0);
   /** The compact toolbar opening scrolls to its top; that is not a new tree position. */
   const anchorFrozenUntilRef = useRef(0);
   const updateView = useCallback(
@@ -1784,6 +1787,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const treeExpanded = useMemo(() => peekAncestors ? { ...expanded, ...Object.fromEntries(peekAncestors.map((key) => [key, true])), ...peekToggles } : expanded, [expanded, peekAncestors, peekToggles]);
   const rows: readonly ListRow[] = useMemo(() => resultMode && !peek ? results.map((entry) => ({ kind: "result" as const, entry }))
     : flattenOrganizationTree(filtered, treeExpanded, false, defaultGroupExpanded), [resultMode, peek, results, filtered, treeExpanded]);
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
   const provenance = useMemo(() => new Map(results.map((entry) => [entry.id, sessionProvenance(entry, mappings)])), [results, mappings]);
   const rowSignature = useMemo(() => rows.map(listRowKey).join("\n"), [rows]);
   const previousRowSignatureRef = useRef(rowSignature);
@@ -1915,6 +1920,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       return;
     }
     listModeRef.current = listMode;
+    placementRef.current += 1;
     const stored = readSessionView(viewScope).scrollOffset;
     const head = compact && !toolbarCollapsedRef.current ? compactToolbarHeight() : 0;
     const offset = listMode === "results" && previous === "tree" ? 0 : stored > 0 ? stored + head : 0;
@@ -2369,11 +2375,16 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         keyExtractor={listRowKey}
         extraData={extraData}
         onScrollToIndexFailed={({ index, averageItemLength }) => {
-          // Rows past the rendered window have no measured offset yet: land near it, then on it. The
-          // retry belongs to the list that asked for it; Back or a scope change can swap in a shorter list first.
-          const mode = listModeRef.current;
+          // Rows past the rendered window have no measured offset yet: land near it, then on it. The retry
+          // belongs to the placement that asked for it, so Back, a new placement or a scope change drops it.
+          // It follows its row, not the index: a collapse or a live update can move or remove the row first.
+          const placement = placementRef.current;
+          const target = rowsRef.current[index];
           listRef.current?.scrollToOffset({ offset: index * averageItemLength, animated: false });
-          setTimeout(() => { if (listModeRef.current === mode) listRef.current?.scrollToIndex({ index, viewPosition: 0.3, animated: false }); }, 60);
+          setTimeout(() => {
+            const now = target && placementRef.current === placement ? rowsRef.current.findIndex((row) => listRowKey(row) === listRowKey(target)) : -1;
+            if (now >= 0) listRef.current?.scrollToIndex({ index: now, viewPosition: 0.3, animated: false });
+          }, 60);
         }}
         initialNumToRender={24}
         windowSize={11}
