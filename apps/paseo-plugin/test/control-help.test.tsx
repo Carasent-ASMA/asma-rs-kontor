@@ -40,11 +40,52 @@ function mount(width = 390, height = 320) {
   const root = all(tree).find(e => e.type === "View")!;
   (root.props.ref as { current: unknown }).current = measure(20, 30, width, height);
   cleanup = hooks.effects.map(fn => fn()).filter((fn): fn is () => void => typeof fn === "function");
+  const controlCursor = hooks.cursor;
   const control = useControlHelp("Explanation: no execution or freshness inferred.");
-  control.bindings.ref(measure(20 + width - 34, 30 + height - 34, 28, 28) as View);
-  return { control, render, tooltip: () => all(tree).find(e => e.props.role === "tooltip"), root };
+  const node = measure(20 + width - 34, 30 + height - 34, 28, 28) as View;
+  control.bindings.ref(node);
+  const update = (text: string) => {
+    hooks.cursor = controlCursor;
+    const next = useControlHelp(text);
+    // React commits the changed callback ref after rendering the control.
+    control.bindings.ref(null); next.bindings.ref(node);
+    return next;
+  };
+  return { control, update, render, tooltip: () => all(tree).find(e => e.props.role === "tooltip"), root };
 }
 describe("hover and focus help", () => {
+  it.each(["hover", "focus"])("refreshes changed text during stationary %s without another input event", (mode) => {
+    const screen = mount();
+    const control = screen.update("Idle");
+    if (mode === "hover") control.bindings.onHoverIn(); else control.bindings.onFocus();
+    screen.render(); expect(all(screen.tooltip()).some(e => e.props.children === "Idle")).toBe(true);
+    const updated = screen.update("Running"); screen.render();
+    expect(all(screen.tooltip()).some(e => e.props.children === "Running")).toBe(true);
+    expect(updated.bindings["aria-describedby"]).toBe(screen.tooltip()!.props.nativeID);
+    if (mode === "focus") {
+      updated.bindings.onHoverOut(); vi.advanceTimersByTime(1000); screen.render(); expect(screen.tooltip()).toBeDefined();
+    }
+  });
+  it("does not reopen escaped help when the same control commits new text", () => {
+    const screen = mount(); const control = screen.update("Idle"); control.bindings.onFocus(); screen.render();
+    handlers.get("keydown")!({ key: "Escape", preventDefault() {}, stopPropagation() {} } as never);
+    const updated = screen.update("Running"); screen.render(); expect(screen.tooltip()).toBeUndefined();
+    updated.bindings.onBlur(); updated.bindings.onFocus(); screen.render();
+    expect(all(screen.tooltip()).some(e => e.props.children === "Running")).toBe(true);
+  });
+  it("keeps the pointer-leave deadline when active text changes and ignores other anchors", () => {
+    const screen = mount(); const control = screen.update("Idle");
+    const other = useControlHelp("Other control"); const otherNode = measure(40, 50, 28, 28) as View;
+    other.bindings.ref(otherNode); control.bindings.onHoverIn(); screen.render(); other.bindings.ref(otherNode);
+    screen.render(); expect(all(screen.tooltip()).some(e => e.props.children === "Idle")).toBe(true);
+    control.bindings.onHoverOut(); vi.advanceTimersByTime(80);
+    screen.update("Running"); screen.render(); expect(all(screen.tooltip()).some(e => e.props.children === "Running")).toBe(true);
+    vi.advanceTimersByTime(80); screen.render(); expect(screen.tooltip()).toBeUndefined();
+  });
+  it("dismisses help when the active control no longer has an explanation", () => {
+    const screen = mount(); screen.control.bindings.onFocus(); screen.render();
+    expect(screen.update("").bindings["aria-describedby"]).toBeUndefined(); screen.render(); expect(screen.tooltip()).toBeUndefined();
+  });
   it("appears on focus, stays while the pointer moves away, and Escape dismisses without moving focus", () => {
     const screen = mount(); screen.control.bindings.onFocus(); screen.render(); expect(screen.tooltip()).toBeDefined();
     expect(screen.control.bindings["aria-describedby"]).toBe(screen.tooltip()!.props.nativeID);
