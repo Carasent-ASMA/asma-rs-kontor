@@ -2086,6 +2086,24 @@ pub trait RuntimeAdapter: Send + Sync {
         request: &PermissionResponseRequest,
     ) -> RuntimeResult<PermissionAck>;
 
+    /// Read the permission requests currently open on one exact session.
+    ///
+    /// The native permission lifecycle is not part of a transcript on every
+    /// runtime; Paseo carries it on the agent snapshot and the unsolicited
+    /// stream. A caller that must decide whether a request is addressable asks
+    /// the runtime that raised it rather than inferring it from content.
+    ///
+    /// The default returns nothing, which keeps runtimes that never implemented
+    /// permission ingestion honest instead of inventing ids. An adapter that
+    /// answers must scope the read to the presented binding and return only
+    /// requests still awaiting a decision.
+    async fn pending_permissions(
+        &self,
+        _binding: &RuntimeBindingSnapshot,
+    ) -> RuntimeResult<Vec<ExternalId>> {
+        Ok(Vec::new())
+    }
+
     /// Compact one live session's context **in place**.
     ///
     /// Three obligations, and the contract suite proves each of them:

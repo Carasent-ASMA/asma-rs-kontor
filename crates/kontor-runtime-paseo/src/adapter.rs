@@ -945,6 +945,14 @@ struct PaseoState {
     resolved_in_history: BTreeSet<ExternalId>,
     permission_acks: Vec<(ExternalId, PermissionAck)>,
     adoptions: BTreeMap<ExternalId, PaseoAdoptionIntent>,
+    /// Natives this process has read back as archived.
+    ///
+    /// A replacement is admitted only when the runtime has observed the holder
+    /// finish, and "archived" is the only terminal fact Paseo offers. The
+    /// in-process generation alone cannot see a predecessor archived before a
+    /// restart or by another process, so the fresh archive stamp is recorded
+    /// here and [`PaseoSeatFacts`] accepts it alongside the generation.
+    retired_natives: BTreeSet<ExternalId>,
     epochs: EpochRegistry,
     cursors: BTreeMap<RuntimeBindingId, TimelinePosition>,
     request_seq: u64,
@@ -954,6 +962,7 @@ struct PaseoState {
 struct PaseoSeatFacts<'a> {
     bindings: &'a IssuedBindingRegistry,
     generation: u64,
+    retired_natives: &'a BTreeSet<ExternalId>,
 }
 
 impl SeatFacts for PaseoSeatFacts<'_> {
@@ -974,8 +983,15 @@ impl SeatFacts for PaseoSeatFacts<'_> {
     fn holder_is_finished_or_retired(
         &self,
         binding_id: RuntimeBindingId,
-        _native_id: &ExternalId,
+        native_id: &ExternalId,
     ) -> bool {
+        // Archive is the terminal fact; generation is only the local memory of
+        // it. A predecessor archived before this process started, or by another
+        // process, carries no stale generation here, and admitting its
+        // replacement is the whole of A4. A live holder is still refused.
+        if self.retired_natives.contains(native_id) {
+            return true;
+        }
         match self.bindings.get(binding_id) {
             None => true,
             Some(snapshot) => snapshot.identity().generation != self.generation,
@@ -1340,6 +1356,7 @@ impl PaseoAdapter {
                 resolved_in_history,
                 permission_acks: checkpoint.permission_acks.clone(),
                 adoptions: BTreeMap::new(),
+                retired_natives: BTreeSet::new(),
                 epochs,
                 cursors: checkpoint.cursors.iter().copied().collect(),
                 request_seq: 0,
@@ -2128,15 +2145,45 @@ impl PaseoAdapter {
         &self,
         agent_id: &str,
     ) -> RuntimeResult<Option<PaseoAgent>> {
-        match self.fetch_agent(agent_id).await {
-            Ok(agent) => Ok(Some(agent)),
-            Err(RuntimeError::StaleBinding { .. }) => Ok(self
+        let found = match self.fetch_agent(agent_id).await {
+            Ok(agent) => Some(agent),
+            Err(RuntimeError::StaleBinding { .. }) => self
                 .fetch_agents(&BTreeMap::new(), true)
                 .await?
                 .into_iter()
-                .find(|agent| agent.id == agent_id)),
-            Err(error) => Err(error),
+                .find(|agent| agent.id == agent_id),
+            Err(error) => return Err(error),
+        };
+        if let Some(agent) = &found
+            && agent.is_archived()
+            && let Ok(id) = ExternalId::parse(&agent.id)
+        {
+            // Every archive stamp this adapter reads becomes admitted evidence
+            // for a later replacement. It is recorded even on read paths so a
+            // seat retired before a restart is not invisible to admission.
+            self.lock().retired_natives.insert(id);
         }
+        Ok(found)
+    }
+
+    /// Read one agent that a driving operation may address.
+    ///
+    /// `fetch_agent` already hides an archived agent, but the paginated
+    /// fallback can still find one. Sending to that identity is how Paseo's
+    /// message handler unarchives a retired seat (G-03), so an archived
+    /// readback is a refusal here rather than something to drive.
+    async fn fetch_driveable_agent(&self, agent_id: &str) -> RuntimeResult<PaseoAgent> {
+        let agent = self.find_agent_including_archived(agent_id).await?.ok_or(
+            RuntimeError::StaleBinding {
+                rule: "the exact native agent no longer exists",
+            },
+        )?;
+        if agent.is_archived() {
+            return Err(RuntimeError::StaleBinding {
+                rule: "this session has been retired and cannot be driven",
+            });
+        }
+        Ok(agent)
     }
 
     async fn hosted_seat_agent(
@@ -4671,6 +4718,11 @@ impl PaseoAdapter {
                 agent_run_id: &request.agent_run_id().to_string(),
                 role_slot_id: request.role_slot_id().as_str(),
                 prompt: request.prompt().as_str(),
+                idempotent: self
+                    .lock()
+                    .server
+                    .as_ref()
+                    .is_some_and(crate::wire::PaseoServerInfo::supports_creation_lifecycle),
             })?;
             labels = created.labels.clone();
             Some(created)
@@ -5039,10 +5091,40 @@ impl PaseoAdapter {
             // The create may have landed. Never sent again: that is how one seat
             // acquires two sessions, each holding a worktree.
             Err(RuntimeError::Transport { .. }) => {
-                return self.reconcile_delivery_create(delivery).await;
+                return self.reconcile_delivery_create_after_attempt(delivery).await;
             }
             Err(other) => return Err(other),
         };
+        if delivery.rpc.response_type == "agent.create.response" {
+            let answer: crate::wire::PaseoAgentCreateAnswer =
+                frame.resolve(&delivery.rpc, "PaseoAgentCreateAnswer")?;
+            // A keyed answer may carry a partially provisioned agent alongside
+            // a failed or unresolved creation. Only a completed, provable
+            // creation is a bind target; everything else is reconciled.
+            let completed = answer.creation.as_ref().is_none_or(|creation| {
+                creation.phase == crate::wire::PaseoCreationSnapshot::COMPLETED
+                    && !creation.outcome_unknown
+            });
+            if let Some(agent) = answer.agent
+                && completed
+            {
+                return Ok(agent);
+            }
+            tracing::warn!(
+                error = answer.error.as_deref().unwrap_or("none"),
+                phase = answer
+                    .creation
+                    .as_ref()
+                    .map(|creation| creation.phase.as_str())
+                    .unwrap_or("none"),
+                outcome_unknown = answer
+                    .creation
+                    .as_ref()
+                    .is_some_and(|creation| creation.outcome_unknown),
+                "keyed delivery create did not return an agent; consulting its durable snapshot"
+            );
+            return self.reconcile_delivery_create_after_attempt(delivery).await;
+        }
         let answer: crate::wire::PaseoAgentCreated =
             frame.resolve(&delivery.rpc, "PaseoAgentCreated")?;
         if let Some(agent) = answer.created() {
@@ -5085,7 +5167,43 @@ impl PaseoAdapter {
         self.reconcile_delivery_create(delivery).await
     }
 
-    /// Decide an ambiguous delivery create from the agent directory alone.
+    /// Read the durable creation journal for one launch key.
+    ///
+    /// A read, never a create: `creation.subscribe.request` returns what the
+    /// daemon recorded for the key, and a key with no record returns `None`.
+    async fn creation_snapshot(
+        &self,
+        idempotency_key: &str,
+    ) -> RuntimeResult<Option<crate::wire::PaseoCreationSnapshot>> {
+        let rpc = PaseoRpc::creation_subscribe(self.next_request_id(), idempotency_key);
+        let frame = self.transport.request(&rpc).await?;
+        let answer: crate::wire::PaseoCreationSubscription =
+            frame.resolve(&rpc, "PaseoCreationSubscription")?;
+        Ok(answer.snapshot)
+    }
+
+    /// Reconcile a create whose attempt may already have landed.
+    ///
+    /// A read failure here is not a channel fact about an untouched runtime; it
+    /// is a failure to settle an effect that may exist. It must keep the seat
+    /// claim, so it is typed as an unknown outcome rather than a plain
+    /// transport error.
+    async fn reconcile_delivery_create_after_attempt(
+        &self,
+        delivery: &crate::client::DeliveryCreateRequest,
+    ) -> RuntimeResult<PaseoAgent> {
+        self.reconcile_delivery_create(delivery)
+            .await
+            .map_err(|error| match error {
+                RuntimeError::Transport { .. } => RuntimeError::DeliveryConfirmationUnknown {
+                    rule: "the create was attempted and the read that would settle it did not answer; a second create would duplicate the seat",
+                },
+                other => other,
+            })
+    }
+
+    /// Decide an ambiguous delivery create from the durable journal, then from
+    /// the agent directory alone.
     ///
     /// The launch-intent digest is in `labels`, and it covers the create
     /// configuration *and* the prompt, so at most one agent in this project can
@@ -5107,6 +5225,39 @@ impl PaseoAdapter {
         &self,
         delivery: &crate::client::DeliveryCreateRequest,
     ) -> RuntimeResult<PaseoAgent> {
+        // A keyed create has a durable answer that is strictly better than a
+        // label census: it names the resource the daemon journaled for this
+        // exact launch key. `completed` is the only phase that may be adopted,
+        // and `outcomeUnknown` is the daemon saying it cannot prove either way.
+        if let Some(key) = &delivery.idempotency_key {
+            match self.creation_snapshot(key).await {
+                Ok(Some(snapshot)) => {
+                    if let Some(agent_id) = snapshot.completed_agent_id() {
+                        let agent = self.fetch_agent(agent_id).await?;
+                        self.first_turn_proved(agent_id, &delivery.client_message_id)
+                            .await?;
+                        return Ok(agent);
+                    }
+                    if snapshot.outcome_unknown
+                        || snapshot.phase == crate::wire::PaseoCreationSnapshot::FAILED
+                    {
+                        return Err(RuntimeError::DeliveryConfirmationUnknown {
+                            rule: "the keyed create reports an outcome the daemon could not confirm; it is never replayed as a second create",
+                        });
+                    }
+                }
+                Ok(None) => {}
+                // The durable read is the settling evidence. If it cannot be
+                // reached after a create was attempted, the outcome is unknown
+                // and must keep the seat claim.
+                Err(RuntimeError::Transport { .. }) => {
+                    return Err(RuntimeError::DeliveryConfirmationUnknown {
+                        rule: "the keyed create's durable snapshot could not be reached, so its outcome is unknown",
+                    });
+                }
+                Err(error) => return Err(error),
+            }
+        }
         let labels = &delivery.labels;
         let (agents, complete) = self.census_by_labels(labels, false).await?;
         if !complete {
@@ -7555,14 +7706,34 @@ impl RuntimeAdapter for PaseoAdapter {
         })
     }
 
-    /// Admission is bookkeeping about seats: it starts nothing and reaches no
-    /// Paseo surface, so "the daemon was never called" keeps meaning what it
-    /// says.
+    /// Admission decides who may fill a seat, and a replacement additionally
+    /// requires the runtime's own archive evidence.
+    ///
+    /// A vacant seat and a same-run resume are decided from the reservation
+    /// table alone. A replacement is the one case that reads Paseo first: the
+    /// citation names a predecessor, and the only terminal fact this wire
+    /// offers is `archivedAt`. That read is bounded, read-only, and happens
+    /// before the table is touched, so a refusal still changes nothing.
     async fn admit_launch(&self, request: &AdmissionRequest) -> RuntimeResult<AdmissionOutcome> {
+        if request.replaces.is_some() {
+            let predecessor = self.lock().admissions.occupied_native(&request.slot);
+            if let Some(native_id) = predecessor {
+                let observed = self
+                    .find_agent_including_archived(native_id.as_str())
+                    .await?;
+                // Only a stamped archive is evidence. A live predecessor, or
+                // one Paseo no longer holds at all, leaves the holder
+                // unproved and the admission refuses.
+                if observed.is_some_and(|agent| agent.is_archived()) {
+                    self.lock().retired_natives.insert(native_id);
+                }
+            }
+        }
         let state = &mut *self.lock();
         let facts = PaseoSeatFacts {
             bindings: &state.bindings,
             generation: state.generation,
+            retired_natives: &state.retired_natives,
         };
         state.admissions.admit(request, &facts)
     }
@@ -8584,7 +8755,13 @@ impl RuntimeAdapter for PaseoAdapter {
         // Last thing before the wire, and deliberately after both short-circuits
         // above: a replay answering from recorded evidence produces no effect, so
         // it has no tree to be wrong about. What follows does.
-        let fresh = self.fetch_agent(&native_id).await?;
+        //
+        // Archived is refused here even though the exact lookup already hides
+        // one: Paseo unarchives an agent when it accepts a message, so a send
+        // addressed to a retired seat would reactivate it. The fallback read
+        // makes that refusal explicit instead of relying on which lookup shape
+        // the daemon happens to answer.
+        let fresh = self.fetch_driveable_agent(&native_id).await?;
         self.verify_seat_placement(&binding, &fresh).await?;
         self.ensure_provider_available(&fresh.provider)?;
 
@@ -8756,7 +8933,7 @@ impl RuntimeAdapter for PaseoAdapter {
         }
 
         let native_id = binding.identity().native_id.as_str();
-        let fresh = self.fetch_agent(native_id).await?;
+        let fresh = self.fetch_driveable_agent(native_id).await?;
         self.verify_seat_placement(&binding, &fresh).await?;
         self.ensure_provider_available(&fresh.provider)?;
         let rpc = PaseoRpc::send_message(
@@ -9998,6 +10175,47 @@ impl RuntimeAdapter for PaseoAdapter {
                 rule: "runtime accepted the answer but its resolution has not appeared yet",
             }),
         }
+    }
+
+    async fn pending_permissions(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+    ) -> RuntimeResult<Vec<ExternalId>> {
+        let binding = self.attested(binding)?;
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::Inspect,
+        )
+        .await?;
+        let declared = self.declared().await?;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::Inspect,
+                autonomous: false,
+                account_pinned: false,
+                binding: Some(&binding),
+                placement: None,
+                current_generation: Some(self.generation()),
+                demand: None,
+                context_policy: None,
+            },
+        )?;
+        let native_id = binding.identity().native_id.as_str().to_owned();
+        // The snapshot is where this wire records the open requests. A fresh
+        // read is the answer: a cached list would be a description of the past,
+        // and the answer decides whether an answer may be dispatched at all.
+        let agent = self.fetch_agent(&native_id).await?;
+        self.observe_permissions(binding.binding_id(), &agent);
+        let mut pending: Vec<ExternalId> = self
+            .lock()
+            .permission_owners
+            .iter()
+            .filter(|(_, owner)| **owner == binding.binding_id())
+            .map(|(permission_id, _)| permission_id.clone())
+            .collect();
+        pending.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        Ok(pending)
     }
 
     /// Report, honestly, that this daemon cannot compact a seat's context.
