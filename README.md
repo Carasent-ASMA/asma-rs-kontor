@@ -1,6 +1,9 @@
 # ASMA Kontor
 
-> Implementation counts and merge claims are stamped to `0971674d` (PR #300, 2026-10-11) and were checked against that source. Merged is not qualified, deployed or enabled for a realm: those claims belong to the [canonical implementation inventory](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/reference/2026-09-05-11-36-reference-kontor-implementation-inventory.md), which stays the authority for qualification and deployment and is stamped to its own inspected revision. Registry membership, MCP advertising and credential authorization are distinct.
+> Kontor is pre-1.0. Merged is not qualified, deployed or enabled for a realm;
+> those are separate evidence rungs, defined in
+> [`docs/GLOSSARY.md`](docs/GLOSSARY.md#the-evidence-ladder). Registry
+> membership, MCP advertising and credential authorization are distinct.
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license-intent)
 
@@ -113,27 +116,27 @@ The current repository includes:
   identity, Team Definition tokens that render the confirmed key itself, and
   consultation titles Kontor renders from a semantic topic, refusing a
   duplicate; a missing or ambiguous binding fails closed before any native
-  effect (PRs #198, #215, #216, #279; see [Native naming](docs/NATIVE_NAMING.md));
+  effect (see [Native naming](docs/NATIVE_NAMING.md));
 - **publication identity**: one branch grammar shared with the ASMA CLI,
   recorded `publication:preview` / `:attest` decisions that cannot be updated
   or deleted, and an optional GitHub App gateway that posts the
   `asma/publication-identity` check and squash-merges only the judged head
-  (PRs #192, #193, #195, #265, #280; see [Native naming](docs/NATIVE_NAMING.md)
-  and [Configuration](docs/CONFIGURATION.md));
+  (see [Native naming](docs/NATIVE_NAMING.md) and
+  [Configuration](docs/CONFIGURATION.md));
 - epic-independent **durable desks** (`DESK • ADAM`, `DESK • PR REVIEW`) with
   declared desk seats, desk-hosted epic and ad-hoc Adams, and one Adam tab plus
   review room per pull request, available once a desk-capable Team Definition
-  is selected (PRs #295–#300, `733807cc`…`0971674d`; see the
+  is selected (see the
   [durable desks reference](_docs/reference/2026-10-10-23-55-reference-kontord-durable-desks.md)
   and its siblings);
-- a deterministic **standard role catalogue** (56 roles across 9 segments) with
-  typed role-code seat selection and optional display labels;
+- a deterministic **standard role catalogue** with typed role-code seat
+  selection and optional display labels;
 - **Project Core Teams**, quick ad-hoc sessions and preview/apply promotion of an
   ad-hoc session into a real epic with a durable handoff;
 - read-only **Advisors** and **Committees** with frozen inputs, independent
   findings, preserved dissent and typed aggregate verdicts, plus governed
   **planning pairs**: two read-only members on distinct vendors, one sealed
-  findings round and at most one clarification (PR #292, `4097afb8`; see
+  findings round and at most one clarification (see
   [Consultation lifecycle](docs/CONSULTATION_LIFECYCLE.md) and the gap below);
 - configurable **epic Completion Profiles** that compile integration, independent
   verdict, bounded remediation and six closeout receipts into ordinary task,
@@ -143,32 +146,28 @@ The current repository includes:
 - explicit recovery operations for interrupted or uncertain work, such as
   turn-correlation challenges, gate-rejection and workflow-phase recovery, task
   worktree claim repair, TeamRun admission adoption and never-bound
-  launch-intent supersession (PRs #199, #217, #239, #241, #245, #262), and a
-  durable ledger that completes a Core Team leadership-seat succession exactly
-  once (PR #290, `1d7a71dd`);
-- **live fleet routing**: an owner-only `fleet.yml` re-read at every placement
-  (PR #271, `7ffd650d`), or one activated, content-addressed fleet policy that
-  the daemon and the CLI's daemon-free `fleet-policy-resolve` read through the
-  same code (PR #292, `4097afb8`; see [Configuration](docs/CONFIGURATION.md));
+  launch-intent supersession, and a durable ledger that completes a Core Team
+  leadership-seat succession exactly once;
+- **live fleet routing**: an owner-only `fleet.yml` re-read at every placement,
+  or one activated, content-addressed fleet policy that the daemon and the
+  CLI's daemon-free `fleet-policy-resolve` read through the same code (see
+  [Configuration](docs/CONFIGURATION.md));
 - **experience memory**: approved, typed experiences with bounded lexical
   recall frozen into delivery prompts, and an opt-in Cognee projection
-  transport (PR #291, `abe990ac`; see [Configuration](docs/CONFIGURATION.md)
-  and the gap below);
+  transport (see [Configuration](docs/CONFIGURATION.md) and the gap below);
 - native connectors for Jira, including issue bodies with typed content
   conflicts, and for live provider-quota observation, with routing by
   admissible account and rung;
 - non-secret provider-account profiles with one credential home per account;
 - an authenticated loopback daemon with a versioned HTTP/SSE API and checked-in
   OpenAPI contract;
-- one capability catalogue — 230 registry entries at `0971674d`, 228 of them
-  listable at admin MCP scope by source computation rather than live tool
-  discovery, because one entry is a local CLI operation with no `/v1` route and
-  one entry is kept off `tools/list` to save every seat's context but stays
-  callable by name — exposed through the stdio MCP server and a `kontor` CLI
-  *generated from the same registry*, with credential tiers and narrow serve
-  profiles;
+- one capability catalogue exposed through the stdio MCP server and a `kontor`
+  CLI *generated from the same registry*, with credential tiers and narrow
+  serve profiles; one entry is a local CLI operation with no `/v1` route, and
+  one is kept off `tools/list` to save every seat's context but stays callable
+  by name;
 - a responsive React operator console and Tauri desktop shell, including a
-  Tokenomics development-preview view (PR #293, `a65ea46b`).
+  Tokenomics development-preview view.
 
 ### What is not built
 
@@ -178,10 +177,10 @@ admits its absence:
 | Not built | Detail |
 | --- | --- |
 | Calendar admission | `kontor-calendar` implements windows, holiday import and drain with tests, and is reached by **no** route and **no** tool. Every project resolves to `unrestricted`. |
-| Post-delivery profile packs | The seed manifest declares 17 work-profile categories; **four** ship (`code`, `ux-ui-layout`, `research`, `docs`). Operations, incident response, maintenance, compliance and retirement are declared, not implemented. |
-| KON-OP-21 qualification and enablement | Evidence-bound mid-run quota succession and the resident bounded supervisor are merged through PR #164 (`3d7c6043`, 2026-09-04) with local contract coverage. This repository records no independent qualification, fleet deployment or realm-enablement receipt for them, and automatic succession stays off until a realm opts in through `supervision.yml` (below). |
-| Planning pairs through Paseo | The protocol, operations and shared allocator are merged (PR #292, `4097afb8`), but the Paseo adapter refuses every member route before any native effect, because no provider route acknowledges the closed tool restriction a member requires. A pair cannot launch through the production runtime. |
-| Live Cognee projection | The Cognee transport (PR #291, `abe990ac`) is qualified against synthetic fixtures only. Ordinary daemon startup composes no Cognee client and refuses a `memory-cognee.json` with `enabled: true`; recall uses the bounded lexical path. |
+| Post-delivery profile packs | The seed manifest declares work-profile categories beyond the ones that ship (`code`, `ux-ui-layout`, `research`, `docs`). Operations, incident response, maintenance, compliance and retirement are declared, not implemented. |
+| Mid-run quota succession and supervision | Evidence-bound mid-run quota succession and the resident bounded supervisor are present with local contract coverage. Independent qualification, fleet deployment and realm-enablement receipts are separate claims, and automatic succession stays off until a realm opts in through `supervision.yml` (below). |
+| Planning pairs through Paseo | The protocol, operations and shared allocator are present, but the Paseo adapter refuses every member route before any native effect, because no provider route acknowledges the closed tool restriction a member requires. A pair cannot launch through the production runtime. |
+| Live Cognee projection | The Cognee transport is qualified against synthetic fixtures only. Ordinary daemon startup composes no Cognee client and refuses a `memory-cognee.json` with `enabled: true`; recall uses the bounded lexical path. |
 | Launch-time quota waiting | The account-before-rung resolver computes `Wait` / `NeedsHuman`, but delivery launch still needs a model rung, so it refuses `Wait` and `NeedsHuman` with a typed `ProviderHeadroom` missing-evidence refusal before any native effect instead of parking until the computed reset. |
 | Automatic stale-evidence rejection | Post-freeze product drift that invalidates a completion bundle is currently caught by a reviewer, not by the state machine. |
 | Unified mission-control dashboard | Individual console views do not yet provide one joined dependency graph, running/waiting/blocked/stale state, next eligible work, prepared operator decisions and delivery evidence. |
@@ -301,7 +300,8 @@ document is schema v2, `watchdog.enabled` is `true`, and
 With no policy, with schema v1, or with a disabled watchdog, automatic
 succession does not start and Kontor invents no cadence or capacity. See
 [Configuration](docs/CONFIGURATION.md).
-This path is merged at `3d7c6043` (PR #164, 2026-09-04). Independent audit, live-runtime verification and per-realm enablement require separate receipts.
+Local contract coverage is not a deployment claim: independent audit,
+live-runtime verification and per-realm enablement require separate receipts.
 
 For frontend development:
 
@@ -317,8 +317,7 @@ pnpm --filter kontor-desktop tauri dev
 ```
 
 Tokenomics is available from the connection screen, the navigation rail and
-`?view=tokenomics`, and needs no realm connection; it was merged as a
-development preview in PR #293 (`a65ea46b`, 2026-10-04).
+`?view=tokenomics`, and needs no realm connection. It is a development preview.
 The initial UI uses the existing report renderer and fetches its generated data
 separately. Start `asma report dashboard --port 8791` from the ASMA workspace
 in another terminal before opening Tokenomics. The console's development proxy
@@ -353,14 +352,16 @@ interface” development shortcut.
 
 ## Development and contribution
 
-Start with [Contributing](CONTRIBUTING.md). Architectural changes should also
-read [Architecture](ARCHITECTURE.md); security findings follow
-[Security](SECURITY.md), and participation follows the
+Start with [Contributing](CONTRIBUTING.md). The delivery method, vocabulary and
+governing principles are in [Workflow](docs/WORKFLOW.md),
+[Glossary](docs/GLOSSARY.md) and [Principles](docs/PRINCIPLES.md).
+Architectural changes should also read [Architecture](ARCHITECTURE.md);
+security findings follow [Security](SECURITY.md), and participation follows the
 [Code of Conduct](CODE_OF_CONDUCT.md).
 
 Kontor deliberately does not run build or test CI in GitHub Actions. Its one
-workflow, `asma/publication-branch-title` (PR #198, hardened in PR #280), checks
-only a pull request's base, branch name and title key and builds nothing. A
+workflow, `asma/publication-branch-title`, checks only a pull request's base,
+branch name and title key and builds nothing. A
 `dependabot/` branch opened by `dependabot[bot]` is accepted as
 `bot_branch_exempt`; the base and head-sha checks still run.
 Verification runs locally against the exact candidate commit before merge and
@@ -413,10 +414,10 @@ the Apache-2.0 option provides an explicit patent grant. See
 > This proof accepted the Foundation control plane and **passed**; the retained
 > bundle is the record. It is kept as a regression contract rather than as the
 > current acceptance boundary — delivered work is now accepted by an epic
-> Completion Profile, not by this test. ASMA-8511 removed the committed bundles
-> from the tree: each file is listed in
-> [`docs/evidence/removed-run-evidence-2026-10-17.tsv`](docs/evidence/removed-run-evidence-2026-10-17.tsv),
-> and `git show 0971674d:<path>` prints it.
+> Completion Profile, not by this test. The committed bundles were removed from
+> the tree: each file is listed in
+> [`docs/evidence/removed-run-evidence-2026-10-17.tsv`](docs/evidence/removed-run-evidence-2026-10-17.tsv)
+> and remains available in the repository's history.
 
 One command runs the whole disposable mini-project proof and writes the evidence
 bundle that accepted the Foundation MVP:
@@ -454,7 +455,7 @@ tree that produced it, and the retained bundle's `commit` field names that tree
 — but it does mean a run after an unrelated commit leaves a new directory.
 Delete it and never commit it: `.gitignore` keeps it out of git, `verify-tree`
 refuses a run receipt under an evidence root, and new run bundles stay out of
-the tree until ASMA-8511 moves this output (see `CONTRIBUTING.md`).
+the tree (see `CONTRIBUTING.md`).
 
 Verifying the installed harnesses is a separate, opt-in question:
 
@@ -591,6 +592,9 @@ mutation tests. See [Architecture](ARCHITECTURE.md#runtime-extension-contract).
 ### Where is the detailed design?
 
 The concise repository contract is [Architecture](ARCHITECTURE.md), which is
-readable without the parent checkout. The governing principles, the full
-implementation baseline and the active plans live in the parent `asma-modules`
-documentation; links are collected at the end of `ARCHITECTURE.md`.
+readable without a private checkout. The delivery method is
+[Workflow](docs/WORKFLOW.md), the vocabulary is [Glossary](docs/GLOSSARY.md),
+the governing principles are [Principles](docs/PRINCIPLES.md), and Kontor
+decisions are recorded in [`docs/decisions/`](docs/decisions/README.md).
+Repository-local design, plans and reports are routed from
+[`_docs/index.md`](_docs/index.md).

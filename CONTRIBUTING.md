@@ -19,6 +19,11 @@ policy, commands, runtime adapters, session content, accounts, integrations or
 security. The invariants in that document are acceptance criteria, not style
 preferences.
 
+The delivery method is [Workflow](docs/WORKFLOW.md), the vocabulary is
+[Glossary](docs/GLOSSARY.md), and the governing principles are
+[Principles](docs/PRINCIPLES.md). Kontor decisions are recorded in
+[`docs/decisions/`](docs/decisions/README.md).
+
 ## Set up
 
 ```sh
@@ -33,8 +38,8 @@ expectations (`node >=24`, `pnpm@11.6.0` in `package.json`), Rust dependencies
 and JavaScript dependencies. Keep both lockfiles committed and reproducible.
 
 Dev builds carry line tables only (`[profile.dev] debug = "line-tables-only"`
-in `Cargo.toml`, PR #232): backtraces keep file and line, a debugger loses
-variable inspection. The setting exists because parallel worktrees each keep a
+in `Cargo.toml`): backtraces keep file and line, a debugger loses variable
+inspection. The setting exists because parallel worktrees each keep a
 `target/` of their own.
 
 ## Work in one focused branch
@@ -106,7 +111,7 @@ pnpm audit --prod
 
 The KON-MVP-18 e2e pilot inside `cargo test --workspace` still writes a run
 bundle into `docs/evidence/KON-MVP-18/<run-id>/` on every run; delete it and
-never commit it until ASMA-8511 moves that output.
+never commit it. Receipts stay with the run that produced them.
 
 During development, `scripts/test-lanes.py` runs only what a change reaches:
 
@@ -176,8 +181,8 @@ The pull-request title leads with the branch's key and one space
 (`ASMA-<number> <summary>`); a `releases/v<X>.<Y>.<Z>` branch takes exactly
 `Release v<X>.<Y>.<Z>`, and the base is `master`. The
 `asma/publication-branch-title` check
-(`.github/workflows/publication-branch-title.yml`, PR #280) reports any other
-branch, title or base as a failure, with one exception: a `dependabot/` branch
+(`.github/workflows/publication-branch-title.yml`) reports any other branch,
+title or base as a failure, with one exception: a `dependabot/` branch
 opened by `dependabot[bot]` is accepted as `bot_branch_exempt`, and the base and
 head-sha checks still run. It proves shape and key equality only, not the Jira
 binding. Agent and ASMA CLI publications are also attested against

@@ -1,14 +1,10 @@
 # ASMA Kontor Architecture
 
-> **Status:** Current pre-1.0 repository contract. Every section was checked
-> against source `0971674d` (PR #300, 2026-10-11): store schema v134, 230
-> registry tools, the crate list, the serve profiles and each capability named
-> below. "Merged" means present in that source. Qualification, deployment and
-> realm enablement require separate receipts and are not claimed here.
-> KON-OP-21 is merged through PR #164 (`3d7c6043`, 2026-09-04). The
-> [implementation inventory](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/reference/2026-09-05-11-36-reference-kontor-implementation-inventory.md)
-> records qualification and deployment separately and is stamped to its own
-> inspected revision.
+> **Status:** Current pre-1.0 repository contract. "Merged" means present on the
+> default branch; qualification, release, deployment and realm enablement are
+> separate evidence rungs and are not claimed here. The rungs are defined in
+> [`docs/GLOSSARY.md`](docs/GLOSSARY.md#the-evidence-ladder), and the method is
+> in [`docs/WORKFLOW.md`](docs/WORKFLOW.md).
 >
 > **Scope:** Governing principles, authority boundaries, consistency model,
 > technology choices and extension rules for `asma-rs-kontor`.
@@ -153,7 +149,7 @@ prompt content or authority, and an absent, stale, failed or malformed projectio
 degrades to lexical recall. The transport is off by default. An ordinary daemon
 start never constructs a Cognee client and refuses a `memory-cognee.json` with
 `enabled: true`; only an embedding or test composition can supply one today. See
-[Configuration](docs/CONFIGURATION.md) (merged in PR #291, `abe990ac`).
+[Configuration](docs/CONFIGURATION.md).
 
 Publication identity is judged, not inferred. A branch follows one grammar,
 `<type>/<PROJECT>-<number>-<slug>` (plus keyless `releases/v<x.y.z>`), and the
@@ -166,8 +162,7 @@ When an operator installs the GitHub App and writes `config/github-app.json`, th
 daemon's gateway posts the `asma/publication-identity` check run and performs a
 squash merge only after re-judging the pull request's current head, refusing a
 head that moved. Without that file the gateway is inert. See
-[native naming](docs/NATIVE_NAMING.md#publication-attestation) (merged in PRs
-#192, #195 and #265: `2511b712`, `e4bb5fbd`, `835c5815`).
+[native naming](docs/NATIVE_NAMING.md#publication-attestation).
 
 ## Consistency model
 
@@ -249,9 +244,8 @@ to four rules:
   abandoned, never-bound replacement bridge is followed through its preserved
   ancestry and is never mistaken for the current holder.
 
-These rules are merged across the ASMA-8110, 8111, 8119, 8187, 8190, 8196, 8202,
-8203 and 8234 changes (for example PR #217 `f2d7541e`, #244 `193def19`, #264
-`44663e10`, #290 `1d7a71dd`). Backup, restore, export and import are separate
+These rules cover the recovery cases recorded in the repository history.
+Backup, restore, export and import are separate
 operator procedures in [Recovery](RECOVERY.md); consultation-seat recovery is in
 [consultation lifecycle](docs/CONSULTATION_LIFECYCLE.md).
 
@@ -308,7 +302,6 @@ See [durable desks](_docs/reference/2026-10-10-23-55-reference-kontord-durable-d
 [desk seats](_docs/reference/2026-10-11-02-20-reference-kontord-durable-desk-seats.md),
 [desk Adams](_docs/reference/2026-10-11-05-36-reference-kontord-desk-adams.md) and
 [PR reviews](_docs/reference/2026-10-11-11-35-reference-kontord-pr-reviews.md).
-They are merged through PRs #295–#300 (`733807cc`…`0971674d`, schema v131–v134).
 The [ASMA-8454 report](_docs/reports/2026-10-11-16-00-report-asma-8454-desk-qualification.md)
 records source and disposable-realm qualification only; Independent Review and
 released-build acceptance are separate gates.
@@ -348,18 +341,17 @@ convention. The approved contract makes one pinned Team Definition JSON the
 sole hierarchy/naming authority, with local seats such as `LSA`, `TPM`, `AUD`,
 `SA`, `SEAT A`, `SEAT B`, `JUDGE`. `ADVISOR` is not a universal native seat
 title; ASW seats use the exact configured registered professional role or
-advisor-profile code, and ASW never performs Committee aggregation. Its
-[2026-09-06 amendment](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/architecture/2026-09-06-17-25-architecture-kontor-jira-key-identity.md)
-makes the confirmed Jira key the recommended native scope (`ESW • ASMA-8001`,
-`TSW • ASMA-7869`). The source renders it through typed `EPIC_JIRA_KEY`,
+advisor-profile code, and ASW never performs Committee aggregation. The
+confirmed-key identity rule makes the confirmed Jira key the recommended native
+scope (`ESW • ASMA-8001`, `TSW • ASMA-7869`). The source renders it through
+typed `EPIC_JIRA_KEY`,
 `TASK_JIRA_KEY` and `SCOPE_JIRA_KEY` tokens, resolved only from an exact
 confirmed, project-scoped binding; a missing, ambiguous or non-canonical binding
-refuses as `placement_blocked` before any native effect (PRs #215/#216,
-`6355b850` / `f78d041e`). Item-code tokens, which the seeded operational fixture
-still uses, keep their meaning for every definition pinned to them until an
-explicit upgrade. See
-[`docs/NATIVE_NAMING.md`](docs/NATIVE_NAMING.md), which records the 2026-09-02
-live migration of one epic; other epics keep their historical pins.
+refuses as `placement_blocked` before any native effect. Item-code tokens, which
+the seeded operational fixture still uses, keep their meaning for every
+definition pinned to them until an explicit upgrade. See
+[`docs/NATIVE_NAMING.md`](docs/NATIVE_NAMING.md), which records the migration of
+one epic; other epics keep their historical pins.
 
 Jira materialization recovery preserves the failed create batch as the sole
 intent. Schema v74 adds an append-only recovery ledger keyed to its exact item,
@@ -407,9 +399,8 @@ eligibility. Once an activation exists, a failed verification refuses placement
 and never falls back to `fleet.yml` or template routing. The resolver chooses a
 route; the scheduler's rules still decide whether that choice launches now,
 waits or escalates. See [Configuration](docs/CONFIGURATION.md#activated-fleet-policy-asma-8280)
-and the [live fleet routing decision](_docs/architecture/2026-09-24-20-45-architecture-live-fleet-routing.md)
-(merged in PR #271 `7ffd650d` and PR #292 `4097afb8`; no live realm activation
-is recorded here).
+and the [live fleet routing decision](_docs/architecture/2026-09-24-20-45-architecture-live-fleet-routing.md).
+No live realm activation is recorded here.
 
 Quota headroom has one deliberate status caveat. The account-before-rung
 resolver computes typed `Admit`, `Wait` and `NeedsHuman` outcomes, and launch
@@ -422,8 +413,9 @@ is not shipped. The
 source separately implements mid-run quota detection, durable
 redacted handoff, successor placement and resident bounded reconciliation. It
 does so only under explicit schema-v2 supervision enablement; schema v1 and an
-absent or disabled policy remain inert. Those KON-OP-21 paths have local tests
-and are merged through PR #164 (`3d7c6043`, 2026-09-04). Deployment, live-runtime verification and realm enablement are separate receipt-backed stages.
+absent or disabled policy remain inert. Those supervision paths have local
+tests; deployment, live-runtime verification and realm enablement are separate
+receipt-backed stages.
 
 The calendar dimension is implemented in `kontor-calendar` and is reached by no
 route and no tool, so every project currently resolves to `unrestricted`. That
@@ -460,7 +452,7 @@ Committee at once or not at all. A template that declares distinct vendors gets
 reviewers that share none, and the formal Independent Review additionally seats
 at most one Anthropic model and no route deeper than rung 2.
 
-`planning_pair@1` (ASMA-8282, merged in PR #292) is a third, opt-in consultation
+`planning_pair@1` is a third, opt-in consultation
 family, and it is advice rather than review: two independent read-only members
 (`SEAT A`, `SEAT B`) frozen from one placement on distinct actual vendors, one
 findings round in which neither sees the other's finding, at most one
@@ -558,12 +550,12 @@ tier gate and argument validation, which MCP neither lists nor dispatches. The
 JSON Schema a client is shown is derived from the same rows the dispatch path
 validates against, with `additionalProperties: false` on every tool.
 
-At `0971674d` the registry declares 230 tools: 93 `admin`, 76 `operator` and 61
-`observer`. The CLI exposes all 230. Computed from source, an admin-tier MCP
-server lists 228 of the 230 — all but the local operation and
-`kontor_account_profile_amend`, which is kept off `tools/list` to save every
-seat's context but stays callable by name. That figure is a source computation,
-not a live tool-discovery observation.
+The registry declares three credential tiers, `admin`, `operator` and
+`observer`. The CLI exposes every entry. An admin-tier MCP server lists all but
+the local operation and `kontor_account_profile_amend`, which is kept off
+`tools/list` to save every seat's context but stays callable by name. Read the
+live registry for current counts; this is a source contract, not a live
+tool-discovery observation.
 
 Authority is the credential and nothing else. A realm has three secrets; a process
 holds one and therefore *is* one seat (a hosted native seat holds a narrower,
@@ -693,20 +685,22 @@ The workspace is split by authority rather than by technical layer alone:
 - automatic task decomposition with model-written scheduler state;
 - a hard-coded catalogue of work types or one universal agent team.
 
-## Detailed ASMA design
+## Related design
 
-The repository contract above is intentionally concise. The full implementation
-baseline and active epic plan are maintained in the parent polyrepo:
+The repository contract above is intentionally concise. The public method and
+governing principles are:
 
-- [Kontor governing principles](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/architecture/2026-08-26-11-30-architecture-kontor-governing-principles.md) — Autonomy and Delivery Quality in full, with the fourteen principles and their honest gaps
-- [Kontor control-plane architecture](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/architecture/2026-08-08-20-12-architecture-asma-kontor-control-plane.md)
-- [Kontor Operational MVP plan](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/plans/2026-08-14-23-21-plan-kontor-operational-mvp.md)
-- [Kontor mission-control and attention plan](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/plans/2026-08-18-17-17-plan-kontor-operator-surface-and-attention.md)
-- [Confirmed Jira-key identity](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/architecture/2026-09-06-17-25-architecture-kontor-jira-key-identity.md) — public identity and native scope from the confirmed key
-- [Kontor current workflow contracts](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/reference/2026-09-27-08-11-reference-kontor-current-workflow-contracts.md) — the adopted workflow rules, separated from trials and proposals
+- [Kontor workflow](docs/WORKFLOW.md) — both surfaces, roles, gates, holds and
+  closeout;
+- [Kontor glossary](docs/GLOSSARY.md) — the one dictionary for codes, records,
+  evidence and status;
+- [Kontor governing principles](docs/PRINCIPLES.md) — Autonomy and Delivery
+  Quality, and the fourteen principles derived from them;
+- [Kontor decisions](docs/decisions/README.md) — the reviewed decisions that
+  govern this repository and the workflow pack.
 
-Those documents govern ASMA-specific rollout. This file governs the public
-repository boundary and must stay readable without the parent checkout.
-Repository-local detail lives in [`_docs/`](_docs/index.md): durable desks and
-their seats, Adams and PR reviews under `_docs/reference/`, the live fleet routing
-and local verification decisions under `_docs/architecture/`.
+This file governs the public repository boundary and must stay readable without
+a private checkout. Repository-local detail lives in [`_docs/`](_docs/index.md):
+durable desks and their seats, Adams and PR reviews under `_docs/reference/`,
+the live fleet routing and local verification decisions under
+`_docs/architecture/`.
