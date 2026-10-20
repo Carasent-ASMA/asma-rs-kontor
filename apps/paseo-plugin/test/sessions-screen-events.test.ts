@@ -984,9 +984,7 @@ describe("SessionsScreen toolbar events", () => {
   it("moves a scroll retry with its row when a live update shifts the tree", () => {
     const { failed, quietRow, indexes } = showQuietInTree();
     failed();
-    const { entries } = directory.state as { entries: readonly unknown[] };
-    directory.state = { ...(directory.state as object), entries: [sessionEntry("busy-40", { status: "running", labels: { epic: "ASMA-1" } }), ...entries] };
-    harness.flush();
+    addBusySibling();
     expect(quietRow()).toBe(44);
     vi.runOnlyPendingTimers();
     expect(indexes()).toEqual([44]);
@@ -1027,6 +1025,45 @@ describe("SessionsScreen toolbar events", () => {
     expect(readSessionView("host-b").peek?.sessionId).toBe("quiet");
     vi.runOnlyPendingTimers();
     expect(indexes()).toEqual([]);
+  });
+
+  /** Adds a running session that sorts before "quiet", so quiet's tree row moves from 43 to 44. */
+  function addBusySibling() {
+    const { entries } = directory.state as { entries: readonly unknown[] };
+    directory.state = { ...(directory.state as object), entries: [sessionEntry("busy-40", { status: "running", labels: { epic: "ASMA-1" } }), ...entries] };
+    harness.flush();
+  }
+
+  it("places a session shown in the tree on its row as that row stands when the first pass runs", () => {
+    const { back, showInTree, quietRow, indexes } = showQuietInTree();
+    back();
+    showInTree();
+    addBusySibling();
+    expect(quietRow()).toBe(44);
+    vi.advanceTimersByTime(0);
+    expect(indexes()).toEqual([44]);
+  });
+
+  it("drops the settle pass when a collapse removes the session's row, though the list mode is unchanged", () => {
+    const { back, showInTree, indexes } = showQuietInTree();
+    back();
+    showInTree();
+    vi.advanceTimersByTime(0);
+    expect(indexes()).toEqual([43]);
+    toggle("workspace");
+    expect(listRows()).toHaveLength(3);
+    vi.runOnlyPendingTimers();
+    expect(indexes()).toEqual([43]);
+  });
+
+  it("moves the settle pass with the session's row when a live update shifts the tree", () => {
+    const { back, showInTree, indexes } = showQuietInTree();
+    back();
+    showInTree();
+    vi.advanceTimersByTime(0);
+    addBusySibling();
+    vi.runOnlyPendingTimers();
+    expect(indexes()).toEqual([43, 44]);
   });
 
   it("returns to the tree position it left when the search is cleared", () => {

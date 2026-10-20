@@ -1924,7 +1924,13 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     const stored = readSessionView(viewScope).scrollOffset;
     const head = compact && !toolbarCollapsedRef.current ? compactToolbarHeight() : 0;
     const offset = listMode === "results" && previous === "tree" ? 0 : stored > 0 ? stored + head : 0;
-    const index = peek ? rows.findIndex((row) => row.kind === "session" && row.entry.id === peek.sessionId) : -1;
+    const sessionId = peek?.sessionId ?? null;
+    // Each pass finds the session's row again: a collapse or a live update can move or remove it first.
+    const place = () => {
+      const index = sessionId === null ? -1 : rowsRef.current.findIndex((row) => row.kind === "session" && row.entry.id === sessionId);
+      if (index >= 0) listRef.current?.scrollToIndex({ index, viewPosition: 0.3, animated: false });
+      return index >= 0;
+    };
     scrollOffsetRef.current = offset;
     lastScrollOffsetRef.current = offset;
     scrollAccumulatorRef.current = EMPTY_SCROLL_ACCUMULATOR;
@@ -1935,13 +1941,12 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     const focus = focusAfterModeRef.current;
     focusAfterModeRef.current = null;
     const timer = setTimeout(() => {
-      if (index >= 0) listRef.current?.scrollToIndex({ index, viewPosition: 0.3, animated: false });
-      else listRef.current?.scrollToOffset({ offset, animated: false });
+      if (!place()) listRef.current?.scrollToOffset({ offset, animated: false });
       focus?.();
     }, 0);
     // The first pass places the session by estimated row heights, which leave out a list header
     // such as open compact Filters; once the new rows are measured, place it again.
-    const settle = index >= 0 ? setTimeout(() => listRef.current?.scrollToIndex({ index, viewPosition: 0.3, animated: false }), 150) : undefined;
+    const settle = sessionId !== null ? setTimeout(place, 150) : undefined;
     return () => { clearTimeout(timer); clearTimeout(settle); };
   }, [listMode]);
 
