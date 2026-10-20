@@ -122,7 +122,15 @@ The plugin body has Sessions, Overview, Plan, Board and More on compact clients.
 Desktop also exposes Graph and Delivery directly. More contains the remaining
 destinations, including Inbox, Search and Settings. The compact context picker
 offers All projects, observed native projects, confirmed epic keys and configured
-plans. The same picker scopes Overview; All projects clears the selection. Plan queries and positions are scoped to the host,
+plans on every main view, including Sessions. Native project identity is separate
+from the selected epic or plan; the selector names both when applicable. Sessions,
+Overview, Plan, Board, Graph and Delivery retain that selection. All projects
+explicitly clears it. A concise Live badge describes the reconciled native session
+inventory only; Reading, Stale, offline and errors remain distinct, and configured
+plan/Jira freshness is reported on their own pages. The selector, Back and inventory
+status share one local toolbar. Paseo 0.12 owns its native screen title; its supported
+plugin-screen contract has no picker slot (`addHeaderButton` is workspace-only).
+Plan queries and positions are scoped to the host,
 project, epic, exact source identity and revision. Organization placement uses
 explicit display mapping, then desk, then workstream. Back retains the previous query, position and session
 filters; the native **← Kontor** control returns to the last host-local view.

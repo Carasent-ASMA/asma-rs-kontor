@@ -29,7 +29,7 @@ export function inventoryReadLabel(state: Pick<DirectoryState, "lastUpdatedAt" |
 export function NativeFreshnessPill({ state, hostStatus, hostLabel, colors }: { state: DirectoryState; hostStatus: PluginHostSummary["status"]; hostLabel?: string; colors: Colors }) {
   const label = nativeFreshnessLabel({ ...state, hostStatus });
   const color = nativeFreshnessColor(label, colors);
-  return <View accessible accessibilityRole="text" accessibilityLabel={`Native sessions${hostLabel ? ` from ${hostLabel}` : ""}: ${label}. ${inventoryReadLabel(state)}. Source freshness is reported separately.`} style={{ borderWidth: 1, borderColor: color, borderRadius: 12, paddingHorizontal: 8, paddingVertical: 5 }}>
-    <Text numberOfLines={1} style={{ color, fontSize: 12 }}>Native · {label}</Text>
+  return <View testID="kontor-native-freshness" accessible accessibilityRole="text" accessibilityLabel={`Native sessions${hostLabel ? ` from ${hostLabel}` : ""}: ${label}. ${inventoryReadLabel(state)}. Source freshness is reported separately.`} style={{ flexShrink: 1, minWidth: 0, maxWidth: "40%", borderWidth: 1, borderColor: color, borderRadius: 12, paddingHorizontal: 7, paddingVertical: 4 }}>
+    <Text numberOfLines={2} style={{ color, fontSize: 12 }}>{label}</Text>
   </View>;
 }
