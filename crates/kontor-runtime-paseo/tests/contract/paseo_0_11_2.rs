@@ -36,6 +36,11 @@ fn the_0_11_2_baseline_advertises_keyed_creation_and_delivery_receipts() {
         serde_json::from_value(identity).expect("recorded server_info is the pinned shape");
     assert!(parsed.supports_creation_lifecycle());
     assert!(parsed.supports(kontor_runtime_paseo::wire::PaseoFeature::AgentRequestReceipts));
+    assert!(
+        kontor_runtime_paseo::wire::REQUIRED_FEATURES
+            .contains(&kontor_runtime_paseo::wire::PaseoFeature::AgentRequestReceipts),
+        "a daemon without caller-journaled receipts cannot be driven autonomously"
+    );
     assert_eq!(parsed.version.as_deref(), Some("0.11.2"));
 }
 
