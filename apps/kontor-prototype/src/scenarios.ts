@@ -58,7 +58,7 @@ export const SCENARIOS: readonly Scenario[] = [
       { afterMs: 16000, agentId: "agt_qa_99104", patch: { status: "running" }, note: "QA started on ASMA-99104" },
     ],
   },
-  { id: "role-view", title: "Roles: one level", summary: "Role grouping: one header per role, singletons and No role included. QA gathers case and spacing variants; QA1 stays apart; two sessions disagree with their titles or labels.", inventory: "roles", sources: true, settings: ROLES },
+  { id: "role-view", title: "Roles: one level", summary: "Role grouping: one header per role, singletons and No role included. QA gathers case and spacing variants; QA1 stays apart; two sessions disagree with their titles or labels. A session row's Details button gives its full place; one AUD session has a long title and workstream.", inventory: "roles", sources: true, settings: ROLES },
   { id: "role-view-offline", title: "Roles: host goes offline", summary: "Role picked in this view; the host drops at 4 s, saved preferences become unavailable, and the role headers give last known counts.", inventory: "roles", sources: true, settings: ROLES, start: { grouping: "role" }, hostOfflineAfterMs: 4000 },
   { id: "host-offline", title: "Host goes offline", summary: "The host drops after 4 s: last known states, marked stale.", inventory: "base", sources: true, start: { tab: "Board", sourceId: "plan-99101" }, hostOfflineAfterMs: 4000 },
   { id: "no-sessions", title: "No sessions", summary: "An empty host: Board tasks have no linked sessions.", inventory: "none", sources: true, start: { tab: "Board", sourceId: "plan-99101" } },

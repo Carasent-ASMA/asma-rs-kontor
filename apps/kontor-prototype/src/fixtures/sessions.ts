@@ -145,7 +145,8 @@ export function scrollSessions(): FixtureSession[] {
 /**
  * The Roles review inventory: the default one plus role variants. Case and spacing
  * variants share a header, a numbered slot keeps its own, and two sessions whose
- * sources disagree show the label's role with a conflict cue.
+ * sources disagree show the label's role with a conflict cue. One long title and
+ * workstream test how the row details wrap.
  */
 export function roleSessions(): FixtureSession[] {
   return [
@@ -156,5 +157,6 @@ export function roleSessions(): FixtureSession[] {
     session({ id: "agt_conflict_title", title: "AUD • ASMA-99104 spot check", ws: "wks_rsw_99104", status: "idle", minutes: 18, needsInput: true, labels: kontor("ASMA-99101", { role: "qa", task: "ASMA-99104" }) }),
     session({ id: "agt_conflict_labels", title: "ASMA-99103 release notes", ws: "wks_tsw_99103", status: "running", minutes: 3, labels: kontor("ASMA-99101", { "kontor.role": "SWE", role: "tpm", task: "ASMA-99103" }) }),
     session({ id: "agt_revb_label", title: "Second look at PR 812", ws: "wks_desk_review", status: "idle", minutes: 22, labels: { desk: "PR Review", pr: "812", role: "rev_b" } }),
+    session({ id: "agt_aud_long", title: "AUD • ASMA-99206 offline sync reconciliation audit for shared field devices", ws: "wks_tsw_99202", status: "idle", minutes: 16, project: MOBILE, labels: { workstream: "Mobile field operations and offline sync across shared devices", epic: "ASMA-99201", "kontor.role": "AUD", "jira.issue": "ASMA-99206" } }),
   ];
 }
