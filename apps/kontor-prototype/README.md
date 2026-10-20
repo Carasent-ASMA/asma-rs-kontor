@@ -16,8 +16,8 @@ rest of the workspace. Then:
 
 | Use | Command (in `apps/kontor-prototype`) | URL |
 | --- | --- | --- |
-| Live editing | `./node_modules/.bin/vite --host 127.0.0.1` | http://127.0.0.1:58091/ |
-| Review build | `./node_modules/.bin/vite build && ./node_modules/.bin/vite preview --host 127.0.0.1` | http://127.0.0.1:58092/ |
+| Live editing | `./node_modules/.bin/vite --host 127.0.0.1` | http://127.0.0.1:58151/ |
+| Review build | `./node_modules/.bin/vite build && ./node_modules/.bin/vite preview --host 127.0.0.1` | http://127.0.0.1:58151/ |
 | Typecheck | `./node_modules/.bin/tsc --noEmit` | |
 
 Both servers bind to 127.0.0.1, so they are reachable only from this machine.
@@ -208,3 +208,26 @@ unit tests (with an injected reader) and the simulated scenarios reach it.
 `?scenario=integrated-review` uses the integrated plugin source with fictional timestamp, model-report, lifecycle and native-desk inventories. `integrated-roles` and `integrated-offline` show the same inventory in Roles and as stale. Individual `status-lifecycle`, `native-desks`, `model-usage` and `time-view` scenarios remain selectable. Earlier errors are neutral history; Include archived adds only explicitly archived sessions.
 
 Plan, Board, Graph, Overview and Delivery use the fictional ASMA-991xx/992xx catalog. The separately qualified 19 real source reads across 27 epics are evidence outside this app; no real catalog, private sessions or Jira capture is copied here. The simulated host title row permits compact-header review; it does not deliver the separate Paseo sidebar/title-overlap correction. This preview is not an installed-host, packaged Electron, physical-device or VoiceOver pass.
+
+
+## Mobile header follow-up
+
+`mobile-header` shows All projects and the truthful session-inventory status on
+one local toolbar. `mobile-header-project`, `mobile-header-epic`,
+`mobile-header-long`, `mobile-header-no-sources`, `mobile-header-loading` and
+`mobile-header-offline` cover the corresponding fixture states. All source data
+and connection changes remain simulated. The native Kontor title above the
+plugin is a host simulation: Paseo 0.12 exposes no plugin-screen header picker
+slot, and workspace `addHeaderButton` does not supply one.
+
+The app-only contribution deliberately retains its baseline tracked plugin tree.
+For the combined review, export the exact committed app head into a disposable
+external directory and overlay the paired committed `apps/paseo-plugin` source
+tree there. Record both Git heads and verify every plugin blob and the build's
+`sourcesContent` against that source head. Run and capture that export on 58151;
+do not replace tracked plugin files in the app-only checkout. The handoff's
+`combined-pins.json` and `composition-verification.json` identify the reviewed
+pair. The app-only checkout alone is not the combined candidate.
+
+Browser pointer and enlarged-text checks do not establish packaged Electron,
+native iOS/Android, physical touch, VoiceOver/TalkBack or OS font scaling.
