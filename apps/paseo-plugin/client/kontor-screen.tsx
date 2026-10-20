@@ -24,6 +24,7 @@ import { GraphPage } from "./graph-page";
 import { contextPlanSources, resolveContextPlan, refreshContextSource } from "./navigation-state";
 import { NativeFreshnessPill } from "./native-freshness";
 import { resolvePlanLink, safeHttpsUrl } from "./plan-links";
+import { taskTeamReader } from "./task-team-source";
 
 const PRIMARY_MOBILE: Destination[] = ["Sessions", "Overview", "Plan", "Board"];
 const PRIMARY_DESKTOP: Destination[] = ["Sessions", "Overview", "Plan", "Board", "Graph", "Delivery"];
@@ -55,6 +56,7 @@ function HostScreen(props: PluginScreenProps) {
   const [, setTeamsViewRevision] = useState(0);
   const directory = useSessionDirectory({ hostId: host.id, hostStatus, includeArchived });
   const sourceState = useReadSources(host.id, hostStatus);
+  const taskTeams = useMemo(() => taskTeamReader(sourceState.sources, sourceState.teamsSnapshots), [sourceState.sources, sourceState.teamsSnapshots]);
   const workspaces = useWorkspaceDirectory(host.id, hostStatus === "online");
   const presentation = sourceState.error && !sourceState.available
     ? { ...organization, state: { ...organization.state, status: "error" as const, error: "Plugin source service unavailable; organization preferences are not current." } }
@@ -210,7 +212,7 @@ function HostScreen(props: PluginScreenProps) {
       onShowInSessions: (task) => visit({ tab: "Sessions", ...NO_SCOPE }, undefined, (next) => {
         const scope = sessionScopeKey(host.id, next);
         patchSessionView(scope, sessionViewTransition(readSessionView(scope), { task, query: "", status: "all", scrollOffset: 0 }));
-      }) }} />;
+      }) }} taskTeams={taskTeams} />;
   else page = <ReadOnlyPage key={routeViewKey(route)} compact={layout.compact} onChooseSource={() => toggle("context")} onDocumentLink={openDocumentLink} onCopy={copy} onExternalLink={openExternalLink} contextLabel={route.sourceId ? selectedPlan?.title ?? "Source unavailable" : projectLabel} tab={route.tab} colors={colors} entries={entries} directory={directory.state} sources={sources} reads={reads} sourceId={route.sourceId}
     teamsSources={sourceState.sources.filter((source) => source.kind === "teams")} teamsJsonReads={Object.fromEntries(Object.entries(sourceState.reads).filter(([, read]) => read.source.kind === "teams"))}
     teamsSnapshots={sourceState.teamsSnapshots} teamsErrors={sourceState.teamsErrors} teamsBindingDiagnostics={sourceState.teamsBindingDiagnostics} teamsAvailable={sourceState.available}

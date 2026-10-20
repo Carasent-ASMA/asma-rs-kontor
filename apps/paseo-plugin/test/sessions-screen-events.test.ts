@@ -261,6 +261,7 @@ import {
   OPTIONS_SPACE_SHARE,
   SCOPE_SUMMARY_TEST_ID,
   SessionsScreen,
+  SHORT_PEEK_HEIGHT,
   SlimActionButton,
   SlimToolbar,
   toolbarOpenPatch,
@@ -833,6 +834,68 @@ describe("SessionsScreen toolbar events", () => {
     (findByTestID(harness.current(), "sessions-filter-all").props.onPress as () => void)(); harness.flush();
     expect(groupRows().map((row) => `${row.group.kind}:${row.expanded}`)).toEqual(["workstream:true", "epic:false"]);
     expect(save).not.toHaveBeenCalled();
+  });
+
+  it("on a short compact screen, Show in tree keeps one Back row above the list, and Back brings the toolbar and filters back", () => {
+    directory.state = { ...(directory.state as object), entries: [
+      sessionEntry("busy", { status: "running", labels: { epic: "ASMA-1" } }),
+      sessionEntry("quiet", { status: "idle", labels: { epic: "ASMA-1" } }),
+    ] };
+    patchSessionView("host-a", { query: "" });
+    renderScreen();
+    const rootHeight = (height: number) => { ((harness.current() as ElementLike).props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height } } }); harness.flush(); };
+    const header = () => testIDs(findByTestID(harness.current(), "sessions-list").props.ListHeaderComponent);
+    const peekText = () => walk(findByTestID(harness.current(), "sessions-peek")).find((element) => "numberOfLines" in element.props)!;
+    const showInTree = () => {
+      const [result] = listRows() as [Extract<ListRow, { kind: "result" }>];
+      const row = (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: result });
+      (row.props.onShowInTree as (entry: unknown) => void)(result.entry); harness.flush();
+    };
+    const back = () => walk(findByTestID(harness.current(), "sessions-peek")).find((element) => element.props.label === "Back to 1 result")!;
+    rootHeight(SHORT_PEEK_HEIGHT - 100);
+    (findByTestID(harness.current(), "sessions-filter-idle").props.onPress as () => void)(); harness.flush();
+    // Results keep their toolbar and filters at any height; only the peek folds them.
+    expect(testIDs(harness.current())).toContain("sessions-slim-toolbar-slot");
+    expect(header()).toContain("sessions-full-toolbar");
+    showInTree();
+    expect(testIDs(harness.current())).not.toContain("sessions-slim-toolbar-slot");
+    expect(header()).toEqual([]);
+    expect([textOf(peekText()), peekText().props.numberOfLines, peekText().props.accessibilityLabel]).toEqual(["In the tree · not saved", 1, "Showing “Session quiet” in the tree. Branches opened here are not saved."]);
+    // A full-size Back, the 44pt touch action.
+    expect(back().props.small).toBe(false);
+    expect(sessionRowIds()).toEqual(expect.arrayContaining(["quiet"]));
+    (back().props.onPress as () => void)(); harness.flush();
+    expect(testIDs(harness.current())).toContain("sessions-slim-toolbar-slot");
+    expect(header()).toContain("sessions-full-toolbar");
+    expect(sessionRowIds()).toEqual(["quiet"]);
+    // A phone-height screen keeps the toolbar and the longer note during the peek.
+    rootHeight(SHORT_PEEK_HEIGHT);
+    showInTree();
+    expect(testIDs(harness.current())).toContain("sessions-slim-toolbar-slot");
+    expect(header()).toContain("sessions-full-toolbar");
+    expect([textOf(peekText()), peekText().props.numberOfLines]).toEqual(["Shown in the tree. Branches opened here are not saved.", 2]);
+  });
+
+  it("places a session shown in the tree again once the tree rows are measured, so a list header cannot push it out of view", () => {
+    directory.state = { ...(directory.state as object), entries: [
+      sessionEntry("busy", { status: "running", labels: { epic: "ASMA-1" } }),
+      sessionEntry("quiet", { status: "idle", labels: { epic: "ASMA-1" } }),
+    ] };
+    patchSessionView("host-a", { query: "" });
+    renderScreen();
+    const scrollToIndex = vi.fn();
+    (findByTestID(harness.current(), "sessions-list").props.ref as RefLike).current = { scrollToOffset: vi.fn(), scrollToIndex };
+    (findByTestID(harness.current(), "sessions-filter-idle").props.onPress as () => void)(); harness.flush();
+    const [result] = listRows() as [Extract<ListRow, { kind: "result" }>];
+    ((findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: result }).props.onShowInTree as (entry: unknown) => void)(result.entry);
+    harness.flush();
+    const place = { index: listRows().findIndex((row) => row.kind === "session" && row.entry.id === "quiet"), viewPosition: 0.3, animated: false };
+    vi.advanceTimersByTime(0);
+    expect(scrollToIndex.mock.calls).toEqual([[place]]);
+    vi.advanceTimersByTime(150);
+    expect(scrollToIndex.mock.calls).toEqual([[place], [place]]);
+    vi.runOnlyPendingTimers();
+    expect(scrollToIndex).toHaveBeenCalledTimes(2);
   });
 
   it("returns to the tree position it left when the search is cleared", () => {
