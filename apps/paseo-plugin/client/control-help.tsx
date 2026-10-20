@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode, type Ref, type RefObject } from "react";
 import { BackHandler, ScrollView, Text, View } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
-import { menuFrame, type MenuFrame } from "./anchored-menu";
+import { anchoredPanelOpen, menuFrame, type MenuFrame } from "./anchored-menu";
 
 type Anchor = RefObject<View | null>;
 type Help = { anchor: Anchor; text: string; focused: boolean };
@@ -54,7 +54,10 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
     const window = (globalThis as { window?: EventTarget }).window;
     const key = (event: KeyEvent) => {
       if (event.key !== "Escape" || !current.current) return;
-      event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation?.(); controller.dismiss();
+      controller.dismiss();
+      // A menu/dialog keeps its existing one-press Escape and focus return.
+      if (anchoredPanelOpen()) return;
+      event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation?.();
     };
     // Focus can scroll a row into view after its focus event. Re-measure its help;
     // hover-only help closes when its source moves. Scrolling help itself stays usable.
