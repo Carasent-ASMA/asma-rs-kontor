@@ -120,7 +120,7 @@ describe("role lanes", () => {
 
   it("keeps an error cue apart from the runtime status", () => {
     expect(chainLabel(sessionEntry("e", { status: "error" }))).toBe("Error");
-    expect(chainLabel(sessionEntry("e", { status: "idle", attentionReason: "error" }))).toBe("Error reported, idle now");
+    expect(chainLabel(sessionEntry("e", { status: "idle", attentionReason: "error" }))).toBe("Idle · Earlier error · now idle");
     expect(chainLabel(sessionEntry("e", { status: "closed", archivedAt: "2026-10-01T00:00:00Z" }))).toBe("Archived");
   });
 

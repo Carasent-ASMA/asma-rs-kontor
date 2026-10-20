@@ -1,4 +1,4 @@
-import type { DirectoryEntry } from "./session-directory";
+import { hasSessionAttention, type DirectoryEntry } from "./session-directory";
 
 export const OTHER_WORKSTREAM = "Other work";
 export const UNASSIGNED_EPIC = "Unassigned";
@@ -315,13 +315,13 @@ export function sessionState(entry: DirectoryEntry): OrganizationState {
   if (entry.needsInput) {
     return "needs_input";
   }
-  if (entry.status === "error" || entry.attentionReason === "error") {
+  if (entry.status === "error") {
     return "failed";
   }
   if (entry.status === "running") {
     return "running";
   }
-  if (entry.requiresAttention || entry.attentionReason !== null) {
+  if (hasSessionAttention(entry)) {
     return "attention";
   }
   return entry.status;

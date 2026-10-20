@@ -1,4 +1,6 @@
 import {
+  hasEarlierError,
+  hasSessionAttention,
   type DirectoryEntry,
   type SessionStatus,
 } from "./session-directory";
@@ -11,9 +13,10 @@ export type StatusFilter =
   | SessionStatus
   | "needs_input"
   | "attention"
+  | "earlier_error"
   | "favorites";
 
-/** Frequent choices in prototype order; Starting and Closed sit under More states. */
+/** Frequent choices; runtime history and less common states sit under More states. */
 export const QUICK_STATUS_FILTERS: readonly StatusFilter[] = [
   ALL_STATUS_FILTER,
   "running",
@@ -23,7 +26,7 @@ export const QUICK_STATUS_FILTERS: readonly StatusFilter[] = [
   "attention",
   "favorites",
 ];
-export const MORE_STATUS_FILTERS: readonly StatusFilter[] = ["initializing", "closed"];
+export const MORE_STATUS_FILTERS: readonly StatusFilter[] = ["initializing", "closed", "earlier_error"];
 
 export type SessionFilters = {
   readonly query: string;
@@ -46,6 +49,7 @@ const STATUS_FILTER_LABELS: Record<StatusFilter, string> = {
   error: "Error",
   needs_input: "Needs input",
   attention: "Attention",
+  earlier_error: "Earlier errors",
   favorites: "★ Favorites",
   initializing: "Starting",
   closed: "Closed",
@@ -73,8 +77,8 @@ export function matchesQuery(entry: DirectoryEntry, query: string): boolean {
 }
 
 /**
- * Needs input follows the native pending-permission priority, Error includes an
- * error attention reason, and Attention is the native attention flag.
+ * Error follows the current native lifecycle. Earlier errors remain separately
+ * reachable without inflating current Error or Attention counts.
  */
 export function matchesStatus(
   entry: DirectoryEntry,
@@ -89,9 +93,11 @@ export function matchesStatus(
     case "needs_input":
       return entry.needsInput;
     case "attention":
-      return entry.requiresAttention;
+      return hasSessionAttention(entry);
     case "error":
-      return entry.status === "error" || entry.attentionReason === "error";
+      return entry.status === "error";
+    case "earlier_error":
+      return hasEarlierError(entry);
     default:
       return entry.status === status;
   }
@@ -133,10 +139,10 @@ export function attentionLabel(entry: DirectoryEntry): string | null {
   if (entry.needsInput) {
     return "Needs input";
   }
-  if (entry.status === "error" || entry.attentionReason === "error") {
+  if (entry.status === "error") {
     return "Error";
   }
-  if (!entry.requiresAttention) {
+  if (!hasSessionAttention(entry)) {
     return null;
   }
   switch (entry.attentionReason) {
@@ -151,4 +157,8 @@ export function attentionLabel(entry: DirectoryEntry): string | null {
 
 export function archivedLabel(entry: DirectoryEntry): string | null {
   return entry.archivedAt === null ? null : "Archived";
+}
+
+export function earlierErrorLabel(entry: DirectoryEntry): string | null {
+  return hasEarlierError(entry) ? `Earlier error · now ${entry.status}` : null;
 }

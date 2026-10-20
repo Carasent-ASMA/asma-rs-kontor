@@ -73,6 +73,16 @@ export type DirectoryEntry = {
   readonly searchText: string;
 };
 
+/** An unread error notice can outlive the native error state after recovery or close. */
+export function hasEarlierError(entry: DirectoryEntry): boolean {
+  return entry.attentionReason === "error" && entry.status !== "error";
+}
+
+/** Retained error history does not create a current Attention signal. */
+export function hasSessionAttention(entry: DirectoryEntry): boolean {
+  return entry.requiresAttention && !hasEarlierError(entry);
+}
+
 export type DirectoryStatus = "idle" | "loading" | "ready" | "stale" | "error";
 
 export type DirectoryState = {
@@ -219,21 +229,20 @@ function timestampOf(value: string): number {
 }
 
 /**
- * Same order as the installed native `deriveAgentStateBucket` priority:
- * needs input, failed, running, attention, done. The raw lifecycle remains
- * untouched; this only chooses display order.
+ * Current needs input, error, running, attention, then other sessions.
+ * Retained error notices stay in history and never promote the current state.
  */
 function stateBucketRank(entry: DirectoryEntry): number {
   if (entry.needsInput) {
     return 0;
   }
-  if (entry.status === "error" || entry.attentionReason === "error") {
+  if (entry.status === "error") {
     return 1;
   }
   if (entry.status === "running") {
     return 2;
   }
-  if (entry.requiresAttention) {
+  if (hasSessionAttention(entry)) {
     return 3;
   }
   return 4;

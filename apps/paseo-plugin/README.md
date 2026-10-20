@@ -24,7 +24,14 @@ pill is the in-session return control where the composer supports it.
   state.
 - **Live native truth.** Initializing, running, idle, error and closed come
   from the host. Attention is a separate signal with its reason (`finished`,
-  `error`, `permission`) when the host supplies it. A subscription streams
+  `error`, `permission`) when the host supplies it. Error counts and red badges
+  follow the current native `error` status. A retained error notice after the
+  session starts, recovers or closes is shown as **Earlier error · now …**;
+  it does not inflate Error or Attention. **More → Earlier errors** finds these
+  sessions; **Include archived sessions** also brings archived records into that
+  search. Closed sessions with no `archivedAt` remain in the default inventory,
+  including those in archived workspaces. Other unread attention signals keep
+  their native meaning. A subscription streams
   native `agent_update` upserts and removals. If the initial observation
   bootstrap fails, the last inventory stays visible and the plugin retries the
   owned observation with bounded backoff. Cleanup cancels the retry and releases
