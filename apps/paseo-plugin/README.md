@@ -133,7 +133,9 @@ focus to the button. The row itself still opens the session.
 The details are a modal dialog. On the web, Tab and Shift+Tab cycle through
 Close and the lines, which are a named stop of their own with a focus outline,
 so arrows, Page Down and End scroll them. The context picker and the Board
-sessions chooser keep Tab inside in the same way; menus are unchanged. If the
+sessions chooser keep Tab inside in the same way; menus are unchanged. A menu
+or dialog that takes another's place without a close, such as the picker
+reached from the open More menu, opens as it would from closed. If the
 row's button has left the list by the time the details close, focus goes to
 the list. Details whose session has left close on their own.
 

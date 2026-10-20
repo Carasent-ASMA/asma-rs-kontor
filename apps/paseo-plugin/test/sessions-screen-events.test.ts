@@ -268,7 +268,7 @@ import {
   toolbarOpenPatch,
 } from "../client/sessions-screen";
 import { StateBadge } from "../client/organization-row";
-import { MenuItem } from "../client/anchored-menu";
+import { AnchoredMenu, MenuItem } from "../client/anchored-menu";
 import { nativeFreshnessLabel } from "../client/native-freshness";
 import {
   clearSessionViews,
@@ -2019,6 +2019,18 @@ describe("SessionsScreen compact toolbar", () => {
     choose("Role");
     expect([select("sessions-grouping").value, menus(), groupingFocus.mock.calls.length]).toEqual(["Role", [], 1]);
     expect(save).toHaveBeenCalledWith({ grouping: "role" });
+
+    // Menus keep no Tab, so the other select is reachable with one open; it swaps its menu in without a close, as a new
+    // opening against its own trigger, and back again.
+    const opening = (id: string) => AnchoredMenu(findByTestID(harness.current(), `sessions-${id}-menu`).props as Parameters<typeof AnchoredMenu>[0]);
+    (select("sessions-grouping").onPress as () => void)(); harness.flush();
+    const grouping = opening("grouping");
+    (select("sessions-scope").onPress as () => void)(); harness.flush();
+    expect([menus(), opening("scope").props.anchor]).toEqual([["sessions-scope-menu"], select("sessions-scope").anchor]);
+    expect(opening("scope").key).not.toBe(grouping.key);
+    (select("sessions-grouping").onPress as () => void)(); harness.flush();
+    expect([menus(), opening("grouping").key]).toEqual([["sessions-grouping-menu"], grouping.key]);
+    (findByTestID(harness.current(), "sessions-grouping-menu").props.onClose as () => void)(); harness.flush();
 
     // A menu left open closes with the options panel and does not come back when it reopens.
     (select("sessions-scope").onPress as () => void)(); harness.flush();

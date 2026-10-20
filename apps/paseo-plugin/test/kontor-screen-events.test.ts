@@ -506,12 +506,38 @@ describe("Kontor shell native actions", () => {
     expect(screen.action("More").props.expanded).toBe(false);
     expect(hostNavigation(screen.props.host.id).route.tab).toBe("Inbox");
     screen.click("More"); screen.click("More"); expect(screen.menu()).toBeUndefined();
-    // The picker, reached by Tab from the open menu, takes its slot without a close between them, so it must open as a new panel.
+  });
+
+  it("opens More and the context picker as their own panels whichever one the shared slot held before", () => {
+    const screen = mount(false, { tab: "Overview" });
+    const opening = () => { const menu = screen.menu(); return menu && AnchoredMenu(menu.props as Parameters<typeof AnchoredMenu>[0]); };
+    // Each from closed.
     screen.click("More");
-    const more = AnchoredMenu(screen.menu()!.props as Parameters<typeof AnchoredMenu>[0]);
+    const more = opening()!;
+    expect([more.props.testID, more.props.dialog]).toEqual(["kontor-more-menu", undefined]);
+    screen.closeMenu();
     screen.openPicker();
-    expect(screen.menu()!.props).toMatchObject({ testID: "kontor-context-menu", dialog: true });
-    expect(AnchoredMenu(screen.menu()!.props as Parameters<typeof AnchoredMenu>[0]).key).not.toBe(more.key);
+    const picker = opening()!;
+    expect([picker.props.testID, picker.props.dialog]).toEqual(["kontor-context-menu", true]);
+    expect(picker.key).not.toBe(more.key);
+    screen.closeMenu();
+    expect(opening()).toBeUndefined();
+    // More open, then the picker, which Tab reaches behind the menu: it takes the slot without a close and opens as from closed.
+    screen.click("More");
+    screen.openPicker();
+    expect([opening()!.props.testID, opening()!.key]).toEqual(["kontor-context-menu", picker.key]);
+    // And back: a press on More with the picker open swaps More in as from closed.
+    screen.click("More");
+    expect([opening()!.props.testID, opening()!.key]).toEqual(["kontor-more-menu", more.key]);
+    // Closed, then each reopened as before.
+    screen.closeMenu();
+    expect(opening()).toBeUndefined();
+    screen.openPicker();
+    expect(opening()!.key).toBe(picker.key);
+    screen.click("More");
+    expect(opening()!.key).toBe(more.key);
+    screen.click("More");
+    expect(opening()).toBeUndefined();
   });
   it("scopes Overview by a confirmed epic without a plan, returns with Back, and clears to All projects", () => {
     const screen = mount(true);
