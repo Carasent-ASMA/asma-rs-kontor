@@ -42,6 +42,8 @@ const EXPANDED: Partial<OrganizationSettings> = {
 };
 
 export const SCENARIOS: readonly Scenario[] = [
+  { id: "compact-icons", title: "Compact controls: combined review", summary: "Fictional combined inventory: configured/reported/missing/custom models, absent/zero token reports, stale cases, roles and long titles. Hover or focus controls for help; touch opens exact Details. Source and status semantics remain unchanged.", inventory: "integration", sources: true, start: { grouping: "flat" } },
+  { id: "compact-icons-stale", title: "Compact controls: stale inventory", summary: "The combined fixture host goes offline at 3 seconds; model and counter report age remains unknown. Details preserves all source limits.", inventory: "integration", sources: true, start: { grouping: "flat" }, hostOfflineAfterMs: 3000 },
   { id: "baseline", title: "Baseline", summary: "Default inventory, Sessions tree with one epic open.", inventory: "base", sources: true, settings: EXPANDED },
   { id: "integrated-review", title: "Combined navigator review", summary: "All applicable plugin changes: timestamps, lifecycle, native desks, compact header and model reports. Sessions and plan catalogs are fictional; 19 real-source reads are separate qualification evidence. Host title overlap is not delivered here.", inventory: "integration", sources: true, start: { grouping: "flat" } },
   { id: "integrated-roles", title: "Combined review: Roles", summary: "Combined fictional inventory in Roles, with exact times and model/report Details.", inventory: "integration", sources: true, settings: { grouping: "role", expandedGroups: { "roles/role:SWE": true, "roles/role:QA": true, "roles/role:AUD": true, "roles/role:TPM": true } } },
