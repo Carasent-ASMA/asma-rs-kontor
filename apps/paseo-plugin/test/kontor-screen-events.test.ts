@@ -421,7 +421,7 @@ describe("Kontor shell native actions", () => {
     model.keyboard = { status: "ready", values: { backShortcut: "off" } }; screen.render();
     expect(model.shortcut).toMatchObject({ shortcut: "off", web: true });
   });
-  it.each(["web", "ios"] as const)("gives Settings the Keyboard card with the keyboard document and the platform (%s)", (platform) => {
+  it.each(["web", "ios"] as const)("gives Settings the Keyboard card with the keyboard document, the platform, the screen root and the clipboard (%s)", async (platform) => {
     model.keyboard = { status: "ready", values: { backShortcut: "cmd-backquote" } };
     const screen = mount(false, { tab: "Settings" });
     screen.props.layout = { compact: false, platform }; screen.render();
@@ -431,6 +431,11 @@ describe("Kontor shell native actions", () => {
     expect(card.props.state).toBe(model.keyboard);
     expect(card.props.save).toBe(model.keyboardSave);
     expect(card.props.web).toBe(platform === "web");
+    // The test watches the same screen root as the Back shortcut, and copies through the shell's clipboard action.
+    expect(card.props.root).toBe(model.shortcut!.root);
+    (card.props.copy as (text: string, what: string) => void)("Kontor received Cmd+`.", "Test result"); await Promise.resolve(); await Promise.resolve();
+    expect(model.copyText).toHaveBeenCalledExactlyOnceWith("Kontor received Cmd+`.");
+    expect(model.toastShow).toHaveBeenCalledExactlyOnceWith("Test result copied");
   });
   it("restores the Plan reader view through Back and keeps it per plan", () => {
     model.sources = ["plan-a", "plan-b"].map((id) => ({ id, title: id, kind: "plan", path: `/configured/${id}.md`, workstream: null, epic: null, projectId: null, revisionKind: "working copy" }));

@@ -9,34 +9,45 @@ vi.mock("react", async (original) => ({
 vi.mock("react-native", () => ({ BackHandler: { addEventListener: () => ({ remove: () => undefined }) }, Pressable: "Pressable", Text: "Text", View: "View" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
 
-import { describeKey, installBackShortcut, isBackShortcut, isEditable, SHORTCUT_TEST_MS, testShortcut, useBackShortcut, type ShortcutEvent, type ShortcutPage } from "../client/keyboard-shortcuts";
+import { describeKey, installBackShortcut, isBackShortcut, isEditable, SHORTCUT_TEST_MS, testShortcut, useBackShortcut, type PageEvent, type ShortcutEvent, type ShortcutPage } from "../client/keyboard-shortcuts";
 
 type Listener = (event: ShortcutEvent) => void;
 type Pressed = ShortcutEvent & { preventDefault: ReturnType<typeof vi.fn> };
 
 /** A page with Kontor's screen root: 800×600 at the origin, drawn and in front unless told otherwise. */
 function fakePage() {
-  const listeners: { listener: Listener; capture: boolean }[] = [];
+  const listeners: { type: string; listener: Listener; capture: boolean }[] = [];
+  const blurs: (() => void)[] = [];
   const inside = { tagName: "DIV" }, elsewhere = { tagName: "DIV" }, field = { tagName: "DIV", isContentEditable: true };
   const box = { left: 0, top: 0, width: 800, height: 600 };
   const root = { drawn: true, contains: (node: unknown) => node === root || node === inside || node === field, getClientRects: () => (root.drawn ? [{}] : []), getBoundingClientRect: () => box };
   const view = { covered: false };
   const page = {
-    activeElement: null as unknown, body: { tagName: "BODY" },
+    activeElement: null as unknown, body: { tagName: "BODY" }, visibilityState: "visible",
     elementFromPoint: vi.fn((_x: number, _y: number): unknown => (view.covered ? elsewhere : inside)),
-    addEventListener: (_type: "keydown", listener: Listener, capture: boolean) => { listeners.push({ listener, capture }); },
-    removeEventListener: (_type: "keydown", listener: Listener, capture: boolean) => {
-      const index = listeners.findIndex((entry) => entry.listener === listener && entry.capture === capture);
+    defaultView: {
+      addEventListener: (_type: "blur", listener: () => void) => { blurs.push(listener); },
+      removeEventListener: (_type: "blur", listener: () => void) => { const index = blurs.indexOf(listener); if (index >= 0) blurs.splice(index, 1); },
+    },
+    addEventListener: (type: string, listener: Listener, capture: boolean) => { listeners.push({ type, listener, capture }); },
+    removeEventListener: (type: string, listener: Listener, capture: boolean) => {
+      const index = listeners.findIndex((entry) => entry.type === type && entry.listener === listener && entry.capture === capture);
       if (index >= 0) listeners.splice(index, 1);
     },
   } satisfies ShortcutPage;
-  /** Cmd+` unless overridden, delivered to every listener. */
+  /** Delivers an event as the page does: capture listeners first, then the bubble phase. */
+  const fire = (type: string, event: PageEvent) => {
+    for (const capture of [true, false]) for (const entry of [...listeners]) if (entry.type === type && entry.capture === capture) entry.listener(event as ShortcutEvent);
+  };
+  /** Cmd+` unless overridden; claiming it marks it handled for later listeners. */
   const press = (key: Partial<ShortcutEvent> = {}): Pressed => {
-    const event = { key: "`", code: "Backquote", metaKey: true, ...key, preventDefault: vi.fn() } as Pressed;
-    for (const { listener } of [...listeners]) listener(event);
+    const event = { key: "`", code: "Backquote", metaKey: true, ...key } as Pressed;
+    event.preventDefault = vi.fn(() => { event.defaultPrevented = true; });
+    fire("keydown", event);
     return event;
   };
-  return { page, view, root, box, inside, elsewhere, field, listeners, press };
+  const blurWindow = () => { for (const listener of [...blurs]) listener(); };
+  return { page, view, root, box, inside, elsewhere, field, listeners, blurs, fire, press, blurWindow };
 }
 
 describe("Back shortcut keys", () => {
@@ -201,66 +212,132 @@ describe("Back shortcut hook", () => {
 describe("Test shortcut", () => {
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); });
-
-  it("reports the first key early in the capture phase, claims it and stops listening", () => {
+  function start(timeoutMs?: number) {
     const world = fakePage();
     const done = vi.fn();
-    testShortcut(world.page, done);
-    expect(world.listeners.map((entry) => entry.capture)).toEqual([true]);
-    const modifier = world.press({ key: "Meta", code: "MetaLeft" });
-    expect(modifier.preventDefault).not.toHaveBeenCalled();
-    expect(done).not.toHaveBeenCalled();
+    const stop = testShortcut(world.page, () => world.root, done, timeoutMs);
+    return { ...world, done, stop };
+  }
+  /** Every page and window listener the test added is gone. */
+  const removed = (world: ReturnType<typeof start>) => { expect(world.listeners).toEqual([]); expect(world.blurs).toEqual([]); };
+
+  it("waits early in the capture phase for one key with Cmd, claims the Back shortcut's own key and stops listening", () => {
+    const world = start();
+    expect(world.listeners.map((entry) => [entry.type, entry.capture])).toEqual([["keydown", true], ["focusin", true], ["pointerdown", true], ["visibilitychange", false]]);
+    expect(world.blurs.length).toBe(1);
+    const cmd = world.press({ key: "Meta", code: "MetaLeft" });
+    expect(cmd.preventDefault).not.toHaveBeenCalled();
+    expect(world.done).not.toHaveBeenCalled();
     const key = world.press();
     expect(key.preventDefault).toHaveBeenCalledTimes(1);
-    expect(done).toHaveBeenCalledExactlyOnceWith({ kind: "key", label: "Cmd+`", code: "Backquote", back: true });
-    expect(world.listeners).toEqual([]);
+    expect(world.done).toHaveBeenCalledExactlyOnceWith({ kind: "key", label: "Cmd+`", code: "Backquote", back: true });
+    removed(world);
     vi.advanceTimersByTime(SHORTCUT_TEST_MS);
-    expect(done).toHaveBeenCalledTimes(1);
+    expect(world.done).toHaveBeenCalledTimes(1);
   });
 
-  it("says when the key is not the Back shortcut, and when the browser gave no position", () => {
-    const world = fakePage();
-    const done = vi.fn();
-    testShortcut(world.page, done);
-    world.press({ key: "<", code: "Comma", shiftKey: true });
-    expect(done).toHaveBeenCalledWith({ kind: "key", label: "Cmd+Shift+<", code: "Comma", back: false });
-    testShortcut(world.page, done);
-    world.press({ key: "a", code: undefined, metaKey: false });
-    expect(done).toHaveBeenLastCalledWith({ kind: "key", label: "A", code: "", back: false });
+  it("reports another key with Cmd without claiming it, and says when the browser gave no position", () => {
+    const world = start();
+    const other = world.press({ key: "<", code: "Comma", shiftKey: true });
+    expect(other.preventDefault).not.toHaveBeenCalled();
+    expect(world.done).toHaveBeenCalledExactlyOnceWith({ kind: "key", label: "Cmd+Shift+<", code: "Comma", back: false });
+    const again = start();
+    again.press({ key: "c", code: undefined });
+    expect(again.done).toHaveBeenCalledExactlyOnceWith({ kind: "key", label: "Cmd+C", code: "", back: false });
   });
 
-  it("reports modifiers alone, the last one pressed, when macOS took the key", () => {
-    const world = fakePage();
-    const done = vi.fn();
-    testShortcut(world.page, done, 50);
+  it("goes on listening when focus or a click stays in Kontor, or the page stays visible", () => {
+    const world = start();
+    world.fire("focusin", { target: world.inside });
+    world.fire("pointerdown", { target: world.field });
+    world.fire("visibilitychange", {});
+    expect(world.done).not.toHaveBeenCalled();
+    expect(world.listeners.length).toBe(4);
+  });
+
+  it("takes a key with focus on the page body, as after a click on Kontor's background", () => {
+    const world = start();
+    world.page.activeElement = world.page.body;
+    world.press();
+    expect(world.done).toHaveBeenCalledExactlyOnceWith({ kind: "key", label: "Cmd+`", code: "Backquote", back: true });
+  });
+
+  it.each([
+    ["a key typed without Cmd", (_world: ReturnType<typeof start>) => {}, { key: "a", code: "KeyA", metaKey: false }],
+    ["a repeat", (_world: ReturnType<typeof start>) => {}, { repeat: true }],
+    ["an input method composing", (_world: ReturnType<typeof start>) => {}, { isComposing: true }],
+    ["typing in a field", (_world: ReturnType<typeof start>) => {}, { target: { tagName: "INPUT" } }],
+    ["typing in an editable region of Kontor that the event does not name", (world: ReturnType<typeof start>) => { world.page.activeElement = world.field; }, {}],
+    ["another modifier held with Cmd", (_world: ReturnType<typeof start>) => {}, { key: "Shift", code: "ShiftLeft", shiftKey: true }],
+  ] as const)("leaves %s alone and goes on listening", (_name, arrange, key) => {
+    const world = start();
+    arrange(world);
+    const pressed = world.press(key);
+    expect(pressed.preventDefault).not.toHaveBeenCalled();
+    expect(world.done).not.toHaveBeenCalled();
+    expect(world.listeners.length).toBe(4);
+    vi.advanceTimersByTime(SHORTCUT_TEST_MS);
+    // None of them counts as Cmd reaching Kontor.
+    expect(world.done).toHaveBeenCalledExactlyOnceWith({ kind: "nothing" });
+  });
+
+  it.each([
+    ["focus moves outside Kontor", "focus", (world: ReturnType<typeof start>) => { world.fire("focusin", { target: world.elsewhere }); }],
+    ["a click lands outside Kontor", "focus", (world: ReturnType<typeof start>) => { world.fire("pointerdown", { target: world.elsewhere }); }],
+    ["a key arrives with focus outside Kontor", "focus", (world: ReturnType<typeof start>) => { world.page.activeElement = world.elsewhere; expect(world.press({ key: "a", metaKey: false }).preventDefault).not.toHaveBeenCalled(); }],
+    ["a key arrives with Kontor covered", "front", (world: ReturnType<typeof start>) => { world.view.covered = true; expect(world.press().preventDefault).not.toHaveBeenCalled(); }],
+    ["the time runs out with Kontor covered", "front", (world: ReturnType<typeof start>) => { world.view.covered = true; vi.advanceTimersByTime(SHORTCUT_TEST_MS); }],
+    ["the window loses focus", "window", (world: ReturnType<typeof start>) => { world.blurWindow(); }],
+    ["the page is hidden", "hidden", (world: ReturnType<typeof start>) => { world.page.visibilityState = "hidden"; world.fire("visibilitychange", {}); }],
+  ] as const)("stops when %s, saying whether Cmd had reached Kontor", (_name, reason, leave) => {
+    const world = start();
     world.press({ key: "Meta", code: "MetaLeft" });
-    world.press({ key: "Alt", code: "AltLeft", metaKey: false, altKey: true, ctrlKey: true });
+    leave(world);
+    expect(world.done).toHaveBeenCalledExactlyOnceWith({ kind: "left", reason, cmd: true });
+    removed(world);
+    const bare = start();
+    leave(bare);
+    expect(bare.done).toHaveBeenCalledExactlyOnceWith({ kind: "left", reason, cmd: false });
+  });
+
+  it("reports Cmd alone when no key came with it", () => {
+    const world = start(50);
+    world.press({ key: "Meta", code: "MetaLeft" });
     vi.advanceTimersByTime(49);
-    expect(done).not.toHaveBeenCalled();
+    expect(world.done).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1);
-    expect(done).toHaveBeenCalledExactlyOnceWith({ kind: "modifiers", label: "Ctrl+Option" });
-    expect(world.listeners).toEqual([]);
+    expect(world.done).toHaveBeenCalledExactlyOnceWith({ kind: "cmd" });
+    removed(world);
   });
 
   it("reports nothing after ten seconds without a key", () => {
-    const world = fakePage();
-    const done = vi.fn();
-    testShortcut(world.page, done);
+    const world = start();
     vi.advanceTimersByTime(SHORTCUT_TEST_MS - 1);
-    expect(done).not.toHaveBeenCalled();
+    expect(world.done).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1);
-    expect(done).toHaveBeenCalledExactlyOnceWith({ kind: "nothing" });
+    expect(world.done).toHaveBeenCalledExactlyOnceWith({ kind: "nothing" });
     expect(SHORTCUT_TEST_MS).toBe(10_000);
   });
 
   it("stops without a result", () => {
-    const world = fakePage();
-    const done = vi.fn();
-    const stop = testShortcut(world.page, done);
-    stop();
-    expect(world.listeners).toEqual([]);
+    const world = start();
+    world.stop();
+    removed(world);
     expect(world.press().preventDefault).not.toHaveBeenCalled();
+    world.blurWindow();
     vi.advanceTimersByTime(SHORTCUT_TEST_MS);
-    expect(done).not.toHaveBeenCalled();
+    expect(world.done).not.toHaveBeenCalled();
+  });
+
+  it("keeps Back from acting on the press it reports, and Back acts again once the test is over", () => {
+    const world = fakePage();
+    const back = vi.fn(), done = vi.fn();
+    installBackShortcut(world.page, { shortcut: "cmd-backquote", root: () => world.root, canGoBack: () => true, back });
+    testShortcut(world.page, () => world.root, done);
+    expect(world.press().preventDefault).toHaveBeenCalledTimes(1);
+    expect(done).toHaveBeenCalledExactlyOnceWith({ kind: "key", label: "Cmd+`", code: "Backquote", back: true });
+    expect(back).not.toHaveBeenCalled();
+    world.press();
+    expect(back).toHaveBeenCalledTimes(1);
   });
 });
