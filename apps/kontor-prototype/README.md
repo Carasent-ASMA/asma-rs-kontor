@@ -114,16 +114,18 @@ is kept as a reference and is not maintained alongside this prototype.
 | --- | --- |
 | Sessions (desks, epic and project tree, filters, favourites) | The delivered Sessions screen, plus flat filtered results, Show in tree and Clear restoring the tree. |
 | Plan, Graph, Delivery | The delivered Plan, Graph and Delivery pages with fixture sources. |
-| Board (`vBoard`): stats, a project switch, filter chips and task rows by lane, wave or grid. A row opens the task view (`vTask`), whose Runs tab names the team and run, with a seat pipeline: one chip per role seat, each opening that seat's session. The teaching-plan fixtures give each task a High-stakes or Standard tier, shown in plan exports | The delivered compact Board, kept as is. Each task row adds one line for its sessions: the risk tier and workflow when a source declares them, then the roles in declared steps (" → " between steps, " & " for roles in parallel, "–" for a role with no session). One session opens directly; otherwise a chooser lists the sessions by workspace. The HTML's task view, team snapshot and seat tiles are not reproduced. |
+| Board (`vBoard`): stats, a project switch, filter chips and task rows by lane, wave or grid. A row opens the task view (`vTask`), whose Runs tab names the team and run, with a seat pipeline: one chip per role seat, each opening that seat's session. The teaching-plan fixtures give each task a High-stakes or Standard tier, shown in plan exports | The delivered compact Board, kept as is. Each task row adds one line for its sessions: role and state. In the simulated scenarios only, the line leads with the risk tier and workflow, then the roles in declared steps (" → " between steps, " & " for roles in parallel, "–" for a role with no session); production has no declaration provider. One session opens directly; otherwise a chooser lists the sessions by workspace. The HTML's task view, team snapshot and seat tiles are not reproduced. |
 | Teams and skills | The delivered "AI teams & sessions" page under More. The HTML's team editor (seat transitions, skills, rungs) is not in the plugin. |
 | Settings | The delivered Settings page. Saves go to the host log only. |
 | Home, ledger, scope, decisions, Adam desk, kickoff and rehearsals | Not in the delivered plugin, so not reproduced. Overview, Decisions, Activity and Inbox show the plugin's own pages. |
 
 ## Team, workflow and risk tier
 
-**What production reads.** The plugin's `client/task-team-source.ts` gives Board
-a task's team, workflow and risk tier only from a configured source that
-declares them for that task. None of the configured source kinds does:
+**What production does.** The plugin's `client/task-team-source.ts` does not
+read declarations. It answers "not provided" for every task, with coverage text
+built from the configured source kinds and the Teams template names. Production
+has no declaration provider yet. The nine sources configured on the test host
+cover these kinds, and none declares a team, workflow or risk tier for a task:
 
 | Source kind | What it declares | Team, workflow or risk for a task |
 | --- | --- | --- |
@@ -135,10 +137,11 @@ declares them for that task. None of the configured source kinds does:
 | Decision and delivery records | Decisions; pull requests, checks and releases | No |
 
 So production Board shows "Team, workflow and risk tier: not provided" in the
-task's chooser, and Source details lists the sources that were read. Session
-labels are never read as a declaration: an unenforced label assigns nothing.
-Kontor's daemon is the only path that binds a task to a team, and the plugin
-has no daemon access.
+task's chooser, and Source details gives the coverage with the number of
+configured sources. Session labels are never read as a declaration: an
+unenforced label assigns nothing. This covers the surveyed sources only. It does
+not show that `kontord` is the only possible path: Paseo-direct epics follow the
+same Kontor workflow, and rendering a declaration needs no daemon.
 
 **Vocabulary checked.** The workflow name "build-verify-deploy" does not occur in
 `_docs`, `.agents`, `AGENTS.md`, `_tools/ai-orchestration` or `config` in
@@ -159,7 +162,8 @@ fixture)". This is a design fixture, not a source format, a backend schema or a
 Kontor binding. The same plugin code renders the production "not provided" state
 for every other task and scenario.
 
-**How a declaration is shown.**
+**How a declaration is shown.** The plugin ships this renderer, but only its
+unit tests (with an injected reader) and the simulated scenarios reach it.
 - The task line gives the risk tier and workflow, then the roles. A missing part
   is named ("workflow not declared"); a role without a session shows "–".
 - Roles are placed in steps by the declared handoffs. Roles without a path
