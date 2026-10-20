@@ -37,7 +37,7 @@ It exists to serve two things:
 
 There are many capable agent orchestrators. They solve **execution**: starting a
 model, managing a terminal, streaming output, asking for permissions and
-keeping a native conversation alive. Kontor does not rebuild that layer.
+keeping a native conversation alive. The control plane does not rebuild that layer.
 
 The unsolved problem in a long-running ASMA mini-project is **durable control**:
 
@@ -54,7 +54,7 @@ The unsolved problem in a long-running ASMA mini-project is **durable control**:
 An execution runtime cannot answer those questions authoritatively for every
 other runtime, and asking each orchestrator to grow a project database,
 scheduler, policy engine and Jira model would create several competing control
-planes. Kontor is the deliberately small authority above them.
+planes. `kontord` is the deliberately small authority above them.
 
 Here, **small means a narrow authority boundary**. It does not mean a small
 codebase or a weak UI. The operator still needs a rich mission-control dashboard
@@ -62,7 +62,7 @@ for the truth no single connected system can show: dependency order, what is
 running or waiting, what needs attention, what can run next and whether the work
 is actually delivered.
 
-| Concern | Kontor owns | Agent runtime owns |
+| Concern | `kontord` owns | Agent runtime owns |
 | --- | --- | --- |
 | Project truth | Tasks, dependencies, profiles, gates, evidence, policy | No |
 | Scheduling | Deterministic admission, leases, budgets and explanations | Native execution only |
@@ -73,7 +73,7 @@ is actually delivered.
 
 The reuse rule is simple:
 
-| Existing system | Keep using it for | Kontor adds |
+| Existing system | Keep using it for | `kontord` adds |
 | --- | --- | --- |
 | Jira | Business workflow, issue fields and team-established process | Deterministic orchestration and convergence with execution evidence |
 | GitHub | Repositories, pull requests, checks and releases | Joined delivery evidence and completion truth |
@@ -91,7 +91,7 @@ The [recommended teams and seats](_docs/reference/2026-09-04-23-35-reference-rec
 describe role responsibilities and fleet-design tradeoffs, with implementation
 limits separated from recommendations.
 
-## What Kontor provides
+## What `kontord` provides
 
 The current repository includes:
 
@@ -114,7 +114,7 @@ The current repository includes:
   as `KOP-8001` derived from confirmed Jira numeric identities;
 - **confirmed-Jira-key naming**: Jira keys resolved by immutable issue
   identity, Team Definition tokens that render the confirmed key itself, and
-  consultation titles Kontor renders from a semantic topic, refusing a
+  consultation titles `kontord` renders from a semantic topic, refusing a
   duplicate; a missing or ambiguous binding fails closed before any native
   effect (see [Native naming](docs/NATIVE_NAMING.md));
 - **publication identity**: one branch grammar shared with the ASMA CLI,
@@ -503,17 +503,17 @@ It coordinates supported runtimes through adapters.
 
 ### Does Kontor replace Paseo or Agent Orchestrator?
 
-No. They remain execution planes. Kontor supplies durable cross-runtime state,
+No. They remain execution planes. `kontord` supplies durable cross-runtime state,
 policy, scheduling, reconciliation and evidence above them.
 
 ### Does Kontor replace AgentsRoom, Jira or GitHub?
 
-Jira remains the external workflow system; Kontor converges to it through a
+Jira remains the external workflow system; `kontord` converges to it through a
 native connector and never edits its store. Jira issue keys remain their native
-full values, such as `ASMA-8001`; Kontor does not attempt to create keys like
+full values, such as `ASMA-8001`; `kontord` does not attempt to create keys like
 `ASMA-ESW-8001` or reconstruct Jira identity from a display name.
 
-Kontor separately assigns each epic one immutable namespace inside its project,
+`kontord` separately assigns each epic one immutable namespace inside its project,
 for example `KOP`. Omission derives a candidate from title initials and expands
 unused title characters until it is unique; an operator may instead supply a
 manual code. Once Jira readback confirms `ASMA-8001` for the epic and
@@ -532,22 +532,22 @@ completes exact readback.
 
 Confirmed Jira tasks and epics are reconciled automatically by the resident
 daemon controller. It runs once after the startup barrier opens, after durable
-Kontor changes, and at a 30-second recovery backstop. Each subject must select
+`kontord` changes, and at a 30-second recovery backstop. Each subject must select
 one exact installed immutable workflow revision for its entity kind and frozen
-work profile; missing or mismatched configuration fails closed. Kontor records
+work profile; missing or mismatched configuration fails closed. `kontord` records
 contradictory external state as a durable conflict for explicit resolution and
 does not spin on unchanged conflicts or failed Jira effects. See the
 configuration guide's [Jira reconciliation](docs/CONFIGURATION.md#jira-reconciliation)
 section.
 
-GitHub remains the repository, pull-request, check and release system. Kontor
+GitHub remains the repository, pull-request, check and release system. `kontord`
 uses those facts as delivery evidence; it does not become a source host. With
-the optional GitHub App configured, Kontor also posts its publication-identity
+the optional GitHub App configured, `kontord` also posts its publication-identity
 check and squash-merges a judged head through that App identity.
 
 AgentsRoom is being replaced per project, per subject. Write authority for a
 project's `memory` and its `backlog` is a fact about `(project_id, subject)`: a
-project created in Kontor is native and writable immediately, while a project
+project created in `kontord` is native and writable immediately, while a project
 whose facts came from AgentsRoom stays read-only for that subject until its
 import and read-back attestation succeed. After attestation, AgentsRoom is
 legacy read-only for that subject. Both states can be true of one realm at once.
@@ -578,7 +578,7 @@ As a last safe step. It first performs deterministic inspection and any
 policy-permitted automatic recovery, then uses a bounded Advisor and, for
 cross-cutting ambiguity, a bounded Committee, followed only by bounded
 evidence-backed remediation. If those paths cannot establish a safe authorized
-way forward, Kontor raises one prepared decision brief with the evidence, tried
+way forward, `kontord` raises one prepared decision brief with the evidence, tried
 options, exact decision and consequence of no action. Decisions inherently
 reserved to human authority go directly to that brief; consultation cannot
 invent authority.

@@ -1,0 +1,250 @@
+{
+  "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+  "files": {
+    "replacement-bridges/SHA256SUMS.json": {
+      "bytes": 19186,
+      "derivative_sha256": "77f77cd8f1d898b446d6937506b35251352b9ebddde5eef97ea672fbc30c8d55",
+      "original_sha256": "e22b6947c8a149141350b02ab092ff90312b9f64ef86d2fef4e7cdbbda0f7196"
+    },
+    "replacement-bridges/actual-lsa-09f-publication-audit.txt": {
+      "bytes": 1357,
+      "derivative_sha256": "f9ceba90e375d4d5f3e62d26343884577f71dfec6f25de90b9870b6d9577cbd9",
+      "original_sha256": "133e96e063e116fa30d2ee3b74664e0516d1155c9c0546d640740a5723fc42c5"
+    },
+    "replacement-bridges/actual-lsa-3b9-audit.txt": {
+      "bytes": 5201,
+      "derivative_sha256": "cb86eb24d6116c5123888da37e35f1fb7576bc6c5702ea742ca8ff0b30e0d256",
+      "original_sha256": "48e140a92af01ed7c29c7dd2cfd7386b10aacd096778b73c49a8b03c911c9efa"
+    },
+    "replacement-bridges/actual-lsa-6b-audit.txt": {
+      "bytes": 3164,
+      "derivative_sha256": "fe5cee1dc66efd06373c7428e8d4ad90cc27fcf385d46b05f4c9dc5dbcbb7a4e",
+      "original_sha256": "d6ea9a13c95848e6c6d6a84b77ac15a4c55bcfd0851f544b96d89d0a39c2236b"
+    },
+    "replacement-bridges/actual-lsa-a488-audit.txt": {
+      "bytes": 2181,
+      "derivative_sha256": "73d1e3aa45b1cc84c8d09dfad68ed0b397e337a60a0acc8648c49781b5b280be",
+      "original_sha256": "21f8fc287a6b8ea418c09ffb4e5209447f346a930502260f72a9314aed7d0f5b"
+    },
+    "replacement-bridges/daemon-expanded-green.txt": {
+      "bytes": 705,
+      "derivative_sha256": "4c72951a7694cbc6a04b8e11af06a9daf92ee175a38602bf67d471c94cd188ab",
+      "original_sha256": "4d0bdd99cab444c2e38a0c3d415e8a8f9197c52698786ef3b6d59c552621b300"
+    },
+    "replacement-bridges/daemon-green.txt": {
+      "bytes": 603,
+      "derivative_sha256": "e7036b0d32fbf69e6344e0729fa7c3d040e5485f294b2eb5eb778741ee3f69c5",
+      "original_sha256": "25d62aa5c265d998dffd6ff961196c1dc76847ce4c084bddf3e380f395be99de"
+    },
+    "replacement-bridges/daemon-red.txt": {
+      "bytes": 1643,
+      "derivative_sha256": "0e4464bda6e6b1390f315f5a548ec0fa55cd6192190316486372bb8d0a8e65f0",
+      "original_sha256": "289f5094bfb8d679082c0531d4f3923beeaf194a8f7c88b1c04d7a14ef41e4e6"
+    },
+    "replacement-bridges/historical-3b9-mutations/baseline-daemon.txt": {
+      "bytes": 2337,
+      "derivative_sha256": "7d03532caa1aa38447cb653b5770479b4ead519a6761bf7dc337a460ea2ba686",
+      "original_sha256": "16a353e150746e161614fde3a4984fd74277925d5c106d680e08997b8de57e10"
+    },
+    "replacement-bridges/historical-3b9-mutations/baseline-store.txt": {
+      "bytes": 3390,
+      "derivative_sha256": "13a5023b19556ac0c3aa8c844aaa818d95961a65f828e8dbc3101df024919559",
+      "original_sha256": "5d5f0fb7e1ca0af69e113eb64fd473c542e282d7c108f95994c0d8f3a716d2f8"
+    },
+    "replacement-bridges/historical-3b9-mutations/daemon-count-trailing-abandoned.txt": {
+      "bytes": 1440,
+      "derivative_sha256": "887b19bb521c5217413feae1d57e6111c2d503e0bc98adb1f3a4b4acba6263e0",
+      "original_sha256": "d8dd4dea40fb016759c9f172063d3a6320f08c4325e2d9652f5a3f1980e62eda"
+    },
+    "replacement-bridges/historical-3b9-mutations/daemon-skip-bridge-ancestry.txt": {
+      "bytes": 1481,
+      "derivative_sha256": "046662588a87ce52f536efb0196282dac3248bcd416159cb616e9f82ae217d3f",
+      "original_sha256": "4eda553d549cdb189abbced78359aacd11346aa97c8fb550df00002f901c7b88"
+    },
+    "replacement-bridges/historical-3b9-mutations/restored-daemon.txt": {
+      "bytes": 961,
+      "derivative_sha256": "228f506264f31260bdbfb1fc461d74418e37ad7e37da85ca6a5d7eb9dda209b5",
+      "original_sha256": "065abce39f7cee4f240e1f1fa60dc72a21a37151cf62707be46576d56271722d"
+    },
+    "replacement-bridges/historical-3b9-mutations/restored-store.txt": {
+      "bytes": 2473,
+      "derivative_sha256": "1d64f1956e5b6b91796e2d48b455becef560a42e5467e9249a285d8681137194",
+      "original_sha256": "2157dd3f836dd7625c0ff3dd8627bbae92ee64fd280235ef16be4859a96f5af7"
+    },
+    "replacement-bridges/historical-3b9-mutations/store-skip-bridge-ancestry.txt": {
+      "bytes": 1280,
+      "derivative_sha256": "1bf52a4e1076ab605b2c627337b1939ce6c56c88bd9a096b2bb456befe2849aa",
+      "original_sha256": "65391df4b899d11c01ae82ac14485e1584b30cf7b5c00c828b32aa6471e3e5f0"
+    },
+    "replacement-bridges/historical-3b9-mutations/store-skip-unbound-fork-fence.txt": {
+      "bytes": 2464,
+      "derivative_sha256": "89fea45d23f2495fd005de937d05aa8ffc64a6cf457d9240610ea4148221404c",
+      "original_sha256": "a8d32b0dde2e776fd7b4bf67b3968c7d5c39057d01f3293cd04ae30601d2eb34"
+    },
+    "replacement-bridges/hydration-green-daemon.txt": {
+      "bytes": 944,
+      "derivative_sha256": "354acdf902b04316188dd2a05fbd7fd64f6cc409ad487f2585d8ae63854a27ec",
+      "original_sha256": "89ce93b8a20bec4e098cd4a88a14922c6e06d720e928918cbcf0a3b1970f18a3"
+    },
+    "replacement-bridges/hydration-green-teams.txt": {
+      "bytes": 471,
+      "derivative_sha256": "b407cfe3b8c1cd9ef642c15c625ee31bbbfc6e9c2969fd294ef785d2341c7cf0",
+      "original_sha256": "8f24a0eb2f09881ccde90e86432fcb13075b4d461d73d375cf68b16978626e86"
+    },
+    "replacement-bridges/hydration-red-daemon.txt": {
+      "bytes": 2332,
+      "derivative_sha256": "cf51e0d597b5524746ec7b1a9ad728a38bddffb77ece97ced83e384d8b407288",
+      "original_sha256": "8ec330a73e73de693ea4b2441d433c86852edcdbdba65c12f092509634a7a6fd"
+    },
+    "replacement-bridges/hydration-red-teams.txt": {
+      "bytes": 1298,
+      "derivative_sha256": "37b3cedf8ebc74ad436efdf276203ede300aa7ececa81fce5d484706916ef99a",
+      "original_sha256": "68337723112beb1e3a3fbc3fe9c0f2df05595a403f42c4849203d8edb35e98e6"
+    },
+    "replacement-bridges/hydration-teams-all-green.txt": {
+      "bytes": 5612,
+      "derivative_sha256": "963f428008d3e1ea85762fed574da1d04b4e704d6580a3d8b59a19b734e45e00",
+      "original_sha256": "e58fdf6f5b11a2e4c9ac95a2d9227d18d8c60213254a9c094c96b6db87d687a2"
+    },
+    "replacement-bridges/initial-eb41560f-mutations/baseline-daemon.txt": {
+      "bytes": 2337,
+      "derivative_sha256": "04b3f666be828eb7fbf31353c4a316513f5dde071622551a9e668261cf1e41ad",
+      "original_sha256": "44c1cade0b3ff185462ffd1b35efc97cafb5c8c1971a5684ad851241828b650b"
+    },
+    "replacement-bridges/initial-eb41560f-mutations/baseline-store.txt": {
+      "bytes": 3187,
+      "derivative_sha256": "21894feab2a75e9b2f13bd629dedfc814f5e5552c5a1cf1b9f52e65889d2e25d",
+      "original_sha256": "804d53cc3a8276a8ea261bcf63a2f36443c4d218e73946b7abc9c4daacbc2506"
+    },
+    "replacement-bridges/initial-eb41560f-mutations/daemon-count-trailing-abandoned.txt": {
+      "bytes": 1440,
+      "derivative_sha256": "2bf0d8e5e6aaa814fb4e281aba132fe80a37bed037abf86d31e018e662fb7e11",
+      "original_sha256": "b50f8ee87dbd94fa7ea6eb663e855c0b86ac4598bc1a3adb1be7545e69a1c180"
+    },
+    "replacement-bridges/initial-eb41560f-mutations/daemon-skip-bridge-ancestry.txt": {
+      "bytes": 1481,
+      "derivative_sha256": "c623126942489aa3944ec7a144d52430f8a68895adb1252ccdeb4b35ee23b210",
+      "original_sha256": "a5806629e0e9b31b0d943ee53636cee638a9fa9a7fb95865c8892764fb2a565a"
+    },
+    "replacement-bridges/initial-eb41560f-mutations/restored-daemon.txt": {
+      "bytes": 961,
+      "derivative_sha256": "c436ebf8c2837925f08acc79732eeeae8659ad36cfdf8b2d0c684e86934f4fc7",
+      "original_sha256": "a740ab371e243cf5811bef33559aead9b37b0d7a9f8fa40e6f608257c4c288b7"
+    },
+    "replacement-bridges/initial-eb41560f-mutations/restored-store.txt": {
+      "bytes": 2270,
+      "derivative_sha256": "ceb241d6e815be552e34d0604d9b38b39e23968fbe4343d330af2bad67c69cad",
+      "original_sha256": "46b38a32daba922f725c203d7f51ef5219af5d03e1c2fdae2eeab4b9305ace97"
+    },
+    "replacement-bridges/initial-eb41560f-mutations/resumed-driver.py": {
+      "bytes": 5887,
+      "derivative_sha256": "9e55928752fa64ae40800ffea92c4c784b3e691103799ab102697ab15f7f9a18",
+      "original_sha256": "748c79717f4ac9670d82944902c9cf04060b5e3169c349d09e8ef47a52652a2e"
+    },
+    "replacement-bridges/initial-eb41560f-mutations/store-skip-bridge-descendants.txt": {
+      "bytes": 1265,
+      "derivative_sha256": "fd58dc71bc7d2d6c9e61fcc29b84449bbc718c869c4e229c1765e803b9948e8d",
+      "original_sha256": "4a2499e98cec1c5c212a4f7c19e02695a3f2dc314fb51f39be53d2247907435c"
+    },
+    "replacement-bridges/initial-eb41560f-mutations/store-skip-fork-fence.txt": {
+      "bytes": 1101,
+      "derivative_sha256": "9dd79bacbd107a4dff893a18c740e1a9e93e8e0bde3d9809350c7b09077be8b9",
+      "original_sha256": "f6ba46878e6dfc67a24ea24cbd126091d30f65d428df7c47271cfca8797109d5"
+    },
+    "replacement-bridges/qualified-6b3654bc-mutations/baseline-daemon.txt": {
+      "bytes": 2492,
+      "derivative_sha256": "f7ab0ecdf492a0647b5987f47a8802c09539811ab276771a0473e65d7129194c",
+      "original_sha256": "ace08a4f88d78d04ff443f434a35ed2b5d3f73a3e0fb27b67aa658db85820328"
+    },
+    "replacement-bridges/qualified-6b3654bc-mutations/baseline-store.txt": {
+      "bytes": 3417,
+      "derivative_sha256": "ba9627aea69a9864354dd99e2ec389b4ac9dc752de3a24913d8825de08ea0766",
+      "original_sha256": "84d7ace42a8f2a521e61358aedebf061a9cd9886cd76a66d1edcbca32d4804b4"
+    },
+    "replacement-bridges/qualified-6b3654bc-mutations/baseline-teams.txt": {
+      "bytes": 4674,
+      "derivative_sha256": "66d5830e4ad368bbb6dc138cd5f21d8ee01a9f97caec4288c3271e56cd8e7eec",
+      "original_sha256": "821b5e5faa2c3409aea8c263f713015c4b53fc0cd08eca9667f77c71c230755d"
+    },
+    "replacement-bridges/qualified-6b3654bc-mutations/daemon-count-trailing-abandoned.txt": {
+      "bytes": 1509,
+      "derivative_sha256": "8ed711d93b95d5610cef96095c745456bfb82667cb283042cfa8ea3a4adf75b0",
+      "original_sha256": "ee43e53a989752b796c507f1167678a92225ec4bed8f4568ba11a7bd1739bbe0"
+    },
+    "replacement-bridges/qualified-6b3654bc-mutations/daemon-skip-bridge-ancestry.txt": {
+      "bytes": 1550,
+      "derivative_sha256": "6335d2d32cf5f9197cc4019e11e6393f385d92f234859a43f985cf31b935f069",
+      "original_sha256": "3d3039a49baf227fbd311f531866e627d0f12e729d2e67031546eda0e7841390"
+    },
+    "replacement-bridges/qualified-6b3654bc-mutations/restored-daemon.txt": {
+      "bytes": 1314,
+      "derivative_sha256": "60b46c395a74480e95f02cd3f8bac7cea56c8fa5ae2f9c5a5aeef1fbbbf21c5b",
+      "original_sha256": "b10fc4897fb469671d2397a4a9f9ca22b0bb926ceabb60ce514a5d167d9de981"
+    },
+    "replacement-bridges/qualified-6b3654bc-mutations/restored-store.txt": {
+      "bytes": 2710,
+      "derivative_sha256": "c713fbb1c6cd688e3cfe6883d17c23ef853f73797917942df8491b52f98ca50b",
+      "original_sha256": "a1e810b4cfedb02496e78ee4826ae48362177f36c855a8aa44cd405c641250f8"
+    },
+    "replacement-bridges/qualified-6b3654bc-mutations/restored-teams.txt": {
+      "bytes": 4325,
+      "derivative_sha256": "52e42b0b75e82d022c808d723b309e45d1fb99ffa5cd52c198f0d627a8813dba",
+      "original_sha256": "cced5025392a468ed83e1b21686af9df75bf2c64596a560dc54173ee7fdfdfaa"
+    },
+    "replacement-bridges/qualified-6b3654bc-mutations/store-skip-bridge-ancestry.txt": {
+      "bytes": 1283,
+      "derivative_sha256": "4192ee2ebd8afdb8a45a37751cf0b76304a031945c006c5447efb21a2c46ee92",
+      "original_sha256": "e76e5176766fee3db0d05786ff597611f96a7f1893c4888e1f12db83c82a939c"
+    },
+    "replacement-bridges/qualified-6b3654bc-mutations/store-skip-unbound-fork-fence.txt": {
+      "bytes": 2467,
+      "derivative_sha256": "471bff00dd68fd2536ce048cc8401485214e50c6e8abecb28317e25234588ed6",
+      "original_sha256": "db03f17a4573e4510b71c50b0739934c9c7cb7730376a9fbc1e596264806586d"
+    },
+    "replacement-bridges/qualified-6b3654bc-mutations/teams-count-trailing-abandoned.txt": {
+      "bytes": 1175,
+      "derivative_sha256": "13c9608b8f2b6a80b10523645d6c7584f77397fb007666961915da43d9dd3a04",
+      "original_sha256": "74f488bc667a1ea99ccaf4967330b6b8db7248f7fe8489214a1e21f966678838"
+    },
+    "replacement-bridges/qualified-6b3654bc-mutations/teams-skip-transitive-bridge-retention.txt": {
+      "bytes": 1183,
+      "derivative_sha256": "d81482a2f6ec0dccc584f1caee7fbd6c56e403d43e0191d8f2f66f2a513d9a91",
+      "original_sha256": "6db3eb8535926c4dc1ea35e79e66dc789c3f289d3c4065d01a4e3eadd91bd4a8"
+    },
+    "replacement-bridges/store-expanded-green.txt": {
+      "bytes": 2335,
+      "derivative_sha256": "d5d3556056b71d6a046223aa47917cd9bd7887708454c67317cc17f7970113eb",
+      "original_sha256": "c7f03cc002d7b01aded92c35c780d50e0d172065b0f0a1bbef02d341cc5692d9"
+    },
+    "replacement-bridges/store-fork-refusal-green.txt": {
+      "bytes": 470,
+      "derivative_sha256": "c94fbb4b4c7ba185d8a7e66d237ae4ae69a8a00675c12557df5b27bd90098397",
+      "original_sha256": "236275d8f91bbb7d8d94d2740274c8220582ee8130fac3cff20bbe1c06962178"
+    },
+    "replacement-bridges/store-green.txt": {
+      "bytes": 2132,
+      "derivative_sha256": "9913a287bd89c042fffafe993763258825fd2127e7eebf233bbe185c0bcc94fe",
+      "original_sha256": "3672f33be28d186ac214cd0dfbd030499dfaa6a5d42e1e81039615ac24094963"
+    },
+    "replacement-bridges/store-red.txt": {
+      "bytes": 3185,
+      "derivative_sha256": "74b49dd0da1b56ef6ce36fa8c2267500d0faa22896371ff19d4988efd40a9a14",
+      "original_sha256": "4d9ad71ca1cd04d538c78dc0a0b346be8b20aab4c99b73127818683776220f55"
+    },
+    "replacement-bridges/unbound-fork-red.txt": {
+      "bytes": 1010,
+      "derivative_sha256": "808937367afb673d8306df898665716d886f63367304d29869b113dd9682967d",
+      "original_sha256": "fb0377e46572886cb5dcdfa473ab6f4d75f2c41a0c64463359a9b1b91afba0fe"
+    }
+  },
+  "model": "The public copy is a redacted derivative. Original bytes and SHA-256 are retained in the access-controlled evidence store; the TPM owns the exact-path disposition ledger.",
+  "placeholders": {
+    "[archived-private-evidence]": "private parent-repository evidence URL",
+    "[parent-plan]": "private parent plan path",
+    "[parent-repository]": "private parent-repository slug",
+    "[parent-tools]": "private parent tools path",
+    "[parent-workspace]": "private parent workspace path",
+    "[task-workspace]": "private task workspace path"
+  },
+  "scope": "_docs/reports/evidence/ASMA-8196"
+}

@@ -1,0 +1,50 @@
+{
+  "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+  "files": {
+    "legacy-consultation-read/SHA256SUMS.json": {
+      "bytes": 6276,
+      "derivative_sha256": "88e4e97418b7951193b626c0cd8a7482d85c86a36a8076a055b8727578ed84ee",
+      "original_sha256": "4fd09764a3b7716e564f9a37d6b1dce4ecc19d7f6996d8717bafc40ddcb4c37c"
+    },
+    "legacy-consultation-read/focused-runner.py": {
+      "bytes": 2378,
+      "derivative_sha256": "70dda400bcf592e15fa35c88050de501073dc7ae26641c44bc8e54475c4c38b4",
+      "original_sha256": "9d0c47b3169fa60164cbbe0fda691be751c124262f52ac0829f80ffba96bbc3e"
+    },
+    "legacy-consultation-read/green-after-correction.json": {
+      "bytes": 2775,
+      "derivative_sha256": "25f7a7605a678b80eaed56ef807151c4784ff5fa0cb7af9e12b71ebe4f952fbd",
+      "original_sha256": "28a0bedf21fa4ef4daec9879e0bb6c401e3e9b3f0626bcb70d5937f1fbffa4dc"
+    },
+    "legacy-consultation-read/integrated-1b99689d-full-gate-runner.py": {
+      "bytes": 3665,
+      "derivative_sha256": "4f189f62d56e1864e70005db9efe9b3348ed551499dca9d8c59f49e203f57cf5",
+      "original_sha256": "d5d2f23332d7f4b5be32098601b5b740dacef1f73a8d16d7529abc0f87217ef8"
+    },
+    "legacy-consultation-read/mutant-runner.py": {
+      "bytes": 6315,
+      "derivative_sha256": "ca3977e6af979739d37aa8c2b56db75a0aff66cfc5b1894a8299aa5a136ef364",
+      "original_sha256": "59fc7abc3fcb6e3a492588a13c2fbb7689b755162f3caa2e99b9e43694bce390"
+    },
+    "legacy-consultation-read/red-before-correction.json": {
+      "bytes": 629,
+      "derivative_sha256": "b92ac5d6d08b4e34f9fb9a6789689561059503d2350be134c4a59e5d47464003",
+      "original_sha256": "1ee667d821510e8d8a9597c377a04df4d222ec5a8673817dbad58c171c31f0e2"
+    },
+    "legacy-consultation-read/red-current-naming-fixtures.json": {
+      "bytes": 1447,
+      "derivative_sha256": "38ee125ff120c4c8723cc5f04abdd32a19107919523989651c850347649c37ad",
+      "original_sha256": "d92917f337fa0f48b2b771fc1fb06e18f3d60a304eaf60824a2735a3cce64cab"
+    }
+  },
+  "model": "The public copy is a redacted derivative. Original bytes and SHA-256 are retained in the access-controlled evidence store; the TPM owns the exact-path disposition ledger.",
+  "placeholders": {
+    "[archived-private-evidence]": "private parent-repository evidence URL",
+    "[parent-plan]": "private parent plan path",
+    "[parent-repository]": "private parent-repository slug",
+    "[parent-tools]": "private parent tools path",
+    "[parent-workspace]": "private parent workspace path",
+    "[task-workspace]": "private task workspace path"
+  },
+  "scope": "_docs/reports/evidence/ASMA-8114"
+}

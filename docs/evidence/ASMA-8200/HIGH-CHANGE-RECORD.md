@@ -10,7 +10,7 @@ TeamRun: `01a0b033-78bd-7691-90e0-a8a34eb46030`
 AgentRun: `01a0b033-9bec-7b83-8eff-ce5d414b8434` (`implement`)
 Scope: `HIGH-SCOPE-RECORD.md`, frozen — restart-time activation only.
 
-Worktree `asma-modules/.worktrees/asma-8200/asma-rs-kontor`, branch
+Worktree `[task-workspace]`, branch
 `feat/ASMA-8200-enforce-persisted-capacity-configuration-at-runtime`, based on
 `2e4b9985fc1073dd25c22b78349d8f36d6b1d4ec`.
 

@@ -207,5 +207,10 @@
       "sha256": "ab1b7231ab95d400e7a1a761899bb5fbc8b6752b4be1ed752354045ea3bc9f03"
     }
   ],
-  "excluded": "No realm directories, credential files, executables, compiled artifacts or sidecar database bytes copied into report package."
+  "excluded": "No realm directories, credential files, executables, compiled artifacts or sidecar database bytes copied into report package.",
+  "public_derivative": {
+    "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+    "ledger": "../../PUBLIC-REDACTION.json",
+    "note": "This public copy is a redacted derivative. The root ledger records original and derivative digests."
+  }
 }

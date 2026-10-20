@@ -40,7 +40,7 @@ The scan read a mirror clone taken on 2026-10-17 at 18:43, with `master` at
 
 Actions logs live outside git. The run list taken at 17:46Z held 767 workflow
 runs: 370 `ci`, 363 `Publication branch and title identity` and 34
-`Update asma-modules Pointer`. All 767 log archives were downloaded. Ten of
+`[parent-repository] Pointer`. All 767 log archives were downloaded. Ten of
 them, all from cancelled branch-checker runs, were empty. The other 757 held
 316 MB of logs.
 

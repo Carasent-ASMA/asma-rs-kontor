@@ -1,14 +1,14 @@
-   Compiling kontor-core v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/crates/kontor-core)
-   Compiling kontor-runtime v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/crates/kontor-runtime)
-   Compiling kontor-policy v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/crates/kontor-policy)
-   Compiling kontor-context v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/crates/kontor-context)
-   Compiling kontor-teams v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/crates/kontor-teams)
-   Compiling kontor-scheduler v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/crates/kontor-scheduler)
-   Compiling kontor-profiles v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/crates/kontor-profiles)
-   Compiling kontor-calendar v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/crates/kontor-calendar)
-   Compiling kontor-store v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/crates/kontor-store)
+   Compiling kontor-core v0.2.1 ([task-workspace])
+   Compiling kontor-runtime v0.2.1 ([task-workspace])
+   Compiling kontor-policy v0.2.1 ([task-workspace])
+   Compiling kontor-context v0.2.1 ([task-workspace])
+   Compiling kontor-teams v0.2.1 ([task-workspace])
+   Compiling kontor-scheduler v0.2.1 ([task-workspace])
+   Compiling kontor-profiles v0.2.1 ([task-workspace])
+   Compiling kontor-calendar v0.2.1 ([task-workspace])
+   Compiling kontor-store v0.2.1 ([task-workspace])
     Finished `test` profile [unoptimized + debuginfo] target(s) in 26.83s
-     Running tests/backup_export.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/backup_export-86507a0c15daf53a)
+     Running tests/backup_export.rs ([parent-tools])
 
 running 1 test
 

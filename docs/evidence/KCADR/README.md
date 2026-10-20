@@ -2,11 +2,12 @@
 
 Status: source candidate `71e3c6f9492b6a0418f6552830fa3ac0c2ef0af7` passed the full archived release gate: 2,283 Rust tests and 300 console tests, with static checks, reproducible lockfile and dependency audits. Independent repository reviews and disposable native qualification are recorded below. The parent deployed PR #167 merge `1b0b27e` and recorded preserved fleet identities; see the current release checkpoint below. The follow-up Jira diagnostic candidate `d30e0df` also passed its complete archive gate: 2,284 Rust tests and 300 console tests. Its deployment, required Kontor role gates and task closure remain with the parent session.
 
-> **Historical private-reference exception.** `qualification-71e3c6f.json` and
-> `qualification-d30e0df.json` retain `receipt_url` and `live_recovery_receipt`
-> values that point into the private parent repository. They are frozen evidence
-> for the named revisions and are not rewritten. Owner: Kontor maintainers.
-> Replace or remove the values only when this evidence is retired.
+Files listed in [PUBLIC-REDACTION.json](PUBLIC-REDACTION.json) are public
+redacted derivatives under LSA-WP01-PUBLIC-EVIDENCE-001. Private workspace paths
+and the two private evidence URLs were replaced with bracketed placeholders.
+The ledger records each original and derivative SHA-256; the original bytes are
+retained in the access-controlled evidence store. The TPM owns the exact-path
+disposition ledger.
 
 ## Scope and identities
 

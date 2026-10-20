@@ -3,7 +3,7 @@
 > **Date:** 2026-09-24 20:45
 > **Status:** 🟢 Approved. Implemented in PR #271 (`7ffd650d`, 2026-09-25). PR #292 (`4097afb8`, ASMA-8280, merged 2026-10-04) adds an activated fleet policy above this file; see [Implementation notes](#implementation-notes-2026-10-17).
 > **Category:** architecture
-> **Scope:** `asma-rs-kontor` model routing for delivery, Committee and Advisor seats; the live Kontor state root `<state-root>/fleet.yml`; the asma-modules plan `2026-09-24-07-30-plan-kontor-live-fleet-configuration.md`
+> **Scope:** `asma-rs-kontor` model routing for delivery, Committee and Advisor seats; the live Kontor state root `<state-root>/fleet.yml`; the historical parent plan `2026-09-24-07-30-plan-kontor-live-fleet-configuration.md`
 > **Summary:** Every seat placement resolves its model route from one owner-only `fleet.yml` in the live state root, read at placement time, instead of from the route frozen into a published template revision. Editing that file changes the next placement with no rebuild, restart or template republish; an invalid edit keeps the last valid version. This supersedes template-snapshot immutability **for routing only**.
 
 ---

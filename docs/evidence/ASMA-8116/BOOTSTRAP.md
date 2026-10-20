@@ -111,8 +111,8 @@ The originally declared paths encoded a feature branch directly under
 `.worktrees/<jira-key-lowercase>/asma-rs-kontor`. Identity-preserving Git
 worktree moves established:
 
-- `$HOME/carasent/asma-modules/.worktrees/asma-8116/asma-rs-kontor`;
-- `$HOME/carasent/asma-modules/.worktrees/asma-8117/asma-rs-kontor`.
+- `[task-workspace]`;
+- `[task-workspace]`.
 
 The ASMA-8116 branch, HEAD and tree stayed unchanged and clean after the move;
 the ASMA-8117 branch stayed at its original clean `508a514` source state.

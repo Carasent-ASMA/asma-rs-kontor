@@ -16,7 +16,7 @@ documents link to them instead of restating them.
 | **Paseo-direct** (`orchestration: paseo`) | The workflow run by agents through Paseo, the plan, the tracker and the project CLI, without a daemon. The default. | a lesser workflow; legacy mode |
 | **Kontor-governed** (`orchestration: kontor`) | The workflow run through `kontord`, which owns the task graph, admission, evidence and tracker projection deterministically. Requires the plan marker and the tracker governance marker. | the workflow itself; Kontor (bare) |
 | **`workflow: kontor \| free`** | Whether the epic follows the Kontor workflow at all. `free` keeps the safety floor and any named workflow piece. | the surface |
-| **Safety floor** | The rules that hold in every workflow and are never switched off: one writer per fact, uncertainty is not completion, intent precedes effect, proposal is not authority, secrets are references and the public tree carries only public material. | optional guardrails |
+| **Safety floor** | The rules that hold in every workflow and are never switched off: the tracker stays in the project's configured tracker project; never overwrite another person's work, one writer per branch; no force-push and no ruleset bypass; every check the repository defines must pass; merge only on the host owner's command or the pull request author's merge order in the project's configured merge rule; no secrets in files; every pull request is reviewed. Secrets stay references and the public tree carries only public material. | optional guardrails |
 | **Workflow piece** | A named procedure used on its own — a review, a committee, a takeover, a handoff, a plan hardening, a decision record. It brings its own rules only while it runs. | workflow stage; mandatory step |
 
 ### The `kontor` value
@@ -38,7 +38,7 @@ prose, write **Kontor** for the method, **Kontor-governed** for the surface and
 | **Implementation Plan** | The durable plan that records scope, dependencies, waves, verification and closeout for one change. | brainstorm; notes |
 | **Phase** | A goal-bounded group of work inside one plan, with its own completion criteria. Answers *what this delivers*. | wave; sprint |
 | **Wave** | A set of work items launched together, bounded by collision and capacity rules. Answers *what starts at the same time*. A wave is never a unit of deliverable scope. | phase; release |
-| **Frontier** | The lowest plan-graph wave that still contains a task that is neither done nor cancelled. A statement about the plan, not about capacity. | ready set; launch set |
+| **Frontier** | The lowest wave in the plan's dependency graph (see [Wave](#work-and-planning)) that still contains a task that is neither done nor cancelled. A statement about the plan, not about capacity. | ready set; launch set |
 | **Acceptance criteria** | The behavioural outcomes that define when a task and its bound issue may be completed. | task notes; guesses |
 | **Milestone** | A plan-defined, independently useful increment that is safely deployable and verifiable, delivered through a pull request or a coordinated set. | phase; release |
 | **Hold** | A recorded pause with a reason, an owner, a checkable lift condition and a review date at most 30 days ahead. The procedure is in [`WORKFLOW.md`](WORKFLOW.md#5-holds). | indefinite wait; blocker note |

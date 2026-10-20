@@ -107,7 +107,7 @@ Closes the residual Mutant 1 recorded: the project-scoping half of ASMA-8102.
 
 The guard decides whether a Kontor project carries the governed ASMA forge
 mapping at all. Disabling it restores the exact widening two review rounds
-rejected: every project in the realm authorizing `Carasent-ASMA/asma-modules`
+rejected: every project in the realm authorizing `[parent-repository]`
 and `Carasent-ASMA/asma-rs-kontor` merely by holding a confirmed tracker key.
 
 File: `crates/kontor-daemon/src/applications.rs`.
@@ -163,7 +163,7 @@ The killing regression is exactly one test, and it is the cross-project
 isolation case. Its red is the assertion, not a malformed invocation:
 `loopback_api.rs:55795` recorded the served route answering
 `"project_id": "01a0bc5d-10fd-…"` (an ungoverned project),
-`"repository": "Carasent-ASMA/asma-modules"`, `"accepted": true`,
+`"repository": "[parent-repository]"`, `"accepted": true`,
 `"reasons": []`, against an expected `["repository_mismatch"]`.
 
 Two tests deliberately stay green, and each records something:

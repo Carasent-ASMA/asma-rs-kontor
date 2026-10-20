@@ -1,0 +1,15 @@
+{
+  "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+  "files": {
+    "CODE-REVIEW-01.md": {
+      "bytes": 27905,
+      "derivative_sha256": "4665f9f4a7d97d47fd425c25d0dca91aae2115e5d99b544285415303ffc0cad1",
+      "original_sha256": "81ce093d61022ea35652887aeae754aa40a7ddf6a49b727846261914171c4389"
+    }
+  },
+  "model": "The public copy is a redacted derivative. Original bytes and SHA-256 are retained in the access-controlled evidence store; the TPM owns the exact-path disposition ledger.",
+  "placeholders": {
+    "[parent-workspace]": "private parent workspace path"
+  },
+  "scope": "docs/evidence/KON-OP-07"
+}

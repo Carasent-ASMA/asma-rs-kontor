@@ -1,0 +1,55 @@
+{
+  "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+  "files": {
+    "asma-8190-attachment-green-restored.txt": {
+      "bytes": 750,
+      "derivative_sha256": "90230e435e80c7f5578d7eb66a209c6cea1acad7c6a6ededda2670b3c2ea0e89",
+      "original_sha256": "23a6c4f91c77478ed4610a9dba5fa19ef8942e728a1292ef73f76234c8c37fda"
+    },
+    "asma-8190-attachment-red.txt": {
+      "bytes": 1685,
+      "derivative_sha256": "03fe277229add6a68853c87935c3c7539256697ebddd1368edb83af2535ab0cc",
+      "original_sha256": "9525e929bcea71cd3f417a4aac8e5b0c09cb578a45c6e24f92e9cccd88f5e9c7"
+    },
+    "asma-8190-f2ba0a73-full-gate.txt": {
+      "bytes": 717011,
+      "derivative_sha256": "6f5b70da23601cdfc5f3f8ea6890f0089dab75ab95491440a7b0d0c49aca41ce",
+      "original_sha256": "75b41e7927ccd3d99b347f5361be071bde3cd3c11d49f88c5decc82088971680"
+    },
+    "asma-8190-mutant-invent-activity.txt": {
+      "bytes": 1141,
+      "derivative_sha256": "693ca69360a0fdec095407a920d726ee6ec8d4703184fe94371c611165fd511d",
+      "original_sha256": "da053817adc934aef1da1b729666def2f2edabf8b98b00bbb218de7042040bbc"
+    },
+    "asma-8190-mutant-omit-attachment.txt": {
+      "bytes": 1624,
+      "derivative_sha256": "29d43ca46c8bbafdac1e2687a6aeec9ee4288417342da1ac88f8133d94c1b4d5",
+      "original_sha256": "6d24813b9e4f864e53effb7009b02015d55d29926a5083f6264b71d257a76c3b"
+    },
+    "asma-8190-mutant-omit-prepared-install.txt": {
+      "bytes": 886,
+      "derivative_sha256": "0e83bf525b2aa8745660c081d218a7418f38c0d2910970b3a58e9f3d39d9297b",
+      "original_sha256": "46be8d327a2618d4f44e8707c6b4c42c99d4ef7386b5a7a7aa641265a94df468"
+    },
+    "lsa-attachment-corrective-review-20260926.txt": {
+      "bytes": 1169,
+      "derivative_sha256": "e1fddd864bfad4559121f73c2b2e147ee8ee2dfb33fa5e570823d816ce1e8d8f",
+      "original_sha256": "3061428dd52d4f61f1325daa14af5057801e7f8cd043af6cfb9210ec0ca2cf9e"
+    },
+    "lsa-attachment-review-20260926.txt": {
+      "bytes": 2120,
+      "derivative_sha256": "abef325501e077ef03271c7455dbd709e36991d66ef7004bdc97f34d62c8579d",
+      "original_sha256": "df29e019e482fee6accb279ba77a7e9a75387ced8786fabcd01d1d52a00d7cfc"
+    }
+  },
+  "model": "The public copy is a redacted derivative. Original bytes and SHA-256 are retained in the access-controlled evidence store; the TPM owns the exact-path disposition ledger.",
+  "placeholders": {
+    "[archived-private-evidence]": "private parent-repository evidence URL",
+    "[parent-plan]": "private parent plan path",
+    "[parent-repository]": "private parent-repository slug",
+    "[parent-tools]": "private parent tools path",
+    "[parent-workspace]": "private parent workspace path",
+    "[task-workspace]": "private task workspace path"
+  },
+  "scope": "_docs/reports/evidence/ASMA-8190"
+}

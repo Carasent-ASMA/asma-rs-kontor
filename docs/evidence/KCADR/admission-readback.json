@@ -76,7 +76,7 @@
         "team_runs": [],
         "title": "Complete Paseo permission and timeline compatibility",
         "workflow_revision": 1,
-        "worktree": "$HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor"
+        "worktree": "[compat-workspace]"
       },
       {
         "ai_short_name": "Documentation Recovery",
@@ -137,7 +137,7 @@
         "team_runs": [],
         "title": "Recover Kontor governance and compatibility documentation",
         "workflow_revision": 1,
-        "worktree": "$HOME/carasent/asma-modules/.worktrees/kontor-compat-docs"
+        "worktree": "[compat-docs-workspace]"
       }
     ],
     "team_template": {

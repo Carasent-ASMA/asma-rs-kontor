@@ -24,14 +24,14 @@ each live definition variant, but do not publish, select, deploy or migrate them
 in ASMA-8117.
 
 This scope is controlled by the approved plan
-`asma-modules/plan/feature-kontor-jira-key-identity-1.md`, its governing
+`[parent-plan]`, its governing
 architecture amendment, Jira ASMA-8117 and the Kontor task above. AgentsRoom
 backlog or memory and legacy mirror output are not authority for this record.
 
 ## Frozen baseline and bootstrap state
 
 The canonical worktree is
-`asma-modules/.worktrees/asma-8117/asma-rs-kontor` on branch
+`[task-workspace]` on branch
 `feat/ASMA-8117-implement-jira-key-team-definition-tokens-and-rendering`.
 The scope read was made at clean HEAD
 `508a5141e0ecab8b207e1b7112f839e3f1bb9a2d`.

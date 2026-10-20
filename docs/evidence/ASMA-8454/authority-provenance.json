@@ -1,26 +1,26 @@
 {
   "plan": {
-    "path": "$HOME/carasent/asma-modules/.worktrees/plans/kontord-durable-desks-20261008/_docs/ai-orchestration/plans/2026-10-08-22-47-plan-kontord-durable-desks.md",
+    "path": "[parent-workspace]/.worktrees/plans/kontord-durable-desks-20261008/_docs/ai-orchestration/plans/2026-10-08-22-47-plan-kontord-durable-desks.md",
     "sha256": "fa5eded4d247347b72ff002d077f42bbda84a3dccbe74b043d4384bac903e472"
   },
   "advisor": {
-    "path": "$HOME/carasent/asma-modules/.worktrees/plans/kontord-durable-desks-20261008/_docs/ai-orchestration/assets/kontord-durable-desks/2026-10-11-advisor-verdict-adam-subject.md",
+    "path": "[parent-workspace]/.worktrees/plans/kontord-durable-desks-20261008/_docs/ai-orchestration/assets/kontord-durable-desks/2026-10-11-advisor-verdict-adam-subject.md",
     "sha256": "d4c578009b5125a47ffa815bac467b10eb62249046493d79af44b481b2672cac"
   },
   "handoff_skill": {
-    "path": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.agents/skills/seat-handoff/SKILL.md",
+    "path": "[qualification-workspace]/.agents/skills/seat-handoff/SKILL.md",
     "sha256": "e9a15b10679129f853586ea46312749332386bc87952a868c90b09c9af8d8870"
   },
   "mutation_skill": {
-    "path": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.agents/skills/mutation-testing/SKILL.md",
+    "path": "[qualification-workspace]/.agents/skills/mutation-testing/SKILL.md",
     "sha256": "6de1a43ec25aceca79f06066579454b8771d3a0e095b49aa2771fe0b3b42cdf1"
   },
   "alignment_contract": {
-    "path": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.asma/workspace/_docs/ai-orchestration/reference/2026-09-27-19-35-reference-orchestration-skills-alignment.md",
+    "path": "[qualification-workspace]/.asma/workspace/_docs/ai-orchestration/reference/2026-09-27-19-35-reference-orchestration-skills-alignment.md",
     "sha256": "4764403eccfcd44adbb776c7e73735ea7728c26a21f76bbcbb36a99bfce9ab66"
   },
   "surface_transition": {
-    "path": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.agents/skills/epic-orchestration/references/orchestration-surface-transition.md",
+    "path": "[qualification-workspace]/.agents/skills/epic-orchestration/references/orchestration-surface-transition.md",
     "sha256": "c6a531db8e85378967285a25e1a6b6ab8874166962905164d85762f44c195ead"
   }
 }

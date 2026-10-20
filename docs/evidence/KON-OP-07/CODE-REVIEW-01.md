@@ -221,7 +221,7 @@ A generated client branching on documented statuses gets this endpoint wrong.
 - Submodule HEAD `3b95141` is **not pushed**: `git branch -r --contains 3b95141`
   is empty. It exists only in this local worktree.
 - The superproject gitlink still points at `65412ba` — the docs-only handoff. The
-  code commit is invisible to `asma-modules`.
+  code commit is invisible to the parent workspace.
 - `.gitmodules` sets `ignore = all` for `_tools/asma-rs-kontor`, so the
   superproject reports a **clean** tree despite the drift. `git show`/`git status`
   on the pointer commits look empty; only tree-hash comparison reveals them

@@ -51,8 +51,8 @@ catalogs, chains, committees, advisors and completion profiles are versioned
 data published through `/v1` (see [CONFIGURATION.md](../../docs/CONFIGURATION.md)); the historical AgentsRoom manifests are import/design references, not live
 Kontor authority. The current supported model catalog and its validator remain
 code-reviewed and tested; publishing a new selection does not rewrite existing pins. ASMA policy and historical instantiation references live in the deployment repo
-(`asma-modules/_docs/ai-orchestration/architecture/2026-08-05-01-07-architecture-agent-fleet-roles-model-policy.md`
-§0, and `asma-modules/_tools/ai-orchestration/manifest/{teams,advisors}/`) and
+(`[parent-plan]`
+§0, and `[deployment-manifests]`) and
 are expected to change without this document changing.
 
 ## 1. Capability dimensions — the vocabulary
@@ -387,7 +387,7 @@ its regression tests demonstrate that check.
   the invariants-versus-data split.
 - [QUOTA-FALLBACK-PLAN.md](../../docs/QUOTA-FALLBACK-PLAN.md) — the durable quota state
   behind the rung walk (account-before-rung, blocked-until, headroom).
-- Deployment-side policy and historical instantiation references: `asma-modules/_docs/ai-orchestration/architecture/2026-08-05-01-07-architecture-agent-fleet-roles-model-policy.md` §0
-  and `asma-modules/_tools/ai-orchestration/manifest/{teams,advisors}/`.
+- Deployment-side policy and historical instantiation references: `[parent-plan]` §0
+  and `[deployment-manifests]`.
 - Seat context classes: the seat context-window and compaction policy in the
   deployment repo's `_docs/ai-orchestration/architecture/`.

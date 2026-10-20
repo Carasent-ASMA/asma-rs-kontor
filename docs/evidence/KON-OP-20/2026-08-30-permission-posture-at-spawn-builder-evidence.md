@@ -54,7 +54,7 @@ The plan's D3 says `<cwd>/opencode.json`. That target is wrong for the
 repositories these seats actually run in, and the deviation is recorded here for
 the architect rather than taken silently:
 
-- A seat's cwd is a worktree of the `asma-modules` superproject, which **tracks**
+- A seat's cwd is a worktree of the parent superproject, which **tracks**
   a root `opencode.json` (model, instructions, mcp). Verified:
   `git ls-files --error-unmatch opencode.json` succeeds.
 - Git applies no ignore rule to a tracked file, so D3's stated mitigation —

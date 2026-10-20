@@ -65,7 +65,7 @@ Kontor reuses mature systems for the facts they already own:
 - Paseo or another selected runtime owns native sessions, transcripts, tools,
   permissions and provider authentication.
 
-Kontor owns what none of them owns alone: cross-system orchestration,
+`kontord` owns what none of them owns alone: cross-system orchestration,
 synchronization, dependency execution, admission, policy, evidence, derived safe
 state, completion and operator attention. It integrates through supported
 contracts, projects native facts, and embeds or deep-links to native detail
@@ -113,27 +113,27 @@ verified reader the daemon's placement uses, and writes nothing.
 
 | Fact or effect | Authority |
 | --- | --- |
-| Realm, projects, tasks, dependencies, profiles and gates | Kontor |
-| Scheduler decisions, leases, policy verdicts and receipts | Kontor |
-| Desired runtime command and last observed native evidence | Kontor records |
+| Realm, projects, tasks, dependencies, profiles and gates | `kontord` |
+| Scheduler decisions, leases, policy verdicts and receipts | `kontord` |
+| Desired runtime command and last observed native evidence | `kontord` records |
 | Native process, session, transcript, tools and provider authentication | Selected runtime |
-| Provider capacity, cooldown and quota headroom | Kontor's native provider connector |
-| External ticket workflow and issue keys | Jira, through Kontor's native `kontor-jira` connector |
-| Confirmed Jira bindings, key resolution and their evidence | Kontor |
+| Provider capacity, cooldown and quota headroom | `kontord`'s native provider connector |
+| External ticket workflow and issue keys | Jira, through `kontord`'s native `kontor-jira` connector |
+| Confirmed Jira bindings, key resolution and their evidence | `kontord` |
 | Repositories, pull requests and releases | GitHub |
-| Publication decisions: whether a branch, commit and title match a confirmed binding | Kontor (append-only attestation ledger) |
-| The `asma/publication-identity` check run and Kontor-requested squash merges | Kontor's GitHub App gateway, when installed and configured |
-| The activated fleet policy and Core Team roster | Kontor state root: one activation record naming immutable, content-addressed artifacts |
-| Approved experience memory | Kontor; a Cognee projection is derived and candidate-only |
-| A durable desk seat declared `paseo_direct` | Its operator, in Paseo; Kontor records and reports the declaration |
+| Publication decisions: whether a branch, commit and title match a confirmed binding | `kontord` (append-only attestation ledger) |
+| The `asma/publication-identity` check run and `kontord`-requested squash merges | `kontord`'s GitHub App gateway, when installed and configured |
+| The activated fleet policy and Core Team roster | `kontord` state root: one activation record naming immutable, content-addressed artifacts |
+| Approved experience memory | `kontord`; a Cognee projection is derived and candidate-only |
+| A durable desk seat declared `paseo_direct` | Its operator, in Paseo; `kontord` records and reports the declaration |
 | A project's backlog or memory before its cutover attestation | AgentsRoom, per `(project, subject)` |
 
-The core rule is **one writer per fact**. Kontor uses supported adapter or API
+The core rule is **one writer per fact**. `kontord` uses supported adapter or API
 interfaces and never edits Paseo, AO, Jira or AgentsRoom internal stores. No
 Kontor crate or process invokes the `asma` CLI.
 
 Write authority for a project's `memory` and its `backlog` is a fact about
-`(project_id, subject)`, not a realm-wide flag. A project created in Kontor is
+`(project_id, subject)`, not a realm-wide flag. A project created in `kontord` is
 native and writable from its first instant; a project whose facts came from
 AgentsRoom stays read-only for that subject until its import and read-back
 attestation succeed. Both states can be true of one realm at once.
@@ -156,7 +156,7 @@ Publication identity is judged, not inferred. A branch follows one grammar,
 `<type>/<PROJECT>-<number>-<slug>` (plus keyless `releases/v<x.y.z>`), and the
 branch key must be the confirmed Jira key of the epic or task it names; a Kontor
 display or backlog code is never a key. Before the ASMA workflow pushes or opens
-a pull request, Kontor judges the repository, base branch, head branch, head
+a pull request, `kontord` judges the repository, base branch, head branch, head
 commit and title against that binding and records accepted and refused decisions
 alike; the schema refuses any update or delete of a recorded decision (v119).
 When an operator installs the GitHub App and writes `config/github-app.json`, the
@@ -169,7 +169,7 @@ head that moved. Without that file the gateway is inert. See
 
 ### Desired, observed and derived state
 
-Kontor keeps three facts instead of one optimistic status:
+`kontord` keeps three facts instead of one optimistic status:
 
 1. **Desired** — what a durable command requested.
 2. **Observed** — what the runtime actually confirmed, with native identity,
@@ -252,7 +252,7 @@ operator procedures in [Recovery](RECOVERY.md); consultation-seat recovery is in
 
 ### Runtime-owned session content
 
-Kontor stores bindings and continuity evidence, not a second transcript.
+`kontord` stores bindings and continuity evidence, not a second transcript.
 History is paged from the runtime, live subscription starts strictly after its
 anchor, and an epoch/sequence gap requires refetch. CLI, MCP and UI receive
 session content through the daemon so runtime credentials never reach clients.
@@ -317,7 +317,7 @@ issue renames the binding in place while a readback naming a different issue is
 an anti-rebind refusal. No numeric suffix, title or display code is ever
 identity evidence.
 
-Kontor also records one immutable, case-insensitively unique epic namespace per
+`kontord` also records one immutable, case-insensitively unique epic namespace per
 project (`KOP`), allocated from title characters or selected manually. A native
 item code (`KOP-8001`) is a display-only projection of that namespace and the
 confirmed Jira numeric suffix; it is never persisted as a second Jira binding
@@ -460,7 +460,7 @@ findings round in which neither sees the other's finding, at most one
 clarification round, and the caller's own disposition, which must cite every
 member's finding so dissent stays on the record. It has no Judge, quorum or
 verdict, nothing it records has the shape a gate reads, and the caller selects
-the protocol by name — Kontor never substitutes another. Only Independent
+the protocol by name — `kontord` never substitutes another. Only Independent
 Review satisfies a formal review requirement. At this source the Paseo adapter
 refuses every planning-pair member route, so a pair cannot yet be placed on
 Paseo.

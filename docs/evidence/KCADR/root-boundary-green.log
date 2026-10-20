@@ -1,4 +1,4 @@
-   Compiling kontor-store v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-store)
+   Compiling kontor-store v0.2.1 ([compat-workspace]/crates/kontor-store)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 7.15s
      Running tests/operational_topology.rs (target/debug/deps/operational_topology-2fa9316bbb487eec)
 

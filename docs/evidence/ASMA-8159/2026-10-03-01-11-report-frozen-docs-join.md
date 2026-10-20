@@ -16,7 +16,7 @@ docs-join.json.
 
 ## Pins and method
 
-Docs repository: asma-modules, frozen commit
+Docs repository: parent repository, frozen commit
 9b5b538c269deca55058f3fdd9efc66ee8046ab9, worktree
 $HOME/.paseo/worktrees/0vl4ss0m/docs-asma-8157-experience-memory-skill-and-runbook.
 HEAD matched the frozen commit and status was clean. All comparisons read

@@ -48,5 +48,18 @@
     "source-and-evidence-boundary.json": "b801e7c0c1ee11a444b3247defd8d42540bb6952ddebbcfad5fe0ffab6601706",
     "source-entries-after.json": "1f84dca5da045051b3e84f605bba9d7bc0b8cc466bd75057c5c1061f50a520ca",
     "source-entries-before.json": "1f84dca5da045051b3e84f605bba9d7bc0b8cc466bd75057c5c1061f50a520ca"
+  },
+  "public_derivative": {
+    "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+    "ledger": "../PUBLIC-REDACTION.json",
+    "note": "files maps original SHA-256; derivatives maps the public derivative SHA-256 for redacted files."
+  },
+  "derivatives": {
+    "focused-runner.py": "70dda400bcf592e15fa35c88050de501073dc7ae26641c44bc8e54475c4c38b4",
+    "green-after-correction.json": "25f7a7605a678b80eaed56ef807151c4784ff5fa0cb7af9e12b71ebe4f952fbd",
+    "integrated-1b99689d-full-gate-runner.py": "4f189f62d56e1864e70005db9efe9b3348ed551499dca9d8c59f49e203f57cf5",
+    "mutant-runner.py": "ca3977e6af979739d37aa8c2b56db75a0aff66cfc5b1894a8299aa5a136ef364",
+    "red-before-correction.json": "b92ac5d6d08b4e34f9fb9a6789689561059503d2350be134c4a59e5d47464003",
+    "red-current-naming-fixtures.json": "38ee125ff120c4c8723cc5f04abdd32a19107919523989651c850347649c37ad"
   }
 }

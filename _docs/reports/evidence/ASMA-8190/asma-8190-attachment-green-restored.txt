@@ -1,6 +1,6 @@
-   Compiling kontor-daemon v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-daemon)
+   Compiling kontor-daemon v0.2.1 ([task-workspace])
     Finished `test` profile [unoptimized + debuginfo] target(s) in 19.66s
-     Running tests/loopback_api.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/loopback_api-b347fa1894c0337e)
+     Running tests/loopback_api.rs ([parent-tools])
 
 running 6 tests
 test materializing_a_ticket_binds_its_native_workspace_without_admitting_a_run ... ok

@@ -114,7 +114,7 @@ are not represented as a fresh combined-source qualification.
 | Repository | Actual remote default | Divergence from relevant frozen candidate |
 | --- | --- | --- |
 | `Carasent-ASMA/asma-rs-kontor` | `refs/heads/master` → `8acdbd17e83d9d7ec545221c4b957e0325916997` | Starting `fe5373f2` is 3 ahead / 0 behind; merge base is the remote head. No upstream module advance relative to the accepted source base. |
-| `Carasent-ASMA/asma-modules` | `refs/heads/master` → `25de2b541da5d8dd61082e2d150c5c8087b09ac6` | Accepted docs `7d192808` is 3 ahead / 10 behind; merge base `f77c3b31bd73148a93cb3370d0ae34bf807fe2ff`. Docs reconciliation remains with its owner. |
+| `[parent-repository]` | `refs/heads/master` → `25de2b541da5d8dd61082e2d150c5c8087b09ac6` | Accepted docs `7d192808` is 3 ahead / 10 behind; merge base `f77c3b31bd73148a93cb3370d0ae34bf807fe2ff`. Docs reconciliation remains with its owner. |
 
 The evidence checkpoint adds one local commit; counts above intentionally pin
 the user-supplied starting candidate. Remote reads did not fetch, switch, pull,

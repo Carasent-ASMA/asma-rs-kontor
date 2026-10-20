@@ -1,7 +1,7 @@
 QUALIFIED_SOURCE=3b9eb3a577cdb4c3beb92ba958b775f2e91307f9
    Compiling kontor-daemon v0.2.1 (/private/tmp/ASMA-8196-bridge-mutations-3b9eb3a5/source/crates/kontor-daemon)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 35.55s
-     Running tests/loopback_api.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/loopback_api-b347fa1894c0337e)
+     Running tests/loopback_api.rs ([parent-tools])
 
 running 1 test
 test replacement_bridges::cancelled_bound_run_through_abandoned_bridges_names_only_the_current_native ... FAILED

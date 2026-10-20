@@ -1,4 +1,4 @@
-archive HEAD extracted to $HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree
+archive HEAD extracted to [qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree
 Cargo.lock satisfies every manifest under --locked
 note: Updating cc v1.4.6 -> v1.4.7 (refresh the lock in its own change)
 note: Updating find-msvc-tools v0.1.12 -> v0.1.13 (refresh the lock in its own change)
@@ -6,31 +6,31 @@ note: Updating jiff-tzdb v0.1.8 -> v0.1.9 (refresh the lock in its own change)
 note: Updating libc v0.2.189 -> v0.2.190 (refresh the lock in its own change)
 $ cargo fmt --all -- --check
 $ cargo clippy --workspace --all-targets -- -D warnings
-    Checking kontor-core v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-core)
-   Compiling kontor-desktop v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/apps/desktop/src-tauri)
-    Checking kontor-runtime v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-runtime)
-    Checking kontor-policy v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-policy)
-    Checking kontor-context v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-context)
-    Checking kontor-mcp v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-mcp)
-    Checking kontor-fleet v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-fleet)
-    Checking kontor-intake v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-intake)
-    Checking kontor-tests-e2e v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/tests/e2e)
-    Checking kontor-fleet-activation v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-fleet-activation)
-    Checking kontor-cli v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-cli)
-    Checking kontor-scheduler v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-scheduler)
-    Checking kontor-teams v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-teams)
-    Checking kontor-runtime-paseo v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-runtime-paseo)
-    Checking kontor-tests-contract v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/tests/contract)
-    Checking kontor-runtime-ao v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-runtime-ao)
-    Checking kontor-profiles v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-profiles)
-    Checking kontor-calendar v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-calendar)
-    Checking kontor-accounts v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-accounts)
-    Checking kontor-store v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-store)
-    Checking kontor-jira v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-jira)
-    Checking kontor-runtime-codex v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-runtime-codex)
-    Checking kontor-api v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-api)
-    Checking kontor-memory-cognee v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-memory-cognee)
-    Checking kontor-daemon v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-daemon)
+    Checking kontor-core v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-core)
+   Compiling kontor-desktop v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/apps/desktop/src-tauri)
+    Checking kontor-runtime v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-runtime)
+    Checking kontor-policy v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-policy)
+    Checking kontor-context v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-context)
+    Checking kontor-mcp v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-mcp)
+    Checking kontor-fleet v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-fleet)
+    Checking kontor-intake v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-intake)
+    Checking kontor-tests-e2e v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/tests/e2e)
+    Checking kontor-fleet-activation v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-fleet-activation)
+    Checking kontor-cli v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-cli)
+    Checking kontor-scheduler v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-scheduler)
+    Checking kontor-teams v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-teams)
+    Checking kontor-runtime-paseo v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-runtime-paseo)
+    Checking kontor-tests-contract v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/tests/contract)
+    Checking kontor-runtime-ao v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-runtime-ao)
+    Checking kontor-profiles v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-profiles)
+    Checking kontor-calendar v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-calendar)
+    Checking kontor-accounts v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-accounts)
+    Checking kontor-store v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-store)
+    Checking kontor-jira v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-jira)
+    Checking kontor-runtime-codex v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-runtime-codex)
+    Checking kontor-api v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-api)
+    Checking kontor-memory-cognee v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-memory-cognee)
+    Checking kontor-daemon v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-daemon)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 56.25s
 $ cargo test --workspace --locked
    Compiling libc v0.2.189
@@ -68,7 +68,7 @@ $ cargo test --workspace --locked
    Compiling icu_locale_core v2.3.0
    Compiling tokio v1.53.1
    Compiling icu_collections v2.3.0
-   Compiling kontor-core v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-core)
+   Compiling kontor-core v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-core)
    Compiling rustix v1.1.5
    Compiling core-foundation v0.10.1
    Compiling icu_provider v2.3.1
@@ -174,15 +174,15 @@ $ cargo test --workspace --locked
    Compiling base64 v0.21.7
    Compiling rand_core v0.6.4
    Compiling web_atoms v0.2.6
-   Compiling kontor-policy v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-policy)
-   Compiling kontor-context v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-context)
-   Compiling kontor-fleet v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-fleet)
+   Compiling kontor-policy v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-policy)
+   Compiling kontor-context v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-context)
+   Compiling kontor-fleet v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-fleet)
    Compiling alloc-stdlib v0.2.4
    Compiling parking_lot v0.12.5
    Compiling unic-ucd-ident v0.9.0
    Compiling anyhow v1.0.104
    Compiling serde_with_macros v3.23.0
-   Compiling kontor-fleet-activation v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-fleet-activation)
+   Compiling kontor-fleet-activation v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-fleet-activation)
    Compiling serde_spanned v1.1.1
    Compiling quick-xml v0.42.0
    Compiling string_cache v0.9.0
@@ -276,7 +276,7 @@ $ cargo test --workspace --locked
    Compiling chacha20 v0.9.1
    Compiling ctr v0.9.2
    Compiling aes v0.8.4
-   Compiling kontor-intake v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-intake)
+   Compiling kontor-intake v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-intake)
    Compiling console v0.16.6
    Compiling similar v2.7.0
    Compiling foreign-types-shared v0.3.1
@@ -324,7 +324,7 @@ $ cargo test --workspace --locked
    Compiling constant_time_eq v0.3.1
    Compiling embed_plist v1.2.2
    Compiling rust-argon2 v2.1.0
-   Compiling kontor-tests-e2e v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/tests/e2e)
+   Compiling kontor-tests-e2e v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/tests/e2e)
    Compiling tauri-build v2.6.3
    Compiling tauri-plugin v2.6.3
    Compiling tauri-codegen v2.6.3
@@ -338,36 +338,36 @@ $ cargo test --workspace --locked
    Compiling tauri v2.11.5
    Compiling tauri-plugin-stronghold v2.3.1
    Compiling tauri-macros v2.6.3
-   Compiling kontor-desktop v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/apps/desktop/src-tauri)
+   Compiling kontor-desktop v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/apps/desktop/src-tauri)
    Compiling aws-lc-rs v1.18.1
    Compiling rustls v0.23.45
-   Compiling kontor-runtime v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-runtime)
+   Compiling kontor-runtime v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-runtime)
    Compiling rustls-webpki v0.103.15
-   Compiling kontor-scheduler v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-scheduler)
-   Compiling kontor-teams v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-teams)
-   Compiling kontor-tests-contract v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/tests/contract)
+   Compiling kontor-scheduler v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-scheduler)
+   Compiling kontor-teams v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-teams)
+   Compiling kontor-tests-contract v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/tests/contract)
    Compiling tokio-rustls v0.26.5
    Compiling rustls-platform-verifier v0.7.0
    Compiling hyper-rustls v0.27.9
    Compiling reqwest v0.13.4
-   Compiling kontor-profiles v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-profiles)
-   Compiling kontor-mcp v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-mcp)
-   Compiling kontor-runtime-paseo v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-runtime-paseo)
-   Compiling kontor-calendar v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-calendar)
-   Compiling kontor-accounts v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-accounts)
-   Compiling kontor-runtime-ao v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-runtime-ao)
-   Compiling kontor-store v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-store)
-   Compiling kontor-jira v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-jira)
-   Compiling kontor-runtime-codex v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-runtime-codex)
-   Compiling kontor-cli v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-cli)
+   Compiling kontor-profiles v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-profiles)
+   Compiling kontor-mcp v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-mcp)
+   Compiling kontor-runtime-paseo v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-runtime-paseo)
+   Compiling kontor-calendar v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-calendar)
+   Compiling kontor-accounts v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-accounts)
+   Compiling kontor-runtime-ao v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-runtime-ao)
+   Compiling kontor-store v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-store)
+   Compiling kontor-jira v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-jira)
+   Compiling kontor-runtime-codex v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-runtime-codex)
+   Compiling kontor-cli v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-cli)
    Compiling stronghold-runtime v2.0.1
    Compiling stronghold_engine v2.0.1
-   Compiling kontor-api v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-api)
-   Compiling kontor-memory-cognee v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-memory-cognee)
+   Compiling kontor-api v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-api)
+   Compiling kontor-memory-cognee v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-memory-cognee)
    Compiling iota_stronghold v2.1.0
-   Compiling kontor-daemon v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-daemon)
+   Compiling kontor-daemon v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-daemon)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 55s
-     Running unittests src/lib.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/kontor_accounts-e3fdaa3da9b6b718)
+     Running unittests src/lib.rs ([qualification-workspace]/target/debug/deps/kontor_accounts-e3fdaa3da9b6b718)
 
 running 78 tests
 test admission::tests::a_fresh_position_starts_at_the_configured_width_with_no_trend ... ok
@@ -451,7 +451,7 @@ test usage::tests::two_identical_readings_digest_identically_and_a_changed_one_d
 
 test result: ok. 78 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
 
-     Running tests/account_security.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/account_security-a14261bbdc1d0304)
+     Running tests/account_security.rs ([qualification-workspace]/target/debug/deps/account_security-a14261bbdc1d0304)
 
 running 22 tests
 test a_failover_intent_records_only_ids_and_a_closed_reason_code ... ok
@@ -479,7 +479,7 @@ test two_profiles_resolve_concurrently_without_cross_talk ... ok
 
 test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 57.43s
 
-     Running tests/quota_classification.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/quota_classification-b2b76b55023a76f1)
+     Running tests/quota_classification.rs ([qualification-workspace]/target/debug/deps/quota_classification-b2b76b55023a76f1)
 
 running 21 tests
 test a_drained_balance_carries_no_instant ... ok
@@ -506,7 +506,7 @@ test the_trailing_parenthesised_zone_does_not_change_the_instant ... ok
 
 test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running unittests src/lib.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/kontor_api-9c961d46e278525a)
+     Running unittests src/lib.rs ([qualification-workspace]/target/debug/deps/kontor_api-9c961d46e278525a)
 
 running 29 tests
 test auth::tests::a_hostile_authority_is_refused_however_it_is_spelled ... ok
@@ -541,7 +541,7 @@ test error::tests::usage_throttle_returns_the_actual_retry_instruction_in_body_a
 
 test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/error_envelope.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/error_envelope-91a8095f249e9cce)
+     Running tests/error_envelope.rs ([qualification-workspace]/target/debug/deps/error_envelope-91a8095f249e9cce)
 
 running 6 tests
 test every_code_tells_an_operator_something_to_try ... ok
@@ -553,7 +553,7 @@ test the_transactional_duplicate_carries_the_exact_sequential_envelope ... ok
 
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/openapi_contract.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/openapi_contract-fd6cd71edfd0b14b)
+     Running tests/openapi_contract.rs ([qualification-workspace]/target/debug/deps/openapi_contract-fd6cd71edfd0b14b)
 
 running 4 tests
 test experience_contract_exposes_closed_typed_documents_and_frozen_readbacks ... ok
@@ -563,13 +563,13 @@ test the_contract_document_names_every_route_the_router_exposes ... ok
 
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
 
-     Running unittests src/lib.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/kontor_calendar-68ec98ba2c403cc5)
+     Running unittests src/lib.rs ([qualification-workspace]/target/debug/deps/kontor_calendar-68ec98ba2c403cc5)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/imports.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/imports-18bbb006b9f1cb61)
+     Running tests/imports.rs ([qualification-workspace]/target/debug/deps/imports-18bbb006b9f1cb61)
 
 running 19 tests
 test a_document_of_the_wrong_shape_is_refused_whole ... ok
@@ -594,7 +594,7 @@ test the_moldova_and_norway_fixtures_close_their_own_national_dates ... ok
 
 test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running tests/resolution.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/resolution-54cfab5210dc972b)
+     Running tests/resolution.rs ([qualification-workspace]/target/debug/deps/resolution-54cfab5210dc972b)
 
 running 28 tests
 test a_child_scope_cannot_widen_without_an_approved_override ... ok
@@ -628,7 +628,7 @@ test the_resolution_agrees_with_the_domain_reducer_everywhere ... ok
 
 test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests src/main.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/kontor-129e20ca279073e1)
+     Running unittests src/main.rs ([qualification-workspace]/target/debug/deps/kontor-129e20ca279073e1)
 
 running 22 tests
 test commands::tests::a_declared_number_reaches_the_dispatcher_as_a_number ... ok
@@ -656,21 +656,21 @@ test commands::tests::the_tree_is_valid_and_every_flag_matches_its_declared_argu
 
 test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
 
-     Running tests/durable_desk_parity.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/durable_desk_parity-2a84427cf03f6435)
+     Running tests/durable_desk_parity.rs ([qualification-workspace]/target/debug/deps/durable_desk_parity-2a84427cf03f6435)
 
 running 1 test
 test desk_ensure_and_undeclared_refusal_match_http_mcp_and_cli ... ok
 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.98s
 
-     Running tests/fleet_bundle.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/fleet_bundle-7931887df7aff6e3)
+     Running tests/fleet_bundle.rs ([qualification-workspace]/target/debug/deps/fleet_bundle-7931887df7aff6e3)
 
 running 1 test
 test a_bundle_is_proposed_published_and_activated_through_the_generated_cli ... ok
 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.18s
 
-     Running tests/local_resolve.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/local_resolve-e063cb7902b5fdaa)
+     Running tests/local_resolve.rs ([qualification-workspace]/target/debug/deps/local_resolve-e063cb7902b5fdaa)
 
 running 10 tests
 test a_joint_allocation_is_one_snapshot_through_the_shared_allocator ... ok
@@ -686,7 +686,7 @@ test the_three_request_forms_are_mutually_exclusive ... ok
 
 test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.57s
 
-     Running tests/memory_parity.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/memory_parity-ea4420f584306064)
+     Running tests/memory_parity.rs ([qualification-workspace]/target/debug/deps/memory_parity-ea4420f584306064)
 
 running 2 tests
 test native_memory_http_and_cli_share_realm_revision_and_cursor ... ok
@@ -694,20 +694,20 @@ test typed_memory_http_cli_and_mcp_share_proposal_projection_and_classification 
 
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.92s
 
-     Running tests/version.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/version-85b0f3ab11f8963c)
+     Running tests/version.rs ([qualification-workspace]/target/debug/deps/version-85b0f3ab11f8963c)
 
 running 1 test
 test version_is_one_line_and_exits_immediately ... ok
 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running unittests src/lib.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/kontor_context-a23a7bfa678f9ab7)
+     Running unittests src/lib.rs ([qualification-workspace]/target/debug/deps/kontor_context-a23a7bfa678f9ab7)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/handoff.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/handoff-3095939b5cef14f2)
+     Running tests/handoff.rs ([qualification-workspace]/target/debug/deps/handoff-3095939b5cef14f2)
 
 running 10 tests
 test a_capsule_claiming_same_engine_continuation_is_rejected ... ok
@@ -723,7 +723,7 @@ test unknown_fields_in_a_portable_capsule_are_rejected_on_import ... ok
 
 test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running tests/redaction.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/redaction-4f3f06697b54c654)
+     Running tests/redaction.rs ([qualification-workspace]/target/debug/deps/redaction-4f3f06697b54c654)
 
 running 8 tests
 test an_authorized_reference_carrying_secret_material_still_fails_the_scan ... ok
@@ -737,7 +737,7 @@ test secret_canaries_never_reach_error_debug_or_serialized_output ... ok
 
 test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/resolution.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/resolution-14284c1556fa0a7b)
+     Running tests/resolution.rs ([qualification-workspace]/target/debug/deps/resolution-14284c1556fa0a7b)
 
 running 15 tests
 test duplicate_source_key_is_rejected ... ok
@@ -758,7 +758,7 @@ test source_permutations_preserve_resolution_and_hash ... ok
 
 test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.79s
 
-     Running unittests src/lib.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/kontor_core-3ac5fb6ee76d3710)
+     Running unittests src/lib.rs ([qualification-workspace]/target/debug/deps/kontor_core-3ac5fb6ee76d3710)
 
 running 55 tests
 test authority::tests::native_origins_start_writable_and_refuse_cutover ... ok
@@ -819,7 +819,7 @@ test tpm_lineage::tests::two_occupancies_naming_different_natives_are_ambiguous 
 
 test result: ok. 55 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/backlog_identity.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/backlog_identity-9453ef396455978c)
+     Running tests/backlog_identity.rs ([qualification-workspace]/target/debug/deps/backlog_identity-9453ef396455978c)
 
 running 8 tests
 test automatic_allocation_refuses_titles_with_fewer_than_two_usable_characters ... ok
@@ -833,7 +833,7 @@ test manual_epic_codes_are_canonical_namespaces_not_issue_numbers ... ok
 
 test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/branch_identity.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/branch_identity-55d80cf1b4c1a8eb)
+     Running tests/branch_identity.rs ([qualification-workspace]/target/debug/deps/branch_identity-55d80cf1b4c1a8eb)
 
 running 10 tests
 test a_managed_worktree_encodes_exactly_its_branch ... ok
@@ -849,7 +849,7 @@ test the_release_line_is_the_only_keyless_form ... ok
 
 test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/consultation_identity_golden.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/consultation_identity_golden-c0d1fc29af491d44)
+     Running tests/consultation_identity_golden.rs ([qualification-workspace]/target/debug/deps/consultation_identity_golden-c0d1fc29af491d44)
 
 running 2 tests
 test advisor_and_committee_identities_keep_their_golden_bytes ... ok
@@ -857,7 +857,7 @@ test a_planning_pair_identity_is_its_own_family_and_still_ignores_retry_mechanic
 
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/consultation_specs.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/consultation_specs-c62b96ba4f1c49d9)
+     Running tests/consultation_specs.rs ([qualification-workspace]/target/debug/deps/consultation_specs-c62b96ba4f1c49d9)
 
 running 26 tests
 test a_consultation_topic_cannot_repeat_server_owned_name_components ... ok
@@ -889,7 +889,7 @@ test two_judges_are_refused ... ok
 
 test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/desk_leadership.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/desk_leadership-4d13d207781d7995)
+     Running tests/desk_leadership.rs ([qualification-workspace]/target/debug/deps/desk_leadership-4d13d207781d7995)
 
 running 7 tests
 test a_definition_without_desk_leadership_keeps_its_canonical_bytes ... ok
@@ -902,7 +902,7 @@ test role_led_subject_titles_render_the_exact_naming_card_bytes ... ok
 
 test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running tests/domain_state.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/domain_state-8aeddbefa9df9972)
+     Running tests/domain_state.rs ([qualification-workspace]/target/debug/deps/domain_state-8aeddbefa9df9972)
 
 running 37 tests
 test a_completed_task_reopens_only_under_an_explicit_authority ... ok
@@ -945,7 +945,7 @@ test the_team_child_digest_is_order_independent_and_matches_an_independent_hash 
 
 test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running tests/experience_memory.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/experience_memory-e63b43a5eeb5249e)
+     Running tests/experience_memory.rs ([qualification-workspace]/target/debug/deps/experience_memory-e63b43a5eeb5249e)
 
 running 4 tests
 test secrets_in_every_text_list_locator_and_key_are_redacted ... ok
@@ -955,7 +955,7 @@ test typed_byte_and_evidence_bounds_preserve_the_generic_document_ceiling ... ok
 
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
 
-     Running tests/native_naming.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/native_naming-5c94a7aa4694c05f)
+     Running tests/native_naming.rs ([qualification-workspace]/target/debug/deps/native_naming-5c94a7aa4694c05f)
 
 running 18 tests
 test a_jira_key_token_renders_its_exact_confirmed_bytes ... ok
@@ -979,7 +979,7 @@ test the_v1_matrix_renders_exact_bullet_separated_bytes ... ok
 
 test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/open_question.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/open_question-a668a12ce9475381)
+     Running tests/open_question.rs ([qualification-workspace]/target/debug/deps/open_question-a668a12ce9475381)
 
 running 27 tests
 test a_correction_must_name_a_predecessor_that_exists ... ok
@@ -1012,7 +1012,7 @@ test the_configured_closer_split_governs_disposition ... ok
 
 test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/planning_pair.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/planning_pair-e2f95eba2a8bed13)
+     Running tests/planning_pair.rs ([qualification-workspace]/target/debug/deps/planning_pair-e2f95eba2a8bed13)
 
 running 25 tests
 test a_disposed_pair_is_immutable ... ok
@@ -1043,7 +1043,7 @@ test a_stored_run_that_breaks_a_rule_fails_closed_on_that_rule ... ok
 
 test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
 
-     Running tests/pr_review.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/pr_review-78963abffbc8f764)
+     Running tests/pr_review.rs ([qualification-workspace]/target/debug/deps/pr_review-78963abffbc8f764)
 
 running 10 tests
 test a_definition_without_pr_review_keeps_its_exact_bytes ... ok
@@ -1059,7 +1059,7 @@ test the_room_is_a_native_workspace_below_the_desk_named_by_its_pull_request ...
 
 test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
 
-     Running tests/publication_identity.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/publication_identity-61897f91e2f1d7e6)
+     Running tests/publication_identity.rs ([qualification-workspace]/target/debug/deps/publication_identity-61897f91e2f1d7e6)
 
 running 13 tests
 test a_commit_sha_is_forty_lowercase_hex_digits ... ok
@@ -1078,7 +1078,7 @@ test every_failing_rule_is_reported_at_once ... ok
 
 test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/quota_headroom.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/quota_headroom-222ab515e8ffdd72)
+     Running tests/quota_headroom.rs ([qualification-workspace]/target/debug/deps/quota_headroom-222ab515e8ffdd72)
 
 running 9 tests
 test a_longer_span_is_never_a_shorter_kind ... ok
@@ -1093,7 +1093,7 @@ test credit_clears_only_above_its_floor_and_only_in_one_currency ... ok
 
 test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
 
-     Running tests/spec_validation.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/spec_validation-aa4d4191ee74d5ba)
+     Running tests/spec_validation.rs ([qualification-workspace]/target/debug/deps/spec_validation-aa4d4191ee74d5ba)
 
 running 61 tests
 test a_credential_prefix_must_begin_at_a_token_boundary ... ok
@@ -1160,7 +1160,7 @@ test arbitrary_linear_profiles_validate ... ok
 
 test result: ok. 61 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.38s
 
-     Running tests/succession.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/succession-198a07098df8440f)
+     Running tests/succession.rs ([qualification-workspace]/target/debug/deps/succession-198a07098df8440f)
 
 running 4 tests
 test deferred_refresh_accepts_exactly_admit_or_future_wait_shapes ... ok
@@ -1170,7 +1170,7 @@ test a_degraded_handoff_is_durable_evidence_not_a_release_refusal ... ok
 
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/team_definition_naming.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/team_definition_naming-79af76513d20584e)
+     Running tests/team_definition_naming.rs ([qualification-workspace]/target/debug/deps/team_definition_naming-79af76513d20584e)
 
 running 9 tests
 test a_missing_topic_or_local_seat_value_fails_closed ... ok
@@ -1185,7 +1185,7 @@ test the_snapshot_binds_the_exact_definition_bytes ... ok
 
 test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/team_definition_render_contract.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/team_definition_render_contract-f960d3c187cfafb7)
+     Running tests/team_definition_render_contract.rs ([qualification-workspace]/target/debug/deps/team_definition_render_contract-f960d3c187cfafb7)
 
 running 11 tests
 test a_required_jira_key_with_no_confirmed_binding_refuses_instead_of_rendering ... ok
@@ -1202,7 +1202,7 @@ test the_separator_is_exact_bullet_bytes_and_never_a_normalized_lookalike ... ok
 
 test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/team_definition_successors.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/team_definition_successors-3955ca7bf4e34999)
+     Running tests/team_definition_successors.rs ([qualification-workspace]/target/debug/deps/team_definition_successors-3955ca7bf4e34999)
 
 running 5 tests
 test a_candidate_differs_from_its_source_only_by_version_and_the_agreed_tokens ... ok
@@ -1213,7 +1213,7 @@ test every_recorded_source_document_still_hashes_to_its_published_identity ... o
 
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running tests/ticket_content.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/ticket_content-8dcba0325625aa27)
+     Running tests/ticket_content.rs ([qualification-workspace]/target/debug/deps/ticket_content-8dcba0325625aa27)
 
 running 14 tests
 test a_body_nobody_published_is_treated_as_human_authored ... ok
@@ -1233,7 +1233,7 @@ test the_task_creation_marker_is_recognized_too ... ok
 
 test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/ticket_policy.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/ticket_policy-b4d1ebc9d5f5e9d4)
+     Running tests/ticket_policy.rs ([qualification-workspace]/target/debug/deps/ticket_policy-b4d1ebc9d5f5e9d4)
 
 running 37 tests
 test a_field_specification_is_accepted_or_refused_atomically ... ok
@@ -1276,7 +1276,7 @@ test zero_or_several_live_transitions_are_conflicts ... ok
 
 test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running unittests src/lib.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/kontor_daemon-6e1fe487c8051d30)
+     Running unittests src/lib.rs ([qualification-workspace]/target/debug/deps/kontor_daemon-6e1fe487c8051d30)
 
 running 164 tests
 test applications::coherence::an_unreached_barrier_reports_instead_of_asserting ... ok
@@ -1446,7 +1446,7 @@ test usage::tests::usage_throttle_survives_restart_and_does_not_starve_other_acc
 
 test result: ok. 164 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 49.35s
 
-     Running unittests src/main.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/kontor_daemon-d51fb1bc74d1f240)
+     Running unittests src/main.rs ([qualification-workspace]/target/debug/deps/kontor_daemon-d51fb1bc74d1f240)
 
 running 10 tests
 test tests::a_copied_realm_and_duplicate_alias_cannot_update_a_locked_roots_entry ... ok
@@ -1462,7 +1462,7 @@ test tests::unknown_roots_aliases_and_relative_paths_refuse_before_stdin_or_effe
 
 test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 25.35s
 
-     Running tests/account_pinning.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/account_pinning-3629c8295c3c456c)
+     Running tests/account_pinning.rs ([qualification-workspace]/target/debug/deps/account_pinning-3629c8295c3c456c)
 
 running 5 tests
 test a_legacy_unpinned_run_is_left_exactly_as_it_is ... ok
@@ -1473,7 +1473,7 @@ test re_presenting_the_same_account_is_a_replay_that_writes_nothing ... ok
 
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.30s
 
-     Running tests/container_recreation.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/container_recreation-d57f42e656fc28f4)
+     Running tests/container_recreation.rs ([qualification-workspace]/target/debug/deps/container_recreation-d57f42e656fc28f4)
 
 running 12 tests
 test a_non_admin_caller_cannot_reach_a_create ... ok
@@ -1491,7 +1491,7 @@ test recreate_absent_previews_then_applies_with_exactly_one_create ... ok
 
 test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.58s
 
-     Running tests/experience_memory.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/experience_memory-d11848a7a44fdff2)
+     Running tests/experience_memory.rs ([qualification-workspace]/target/debug/deps/experience_memory-d11848a7a44fdff2)
 
 running 2 tests
 test secret_canaries_hidden_queries_and_projection_unavailable_are_static ... ok
@@ -1499,7 +1499,7 @@ test proposal_approval_preview_freeze_readback_replay_and_purge_refusal ... ok
 
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.09s
 
-     Running tests/loopback_api.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/loopback_api-d5f6484f7a201bbf)
+     Running tests/loopback_api.rs ([qualification-workspace]/target/debug/deps/loopback_api-d5f6484f7a201bbf)
 
 running 617 tests
 test a_body_overtaken_during_a_lost_confirmation_is_refused ... ok
