@@ -340,7 +340,7 @@ function scrollEvent(
   } as NativeSyntheticEvent<NativeScrollEvent>;
 }
 
-function renderScreen(organization?: Parameters<typeof SessionsScreen>[0]["organization"], compact = true, platform: "ios" | "web" = compact ? "ios" : "web") {
+function renderScreen(organization?: Parameters<typeof SessionsScreen>[0]["organization"], compact = true, platform: "ios" | "web" = compact ? "ios" : "web", native?: Pick<Parameters<typeof SessionsScreen>[0], "projects" | "workspaces">) {
   const navigation = {
     openAgent: () => undefined,
     openBrowser: () => undefined,
@@ -354,6 +354,7 @@ function renderScreen(organization?: Parameters<typeof SessionsScreen>[0]["organ
       theme: { colors } as PluginTheme,
       params: {},
       organization,
+      ...native,
     } as PluginScreenProps),
   );
   const list = findByTestID(tree, "sessions-list");
@@ -782,6 +783,29 @@ describe("SessionsScreen toolbar events", () => {
       advancedOpen: saved.advancedOpen,
       scrollOffset: 1389 + header,
     });
+  });
+
+  it("selects an empty native desk by ID, distinguishes duplicate names and retains selection across rename", () => {
+    patchSessionView("host-a", { query: "", advancedOpen: true, shortcut: null, toolbarOpen: true });
+    const native: Pick<Parameters<typeof SessionsScreen>[0], "projects" | "workspaces"> = { projects: [{ id: "prj_one", name: "DESK • RESEARCH" }, { id: "prj_two", name: "DESK • RESEARCH" }], workspaces: [] };
+    renderScreen(undefined, true, "ios", native);
+    const openScope = () => { (findByTestID(harness.current(), "sessions-scope").props.onPress as () => void)(); harness.flush(); };
+    openScope();
+    const choices = walk(harness.current()).filter((element) => element.type === MenuItem && element.props.label === "DESK • RESEARCH");
+    expect(choices.map((choice) => choice.props.detail)).toEqual(["prj_one", "prj_two"]);
+    (choices[0]!.props.onPress as () => void)(); harness.flush();
+    expect(readSessionView("host-a").shortcut).toBe("desk-project:prj_one");
+    expect(sessionRowIds()).toEqual([]);
+    expect(findByTestID(harness.current(), "sessions-scope").props.value).toBe("DESK • RESEARCH");
+    native.workspaces = [{ id: "wks_empty_desk", name: "CSW • empty native desk", projectKey: "prj_one", projectName: "DESK • RESEARCH" }];
+    harness.flush();
+    expect(groupRows().filter((row) => row.group.kind === "workspace").map((row) => row.group.label)).toEqual(["CSW • empty native desk"]);
+    native.projects = [{ id: "prj_one", name: "DESK • DOCS" }, native.projects![1]!];
+    harness.flush();
+    expect(findByTestID(harness.current(), "sessions-scope").props.value).toBe("DESK • DOCS");
+    expect(readSessionView("host-a").shortcut).toBe("desk-project:prj_one");
+    openScope();
+    expect(walk(harness.current()).find((element) => element.type === MenuItem && element.props.label === "DESK • DOCS")!.props.selected).toBe(true);
   });
 
   it("retains Favorites and desk shortcuts across a screen remount", () => {
@@ -1241,6 +1265,14 @@ describe("SessionsScreen toolbar events", () => {
     // Workstreams details open the same way, with the same lines.
     (buttons[0]!.props.onPress as () => void)(); harness.flush();
     expect(screen.dialog()!.props.label).toBe(`Details: ${(sessions[0] as { entry: { title: string } }).entry.title}`);
+  });
+
+  it("names the native desk workstream in Details when a desk member also has an epic", () => {
+    const session = sessionEntry("desk-with-epic", { projectName: "DESK • ADAM", labels: { epic: "ASMA-99101" } });
+    const stream = (mappings: Parameters<typeof sessionDetailLines>[1]) => sessionDetailLines(session, mappings).find((line) => line.label === "Workstream")!.value;
+    expect(stream({})).toBe("adam (native desk project)");
+    expect(stream({ "session:desk-with-epic": { workstream: "declared" } })).toBe("declared");
+    expect(sessionDetailLines({ ...session, labels: { ...session.labels, workstream: "labelled" } }, {}).find((line) => line.label === "Workstream")!.value).toBe("labelled");
   });
 
   it("names a declared Other work workstream or Unassigned epic as declared, and only a missing one as absent", () => {

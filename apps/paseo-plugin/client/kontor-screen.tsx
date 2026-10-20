@@ -89,11 +89,11 @@ function HostScreen(props: PluginScreenProps) {
     }
   }, [host.id, route, sourceState.sources, sourceState.reads, saved.planAssociations]);
   const projects = useMemo(() => {
-    const names = new Map<string, string>();
-    for (const entry of directory.state.entries) if (entry.projectKey) names.set(entry.projectKey, entry.projectName ?? entry.projectKey);
-    for (const workspace of workspaces.entries) names.set(workspace.projectId, workspace.projectCustomName ?? workspace.projectDisplayName);
+    const names = new Map((workspaces.projects ?? []).map((project) => [project.projectId, project.projectCustomName ?? project.projectDisplayName]));
+    for (const entry of directory.state.entries) if (entry.projectKey && !names.has(entry.projectKey)) names.set(entry.projectKey, entry.projectName ?? entry.projectKey);
+    for (const workspace of workspaces.entries) if (!names.has(workspace.projectId)) names.set(workspace.projectId, workspace.projectCustomName ?? workspace.projectDisplayName);
     return [...names];
-  }, [directory.state.entries, workspaces.entries]);
+  }, [directory.state.entries, workspaces.entries, workspaces.projects]);
   const selectedPlan = route.sourceId ? sourceState.sources.find((source) => source.id === route.sourceId && source.kind === "plan") : undefined;
   const scopedEpic = selectedPlan ? sourceState.reads[selectedPlan.id]?.graph?.epic.jira ?? selectedPlan.epic : route.epicKey;
   const entries = useMemo(() => directory.state.entries.filter((entry) => (route.projectId === null || entry.projectKey === route.projectId) && (scopedEpic === null || confirmedEpic(entry) === scopedEpic) && !(route.tab === "Overview" && route.sourceId && !scopedEpic)), [directory.state.entries, route.projectId, scopedEpic, route.tab, route.sourceId]);
@@ -198,8 +198,9 @@ function HostScreen(props: PluginScreenProps) {
   if (route.tab === "Sessions") page = <SessionsScreen key={sessionScopeKey(host.id, route)} viewScope={sessionScopeKey(host.id, route)} {...props} theme={{ ...props.theme, colors }} directory={directory} organization={presentation} projectId={route.projectId} epicKey={route.epicKey} onIncludeArchived={setIncludeArchived}
     scopeLabel={route.epicKey ?? (route.projectId === null ? null : projectName ?? "Project unavailable")} onClearScope={() => visit({ ...NO_SCOPE })}
     planSources={planSources} onEpicTab={(tab, epicKey, sourceId) => visitContext({ tab, epicKey, sourceId, sourceRevision: sourceId ? sourceState.reads[sourceId]?.revision ?? null : null, originAgentId: null })}
+    projects={projects.map(([id, name]) => ({ id, name }))}
     workspaces={workspaces.entries.filter((workspace) => (route.projectId === null || workspace.projectId === route.projectId) && (route.epicKey === null || saved.displayMappings[`workspace:${workspace.id}`]?.epic?.trim().toLocaleLowerCase() === route.epicKey.trim().toLocaleLowerCase())).map((workspace) => ({ id: workspace.id, name: workspace.title ?? workspace.name, projectKey: workspace.projectId, projectName: workspace.projectCustomName ?? workspace.projectDisplayName }))}
-    workspaceNote={workspaces.error ? `Workspace list unavailable: ${workspaces.error}` : workspaces.readAt ? `Empty workspaces from the workspace list read ${new Date(workspaces.readAt).toLocaleTimeString()}` : "Reading the workspace list…"} />;
+    workspaceNote={[workspaces.error ?? (workspaces.readAt ? `Empty workspaces from the workspace list read ${new Date(workspaces.readAt).toLocaleTimeString()}` : "Reading the workspace list…"), workspaces.projectError ?? (workspaces.projectsReadAt ? `Projects read ${new Date(workspaces.projectsReadAt).toLocaleTimeString()}` : "Reading the project list…")].join(" · ")} />;
   else if (route.tab === "Settings") page = <OrganizationSettingsPage colors={colors} state={presentation.state} entries={directory.state.entries} workspaces={workspaces.entries.map((workspace) => ({ id: workspace.id, name: workspace.title ?? workspace.name }))} sources={sourceState.sources} reads={sourceState.reads} teamsSnapshots={sourceState.teamsSnapshots} teamsErrors={sourceState.teamsErrors} sourcesAvailable={sourceState.available} sourceError={sourceState.error} refresh={() => { void sourceState.refresh(); }}
     onOpenTeams={() => visit({ tab: "AI teams & sessions", ...tabScope(host.id, "AI teams & sessions") }, undefined, (next) => writePageView(host.id, next, { ...readPageView(host.id, next, DEFAULT_TEAMS_VIEW), configured: true }))}
     keyboard={<KeyboardSettingsCard state={keyboard.state} save={keyboard.save} colors={colors} web={layout.platform === "web"} root={rootRef} copy={copy} />} />;

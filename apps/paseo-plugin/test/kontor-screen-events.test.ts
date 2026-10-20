@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { URL } from "node:url";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
+import type { PaseoProject } from "@getpaseo/client";
 import type { PluginHostSummary, PluginScreenProps } from "@getpaseo/plugin/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DirectoryEntry } from "../client/session-directory";
@@ -8,6 +9,7 @@ import { canonicalGraphSchema, jiraHistorySchema, type ReadSourceSummary, type S
 import { Linking } from "react-native";
 
 const model = vi.hoisted(() => ({
+  projects: [] as PaseoProject[],
   slots: [] as unknown[], cursor: 0, entries: [] as DirectoryEntry[], sources: [] as ReadSourceSummary[], reads: {} as Record<string, SourceRead>, values: {} as object,
   hosts: [] as PluginHostSummary[], toastError: vi.fn(), toastShow: vi.fn(), copyText: vi.fn(async (_text: string) => {}), updates: 0,
   keyboardSave: vi.fn(async () => true),
@@ -37,7 +39,7 @@ vi.mock("@getpaseo/plugin/client/react-native", () => ({
 vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: () => ({ state: { entries: model.entries, status: "ready", live: false, lastUpdatedAt: 1, error: null, staleReason: null, pages: 1, includeArchived: false }, refresh: () => {} }) }));
 vi.mock("../client/use-organization-settings", () => ({ useOrganizationSettings: () => ({ state: { status: "ready", values: model.values, saving: false, saveError: null }, save: async () => true }) }));
 vi.mock("../client/use-read-sources", () => ({ useReadSources: () => ({ sources: model.sources, reads: model.reads, teamsSnapshots: {}, error: null, loading: false, available: true }) }));
-vi.mock("../client/use-workspace-directory", () => ({ useWorkspaceDirectory: () => ({ entries: [], error: null, readAt: null }) }));
+vi.mock("../client/use-workspace-directory", () => ({ useWorkspaceDirectory: () => ({ entries: [], error: null, readAt: null, projects: model.projects, projectError: null, projectsReadAt: null }) }));
 vi.mock("../client/use-keyboard-settings", () => ({ useKeyboardSettings: () => ({ state: model.keyboard, save: model.keyboardSave }) }));
 vi.mock("../client/keyboard-shortcuts", async (original) => ({
   ...await original<typeof import("../client/keyboard-shortcuts")>(),
@@ -69,7 +71,7 @@ function elements(value: ReactNode): ReactElement<Record<string, unknown>>[] {
   return [value, ...elements(value.props.children as ReactNode)];
 }
 let sequence = 0;
-beforeEach(() => { vi.clearAllMocks(); model.slots = []; model.cursor = 0; model.updates = 0; model.values = DEFAULT_ORGANIZATION_SETTINGS; model.entries = [sessionEntry("native", { labels: { epic: "ASMA-1" } })]; model.sources = []; model.reads = {}; model.hosts = []; model.keyboard = { status: "loading" }; model.shortcut = null; });
+beforeEach(() => { model.projects = []; vi.clearAllMocks(); model.slots = []; model.cursor = 0; model.updates = 0; model.values = DEFAULT_ORGANIZATION_SETTINGS; model.entries = [sessionEntry("native", { labels: { epic: "ASMA-1" } })]; model.sources = []; model.reads = {}; model.hosts = []; model.keyboard = { status: "loading" }; model.shortcut = null; });
 /** Renders the header selector as the screen would, so its own semantics and style are visible. */
 function pickerField(picker: ReactElement<Record<string, unknown>>): ReactElement<Record<string, unknown>> {
   return (picker.type as (props: Record<string, unknown>) => ReactElement<Record<string, unknown>>)(picker.props);
@@ -115,6 +117,19 @@ function mount(compact: boolean, initial?: Partial<KontorRoute>) {
   };
 }
 describe("Kontor shell native actions", () => {
+  it("offers a native desk with no workspaces or sessions and supplies it to Sessions", () => {
+    model.projects = [{ projectId: "prj_empty", projectKey: "fixture:empty", projectDisplayName: "Desk", projectCustomName: "DESK • RESEARCH", projectRootPath: "/fixture/empty", projectKind: "non_git", projectCustomIconRevision: null, projectIconRevision: "automatic:none:v1" }];
+    const screen = mount(true, { tab: "Overview" });
+    screen.openPicker();
+    expect(screen.menuItems().map((node) => node.props.label)).toContain("DESK • RESEARCH");
+    screen.choose("DESK • RESEARCH");
+    expect(hostNavigation(screen.props.host.id).route.projectId).toBe("prj_empty");
+    screen.click("Sessions");
+    const sessions = screen.elements().find((node) => node.type === SessionsScreen)!;
+    expect(sessions.props.projects).toEqual([{ id: "prj_empty", name: "DESK • RESEARCH" }, { id: "prj_1", name: "Project" }]);
+    expect(sessions.props.workspaces).toEqual([]);
+  });
+
   it.each([true, false])("keeps the title on one line, the confirmed key on the selector's lower border and the full accessible label (compact=%s)", (compact) => {
     const title = "A long configured source title that must remain available to assistive technology";
     model.sources = [{ id: "long-plan", title, kind: "plan", path: "/configured/long.md", projectId: null, epic: "ASMA-8539", workstream: null, revisionKind: "working copy" }];

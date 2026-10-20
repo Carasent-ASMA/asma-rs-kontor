@@ -76,7 +76,7 @@ import {
 import { useSessionDirectory } from "./use-session-directory";
 import { DEFAULT_ORGANIZATION_SETTINGS, type OrganizationSettings } from "../shared/organization";
 import type { useOrganizationSettings } from "./use-organization-settings";
-import { allGroupKeys, buildOrganizationTree, declaredScope, defaultGroupExpanded, filterOrganizationTree, flattenOrganizationTree, inEpicScope, isDeskWork, NO_LINKED_EPIC, NO_ROLE_KEY, organizationScope, OTHER_WORKSTREAM, ROLE_ROOT_KEY, sessionRole, sessionState, STATE_LABELS, titleRoleCode, UNASSIGNED_EPIC, visibleSessions, workstreamRank, type OrganizationGroup, type OrganizationRow, type OrganizationWorkspace, type RoleSource } from "./session-organization";
+import { allGroupKeys, buildOrganizationTree, declaredScope, defaultGroupExpanded, deriveDeskScopes, filterOrganizationTree, flattenOrganizationTree, inEpicScope, matchesScope, nativeDesk, NO_LINKED_EPIC, NO_ROLE_KEY, organizationScope, OTHER_WORKSTREAM, ROLE_ROOT_KEY, scopeKeepsGroup, sessionRole, sessionState, STATE_LABELS, titleRoleCode, UNASSIGNED_EPIC, visibleSessions, workstreamRank, type OrganizationGroup, type OrganizationRow, type OrganizationWorkspace, type OrganizationProject, type RoleSource } from "./session-organization";
 import { rowKey, siblingKeys, reorderSavedSiblingOrder } from "./organization-order";
 import { OrganizationRowView, StateBadge, stateColor as sessionStateColor, WORKSPACE_KINDS } from "./organization-row";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
@@ -126,21 +126,7 @@ export function matchesShortcut(
   shortcut: string | null,
   mappings: Parameters<typeof organizationScope>[1],
 ): boolean {
-  const workstream = organizationScope(entry, mappings).workstream.trim().toLocaleLowerCase();
-  switch (shortcut) {
-    case null:
-      return true;
-    case "PR Review":
-      return workstream === "pr review" || workstream === "pr-review";
-    case "Adam":
-      return workstream === "adam";
-    case "Desks":
-      return isDeskWork(entry, mappings);
-    case "Other work":
-      return !isDeskWork(entry, mappings);
-    default:
-      return workstream === shortcut.trim().toLocaleLowerCase();
-  }
+  return matchesScope(entry, shortcut, mappings);
 }
 
 function workstreamKey(label: string): string {
@@ -521,7 +507,7 @@ const pageDocument = () => (globalThis as { document?: { activeElement?: unknown
 /**
  * Everything a Role row shortens, for its details: the role and where it came from, every other
  * declaration, and the whole desk or workstream, epic and workspace chain, with absent values named.
- * A value is absent only when no display mapping or label supplies it, whatever name it would fall back to.
+ * A workstream may come from a native desk project when no display mapping or label names it.
  */
 export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<typeof organizationScope>[1]): { label: string; value: string }[] {
   const role = sessionRole(entry);
@@ -533,7 +519,7 @@ export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<t
   if (provenance.desk) return [...lines, { label: "Desk", value: provenance.parts[0]! }, { label: "Workspace", value: provenance.workspace }];
   const declared = declaredScope(entry, mappings);
   return [...lines,
-    { label: "Workstream", value: declared.workstream ?? `${OTHER_WORKSTREAM}: no workstream or desk label and no display mapping` },
+    { label: "Workstream", value: declared.workstream ?? (nativeDesk(entry.projectName) !== null ? `${organizationScope(entry, mappings).workstream} (native desk project)` : `${OTHER_WORKSTREAM}: no workstream or desk label and no display mapping`) },
     { label: "Epic", value: declared.epic ?? NO_LINKED_EPIC },
     { label: "Workspace", value: provenance.workspace }];
 }
@@ -1307,6 +1293,7 @@ type SessionsScreenProps = PluginScreenProps & {
   projectId?: string | null;
   onIncludeArchived?: (include: boolean) => void;
   workspaces?: readonly OrganizationWorkspace[];
+  projects?: readonly OrganizationProject[];
   workspaceNote?: string;
   epicKey?: string | null;
   viewScope?: string;
@@ -1317,7 +1304,7 @@ type SessionsScreenProps = PluginScreenProps & {
   planSources?: Readonly<Record<string, readonly string[]>>;
   onEpicTab?: (tab: "Plan" | "Board" | "Graph", epicKey: string, sourceId: string | null) => void;
 };
-export function SessionsScreen({ host, layout, navigation, theme, directory, organization, projectId = null, onIncludeArchived, workspaces, workspaceNote, epicKey = null, viewScope = host.id, scopeLabel = null, onClearScope, planSources, onEpicTab }: SessionsScreenProps) {
+export function SessionsScreen({ host, layout, navigation, theme, directory, organization, projectId = null, onIncludeArchived, workspaces, projects, workspaceNote, epicKey = null, viewScope = host.id, scopeLabel = null, onClearScope, planSources, onEpicTab }: SessionsScreenProps) {
   const colors = theme.colors;
   const compact = layout.compact;
   const hosts = useHosts();
@@ -1885,15 +1872,20 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     () => state.entries.filter((entry) => (projectId === null || entry.projectKey === projectId) && (epicKey === null || inEpicScope(entry, mappings, epicKey))),
     [state.entries, projectId, epicKey, mappings],
   );
+  const deskScopes = useMemo(() => deriveDeskScopes(scoped, workspaces,
+    projects?.filter((project) => projectId === null || project.id === projectId)), [scoped, workspaces, projects, projectId]);
+  // Retain legacy shortcuts; native ID choices distinguish same-named desks and survive renames.
+  const scopeChoices = [...SCOPE_CHOICES.slice(0, -1), ...deskScopes, SCOPE_CHOICES[SCOPE_CHOICES.length - 1]!];
+  const scopeChoiceLabel = shortcut === null ? null : scopeChoices.find(({ id }) => id === shortcut)?.label ?? (shortcut?.startsWith("desk-project:") ? "Native desk project" : shortcut);
   const tree = useMemo(() => buildOrganizationTree({ entries: scoped, ...preferences, grouping, workspaces }), [scoped, preferences, grouping, workspaces]);
   const tokens = useMemo(() => view.query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean), [view.query]);
   const task = view.task ?? null;
   const resultMode = isResultMode(view);
   const eligible = useCallback((entry: DirectoryEntry) => matchesShortcut(entry, shortcut, mappings)
     && (streams === null || streams.includes(workstreamKey(organizationScope(entry, mappings).workstream))), [shortcut, streams, mappings]);
-  // Search and state never narrow the tree; with no desk or workstream choice, empty workspaces stay visible.
+  // Search and state never narrow the tree; with no workstream choice, empty workspaces stay visible, a desk context's own included.
   const filtered = useMemo(() => filterOrganizationTree(tree, eligible,
-    (group) => shortcut === null && streams === null && group.kind === "workspace", eligible), [tree, eligible, shortcut, streams]);
+    (group) => streams === null && scopeKeepsGroup(group, shortcut, mappings), eligible), [tree, eligible, shortcut, streams, mappings]);
   const linked = useMemo(() => task ? new Set(taskSessions(scoped, task).map(({ entry }) => entry.id)) : null, [scoped, task]);
   // Matches before the state filter, so each state chip counts what choosing it would show.
   const candidates = useMemo(() => scoped.filter((entry) => eligible(entry) && (linked === null || linked.has(entry.id)) && matchesResultSearch(entry, tokens, mappings)),
@@ -1992,7 +1984,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const hasOrganizationFilter = shortcut !== null || streams !== null;
   const clearable = view.status !== "all" || !!task || view.includeArchived || hasOrganizationFilter;
   const taskKeys = task ? [task.jira ? `${TASK_JIRA_LABELS.join(" or ")} equal to ${task.jira}` : null, task.kontorId ? `${TASK_TICKET_LABEL} equal to ${task.kontorId}` : null].filter(Boolean).join(", or ") : "";
-  const summaryParts = activeFilterParts({ query: view.query, status: view.status, shortcut, streams, includeArchived: view.includeArchived, task: task?.label });
+  const summaryParts = activeFilterParts({ query: view.query, status: view.status, shortcut: shortcut?.startsWith("desk-project:") ? scopeChoiceLabel : shortcut, streams, includeArchived: view.includeArchived, task: task?.label });
   // The compact slim badge also counts the state and desk chips its closed toolbar hides; search has its own button.
   const slimActiveCount = compact
     ? [view.status !== "all", !!task, shortcut !== null, streams !== null, view.includeArchived, grouping !== "hierarchy"].filter(Boolean).length
@@ -2291,7 +2283,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             {streamChoices.map(([key, label]) => <FilterChip key={key} checkbox label={label} compact={compact} active={streams === null || streams.includes(key)} colors={colors} {...focusProps} onPress={() => toggleStream(key)} />)}
             {streams !== null ? <FilterChip label="All" compact={compact} active={false} colors={colors} {...focusProps} onPress={() => { pinFilterInteraction(); updateView({ streams: null, scrollOffset: 0 }); }} /> : null}
           </OptionLine> : null}
-          <OptionSelect testID="sessions-scope" label="Workspace scope" value={SCOPE_CHOICES.find(({ id }) => id === shortcut)?.label ?? String(shortcut)} expanded={optionMenu === "scope"} anchor={scopeRef} compact={compact} colors={colors} {...focusProps} onPress={() => setOptionMenu(optionMenu === "scope" ? null : "scope")} />
+          <OptionSelect testID="sessions-scope" label="Workspace scope" value={scopeChoiceLabel ?? SCOPE_CHOICES[0]!.label} expanded={optionMenu === "scope"} anchor={scopeRef} compact={compact} colors={colors} {...focusProps} onPress={() => setOptionMenu(optionMenu === "scope" ? null : "scope")} />
           <OptionLine label="Epic lifecycle" colors={colors}>
             <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>Not captured in session data; no lifecycle is inferred from idle or closed sessions.</Text>
           </OptionLine>
@@ -2344,7 +2336,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       <ScrollView testID={`sessions-${optionMenu}-choices`} keyboardShouldPersistTaps="handled" style={{ flexGrow: 0, flexShrink: 1 }}>
         {optionMenu === "grouping"
           ? GROUPINGS.map(({ id, label }) => <MenuItem key={id} label={label} tall={compact} selected={grouping === id} colors={colors} onPress={() => chooseOption(() => chooseGrouping(id))} />)
-          : SCOPE_CHOICES.map(({ id, label }) => <MenuItem key={label} label={label} tall={compact} selected={shortcut === id} colors={colors} onPress={() => chooseOption(() => { pinFilterInteraction(); updateView({ shortcut: id, scrollOffset: 0 }); })} />)}
+          : scopeChoices.map(({ id, label }) => <MenuItem key={id ?? "all"} label={label} detail={id?.startsWith("desk-project:") ? deskScopes.find((choice) => choice.id === id)?.projectId : undefined} tall={compact} selected={shortcut === id} colors={colors} onPress={() => chooseOption(() => { pinFilterInteraction(); updateView({ shortcut: id, scrollOffset: 0 }); })} />)}
       </ScrollView>
     </AnchoredMenu>
   );
