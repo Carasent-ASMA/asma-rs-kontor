@@ -252,22 +252,29 @@ function mappedValue(
   return null;
 }
 
-export function organizationScope(
+/** The workstream and epic a display mapping or label names; null where none does, so a declared "Other work" is not read as absent. */
+export function declaredScope(
   entry: DirectoryEntry,
   mappings: OrganizationInput["displayMappings"],
-): { readonly workstream: string; readonly epic: string } {
+): { readonly workstream: string | null; readonly epic: string | null } {
   const workstream =
     mappedValue(mappings, entry, "workstream") ??
     clean(entry.labels.desk) ??
-    clean(entry.labels.workstream) ??
-    OTHER_WORKSTREAM;
+    clean(entry.labels.workstream);
   const epic =
     mappedValue(mappings, entry, "epic") ??
     clean(entry.labels.epic) ??
     clean(entry.labels["jira.epic"]) ??
-    clean(entry.labels["origin.epic"]) ??
-    UNASSIGNED_EPIC;
+    clean(entry.labels["origin.epic"]);
   return { workstream, epic };
+}
+
+export function organizationScope(
+  entry: DirectoryEntry,
+  mappings: OrganizationInput["displayMappings"],
+): { readonly workstream: string; readonly epic: string } {
+  const declared = declaredScope(entry, mappings);
+  return { workstream: declared.workstream ?? OTHER_WORKSTREAM, epic: declared.epic ?? UNASSIGNED_EPIC };
 }
 
 /** The epic as shown: no display mapping or epic label links the session to one. */
