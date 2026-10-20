@@ -27,10 +27,10 @@ import { goBack, navigate, readRouteView, writeRouteView } from '../client/navig
 type Props = Parameters<typeof ReadOnlyPage>[0];
 type Element = ReactElement<Record<string, unknown>>;
 const catalog = sourceCatalog(JSON.stringify([
-  ['authoring', 'authoring-fleet.yml', 'f7ddfff7a0db716e3356d43fe209c9c73f4fe51866de5ebbc26f641968fbea54'],
-  ['operator', 'operator-fleet.yml', 'e5040c5d74dbc131338b1568d0c0ada499eb31e55bafc512b4b1d883e578d3a3'],
+  ['authoring', 'authoring-fleet.yml', '5e49c621a5ed28a181f7e5f7c5c7c67f7bdc09c8d1258e94d48c60988fa5cff4'],
+  ['operator', 'operator-fleet.yml', 'd0fd421cab74df1346a6fb3c96ae2d85814af7f6336c40fdcd4c95906dab2101'],
   ['roster', 'core-team.yml', '329f5fb70d34cb51409f32588533c1b200bd5bb434341a35d9d66fa142fd6cfc'],
-  ['templates', 'mvp-team-pack.json', 'd4b0965db9be03de42cf9aec25f0dd3c43c9c0493d6b2378b6fb8e4d82f8ee5d'],
+  ['templates', 'mvp-team-pack.json', '2a5a0aed9c23450f984fd3d1f92c5824f4640a71b2bc9697349b0632fed8b3cc'],
 ].map(([id, filename, expectedSha256]) => ({ id, title: id, kind: 'teams', path: fileURLToPath(new URL(`./fixtures/teams-source/${filename}`, import.meta.url)), expectedSha256 }))));
 let snapshots: Record<string, TeamsSourceSnapshot>;
 const views = new Map<string, TeamsView>();

@@ -15,8 +15,8 @@ schema_version: 1
 # a paid model needs its own domain with a distinct model_prefix and Igor's explicit decision.
 domains:
   openrouter-free: { provider: opencode, accounts: [opencode], model_prefix: "openrouter/" } # free models only (ids end in :free)
-  claude:     { provider: claude,   accounts: [claude-work, claude-personal] }   # exact aliases only; never the bare `claude` login. Work first (Igor, 2026-09-25)
-  codex:      { provider: codex,    accounts: [codex-work, codex-personal] }
+  claude:     { provider: claude,   accounts: [claude-b, claude-a] }   # exact aliases only; never the bare `claude` login. Work first (Igor, 2026-09-25)
+  codex:      { provider: codex,    accounts: [codex-b, codex-a] }
   cursor:     { provider: cursor,   accounts: [cursor] }
   deepseek:   { provider: opencode, accounts: [opencode], model_prefix: "deepseek/" }
   # Z.AI Coding Plan: its own subscription (ASMA-8373, 2026-10-06), reached through OpenCode.
@@ -25,7 +25,7 @@ domains:
 # For providers that do not work at all. Quota exhaustion needs no entry.
 unavailable:
   domains: []                     # deepseek removed: Igor 2026-10-06 (ASMA-8371 DEC-014); OpenRouter is available (Igor 2026-10-07)
-  accounts: []                    # claude-work back 2026-09-25 (Igor checked; operator quota record rev 273)
+  accounts: []                    # claude-b back 2026-09-25 (Igor checked; operator quota record rev 273)
 
 models:
   # Free OpenRouter fallbacks (Igor 2026-10-07); adding and removing: _docs/ai-orchestration/operations/2026-10-07-02-50-runbook-openrouter-free-models.md
