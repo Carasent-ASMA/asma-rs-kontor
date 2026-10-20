@@ -42,6 +42,7 @@ const EXPANDED: Partial<OrganizationSettings> = {
 };
 
 export const SCENARIOS: readonly Scenario[] = [
+  { id: "mobile-quick-filters", title: "Mobile quick filters and search", summary: "Combined fictional inventory. Search expands to an editable field. Direct state icons filter once; More exposes all seven names, counts and meanings without applying a filter. Clear filters clears every narrowing choice and keeps the current context/view. Full-page Filters and Back remain separate.", inventory: "integration", sources: true, start: { grouping: "flat" }, settings: { favorites: ["agt_time_recent"] } },
   { id: "baseline", title: "Baseline", summary: "Default inventory, Sessions tree with one epic open.", inventory: "base", sources: true, settings: EXPANDED },
   { id: "integrated-review", title: "Combined navigator review", summary: "All applicable plugin changes: full-page mobile filters with Back, timestamps, lifecycle, native desks, compact header and model reports. Sessions and plan catalogs are fictional; 19 real-source reads are separate qualification evidence. Host title overlap is not delivered here.", inventory: "integration", sources: true, start: { grouping: "flat" } },
   { id: "mobile-filters", title: "Mobile filters and Back", summary: "Combined fictional inventory. On phone: search beside one Filters entry; full-page controls apply immediately; Back and Show results keep all choices. Desktop retains its inline controls.", inventory: "integration", sources: true, start: { grouping: "flat" } },

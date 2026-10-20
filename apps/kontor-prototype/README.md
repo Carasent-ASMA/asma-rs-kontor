@@ -208,3 +208,72 @@ unit tests (with an injected reader) and the simulated scenarios reach it.
 `?scenario=integrated-review` uses the integrated plugin source with fictional timestamp, model-report, lifecycle and native-desk inventories. `integrated-roles` and `integrated-offline` show the same inventory in Roles and as stale. Individual `status-lifecycle`, `native-desks`, `model-usage` and `time-view` scenarios remain selectable. Earlier errors are neutral history; Include archived adds only explicitly archived sessions.
 
 Plan, Board, Graph, Overview and Delivery use the fictional ASMA-991xx/992xx catalog. The separately qualified 19 real source reads across 27 epics are evidence outside this app; no real catalog, private sessions or Jira capture is copied here. The simulated host title row permits compact-header review; it does not deliver the separate Paseo sidebar/title-overlap correction. This preview is not an installed-host, packaged Electron, physical-device or VoiceOver pass.
+
+
+## Mobile quick filters and unified clearing decision
+
+The `mobile-quick-filters` scenario uses the combined fictional inventory, starts
+in Flat view and has one saved favorite. This app-only branch is composed with
+an exact, separately committed production plugin tree in a disposable export.
+Its tracked `apps/paseo-plugin` is intentionally older; never synchronize or
+commit copied runtime files here. The release evidence records both commits,
+all overlaid blobs and the built source maps. Earlier frozen previews stay as
+they were. The new review port is 58148.
+
+Seven 44-point targets already need 308 points before spacing, Search or Filters.
+The decision is therefore an expandable Search plus an explicit More chooser,
+with all seven actions retained. With normal text, 320 CSS pixels leaves 296
+points inside the Sessions padding and shows three direct quick icons; 390
+leaves 366 and shows four. The selected state replaces the last direct icon
+when necessary, and a persistent named summary reports the selection/count.
+The More button has a visible caption. Opening it changes no filter: every
+choice shows its distinct shape, existing name, exact count and meaning. These
+labeled filters are the legend; there is no separate permanent Status legend.
+
+A direct icon applies its filter once. Shared `useControlHelp` from the selected
+403960076464f2e40732f1a300e98fa987777f32 dependency adds hover and keyboard-focus
+help to that same Pressable, with dismissal before activation. Touch users read
+More without activating a filter; long-press is not required. The chooser uses
+the existing bounded AnchoredMenu, scrolls on short screens and returns focus
+to More on Close, Escape or Android Back. The independent full-page Filters/Back
+route keeps its current search and choices. Search expands into an editable
+16-point input; Clear search is explicitly search-only. Submit collapses it
+without losing its value, which remains in the named summary. Larger native
+text can use a separate editing line and wrap the utility targets.
+
+Clear filters uses one action across the quick toolbar, full-page controls,
+desktop expanded controls, collapsed summary and empty results. It clears query,
+status (including the Favorites choice), task, desk/workspace shortcut, selected
+workstreams (including an empty selection), and archive inclusion back to its
+existing default. The existing result/tree transition handles offsets. Grouping,
+Flat view, arrangement/disclosures, favorite membership, layout, and explicit
+project/epic navigation context survive. Clearing twice has no further effect.
+Filter counts and disabled state include every narrowing choice, independently
+of presentation preferences. All data stays in the fixture host.
+
+Primary research and constraints:
+
+- [Apple buttons](https://developer.apple.com/design/human-interface-guidelines/buttons)
+  and [UI design guidance](https://developer.apple.com/design/tips/) inform the
+  44-point interaction size used by the existing plugin.
+- [Android accessibility defaults](https://developer.android.com/develop/ui/compose/accessibility/api-defaults)
+  recommend 48dp. Chooser rows use at least 48 points; toolbar buttons keep the
+  plugin's established 44-point minimum. This is not an Android certification.
+- [WCAG target size minimum](https://www.w3.org/WAI/WCAG22/Understanding/target-size-minimum)
+  specifies 24 CSS pixels subject to exceptions; [enhanced target size](https://www.w3.org/WAI/WCAG21/Understanding/target-size)
+  informs the more generous 44-point choice here.
+- [WCAG reflow](https://www.w3.org/WAI/WCAG22/Understanding/reflow.html) informs
+  the 320-CSS-pixel check. [Hover/focus content](https://www.w3.org/WAI/WCAG22/Understanding/content-on-hover-or-focus.html)
+  requires dismissible, hoverable and persistent help. The [APG tooltip pattern](https://www.w3.org/WAI/ARIA/apg/patterns/tooltip/)
+  is informative and explicitly still a work in progress.
+- Inspection of the installed 0.11.4 SDK declarations and pinned Paseo 0.12.0
+  source confirms host Icon, Modal, ScrollView, FlatList and TextInput APIs; no
+  tooltip or anchored screen chooser is exported. Reuse the agreed plugin help
+  provider and AnchoredMenu rather than adding dependencies.
+
+Browser evidence must cover direct/chooser activation, exact visible results
+and counts, editable search/clear, compound reset, focus restoration, 320/390,
+short/landscape layouts, larger text and keyboard-sized viewports. A web fixture
+host cannot certify physical iOS/Android touch, native software-keyboard insets,
+Dynamic Type, VoiceOver/TalkBack, or the installed Electron host. Those limits
+remain explicit in the review packet.
