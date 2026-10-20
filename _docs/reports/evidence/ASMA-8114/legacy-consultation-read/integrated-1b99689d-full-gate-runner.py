@@ -17,7 +17,7 @@ with log.open('wb') as out:
 receipt={'sourceCommit':commit,'sourceTree':tree,'archiveSha256':hashlib.sha256(archive).hexdigest(),'command':command,'startedAt':start,'finishedAt':finish,'exitCode':run.returncode,'logSha256':hashlib.sha256(log.read_bytes()).hexdigest(),'privateTarget':str(target),'scope':'Integrated exact-candidate archive qualification only. Earlier exact-51 evidence is not relabeled. No merge/deployment or task/epic acceptance.'}
 (folder/'receipt.json').write_text(json.dumps(receipt,indent=2)+'\n');print(json.dumps(receipt),flush=True)
 if run.returncode==0:
- cli=os.environ['HOME']+'/carasent/[parent-tools]'
+ cli=os.environ['HOME']+'/[parent-tools]'
  commands=[['cargo','test','--locked','-p','kontor-api','--test','openapi_contract'],['node',cli,str(source/'crates/kontor-api/contract/openapi.json'),'-o',str(folder/'schema-verify.d.ts')],['diff','-u',str(source/'apps/console/src/api/schema.d.ts'),str(folder/'schema-verify.d.ts')]]
  api=folder/'frozen-and-api.txt';records=[];api_start=datetime.datetime.now(datetime.timezone.utc).isoformat()
  with api.open('wb') as out:

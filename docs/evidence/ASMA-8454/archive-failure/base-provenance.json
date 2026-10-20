@@ -4101,7 +4101,7 @@
   "source_writes": 0,
   "public_derivative": {
     "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
-    "ledger": "PUBLIC-REDACTION.json",
+    "ledger": "../PUBLIC-REDACTION.json",
     "note": "This public copy is a redacted derivative. files maps original SHA-256; clean_export is a redacted placeholder."
   }
 }

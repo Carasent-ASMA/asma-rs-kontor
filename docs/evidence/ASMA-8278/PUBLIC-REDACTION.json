@@ -1,0 +1,44 @@
+{
+  "consumers": [
+    "PUBLIC-REDACTION.md"
+  ],
+  "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+  "files": {
+    "attestation-verifier-source/review-attestation-source.md": {
+      "bytes": 6150,
+      "derivative_sha256": "edf7e667b3fa364dfe21cebf1aa7cf657d6222537c7d80fe64e91fd88a0becc5",
+      "original_sha256": "fe3d2dccb05d1f29798afa04a4104ec9a75c225a5464be64d59b5e0fdbf15e02",
+      "private_references_redacted": 1
+    },
+    "prepared-diagnostic-source/candidate-files/crates/kontor-runtime/src/planning_pair/attestation.rs": {
+      "bytes": 14921,
+      "derivative_sha256": "6289cb9b1497387795e70b1b4728a2e1767065afc6c4be7d5401b9fea12e83cd",
+      "original_sha256": "4902114724206f4581ca055b47a1e7c18444c449b7ae61094df46d8380e57260",
+      "private_references_redacted": 1
+    },
+    "prepared-diagnostic-source/candidate-files/crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic.rs": {
+      "bytes": 8306,
+      "derivative_sha256": "38a0f76f15e9bc1eaffe0c01532b1789093ed69c6bbf985c84d9d96d92e469b8",
+      "original_sha256": "8d4b5040642c68b58986fb8d3d8614584e48bb70ff5ac3ba7728b9679efd1a2d",
+      "private_references_redacted": 2
+    },
+    "prepared-diagnostic-source/original/graph-verify-trace.json": {
+      "bytes": 1270,
+      "derivative_sha256": "12981f6d93d8f9d8aa47c0d652e286d87025b1b8c01e508f1ce09bb79dde736c",
+      "original_sha256": "e7ecb4476da6b822bf9027c782afbde38c87813392c4aa376df8505b8cffa69a",
+      "private_references_redacted": 7
+    }
+  },
+  "model": "The public copy is a redacted derivative. Original bytes and SHA-256 are retained in the access-controlled evidence store; the TPM owns the exact-path disposition ledger.",
+  "original_archive": "access-controlled evidence store outside the public repo; TPM-owned disposition ledger",
+  "placeholders": {
+    "[operator]": "operator-identifying path segment",
+    "[parent-plan]": "private parent plan path",
+    "[parent-project]": "private parent project slug",
+    "[parent-repository]": "private parent repository",
+    "[parent-tools]": "private parent tools path",
+    "[parent-workspace]": "private parent workspace path",
+    "[task-workspace]": "private task workspace path"
+  },
+  "scope": "docs/evidence/ASMA-8278"
+}

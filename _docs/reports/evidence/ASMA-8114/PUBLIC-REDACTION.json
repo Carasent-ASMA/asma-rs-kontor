@@ -1,6 +1,18 @@
 {
+  "additional_redactions": [
+    {
+      "bytes": 3656,
+      "derivative_sha256": "19ee6a5e460ed7f6ac82050cec90c89aa79c4f57e325acdb998e49222085b9ef",
+      "path": "legacy-consultation-read/integrated-1b99689d-full-gate-runner.py",
+      "previous_derivative_sha256": "4f189f62d56e1864e70005db9efe9b3348ed551499dca9d8c59f49e203f57cf5",
+      "private_references_redacted": 1,
+      "reason": "remove remaining owner-directory prefix (LSA-WP01-PUBLIC-EVIDENCE-001)"
+    }
+  ],
+  "additional_redactions_note": "additional_redactions supersedes derivative_sha256 in files for the named paths; files retains the original first-pass pair unchanged.",
   "consumers": [
-    "SHA256SUMS.json"
+    "legacy-consultation-read/SHA256SUMS.json",
+    "PUBLIC-REDACTION.md"
   ],
   "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
   "files": {

@@ -1,4 +1,15 @@
 {
+  "additional_redactions": [
+    {
+      "bytes": 589540,
+      "derivative_sha256": "0f177d57bc0908299dc1bd1aa84286603e6cc94cd9047ab52a32b31b35177173",
+      "path": "archive-failure/base-provenance.json",
+      "previous_derivative_sha256": "d170fb8a643b1103ab78836a6301ca2fa6fac94ca15e84be53e917259af1652d",
+      "private_references_redacted": 0,
+      "reason": "correct derivative-to-ledger reference to ../PUBLIC-REDACTION.json"
+    }
+  ],
+  "additional_redactions_note": "additional_redactions supersedes derivative_sha256 in files for the named paths; files retains the original first-pass pair unchanged.",
   "consumers": [
     "package-manifest.json",
     "archive-failure/base-provenance.json",

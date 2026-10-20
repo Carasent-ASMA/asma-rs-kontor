@@ -1,0 +1,38 @@
+{
+  "consumers": [
+    "PUBLIC-REDACTION.md"
+  ],
+  "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+  "files": {
+    "HIGH-SCOPE-RECORD.approved.json": {
+      "bytes": 7390,
+      "derivative_sha256": "f7c9b5238fae997fe2fcdec8ebec731bf5defd38c51343cf09f2a725e332b3de",
+      "original_sha256": "42a13bbf083dcf1f361c7f57e28ea82f1e62c7fee7dec47209dcf00e6225f961",
+      "private_references_redacted": 1
+    },
+    "IMPLEMENT-TO-VERIFY-HANDOFF.md": {
+      "bytes": 7053,
+      "derivative_sha256": "3536b810c519745223e9b3f88eb2dfd3d03b31832e9937d02e9cba2d1537d3be",
+      "original_sha256": "56a0656e9cb308043bf8d5a696237a638afcfafa51f57dc801084e69bf4a0be6",
+      "private_references_redacted": 1
+    },
+    "OPEN-QUESTIONS.md": {
+      "bytes": 6795,
+      "derivative_sha256": "550ec7f583d3dff12f8a53e8d0fd33dda4ec605f5c8b4a80e13a970b6e1ab98b",
+      "original_sha256": "33e2b35d0655b5ef6ed62c3d1f2597bf69e78475f1842d15f4b3b149a42f0798",
+      "private_references_redacted": 1
+    }
+  },
+  "model": "The public copy is a redacted derivative. Original bytes and SHA-256 are retained in the access-controlled evidence store; the TPM owns the exact-path disposition ledger.",
+  "original_archive": "access-controlled evidence store outside the public repo; TPM-owned disposition ledger",
+  "placeholders": {
+    "[operator]": "operator-identifying path segment",
+    "[parent-plan]": "private parent plan path",
+    "[parent-project]": "private parent project slug",
+    "[parent-repository]": "private parent repository",
+    "[parent-tools]": "private parent tools path",
+    "[parent-workspace]": "private parent workspace path",
+    "[task-workspace]": "private task workspace path"
+  },
+  "scope": "docs/evidence/ASMA-8237"
+}

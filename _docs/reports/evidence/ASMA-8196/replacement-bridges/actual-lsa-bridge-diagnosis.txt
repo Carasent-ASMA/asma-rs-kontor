@@ -27,7 +27,7 @@ The authoritative team hydrator already models this correctly: it retains abando
 
 There is a matching second defect in the migration census SQL at [`repository.rs:21955`](/private/tmp/kontor-ASMA-8121-release-dddb7287/source/crates/kontor-store/src/repository.rs:21955): it ignores an abandoned immediate child without following through to its bound descendant. Fixing only the daemon preview would therefore leave record/confirm parity inconsistent.
 
-The graph project `Users-igor-carasent-asma-modules-_tools-asma-rs-kontor` confirms this helper feeds native-name preparation plus seat/admission recovery, while the store census feeds both migration record and confirmation. Coverage reports no recorded gaps; deployed archive source remains the exact ground truth.
+The graph project `[parent-project]` confirms this helper feeds native-name preparation plus seat/admission recovery, while the store census feeds both migration record and confirmation. Coverage reports no recorded gaps; deployed archive source remains the exact ground truth.
 
 ### Smallest supported repair
 

@@ -1,4 +1,4 @@
-   Compiling kontor-store v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-store)
+   Compiling kontor-store v0.2.1 ([task-workspace])
 warning: method `verify_succession_readback` is never used
     --> crates/kontor-store/src/repository.rs:5789:8
      |

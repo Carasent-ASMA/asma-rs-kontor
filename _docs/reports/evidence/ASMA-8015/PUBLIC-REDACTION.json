@@ -1,6 +1,9 @@
 {
   "consumers": [
-    "SHA256SUMS.json"
+    "credential-authority-correction/SHA256SUMS.json",
+    "credential-authority-correction/preliminary/SHA256SUMS.json",
+    "stopped-realm-credential/SHA256SUMS.json",
+    "PUBLIC-REDACTION.md"
   ],
   "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
   "files": {
