@@ -260,6 +260,7 @@ import {
   OPTIONS_MIN_HEIGHT,
   OPTIONS_SPACE_SHARE,
   SCOPE_SUMMARY_TEST_ID,
+  sessionDetailLines,
   SessionsScreen,
   SHORT_PEEK_HEIGHT,
   SlimActionButton,
@@ -1193,6 +1194,18 @@ describe("SessionsScreen toolbar events", () => {
     const sessions = listRows().filter((row) => row.kind === "session");
     expect(sessions).toHaveLength(5);
     expect(sessions.map((row) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: row }).props.details)).toEqual(sessions.map(() => undefined));
+  });
+
+  it("names a declared Other work workstream or Unassigned epic as declared, and only a missing one as absent", () => {
+    const chain = (entry: ReturnType<typeof sessionEntry>, mappings: Parameters<typeof sessionDetailLines>[1] = {}) =>
+      sessionDetailLines(entry, mappings).filter(({ label }) => label === "Workstream" || label === "Epic").map(({ label, value }) => `${label}: ${value}`);
+    const absent = ["Workstream: Other work: no workstream or desk label and no display mapping", "Epic: No linked epic"];
+    expect(chain(sessionEntry("label", { labels: { workstream: "Other work", epic: "Unassigned" } }))).toEqual(["Workstream: Other work", "Epic: Unassigned"]);
+    expect(chain(sessionEntry("mapped"), { "session:mapped": { workstream: "Other work", epic: "Unassigned" } })).toEqual(["Workstream: Other work", "Epic: Unassigned"]);
+    expect(chain(sessionEntry("jira", { labels: { "jira.epic": "Unassigned" } }))).toEqual([absent[0], "Epic: Unassigned"]);
+    expect(chain(sessionEntry("bare"))).toEqual(absent);
+    // A blank label declares nothing.
+    expect(chain(sessionEntry("blank", { labels: { workstream: " ", epic: "" } }))).toEqual(absent);
   });
 
   const qaEntries = () => [

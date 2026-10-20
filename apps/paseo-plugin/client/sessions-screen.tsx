@@ -75,7 +75,7 @@ import {
 import { useSessionDirectory } from "./use-session-directory";
 import { DEFAULT_ORGANIZATION_SETTINGS, type OrganizationSettings } from "../shared/organization";
 import type { useOrganizationSettings } from "./use-organization-settings";
-import { allGroupKeys, buildOrganizationTree, defaultGroupExpanded, filterOrganizationTree, flattenOrganizationTree, inEpicScope, isDeskWork, NO_ROLE_KEY, organizationScope, OTHER_WORKSTREAM, ROLE_ROOT_KEY, sessionRole, sessionState, STATE_LABELS, titleRoleCode, UNASSIGNED_EPIC, visibleSessions, workstreamRank, type OrganizationGroup, type OrganizationRow, type OrganizationWorkspace, type RoleSource } from "./session-organization";
+import { allGroupKeys, buildOrganizationTree, declaredScope, defaultGroupExpanded, filterOrganizationTree, flattenOrganizationTree, inEpicScope, isDeskWork, NO_LINKED_EPIC, NO_ROLE_KEY, organizationScope, OTHER_WORKSTREAM, ROLE_ROOT_KEY, sessionRole, sessionState, STATE_LABELS, titleRoleCode, UNASSIGNED_EPIC, visibleSessions, workstreamRank, type OrganizationGroup, type OrganizationRow, type OrganizationWorkspace, type RoleSource } from "./session-organization";
 import { rowKey, siblingKeys, reorderSavedSiblingOrder } from "./organization-order";
 import { OrganizationRowView, StateBadge, stateColor as sessionStateColor, WORKSPACE_KINDS } from "./organization-row";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
@@ -493,6 +493,7 @@ export function roleRowContext(entry: DirectoryEntry, mappings: Parameters<typeo
 /**
  * Everything a Role row shortens, for its details: the role and where it came from, every other
  * declaration, and the whole desk or workstream, epic and workspace chain, with absent values named.
+ * A value is absent only when no display mapping or label supplies it, whatever name it would fall back to.
  */
 export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<typeof organizationScope>[1]): { label: string; value: string }[] {
   const role = sessionRole(entry);
@@ -502,10 +503,10 @@ export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<t
     { label: "Other role declarations", value: role.conflicts.length ? role.conflicts.map(({ source, code }) => `${ROLE_SOURCE_NAMES[source]} says ${code}`).join("; ") : "None" },
   ];
   if (provenance.desk) return [...lines, { label: "Desk", value: provenance.parts[0]! }, { label: "Workspace", value: provenance.workspace }];
-  const workstream = provenance.parts[0]!;
+  const declared = declaredScope(entry, mappings);
   return [...lines,
-    { label: "Workstream", value: workstream === OTHER_WORKSTREAM ? `${workstream}: no workstream or desk label and no display mapping` : workstream },
-    { label: "Epic", value: provenance.parts[1]! },
+    { label: "Workstream", value: declared.workstream ?? `${OTHER_WORKSTREAM}: no workstream or desk label and no display mapping` },
+    { label: "Epic", value: declared.epic ?? NO_LINKED_EPIC },
     { label: "Workspace", value: provenance.workspace }];
 }
 

@@ -122,6 +122,8 @@ whole of it:
 - the role and where it came from, and every other role declaration;
 - the full desk, or workstream, epic and workspace chain;
 - absent values by name, such as "No linked epic" or "No workspace · <cwd>".
+  A value is absent only when no display mapping or label supplies it, so a
+  label that says "Other work" is shown as declared.
 
 On a compact screen the details open over the list, from its top, and their
 lines scroll when the screen is too short for them. On a wide screen they open
