@@ -103,12 +103,13 @@ export function PlanReader(props: Props) {
     else setLinkMessage("Link navigation is unavailable on this host.");
   };
   const several = props.sources.filter((source) => source.kind === "plan").length > 1;
+  const empty = props.sourceError ? "Plan sources unavailable." : props.sourceId ? "Selected plan unavailable." : several ? "Several plans are linked here." : "No plan linked.";
   // Empty state: one sentence and one action; the full explanation stays in its label.
   if (!selected) return <ScrollView contentContainerStyle={{ padding: 12, gap: 10 }}>
     <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: 20, fontWeight: "600" }}>Plan</Text>
     {props.sourceError ? <Copy colors={colors}>{props.sourceError}</Copy> : null}
-    <Text selectable testID="plan-empty" accessibilityLabel={`${several ? "Several explicitly linked plans. Choose an exact source." : "No plan linked. Select a configured plan in the top context picker."} Conversation prose and titles do not create links.`}
-      style={{ color: colors.foreground, fontSize: 13, lineHeight: 20 }}>{several ? "Several plans are linked here." : "No plan linked."}</Text>
+    <Text selectable testID="plan-empty" accessibilityLabel={`${empty} Select a configured plan in the top context picker. Conversation prose and titles do not create links.`}
+      style={{ color: colors.foreground, fontSize: 13, lineHeight: 20 }}>{empty}</Text>
     {props.onChooseSource ? <View style={{ alignSelf: "flex-start" }}><Action label="Choose plan" colors={colors} onPress={props.onChooseSource} /></View> : null}
   </ScrollView>;
   const key = selected.graph?.epic.jira ?? selected.source.epic;
