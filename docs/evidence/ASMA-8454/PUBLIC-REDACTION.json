@@ -12,7 +12,7 @@
   "additional_redactions_note": "additional_redactions supersedes derivative_sha256 in files for the named paths; files retains the original first-pass pair unchanged.",
   "consumer_classification": {
     "classification": "LSA-WP01-CUSTODY-CONSUMERS-003",
-    "note": "These three preserved records carry a neutral custody pointer and are public derivatives; their certified source or historical carrier hashes remain TPM-owned. Their historical pins are unchanged and are not re-attested.",
+    "note": "These three preserved records carry a neutral custody pointer and are public derivatives; they are now bound in files. Their certified source or historical carrier hashes remain TPM-owned. Their historical pins are unchanged and are not re-attested.",
     "retained_derivatives": [
       "mcp-rework/preserved-scopes-after.json",
       "mcp-rework/preserved-scopes-before.json",
@@ -1616,6 +1616,24 @@
       "derivative_sha256": "96c656382dfe57361444e99c2f263c77939a2f6fb6855f5c66baa3214f8266a7",
       "original_sha256": "629844d87c18be47c8f4d871619c8e3d6cd52c440fcd359fbd0bf850e97eeac8",
       "private_references_redacted": 5
+    },
+    "mcp-rework/preserved-scopes-after.json": {
+      "bytes": 88151,
+      "derivative_sha256": "68e054f73527356489aa223d83a33cedcb69573ec01502823b8ca0cce7c13d6a",
+      "original_sha256": "d50344989d2190fed6f1444a721ece5cc35106695b001f8ce51cfcb47f2dfb80",
+      "private_references_redacted": 0
+    },
+    "mcp-rework/preserved-scopes-before.json": {
+      "bytes": 88114,
+      "derivative_sha256": "877868772764434a02037ec8b0e7b95612a01536c50f46f2bf888a0c730d9702",
+      "original_sha256": "2e031e6c52b670c4d30bb616a4ce6c16d6743b8d144d33bf5bbd852b7d56b474",
+      "private_references_redacted": 0
+    },
+    "mcp-rework/previous-evidence-preserved.json": {
+      "bytes": 673,
+      "derivative_sha256": "6c62f8fdb1454b804183bcc5613f9666977fbd6cd1bad77975001c73ba64b799",
+      "original_sha256": "cac65e88118c6c445d76a47417b658b8e4e5cbdf62154c2ca38ec6a4a74b9c75",
+      "private_references_redacted": 0
     },
     "mcp-rework/source-manifest.json": {
       "bytes": 1208,
