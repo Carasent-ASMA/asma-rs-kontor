@@ -73,7 +73,7 @@ import {
 import { useSessionDirectory } from "./use-session-directory";
 import { DEFAULT_ORGANIZATION_SETTINGS, type OrganizationSettings } from "../shared/organization";
 import type { useOrganizationSettings } from "./use-organization-settings";
-import { allGroupKeys, buildOrganizationTree, defaultGroupExpanded, filterOrganizationTree, flattenOrganizationTree, inEpicScope, isDeskWork, organizationScope, sessionState, STATE_LABELS, visibleSessions, workstreamRank, type OrganizationGroup, type OrganizationRow, type OrganizationWorkspace } from "./session-organization";
+import { allGroupKeys, buildOrganizationTree, defaultGroupExpanded, epicLabel, filterOrganizationTree, flattenOrganizationTree, inEpicScope, isDeskWork, organizationScope, sessionState, STATE_LABELS, visibleSessions, workstreamRank, type OrganizationGroup, type OrganizationRow, type OrganizationWorkspace } from "./session-organization";
 import { rowKey, siblingKeys, reorderSavedSiblingOrder } from "./organization-order";
 import { OrganizationRowView, StateBadge, stateColor as sessionStateColor, WORKSPACE_KINDS } from "./organization-row";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
@@ -2402,7 +2402,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             onMove={(distance) => moveRow(item, distance)} onFavorite={() => { if (item.kind === "session") savePreference({ favorites: favorites.includes(item.entry.id) ? favorites.filter((id) => id !== item.entry.id) : [...favorites, item.entry.id] }); }}>
           {item.kind === "session" ? <SessionRow
             entry={item.entry}
-            displayContext={grouping === "role" ? `${organizationScope(item.entry, mappings).workstream} · ${organizationScope(item.entry, mappings).epic} · ${item.entry.workspaceName ?? "Unassigned workspace"}`
+            displayContext={grouping === "role" ? `${organizationScope(item.entry, mappings).workstream} · ${epicLabel(organizationScope(item.entry, mappings).epic)} · ${item.entry.workspaceName ?? "Unassigned workspace"}`
               : grouping === "flat" ? [item.entry.workspaceName ?? item.entry.cwd, item.entry.projectName !== item.entry.workspaceName ? item.entry.projectName : null].filter(Boolean).join(" · ") : undefined}
             displayTitle={item.parentKey.includes("/role:") ? item.entry.title.slice(item.entry.title.indexOf("•") + 1).trim() : undefined}
             colors={colors}

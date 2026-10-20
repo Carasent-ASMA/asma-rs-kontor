@@ -22,7 +22,7 @@ describe("filtered result provenance", () => {
   });
 
   it("says when the workstream or epic is missing instead of leaving a gap", () => {
-    expect(sessionProvenance(sessionEntry("bare", { workspaceName: "w" }), {}).parts).toEqual(["Other work", "Unassigned", "w"]);
+    expect(sessionProvenance(sessionEntry("bare", { workspaceName: "w" }), {}).parts).toEqual(["Other work", "No linked epic", "w"]);
   });
 
   it("names a desk and its workspace without an epic", () => {
