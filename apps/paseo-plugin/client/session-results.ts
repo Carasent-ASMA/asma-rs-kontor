@@ -1,5 +1,5 @@
 import type { DirectoryEntry } from "./session-directory";
-import { epicLabel, isDeskWork, organizationScope, sessionState, workspaceLabel, type OrganizationGroup, type OrganizationState } from "./session-organization";
+import { epicLabel, isDeskWork, labelRoleCode, organizationScope, ROLE_ORDER, sessionState, workspaceLabel, type OrganizationGroup, type OrganizationState } from "./session-organization";
 
 type Mappings = Parameters<typeof organizationScope>[1];
 
@@ -41,12 +41,11 @@ export function sessionAncestors(groups: readonly OrganizationGroup[], sessionId
 }
 
 /**
- * Role from a role label only: `kontor.role` (Kontor runtime) or `role`. Both are
- * unenforced labels; a title prefix is never read as a role here.
+ * Role from a role label only: `kontor.role` (Kontor runtime), else `role`. Both are
+ * unenforced labels; a title prefix is never read as a role here, unlike the Role view.
  */
 export function labelledRole(entry: DirectoryEntry): string | null {
-  const value = (entry.labels["kontor.role"] ?? entry.labels.role)?.trim();
-  return value ? value.replace(/[-_]+/g, " ").toLocaleUpperCase() : null;
+  return labelRoleCode(entry.labels["kontor.role"]) ?? labelRoleCode(entry.labels.role);
 }
 
 /** Label keys whose exact value may name a task's Jira key. */
@@ -69,9 +68,6 @@ export function taskSessions(entries: readonly DirectoryEntry[], task: TaskRef):
   }
   return links;
 }
-
-/** Display order only; it implies no handoff, sequence or completion. */
-const ROLE_ORDER = ["LSA", "TPM", "SA", "SWE", "QA", "AUD", "UAT", "SEC", "REV A", "REV B", "JUDGE"];
 
 export type ChainState = OrganizationState | "archived";
 export type RoleLane = {

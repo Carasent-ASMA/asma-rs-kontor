@@ -260,6 +260,7 @@ import {
   OPTIONS_MIN_HEIGHT,
   OPTIONS_SPACE_SHARE,
   SCOPE_SUMMARY_TEST_ID,
+  sessionDetailLines,
   SessionsScreen,
   SHORT_PEEK_HEIGHT,
   SlimActionButton,
@@ -267,6 +268,7 @@ import {
   toolbarOpenPatch,
 } from "../client/sessions-screen";
 import { StateBadge } from "../client/organization-row";
+import { AnchoredMenu, MenuItem } from "../client/anchored-menu";
 import { nativeFreshnessLabel } from "../client/native-freshness";
 import {
   clearSessionViews,
@@ -292,6 +294,7 @@ const colors = {
 } as unknown as PluginTheme["colors"];
 
 type ElementLike = {
+  readonly type?: unknown;
   readonly props: Record<string, unknown>;
 };
 
@@ -821,6 +824,8 @@ describe("SessionsScreen toolbar events", () => {
     expect(sessionRowIds()).toContain("desk");
     // Role grouping names the missing epic in each session's context too.
     harness.reset(); patchSessionView("host-a", { grouping: "role", status: "all" }); renderScreen();
+    expect(groupRows().map((row) => `${row.group.label}:${row.expanded}`)).toEqual(["SWE:false", "No role:false"]);
+    expandAll();
     const roleSessions = listRows().filter((row): row is Extract<ListRow, { kind: "session" }> => row.kind === "session" && row.entry.id.startsWith("loose"));
     expect(roleSessions.map((row) => walk(renderItem({ item: row })).find((element) => "displayContext" in element.props)!.props.displayContext)).toEqual(["Kontor · No linked epic · Workspace", "Kontor · No linked epic · Workspace"]);
   });
@@ -1064,6 +1069,331 @@ describe("SessionsScreen toolbar events", () => {
     addBusySibling();
     vi.runOnlyPendingTimers();
     expect(indexes()).toEqual([43, 44]);
+  });
+
+  it("drops a scroll retry in the Role view when a collapse removes its row", () => {
+    const { failed, quietRow, indexes } = showQuietInTree(() => { patchSessionView("host-a", { grouping: "role" }); renderScreen(); });
+    expect([groupRows().map((row) => `${row.group.label}:${row.expanded}`), quietRow()]).toEqual([["No role:true"], 41]);
+    failed();
+    toggle("role");
+    expect(listRows()).toHaveLength(1);
+    vi.runOnlyPendingTimers();
+    expect(indexes()).toEqual([]);
+  });
+
+  it("moves a scroll retry in the Role view with its row when a new session joins the role", () => {
+    const { failed, quietRow, indexes } = showQuietInTree(() => { patchSessionView("host-a", { grouping: "role" }); renderScreen(); });
+    failed();
+    addBusySibling();
+    expect(quietRow()).toBe(42);
+    vi.runOnlyPendingTimers();
+    expect(indexes()).toEqual([42]);
+  });
+
+  /** The Role view of a few sessions, with a renderer that draws a row as the list does. */
+  function renderRoles(entries: readonly ReturnType<typeof sessionEntry>[], organization?: Parameters<typeof SessionsScreen>[0]["organization"], compact = true) {
+    directory.state = { ...(directory.state as object), entries };
+    patchSessionView("host-a", { query: "", grouping: "role", status: "all" });
+    renderScreen(organization, compact);
+    const renderItem = (row: unknown) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: row });
+    const drawn = (row: unknown) => { const view = renderItem(row) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike }; return view.type(view.props); };
+    return { renderItem, drawn };
+  }
+
+  /** The Role view with every group open, spying on session opens and preference saves. */
+  function renderDetails(entries: readonly ReturnType<typeof sessionEntry>[], compact = true) {
+    const openAgent = vi.fn();
+    const save = vi.fn(async () => true);
+    directory.state = { ...(directory.state as object), entries };
+    patchSessionView("host-a", { query: "", grouping: "role", status: "all" });
+    harness.render(() => SessionsScreen({ host: { id: "host-a", label: "Host" }, layout: { compact, platform: compact ? "ios" : "web" },
+      navigation: { openAgent, openBrowser: () => undefined, openWorkspace: () => undefined }, theme: { colors } as PluginTheme, params: {},
+      organization: { state: { status: "ready", values: DEFAULT_ORGANIZATION_SETTINGS, revision: "revision-a", saving: false, saveError: null, save, reload: async () => {}, reset: async () => true }, save },
+    } as unknown as PluginScreenProps));
+    expandAll();
+    save.mockClear();
+    const row = (id: string) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: listRows().find((candidate) => candidate.kind === "session" && candidate.entry.id === id) });
+    const details = (id: string) => row(id).props.details as ElementLike;
+    const dialog = () => walk(harness.current()).find((element) => element.props.testID === "sessions-details");
+    const lines = () => (findByTestID(dialog()!.props.children, "sessions-details-lines").props.children as ElementLike[])
+      .map((line) => (line.props.children as ElementLike[]).map(textOf).join(": "));
+    const close = () => walk(dialog()!.props.header).find((element) => element.props.label === "Close")!;
+    const open = (id: string) => { (details(id).props.onPress as () => void)(); harness.flush(); };
+    return { openAgent, save, row, details, dialog, lines, close, open };
+  }
+
+  const placeEntries = () => [
+    sessionEntry("long", { title: "QA • Reconcile the delivery evidence for the second review round", workspaceName: "TSW • ASMA-8541 roles provenance correction workspace with a long name",
+      labels: { "kontor.role": "QA", workstream: "Kontor plugin and prototype parity across every host", epic: "ASMA-8541" } }),
+    sessionEntry("conflict", { title: "AUD • audit notes", labels: { role: "qa", workstream: "Review" } }),
+    sessionEntry("desk", { title: "SWE • desk work", labels: { desk: "Adam" } }),
+    sessionEntry("cwd", { title: "SWE • scratch", workspaceId: null, workspaceName: null, cwd: "/tmp/scratch" }),
+    sessionEntry("nowhere", { title: "loose", workspaceId: null, workspaceName: null, cwd: "" }),
+  ];
+
+  it("reveals each Role row's full place from its own details button, with absent values named, and saves nothing", () => {
+    const screen = renderDetails(placeEntries());
+    // The row keeps its short context; the details hold what it leaves out.
+    expect((screen.row("long").props.children as ElementLike).props.compactContext).toBe("ASMA-8541 · TSW • ASMA-8541 roles provenance correction workspace with a long name");
+    expect(screen.dialog()).toBeUndefined();
+    expect(screen.details("long").props).toMatchObject({ title: "QA • Reconcile the delivery evidence for the second review round", expanded: false });
+    screen.open("long");
+    expect(screen.dialog()!.props).toMatchObject({ dialog: true, label: "Details: QA • Reconcile the delivery evidence for the second review round", placement: { align: "stretch", width: 0, cover: true } });
+    expect(textOf(findByTestID(screen.dialog()!.props.header, "sessions-details-title"))).toBe("QA • Reconcile the delivery evidence for the second review round");
+    expect(screen.lines()).toEqual(["Role: QA, from the kontor.role label", "Other role declarations: None", "Workstream: Kontor plugin and prototype parity across every host", "Epic: ASMA-8541",
+      "Workspace: TSW • ASMA-8541 roles provenance correction workspace with a long name"]);
+    expect(screen.details("long").props.expanded).toBe(true);
+    expect(screen.details("conflict").props.expanded).toBe(false);
+    const expected: Record<string, string[]> = {
+      conflict: ["Role: QA, from the role label", "Other role declarations: title says AUD", "Workstream: Review", "Epic: No linked epic", "Workspace: Workspace"],
+      desk: ["Role: SWE, from the title", "Other role declarations: None", "Desk: Adam desk", "Workspace: Workspace"],
+      cwd: ["Role: SWE, from the title", "Other role declarations: None", "Workstream: Other work: no workstream or desk label and no display mapping", "Epic: No linked epic", "Workspace: No workspace · /tmp/scratch"],
+      nowhere: ["Role: No role: no kontor.role or role label, and no role prefix in the title", "Other role declarations: None", "Workstream: Other work: no workstream or desk label and no display mapping", "Epic: No linked epic", "Workspace: No workspace"],
+    };
+    for (const [id, lines] of Object.entries(expected)) {
+      (screen.dialog()!.props.onClose as () => void)(); harness.flush();
+      expect(screen.dialog()).toBeUndefined();
+      screen.open(id);
+      expect(screen.lines()).toEqual(lines);
+    }
+    expect(screen.openAgent).not.toHaveBeenCalled();
+    expect(screen.save).not.toHaveBeenCalled();
+  });
+
+  it("moves focus to Close on open and back to the details button on Close, while the row itself still opens the session", () => {
+    const screen = renderDetails(placeEntries());
+    const button = { focus: vi.fn() };
+    (screen.details("long").props.ref as (node: unknown) => void)(button);
+    screen.open("long");
+    const closeFocus = vi.fn();
+    (screen.close().props.ref as RefLike).current = { focus: closeFocus };
+    (screen.close().props.onPress as () => void)(); harness.flush();
+    expect(screen.dialog()).toBeUndefined();
+    expect(button.focus).toHaveBeenCalledTimes(1);
+    screen.open("long");
+    expect(closeFocus).toHaveBeenCalledTimes(1);
+    (screen.dialog()!.props.onClose as () => void)(); harness.flush();
+    // The row's own button opens the session and never the details.
+    const sessionRow = screen.row("long").props.children as ElementLike;
+    (sessionRow.props.onPress as (entry: unknown) => void)(sessionRow.props.entry);
+    harness.flush();
+    expect(screen.openAgent).toHaveBeenCalledTimes(1);
+    expect(screen.openAgent.mock.calls[0]![0]).toMatchObject({ agentId: "long" });
+    expect(screen.dialog()).toBeUndefined();
+    expect(screen.save).not.toHaveBeenCalled();
+  });
+
+  it("anchors the details beside the row on a wide screen, closes them when the view leaves Role, and draws no details elsewhere", () => {
+    const screen = renderDetails(placeEntries(), false);
+    screen.open("desk");
+    expect(screen.dialog()!.props.placement).toEqual({ align: "end", width: 360, maxHeight: 440 });
+    (walk(harness.current()).find((element) => element.props.testID === "sessions-grouping")!.props.onPress as () => void)(); harness.flush();
+    (walk(harness.current()).find((element) => element.type === MenuItem && element.props.label === "Workstreams")!.props.onPress as () => void)(); harness.flush();
+    expect(screen.dialog()).toBeUndefined();
+    expandAll();
+    const sessions = listRows().filter((row) => row.kind === "session");
+    expect(sessions).toHaveLength(5);
+    expect(sessions.map((row) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: row }).props.details)).toEqual(sessions.map(() => undefined));
+  });
+
+  it("names a declared Other work workstream or Unassigned epic as declared, and only a missing one as absent", () => {
+    const chain = (entry: ReturnType<typeof sessionEntry>, mappings: Parameters<typeof sessionDetailLines>[1] = {}) =>
+      sessionDetailLines(entry, mappings).filter(({ label }) => label === "Workstream" || label === "Epic").map(({ label, value }) => `${label}: ${value}`);
+    const absent = ["Workstream: Other work: no workstream or desk label and no display mapping", "Epic: No linked epic"];
+    expect(chain(sessionEntry("label", { labels: { workstream: "Other work", epic: "Unassigned" } }))).toEqual(["Workstream: Other work", "Epic: Unassigned"]);
+    expect(chain(sessionEntry("mapped"), { "session:mapped": { workstream: "Other work", epic: "Unassigned" } })).toEqual(["Workstream: Other work", "Epic: Unassigned"]);
+    expect(chain(sessionEntry("jira", { labels: { "jira.epic": "Unassigned" } }))).toEqual([absent[0], "Epic: Unassigned"]);
+    expect(chain(sessionEntry("bare"))).toEqual(absent);
+    // A blank label declares nothing.
+    expect(chain(sessionEntry("blank", { labels: { workstream: " ", epic: "" } }))).toEqual(absent);
+  });
+
+  it("makes the lines a named stop with a visible focus on web only, and returns focus to the list once the row has left", () => {
+    const screen = renderDetails(placeEntries());
+    const region = () => findByTestID(screen.dialog()!.props.children, "sessions-details-lines");
+    const list = () => findByTestID(harness.current(), "sessions-list");
+    screen.open("long");
+    // Native keeps its own focus rules.
+    expect([region().props.tabIndex, region().props.role, region().props.accessibilityLabel, list().props.tabIndex]).toEqual([undefined, undefined, undefined, undefined]);
+    (screen.dialog()!.props.onClose as () => void)(); harness.flush();
+    vi.stubGlobal("document", { activeElement: null, body: {} });
+    try {
+      screen.open("long");
+      expect(region().props).toMatchObject({ tabIndex: 0, role: "region", accessibilityLabel: "Role and placement" });
+      expect(list().props.tabIndex).toBe(-1);
+      expect(region().props.style).not.toHaveProperty("outlineWidth");
+      (region().props.onFocus as () => void)(); harness.flush();
+      expect(region().props.style).toMatchObject({ outlineColor: colors.accent, outlineStyle: "solid", outlineWidth: 2 });
+      (region().props.onBlur as () => void)(); harness.flush();
+      expect(region().props.style).not.toHaveProperty("outlineWidth");
+      (region().props.onFocus as () => void)(); harness.flush();
+      (screen.dialog()!.props.onClose as () => void)(); harness.flush();
+      screen.open("long");
+      expect(region().props.style).not.toHaveProperty("outlineWidth");
+      // Escape, a press outside and Close all dismiss through onClose; without the row's button, focus goes to the list.
+      const scroller = { focus: vi.fn() };
+      (list().props.ref as RefLike).current = { getScrollableNode: () => scroller };
+      const button = { focus: vi.fn() };
+      (screen.details("long").props.ref as (node: unknown) => void)(button);
+      (screen.details("long").props.ref as (node: unknown) => void)(null);
+      (screen.dialog()!.props.onClose as () => void)(); harness.flush();
+      expect(screen.dialog()).toBeUndefined();
+      expect([scroller.focus.mock.calls.length, button.focus.mock.calls.length]).toEqual([1, 0]);
+      (screen.details("long").props.ref as (node: unknown) => void)(button);
+      screen.open("long");
+      (screen.close().props.onPress as () => void)(); harness.flush();
+      expect([scroller.focus.mock.calls.length, button.focus.mock.calls.length]).toEqual([1, 1]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("closes details whose session has left or that leave Role, sending only focus the page dropped to the list", () => {
+    const screen = renderDetails(placeEntries());
+    const page = { activeElement: null as unknown, body: {} };
+    vi.stubGlobal("document", page);
+    try {
+      const scroller = { focus: vi.fn() };
+      (findByTestID(harness.current(), "sessions-list").props.ref as RefLike).current = { getScrollableNode: () => scroller };
+      const without = (id: string) => { directory.state = { ...(directory.state as object), entries: placeEntries().filter((entry) => entry.id !== id) }; harness.flush(); };
+      screen.open("long");
+      without("long");
+      expect(screen.dialog()).toBeUndefined();
+      expect(scroller.focus).toHaveBeenCalledTimes(1);
+      // They stay closed when the session comes back.
+      without("none");
+      expect(screen.dialog()).toBeUndefined();
+      screen.open("conflict");
+      page.activeElement = page.body;
+      without("conflict");
+      expect(screen.dialog()).toBeUndefined();
+      expect(scroller.focus).toHaveBeenCalledTimes(2);
+      // Focus that moved on is left where it is.
+      without("none");
+      screen.open("desk");
+      page.activeElement = { elsewhere: true };
+      without("desk");
+      expect(screen.dialog()).toBeUndefined();
+      expect(scroller.focus).toHaveBeenCalledTimes(2);
+      without("none");
+      screen.open("cwd");
+      const choose = (label: string) => {
+        (walk(harness.current()).find((element) => element.props.testID === "sessions-grouping")!.props.onPress as () => void)(); harness.flush();
+        (walk(harness.current()).find((element) => element.type === MenuItem && element.props.label === label)!.props.onPress as () => void)(); harness.flush();
+      };
+      choose("Workstreams");
+      choose("Role");
+      expect(screen.dialog()).toBeUndefined();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  const qaEntries = () => [
+    sessionEntry("n", { title: "QA • n", pendingPermissionCount: 1 }),
+    sessionEntry("e", { title: "QA • e", status: "error" }),
+    ...["r1", "r2", "r3"].map((id) => sessionEntry(id, { title: `QA • ${id}`, status: "running" })),
+  ];
+
+  it("narrows the Role headers to the sessions in the selected epic", () => {
+    patchSessionView("host-a:epic-roles", { query: "", grouping: "role", status: "all", scrollOffset: 0, ...toolbarOpenPatch(true) });
+    harness.render(() => SessionsScreen({ host: { id: "host-a", label: "Host" },
+      layout: { compact: true, platform: "ios" }, theme: { colors } as PluginTheme, params: {}, viewScope: "host-a:epic-roles",
+      directory: { state: { ...emptyDirectoryState(), status: "ready" as const, pages: 1, lastUpdatedAt: 0, entries: [
+        sessionEntry("qa-in", { title: "QA • in", labels: { epic: "ASMA-9" } }),
+        sessionEntry("swe-in", { title: "work", labels: { epic: "ASMA-9", role: "swe" } }),
+        sessionEntry("aud-out", { title: "AUD • out", labels: { epic: "ASMA-1" } }),
+        sessionEntry("qa-out", { title: "QA • out", labels: { epic: "ASMA-1" } }),
+      ] }, refresh: vi.fn() },
+      epicKey: "ASMA-9",
+    } as Parameters<typeof SessionsScreen>[0]));
+    // AUD has no session in ASMA-9, so it has no header; QA counts only its ASMA-9 session.
+    expect(groupRows().map((row) => [row.group.label, row.group.aggregate.total])).toEqual([["SWE", 1], ["QA", 1]]);
+    expandAll();
+    expect(sessionRowIds()).toEqual(["swe-in", "qa-in"]);
+  });
+
+  it("draws a Role header with its two leading states and a separate total, calling them last known when stale", () => {
+    const { drawn } = renderRoles(qaEntries());
+    const [qa] = groupRows();
+    expect([qa!.group.label, qa!.expanded]).toEqual(["QA", false]);
+    const header = drawn(qa);
+    const counts = walk(header).find((element) => "aggregate" in element.props) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike };
+    const words = walk(counts.type(counts.props)).map((element) => element.props.children).filter((child) => typeof child === "string" || typeof child === "number");
+    expect(words).toEqual(["▲", 1, "needs input", "✕", 1, "error"]);
+    expect(walk(header).filter((element) => element.props.children === "5")).toHaveLength(1);
+    const label = () => String(walk(drawn(groupRows()[0])).find((element) => element.props.accessibilityRole === "button")!.props.accessibilityLabel);
+    expect(label()).toMatch(/^Role QA, 5 sessions\. 1 needs input · 1 error · 3 running\. Native counts: 0 initializing, 1 idle, 3 running, 1 errors, 0 closed\.$/);
+    directory.state = { ...(directory.state as object), status: "stale", live: false, staleReason: "Host offline" };
+    harness.flush();
+    expect(label()).toContain("5 sessions. Last known: 1 needs input · 1 error · 3 running.");
+    const staleCounts = walk(drawn(groupRows()[0])).find((element) => "aggregate" in element.props) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike };
+    expect(walk(staleCounts.type(staleCounts.props)).map((element) => element.props.children).filter((child) => typeof child === "string" || typeof child === "number"))
+      .toEqual(["Last known", "▲", 1, "needs input", "✕", 1, "error"]);
+  });
+
+  it("shows a Role row's conflict cue and place, keeping the place beside the title on compact", () => {
+    const { renderItem, drawn } = renderRoles([
+      sessionEntry("conflict", { title: "QA • check results", labels: { "kontor.role": "AUD", workstream: "Kontor", epic: "ASMA-1" } }),
+      sessionEntry("plain", { title: "aud • sign off", labels: { desk: "PR Review" } }),
+      sessionEntry("loose", { title: "Notes", workspaceId: null, workspaceName: null, cwd: "/tmp/notes" }),
+    ]);
+    expect(groupRows().map((row) => row.group.label)).toEqual(["AUD", "No role"]);
+    const headerOf = (label: string) => walk(drawn(groupRows().find((row) => row.group.label === label)));
+    expect(String(headerOf("No role").find((element) => element.props.accessibilityRole === "button")!.props.accessibilityLabel)).toMatch(/^No role, 1 sessions\. 1 idle\./);
+    expect(["AUD", "No role"].map((label) => (headerOf(label).find((element) => element.props.children === label)!.props.style as { fontFamily?: string }).fontFamily)).toEqual(["monospace", undefined]);
+    expandAll();
+    const props = (id: string) => walk(renderItem(listRows().find((row) => row.kind === "session" && row.entry.id === id))).find((element) => "displayContext" in element.props)!.props;
+    const shown = (id: string) => { const { displayTitle, displayContext, compactContext, accessibilityContext } = props(id); return { displayTitle, displayContext, compactContext, accessibilityContext }; };
+    expect(shown("conflict")).toEqual({
+      displayTitle: undefined,
+      displayContext: "title says QA · Kontor · ASMA-1 · Workspace",
+      compactContext: "title says QA · ASMA-1 · Workspace",
+      accessibilityContext: "Role AUD from the kontor.role label. title says QA. Workstream Kontor, epic ASMA-1, workspace Workspace",
+    });
+    expect(shown("plain")).toEqual({
+      displayTitle: "sign off",
+      displayContext: "PR Review desk · Workspace",
+      compactContext: "PR Review desk · Workspace",
+      accessibilityContext: "Role AUD from the title. Desk PR Review desk, workspace Workspace",
+    });
+    expect(shown("loose")).toMatchObject({ displayTitle: undefined, displayContext: "Other work · No linked epic · No workspace · /tmp/notes", compactContext: "Other work · No workspace · /tmp/notes" });
+    const row = walk(renderItem(listRows().find((candidate) => candidate.kind === "session" && candidate.entry.id === "conflict"))).find((element) => "displayContext" in element.props) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike };
+    // The harness's memo returns the component itself.
+    const drawnRow = row.type(row.props);
+    expect([findByTestID(drawnRow, "sessions-row-title").props.children, findByTestID(drawnRow, "sessions-row-meta").props.children]).toEqual(["QA • check results", "title says QA · ASMA-1 · Workspace"]);
+    expect((findByTestID(drawnRow, "sessions-row-meta").props.style as { maxWidth: string }).maxWidth).toBe("55%");
+    expect(String(drawnRow.props.accessibilityLabel)).toContain("Role AUD from the kontor.role label. title says QA. Workstream Kontor, epic ASMA-1, workspace Workspace");
+  });
+
+  it("arranges Role headers among themselves and keeps No role last", () => {
+    const save = vi.fn(async () => true);
+    patchSessionView("host-a", { arranging: true });
+    const { renderItem } = renderRoles([sessionEntry("q", { title: "QA • q" }), sessionEntry("s", { title: "SWE • s" }), sessionEntry("x", { title: "Notes" })],
+      { state: { status: "ready", values: DEFAULT_ORGANIZATION_SETTINGS, revision: "revision-a", saving: false, saveError: null, save, reload: async () => {}, reset: async () => true }, save } as unknown as NonNullable<Parameters<typeof SessionsScreen>[0]["organization"]>);
+    expect(groupRows().map((row) => row.group.key)).toEqual(["roles/role:SWE", "roles/role:QA", "roles/no-role"]);
+    const move = (key: string, distance: number) => { (renderItem(groupRows().find((row) => row.group.key === key)).props.onMove as (distance: number) => void)(distance); harness.flush(); };
+    move("roles/role:QA", -1);
+    expect(save).toHaveBeenLastCalledWith({ siblingOrder: { roles: ["roles/role:QA", "roles/role:SWE", "roles/no-role"] } });
+    move("roles/no-role", -2);
+    expect(save).toHaveBeenLastCalledWith({ siblingOrder: { roles: ["roles/role:SWE", "roles/role:QA", "roles/no-role"] } });
+  });
+
+  it("opens a result's Role header for Show in tree without saving it, and the header is closed again after Back", () => {
+    const save = vi.fn(async (_patch: object) => true);
+    renderRoles(qaEntries(), { state: { status: "ready", values: DEFAULT_ORGANIZATION_SETTINGS, revision: "revision-a", saving: false, saveError: null, save, reload: async () => {}, reset: async () => true }, save } as unknown as NonNullable<Parameters<typeof SessionsScreen>[0]["organization"]>);
+    (findByTestID(harness.current(), "sessions-filter-idle").props.onPress as () => void)(); harness.flush();
+    const [result] = listRows() as [Extract<ListRow, { kind: "result" }>];
+    expect(result.entry.id).toBe("n");
+    ((findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: result }).props.onShowInTree as (entry: unknown) => void)(result.entry);
+    harness.flush();
+    expect([groupRows().map((row) => `${row.group.label}:${row.expanded}`), sessionRowIds()]).toEqual([["QA:true"], ["n", "e", "r1", "r2", "r3"]]);
+    (walk(findByTestID(harness.current(), "sessions-peek")).find((element) => String(element.props.label).startsWith("Back to "))!.props.onPress as () => void)();
+    harness.flush();
+    expect(sessionRowIds()).toEqual(["n"]);
+    (findByTestID(harness.current(), "sessions-filter-all").props.onPress as () => void)(); harness.flush();
+    expect(groupRows().map((row) => `${row.group.label}:${row.expanded}`)).toEqual(["QA:false"]);
+    expect(save.mock.calls.filter(([patch]) => "expandedGroups" in patch)).toEqual([]);
   });
 
   it("returns to the tree position it left when the search is cleared", () => {
@@ -1689,6 +2019,18 @@ describe("SessionsScreen compact toolbar", () => {
     choose("Role");
     expect([select("sessions-grouping").value, menus(), groupingFocus.mock.calls.length]).toEqual(["Role", [], 1]);
     expect(save).toHaveBeenCalledWith({ grouping: "role" });
+
+    // Menus keep no Tab, so the other select is reachable with one open; it swaps its menu in without a close, as a new
+    // opening against its own trigger, and back again.
+    const opening = (id: string) => AnchoredMenu(findByTestID(harness.current(), `sessions-${id}-menu`).props as Parameters<typeof AnchoredMenu>[0]);
+    (select("sessions-grouping").onPress as () => void)(); harness.flush();
+    const grouping = opening("grouping");
+    (select("sessions-scope").onPress as () => void)(); harness.flush();
+    expect([menus(), opening("scope").props.anchor]).toEqual([["sessions-scope-menu"], select("sessions-scope").anchor]);
+    expect(opening("scope").key).not.toBe(grouping.key);
+    (select("sessions-grouping").onPress as () => void)(); harness.flush();
+    expect([menus(), opening("grouping").key]).toEqual([["sessions-grouping-menu"], grouping.key]);
+    (findByTestID(harness.current(), "sessions-grouping-menu").props.onClose as () => void)(); harness.flush();
 
     // A menu left open closes with the options panel and does not come back when it reopens.
     (select("sessions-scope").onPress as () => void)(); harness.flush();

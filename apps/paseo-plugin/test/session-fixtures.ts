@@ -17,6 +17,7 @@ type SessionEntryOverrides = {
   workspaceId?: string | null;
   cwd?: string;
   updatedAt?: string;
+  createdAt?: string;
   labels?: Readonly<Record<string, string>>;
 };
 
@@ -38,7 +39,7 @@ export function sessionEntry(
       overrides.needsInput ??
       (pendingPermissionCount > 0 || attentionReason === "permission"),
     archivedAt: overrides.archivedAt ?? null,
-    createdAt: "2026-10-18T09:00:00.000Z",
+    createdAt: overrides.createdAt ?? "2026-10-18T09:00:00.000Z",
     updatedAt: overrides.updatedAt ?? "2026-10-18T10:00:00.000Z",
     cwd: overrides.cwd ?? "/tmp/work",
     workspaceId:

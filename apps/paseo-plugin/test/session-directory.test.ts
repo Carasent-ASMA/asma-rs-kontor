@@ -336,6 +336,7 @@ describe("SessionDirectory", () => {
         labels: {
           epic: "ASMA-8539",
           workstream: "kontor",
+          "kontor.role": "rev-b",
           "paseo.parent-agent-id": "internal-only",
         },
       }),
@@ -343,6 +344,7 @@ describe("SessionDirectory", () => {
 
     expect(directoryEntry.searchText).toContain("asma-8539");
     expect(directoryEntry.searchText).toContain("kontor");
+    expect(directoryEntry.searchText).toContain("rev-b");
     expect(directoryEntry.searchText).not.toContain("internal-only");
     expect(matchesQuery(directoryEntry, "ASMA-8539")).toBe(true);
     expect(matchesQuery(directoryEntry, "kontor")).toBe(true);

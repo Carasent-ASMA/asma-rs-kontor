@@ -38,6 +38,7 @@ export const SEARCH_LABEL_KEYS = [
   "origin.epic",
   "desk",
   "role",
+  "kontor.role",
 ] as const;
 
 const AGENT_SORT: NonNullable<PaseoAgentListOptions["sort"]> = [
