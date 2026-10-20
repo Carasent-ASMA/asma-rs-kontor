@@ -136,7 +136,8 @@ describe("Kontor shell native actions", () => {
     const screen = mount(compact, { tab: "Plan", sourceId: "long-plan", epicKey: "ASMA-8539" });
     const row = screen.elements().find((node) => node.props.testID === "kontor-context-row")!;
     expect(row.props.style).toMatchObject({ minHeight: 51 });
-    expect(elements(row).find((node) => node.props.accessibilityRole === "header")?.props.children).toBe("Kontor");
+    expect(elements(row).some((node) => node.props.accessibilityRole === "header")).toBe(false);
+    expect(elements(row).some((node) => node.props.children === screen.props.host.label)).toBe(false);
     expect(screen.picker()!.props).toMatchObject({ label: title, epicKey: "ASMA-8539", expanded: false });
     const field = pickerField(screen.picker()!);
     expect(field.props).toMatchObject({ testID: "kontor-context-picker", accessibilityRole: "button", accessibilityLabel: `Plan / project: ASMA-8539 · ${title}`, accessibilityState: { expanded: false } });
@@ -181,6 +182,21 @@ describe("Kontor shell native actions", () => {
       model.hosts = [{ serverId: screen.props.host.id, label: "Host", status }]; screen.render();
       expect(screen.elements().find((node) => node.type === NativeFreshnessPill)?.props.hostStatus).toBe(status);
     }
+  });
+  it("keeps desktop Back available in place and enables it only when navigation has history", () => {
+    const screen = mount(false);
+    expect(screen.action("Back").props.disabled).toBe(true);
+    const route = { ...hostNavigation(screen.props.host.id).route };
+    screen.click("Overview");
+    expect(screen.action("Back").props.disabled).toBe(false);
+    screen.click("Back");
+    expect(hostNavigation(screen.props.host.id).route).toEqual(route);
+    expect(screen.action("Back").props.disabled).toBe(true);
+    expect(screen.elements().filter((node) => node.props.accessibilityRole === "tablist")).toHaveLength(1);
+  });
+  it("keeps host attribution available after removing the duplicate visible host label", () => {
+    const screen = mount(false);
+    expect(screen.elements().find((node) => node.type === NativeFreshnessPill)?.props.hostLabel).toBe("Host");
   });
   it("opens standalone decision evidence through a guarded callback without a selected plan and reports opener failures", async () => {
     model.sources = [{ id: "decisions", title: "Decisions", kind: "decisions", path: "/configured/decisions.json", projectId: null, epic: null, workstream: null, revisionKind: "working copy" }];
