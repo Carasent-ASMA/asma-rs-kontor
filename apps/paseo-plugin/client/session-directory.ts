@@ -5,6 +5,7 @@ import type {
   PaseoAgentUpdate,
   PaseoApi,
 } from "@getpaseo/client";
+import type { SessionTelemetry } from "./session-usage";
 
 export const SESSION_STATUSES = [
   "initializing",
@@ -64,6 +65,8 @@ export type DirectoryEntry = {
   readonly workspaceId: string | null;
   readonly provider: string;
   readonly model: string | null;
+  /** Latest native fields. No accumulated totals or inferred usage/model association. */
+  readonly telemetry?: SessionTelemetry;
   readonly parentAgentId: string | null;
   readonly labels: Readonly<Record<string, string>>;
   readonly projectKey: string | null;
@@ -204,6 +207,12 @@ export function toDirectoryEntry(
     workspaceId: agent.workspaceId ?? null,
     provider: agent.provider,
     model: agent.model ?? null,
+    telemetry: {
+      runtimeInfo: agent.runtimeInfo,
+      lastUsage: agent.lastUsage,
+      thinkingOptionId: agent.thinkingOptionId,
+      effectiveThinkingOptionId: agent.effectiveThinkingOptionId,
+    },
     parentAgentId: (agent as { parentAgentId?: string | null }).parentAgentId ?? null,
     labels,
     projectKey,

@@ -1115,7 +1115,7 @@ describe("SessionsScreen toolbar events", () => {
     const row = (id: string) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: listRows().find((candidate) => candidate.kind === "session" && candidate.entry.id === id) });
     const details = (id: string) => row(id).props.details as ElementLike;
     const dialog = () => walk(harness.current()).find((element) => element.props.testID === "sessions-details");
-    const lines = () => (findByTestID(dialog()!.props.children, "sessions-details-lines").props.children as ElementLike[])
+    const lines = () => (findByTestID(dialog()!.props.children, "sessions-details-lines").props.children as ElementLike[][])[0]!
       .map((line) => (line.props.children as ElementLike[]).map(textOf).join(": "));
     const close = () => walk(dialog()!.props.header).find((element) => element.props.label === "Close")!;
     const open = (id: string) => { (details(id).props.onPress as () => void)(); harness.flush(); };
@@ -1183,7 +1183,7 @@ describe("SessionsScreen toolbar events", () => {
     expect(screen.save).not.toHaveBeenCalled();
   });
 
-  it("anchors the details beside the row on a wide screen, closes them when the view leaves Role, and draws no details elsewhere", () => {
+  it("anchors details beside the row, closes them on a grouping change, and makes them available in the tree and results", () => {
     const screen = renderDetails(placeEntries(), false);
     screen.open("desk");
     expect(screen.dialog()!.props.placement).toEqual({ align: "end", width: 360, maxHeight: 440 });
@@ -1193,7 +1193,12 @@ describe("SessionsScreen toolbar events", () => {
     expandAll();
     const sessions = listRows().filter((row) => row.kind === "session");
     expect(sessions).toHaveLength(5);
-    expect(sessions.map((row) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: row }).props.details)).toEqual(sessions.map(() => undefined));
+    expect(sessions.every((row) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: row }).props.details !== undefined)).toBe(true);
+    const renderItem = findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike;
+    const result = renderItem({ item: { kind: "result", entry: placeEntries()[0]! } });
+    expect((result.props.details as ElementLike).props.title).toBe(placeEntries()[0]!.title);
+    ((result.props.details as ElementLike).props.onPress as () => void)(); harness.flush();
+    expect(screen.dialog()).toBeDefined();
   });
 
   it("names a declared Other work workstream or Unassigned epic as declared, and only a missing one as absent", () => {
@@ -1219,7 +1224,7 @@ describe("SessionsScreen toolbar events", () => {
     vi.stubGlobal("document", { activeElement: null, body: {} });
     try {
       screen.open("long");
-      expect(region().props).toMatchObject({ tabIndex: 0, role: "region", accessibilityLabel: "Role and placement" });
+      expect(region().props).toMatchObject({ tabIndex: 0, role: "region", accessibilityLabel: "Role, placement, model and token report" });
       expect(list().props.tabIndex).toBe(-1);
       expect(region().props.style).not.toHaveProperty("outlineWidth");
       (region().props.onFocus as () => void)(); harness.flush();

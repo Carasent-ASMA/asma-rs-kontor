@@ -17,6 +17,7 @@ import {
   type DirectoryState,
 } from "../client/session-directory";
 import { matchesQuery } from "../client/session-view";
+import { usagePresentation } from "../client/session-usage";
 
 type Observer = {
   snapshot: (snapshot: PaseoAgentListResult & { subscriptionId: string }) => void;
@@ -329,6 +330,25 @@ describe("collectDirectory", () => {
 });
 
 describe("SessionDirectory", () => {
+  it("projects subscription usage snapshots without accumulating duplicates or carrying reports over a reset", async () => {
+    const fake = fakeDirectory([[entry("usage-agent")]]);
+    let latest = emptyDirectoryState();
+    const directory = new SessionDirectory({ client: () => fake.client, includeArchived: false, onChange: (state) => { latest = state; } });
+    await directory.start();
+    const native = { ...entry("usage-agent").agent, provider: "codex", model: "gpt-6.1-sol", lastUsage: { inputTokens: 100, outputTokens: 20, cachedInputTokens: 80 } };
+    const upsert = { kind: "upsert", agent: native } as const;
+    fake.emitUpdate(upsert);
+    fake.emitUpdate(upsert);
+    expect(usagePresentation(latest.entries[0]!).label).toBe("Report: 100 in · 20 out");
+    fake.emitUpdate({ kind: "upsert", agent: { ...native, model: "other-model", lastUsage: { inputTokens: 5, outputTokens: 0 } } });
+    expect(latest.entries[0]!.model).toBe("other-model");
+    expect(usagePresentation(latest.entries[0]!).label).toBe("Report: 5 in · 0 out");
+    fake.emitUpdate({ kind: "upsert", agent: { ...native, provider: "other-route", lastUsage: undefined, runtimeInfo: undefined } });
+    expect(usagePresentation(latest.entries[0]!).label).toBe("Usage not reported");
+    directory.markHostOffline("Disconnected");
+    expect(latest.status).toBe("stale");
+    await directory.dispose();
+  });
   it("searches recognized epic and workstream label values", () => {
     const directoryEntry = toDirectoryEntry(
       entry("labeled", {

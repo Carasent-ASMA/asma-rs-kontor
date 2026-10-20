@@ -80,6 +80,8 @@ import { rowKey, siblingKeys, reorderSavedSiblingOrder } from "./organization-or
 import { OrganizationRowView, StateBadge, stateColor as sessionStateColor, WORKSPACE_KINDS } from "./organization-row";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
 import { Action, COARSE_POINTER, Disclosure } from "./page-controls";
+import { sessionUsageLabel } from "./session-usage";
+import { SessionUsage, SessionUsageLines } from "./session-usage-view";
 
 type ThemeColors = PluginTheme["colors"];
 /** A tree row, or a flat match while a search, state or task filter is on. */
@@ -350,6 +352,7 @@ export const SessionRow = memo(function SessionRow({
         : null,
     archived,
     accessibilityContext ?? detail,
+    sessionUsageLabel(entry),
     highlighted ? "Shown from search results" : null,
   ]
     .filter((part): part is string => part !== null && part.length > 0)
@@ -357,9 +360,8 @@ export const SessionRow = memo(function SessionRow({
   const meta = [displayContext, archived].filter((part): part is string => !!part).join(" · ");
   const runtime = (state === "needs_input" || state === "attention" || state === "failed") && entry.status !== "error";
   const runtimeLabel = entry.status.charAt(0).toLocaleUpperCase() + entry.status.slice(1);
-  // Compact: one line. The title leads, runtime/context/archived follow muted in
-  // the same truncating line, and the state badge stays visible at the end. The
-  // native ID stays in the accessible label only (review ST-02).
+  // Compact: the title and context lead, then model/report metadata can wrap.
+  // The state badge stays visible; the native ID remains in the accessible label.
   const compactMeta = [runtime ? runtimeLabel : null, compactContext ?? displayContext, archived]
     .filter((part): part is string => !!part)
     .join(" · ");
@@ -388,7 +390,8 @@ export const SessionRow = memo(function SessionRow({
       {compact && compactContext !== undefined ? (
         <>
           {/* The context keeps up to about half the line; the title gives way first. */}
-          <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <View style={{ flex: 1, minWidth: 0 }}>
+          <View style={{ minWidth: 0, flexDirection: "row", alignItems: "center", gap: 8 }}>
             <Text testID="sessions-row-title" numberOfLines={1} style={{ flexShrink: 1, color: colors.foreground, fontSize: 14, lineHeight: 20 }}>
               {displayTitle ?? entry.title}
             </Text>
@@ -396,10 +399,13 @@ export const SessionRow = memo(function SessionRow({
               {compactMeta}
             </Text>
           </View>
+          <SessionUsage entry={entry} colors={colors} />
+          </View>
           <StateBadge state={state} colors={colors} compact={false} />
         </>
       ) : compact ? (
         <>
+          <View style={{ flex: 1, minWidth: 0 }}>
           <Text
             testID="sessions-row-title"
             numberOfLines={1}
@@ -412,6 +418,8 @@ export const SessionRow = memo(function SessionRow({
               </Text>
             ) : null}
           </Text>
+          <SessionUsage entry={entry} colors={colors} />
+          </View>
           <StateBadge state={state} colors={colors} compact={false} />
         </>
       ) : (
@@ -429,6 +437,7 @@ export const SessionRow = memo(function SessionRow({
               </Text>
             ) : null}
           </View>
+          <View style={{ maxWidth: 340, minWidth: 0, flexShrink: 1 }}><SessionUsage entry={entry} colors={colors} /></View>
           <View style={{ width: 95, gap: 2 }}>
             <StateBadge state={state} colors={colors} compact={false} />
             {runtime ? (
@@ -513,13 +522,13 @@ export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<t
     { label: "Workspace", value: provenance.workspace }];
 }
 
-/** Opens a Role row's details. It sits beside the row's button, which still opens the session. */
+/** Opens session details beside the row's own session-navigation button. */
 export function SessionDetailsButton({ title, expanded, compact, colors, onPress, ref }: {
   readonly title: string; readonly expanded: boolean; readonly compact: boolean; readonly colors: ThemeColors; readonly onPress: () => void; readonly ref?: Ref<View>;
 }) {
   const size = compact || COARSE_POINTER ? 44 : 30;
   return (
-    <Pressable ref={ref} testID="sessions-row-details" accessibilityRole="button" accessibilityLabel={`Details: ${title}`} accessibilityHint="Shows the full role, workstream, epic and workspace"
+    <Pressable ref={ref} testID="sessions-row-details" accessibilityRole="button" accessibilityLabel={`Details: ${title}`} accessibilityHint="Shows full model, token report, role and placement details"
       accessibilityState={{ expanded }} aria-expanded={expanded} onPress={onPress}
       style={({ pressed, hovered, focused }: { pressed: boolean; hovered?: boolean; focused?: boolean }) => ({ width: size, height: size, borderRadius: 6, alignItems: "center", justifyContent: "center", backgroundColor: pressed || hovered || focused ? colors.surface2 : undefined })}>
       <Icon name="Info" size={compact ? 16 : 14} color={colors.foregroundMuted} />
@@ -541,6 +550,7 @@ export function resultAccessibilityLabel(entry: DirectoryEntry, provenance: Sess
     entry.labels.pr?.trim() ? `PR label ${entry.labels.pr.trim()}` : null,
     archivedLabel(entry),
     `Native ID ${entry.id}`,
+    sessionUsageLabel(entry),
   ].filter((part): part is string => !!part).join(". ");
 }
 
@@ -552,10 +562,11 @@ type SessionResultRowProps = {
   readonly onPress: (entry: DirectoryEntry) => void;
   readonly onShowInTree: (entry: DirectoryEntry) => void;
   readonly treeButtonRef: (id: string, node: View | null) => void;
+  readonly details: ReactNode;
 };
 
 /** A flat match: the session opens from the row, and its place in the tree is a separate control beside it. */
-const SessionResultRow = memo(function SessionResultRow({ entry, provenance, colors, compact, onPress, onShowInTree, treeButtonRef }: SessionResultRowProps) {
+const SessionResultRow = memo(function SessionResultRow({ entry, provenance, colors, compact, onPress, onShowInTree, treeButtonRef, details }: SessionResultRowProps) {
   const cues = resultCues(entry);
   const coarse = compact || COARSE_POINTER;
   return (
@@ -582,13 +593,16 @@ const SessionResultRow = memo(function SessionResultRow({ entry, provenance, col
           <Text testID="sessions-row-title" numberOfLines={1} style={{ flex: 1, minWidth: 0, color: colors.foreground, fontSize: compact ? 14 : 13, lineHeight: compact ? 20 : 18 }}>
             {entry.title}
           </Text>
+          {compact ? null : <View style={{ maxWidth: 340, minWidth: 0, flexShrink: 1 }}><SessionUsage entry={entry} colors={colors} /></View>}
           <StateBadge state={sessionState(entry)} colors={colors} compact={false} />
         </View>
         <Text testID="sessions-result-place" numberOfLines={compact ? 2 : 1} style={{ color: colors.foregroundMuted, fontSize: compact ? 12 : 11, lineHeight: compact ? 16 : 15 }}>
           {provenance.parts.join(" › ")}
           {cues.length > 0 ? `  ·  ${cues.join(" · ")}` : ""}
         </Text>
+        {compact ? <SessionUsage entry={entry} colors={colors} /> : null}
       </Pressable>
+      {details}
       <Action ref={(node) => treeButtonRef(entry.id, node)} small={!compact} colors={colors} label={compact ? "In tree" : "Show in tree"}
         accessibilityLabel={`Show ${entry.title} in the tree`} onPress={() => onShowInTree(entry)} />
     </View>
@@ -1909,6 +1923,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   };
   const chooseGrouping = (next: SessionGrouping) => {
     pinFilterInteraction();
+    setDetailsId(null);
     updateView({ grouping: next, scrollOffset: 0 });
     if (next !== "placement") savePreference({ grouping: next });
   };
@@ -2297,13 +2312,13 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       </ScrollView>
     </AnchoredMenu>
   );
-  const detailsEntry = detailsId === null || grouping !== "role" ? null : state.entries.find((entry) => entry.id === detailsId) ?? null;
+  const detailsEntry = detailsId === null ? null : state.entries.find((entry) => entry.id === detailsId) ?? null;
   const closeDetails = () => {
     const target = detailsReturn();
     setDetailsId(null);
     target?.focus?.();
   };
-  // Details whose session has left, or that Role grouping no longer shows, close. Focus they held,
+  // Details whose session has left close. Focus they held,
   // which the page has now dropped, goes where Close would send it; focus elsewhere stays put.
   useEffect(() => {
     if (detailsId === null || detailsEntry !== null) return;
@@ -2322,7 +2337,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         <Action ref={detailsCloseRef} small={!compact} colors={colors} label="Close" accessibilityLabel={`Close details: ${detailsEntry.title}`} onPress={closeDetails} />
       </View>}>
       {/* On web the lines are a named stop of their own, so a keyboard can scroll a chain longer than the screen. */}
-      <ScrollView testID="sessions-details-lines" {...(pageDocument() ? { tabIndex: 0, role: "region", accessibilityLabel: "Role and placement" } as const : {})}
+      <ScrollView testID="sessions-details-lines" {...(pageDocument() ? { tabIndex: 0, role: "region", accessibilityLabel: "Role, placement, model and token report" } as const : {})}
         onFocus={() => setDetailsLinesFocused(true)} onBlur={() => setDetailsLinesFocused(false)}
         style={{ flexGrow: 0, flexShrink: 1, borderRadius: 6, ...(detailsLinesFocused ? { outlineColor: colors.accent, outlineStyle: "solid", outlineWidth: 2 } as const : null) }}>
         {sessionDetailLines(detailsEntry, mappings).map(({ label, value }) => (
@@ -2331,6 +2346,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             <Text selectable style={{ color: colors.foreground, fontSize: 13, lineHeight: 18 }}>{value}</Text>
           </View>
         ))}
+        <SessionUsageLines entry={detailsEntry} colors={colors} stale={showBanner} />
       </ScrollView>
     </AnchoredMenu>
   );
@@ -2548,7 +2564,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         contentContainerStyle={rows.length === 0 ? { flexGrow: 1, ...scrollSlack } : { paddingBottom: 16, ...scrollSlack }}
         ListHeaderComponent={listHeader}
         renderItem={({ item }) => {
-          if (item.kind === "result") return <SessionResultRow entry={item.entry} provenance={provenance.get(item.entry.id) ?? sessionProvenance(item.entry, mappings)} colors={colors} compact={compact} onPress={handleOpen} onShowInTree={handleShowInTree} treeButtonRef={treeButtonRef} />;
+          if (item.kind === "result") return <SessionResultRow entry={item.entry} provenance={provenance.get(item.entry.id) ?? sessionProvenance(item.entry, mappings)} colors={colors} compact={compact} onPress={handleOpen} onShowInTree={handleShowInTree} treeButtonRef={treeButtonRef}
+            details={<SessionDetailsButton ref={(node) => detailsButtonRef(item.entry.id, node)} title={item.entry.title} expanded={detailsId === item.entry.id} compact={compact} colors={colors} onPress={() => setDetailsId(item.entry.id)} />} />;
           const key = listRowKey(item);
           if (item.kind === "empty") return <OrganizationRowView row={item} colors={colors} compact={compact} disabled arranging={false} selected={false} favorite={false} onFavorite={() => undefined} onToggle={() => undefined} onMove={() => undefined} onSelect={() => undefined} />;
           const epic = item.kind === "group" && item.group.kind === "epic" ? item.group.epic : null;
@@ -2557,7 +2574,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             accessibilityLabel={`${tab} for ${epic}${plans.length > 1 ? `, choose among ${plans.length} configured plans` : ""}`} onPress={() => onEpicTab(tab, epic, plans.length === 1 ? plans[0]! : null)} />) : undefined;
           const role = item.kind === "session" && grouping === "role" ? roleRowContext(item.entry, mappings) : null;
           return <OrganizationRowView row={item} colors={colors} compact={compact} disabled={editsDisabled} arranging={arrangeEnabled} selected={orderSelection === key}
-            details={role && item.kind === "session" ? <SessionDetailsButton ref={(node) => detailsButtonRef(item.entry.id, node)} title={item.entry.title} expanded={detailsId === item.entry.id} compact={compact} colors={colors} onPress={() => setDetailsId(item.entry.id)} /> : undefined}
+            details={item.kind === "session" ? <SessionDetailsButton ref={(node) => detailsButtonRef(item.entry.id, node)} title={item.entry.title} expanded={detailsId === item.entry.id} compact={compact} colors={colors} onPress={() => setDetailsId(item.entry.id)} /> : undefined}
             favorite={item.kind === "session" && favorites.includes(item.entry.id)} stale={showBanner} actions={actions}
             onToggle={() => toggleGroup(item)}
             onSelect={() => setOrderSelection(orderSelection === key ? null : key)}
