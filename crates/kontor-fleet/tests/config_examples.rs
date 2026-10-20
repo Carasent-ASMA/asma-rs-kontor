@@ -961,10 +961,13 @@ fn parse_qualification(reference: &str) -> Result<(&str, &str), &'static str> {
 fn qualification_hash(record: &Value) -> String {
     let efforts = schema_keys(&record["efforts"], "qualification efforts").join(",");
     let canonical = format!(
-        "route={}\nharness={}\nmodel={}\nefforts={}\nrevision={}\nactivated_at={}",
+        "route={}\nharness={}\nmodel={}\ncanonical_model_id={}\ncanonical_vendor={}\nroute_model_id={}\nefforts={}\nrevision={}\nactivated_at={}",
         record["route"].as_str().unwrap_or_default(),
         record["harness"].as_str().unwrap_or_default(),
         record["model"].as_str().unwrap_or_default(),
+        record["canonical_model_id"].as_str().unwrap_or_default(),
+        record["canonical_vendor"].as_str().unwrap_or_default(),
+        record["route_model_id"].as_str().unwrap_or_default(),
         efforts,
         record["revision"].as_str().unwrap_or_default(),
         record["activated_at"].as_str().unwrap_or_default(),
@@ -972,13 +975,20 @@ fn qualification_hash(record: &Value) -> String {
     ContentHash::of(canonical.as_bytes()).as_str().to_owned()
 }
 
+struct QualificationScope<'a> {
+    route: &'a str,
+    harness: &'a str,
+    model: &'a str,
+    canonical_model_id: &'a str,
+    canonical_vendor: &'a str,
+    route_model_id: &'a str,
+    effort: &'a str,
+    revision: &'a str,
+}
+
 fn proven_qualification<'a>(
     qualifications: &'a Value,
-    route: &str,
-    harness: &str,
-    model: &str,
-    effort: &str,
-    revision: &str,
+    scope: &QualificationScope<'_>,
 ) -> Result<&'a Value, &'static str> {
     if qualifications["schema_version"].as_i64() != Some(1)
         || qualifications["activated"].as_bool() != Some(true)
@@ -990,14 +1000,18 @@ fn proven_qualification<'a>(
         .ok_or("route_qualification_unproven")?
         .iter()
         .find(|record| {
-            record["route"].as_str() == Some(route) && record["revision"].as_str() == Some(revision)
+            record["route"].as_str() == Some(scope.route)
+                && record["revision"].as_str() == Some(scope.revision)
         })
         .ok_or("route_qualification_unproven")?;
-    if record["harness"].as_str() != Some(harness)
-        || record["model"].as_str() != Some(model)
+    if record["harness"].as_str() != Some(scope.harness)
+        || record["model"].as_str() != Some(scope.model)
+        || record["canonical_model_id"].as_str() != Some(scope.canonical_model_id)
+        || record["canonical_vendor"].as_str() != Some(scope.canonical_vendor)
+        || record["route_model_id"].as_str() != Some(scope.route_model_id)
         || !schema_keys(&record["efforts"], "qualification efforts")
             .iter()
-            .any(|candidate| candidate == effort)
+            .any(|candidate| candidate == scope.effort)
     {
         return Err("route_qualification_unproven");
     }
@@ -1081,11 +1095,16 @@ fn eligible_route(
         }
         proven_qualification(
             qualifications,
-            route_provider,
-            route_harness,
-            model,
-            effort,
-            revision,
+            &QualificationScope {
+                route: route_provider,
+                harness: route_harness,
+                model,
+                canonical_model_id: fleet_model["id"].as_str().ok_or("canonical_model")?,
+                canonical_vendor: fleet_model["vendor"].as_str().ok_or("canonical_vendor")?,
+                route_model_id,
+                effort,
+                revision,
+            },
         )?;
     } else if route_provider != fleet_provider {
         return Err("route_unqualified");
@@ -1117,6 +1136,7 @@ fn resolve_binding_avoiding(
     fleet: &Value,
     host: &Value,
     qualifications: &Value,
+    project: &Value,
     binding: &str,
     excluded_vendors: &[&str],
 ) -> Result<ResolvedRoute, &'static str> {
@@ -1137,6 +1157,17 @@ fn resolve_binding_avoiding(
                 .as_str()
                 .ok_or("model_domain")?;
             for slot in route_slots(host, domain) {
+                let account = match host
+                    .get("provider_accounts")
+                    .and_then(|accounts| accounts.get(slot.as_str()))
+                {
+                    Some(account) => account,
+                    None => continue,
+                };
+                if route_pair_allowed(project, account).is_err() {
+                    last = "runtime_pair_not_allowed";
+                    continue;
+                }
                 match eligible_route(fleet, host, qualifications, &slot, model, effort) {
                     Ok(route) => {
                         if excluded_vendors.contains(&route.canonical_vendor.as_str()) {
@@ -1162,9 +1193,10 @@ fn resolve_binding(
     fleet: &Value,
     host: &Value,
     qualifications: &Value,
+    project: &Value,
     binding: &str,
 ) -> Result<ResolvedRoute, &'static str> {
-    resolve_binding_avoiding(fleet, host, qualifications, binding, &[])
+    resolve_binding_avoiding(fleet, host, qualifications, project, binding, &[])
 }
 
 /// Resolve one fleet model through a host's logical slot order. This is the
@@ -1308,7 +1340,12 @@ fn the_same_fleet_resolves_under_two_different_hosts() {
     assert_eq!(frozen.resolved_at, "2026-10-20T00:00:00Z");
 }
 
+const PROJECT: &str = "config/examples/orchestration/orchestration.yml";
 const QUALIFICATIONS: &str = "config/examples/orchestration/route-qualifications.yml";
+
+fn project() -> Value {
+    read(PROJECT)["project"].clone()
+}
 const OPEN_BINDING: &str = "team/01936f5a-0000-7000-8000-000000000001/open";
 const FALLBACK_BINDING: &str = "team/01936f5a-0000-7000-8000-000000000001/fallback";
 const IMPLEMENT_BINDING: &str = "team/01936f5a-0000-7000-8000-000000000001/implement";
@@ -1322,6 +1359,7 @@ fn the_same_fleet_resolves_through_a_different_provider_route() {
         &fleet,
         &read("config/examples/host.example.yml"),
         &qualifications,
+        &project(),
         OPEN_BINDING,
     )
     .expect("the OpenCode route serves the canonical model");
@@ -1329,6 +1367,7 @@ fn the_same_fleet_resolves_through_a_different_provider_route() {
         &fleet,
         &read("tests/fixtures/config/host-cross-provider.yml"),
         &qualifications,
+        &project(),
         OPEN_BINDING,
     )
     .expect("the qualified ACP route serves the same canonical model");
@@ -1364,7 +1403,7 @@ fn an_unqualified_cross_provider_route_is_refused() {
         .expect("the opencode route")
         .remove("qualification");
     assert_eq!(
-        resolve_binding(&fleet, &host, &qualifications, OPEN_BINDING),
+        resolve_binding(&fleet, &host, &qualifications, &project(), OPEN_BINDING),
         Err("route_unqualified"),
         "a cross-provider substitution without a qualification is refused"
     );
@@ -1380,7 +1419,7 @@ fn an_unqualified_cross_provider_route_is_refused() {
             Value::String(reference.to_owned());
         assert!(
             matches!(
-                resolve_binding(&fleet, &wrong, &qualifications, OPEN_BINDING),
+                resolve_binding(&fleet, &wrong, &qualifications, &project(), OPEN_BINDING),
                 Err("route_unqualified")
                     | Err("route_qualification_malformed")
                     | Err("route_qualification_unproven")
@@ -1399,7 +1438,7 @@ fn qualification_records_are_activated_and_hash_bound() {
     let mut missing = base.clone();
     missing["records"] = Value::Sequence(vec![]);
     assert_eq!(
-        resolve_binding(&fleet, &cross, &missing, OPEN_BINDING),
+        resolve_binding(&fleet, &cross, &missing, &project(), OPEN_BINDING),
         Err("route_qualification_unproven"),
         "a reference with no matching record is refused"
     );
@@ -1407,7 +1446,7 @@ fn qualification_records_are_activated_and_hash_bound() {
     let mut inactive = base.clone();
     inactive["activated"] = Value::Bool(false);
     assert_eq!(
-        resolve_binding(&fleet, &cross, &inactive, OPEN_BINDING),
+        resolve_binding(&fleet, &cross, &inactive, &project(), OPEN_BINDING),
         Err("route_qualification_unproven"),
         "an unactivated record is refused"
     );
@@ -1415,7 +1454,7 @@ fn qualification_records_are_activated_and_hash_bound() {
     let mut tampered = base.clone();
     tampered["records"][0]["activated_at"] = Value::String("2026-10-21T00:00:00Z".to_owned());
     assert_eq!(
-        resolve_binding(&fleet, &cross, &tampered, OPEN_BINDING),
+        resolve_binding(&fleet, &cross, &tampered, &project(), OPEN_BINDING),
         Err("route_qualification_hash_mismatch"),
         "a record edited after approval no longer hash-matches"
     );
@@ -1425,7 +1464,7 @@ fn qualification_records_are_activated_and_hash_bound() {
     let rehashed = qualification_hash(&wrong_model["records"][0]);
     wrong_model["records"][0]["record_hash"] = Value::String(rehashed);
     assert_eq!(
-        resolve_binding(&fleet, &cross, &wrong_model, OPEN_BINDING),
+        resolve_binding(&fleet, &cross, &wrong_model, &project(), OPEN_BINDING),
         Err("route_qualification_unproven"),
         "a validly hashed record that does not cover the pinned model is refused"
     );
@@ -1436,9 +1475,64 @@ fn qualification_records_are_activated_and_hash_bound() {
     let rehashed = qualification_hash(&wrong_effort["records"][0]);
     wrong_effort["records"][0]["record_hash"] = Value::String(rehashed);
     assert_eq!(
-        resolve_binding(&fleet, &cross, &wrong_effort, OPEN_BINDING),
+        resolve_binding(&fleet, &cross, &wrong_effort, &project(), OPEN_BINDING),
         Err("route_qualification_unproven"),
         "a validly hashed record that omits the pinned effort is refused"
+    );
+}
+
+#[test]
+fn qualification_binds_canonical_identity_and_route_model_id() {
+    let fleet = read("config/examples/orchestration/fleet.yml");
+    let qualifications = read(QUALIFICATIONS);
+    let cross = read("tests/fixtures/config/host-cross-provider.yml");
+    assert!(
+        resolve_binding(&fleet, &cross, &qualifications, &project(), OPEN_BINDING).is_ok(),
+        "the baseline qualified route is accepted"
+    );
+
+    let mut changed_launch_id = cross.clone();
+    changed_launch_id["provider_accounts"]["opencode"]["serves"]["open-example"] =
+        Value::String("unqualified-other-vendor-model".to_owned());
+    assert_eq!(
+        resolve_binding(
+            &fleet,
+            &changed_launch_id,
+            &qualifications,
+            &project(),
+            OPEN_BINDING
+        ),
+        Err("route_qualification_unproven"),
+        "a host mapping that changes the launch id no longer matches the qualified record"
+    );
+
+    let mut changed_canonical_id = fleet.clone();
+    changed_canonical_id["models"]["open-example"]["id"] =
+        Value::String("other-canonical-id".to_owned());
+    assert_eq!(
+        resolve_binding(
+            &changed_canonical_id,
+            &cross,
+            &qualifications,
+            &project(),
+            OPEN_BINDING
+        ),
+        Err("route_qualification_unproven"),
+        "a changed canonical model id no longer matches the qualified record"
+    );
+
+    let mut changed_vendor = fleet.clone();
+    changed_vendor["models"]["open-example"]["vendor"] = Value::String("other-vendor".to_owned());
+    assert_eq!(
+        resolve_binding(
+            &changed_vendor,
+            &cross,
+            &qualifications,
+            &project(),
+            OPEN_BINDING
+        ),
+        Err("route_qualification_unproven"),
+        "a changed canonical vendor no longer matches the qualified record"
     );
 }
 
@@ -1454,7 +1548,7 @@ fn a_route_that_does_not_serve_the_model_is_refused() {
     );
     host["provider_accounts"]["opencode"]["serves"] = Value::Mapping(serves);
     assert_eq!(
-        resolve_binding(&fleet, &host, &qualifications, OPEN_BINDING),
+        resolve_binding(&fleet, &host, &qualifications, &project(), OPEN_BINDING),
         Err("route_not_served"),
         "a route that does not prove the model is not eligible"
     );
@@ -1468,8 +1562,14 @@ fn an_incompatible_route_falls_through_the_configured_chain() {
 
     // The ACP route states high/max only, so the pinned low effort is refused
     // on step one and the configured chain descends to the next policy step.
-    let fallback = resolve_binding(&fleet, &cross, &qualifications, FALLBACK_BINDING)
-        .expect("the next policy step is compatible");
+    let fallback = resolve_binding(
+        &fleet,
+        &cross,
+        &qualifications,
+        &project(),
+        FALLBACK_BINDING,
+    )
+    .expect("the next policy step is compatible");
     assert_eq!(fallback.slot, "codex-primary");
     assert_eq!(fallback.route_provider, "codex");
     assert_eq!(fallback.canonical_model, "gpt-example");
@@ -1483,6 +1583,7 @@ fn an_incompatible_route_falls_through_the_configured_chain() {
         &fleet,
         &read("config/examples/host.example.yml"),
         &qualifications,
+        &project(),
         FALLBACK_BINDING,
     )
     .expect("the OpenCode route serves the low effort");
@@ -1498,7 +1599,7 @@ fn a_chain_with_no_compatible_route_is_refused_without_substitution() {
     let qualifications = read(QUALIFICATIONS);
     let mut host = read("tests/fixtures/config/host-cross-provider.yml");
     host["routes"]["codex"] = Value::Sequence(vec![]);
-    let outcome = resolve_binding(&fleet, &host, &qualifications, FALLBACK_BINDING);
+    let outcome = resolve_binding(&fleet, &host, &qualifications, &project(), FALLBACK_BINDING);
     assert_eq!(
         outcome,
         Err("route_effort_unsupported"),
@@ -1514,7 +1615,7 @@ fn vendor_independence_skips_the_partners_vendor_on_a_cross_provider_route() {
 
     // The first seat is pinned to the open model, so on this host it lands on
     // the qualified ACP route and runs with the canonical example vendor.
-    let implement = resolve_binding(&fleet, &cross, &qualifications, OPEN_BINDING)
+    let implement = resolve_binding(&fleet, &cross, &qualifications, &project(), OPEN_BINDING)
         .expect("the ACP route places the first seat");
     assert_eq!(implement.canonical_vendor, "example");
     assert_eq!(implement.route_provider, "glm-acp-agent");
@@ -1523,6 +1624,7 @@ fn vendor_independence_skips_the_partners_vendor_on_a_cross_provider_route() {
         &fleet,
         &cross,
         &qualifications,
+        &project(),
         VERIFY_BINDING,
         &["example"],
     )
@@ -1539,13 +1641,25 @@ fn vendor_independence_falls_through_the_chain_without_relaxing_the_vendor() {
     let mut host = read("config/examples/host.example.yml");
     host["routes"]["claude"] = Value::Sequence(vec![]);
 
-    let implement = resolve_binding(&fleet, &host, &qualifications, IMPLEMENT_BINDING)
-        .expect("the codex route implements");
+    let implement = resolve_binding(
+        &fleet,
+        &host,
+        &qualifications,
+        &project(),
+        IMPLEMENT_BINDING,
+    )
+    .expect("the codex route implements");
     assert_eq!(implement.canonical_vendor, "openai");
 
-    let verify =
-        resolve_binding_avoiding(&fleet, &host, &qualifications, VERIFY_BINDING, &["openai"])
-            .expect("the next independent chain step is compatible");
+    let verify = resolve_binding_avoiding(
+        &fleet,
+        &host,
+        &qualifications,
+        &project(),
+        VERIFY_BINDING,
+        &["openai"],
+    )
+    .expect("the next independent chain step is compatible");
     assert_eq!(verify.canonical_vendor, "xai");
     assert_eq!(verify.canonical_model, "grok-example");
     assert_eq!(verify.canonical_effort, "high");
@@ -1560,12 +1674,19 @@ fn vendor_independence_is_refused_when_no_route_remains() {
         host["routes"][domain] = Value::Sequence(vec![]);
     }
 
-    let implement = resolve_binding(&fleet, &host, &qualifications, OPEN_BINDING)
+    let implement = resolve_binding(&fleet, &host, &qualifications, &project(), OPEN_BINDING)
         .expect("the only remaining route implements");
     assert_eq!(implement.canonical_vendor, "example");
 
     assert_eq!(
-        resolve_binding_avoiding(&fleet, &host, &qualifications, VERIFY_BINDING, &["example"],),
+        resolve_binding_avoiding(
+            &fleet,
+            &host,
+            &qualifications,
+            &project(),
+            VERIFY_BINDING,
+            &["example"],
+        ),
         Err("vendor_independence_unpreserved"),
         "placement is refused rather than reusing the partner's vendor"
     );
@@ -1602,14 +1723,15 @@ fn the_project_runtime_matrix_allows_every_host_route() {
 }
 
 #[test]
-fn a_route_outside_the_project_matrix_is_refused() {
-    let project = read("config/examples/orchestration/orchestration.yml");
+fn placement_refuses_a_route_outside_the_project_matrix() {
+    let fleet = read("config/examples/orchestration/fleet.yml");
+    let qualifications = read(QUALIFICATIONS);
     let mut host = read("config/examples/host.example.yml");
     host["provider_accounts"]["opencode"]["harness"] = Value::String("unlisted-harness".to_owned());
     assert_eq!(
-        route_pair_allowed(&project["project"], &host["provider_accounts"]["opencode"]),
+        resolve_binding(&fleet, &host, &qualifications, &project(), OPEN_BINDING),
         Err("runtime_pair_not_allowed"),
-        "a host route not listed by project.runtime.matrix is refused before placement"
+        "placement refuses a host route not listed by project.runtime.matrix"
     );
 }
 

@@ -157,12 +157,14 @@ working route. They meet on two keys: the logical slot and the canonical model.
    canonical model, maps it to a non-empty route-native model id, supports the
    pinned effort (the route's `efforts`, when stated, contains it), and, for a
    cross-provider route, carries a qualification reference that matches an
-   activated, hash-bound record covering that exact route, harness, model and
-   effort. `<route>@<revision>` is split exactly once and compared for
-   equality; a malformed reference, a missing record, an unactivated record, a
-   hash mismatch or a record that does not cover the pinned model/effort is
-   refused. The resolver never substitutes a different provider merely because
-   it is available, and never requires a fleet edit to make a host route work.
+   activated, hash-bound record covering that exact route, harness, symbolic
+   model, canonical id/vendor, route-native launch id and effort.
+   `<route>@<revision>` is split exactly once and compared for equality; a
+   malformed reference, a missing record, an unactivated record, a hash
+   mismatch or a record that does not cover the pinned identity, launch id or
+   effort is refused. The resolver never substitutes a different provider
+   merely because it is available, and never requires a fleet edit to make a
+   host route work.
 5. `project.runtime.matrix` is an allowlist of `{harness, provider}` pairs the
    project may launch. A host route whose pair is absent is refused with
    `runtime_pair_not_allowed` before placement; the matrix does not own model
@@ -193,11 +195,14 @@ working route. They meet on two keys: the logical slot and the canonical model.
 record in `orchestration/route-qualifications.yml`, not by a string in
 `host.yml`. The file is published and activated through the same policy path as
 the other project policy, then bound by content hash; it is not the fleet policy
-and not the host bootstrap file. Each record binds `route`, `harness`,
-canonical `model`, `efforts`, `revision`, `activated_at` and `record_hash`. A
-host reference is exactly `<route>@<revision>`; the resolver splits once,
-compares both parts exactly, requires `activated: true`, verifies the record
-hash, and requires the record to cover the pinned canonical model and effort.
+and not the host bootstrap file. Each record binds `route`, `harness`, the
+symbolic `model`, `canonical_model_id`, `canonical_vendor`, `route_model_id`,
+`efforts`, `revision`, `activated_at` and `record_hash`. A host reference is
+exactly `<route>@<revision>`; the resolver splits once, compares both parts
+exactly, requires `activated: true`, verifies the record hash, and requires the
+record to cover the pinned canonical identity, the route-native launch id and
+the effort. A changed `serves` mapping or a changed canonical id/vendor under
+the same model name no longer matches the record and is refused.
 A missing or unactivated record, a hash mismatch, a malformed reference, or a
 record whose route/harness/model/effort does not cover the placement is refused
 as `route_qualification_unproven`, `route_qualification_hash_mismatch` or

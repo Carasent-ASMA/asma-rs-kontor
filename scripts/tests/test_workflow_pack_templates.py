@@ -183,6 +183,8 @@ class NeutralExampleTests(unittest.TestCase):
     def test_the_neutral_quota_signals_are_not_captured_vendor_copy(self) -> None:
         text = read(EXAMPLES / "quota-signals.yml")
         self.assertIn("example.invalid", text)
+        self.assertIn("example credit balance exhausted", text)
+        self.assertNotIn("insufficient", text)
         self.assertNotIn("claude.ai/settings/usage", text)
         self.assertNotIn("chatgpt.com/codex", text)
 

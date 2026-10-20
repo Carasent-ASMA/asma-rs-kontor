@@ -38,5 +38,5 @@ signals:
     provider: opencode
     basis: credit_balance
     markers:
-      - insufficient
-      - credits
+      - example credit balance exhausted
+      - example.invalid/billing

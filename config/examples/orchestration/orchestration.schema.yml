@@ -113,7 +113,7 @@ route_binding:
   qualification:
     source: orchestration/route-qualifications.yml
     activation: published and activated through the policy path, bound by content hash; not fleet policy and not host.yml
-    record_fields: [route, harness, model, efforts, revision, activated_at, record_hash]
+    record_fields: [route, harness, model, canonical_model_id, canonical_vendor, route_model_id, efforts, revision, activated_at, record_hash]
     rule: the record must be activated, hash-match, and cover the pinned canonical model and effort; `<route>@<revision>` is split exactly and compared for equality
   compatibility:
     rule: the route maps the canonical model to a route-native id in serves and supports the pinned effort; a cross-provider route needs a matching activated qualification record

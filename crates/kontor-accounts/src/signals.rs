@@ -243,6 +243,43 @@ mod tests {
     }
 
     #[test]
+    fn the_neutral_example_does_not_classify_live_credit_wording() {
+        let document = parse(NEUTRAL_EXAMPLE).expect("the neutral example is valid");
+        let opencode: Vec<QuotaSignal> = document
+            .signals
+            .iter()
+            .filter(|signal| signal.provider == "opencode")
+            .cloned()
+            .collect();
+        assert!(
+            !opencode.is_empty(),
+            "the neutral example declares opencode"
+        );
+        assert!(
+            opencode
+                .iter()
+                .flat_map(|signal| &signal.markers)
+                .all(|marker| marker != "insufficient" && marker != "credits"),
+            "the neutral example carries no active credit fingerprint"
+        );
+
+        let at = parse_utc_timestamp("2026-08-21T07:00:00Z").expect("a canonical instant");
+        let synthetic = "example credit balance exhausted; see example.invalid/billing";
+        let observed = classify(synthetic, &opencode, at).expect("the synthetic marker classifies");
+        assert_eq!(observed.kind, ProviderQuotaKind::Drained);
+
+        for live in [
+            "This request failed because of insufficient credits",
+            "402 Payment Required: insufficient credits for this request",
+        ] {
+            assert!(
+                classify(live, &opencode, at).is_none(),
+                "the neutral example must not classify live credit wording: {live}"
+            );
+        }
+    }
+
+    #[test]
     fn the_shipped_example_names_exact_catalog_aliases_not_vendor_families() {
         let document = parse(EXAMPLE).expect("the shipped example is valid");
         assert_eq!(document.schema_version, 1);

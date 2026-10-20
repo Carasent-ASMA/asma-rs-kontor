@@ -111,8 +111,9 @@ enables.
 A route is eligible only when its `serves` mapping contains the canonical model,
 its route-native id is non-empty, and it supports the pinned effort. A
 cross-provider route also needs an activated, hash-bound record in
-`orchestration/route-qualifications.yml` covering that route, harness, model and
-effort; a missing, malformed or unproven reference is refused. The canonical
+`orchestration/route-qualifications.yml` covering that route, harness, symbolic
+model, canonical id/vendor, route-native launch id and effort; a missing,
+malformed or unproven reference is refused. The canonical
 model id, effort and vendor are unchanged, `route_model_id` is the route's own
 launch id, and vendor independence uses the canonical vendor. An incompatible
 route is skipped and the configured chain falls through; if no step is

@@ -3,14 +3,18 @@
 # and it is not host.yml. A host names a record by `<route>@<revision>` only.
 #
 # A record proves one working provider/harness route for one canonical fleet
-# model and a stated effort subset. The record hash binds the approved values.
+# model, its canonical id/vendor, its route-native launch id and a stated effort
+# subset. The record hash binds those approved values.
 schema_version: 1
 activated: true
 records:
   - route: glm-acp-agent
     harness: acp-agent
     model: open-example
+    canonical_model_id: example/model
+    canonical_vendor: example
+    route_model_id: glm-5.3
     efforts: [high, max]
     revision: '1'
     activated_at: '2026-10-20T00:00:00Z'
-    record_hash: '51403d36bf9229e9d67fbc5352335bccaf347468db2dcb8bcebcbf3781122b20'
+    record_hash: '0564f52788d570ab91cea970092fc20f5ef5d0c6f648e904b280ba5096804a5e'
