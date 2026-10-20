@@ -5,6 +5,7 @@ import { baseSessions, deskSessions, DESK_PROJECTS, DESK_WORKSPACES, roleSession
 import { modelUsageSessions } from "../fixtures/model-usage";
 import { lifecycleSessions } from "../fixtures/lifecycle";
 import { integrationSessions } from "../fixtures/integration";
+import { statusMarkerSessions } from "../fixtures/status-markers";
 import { SOURCE_READS } from "../fixtures/sources";
 import { SCENARIOS, type Scenario } from "../scenarios";
 import { logHostEvent } from "./event-log";
@@ -36,7 +37,7 @@ export function subscribeHost(listener: () => void): () => void {
 // Sessions ------------------------------------------------------------------
 
 const sessions = new Map<string, FixtureSession>();
-const inventory = { none: () => [], large: scrollSessions, roles: roleSessions, times: timeSessions, base: baseSessions, usage: modelUsageSessions, desks: deskSessions, lifecycle: lifecycleSessions, integration: integrationSessions }[scenario.inventory];
+const inventory = { none: () => [], large: scrollSessions, roles: roleSessions, times: timeSessions, base: baseSessions, usage: modelUsageSessions, desks: deskSessions, lifecycle: lifecycleSessions, integration: integrationSessions, markers: () => [...integrationSessions(), ...statusMarkerSessions()] }[scenario.inventory];
 for (const value of inventory()) sessions.set(value.agent.id, value);
 
 type Observer = { snapshot?: (value: unknown) => void; update?: (message: unknown) => void; error?: (error: unknown) => void };

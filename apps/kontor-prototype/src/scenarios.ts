@@ -11,7 +11,7 @@ export type Scenario = {
   readonly id: string;
   readonly title: string;
   readonly summary: string;
-  readonly inventory: "base" | "large" | "roles" | "times" | "none" | "usage" | "desks" | "lifecycle" | "integration";
+  readonly inventory: "base" | "large" | "roles" | "times" | "none" | "usage" | "desks" | "lifecycle" | "integration" | "markers";
   readonly sources: boolean;
   readonly settings?: Partial<OrganizationSettings>;
   /** The saved keyboard document; without it the Back shortcut is off, as on a new host. */
@@ -42,6 +42,15 @@ const EXPANDED: Partial<OrganizationSettings> = {
 };
 
 export const SCENARIOS: readonly Scenario[] = [
+  { id: "status-markers", title: "Compact status markers: combined review", summary: "Fictional combined inventory. Seven distinct shapes keep row states readable without color. Existing labeled filters are the legend; hover or focus a row for its short state label. Earlier errors and Archived remain text cues. Browser prototype, not native/device evidence.", inventory: "markers", sources: true, start: { grouping: "flat", query: "Marker sample" } },
+  { id: "status-markers-roles", title: "Status markers: Roles", summary: "Combined fictional inventory in Roles. Session rows use compact shapes; role totals retain their labels and exact counts. Expand SWE to compare all seven states.", inventory: "markers", sources: true, settings: { grouping: "role", expandedGroups: { "roles/role:SWE": true } } },
+  { id: "status-markers-updates", title: "Status markers: simulated transitions", summary: "Fictional combined inventory. Sample B changes from idle to running, permission wait, current error, closed with earlier error, then finished notice. Changes are simulated; current status and filter counts use production logic.", inventory: "markers", sources: true, start: { grouping: "flat", query: "Marker sample" }, script: [
+    { afterMs: 4000, agentId: "agt_marker_1", patch: { status: "running" }, note: "Simulated idle to running" },
+    { afterMs: 8000, agentId: "agt_marker_1", patch: { status: "running", requiresAttention: true, attentionReason: "permission", pendingPermissions: [{}] }, note: "Simulated permission request" },
+    { afterMs: 12000, agentId: "agt_marker_1", patch: { status: "error", attentionReason: "error", pendingPermissions: [] }, note: "Simulated current error" },
+    { afterMs: 16000, agentId: "agt_marker_1", patch: { status: "closed", attentionReason: "error" }, note: "Simulated closed with neutral earlier error" },
+    { afterMs: 20000, agentId: "agt_marker_1", patch: { status: "idle", attentionReason: "finished" }, note: "Simulated unread finished notice" },
+  ] },
   { id: "compact-icons", title: "Compact controls: combined review", summary: "Fictional combined inventory: configured/reported/missing/custom models, absent/zero token reports, stale cases, roles and long titles. Hover or focus controls for help; touch opens exact Details. Source and status semantics remain unchanged.", inventory: "integration", sources: true, start: { grouping: "flat", query: "Model report" } },
   { id: "compact-icons-stale", title: "Compact controls: stale inventory", summary: "The combined fixture host goes offline at 3 seconds; model and counter report age remains unknown. Details preserves all source limits.", inventory: "integration", sources: true, start: { grouping: "flat", query: "Model report" }, hostOfflineAfterMs: 3000 },
   { id: "baseline", title: "Baseline", summary: "Default inventory, Sessions tree with one epic open.", inventory: "base", sources: true, settings: EXPANDED },
