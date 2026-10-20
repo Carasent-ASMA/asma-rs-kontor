@@ -11,7 +11,7 @@ export type Scenario = {
   readonly id: string;
   readonly title: string;
   readonly summary: string;
-  readonly inventory: "base" | "large" | "roles" | "none";
+  readonly inventory: "base" | "large" | "roles" | "none" | "usage";
   readonly sources: boolean;
   readonly settings?: Partial<OrganizationSettings>;
   /** The saved keyboard document; without it the Back shortcut is off, as on a new host. */
@@ -42,6 +42,16 @@ const EXPANDED: Partial<OrganizationSettings> = {
 };
 
 export const SCENARIOS: readonly Scenario[] = [
+  { id: "model-usage", title: "Models and token reports", summary: "Fictional reports: selected and observed models, opaque routes, missing and zero counts, cache, huge counts, context-only and long IDs. No consumed session total is available.", inventory: "usage", sources: true, start: { query: "Model report" } },
+  { id: "model-usage-roles", title: "Models: Roles", summary: "The same fictional reports in Role groups; use each row's Details for source, exact model and exact token counts.", inventory: "usage", sources: true, settings: { grouping: "role", expandedGroups: { "roles/role:QA": true, "roles/role:SWE": true } } },
+  { id: "model-usage-offline", title: "Models: host offline", summary: "Fictional reports; host goes offline at 4 seconds. Details distinguish last known inventory from unknown report age.", inventory: "usage", sources: true, start: { query: "Model report" }, hostOfflineAfterMs: 4000 },
+  { id: "model-usage-updates", title: "Models: scripted updates", summary: "Simulated snapshot updates at 4/8/12/16/20 seconds: replace, duplicate, reset, model switch retaining historical counts, provider switch clearing counts. Never sums reports.", inventory: "usage", sources: true, start: { query: "Model report" }, script: [
+    { afterMs: 4000, agentId: "agt_model_report_0", patch: { lastUsage: { inputTokens: 24_800, outputTokens: 640, cachedInputTokens: 20_000 } }, note: "Replace snapshot; no accumulation" },
+    { afterMs: 8000, agentId: "agt_model_report_0", patch: { lastUsage: { inputTokens: 24_800, outputTokens: 640, cachedInputTokens: 20_000 } }, note: "Duplicate snapshot; counts unchanged" },
+    { afterMs: 12000, agentId: "agt_model_report_0", patch: { lastUsage: { inputTokens: 5, outputTokens: 0 } }, note: "Counters reset; show 5 in and explicit 0 out" },
+    { afterMs: 16000, agentId: "agt_model_report_0", patch: { model: "other-model", runtimeInfo: { sessionId: null, provider: "codex", model: "other-model" } }, note: "Configured model switched; report model attribution stays unknown" },
+    { afterMs: 20000, agentId: "agt_model_report_0", patch: { provider: "another-route", runtimeInfo: undefined, lastUsage: undefined, model: null }, note: "Provider switched; missing report and model remain unknown" },
+  ] },
   { id: "baseline", title: "Baseline", summary: "Default inventory, Sessions tree with one epic open.", inventory: "base", sources: true, settings: EXPANDED },
   { id: "filtered-errors", title: "Filtered: errors", summary: "Error filter on: runtime errors and an earlier error cue on an idle session.", inventory: "base", sources: true, settings: EXPANDED, start: { status: "error" } },
   { id: "needs-input", title: "Filtered: needs input", summary: "Needs input filter on: a task QA session and a desk reviewer.", inventory: "base", sources: true, settings: EXPANDED, start: { status: "needs_input" } },

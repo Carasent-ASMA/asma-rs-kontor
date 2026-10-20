@@ -7,7 +7,8 @@
  * `jira.epic`, `kontor.role`, `kontor.team_run`, `takeover.predecessor`).
  * They are unenforced session labels, and the prototype shows them as such.
  */
-export type FixtureAgent = {
+type NativeTelemetry = Pick<import("../../../paseo-plugin/client/session-directory").AgentDirectoryPage["agent"], "runtimeInfo" | "lastUsage" | "thinkingOptionId" | "effectiveThinkingOptionId">;
+export type FixtureAgent = NativeTelemetry & {
   id: string;
   title: string;
   status: "initializing" | "idle" | "running" | "error" | "closed";
