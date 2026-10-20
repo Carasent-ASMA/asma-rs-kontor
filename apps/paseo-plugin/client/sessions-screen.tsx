@@ -38,6 +38,7 @@ import { type DirectoryEntry } from "./session-directory";
 import {
   attentionLabel,
   archivedLabel,
+  earlierErrorLabel,
   hasActiveView,
   matchesQuery,
   matchesStatus,
@@ -75,11 +76,15 @@ import {
 import { useSessionDirectory } from "./use-session-directory";
 import { DEFAULT_ORGANIZATION_SETTINGS, type OrganizationSettings } from "../shared/organization";
 import type { useOrganizationSettings } from "./use-organization-settings";
-import { allGroupKeys, buildOrganizationTree, declaredScope, defaultGroupExpanded, filterOrganizationTree, flattenOrganizationTree, inEpicScope, isDeskWork, NO_LINKED_EPIC, NO_ROLE_KEY, organizationScope, OTHER_WORKSTREAM, ROLE_ROOT_KEY, sessionRole, sessionState, STATE_LABELS, titleRoleCode, UNASSIGNED_EPIC, visibleSessions, workstreamRank, type OrganizationGroup, type OrganizationRow, type OrganizationWorkspace, type RoleSource } from "./session-organization";
+import { allGroupKeys, buildOrganizationTree, declaredScope, defaultGroupExpanded, deriveDeskScopes, filterOrganizationTree, flattenOrganizationTree, inEpicScope, matchesScope, nativeDesk, NO_LINKED_EPIC, NO_ROLE_KEY, organizationScope, OTHER_WORKSTREAM, ROLE_ROOT_KEY, scopeKeepsGroup, sessionRole, sessionState, STATE_LABELS, titleRoleCode, UNASSIGNED_EPIC, visibleSessions, workstreamRank, type OrganizationGroup, type OrganizationRow, type OrganizationWorkspace, type OrganizationProject, type RoleSource } from "./session-organization";
 import { rowKey, siblingKeys, reorderSavedSiblingOrder } from "./organization-order";
 import { OrganizationRowView, StateBadge, stateColor as sessionStateColor, WORKSPACE_KINDS } from "./organization-row";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
 import { Action, COARSE_POINTER, Disclosure } from "./page-controls";
+import { nativeFreshnessLabel } from "./native-freshness";
+import { sessionTimeLines, useClock, useUpdatedTime, type RowTime, type TimeFreshness } from "./session-time";
+import { sessionUsageLabel } from "./session-usage";
+import { SessionUsage, SessionUsageLines } from "./session-usage-view";
 
 type ThemeColors = PluginTheme["colors"];
 /** A tree row, or a flat match while a search, state or task filter is on. */
@@ -123,21 +128,7 @@ export function matchesShortcut(
   shortcut: string | null,
   mappings: Parameters<typeof organizationScope>[1],
 ): boolean {
-  const workstream = organizationScope(entry, mappings).workstream.trim().toLocaleLowerCase();
-  switch (shortcut) {
-    case null:
-      return true;
-    case "PR Review":
-      return workstream === "pr review" || workstream === "pr-review";
-    case "Adam":
-      return workstream === "adam";
-    case "Desks":
-      return isDeskWork(entry, mappings);
-    case "Other work":
-      return !isDeskWork(entry, mappings);
-    default:
-      return workstream === shortcut.trim().toLocaleLowerCase();
-  }
+  return matchesScope(entry, shortcut, mappings);
 }
 
 function workstreamKey(label: string): string {
@@ -317,7 +308,18 @@ type SessionRowProps = {
   readonly accessibilityContext?: string;
   /** The result a user asked to see in the tree. */
   readonly highlighted?: boolean;
+  /** The list is reading live: only then does the row give its Updated time as an age. */
+  readonly live?: boolean;
 };
+
+/** A row's Updated time, kept whole while the title beside it truncates. */
+function rowAge(time: RowTime, compact: boolean, colors: ThemeColors) {
+  return (
+    <Text testID="sessions-row-age" numberOfLines={1} style={{ flexShrink: 0, color: colors.foregroundMuted, fontSize: compact ? 12 : 11 }}>
+      {compact ? time.compact : time.wide}
+    </Text>
+  );
+}
 
 export const SessionRow = memo(function SessionRow({
   entry,
@@ -329,9 +331,13 @@ export const SessionRow = memo(function SessionRow({
   compactContext,
   accessibilityContext,
   highlighted = false,
+  live = false,
 }: SessionRowProps) {
+  const time = useUpdatedTime(entry.updatedAt, live);
+  const age = time ? rowAge(time, compact, colors) : null;
   const attention = attentionLabel(entry);
   const archived = archivedLabel(entry);
+  const history = earlierErrorLabel(entry);
   const state = sessionState(entry);
   const context = entry.workspaceName ?? entry.projectName ?? entry.cwd;
   const project =
@@ -348,19 +354,21 @@ export const SessionRow = memo(function SessionRow({
       : attention
         ? `Needs attention: ${attention}`
         : null,
+    time?.spoken ?? null,
     archived,
+    history,
     accessibilityContext ?? detail,
+    sessionUsageLabel(entry),
     highlighted ? "Shown from search results" : null,
   ]
     .filter((part): part is string => part !== null && part.length > 0)
     .join(". ");
-  const meta = [displayContext, archived].filter((part): part is string => !!part).join(" · ");
+  const meta = [displayContext, archived, history].filter((part): part is string => !!part).join(" · ");
   const runtime = (state === "needs_input" || state === "attention" || state === "failed") && entry.status !== "error";
   const runtimeLabel = entry.status.charAt(0).toLocaleUpperCase() + entry.status.slice(1);
-  // Compact: one line. The title leads, runtime/context/archived follow muted in
-  // the same truncating line, and the state badge stays visible at the end. The
-  // native ID stays in the accessible label only (review ST-02).
-  const compactMeta = [runtime ? runtimeLabel : null, compactContext ?? displayContext, archived]
+  // Compact: the title and context lead, then model/report metadata can wrap.
+  // The state badge stays visible; the native ID remains in the accessible label.
+  const compactMeta = [runtime ? runtimeLabel : null, compactContext ?? displayContext, archived, history]
     .filter((part): part is string => !!part)
     .join(" · ");
 
@@ -388,18 +396,23 @@ export const SessionRow = memo(function SessionRow({
       {compact && compactContext !== undefined ? (
         <>
           {/* The context keeps up to about half the line; the title gives way first. */}
-          <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <View style={{ flex: 1, minWidth: 0 }}>
+          <View style={{ minWidth: 0, flexDirection: "row", alignItems: "center", gap: 8 }}>
             <Text testID="sessions-row-title" numberOfLines={1} style={{ flexShrink: 1, color: colors.foreground, fontSize: 14, lineHeight: 20 }}>
               {displayTitle ?? entry.title}
             </Text>
             <Text testID="sessions-row-meta" numberOfLines={1} style={{ flexShrink: 0, maxWidth: "55%", color: colors.foregroundMuted, fontSize: 12 }}>
               {compactMeta}
             </Text>
+            {age}
+          </View>
+          <SessionUsage entry={entry} colors={colors} />
           </View>
           <StateBadge state={state} colors={colors} compact={false} />
         </>
       ) : compact ? (
         <>
+          <View style={{ flex: 1, minWidth: 0 }}>
           <Text
             testID="sessions-row-title"
             numberOfLines={1}
@@ -412,23 +425,30 @@ export const SessionRow = memo(function SessionRow({
               </Text>
             ) : null}
           </Text>
+          {age}
+          <SessionUsage entry={entry} colors={colors} />
+          </View>
           <StateBadge state={state} colors={colors} compact={false} />
         </>
       ) : (
         <>
           <View style={{ flex: 1, minWidth: 0 }}>
-            <Text
-              numberOfLines={1}
-              style={{ color: colors.foreground, fontSize: 13, lineHeight: 18 }}
-            >
-              {displayTitle ?? entry.title}
-            </Text>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <Text
+                numberOfLines={1}
+                style={{ flex: 1, minWidth: 0, color: colors.foreground, fontSize: 13, lineHeight: 18 }}
+              >
+                {displayTitle ?? entry.title}
+              </Text>
+              {age}
+            </View>
             {meta ? (
               <Text numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 11, marginTop: 1 }}>
                 {meta}
               </Text>
             ) : null}
           </View>
+          <View style={{ maxWidth: 340, minWidth: 0, flexShrink: 1 }}><SessionUsage entry={entry} colors={colors} /></View>
           <View style={{ width: 95, gap: 2 }}>
             <StateBadge state={state} colors={colors} compact={false} />
             {runtime ? (
@@ -458,7 +478,7 @@ export function resultCues(entry: DirectoryEntry): string[] {
   const pr = entry.labels.pr?.trim().replace(/^#/, "");
   const derived = (state === "needs_input" || state === "attention" || state === "failed") && entry.status !== "error";
   return [
-    derived ? (entry.attentionReason === "error" ? `Earlier error · now ${entry.status}` : `Now ${entry.status}`) : null,
+    earlierErrorLabel(entry) ?? (derived ? `Now ${entry.status}` : null),
     archivedLabel(entry),
     labelledRole(entry),
     task ?? null,
@@ -496,7 +516,7 @@ const pageDocument = () => (globalThis as { document?: { activeElement?: unknown
 /**
  * Everything a Role row shortens, for its details: the role and where it came from, every other
  * declaration, and the whole desk or workstream, epic and workspace chain, with absent values named.
- * A value is absent only when no display mapping or label supplies it, whatever name it would fall back to.
+ * A workstream may come from a native desk project when no display mapping or label names it.
  */
 export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<typeof organizationScope>[1]): { label: string; value: string }[] {
   const role = sessionRole(entry);
@@ -508,22 +528,37 @@ export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<t
   if (provenance.desk) return [...lines, { label: "Desk", value: provenance.parts[0]! }, { label: "Workspace", value: provenance.workspace }];
   const declared = declaredScope(entry, mappings);
   return [...lines,
-    { label: "Workstream", value: declared.workstream ?? `${OTHER_WORKSTREAM}: no workstream or desk label and no display mapping` },
+    { label: "Workstream", value: declared.workstream ?? (nativeDesk(entry.projectName) !== null ? `${organizationScope(entry, mappings).workstream} (native desk project)` : `${OTHER_WORKSTREAM}: no workstream or desk label and no display mapping`) },
     { label: "Epic", value: declared.epic ?? NO_LINKED_EPIC },
     { label: "Workspace", value: provenance.workspace }];
 }
 
-/** Opens a Role row's details. It sits beside the row's button, which still opens the session. */
+/** Opens session details beside the row's own session-navigation button. */
 export function SessionDetailsButton({ title, expanded, compact, colors, onPress, ref }: {
   readonly title: string; readonly expanded: boolean; readonly compact: boolean; readonly colors: ThemeColors; readonly onPress: () => void; readonly ref?: Ref<View>;
 }) {
   const size = compact || COARSE_POINTER ? 44 : 30;
   return (
-    <Pressable ref={ref} testID="sessions-row-details" accessibilityRole="button" accessibilityLabel={`Details: ${title}`} accessibilityHint="Shows the full role, workstream, epic and workspace"
+    <Pressable ref={ref} testID="sessions-row-details" accessibilityRole="button" accessibilityLabel={`Details: ${title}`} accessibilityHint="Shows exact times with their time zone, model, token report, role and placement details"
       accessibilityState={{ expanded }} aria-expanded={expanded} onPress={onPress}
       style={({ pressed, hovered, focused }: { pressed: boolean; hovered?: boolean; focused?: boolean }) => ({ width: size, height: size, borderRadius: 6, alignItems: "center", justifyContent: "center", backgroundColor: pressed || hovered || focused ? colors.surface2 : undefined })}>
       <Icon name="Info" size={compact ? 16 : 14} color={colors.foregroundMuted} />
     </Pressable>
+  );
+}
+
+/** A session's times at the top of its details, redrawn by the shared clock while they are open. */
+export function SessionTimeLines({ entry, freshness, colors }: { readonly entry: DirectoryEntry; readonly freshness: TimeFreshness; readonly colors: ThemeColors }) {
+  const clock = useClock();
+  return (
+    <View testID="sessions-details-times">
+      {sessionTimeLines(entry, clock, freshness).map(({ label, value }) => (
+        <View key={label} style={{ paddingHorizontal: 6, paddingVertical: 4 }}>
+          <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>{label}</Text>
+          <Text selectable style={{ color: colors.foreground, fontSize: 13, lineHeight: 18 }}>{value}</Text>
+        </View>
+      ))}
+    </View>
   );
 }
 
@@ -541,6 +576,7 @@ export function resultAccessibilityLabel(entry: DirectoryEntry, provenance: Sess
     entry.labels.pr?.trim() ? `PR label ${entry.labels.pr.trim()}` : null,
     archivedLabel(entry),
     `Native ID ${entry.id}`,
+    sessionUsageLabel(entry),
   ].filter((part): part is string => !!part).join(". ");
 }
 
@@ -552,18 +588,23 @@ type SessionResultRowProps = {
   readonly onPress: (entry: DirectoryEntry) => void;
   readonly onShowInTree: (entry: DirectoryEntry) => void;
   readonly treeButtonRef: (id: string, node: View | null) => void;
+  /** The list is reading live: only then does the row give its Updated time as an age. */
+  readonly live: boolean;
+  /** The session's details button, beside the row's own button. */
+  readonly details?: ReactNode;
 };
 
 /** A flat match: the session opens from the row, and its place in the tree is a separate control beside it. */
-const SessionResultRow = memo(function SessionResultRow({ entry, provenance, colors, compact, onPress, onShowInTree, treeButtonRef }: SessionResultRowProps) {
+const SessionResultRow = memo(function SessionResultRow({ entry, provenance, colors, compact, onPress, onShowInTree, treeButtonRef, live, details }: SessionResultRowProps) {
   const cues = resultCues(entry);
   const coarse = compact || COARSE_POINTER;
+  const time = useUpdatedTime(entry.updatedAt, live);
   return (
     <View testID={`sessions-result-${entry.id}`} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
       <Pressable
         testID={`sessions-row-${entry.id}`}
         accessibilityRole="button"
-        accessibilityLabel={resultAccessibilityLabel(entry, provenance)}
+        accessibilityLabel={[resultAccessibilityLabel(entry, provenance), time?.spoken].filter(Boolean).join(". ")}
         accessibilityHint="Opens the existing Paseo session"
         onPress={() => onPress(entry)}
         style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => ({
@@ -582,13 +623,17 @@ const SessionResultRow = memo(function SessionResultRow({ entry, provenance, col
           <Text testID="sessions-row-title" numberOfLines={1} style={{ flex: 1, minWidth: 0, color: colors.foreground, fontSize: compact ? 14 : 13, lineHeight: compact ? 20 : 18 }}>
             {entry.title}
           </Text>
+          {time ? rowAge(time, compact, colors) : null}
+          {compact ? null : <View style={{ maxWidth: 340, minWidth: 0, flexShrink: 1 }}><SessionUsage entry={entry} colors={colors} /></View>}
           <StateBadge state={sessionState(entry)} colors={colors} compact={false} />
         </View>
         <Text testID="sessions-result-place" numberOfLines={compact ? 2 : 1} style={{ color: colors.foregroundMuted, fontSize: compact ? 12 : 11, lineHeight: compact ? 16 : 15 }}>
           {provenance.parts.join(" › ")}
           {cues.length > 0 ? `  ·  ${cues.join(" · ")}` : ""}
         </Text>
+        {compact ? <SessionUsage entry={entry} colors={colors} /> : null}
       </Pressable>
+      {details}
       <Action ref={(node) => treeButtonRef(entry.id, node)} small={!compact} colors={colors} label={compact ? "In tree" : "Show in tree"}
         accessibilityLabel={`Show ${entry.title} in the tree`} onPress={() => onShowInTree(entry)} />
     </View>
@@ -1260,6 +1305,7 @@ type SessionsScreenProps = PluginScreenProps & {
   projectId?: string | null;
   onIncludeArchived?: (include: boolean) => void;
   workspaces?: readonly OrganizationWorkspace[];
+  projects?: readonly OrganizationProject[];
   workspaceNote?: string;
   epicKey?: string | null;
   viewScope?: string;
@@ -1270,7 +1316,7 @@ type SessionsScreenProps = PluginScreenProps & {
   planSources?: Readonly<Record<string, readonly string[]>>;
   onEpicTab?: (tab: "Plan" | "Board" | "Graph", epicKey: string, sourceId: string | null) => void;
 };
-export function SessionsScreen({ host, layout, navigation, theme, directory, organization, projectId = null, onIncludeArchived, workspaces, workspaceNote, epicKey = null, viewScope = host.id, scopeLabel = null, onClearScope, planSources, onEpicTab }: SessionsScreenProps) {
+export function SessionsScreen({ host, layout, navigation, theme, directory, organization, projectId = null, onIncludeArchived, workspaces, projects, workspaceNote, epicKey = null, viewScope = host.id, scopeLabel = null, onClearScope, planSources, onEpicTab }: SessionsScreenProps) {
   const colors = theme.colors;
   const compact = layout.compact;
   const hosts = useHosts();
@@ -1838,15 +1884,20 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     () => state.entries.filter((entry) => (projectId === null || entry.projectKey === projectId) && (epicKey === null || inEpicScope(entry, mappings, epicKey))),
     [state.entries, projectId, epicKey, mappings],
   );
+  const deskScopes = useMemo(() => deriveDeskScopes(scoped, workspaces,
+    projects?.filter((project) => projectId === null || project.id === projectId)), [scoped, workspaces, projects, projectId]);
+  // Retain legacy shortcuts; native ID choices distinguish same-named desks and survive renames.
+  const scopeChoices = [...SCOPE_CHOICES.slice(0, -1), ...deskScopes, SCOPE_CHOICES[SCOPE_CHOICES.length - 1]!];
+  const scopeChoiceLabel = shortcut === null ? null : scopeChoices.find(({ id }) => id === shortcut)?.label ?? (shortcut?.startsWith("desk-project:") ? "Native desk project" : shortcut);
   const tree = useMemo(() => buildOrganizationTree({ entries: scoped, ...preferences, grouping, workspaces }), [scoped, preferences, grouping, workspaces]);
   const tokens = useMemo(() => view.query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean), [view.query]);
   const task = view.task ?? null;
   const resultMode = isResultMode(view);
   const eligible = useCallback((entry: DirectoryEntry) => matchesShortcut(entry, shortcut, mappings)
     && (streams === null || streams.includes(workstreamKey(organizationScope(entry, mappings).workstream))), [shortcut, streams, mappings]);
-  // Search and state never narrow the tree; with no desk or workstream choice, empty workspaces stay visible.
+  // Search and state never narrow the tree; with no workstream choice, empty workspaces stay visible, a desk context's own included.
   const filtered = useMemo(() => filterOrganizationTree(tree, eligible,
-    (group) => shortcut === null && streams === null && group.kind === "workspace", eligible), [tree, eligible, shortcut, streams]);
+    (group) => streams === null && scopeKeepsGroup(group, shortcut, mappings), eligible), [tree, eligible, shortcut, streams, mappings]);
   const linked = useMemo(() => task ? new Set(taskSessions(scoped, task).map(({ entry }) => entry.id)) : null, [scoped, task]);
   // Matches before the state filter, so each state chip counts what choosing it would show.
   const candidates = useMemo(() => scoped.filter((entry) => eligible(entry) && (linked === null || linked.has(entry.id)) && matchesResultSearch(entry, tokens, mappings)),
@@ -1909,6 +1960,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   };
   const chooseGrouping = (next: SessionGrouping) => {
     pinFilterInteraction();
+    setDetailsId(null);
     updateView({ grouping: next, scrollOffset: 0 });
     if (next !== "placement") savePreference({ grouping: next });
   };
@@ -1945,7 +1997,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const hasOrganizationFilter = shortcut !== null || streams !== null;
   const clearable = view.status !== "all" || !!task || view.includeArchived || hasOrganizationFilter;
   const taskKeys = task ? [task.jira ? `${TASK_JIRA_LABELS.join(" or ")} equal to ${task.jira}` : null, task.kontorId ? `${TASK_TICKET_LABEL} equal to ${task.kontorId}` : null].filter(Boolean).join(", or ") : "";
-  const summaryParts = activeFilterParts({ query: view.query, status: view.status, shortcut, streams, includeArchived: view.includeArchived, task: task?.label });
+  const summaryParts = activeFilterParts({ query: view.query, status: view.status, shortcut: shortcut?.startsWith("desk-project:") ? scopeChoiceLabel : shortcut, streams, includeArchived: view.includeArchived, task: task?.label });
   // The compact slim badge also counts the state and desk chips its closed toolbar hides; search has its own button.
   const slimActiveCount = compact
     ? [view.status !== "all", !!task, shortcut !== null, streams !== null, view.includeArchived, grouping !== "hierarchy"].filter(Boolean).length
@@ -1980,11 +2032,13 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     if (node) treeButtonsRef.current.set(id, node);
     else treeButtonsRef.current.delete(id);
   }, []);
-  // One Role row's details at a time. The anchor reads the row's current button, so focus
+  // One session's details at a time. The anchor reads the row's current button, so focus
   // returns to it even if the list drew the row again while the details were open.
   const [detailsId, setDetailsId] = useState<string | null>(null);
   const detailsIdRef = useRef(detailsId);
   detailsIdRef.current = detailsId;
+  // The grouping and list mode the details opened in; another one draws the row elsewhere, or not at all.
+  const detailsWhereRef = useRef("");
   const detailsButtonsRef = useRef(new Map<string, View>());
   const detailsButtonRef = useCallback((id: string, node: View | null) => {
     if (node) detailsButtonsRef.current.set(id, node);
@@ -2057,6 +2111,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   }, [listMode]);
 
   const staleMessage = state.error ?? state.staleReason;
+  // Ages tick only on a live list; otherwise rows give the time itself, and Details says as of when.
+  const timesLive = nativeFreshnessLabel({ hostStatus: hostSummary?.status ?? "offline", status: state.status, live: state.live }) === "Live";
   const showBanner =
     state.status === "stale" ||
     state.status === "error" ||
@@ -2240,7 +2296,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             {streamChoices.map(([key, label]) => <FilterChip key={key} checkbox label={label} compact={compact} active={streams === null || streams.includes(key)} colors={colors} {...focusProps} onPress={() => toggleStream(key)} />)}
             {streams !== null ? <FilterChip label="All" compact={compact} active={false} colors={colors} {...focusProps} onPress={() => { pinFilterInteraction(); updateView({ streams: null, scrollOffset: 0 }); }} /> : null}
           </OptionLine> : null}
-          <OptionSelect testID="sessions-scope" label="Workspace scope" value={SCOPE_CHOICES.find(({ id }) => id === shortcut)?.label ?? String(shortcut)} expanded={optionMenu === "scope"} anchor={scopeRef} compact={compact} colors={colors} {...focusProps} onPress={() => setOptionMenu(optionMenu === "scope" ? null : "scope")} />
+          <OptionSelect testID="sessions-scope" label="Workspace scope" value={scopeChoiceLabel ?? SCOPE_CHOICES[0]!.label} expanded={optionMenu === "scope"} anchor={scopeRef} compact={compact} colors={colors} {...focusProps} onPress={() => setOptionMenu(optionMenu === "scope" ? null : "scope")} />
           <OptionLine label="Epic lifecycle" colors={colors}>
             <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>Not captured in session data; no lifecycle is inferred from idle or closed sessions.</Text>
           </OptionLine>
@@ -2293,17 +2349,22 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       <ScrollView testID={`sessions-${optionMenu}-choices`} keyboardShouldPersistTaps="handled" style={{ flexGrow: 0, flexShrink: 1 }}>
         {optionMenu === "grouping"
           ? GROUPINGS.map(({ id, label }) => <MenuItem key={id} label={label} tall={compact} selected={grouping === id} colors={colors} onPress={() => chooseOption(() => chooseGrouping(id))} />)
-          : SCOPE_CHOICES.map(({ id, label }) => <MenuItem key={label} label={label} tall={compact} selected={shortcut === id} colors={colors} onPress={() => chooseOption(() => { pinFilterInteraction(); updateView({ shortcut: id, scrollOffset: 0 }); })} />)}
+          : scopeChoices.map(({ id, label }) => <MenuItem key={id ?? "all"} label={label} detail={id?.startsWith("desk-project:") ? deskScopes.find((choice) => choice.id === id)?.projectId : undefined} tall={compact} selected={shortcut === id} colors={colors} onPress={() => chooseOption(() => { pinFilterInteraction(); updateView({ shortcut: id, scrollOffset: 0 }); })} />)}
       </ScrollView>
     </AnchoredMenu>
   );
-  const detailsEntry = detailsId === null || grouping !== "role" ? null : state.entries.find((entry) => entry.id === detailsId) ?? null;
+  const detailsWhere = `${grouping}|${listMode}`;
+  const openDetails = (id: string) => {
+    detailsWhereRef.current = detailsWhere;
+    setDetailsId(id);
+  };
+  const detailsEntry = detailsId === null || detailsWhereRef.current !== detailsWhere ? null : state.entries.find((entry) => entry.id === detailsId) ?? null;
   const closeDetails = () => {
     const target = detailsReturn();
     setDetailsId(null);
     target?.focus?.();
   };
-  // Details whose session has left, or that Role grouping no longer shows, close. Focus they held,
+  // Details whose session has left, or whose grouping or list mode has changed, close. Focus they held,
   // which the page has now dropped, goes where Close would send it; focus elsewhere stays put.
   useEffect(() => {
     if (detailsId === null || detailsEntry !== null) return;
@@ -2322,15 +2383,17 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         <Action ref={detailsCloseRef} small={!compact} colors={colors} label="Close" accessibilityLabel={`Close details: ${detailsEntry.title}`} onPress={closeDetails} />
       </View>}>
       {/* On web the lines are a named stop of their own, so a keyboard can scroll a chain longer than the screen. */}
-      <ScrollView testID="sessions-details-lines" {...(pageDocument() ? { tabIndex: 0, role: "region", accessibilityLabel: "Role and placement" } as const : {})}
+      <ScrollView testID="sessions-details-lines" {...(pageDocument() ? { tabIndex: 0, role: "region", accessibilityLabel: "Times, role, placement, model and token report" } as const : {})}
         onFocus={() => setDetailsLinesFocused(true)} onBlur={() => setDetailsLinesFocused(false)}
         style={{ flexGrow: 0, flexShrink: 1, borderRadius: 6, ...(detailsLinesFocused ? { outlineColor: colors.accent, outlineStyle: "solid", outlineWidth: 2 } as const : null) }}>
+        <SessionTimeLines entry={detailsEntry} freshness={{ live: timesLive, readAt: state.lastUpdatedAt }} colors={colors} />
         {sessionDetailLines(detailsEntry, mappings).map(({ label, value }) => (
           <View key={label} style={{ paddingHorizontal: 6, paddingVertical: 4 }}>
             <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>{label}</Text>
             <Text selectable style={{ color: colors.foreground, fontSize: 13, lineHeight: 18 }}>{value}</Text>
           </View>
         ))}
+        <SessionUsageLines entry={detailsEntry} colors={colors} stale={showBanner} />
       </ScrollView>
     </AnchoredMenu>
   );
@@ -2449,7 +2512,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     );
   }
 
-  const extraData = { colors, arrangeEnabled, orderSelection, editsDisabled, favorites, peek, showBanner };
+  const extraData = { colors, arrangeEnabled, orderSelection, editsDisabled, favorites, peek, showBanner, timesLive };
   const emptyMessage = task && candidates.length === 0
     ? `No session in this view is linked to ${task.label}.`
     : hasActiveView(view) || hasOrganizationFilter || task
@@ -2548,7 +2611,10 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         contentContainerStyle={rows.length === 0 ? { flexGrow: 1, ...scrollSlack } : { paddingBottom: 16, ...scrollSlack }}
         ListHeaderComponent={listHeader}
         renderItem={({ item }) => {
-          if (item.kind === "result") return <SessionResultRow entry={item.entry} provenance={provenance.get(item.entry.id) ?? sessionProvenance(item.entry, mappings)} colors={colors} compact={compact} onPress={handleOpen} onShowInTree={handleShowInTree} treeButtonRef={treeButtonRef} />;
+          const details = item.kind === "result" || item.kind === "session"
+            ? <SessionDetailsButton ref={(node) => detailsButtonRef(item.entry.id, node)} title={item.entry.title} expanded={detailsId === item.entry.id} compact={compact} colors={colors} onPress={() => openDetails(item.entry.id)} />
+            : undefined;
+          if (item.kind === "result") return <SessionResultRow entry={item.entry} provenance={provenance.get(item.entry.id) ?? sessionProvenance(item.entry, mappings)} colors={colors} compact={compact} onPress={handleOpen} onShowInTree={handleShowInTree} treeButtonRef={treeButtonRef} live={timesLive} details={details} />;
           const key = listRowKey(item);
           if (item.kind === "empty") return <OrganizationRowView row={item} colors={colors} compact={compact} disabled arranging={false} selected={false} favorite={false} onFavorite={() => undefined} onToggle={() => undefined} onMove={() => undefined} onSelect={() => undefined} />;
           const epic = item.kind === "group" && item.group.kind === "epic" ? item.group.epic : null;
@@ -2557,7 +2623,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             accessibilityLabel={`${tab} for ${epic}${plans.length > 1 ? `, choose among ${plans.length} configured plans` : ""}`} onPress={() => onEpicTab(tab, epic, plans.length === 1 ? plans[0]! : null)} />) : undefined;
           const role = item.kind === "session" && grouping === "role" ? roleRowContext(item.entry, mappings) : null;
           return <OrganizationRowView row={item} colors={colors} compact={compact} disabled={editsDisabled} arranging={arrangeEnabled} selected={orderSelection === key}
-            details={role && item.kind === "session" ? <SessionDetailsButton ref={(node) => detailsButtonRef(item.entry.id, node)} title={item.entry.title} expanded={detailsId === item.entry.id} compact={compact} colors={colors} onPress={() => setDetailsId(item.entry.id)} /> : undefined}
+            details={details}
             favorite={item.kind === "session" && favorites.includes(item.entry.id)} stale={showBanner} actions={actions}
             onToggle={() => toggleGroup(item)}
             onSelect={() => setOrderSelection(orderSelection === key ? null : key)}
@@ -2572,6 +2638,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             colors={colors}
             compact={compact}
             highlighted={peek?.sessionId === item.entry.id}
+            live={timesLive}
             onPress={handleOpen}
           /> : null}
           </OrganizationRowView>;

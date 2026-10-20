@@ -38,6 +38,9 @@ export function useReadSources(hostId: string, hostStatus: PluginHostSummary["st
         throw new Error("Configured source read canceled");
       }
       await Promise.all(Array.from({ length: Math.min(3, catalog.sources.length) }, () => worker()));
+      // A host catalog edit must not combine old bindings with reads of replacement paths.
+      const current = await list({});
+      if (JSON.stringify(current) !== JSON.stringify(catalog)) throw new Error("Source catalog changed during refresh; refresh again");
       return { ...catalog, reads: Object.fromEntries(results), teamsSnapshots, teamsErrors, teamsBindingDiagnostics: bindings.diagnostics };
     },
   });

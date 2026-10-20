@@ -5,6 +5,7 @@ import type {
   PaseoAgentUpdate,
   PaseoApi,
 } from "@getpaseo/client";
+import type { SessionTelemetry } from "./session-usage";
 
 export const SESSION_STATUSES = [
   "initializing",
@@ -59,11 +60,18 @@ export type DirectoryEntry = {
   readonly needsInput: boolean;
   readonly archivedAt: string | null;
   readonly createdAt: string;
+  /** Paseo's last change to the session, metadata included; not activity alone (see session-time). */
   readonly updatedAt: string;
+  /** When the last prompt was submitted; absent from entries built before it was read. */
+  readonly lastUserMessageAt?: string | null;
+  /** When the running turn started; Paseo loses it on a restart. */
+  readonly activeTurnStartedAt?: string | null;
   readonly cwd: string;
   readonly workspaceId: string | null;
   readonly provider: string;
   readonly model: string | null;
+  /** Latest native fields. No accumulated totals or inferred usage/model association. */
+  readonly telemetry?: SessionTelemetry;
   readonly parentAgentId: string | null;
   readonly labels: Readonly<Record<string, string>>;
   readonly projectKey: string | null;
@@ -72,6 +80,16 @@ export type DirectoryEntry = {
   /** Lower-cased haystack for search over names, workspace context and cwd. */
   readonly searchText: string;
 };
+
+/** An unread error notice can outlive the native error state after recovery or close. */
+export function hasEarlierError(entry: DirectoryEntry): boolean {
+  return entry.attentionReason === "error" && entry.status !== "error";
+}
+
+/** Retained error history does not create a current Attention signal. */
+export function hasSessionAttention(entry: DirectoryEntry): boolean {
+  return entry.requiresAttention && !hasEarlierError(entry);
+}
 
 export type DirectoryStatus = "idle" | "loading" | "ready" | "stale" | "error";
 
@@ -200,10 +218,18 @@ export function toDirectoryEntry(
     archivedAt: agent.archivedAt ?? null,
     createdAt: agent.createdAt,
     updatedAt: agent.updatedAt,
+    lastUserMessageAt: agent.lastUserMessageAt ?? null,
+    activeTurnStartedAt: agent.activeTurn?.startedAt ?? null,
     cwd,
     workspaceId: agent.workspaceId ?? null,
     provider: agent.provider,
     model: agent.model ?? null,
+    telemetry: {
+      runtimeInfo: agent.runtimeInfo,
+      lastUsage: agent.lastUsage,
+      thinkingOptionId: agent.thinkingOptionId,
+      effectiveThinkingOptionId: agent.effectiveThinkingOptionId,
+    },
     parentAgentId: (agent as { parentAgentId?: string | null }).parentAgentId ?? null,
     labels,
     projectKey,
@@ -219,21 +245,20 @@ function timestampOf(value: string): number {
 }
 
 /**
- * Same order as the installed native `deriveAgentStateBucket` priority:
- * needs input, failed, running, attention, done. The raw lifecycle remains
- * untouched; this only chooses display order.
+ * Current needs input, error, running, attention, then other sessions.
+ * Retained error notices stay in history and never promote the current state.
  */
 function stateBucketRank(entry: DirectoryEntry): number {
   if (entry.needsInput) {
     return 0;
   }
-  if (entry.status === "error" || entry.attentionReason === "error") {
+  if (entry.status === "error") {
     return 1;
   }
   if (entry.status === "running") {
     return 2;
   }
-  if (entry.requiresAttention) {
+  if (hasSessionAttention(entry)) {
     return 3;
   }
   return 4;

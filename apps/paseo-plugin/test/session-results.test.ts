@@ -25,9 +25,14 @@ describe("filtered result provenance", () => {
     expect(sessionProvenance(sessionEntry("bare", { workspaceName: "w" }), {}).parts).toEqual(["Other work", "No linked epic", "w"]);
   });
 
-  it("names a desk and its workspace without an epic", () => {
-    const desk = sessionProvenance(sessionEntry("d", { workspaceName: "desk-review", labels: { desk: "PR Review", epic: "ASMA-9" } }), {});
+  it("names a desk and its workspace when no epic is linked, and the epic the tree files desk work under otherwise", () => {
+    const desk = sessionProvenance(sessionEntry("d", { workspaceName: "desk-review", labels: { desk: "PR Review" } }), {});
     expect(desk).toEqual({ parts: ["PR Review desk", "desk-review"], desk: true, workspace: "desk-review" });
+    const epic = sessionEntry("e", { workspaceName: "desk-review", labels: { desk: "PR Review", epic: "ASMA-9" } });
+    expect(sessionProvenance(epic, {})).toEqual({ parts: ["PR Review", "ASMA-9", "desk-review"], desk: false, workspace: "desk-review" });
+    expect(sessionAncestors(buildOrganizationTree({ entries: [epic] }), "e")?.[1]).toContain("/epic:asma-9");
+    const native = sessionEntry("n", { workspaceName: "ADAM", projectName: "DESK • ADAM" });
+    expect(sessionProvenance(native, {}).parts).toEqual(["adam desk", "ADAM"]);
   });
 
   it("never passes a working directory off as a workspace", () => {
@@ -120,7 +125,7 @@ describe("role lanes", () => {
 
   it("keeps an error cue apart from the runtime status", () => {
     expect(chainLabel(sessionEntry("e", { status: "error" }))).toBe("Error");
-    expect(chainLabel(sessionEntry("e", { status: "idle", attentionReason: "error" }))).toBe("Error reported, idle now");
+    expect(chainLabel(sessionEntry("e", { status: "idle", attentionReason: "error" }))).toBe("Idle · Earlier error · now idle");
     expect(chainLabel(sessionEntry("e", { status: "closed", archivedAt: "2026-10-01T00:00:00Z" }))).toBe("Archived");
   });
 
