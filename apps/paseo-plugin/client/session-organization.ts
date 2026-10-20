@@ -13,7 +13,6 @@ export type OrganizationGroupKind =
   | "workspace"
   | "project"
   | "role"
-  | "roles"
   | "flat";
 
 /** Each session counts once, in the first state of STATE_PRIORITY it shows. */
@@ -82,7 +81,7 @@ export type OrganizationGroup = {
   readonly visibleCount: number;
   /** Summarizes the visible sessions once a filter has run. */
   readonly aggregate: OrganizationAggregate;
-  /** Secondary context beside the label, such as the native placement of a Role group. */
+  /** Secondary context beside the label, such as an epic count. */
   readonly detail: string | null;
   /** Resolved epic of an epic group; null elsewhere and for the no-linked-epic group. */
   readonly epic: string | null;
@@ -130,6 +129,13 @@ export type OrganizationRow =
 
 const SEPARATOR = "\u2022";
 
+/** The Role view's role headers are top-level rows; this is only their parent key, so a saved Arrange order applies. */
+export const ROLE_ROOT_KEY = "roles";
+export const NO_ROLE = "No role";
+export const NO_ROLE_KEY = `${ROLE_ROOT_KEY}/no-role`;
+/** Display order only; it implies no handoff, sequence or completion. */
+export const ROLE_ORDER: readonly string[] = ["LSA", "TPM", "SA", "SWE", "QA", "AUD", "UAT", "SEC", "REV A", "REV B", "JUDGE"];
+
 function clean(value: string | null | undefined): string | null {
   if (typeof value !== "string") {
     return null;
@@ -172,6 +178,52 @@ export function workspaceKindPrefix(workspaceName: string | null | undefined): s
 
 export function sessionRolePrefix(title: string | null | undefined): string | null {
   return prefixBeforeSeparator(title);
+}
+
+/**
+ * Role text as one code: NFC, Unicode whitespace trimmed and collapsed to one space, and upper case
+ * without the host locale, so "qi" reads as QI under a Turkish locale too. Punctuation and suffixes
+ * stay: QA1 is not QA, and REV A is not REV B. This is not full Unicode case folding.
+ */
+function roleCode(value: string): string | null {
+  return value.normalize("NFC").replace(/\s+/gu, " ").trim().toUpperCase() || null;
+}
+
+/** A role label's code; `-` and `_` read as spaces in role labels, so `rev_a` is REV A. */
+export function labelRoleCode(value: string | null | undefined): string | null {
+  return typeof value === "string" ? roleCode(value.replace(/[-_]+/g, " ")) : null;
+}
+
+/** The code of a title's prefix before the first "•"; its punctuation is kept. */
+export function titleRoleCode(title: string | null | undefined): string | null {
+  const prefix = sessionRolePrefix(title);
+  return prefix === null ? null : roleCode(prefix);
+}
+
+export type RoleSource = "kontor.role" | "role" | "title";
+
+export type SessionRole = {
+  /** The role's code, also its Role view group; null when nothing names a role. */
+  readonly code: string | null;
+  readonly source: RoleSource | null;
+  /** A source that names another role; it loses, and the row shows it as a cue. */
+  readonly conflicts: readonly { readonly source: RoleSource; readonly code: string }[];
+};
+
+/**
+ * The role a session is shown under: the `kontor.role` label, then the `role` label, then the title
+ * prefix. Display only: Board task joins and team declarations read labels, never the title.
+ */
+export function sessionRole(entry: DirectoryEntry): SessionRole {
+  const named = [
+    { source: "kontor.role" as const, code: labelRoleCode(entry.labels["kontor.role"]) },
+    { source: "role" as const, code: labelRoleCode(entry.labels.role) },
+    { source: "title" as const, code: titleRoleCode(entry.title) },
+  ].filter((candidate): candidate is { source: RoleSource; code: string } => candidate.code !== null);
+  const chosen = named[0];
+  if (!chosen) return { code: null, source: null, conflicts: [] };
+  const conflicts = named.filter((other, index) => other.code !== chosen.code && named.findIndex((first) => first.code === other.code) === index);
+  return { code: chosen.code, source: chosen.source, conflicts };
 }
 
 function shortCode(prefix: string): string {
@@ -283,6 +335,11 @@ export function aggregateState(aggregate: OrganizationAggregate): OrganizationSt
   return STATE_PRIORITY.find((state) => aggregate[STATE_COUNTS[state]] > 0) ?? null;
 }
 
+/** The first `limit` non-zero states in STATE_PRIORITY order, with their counts. */
+export function leadingStates(aggregate: OrganizationAggregate, limit = 2): { readonly state: OrganizationState; readonly count: number }[] {
+  return STATE_PRIORITY.map((state) => ({ state, count: aggregate[STATE_COUNTS[state]] })).filter(({ count }) => count > 0).slice(0, limit);
+}
+
 export function aggregateSummary(aggregate: OrganizationAggregate): string {
   const parts = STATE_PRIORITY.filter((state) => aggregate[STATE_COUNTS[state]] > 0).map(
     (state) => `${aggregate[STATE_COUNTS[state]]} ${STATE_LABELS[state].toLocaleLowerCase()}`,
@@ -352,6 +409,8 @@ function sortGroups(
   parentKey: string,
   siblingOrder: OrganizationInput["siblingOrder"],
   rank?: (group: OrganizationGroup) => number,
+  /** Default order among groups no saved order places, before the label. */
+  tieBreak?: (left: OrganizationGroup, right: OrganizationGroup) => number,
 ): OrganizationGroup[] {
   const order = orderIndex(siblingOrder, parentKey);
   return [...groups].sort((left, right) => {
@@ -371,7 +430,7 @@ function sortGroups(
       const rightDefault = defaults.indexOf(right.label.toLocaleLowerCase());
       if (leftDefault >= 0 && rightDefault >= 0) return leftDefault - rightDefault;
     }
-    return left.label.localeCompare(right.label);
+    return tieBreak?.(left, right) || left.label.localeCompare(right.label);
   });
 }
 
@@ -732,64 +791,58 @@ function buildHierarchy(input: {
   );
 }
 
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function roleRank(code: string): number {
+  const index = ROLE_ORDER.indexOf(code);
+  return index >= 0 ? index : ROLE_ORDER.length;
+}
+
 /**
- * Repeated role prefixes group only within one native project, workspace and
- * display scope; the groups and singletons then sit together under Roles.
+ * One header per role across the scope, singletons included, and No role last; each session sits
+ * under exactly one. Within a role, state comes first, then placement and identity, so an update
+ * alone never moves a row.
  */
-function buildRoleRoot(input: {
+function buildRoleView(input: {
   readonly entries: readonly DirectoryEntry[];
   readonly siblingOrder: OrganizationInput["siblingOrder"];
   readonly displayMappings: OrganizationInput["displayMappings"];
-  readonly nativeOrder: ReadonlyMap<string, number>;
 }): OrganizationGroup[] {
-  const rootKey = "roles";
-  const partitions = new Map<string, { detail: string; rank: number; entries: DirectoryEntry[] }>();
+  const roles = new Map<string | null, DirectoryEntry[]>();
   for (const entry of input.entries) {
+    const code = sessionRole(entry).code;
+    const members = roles.get(code);
+    if (members) members.push(entry);
+    else roles.set(code, [entry]);
+  }
+  const keys = new Map(input.entries.map((entry) => {
     const scope = organizationScope(entry, input.displayMappings);
-    const workspace = workspaceOf(entry);
-    const key = JSON.stringify([entry.projectKey ?? "", workspace.key, normalizedPrefix(scope.workstream), normalizedPrefix(scope.epic)]);
-    const existing = partitions.get(key);
-    if (existing) {
-      existing.entries.push(entry);
-    } else {
-      partitions.set(key, {
-        detail: `${scope.workstream} · ${epicLabel(scope.epic)} · ${workspace.label}`,
-        rank: workstreamRank(scope.workstream),
-        entries: [entry],
-      });
-    }
-  }
-  const sessions: DirectoryEntry[] = [];
-  const groups: OrganizationGroup[] = [];
-  const ranks = new Map<string, number>();
-  for (const [key, partition] of partitions) {
-    const roles = buildRoleGroups({
-      entries: partition.entries,
-      parentKey: rootKey,
-      scopeKey: `${rootKey}/scope:${segment(key)}`,
-      depth: 1,
-      siblingOrder: input.siblingOrder,
-      nativeOrder: input.nativeOrder,
-      detail: partition.detail,
-    });
-    sessions.push(...roles.sessions);
-    for (const role of roles.groups) {
-      ranks.set(role.key, partition.rank);
-      groups.push(role);
-    }
-  }
-  return [
-    group({
-      key: rootKey,
-      kind: "roles",
-      label: "Roles",
-      shortCode: null,
-      parentKey: null,
+    return [entry.id, { state: STATE_PRIORITY.indexOf(sessionState(entry)), place: [scope.workstream, scope.epic, workspaceOf(entry).label] }];
+  }));
+  const steady = new Map([...input.entries].sort((left, right) => {
+    const leftKey = keys.get(left.id)!;
+    const rightKey = keys.get(right.id)!;
+    return leftKey.state - rightKey.state
+      || leftKey.place.reduce((order, part, index) => order || part.localeCompare(rightKey.place[index]!), 0)
+      || compareText(left.createdAt, right.createdAt) || compareText(left.id, right.id);
+  }).map((entry, index) => [entry.id, index]));
+  const groups = [...roles].map(([code, entries]) => {
+    const key = code === null ? NO_ROLE_KEY : `${ROLE_ROOT_KEY}/role:${segment(code)}`;
+    return group({
+      key,
+      kind: "role",
+      label: code ?? NO_ROLE,
+      shortCode: code,
+      parentKey: ROLE_ROOT_KEY,
       depth: 0,
-      sessions: sortSessions(sessions, rootKey, input.siblingOrder, input.nativeOrder),
-      groups: sortGroups(groups, rootKey, input.siblingOrder, (role) => ranks.get(role.key) ?? 50),
-    }),
-  ];
+      sessions: sortSessions(entries, key, input.siblingOrder, steady),
+      groups: [],
+    });
+  });
+  return sortGroups(groups, ROLE_ROOT_KEY, input.siblingOrder, (role) => role.shortCode === null ? 1 : 0,
+    (left, right) => roleRank(left.label) - roleRank(right.label));
 }
 
 function countWorkspaces(groups: readonly OrganizationGroup[]): number {
@@ -885,11 +938,10 @@ export function buildOrganizationTree(input: OrganizationInput): OrganizationGro
     });
   }
   if (input.grouping === "role") {
-    return buildRoleRoot({
+    return buildRoleView({
       entries: input.entries,
       siblingOrder: input.siblingOrder,
       displayMappings: input.displayMappings,
-      nativeOrder,
     });
   }
   if (input.grouping === "placement") {
@@ -952,13 +1004,16 @@ export function filterOrganizationTree(
 
 /**
  * First-visit disclosure, following the prototype: workstreams, kind and role
- * groups open; epics and workspaces start closed; desk projects open.
+ * groups open; epics and workspaces start closed; desk projects open. Role view
+ * headers start closed, so the first screen is an overview of the roles.
  */
 export function defaultGroupExpanded(group: OrganizationGroup): boolean {
   switch (group.kind) {
     case "epic":
     case "workspace":
       return false;
+    case "role":
+      return group.parentKey !== ROLE_ROOT_KEY;
     case "project":
       return group.label.toLocaleUpperCase().startsWith("DESK");
     default:

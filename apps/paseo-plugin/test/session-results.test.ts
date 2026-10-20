@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { buildOrganizationTree } from "../client/session-organization";
 import {
   chainLabel,
@@ -74,6 +74,22 @@ describe("task to session joins", () => {
     expect(labelledRole(sessionEntry("r", { labels: { "kontor.role": "rev_a" } }))).toBe("REV A");
     expect(labelledRole(sessionEntry("r", { labels: { role: "qa" } }))).toBe("QA");
     expect(labelledRole(sessionEntry("r", { title: "SWE • work", labels: {} }))).toBeNull();
+    // The shared normalizer: whitespace, NFC and locale-independent case; a blank kontor.role defers to role.
+    expect(labelledRole(sessionEntry("r", { labels: { role: " rev\u00a0 b " } }))).toBe("REV B");
+    expect(labelledRole(sessionEntry("r", { labels: { role: "Re\u0301v" } }))).toBe("R\u00c9V");
+    expect(labelledRole(sessionEntry("r", { labels: { "kontor.role": "  ", role: "aud" } }))).toBe("AUD");
+    expect(labelledRole(sessionEntry("r", { labels: { "kontor.role": "qa1", role: "qa" } }))).toBe("QA1");
+    const upper = vi.spyOn(String.prototype, "toLocaleUpperCase").mockImplementation(function (this: string) { return this.replace(/i/g, "\u0130").toUpperCase(); });
+    try {
+      expect(labelledRole(sessionEntry("r", { labels: { role: "qi" } }))).toBe("QI");
+    } finally {
+      upper.mockRestore();
+    }
+  });
+
+  it("keeps Board lanes on role labels, so a title prefix never places a linked session", () => {
+    const links = [sessionEntry("titled", { title: "QA • check" }), sessionEntry("labelled", { title: "QA • check", labels: { role: "aud" } })].map((entry) => ({ entry, via: "task" }));
+    expect(roleLanes(links).map((lane) => [lane.role, lane.current.map((entry) => entry.id)])).toEqual([["AUD", ["labelled"]], [null, ["titled"]]]);
   });
 });
 

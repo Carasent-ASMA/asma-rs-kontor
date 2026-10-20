@@ -3,6 +3,9 @@ import { sessionKey } from "./session-organization";
 export function rowKey(row: OrganizationRow): string { return row.kind === "group" ? row.group.key : row.kind === "empty" ? `${row.parentKey}/empty` : sessionKey(row.entry.id); }
 export function siblingKeys(groups: readonly OrganizationGroup[], parentKey: string): string[] {
   if (parentKey === "root") return groups.map((group) => group.key);
+  // Role headers are top-level rows under a parent key that has no row of its own.
+  const top = groups.filter((group) => group.parentKey === parentKey);
+  if (top.length) return top.map((group) => group.key);
   for (const group of groups) {
     if (group.key === parentKey) return [...group.groups.map((child) => child.key), ...group.sessions.map((entry) => sessionKey(entry.id))];
     const found = siblingKeys(group.groups, parentKey);
