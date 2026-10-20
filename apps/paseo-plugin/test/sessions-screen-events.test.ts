@@ -267,6 +267,7 @@ import {
   toolbarOpenPatch,
 } from "../client/sessions-screen";
 import { StateBadge } from "../client/organization-row";
+import { MenuItem } from "../client/anchored-menu";
 import { nativeFreshnessLabel } from "../client/native-freshness";
 import {
   clearSessionViews,
@@ -292,6 +293,7 @@ const colors = {
 } as unknown as PluginTheme["colors"];
 
 type ElementLike = {
+  readonly type?: unknown;
   readonly props: Record<string, unknown>;
 };
 
@@ -1096,6 +1098,102 @@ describe("SessionsScreen toolbar events", () => {
     const drawn = (row: unknown) => { const view = renderItem(row) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike }; return view.type(view.props); };
     return { renderItem, drawn };
   }
+
+  /** The Role view with every group open, spying on session opens and preference saves. */
+  function renderDetails(entries: readonly ReturnType<typeof sessionEntry>[], compact = true) {
+    const openAgent = vi.fn();
+    const save = vi.fn(async () => true);
+    directory.state = { ...(directory.state as object), entries };
+    patchSessionView("host-a", { query: "", grouping: "role", status: "all" });
+    harness.render(() => SessionsScreen({ host: { id: "host-a", label: "Host" }, layout: { compact, platform: compact ? "ios" : "web" },
+      navigation: { openAgent, openBrowser: () => undefined, openWorkspace: () => undefined }, theme: { colors } as PluginTheme, params: {},
+      organization: { state: { status: "ready", values: DEFAULT_ORGANIZATION_SETTINGS, revision: "revision-a", saving: false, saveError: null, save, reload: async () => {}, reset: async () => true }, save },
+    } as unknown as PluginScreenProps));
+    expandAll();
+    save.mockClear();
+    const row = (id: string) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: listRows().find((candidate) => candidate.kind === "session" && candidate.entry.id === id) });
+    const details = (id: string) => row(id).props.details as ElementLike;
+    const dialog = () => walk(harness.current()).find((element) => element.props.testID === "sessions-details");
+    const lines = () => (findByTestID(dialog()!.props.children, "sessions-details-lines").props.children as ElementLike[])
+      .map((line) => (line.props.children as ElementLike[]).map(textOf).join(": "));
+    const close = () => walk(dialog()!.props.header).find((element) => element.props.label === "Close")!;
+    const open = (id: string) => { (details(id).props.onPress as () => void)(); harness.flush(); };
+    return { openAgent, save, row, details, dialog, lines, close, open };
+  }
+
+  const placeEntries = () => [
+    sessionEntry("long", { title: "QA • Reconcile the delivery evidence for the second review round", workspaceName: "TSW • ASMA-8541 roles provenance correction workspace with a long name",
+      labels: { "kontor.role": "QA", workstream: "Kontor plugin and prototype parity across every host", epic: "ASMA-8541" } }),
+    sessionEntry("conflict", { title: "AUD • audit notes", labels: { role: "qa", workstream: "Review" } }),
+    sessionEntry("desk", { title: "SWE • desk work", labels: { desk: "Adam" } }),
+    sessionEntry("cwd", { title: "SWE • scratch", workspaceId: null, workspaceName: null, cwd: "/tmp/scratch" }),
+    sessionEntry("nowhere", { title: "loose", workspaceId: null, workspaceName: null, cwd: "" }),
+  ];
+
+  it("reveals each Role row's full place from its own details button, with absent values named, and saves nothing", () => {
+    const screen = renderDetails(placeEntries());
+    // The row keeps its short context; the details hold what it leaves out.
+    expect((screen.row("long").props.children as ElementLike).props.compactContext).toBe("ASMA-8541 · TSW • ASMA-8541 roles provenance correction workspace with a long name");
+    expect(screen.dialog()).toBeUndefined();
+    expect(screen.details("long").props).toMatchObject({ title: "QA • Reconcile the delivery evidence for the second review round", expanded: false });
+    screen.open("long");
+    expect(screen.dialog()!.props).toMatchObject({ dialog: true, label: "Details: QA • Reconcile the delivery evidence for the second review round", placement: { align: "stretch", width: 0, cover: true } });
+    expect(textOf(findByTestID(screen.dialog()!.props.header, "sessions-details-title"))).toBe("QA • Reconcile the delivery evidence for the second review round");
+    expect(screen.lines()).toEqual(["Role: QA, from the kontor.role label", "Other role declarations: None", "Workstream: Kontor plugin and prototype parity across every host", "Epic: ASMA-8541",
+      "Workspace: TSW • ASMA-8541 roles provenance correction workspace with a long name"]);
+    expect(screen.details("long").props.expanded).toBe(true);
+    expect(screen.details("conflict").props.expanded).toBe(false);
+    const expected: Record<string, string[]> = {
+      conflict: ["Role: QA, from the role label", "Other role declarations: title says AUD", "Workstream: Review", "Epic: No linked epic", "Workspace: Workspace"],
+      desk: ["Role: SWE, from the title", "Other role declarations: None", "Desk: Adam desk", "Workspace: Workspace"],
+      cwd: ["Role: SWE, from the title", "Other role declarations: None", "Workstream: Other work: no workstream or desk label and no display mapping", "Epic: No linked epic", "Workspace: No workspace · /tmp/scratch"],
+      nowhere: ["Role: No role: no kontor.role or role label, and no role prefix in the title", "Other role declarations: None", "Workstream: Other work: no workstream or desk label and no display mapping", "Epic: No linked epic", "Workspace: No workspace"],
+    };
+    for (const [id, lines] of Object.entries(expected)) {
+      (screen.dialog()!.props.onClose as () => void)(); harness.flush();
+      expect(screen.dialog()).toBeUndefined();
+      screen.open(id);
+      expect(screen.lines()).toEqual(lines);
+    }
+    expect(screen.openAgent).not.toHaveBeenCalled();
+    expect(screen.save).not.toHaveBeenCalled();
+  });
+
+  it("moves focus to Close on open and back to the details button on Close, while the row itself still opens the session", () => {
+    const screen = renderDetails(placeEntries());
+    const button = { focus: vi.fn() };
+    (screen.details("long").props.ref as (node: unknown) => void)(button);
+    screen.open("long");
+    const closeFocus = vi.fn();
+    (screen.close().props.ref as RefLike).current = { focus: closeFocus };
+    (screen.close().props.onPress as () => void)(); harness.flush();
+    expect(screen.dialog()).toBeUndefined();
+    expect(button.focus).toHaveBeenCalledTimes(1);
+    screen.open("long");
+    expect(closeFocus).toHaveBeenCalledTimes(1);
+    (screen.dialog()!.props.onClose as () => void)(); harness.flush();
+    // The row's own button opens the session and never the details.
+    const sessionRow = screen.row("long").props.children as ElementLike;
+    (sessionRow.props.onPress as (entry: unknown) => void)(sessionRow.props.entry);
+    harness.flush();
+    expect(screen.openAgent).toHaveBeenCalledTimes(1);
+    expect(screen.openAgent.mock.calls[0]![0]).toMatchObject({ agentId: "long" });
+    expect(screen.dialog()).toBeUndefined();
+    expect(screen.save).not.toHaveBeenCalled();
+  });
+
+  it("anchors the details beside the row on a wide screen, closes them when the view leaves Role, and draws no details elsewhere", () => {
+    const screen = renderDetails(placeEntries(), false);
+    screen.open("desk");
+    expect(screen.dialog()!.props.placement).toEqual({ align: "end", width: 360, maxHeight: 440 });
+    (walk(harness.current()).find((element) => element.props.testID === "sessions-grouping")!.props.onPress as () => void)(); harness.flush();
+    (walk(harness.current()).find((element) => element.type === MenuItem && element.props.label === "Workstreams")!.props.onPress as () => void)(); harness.flush();
+    expect(screen.dialog()).toBeUndefined();
+    expandAll();
+    const sessions = listRows().filter((row) => row.kind === "session");
+    expect(sessions).toHaveLength(5);
+    expect(sessions.map((row) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: row }).props.details)).toEqual(sessions.map(() => undefined));
+  });
 
   const qaEntries = () => [
     sessionEntry("n", { title: "QA • n", pendingPermissionCount: 1 }),

@@ -5,7 +5,8 @@ import { COARSE_POINTER, type Colors } from "./page-controls";
 export type MenuRect = { x: number; y: number; width: number; height: number };
 export type MenuSize = { width: number; height: number };
 export type MenuFrame = { left: number; width: number; top: number | null; bottom: number | null; maxHeight: number };
-export type MenuPlacement = { align: "start" | "end" | "stretch"; width: number; gap?: number; margin?: number; maxHeight?: number };
+/** `cover` spans the root's height inside its margins instead of opening beside the trigger, so a short screen keeps all of it. */
+export type MenuPlacement = { align: "start" | "end" | "stretch"; width: number; gap?: number; margin?: number; maxHeight?: number; cover?: boolean };
 
 /** Places a menu against its trigger inside the screen root, clamped to the visible bounds; opens upward only when below is the smaller space. */
 export function menuFrame(anchor: MenuRect, root: MenuSize, placement: MenuPlacement): MenuFrame {
@@ -13,6 +14,7 @@ export function menuFrame(anchor: MenuRect, root: MenuSize, placement: MenuPlace
   const width = Math.max(0, placement.align === "stretch" ? root.width - 2 * margin : Math.min(placement.width, root.width - 2 * margin));
   const preferred = placement.align === "end" ? anchor.x + anchor.width - width : placement.align === "stretch" ? margin : anchor.x;
   const left = Math.max(margin, Math.min(preferred, root.width - margin - width));
+  if (placement.cover) return { left, width, top: margin, bottom: null, maxHeight: Math.max(0, Math.min(cap, root.height - 2 * margin)) };
   const below = root.height - (anchor.y + anchor.height + gap) - margin, above = anchor.y - gap - margin;
   if (below >= Math.min(cap, 240) || below >= above) return { left, width, top: anchor.y + anchor.height + gap, bottom: null, maxHeight: Math.max(0, Math.min(cap, below)) };
   return { left, width, top: null, bottom: root.height - anchor.y + gap, maxHeight: Math.max(0, Math.min(cap, above)) };
