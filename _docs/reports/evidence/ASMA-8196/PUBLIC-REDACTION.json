@@ -1,14 +1,6 @@
 {
   "additional_redactions": [
     {
-      "bytes": 5177,
-      "derivative_sha256": "3c6620ed68f1e73392b8264fb4904495510c0c490060e7a729f9d4049b6e645a",
-      "path": "replacement-bridges/actual-lsa-bridge-diagnosis.txt",
-      "previous_derivative_sha256": "ca61ecdc80672856ce2c7bcf851ffb6d8b02a8f353d515d613ba9054b4c55585",
-      "private_references_redacted": 2,
-      "reason": "complete neutralization of remaining private repository identifiers (LSA-WP01-PUBLIC-EVIDENCE-001)"
-    },
-    {
       "bytes": 5878,
       "derivative_sha256": "b0ee1b8715e4f2560c6bf122ba535b9f368602f3704d1e2ddf5041f6a493e836",
       "path": "replacement-bridges/initial-eb41560f-mutations/resumed-driver.py",
@@ -26,7 +18,7 @@
   "files": {
     "replacement-bridges/SHA256SUMS.json": {
       "bytes": 19186,
-      "derivative_sha256": "77f77cd8f1d898b446d6937506b35251352b9ebddde5eef97ea672fbc30c8d55",
+      "derivative_sha256": "fa53ebe53ac06224aa22f97d2214fd7030f06844fdfe1b8918a770bb48bf4a58",
       "original_sha256": "e22b6947c8a149141350b02ab092ff90312b9f64ef86d2fef4e7cdbbda0f7196"
     },
     "replacement-bridges/actual-lsa-09f-publication-audit.txt": {
@@ -48,6 +40,13 @@
       "bytes": 2181,
       "derivative_sha256": "73d1e3aa45b1cc84c8d09dfad68ed0b397e337a60a0acc8648c49781b5b280be",
       "original_sha256": "21f8fc287a6b8ea418c09ffb4e5209447f346a930502260f72a9314aed7d0f5b"
+    },
+    "replacement-bridges/actual-lsa-bridge-diagnosis.txt": {
+      "bytes": 5177,
+      "derivative_sha256": "3c6620ed68f1e73392b8264fb4904495510c0c490060e7a729f9d4049b6e645a",
+      "original_sha256": "ca61ecdc80672856ce2c7bcf851ffb6d8b02a8f353d515d613ba9054b4c55585",
+      "previous_derivative_sha256": "ca61ecdc80672856ce2c7bcf851ffb6d8b02a8f353d515d613ba9054b4c55585",
+      "private_references_redacted": 2
     },
     "replacement-bridges/daemon-expanded-green.txt": {
       "bytes": 705,

@@ -1612,7 +1612,7 @@
     },
     "package-manifest.json": {
       "bytes": 32440,
-      "derivative_sha256": "db0ca88477804594189656fb29c54c70395644fc83f9f47f9867f374bd94917c",
+      "derivative_sha256": "e4c255941afe8d64e51e66435bae13a41f35f8a8c14160af583cc1b597e9e60b",
       "original_sha256": "e419787217301911299714419f1a9bfc810932902a278ed1fbac6b5edb4d98d7",
       "private_references_redacted": 0
     },

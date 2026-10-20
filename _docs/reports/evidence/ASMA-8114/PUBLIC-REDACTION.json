@@ -18,7 +18,7 @@
   "files": {
     "legacy-consultation-read/SHA256SUMS.json": {
       "bytes": 6276,
-      "derivative_sha256": "88e4e97418b7951193b626c0cd8a7482d85c86a36a8076a055b8727578ed84ee",
+      "derivative_sha256": "7ab6cd8de42493160e5277ad432566ae169f176eec26f19bc8134bdccf18a8cd",
       "original_sha256": "4fd09764a3b7716e564f9a37d6b1dce4ecc19d7f6996d8717bafc40ddcb4c37c"
     },
     "legacy-consultation-read/focused-runner.py": {
