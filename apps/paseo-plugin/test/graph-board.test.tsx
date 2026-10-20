@@ -363,6 +363,13 @@ describe("compact Board density (iPhone 390x844)", () => {
       const column = tree.find((element) => element.props.accessible === true)!;
       const metaRow = tree.find((element) => element.type === "View" && [element.props.children].flat(Infinity).includes(meta))!;
       const textHeight = 2 * (title.props.style as { lineHeight: number }).lineHeight + (column.props.style as { gap: number }).gap + (metaRow.props.style as { minHeight: number }).minHeight;
+      if (item.kind === "task") {
+        // The row button is a real 44pt target on touch, even when the title takes one line (17 + 2 + 22 = 41pt).
+        const oneLine = (title.props.style as { lineHeight: number }).lineHeight + (column.props.style as { gap: number }).gap + (metaRow.props.style as { minHeight: number }).minHeight;
+        expect(column.type).toBe("Pressable");
+        expect(oneLine).toBeLessThan(44);
+        expect((column.props.style as { minHeight: number }).minHeight).toBe(44);
+      }
       const target = issue.length ? (issue[0]!.props.style as { minHeight: number }).minHeight : 0;
       const height = 2 * shell.paddingVertical! + 2 * shell.borderWidth! + Math.max(textHeight, target);
       expect(height).toBeGreaterThanOrEqual(64); expect(height).toBeLessThanOrEqual(76);
@@ -404,6 +411,8 @@ describe("compact Board density (iPhone 390x844)", () => {
       // A sibling of the row button, bottom-aligned so it sits on the meta line's 22pt band; a button never nests in a button.
       const column = tree.find((element) => element.props.accessible === true)!;
       expect(elements(column).includes(issue[0]!)).toBe(false);
+      // A mouse keeps the dense row: the row button has no touch minimum.
+      expect((column.props.style as { minHeight: number }).minHeight).toBe(0);
       const columns = tree.find((element) => element.type === "View" && (element.props.style as { flexDirection?: string } | undefined)?.flexDirection === "row" && (element.props.children as ReactNode[]).includes(issue[0]!))!;
       expect((columns.props.style as { alignItems: string }).alignItems).toBe("flex-end");
       expect((metaRow.props.style as { minHeight: number }).minHeight).toBe(style.minHeight);
