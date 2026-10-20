@@ -11,11 +11,12 @@
 
 ## Purpose
 
-Kontor is the durable project control plane above replaceable agent execution
+`kontord` is the durable project control plane above replaceable agent execution
 runtimes. It supervises work that may outlive one process, one model, one
 provider account or one orchestration product.
 
-It exists to serve two values, and every rule below is derived from one of them.
+The Kontor workflow exists to serve two values, and every rule below is derived
+from one of them.
 
 **Autonomy** — the fleet runs the work without an operator driving each step,
 and runs it the way *this* operator would. That needs two halves:

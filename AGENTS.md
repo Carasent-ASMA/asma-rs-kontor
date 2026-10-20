@@ -1,8 +1,9 @@
 # Kontor repository instructions
 
-Kontor is the public, local-first control plane for durable, policy-governed
-work across AI-agent runtimes. This repository is also the source of the Kontor
-workflow pack: the method, vocabulary and checks a project can adopt.
+Kontor is the workflow for durable, policy-governed work across AI-agent
+runtimes. `kontord` is its optional local-first control plane: daemon, store,
+API, MCP server, CLI and console. This repository is also the source of the
+Kontor workflow pack: the method, vocabulary and checks a project can adopt.
 
 ## Read first
 

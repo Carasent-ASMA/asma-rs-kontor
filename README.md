@@ -7,11 +7,11 @@
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license-intent)
 
-Kontor is a local-first control plane for durable, policy-governed work across
-AI-agent runtimes. It keeps the project plan, dependencies, work profiles,
-team/seat bindings, command receipts, evidence, approved memory and
-external-workflow state in one place while Paseo and future adapters continue to
-own their native sessions and provider mechanics.
+Kontor is the workflow for durable, policy-governed work across AI-agent
+runtimes. `kontord` is its local-first control plane: it keeps the project plan,
+dependencies, work profiles, team/seat bindings, command receipts, evidence,
+approved memory and external-workflow state in one place while Paseo and future
+adapters continue to own their native sessions and provider mechanics.
 
 It exists to serve two things:
 

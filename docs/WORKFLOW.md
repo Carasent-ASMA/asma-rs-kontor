@@ -62,8 +62,10 @@ Two personas deserve their own line:
   It is not a standing second coordinator.
 
 The coordinator and the advisor are separate identities even when they share a
-workspace. A seat's authority comes from its credential tier and its snapshotted
-role slot, not from what it says about itself.
+workspace. Under Kontor-governed orchestration, a seat's authority comes from
+its credential tier and its snapshotted role slot. On Paseo-direct, it comes
+from the selected plan, the role the coordinator assigned and the native session
+readback. In both cases, a self-description in chat changes neither.
 
 ## 3. Kickoff to closeout
 
@@ -194,11 +196,15 @@ At the review date the owner resumes the work, closes it with a reason, or
 renews the hold once with new evidence. A second renewal goes to the authorized
 owner as one alert with a recommendation. Silence never extends a hold: after
 seven days without an answer, the reversible recommendation (resume) applies by
-itself. A scope cut stays an open gap row.
+itself, **but only within existing standing authorization**. It never overrides
+an explicit operator stop, pause or withdrawal, and it never supplies a reserved
+approval or a new authorization. An explicit stop or a withheld authorization
+stays in force until the operator lifts it and records the lift condition. A
+scope cut stays an open gap row.
 
 A plan with status `On Hold`, a paused epic, a held issue, a withheld
 authorization to park work, and a deferred decision all carry the same four
-fields.
+fields. The fields record the pause; they do not create authority to resume it.
 
 ## 6. The gap ledger
 
