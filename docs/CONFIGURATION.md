@@ -160,7 +160,7 @@ working route. They meet on two keys: the logical slot and the canonical model.
    qualification record, `serves[model]` must equal `models.<model>.id`;
    otherwise placement is refused with `route_model_id_unproven`. Any other
    launch id, and every cross-provider route, carries a qualification reference
-   that matches an activation-bound, hash-bound record covering that exact route,
+   that matches an activated, hash-bound record covering that exact route,
    harness, symbolic model, canonical id/vendor, route-native launch id and
    effort. `<route>@<revision>` is split exactly once and compared for equality;
    a malformed reference, a missing activation record, a record hash mismatch or
@@ -204,9 +204,9 @@ the host bootstrap file. Each record binds `route`, `harness`, the symbolic
 `model`, `canonical_model_id`, `canonical_vendor`, `route_model_id`, `efforts`,
 `revision` and `record_hash`. The record hash is SHA-256 over ordered
 `key=value` lines joined by newlines, with no trailing newline: `route`,
-`harness`, `model`, `canonical_model_id`, `canonical_vendor`, `route_model_id`,
-`efforts` in declared order
-comma-separated, and `revision`. Activation time is not part of that hash.
+`harness`, `model`, `canonical_model_id`, `canonical_vendor`,
+`route_model_id`, `efforts` in declared order, comma-separated, and `revision`.
+Activation time is not part of that hash.
 A host reference is exactly `<route>@<revision>`; the resolver splits once,
 compares both parts exactly, requires the activation record's `source_hash` to
 match the file bytes and `activated_at` to be present, verifies the record hash,
