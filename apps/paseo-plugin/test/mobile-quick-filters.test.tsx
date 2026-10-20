@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useRef: () => ({ current: null }) }));
 vi.mock("react-native", () => ({ Pressable: "Pressable", Text: "Text", View: "View" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ ScrollView: "ScrollView", Icon: "Icon" }));
+vi.mock("../client/control-help", () => ({ useControlHelp: () => ({ dismiss() {} }) }));
 import { MobileQuickChooser } from "../client/mobile-quick-chooser";
 import { QUICK_FILTER_ICONS, visibleQuickFilters } from "../client/mobile-quick-filter-options";
 import { QUICK_STATUS_FILTERS, type StatusFilter } from "../client/session-view";

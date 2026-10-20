@@ -38,6 +38,7 @@ export function MobileQuickToolbar(props: ToolbarProps) {
   const { colors, query, status, counts, width, summary, searchInputRef, filtersTriggerRef, chooserRef } = props;
   const { fontScale } = useWindowDimensions();
   const [searchOpen, setSearchOpen] = useState(false);
+  const help = useControlHelp("");
   const searchTriggerRef = useRef<View | null>(null);
   const target = Math.max(44, Math.ceil(36 * fontScale));
   const choices = visibleQuickFilters(width || 296, status, target);
@@ -50,7 +51,7 @@ export function MobileQuickToolbar(props: ToolbarProps) {
   }, [searchOpen, searchInputRef]);
   const closeSearch = () => {
     searchInputRef.current?.blur(); setSearchOpen(false);
-    setTimeout(() => focusControl(searchTriggerRef.current), 0);
+    setTimeout(() => { focusControl(searchTriggerRef.current); help.dismiss(); }, 0);
   };
   const search = <TextInput ref={searchInputRef} testID="sessions-search" value={query} onChangeText={props.onQuery}
     accessibilityLabel="Search sessions by topic, role or ticket" placeholder="Search sessions…" placeholderTextColor={colors.foregroundMuted}

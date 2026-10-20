@@ -4,6 +4,7 @@ import { Icon, ScrollView } from "@getpaseo/plugin/client/react-native";
 import { AnchoredMenu, type MenuSize } from "./anchored-menu";
 import { focusControl } from "./mobile-filters";
 import { Action, type Colors } from "./page-controls";
+import { useControlHelp } from "./control-help";
 import { quickFilterLabel, QUICK_FILTER_ICONS, QUICK_FILTER_MEANINGS } from "./mobile-quick-filter-options";
 import { QUICK_STATUS_FILTERS, type StatusFilter } from "./session-view";
 
@@ -14,7 +15,9 @@ export function MobileQuickChooser({ root, rootSize, anchor, colors, status, cou
 }) {
   const closeRef = useRef<View | null>(null);
   const focused = useRef(false);
-  const close = () => { onClose(); setTimeout(() => focusControl(anchor.current), 0); };
+  const help = useControlHelp("");
+  // Returning focus is navigation, not a request for help over the next touch target.
+  const close = () => { onClose(); setTimeout(() => { focusControl(anchor.current); help.dismiss(); }, 0); };
   return <AnchoredMenu dialog testID="sessions-mobile-quick-chooser" label="Quick filters and icon meanings" root={root} rootSize={rootSize} anchor={anchor}
     colors={colors} onClose={close} placement={{ align: "stretch", width: 0, cover: true }}
     header={<View onLayout={() => { if (!focused.current) { focused.current = true; focusControl(closeRef.current); } }} style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
