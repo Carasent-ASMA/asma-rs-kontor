@@ -190,7 +190,7 @@ Every hold records four fields:
 | --- | --- |
 | **Reason** | One of the closed values: waiting on a named dependency, on capacity, on a named decision, on an external party, or deprioritised by the operator |
 | **Owner** | The one identity that acts when the hold ends |
-| **Lift condition** | A checkable condition; when it is met, the hold lifts by itself |
+| **Lift condition** | A checkable condition; within existing standing authorization, when it is met, the hold lifts by itself |
 | **Review date** | At most 30 days ahead |
 
 For a hold within existing standing authorization, a met lift condition lifts

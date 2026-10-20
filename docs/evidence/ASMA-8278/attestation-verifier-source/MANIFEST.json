@@ -82,7 +82,7 @@
     "mutation-skip-revocation.log": "6b317a7e9675598cbbc5c133159e37416716099501ed8c8afb3b3ab11034a2f3",
     "mutation-skip-audience.log": "4556b0a05fed446c167e91e501710165c561ce1927ef9a7709166eb54cd241a6",
     "mutation-skip-token-time.log": "c82277820c9e534de4dda0384d72613f51c8add8a76ca2377e275ddada455a2e",
-    "review-frozen-source.md": "6f1980a0de9fbc834678d1892f778b49a584ab684433316534e6475739ce1e6e",
+    "review-frozen-source.md": "fd1d1f0dcf9f808d351aa543c8d534c598a4ab38f26d4fb162568dc92f5dc972",
     "review-r01-first-followup.md": "d72f65b271664248b1ecc36278f012b6814ff48e7d399ce8ceb0510e3bb3a1ae",
     "review-r01-correction.md": "bb570d06d500d956a6d147c20fea209cd2314c9040892940dcf4333f5f232864",
     "review-attestation-source.md": "fe3d2dccb05d1f29798afa04a4104ec9a75c225a5464be64d59b5e0fdbf15e02",
@@ -93,9 +93,10 @@
   "public_derivative": {
     "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
     "ledger": "../PUBLIC-REDACTION.json",
-    "note": "Certified file hash for review-attestation-source.md describes the original; the public file is a redacted derivative."
+    "note": "Certified file hashes for review-attestation-source.md and review-frozen-source.md describe the originals; the public copies are redacted derivatives."
   },
   "derivatives": {
-    "review-attestation-source.md": "edf7e667b3fa364dfe21cebf1aa7cf657d6222537c7d80fe64e91fd88a0becc5"
+    "review-attestation-source.md": "edf7e667b3fa364dfe21cebf1aa7cf657d6222537c7d80fe64e91fd88a0becc5",
+    "review-frozen-source.md": "fd1d1f0dcf9f808d351aa543c8d534c598a4ab38f26d4fb162568dc92f5dc972"
   }
 }

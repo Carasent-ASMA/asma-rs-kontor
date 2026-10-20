@@ -11,8 +11,8 @@
       "private_references_redacted": 1
     },
     "2026-10-03-01-11-report-frozen-docs-join.md": {
-      "bytes": 6665,
-      "derivative_sha256": "5bb1ac4dd411902992a59950a5dfaf32ed58eccc55d85a5b56bf46b206a32936",
+      "bytes": 6656,
+      "derivative_sha256": "2606f441a9b576876a354262de01bb9fc8889cccf0791de0031c5846e7a463bf",
       "original_sha256": "f39bbb049ab315aa41b82fbb158abf30981e50cfae590ae64fedb494ca081fd7",
       "private_references_redacted": 1
     },
@@ -23,8 +23,8 @@
       "private_references_redacted": 1
     },
     "production-prep/2026-10-03-10-55-report-composed-production-prep.md": {
-      "bytes": 27695,
-      "derivative_sha256": "d0962a06f43b4e1c515a1dc20a48d412cb22252eaa2a30aaf7421e149ed9c043",
+      "bytes": 27686,
+      "derivative_sha256": "ca67f02d0be3f24314dcb61c50098c41239929c49a1710345c9ce253c99ea72d",
       "original_sha256": "7cb9d3131bcbbb46be84cb121a57dd6991f2df28a2456a4fcac155c04d6e840d",
       "private_references_redacted": 1
     },

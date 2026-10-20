@@ -76,8 +76,8 @@
   "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
   "files": {
     "attestation-verifier-source/MANIFEST.json": {
-      "bytes": 5650,
-      "derivative_sha256": "82eb1c07b614a0372ed16b0ea366528d2d24ce77c524bd311e665a23b2d988c3",
+      "bytes": 5781,
+      "derivative_sha256": "c6c6ad252026ed96e304d15891a7dc6cf8d5fc72b946a1b628c7ff80f1cef7fe",
       "original_sha256": "265a07947d00259ff5ad34a7c0843633b25f37ba513859d9fa52e4085ef1d7c3",
       "private_references_redacted": 0
     },
@@ -86,6 +86,12 @@
       "derivative_sha256": "edf7e667b3fa364dfe21cebf1aa7cf657d6222537c7d80fe64e91fd88a0becc5",
       "original_sha256": "fe3d2dccb05d1f29798afa04a4104ec9a75c225a5464be64d59b5e0fdbf15e02",
       "private_references_redacted": 1
+    },
+    "attestation-verifier-source/review-frozen-source.md": {
+      "bytes": 6987,
+      "derivative_sha256": "fd1d1f0dcf9f808d351aa543c8d534c598a4ab38f26d4fb162568dc92f5dc972",
+      "original_sha256": "6f1980a0de9fbc834678d1892f778b49a584ab684433316534e6475739ce1e6e",
+      "private_references_redacted": 3
     },
     "prepared-diagnostic-source/ROOT-PROVENANCE.json": {
       "bytes": 2489,

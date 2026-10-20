@@ -30,9 +30,11 @@ The unit of value is a completed epic or ticket, and completion is defined,
 checked and independently verified rather than asserted.
 
 Delivered means production-ready: implemented, tested, reviewed by an authority
-that did not do the work, integrated, released and evidenced. Delivered also
-includes what happens after the merge: the workflow, teams and guardrails that
-own support, operations and post-delivery correction are in scope.
+that did not do the work, integrated, released, evidenced and inventoried, with
+regression risk actively reduced (mutation, adversarial review, guardrail
+evidence). Delivered also includes what happens after the merge: the workflow,
+teams and guardrails that own support, operations and post-delivery correction
+are in scope.
 
 The sharpest consequence: **a green task graph is not a delivered epic.** Only a
 compliant independent verdict plus complete closeout evidence completes one.

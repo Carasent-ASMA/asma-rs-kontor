@@ -185,7 +185,7 @@ Each is reversible and none is presented as a substitute decision.
 
 ## asma-cli handoff (not written; another checkout)
 
-- **Repository:** `_tools/asma-cli` (`[project-cli-checkout]`), catalog module `asma-cli`. It is changed only in its own isolated task worktree, created by the plan's owner, on the epic-keyed module integration branch, after this schema is reviewed. This seat did not write it.
+- **Repository:** the project CLI (`[project-cli-checkout]`), catalog module `asma-cli`. It is changed only in its own isolated task worktree, created by the plan's owner, on the epic-keyed module integration branch, after this schema is reviewed. This seat did not write it.
 - **Owner boundary:** direct-mode input shaping and receipt capture only. No parser, no resolver, no scheduler, no control plane, and no new `asma` command. It extends the existing `asma fleet preflight` report through the existing `kontor_publication._run_kontor`.
 - **Operation contract (implemented):** `kontor --state-root <root> --tier operator fleet-policy-resolve --binding-key <key> [--unavailable-accounts '<JSON array>'] [--excluded-vendors '<JSON array>']`. `<key>` is `team/<template>/<slot>`, `committee/<template>/<seat>`, `advisor/<profile>` or `leadership/<core-team-revision-hash>/<role-slot-id>`, where the hash is the `core_team_revision_hash` of the v2 activation record. The answer is `{tool, status, body}`: `status: 200` with `body` = `FleetSelection` (`provenance{policy_hash, schema_version, binding_key, chain}`, `eligibility`, `selected{rung{provider, model, effort}, step, sub_step, vendor}`, `considered[{route, excluded?}]`, `excluded_by_policy[...]`), or `status: 409` `placement_blocked` with the `selection`, or a local refusal (exit codes under choice 2 above). Store `body` verbatim beside the Paseo readback; never launch on anything but `status: 200`.
 - **Joint contract (implemented):** the same command with `--allocation '<JSON>'` instead of `--binding-key` (exactly one), where the JSON is `{diversity: "distinct_vendor_per_reviewer", slots: [{slot_id, role: "reviewer"|"judge", binding_key, unavailable_accounts?, excluded_vendors?}]}`. The answer is `status: 200` with `body` = `JointSelection` (`provenance{policy_hash, policy_schema_version, source_bundle_hash?, core_team_revision_hash?}`, `diversity`, `slots[{binding_key, chain, excluded_by_policy, slot_id, role, eligibility, selected{rung, step, sub_step, vendor, independence}, considered[{candidate, excluded?, conflicts_with?}], failure?}]`), or `status: 409` `placement_blocked` with the `allocation` and `blocked`. Store it verbatim; launch only on `status: 200`.
@@ -218,7 +218,7 @@ Those checks were preparation only. The results below supersede them.
 
 **Head.** `739debaacfb0ace894b36114aaa1eef6835cdfc1`, tree `781e21ec3aab928e939ecb2349c6833ab6640954`, clean.
 
-**Method.** The pass followed the `mutation-testing` skill (`.agents/skills/mutation-testing/SKILL.md` in the parent workspace):
+**Method.** The pass followed the `mutation-testing` skill (`[parent-mutation-testing-skill]`):
 
 - One mutant at a time, each seeded as one anchored edit that had to match exactly once.
 - The claimed killers ran with `cargo test --no-fail-fast`, one package or target per command, sequentially. For site 3 the whole `kontor-fleet-activation` library suite (14 tests) ran, so a killer outside the named ones would show.

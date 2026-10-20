@@ -50,10 +50,9 @@ The shapes below are **configuration recommendations**. In Kontor, teams, role
 catalogs, chains, committees, advisors and completion profiles are versioned
 data published through `/v1` (see [CONFIGURATION.md](../../docs/CONFIGURATION.md)); the historical AgentsRoom manifests are import/design references, not live
 Kontor authority. The current supported model catalog and its validator remain
-code-reviewed and tested; publishing a new selection does not rewrite existing pins. ASMA policy and historical instantiation references live in the deployment repo
-(`[parent-plan]`
-§0, and `[deployment-manifests]`) and
-are expected to change without this document changing.
+code-reviewed and tested; publishing a new selection does not rewrite existing pins. ASMA policy and historical instantiation references live in the deployment
+repo's architecture record and `[deployment-manifests]`; they are expected to
+change without this document changing.
 
 ## 1. Capability dimensions — the vocabulary
 
@@ -387,7 +386,7 @@ its regression tests demonstrate that check.
   the invariants-versus-data split.
 - [QUOTA-FALLBACK-PLAN.md](../../docs/QUOTA-FALLBACK-PLAN.md) — the durable quota state
   behind the rung walk (account-before-rung, blocked-until, headroom).
-- Deployment-side policy and historical instantiation references: `[parent-plan]` §0
-  and `[deployment-manifests]`.
+- Deployment-side policy and historical instantiation references: the deployment's
+  architecture record and `[deployment-manifests]`.
 - Seat context classes: the seat context-window and compaction policy in the
   deployment repo's architecture records.

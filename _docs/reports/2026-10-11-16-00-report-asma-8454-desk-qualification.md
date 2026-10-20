@@ -41,7 +41,7 @@ Rollback explicitly selects desk-less v1, then re-drives both existing desk keys
 
 ## Exact declaration comparison
 
-The Q-002 source is `$HOME/.paseo/worktrees/0vl4ss0m/asma-8419-pr-draft-status-checker/config/orchestration/pr-desk.yml`, SHA-256 `2297aba99eb830c35d9a5f386635162a008056dcdcd1bc1d3c019db33ea9cb05`, an **uncommitted dated decision**, branch `feat/ASMA-8419-pr-draft-status-checker`, coordinator-reported HEAD `c4f9957c`, owner Igor / 2026-10-08. It has no commit or PR and is absent from master. The coordinator's 2026-10-11T13:16Z disposition accepts these exact bytes as the comparison source.
+The Q-002 source is the coordinator's private local declaration file (path withheld), SHA-256 `2297aba99eb830c35d9a5f386635162a008056dcdcd1bc1d3c019db33ea9cb05`, an **uncommitted dated decision**, branch `feat/ASMA-8419-pr-draft-status-checker`, coordinator-reported HEAD `c4f9957c`, owner Igor / 2026-10-08. It has no commit or PR and is absent from master. The coordinator's 2026-10-11T13:16Z disposition accepts these exact bytes as the comparison source.
 
 The read-only comparator verifies both titles (`LSA • PR DRAFTS STATUS CHECKER`, `LSA • GENERAL`), role, skill, owner and date against supported fixture readback. Both remain `paseo_direct`, `unchecked`, with no native, seat binding or model route. `premium` remains the source chain declaration and is not resolved, adopted or launched. A future hash/commit/PR needs Igor's explicit newer decision; this qualification does not chase it. See [declaration comparison](../../docs/evidence/ASMA-8454/asma-8419-comparison.json).
 
@@ -119,7 +119,7 @@ The recorder uses pinned/offline Cargo where applicable, `RUSTC_WRAPPER=''`, wor
 
 ```sh
 python3 scripts/qualify-durable-desks.py baseline
-python3 scripts/qualify-durable-desks.py declarations --declaration-source $HOME/.paseo/worktrees/0vl4ss0m/asma-8419-pr-draft-status-checker/config/orchestration/pr-desk.yml
+python3 scripts/qualify-durable-desks.py declarations --declaration-source "$DECLARATION_SOURCE"
 python3 scripts/qualify-durable-desks.py mutations
 cargo test --offline --locked -p kontor-cli
 cargo test --offline --locked -p kontor-store
@@ -129,6 +129,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 python3 scripts/verify-tree.py --mode archive
 pnpm --filter kontor-console verify:api
 ```
+
+`DECLARATION_SOURCE` is the operator-supplied private declaration path; the path is
+deliberately not recorded.
 
 The archive gate also runs workspace tests, Cargo audit/deny, frozen pnpm install, typecheck, frontend tests and production dependency audit against the committed candidate. Store and daemon bridge/ensure/materialize/replay coverage must pass. Environmental blocks require exact evidence and coordinator disposition.
 

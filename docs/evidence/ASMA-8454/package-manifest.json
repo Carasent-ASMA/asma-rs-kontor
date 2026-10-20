@@ -222,7 +222,7 @@
     "archive-failure/base-probe-provenance.json": "8a7e6c4f8af58164bdbe15b1022f288a5591d72ef01e0087cc36c003e070c6d1",
     "archive-failure/base-probe.json": "5180feba61c6ee20b01e5fb465507f91cb32d749ace178431fbfd030f639a3ab",
     "archive-failure/base-probe.log": "71050565a6119ce37e9bda506ab56c1330be654ccab3775ec0477dcf6c444952",
-    "archive-failure/base-provenance.json": "0f177d57bc0908299dc1bd1aa84286603e6cc94cd9047ab52a32b31b35177173",
+    "archive-failure/base-provenance.json": "3893f3d51cca2270fe26e0c6276d5ee8d9ded194288c488e31e5cdd04d8fb199",
     "archive-failure/current-1.json": "a13b6ff14d12b6ff9f49383a1f3bfaf7d9a324445c6aad7d8ca210621c1731cf",
     "archive-failure/current-2.json": "014f1afc9c7abe0fe75b1cedb08c902ac817ce9b3bc31c2f11cd842b88f84775",
     "archive-failure/current-3.json": "e22867e8e8c2e5c583a39bc9b61205c368767c17d4a5c0b0f12077e8f1bcfc82",
@@ -240,7 +240,7 @@
     "archive-failure/suite-results.json": "9bc5e24d934be37a9f8ef28748a0cc7e791d5b2161cd4f79959cc3fe0bd866a8",
     "archive-failure/window-results.json": "b55f582c1ec6afeeeab0aae79e8265a1b34890a5e2fd11a2e6ac43a5f7ff4c0e",
     "archive-summary.json": "521fb0c48f888bdc0efa06e759668b579da9357e0892ebb7f98686e67fd5b586",
-    "authority-provenance.json": "fbfb1add6cfbe8f76156023f03b9b08904c95b3e514677a0f5ea1eb5943c21c5",
+    "authority-provenance.json": "95ceea5b45bcaab2d72e5d5e0e59625fcedd862b66b318d6b0ca5ee182a76596",
     "candidate.json": "22111423bb3ea352a7b59c46702224fcd842141fc46e221b33976eb414bbcbd2",
     "final-mutations/MUT-001.log": "0f337d2081be90d0812a9a5fdb9d58dc5da1cb2bbb957f372381fdf6696f7cf2",
     "final-mutations/MUT-002-busy.log": "44c3edf61d80208d001b90f75fa4c40052bb49b915a0a72cec05f9fc167caf94",
@@ -294,12 +294,13 @@
     "gates/cli-tests-restored.log": "f2b8c0fbabda983c468518631abde65e12863f088144d1f70bdbf90522d5af98",
     "gates/paseo-contract.log": "e54b9a2836478cf703ee67cc175cb0ad13008bb4826a726400cd7112b8404bbe",
     "gates/store-tests.log": "c6ac9043e5a1d5febd16358206a74a51fa2c7b9aa7a97abf4b4db5d32dbb3033",
-    "handoff-envelope.json": "12521bd28d5bc13d25864695194fd509767cf942656e63e9429aee57c3101eea",
+    "handoff-envelope.json": "a21bb1ab33795768be3b8659cb49c11866985c66e048bdfc22c4bf786edead5f",
     "integrated-evidence.json": "105da45a48b497b8bdfb481dfe5d5c52298486676dd9b845a8c953c8f75bb953",
     "repairs/completion-strengthened.log": "b53640ac7dac5b906aa8063e8461f08782ce4e44d3eb5212cb3ecb5748cbfcdc",
     "repairs/surface-parity-before.log": "4d210ae8e12cba5d2bf3c752b1f62623515f49aa6b8c7b24b0f00c065ebe8e3e",
     "repairs/surface-parity.log": "911f3b97e8010d15a53de42921db4899a3a155ed49fbdc9d6d87a235e782eef8",
     "repairs/topology-boundary-before.log": "8a018e507ee022a121a2eed51811abf153145f2f1218d0d201d1fe3f2f52f31e",
-    "repairs/topology-boundary.log": "765e79b813d16b2999ec9b1ccdf4543c06d91f7e3ed6ba398073cce7c68b359b"
+    "repairs/topology-boundary.log": "765e79b813d16b2999ec9b1ccdf4543c06d91f7e3ed6ba398073cce7c68b359b",
+    "asma-8419-comparison.json": "87e2969a71cae114e0e9419196519d876ce1bf50304d6bc57d1f746dfbbe9226"
   }
 }

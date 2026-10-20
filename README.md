@@ -231,8 +231,9 @@ CLI / MCP / responsive console / Tauri desktop
 
 Six rules shape the design:
 
-1. **One writer per fact.** Kontor never edits another tool's internal store,
-   and never invokes the `asma` CLI.
+1. **One writer per fact.** `kontord` never edits another tool's internal store,
+   and never invokes the `asma` CLI; the workflow uses the project CLI where
+   its procedure says so.
 2. **Uncertainty is not completion.** Stale, divergent, unavailable and
    orphaned are visible states, never guessed terminal outcomes.
 3. **Intent precedes effects.** Runtime-changing commands are durably recorded
@@ -298,7 +299,7 @@ state root opts into the resident succession engine only when the
 document is schema v2, `watchdog.enabled` is `true`, and
 `recovery.max_concurrent_successions` is explicitly set inside the safe bound.
 With no policy, with schema v1, or with a disabled watchdog, automatic
-succession does not start and Kontor invents no cadence or capacity. See
+succession does not start and `kontord` invents no cadence or capacity. See
 [Configuration](docs/CONFIGURATION.md).
 Local contract coverage is not a deployment claim: independent audit,
 live-runtime verification and per-realm enablement require separate receipts.

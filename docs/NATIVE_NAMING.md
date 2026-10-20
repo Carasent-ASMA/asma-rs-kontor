@@ -69,7 +69,7 @@ Git branch and was later published as such — `cat-11`, `kon-op-22`,
 `consultation-<uuid>` — with no tracker identity. Kontor now shares one grammar
 with the ASMA CLI (`asma git checkout -b --from <KEY>`), implemented in
 `kontor-core` `branch.rs` and mirrored byte-for-byte by
-`_tools/asma-cli/src/asma_cli/publication_policy.py`:
+the ASMA CLI's publication-policy implementation:
 
 ```text
 <type>/<PROJECT>-<number>-<slug>      ordinary work, e.g. feat/ASMA-8101-publication-identity

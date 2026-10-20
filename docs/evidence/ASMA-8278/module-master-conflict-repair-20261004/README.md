@@ -141,8 +141,8 @@ them with fresh raw receipts. Every other artifact in this packet is unchanged.
 - Mutation targets `crates/kontor-fleet/src/allocation.rs`,
   `crates/kontor-runtime/.../commands/contribution.rs` and
   `.../commands/recovery.rs` remain byte-equal to the prior reviewed manifest
-  (`receipts/mutation-targets.json`); the root `_tools/ai-orchestration/tpm_supervision.py`
-  target is outside this module checkout and untouched.
+  (`receipts/mutation-targets.json`); the root private TPM-supervision tool target is outside this module
+  checkout and untouched.
 
 ## Boundaries
 

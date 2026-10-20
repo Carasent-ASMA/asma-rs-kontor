@@ -42,7 +42,7 @@ Locked by `leadership_materialization_is_resolved_through_the_activated_policy`,
 
 `record_leadership_decision` writes policy hash, schema version, binding key, chain, roster hash, slot, step, sub-step, provider, model, effort and vendor. The loopback helper `direct_resolution` re-parses `fleet-history/<hash>.yml` with `kontor_fleet::FleetSnapshot::parse_policy` and `assert_decision_is_the_shared_resolution` compares those fields. Daemon result and library result agree.
 
-There is no asma-cli direct-mode policy consumer in this slice (`_tools/asma-cli` `fleet_events.py` is local telemetry, not a resolver). That absence is a non-claim.
+There is no asma-cli direct-mode policy consumer in this slice (the CLI's local `fleet_events.py` telemetry is not a resolver). That absence is a non-claim.
 
 ### 3. Native seat identity is preserved; successor occupancy is explicit
 

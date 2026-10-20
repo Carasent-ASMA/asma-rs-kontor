@@ -8,11 +8,11 @@
     "sha256": "d4c578009b5125a47ffa815bac467b10eb62249046493d79af44b481b2672cac"
   },
   "handoff_skill": {
-    "path": "[qualification-workspace]/.agents/skills/seat-handoff/SKILL.md",
+    "path": "[parent-seat-handoff-skill]",
     "sha256": "e9a15b10679129f853586ea46312749332386bc87952a868c90b09c9af8d8870"
   },
   "mutation_skill": {
-    "path": "[qualification-workspace]/.agents/skills/mutation-testing/SKILL.md",
+    "path": "[parent-mutation-testing-skill]",
     "sha256": "6de1a43ec25aceca79f06066579454b8771d3a0e095b49aa2771fe0b3b42cdf1"
   },
   "alignment_contract": {
@@ -20,7 +20,7 @@
     "sha256": "4764403eccfcd44adbb776c7e73735ea7728c26a21f76bbcbb36a99bfce9ab66"
   },
   "surface_transition": {
-    "path": "[qualification-workspace]/.agents/skills/epic-orchestration/references/orchestration-surface-transition.md",
+    "path": "[parent-orchestration-surface-transition]",
     "sha256": "c6a531db8e85378967285a25e1a6b6ab8874166962905164d85762f44c195ead"
   }
 }
