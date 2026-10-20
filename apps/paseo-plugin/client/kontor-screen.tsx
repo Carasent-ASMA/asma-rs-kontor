@@ -10,6 +10,7 @@ import { useKeyboardSettings } from "./use-keyboard-settings";
 import { useBackShortcut } from "./keyboard-shortcuts";
 import { KeyboardSettingsCard } from "./keyboard-settings-card";
 import { useReadSources } from "./use-read-sources";
+import { projectEpicKeys, sourceEpic, sourceInProject } from "./source-scope";
 import { useSessionDirectory } from "./use-session-directory";
 import { patchSessionView, readSessionView, sessionViewTransition } from "./session-view-store";
 import { DESTINATIONS, contextHeading, goBack, hostNavigation, navigate, NO_SCOPE, readPageView, readRouteView, refreshSourceRevision, routeViewKey, sessionScopeKey, tabScope, writePageView, writeRouteView, type Destination, type KontorRoute } from "./navigation-state";
@@ -60,6 +61,7 @@ function HostScreen(props: PluginScreenProps) {
   const [, setTeamsViewRevision] = useState(0);
   const directory = useSessionDirectory({ hostId: host.id, hostStatus, includeArchived });
   const sourceState = useReadSources(host.id, hostStatus);
+  const projectEpics = useMemo(() => projectEpicKeys(route.projectId, directory.state.entries), [route.projectId, directory.state.entries]);
   const taskTeams = useMemo(() => taskTeamReader(sourceState.sources, sourceState.teamsSnapshots), [sourceState.sources, sourceState.teamsSnapshots]);
   const workspaces = useWorkspaceDirectory(host.id, hostStatus === "online");
   const presentation = sourceState.error && !sourceState.available
@@ -77,7 +79,7 @@ function HostScreen(props: PluginScreenProps) {
   }, [props.params.tab, props.params.sourceId, props.params.agentId, visit]);
   useEffect(() => {
     if (routeViewKey(hostNavigation(host.id).route) !== routeViewKey(route)) return;
-    const resolved = resolveContextPlan(route, sourceState.sources, sourceState.reads, route.originAgentId ? saved.planAssociations[route.originAgentId] ?? [] : null);
+    const resolved = resolveContextPlan(route, sourceState.sources, sourceState.reads, route.originAgentId ? saved.planAssociations[route.originAgentId] ?? [] : null, projectEpics);
     if (resolved.sourceId && resolved.sourceId !== route.sourceId) {
       const next = refreshContextSource(host.id, resolved.sourceId, resolved.sourceRevision);
       setRoute(next); setQuery(readRouteView(host.id, next).query); return;
@@ -87,7 +89,7 @@ function HostScreen(props: PluginScreenProps) {
       const next = refreshSourceRevision(host.id, revision);
       setRoute(next); setQuery(readRouteView(host.id, next).query);
     }
-  }, [host.id, route, sourceState.sources, sourceState.reads, saved.planAssociations]);
+  }, [host.id, route, sourceState.sources, sourceState.reads, saved.planAssociations, projectEpics]);
   const projects = useMemo(() => {
     const names = new Map((workspaces.projects ?? []).map((project) => [project.projectId, project.projectCustomName ?? project.projectDisplayName]));
     for (const entry of directory.state.entries) if (entry.projectKey && !names.has(entry.projectKey)) names.set(entry.projectKey, entry.projectName ?? entry.projectKey);
@@ -97,9 +99,9 @@ function HostScreen(props: PluginScreenProps) {
   const selectedPlan = route.sourceId ? sourceState.sources.find((source) => source.id === route.sourceId && source.kind === "plan") : undefined;
   const scopedEpic = selectedPlan ? sourceState.reads[selectedPlan.id]?.graph?.epic.jira ?? selectedPlan.epic : route.epicKey;
   const entries = useMemo(() => directory.state.entries.filter((entry) => (route.projectId === null || entry.projectKey === route.projectId) && (scopedEpic === null || confirmedEpic(entry) === scopedEpic) && !(route.tab === "Overview" && route.sourceId && !scopedEpic)), [directory.state.entries, route.projectId, scopedEpic, route.tab, route.sourceId]);
-  const sourcesInContext = sourceState.sources.filter((source) => source.kind === "jira"
-    ? source.projectId === null || route.projectId === null || source.projectId === route.projectId
-    : (route.projectId === null || source.projectId === route.projectId) && (scopedEpic === null || (sourceState.reads[source.id]?.graph?.epic.jira ?? source.epic) === scopedEpic) && (route.tab !== "Overview" || route.sourceId === null || source.id === route.sourceId || (source.kind !== "plan" && scopedEpic !== null)));
+  const sourcesInContext = sourceState.sources.filter((source) => sourceInProject(source, sourceState.reads[source.id], route.projectId, projectEpics)
+    && (source.kind === "jira" || (scopedEpic === null || sourceEpic(source, sourceState.reads[source.id]) === scopedEpic)
+      && (route.tab !== "Overview" || route.sourceId === null || source.id === route.sourceId || (source.kind !== "plan" && scopedEpic !== null))));
   const associationIds = route.originAgentId ? linkedPlans(saved.planAssociations, route.originAgentId, new Set(sourceState.sources.filter((source) => source.kind === "plan").map((source) => source.id))) : null;
   const linkedContext = ["Plan", "Graph", "Board"].includes(route.tab) && associationIds !== null;
   const sources = linkedContext ? sourcesInContext.filter((source) => source.kind !== "plan" || associationIds!.includes(source.id)) : sourcesInContext;
@@ -107,11 +109,11 @@ function HostScreen(props: PluginScreenProps) {
   const epics = [...new Set([...directory.state.entries.map(confirmedEpic), ...sourceState.sources.map((source) => sourceState.reads[source.id]?.graph?.epic.jira ?? source.epic)].filter((key): key is string => key !== null))].sort();
   const projectName = route.projectId === null ? null : projects.find(([id]) => id === route.projectId)?.[1] ?? null;
   const projectLabel = route.epicKey ?? (route.projectId === null ? "All projects" : projectName ?? "Project unavailable");
-  const heading = contextHeading(route, sourceState.sources, sourceState.reads, linkedContext ? associationIds : null, projectName);
-  const pickerPlans = contextPlanSources(linkedContext ? { ...route, epicKey: null, projectId: null } : route, sourceState.sources, sourceState.reads, linkedContext ? associationIds : null);
+  const heading = contextHeading(route, sourceState.sources, sourceState.reads, linkedContext ? associationIds : null, projectName, projectEpics, sourceState.error);
+  const pickerPlans = contextPlanSources(linkedContext ? { ...route, epicKey: null, projectId: null } : route, sourceState.sources, sourceState.reads, linkedContext ? associationIds : null, projectEpics);
   const visitContext = (patch: Partial<KontorRoute>, queryOverride?: string) => {
     const candidate = { ...hostNavigation(host.id).route, ...patch };
-    const resolved = resolveContextPlan(candidate, sourceState.sources, sourceState.reads, candidate.originAgentId ? saved.planAssociations[candidate.originAgentId] ?? [] : null);
+    const resolved = resolveContextPlan(candidate, sourceState.sources, sourceState.reads, candidate.originAgentId ? saved.planAssociations[candidate.originAgentId] ?? [] : null, projectEpicKeys(candidate.projectId, directory.state.entries));
     visit({ ...patch, sourceId: resolved.sourceId, sourceRevision: resolved.sourceRevision }, queryOverride);
   };
   const selectSource = (sourceId: string, tab?: Destination) => {

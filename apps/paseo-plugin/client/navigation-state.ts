@@ -1,5 +1,6 @@
 import { readSessionView, writeSessionView, type SessionViewState } from "./session-view-store";
 import type { ReadSourceSummary, SourceRead } from "../shared/read-sources";
+import { sourceEpic, sourceInProject } from "./source-scope";
 
 export const DESTINATIONS = ["Sessions", "Overview", "Plan", "Board", "Graph", "Delivery", "Decisions", "AI teams & sessions", "Activity", "Inbox", "Search", "Settings"] as const;
 export type Destination = (typeof DESTINATIONS)[number];
@@ -92,15 +93,15 @@ export function refreshSourceRevision(hostId: string, revision: string | null): 
   return state.route;
 }
 /** Only explicit epic/project metadata or the exact canonical epic binds a source. */
-export function contextPlanSources(route: KontorRoute, sources: readonly ReadSourceSummary[], reads: Readonly<Record<string, SourceRead>>, allowedIds: readonly string[] | null = null): ReadSourceSummary[] {
+export function contextPlanSources(route: KontorRoute, sources: readonly ReadSourceSummary[], reads: Readonly<Record<string, SourceRead>>, allowedIds: readonly string[] | null = null, projectEpics: readonly string[] = []): ReadSourceSummary[] {
   return sources.filter((source) => source.kind === "plan"
     && (allowedIds === null || allowedIds.includes(source.id))
-    && (route.projectId === null || source.projectId === route.projectId)
-    && (route.epicKey === null || (source.epic ?? reads[source.id]?.graph?.epic.jira) === route.epicKey));
+    && sourceInProject(source, reads[source.id], route.projectId, projectEpics)
+    && (route.epicKey === null || sourceEpic(source, reads[source.id]) === route.epicKey));
 }
-export function resolveContextPlan(route: KontorRoute, sources: readonly ReadSourceSummary[], reads: Readonly<Record<string, SourceRead>>, allowedIds: readonly string[] | null = null): KontorRoute {
+export function resolveContextPlan(route: KontorRoute, sources: readonly ReadSourceSummary[], reads: Readonly<Record<string, SourceRead>>, allowedIds: readonly string[] | null = null, projectEpics: readonly string[] = []): KontorRoute {
   if (!["Plan", "Graph", "Board"].includes(route.tab) || route.sourceId !== null || route.epicKey === null) return route;
-  const plans = contextPlanSources(route, sources, reads, allowedIds);
+  const plans = contextPlanSources(route, sources, reads, allowedIds, projectEpics);
   if (plans.length !== 1) return route;
   return { ...route, sourceId: plans[0]!.id, sourceRevision: reads[plans[0]!.id]?.revision ?? null };
 }
@@ -113,15 +114,16 @@ export function refreshContextSource(hostId: string, sourceId: string, revision:
  * Header context: an exact plan, the single plan bound to the selected epic, or a truthful
  * unselected/ambiguous state. The key is shown only when it is a confirmed Jira key.
  */
-export function contextHeading(route: KontorRoute, sources: readonly ReadSourceSummary[], reads: Readonly<Record<string, SourceRead>>, allowedIds: readonly string[] | null, projectName: string | null): { title: string; key: string | null; plan: ReadSourceSummary | null; plans: number } {
+export function contextHeading(route: KontorRoute, sources: readonly ReadSourceSummary[], reads: Readonly<Record<string, SourceRead>>, allowedIds: readonly string[] | null, projectName: string | null, projectEpics: readonly string[] = [], sourceError: string | null = null): { title: string; key: string | null; plan: ReadSourceSummary | null; plans: number } {
   const jira = (value: string | null | undefined) => value && /^ASMA-[1-9]\d*$/.test(value) ? value : null;
   if (route.sourceId) {
     const plan = sources.find((source) => source.id === route.sourceId && source.kind === "plan") ?? null;
     return { title: plan?.title ?? "Source unavailable", key: plan ? jira(reads[plan.id]?.graph?.epic.jira ?? plan.epic) : null, plan, plans: plan ? 1 : 0 };
   }
   if (route.epicKey) {
-    const plans = contextPlanSources(route, sources, reads, allowedIds);
+    const plans = contextPlanSources(route, sources, reads, allowedIds, projectEpics);
     if (plans.length === 1) return { title: plans[0]!.title, key: jira(route.epicKey), plan: plans[0]!, plans: 1 };
+    if (plans.length === 0 && sourceError) return { title: "Plan sources unavailable", key: jira(route.epicKey), plan: null, plans: 0 };
     return { title: plans.length ? `Choose plan · ${plans.length} linked` : jira(route.epicKey) ? "No plan linked" : route.epicKey, key: jira(route.epicKey), plan: null, plans: plans.length };
   }
   if (route.projectId) return { title: projectName ?? "Project unavailable", key: null, plan: null, plans: 0 };

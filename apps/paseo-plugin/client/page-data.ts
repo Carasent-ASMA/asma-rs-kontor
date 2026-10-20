@@ -20,11 +20,12 @@ export function readTime(value: string | number, now: number = Date.now()): stri
 }
 
 export function confirmedEpic(entry: DirectoryEntry): string | null {
+  const keys = new Set<string>();
   for (const key of ["epic", "jira.epic", "origin.epic"]) {
     const value = entry.labels[key]?.trim();
-    if (value && /^ASMA-\d+$/.test(value)) return value;
+    if (value && /^ASMA-[1-9]\d*$/.test(value)) keys.add(value);
   }
-  return null;
+  return keys.size === 1 ? [...keys][0]! : null;
 }
 export function nativeSummary(entries: readonly DirectoryEntry[]) {
   return { total: entries.length, running: entries.filter((entry) => entry.status === "running").length,
