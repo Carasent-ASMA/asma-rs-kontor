@@ -22,7 +22,7 @@
     "note": "Certified source hashes describe the originals; the public candidate files are redacted derivatives."
   },
   "derivatives": {
-    "crates/kontor-runtime/src/planning_pair/attestation.rs": "6289cb9b1497387795e70b1b4728a2e1767065afc6c4be7d5401b9fea12e83cd",
-    "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic.rs": "38a0f76f15e9bc1eaffe0c01532b1789093ed69c6bbf985c84d9d96d92e469b8"
+    "crates/kontor-runtime/src/planning_pair/attestation.rs": "a6e46758a48ae9d48cb2e719541fc055288126621370820a58418f7d0e9f8779",
+    "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic.rs": "48a5baf647c4e0d10f45d5a0fb176ce389a14a09d342e22b77800ec9096a986f"
   }
 }

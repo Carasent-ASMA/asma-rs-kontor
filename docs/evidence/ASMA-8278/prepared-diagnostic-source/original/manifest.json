@@ -385,8 +385,8 @@
     },
     {
       "path": "01-source-hashes.json",
-      "bytes": 433,
-      "sha256": "1b8efa05a846409cea23819b580e78e58d066ea78159e2f3609cb43dda150890"
+      "bytes": 1019,
+      "sha256": "d14c6d9ddc76c45b5a07575705026cc677e7887f344c61faa22f34d5dc89dc19"
     },
     {
       "path": "02-runtime-regression.log.json",
@@ -435,8 +435,8 @@
     },
     {
       "path": "final-owned-hashes.json",
-      "bytes": 433,
-      "sha256": "233be73aec2b5385f5ad17fd3e7c2077aed4823fb4ee339c370019442a02d908"
+      "bytes": 974,
+      "sha256": "dfa037a4ad4a8f3d5779d10e0ef2a229505aa7c4ef1ce5eba200c5af3b230231"
     },
     {
       "path": "final-owned-hashes.tsv",
@@ -455,8 +455,8 @@
     },
     {
       "path": "mutation-baseline-hashes.json",
-      "bytes": 433,
-      "sha256": "233be73aec2b5385f5ad17fd3e7c2077aed4823fb4ee339c370019442a02d908"
+      "bytes": 974,
+      "sha256": "dfa037a4ad4a8f3d5779d10e0ef2a229505aa7c4ef1ce5eba200c5af3b230231"
     },
     {
       "path": "mutation-definitions.json",
@@ -465,8 +465,8 @@
     },
     {
       "path": "mutation-report.json",
-      "bytes": 10163,
-      "sha256": "390d9449072939c106b228e85bf13cdccf2953ed83b864a64dfe5467289b6d7a"
+      "bytes": 10632,
+      "sha256": "3e5bdaeaee9880fbccd7a0aa7a1d9ab5a2a971f20030851b52d2da16c1a2b405"
     },
     {
       "path": "prepare_mutations.py",
@@ -495,8 +495,8 @@
     },
     {
       "path": "temporal-provenance.json",
-      "bytes": 1662,
-      "sha256": "cbf1fbdcad0cd3f76fa29b867b93a9770cb918e0f646109cad4f95ea6d77575f"
+      "bytes": 2203,
+      "sha256": "e1e195a0839569b6cc27954883c63400a296cd29ce3131d679c26a16f733c325"
     },
     {
       "path": "logs/01-focused.log",
