@@ -189,7 +189,7 @@ const { harness, directory } = vi.hoisted(() => {
 vi.mock("react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react")>();
   return {
-    ...actual,
+    ...actual, useContext: () => null,
     memo: (component: unknown) => component,
     useCallback: harness.useCallback,
     useEffect: harness.useEffect,

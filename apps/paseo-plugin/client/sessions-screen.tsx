@@ -84,6 +84,8 @@ import { Action, COARSE_POINTER, Disclosure } from "./page-controls";
 import { nativeFreshnessLabel } from "./native-freshness";
 import { sessionTimeLines, useClock, useUpdatedTime, type RowTime, type TimeFreshness } from "./session-time";
 import { sessionUsageLabel } from "./session-usage";
+import { compactUsage, SESSION_METADATA_HELP } from "./session-usage-density";
+import { useControlHelp } from "./control-help";
 import { SessionUsage, SessionUsageLines } from "./session-usage-view";
 
 type ThemeColors = PluginTheme["colors"];
@@ -333,6 +335,7 @@ export const SessionRow = memo(function SessionRow({
   highlighted = false,
   live = false,
 }: SessionRowProps) {
+  const usageHint = useControlHelp(compactUsage(entry).help);
   const time = useUpdatedTime(entry.updatedAt, live);
   const age = time ? rowAge(time, compact, colors) : null;
   const attention = attentionLabel(entry);
@@ -374,11 +377,12 @@ export const SessionRow = memo(function SessionRow({
 
   return (
     <Pressable
+      ref={usageHint.bindings.ref} onFocus={usageHint.bindings.onFocus} onBlur={usageHint.bindings.onBlur}
       testID={`sessions-row-${entry.id}`}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
       accessibilityHint="Opens the existing Paseo session"
-      onPress={() => onPress(entry)}
+      onPress={() => { usageHint.dismiss(); onPress(entry); }}
       style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => ({
         minHeight: compact || COARSE_POINTER ? 44 : 40,
         paddingLeft: 8,
@@ -537,10 +541,11 @@ export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<t
 export function SessionDetailsButton({ title, expanded, compact, colors, onPress, ref }: {
   readonly title: string; readonly expanded: boolean; readonly compact: boolean; readonly colors: ThemeColors; readonly onPress: () => void; readonly ref?: Ref<View>;
 }) {
+  const help = useControlHelp(`Details: exact times, model, token report, role and placement. ${SESSION_METADATA_HELP}`, ref);
   const size = compact || COARSE_POINTER ? 44 : 30;
   return (
-    <Pressable ref={ref} testID="sessions-row-details" accessibilityRole="button" accessibilityLabel={`Details: ${title}`} accessibilityHint="Shows exact times with their time zone, model, token report, role and placement details"
-      accessibilityState={{ expanded }} aria-expanded={expanded} onPress={onPress}
+    <Pressable {...help.bindings} testID="sessions-row-details" accessibilityRole="button" accessibilityLabel={`Details: ${title}`} accessibilityHint="Shows exact times with their time zone, model, token report, role and placement details"
+      accessibilityState={{ expanded }} aria-expanded={expanded} onPress={() => { help.dismiss(); onPress(); }}
       style={({ pressed, hovered, focused }: { pressed: boolean; hovered?: boolean; focused?: boolean }) => ({ width: size, height: size, borderRadius: 6, alignItems: "center", justifyContent: "center", backgroundColor: pressed || hovered || focused ? colors.surface2 : undefined })}>
       <Icon name="Info" size={compact ? 16 : 14} color={colors.foregroundMuted} />
     </Pressable>
@@ -598,15 +603,17 @@ type SessionResultRowProps = {
 const SessionResultRow = memo(function SessionResultRow({ entry, provenance, colors, compact, onPress, onShowInTree, treeButtonRef, live, details }: SessionResultRowProps) {
   const cues = resultCues(entry);
   const coarse = compact || COARSE_POINTER;
+  const usageHint = useControlHelp(compactUsage(entry).help);
   const time = useUpdatedTime(entry.updatedAt, live);
   return (
     <View testID={`sessions-result-${entry.id}`} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
       <Pressable
-        testID={`sessions-row-${entry.id}`}
+        ref={usageHint.bindings.ref} onFocus={usageHint.bindings.onFocus} onBlur={usageHint.bindings.onBlur}
+      testID={`sessions-row-${entry.id}`}
         accessibilityRole="button"
         accessibilityLabel={[resultAccessibilityLabel(entry, provenance), time?.spoken].filter(Boolean).join(". ")}
         accessibilityHint="Opens the existing Paseo session"
-        onPress={() => onPress(entry)}
+        onPress={() => { usageHint.dismiss(); onPress(entry); }}
         style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => ({
           flex: 1,
           minWidth: 0,
@@ -2380,7 +2387,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       placement={compact ? { align: "stretch", width: 0, cover: true } : { align: "end", width: 360, maxHeight: 440 }}
       header={<View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8, paddingLeft: 6, paddingBottom: 4 }}>
         <Text testID="sessions-details-title" selectable style={{ flex: 1, minWidth: 0, paddingTop: 6, color: colors.foreground, fontSize: 13, fontWeight: "600" }}>{detailsEntry.title}</Text>
-        <Action ref={detailsCloseRef} small={!compact} colors={colors} label="Close" accessibilityLabel={`Close details: ${detailsEntry.title}`} onPress={closeDetails} />
+        <Action ref={detailsCloseRef} small={!compact} colors={colors} label="Close" icon="X" iconOnly accessibilityLabel={`Close details: ${detailsEntry.title}`} onPress={closeDetails} />
       </View>}>
       {/* On web the lines are a named stop of their own, so a keyboard can scroll a chain longer than the screen. */}
       <ScrollView testID="sessions-details-lines" {...(pageDocument() ? { tabIndex: 0, role: "region", accessibilityLabel: "Times, role, placement, model and token report" } as const : {})}

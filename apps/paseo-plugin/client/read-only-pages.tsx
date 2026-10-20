@@ -134,7 +134,7 @@ function RecordLink({ url, label, title, colors, compact = false, onOpen }: { ur
   const safe = safeHttpsUrl(url);
   if (!safe) return <Copy colors={colors} muted small>Source link unavailable: a valid HTTPS URL without credentials is required.</Copy>;
   return <View style={{ alignItems: "flex-end", gap: 2, maxWidth: 160 }}>
-    <Action small={!compact} label={label === "Open evidence" ? "Evidence" : "Source"} accessibilityLabel={`${label}: ${title}`} colors={colors} disabled={!onOpen} onPress={() => onOpen?.(safe)} />
+    <Action small={!compact} label={label === "Open evidence" ? "Evidence" : "Source"} icon="ExternalLink" iconOnly accessibilityLabel={`${label}: ${title}`} colors={colors} disabled={!onOpen} onPress={() => onOpen?.(safe)} />
     {!onOpen ? <Copy colors={colors} muted small>Source link opening is unavailable on this host.</Copy> : null}
   </View>;
 }

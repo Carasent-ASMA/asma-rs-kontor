@@ -15,7 +15,7 @@ import plugin from "../index.server";
 import { sessionEntry } from "./session-fixtures";
 const model = vi.hoisted(() => ({ query: null as any, rpc: new Map<string, ReturnType<typeof vi.fn>>() }));
 // Page state is the explicit TeamsView; local hook state is not used by these renders.
-vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useState: (initial: unknown) => [initial, () => {}] }));
+vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useContext: () => null, useRef: (current: unknown) => ({ current }), useState: (initial: unknown) => [initial, () => {}] }));
 vi.mock("react-native", () => ({ Pressable: "Pressable", Text: "Text", View: "View" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon", TextInput: "TextInput" }));
 vi.mock("@getpaseo/plugin/client", () => ({ useRpc: (contract: { name: string }) => model.rpc.get(contract.name) }));
