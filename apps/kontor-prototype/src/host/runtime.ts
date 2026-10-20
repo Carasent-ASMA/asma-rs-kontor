@@ -1,6 +1,6 @@
 import type { PaseoApi } from "@getpaseo/client";
 import { DEFAULT_ORGANIZATION_SETTINGS, organizationSettingsSchema, type OrganizationSettings } from "../../../paseo-plugin/shared/organization";
-import { baseSessions, scrollSessions, WORKSPACES, type FixtureSession } from "../fixtures/sessions";
+import { baseSessions, roleSessions, scrollSessions, WORKSPACES, type FixtureSession } from "../fixtures/sessions";
 import { SOURCE_READS } from "../fixtures/sources";
 import { SCENARIOS, type Scenario } from "../scenarios";
 import { logHostEvent } from "./event-log";
@@ -32,7 +32,8 @@ export function subscribeHost(listener: () => void): () => void {
 // Sessions ------------------------------------------------------------------
 
 const sessions = new Map<string, FixtureSession>();
-for (const value of scenario.inventory === "none" ? [] : scenario.inventory === "large" ? scrollSessions() : baseSessions()) sessions.set(value.agent.id, value);
+const inventory = { none: () => [], large: scrollSessions, roles: roleSessions, base: baseSessions }[scenario.inventory];
+for (const value of inventory()) sessions.set(value.agent.id, value);
 
 type Observer = { snapshot?: (value: unknown) => void; update?: (message: unknown) => void; error?: (error: unknown) => void };
 const observers = new Set<Observer>();

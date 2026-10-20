@@ -23,8 +23,8 @@ if (start?.tab && start.tab !== "Sessions") {
   navigate(HOST_ID, { tab: start.tab, sourceId: read?.source.id ?? null, sourceRevision: read?.revision ?? null, epicKey: read?.graph?.epic.jira ?? null, projectId: read?.source.projectId ?? null });
   hostNavigation(HOST_ID).back = [];
 }
-if (start?.query || start?.status) {
-  patchSessionView(sessionScopeKey(HOST_ID, hostNavigation(HOST_ID).route), { query: start.query ?? "", status: start.status ?? "all" });
+if (start?.query || start?.status || start?.grouping) {
+  patchSessionView(sessionScopeKey(HOST_ID, hostNavigation(HOST_ID).route), { query: start.query ?? "", status: start.status ?? "all", ...(start.grouping ? { grouping: start.grouping } : {}) });
 }
 for (const step of scenario.script ?? []) setTimeout(() => simulateUpdate(step.agentId, step.patch, `${step.note} (simulated)`), step.afterMs);
 if (scenario.hostOfflineAfterMs) setTimeout(() => { setHostStatus("offline"); logHostEvent("simulated.update", "host offline (simulated)"); }, scenario.hostOfflineAfterMs);

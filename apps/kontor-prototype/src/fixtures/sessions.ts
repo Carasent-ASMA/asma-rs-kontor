@@ -141,3 +141,20 @@ export function scrollSessions(): FixtureSession[] {
   }
   return [...baseSessions(), ...extra];
 }
+
+/**
+ * The Roles review inventory: the default one plus role variants. Case and spacing
+ * variants share a header, a numbered slot keeps its own, and two sessions whose
+ * sources disagree show the label's role with a conflict cue.
+ */
+export function roleSessions(): FixtureSession[] {
+  return [
+    ...baseSessions(),
+    session({ id: "agt_qa_mixed", title: "Qa • ASMA-99105 restore checks", ws: "wks_tsw_99105", status: "running", minutes: 8, labels: kontor("ASMA-99101", { role: "Qa", task: "ASMA-99105" }) }),
+    session({ id: "agt_qa_spaced", title: "ASMA-99202 sign-in recheck", ws: "wks_tsw_99202", status: "idle", minutes: 14, project: MOBILE, labels: { workstream: "Mobile", epic: "ASMA-99201", "kontor.role": "  qa ", "jira.issue": "ASMA-99202" } }),
+    session({ id: "agt_qa1_slot", title: "QA1 • ASMA-99107 parser rerun", ws: "wks_tsw_99107", status: "error", minutes: 11, attention: "error", labels: kontor("ASMA-99102", {}) }),
+    session({ id: "agt_conflict_title", title: "AUD • ASMA-99104 spot check", ws: "wks_rsw_99104", status: "idle", minutes: 18, needsInput: true, labels: kontor("ASMA-99101", { role: "qa", task: "ASMA-99104" }) }),
+    session({ id: "agt_conflict_labels", title: "ASMA-99103 release notes", ws: "wks_tsw_99103", status: "running", minutes: 3, labels: kontor("ASMA-99101", { "kontor.role": "SWE", role: "tpm", task: "ASMA-99103" }) }),
+    session({ id: "agt_revb_label", title: "Second look at PR 812", ws: "wks_desk_review", status: "idle", minutes: 22, labels: { desk: "PR Review", pr: "812", role: "rev_b" } }),
+  ];
+}

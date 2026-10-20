@@ -1,4 +1,5 @@
 import type { OrganizationSettings } from "../../paseo-plugin/shared/organization";
+import type { SessionGrouping } from "../../paseo-plugin/client/session-view-store";
 
 /**
  * Review scenarios. Each opens the same plugin source on a deterministic
@@ -9,7 +10,7 @@ export type Scenario = {
   readonly id: string;
   readonly title: string;
   readonly summary: string;
-  readonly inventory: "base" | "large" | "none";
+  readonly inventory: "base" | "large" | "roles" | "none";
   readonly sources: boolean;
   readonly settings?: Partial<OrganizationSettings>;
   readonly start?: {
@@ -17,6 +18,8 @@ export type Scenario = {
     readonly sourceId?: string;
     readonly query?: string;
     readonly status?: "error" | "needs_input" | "running" | "attention";
+    /** Grouping chosen in this Sessions view (kept in memory, not saved). */
+    readonly grouping?: SessionGrouping;
   };
   /** Scripted native changes, applied in order and labelled simulated. */
   readonly script?: readonly { readonly afterMs: number; readonly agentId: string; readonly patch: Record<string, unknown>; readonly note: string }[];
@@ -24,6 +27,9 @@ export type Scenario = {
   /** Board reads SIMULATED team, workflow and risk-tier declarations (`fixtures/teams.ts`); labelled in the banner. */
   readonly simulatedTeams?: boolean;
 };
+
+/** Role grouping saved, with only QA saved open; every other role header opens closed. */
+const ROLES: Partial<OrganizationSettings> = { grouping: "role", expandedGroups: { "roles/role:QA": true } };
 
 const EXPANDED: Partial<OrganizationSettings> = {
   expandedGroups: {
@@ -52,6 +58,8 @@ export const SCENARIOS: readonly Scenario[] = [
       { afterMs: 16000, agentId: "agt_qa_99104", patch: { status: "running" }, note: "QA started on ASMA-99104" },
     ],
   },
+  { id: "role-view", title: "Roles: one level", summary: "Role grouping: one header per role, singletons and No role included. QA gathers case and spacing variants; QA1 stays apart; two sessions disagree with their titles or labels.", inventory: "roles", sources: true, settings: ROLES },
+  { id: "role-view-offline", title: "Roles: host goes offline", summary: "Role picked in this view; the host drops at 4 s, saved preferences become unavailable, and the role headers give last known counts.", inventory: "roles", sources: true, settings: ROLES, start: { grouping: "role" }, hostOfflineAfterMs: 4000 },
   { id: "host-offline", title: "Host goes offline", summary: "The host drops after 4 s: last known states, marked stale.", inventory: "base", sources: true, start: { tab: "Board", sourceId: "plan-99101" }, hostOfflineAfterMs: 4000 },
   { id: "no-sessions", title: "No sessions", summary: "An empty host: Board tasks have no linked sessions.", inventory: "none", sources: true, start: { tab: "Board", sourceId: "plan-99101" } },
 ];
