@@ -6,10 +6,13 @@ export const SESSION_METADATA_HELP = "Model source: sliders = selected configura
 export function compactUsage(entry: SessionUsageEntry) {
   const model = modelPresentation(entry);
   const usage = usagePresentation(entry);
+  const sourceHelp = model.model === null ? "Model not supplied; custom IDs are shown verbatim when supplied."
+    : model.source === "Last reported runtime model" ? "Last reported runtime model; may predate a switch and does not confirm the active call."
+    : "Selected model configuration; runtime execution is not established.";
   return {
     model: model.model === null ? "—" : model.short,
     modelIcon: model.model === null ? "CircleHelp" : model.source === "Last reported runtime model" ? "Radio" : "SlidersHorizontal",
     tokens: usage.label === "Usage not reported" ? "—" : usage.label.replace(/^Report: /, "").replace(/ in · /, " ↓ · ").replace(/ out$/, " ↑"),
-    help: `${model.source}: ${model.model ?? "not supplied"}. ${usage.spoken} ${SESSION_METADATA_HELP}`,
+    help: `${sourceHelp} Arrows: reported input / output counters, not whole-session totals. Dash = not reported; zero = explicit zero. Report age and model attribution are unknown. Open Details for exact model IDs, counts and provider limits.`,
   };
 }

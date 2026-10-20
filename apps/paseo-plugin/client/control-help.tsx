@@ -1,13 +1,12 @@
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode, type Ref, type RefObject } from "react";
+import { createContext, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode, type Ref, type RefObject } from "react";
 import { BackHandler, ScrollView, Text, View } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { menuFrame, type MenuFrame } from "./anchored-menu";
 
 type Anchor = RefObject<View | null>;
 type Help = { anchor: Anchor; text: string; focused: boolean };
-type Controller = { show(anchor: Anchor, text: string, focused?: boolean): void; leave(anchor: Anchor, blur?: boolean): void; enter(): void; dismiss(): void };
+type Controller = { id: string; show(anchor: Anchor, text: string, focused?: boolean): void; leave(anchor: Anchor, blur?: boolean): void; enter(): void; dismiss(): void };
 const HelpContext = createContext<Controller | null>(null);
-const HELP_ID = "kontor-control-help";
 type KeyEvent = { key: string; target?: unknown; preventDefault(): void; stopPropagation(): void; stopImmediatePropagation?(): void };
 type EventTarget = { addEventListener(type: string, listener: (event: KeyEvent) => void, capture?: boolean): void; removeEventListener(type: string, listener: (event: KeyEvent) => void, capture?: boolean): void };
 type Contains = { contains?(target: unknown): boolean };
@@ -17,6 +16,7 @@ type Contains = { contains?(target: unknown): boolean };
  * portals or new dependencies. Touch keeps action labels and opens metadata in Details.
  */
 export function ControlHelpProvider({ children, colors }: { children: ReactNode; colors: PluginTheme["colors"] }) {
+  const helpId = `kontor-help-${useId()}`;
   const root = useRef<View | null>(null), panel = useRef<View | null>(null);
   const current = useRef<Help | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -27,7 +27,7 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
     const cancel = () => { if (timer.current !== null) clearTimeout(timer.current); timer.current = null; };
     const dismiss = () => { cancel(); revision.current++; current.current = null; setHelp(null); setFrame(null); };
     return {
-      dismiss, enter: cancel,
+      id: helpId, dismiss, enter: cancel,
       show(anchor, text, focused = false) {
         if (!text || (current.current?.focused && !focused)) return;
         cancel();
@@ -47,7 +47,7 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
         cancel(); timer.current = setTimeout(dismiss, 160);
       },
     };
-  }, []);
+  }, [helpId]);
   useEffect(() => {
     const document = (globalThis as { document?: EventTarget }).document;
     const window = (globalThis as { window?: EventTarget }).window;
@@ -67,7 +67,7 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
     <View ref={root} style={{ flex: 1, minWidth: 0, minHeight: 0 }} onLayout={controller.dismiss}>
       {children}
       {help && frame ? <View testID="control-help-layer" pointerEvents="box-none" style={{ position: "absolute", inset: 0, zIndex: 100 }}>
-        <View ref={panel} testID="control-help" nativeID={HELP_ID} role="tooltip" onPointerEnter={controller.enter} onPointerLeave={() => controller.leave(help.anchor)}
+        <View ref={panel} testID="control-help" nativeID={helpId} role="tooltip" onPointerEnter={controller.enter} onPointerLeave={() => controller.leave(help.anchor)}
           style={{ position: "absolute", left: frame.left, width: frame.width, ...(frame.bottom === null ? { top: frame.top ?? 0 } : { bottom: frame.bottom }), maxHeight: frame.maxHeight,
             padding: 10, borderWidth: 1, borderColor: colors.border, borderRadius: 7, backgroundColor: colors.surface2, elevation: 12, shadowColor: "#000", shadowOpacity: 0.25, shadowRadius: 8 }}>
           <ScrollView style={{ flexShrink: 1 }}><Text selectable style={{ color: colors.foreground, fontSize: 12, lineHeight: 18 }}>{help.text}</Text></ScrollView>
@@ -84,7 +84,7 @@ export function useControlHelp(text: string, forwarded?: Ref<View>) {
   const focused = useRef(false);
   return {
     bindings: {
-      "aria-describedby": text ? HELP_ID : undefined,
+      "aria-describedby": text ? controller?.id : undefined,
       ref: (node: View | null) => { anchor.current = node; if (typeof forwarded === "function") forwarded(node); else if (forwarded) forwarded.current = node; },
       onHoverIn: () => controller?.show(anchor, text, focused.current),
       onHoverOut: () => controller?.leave(anchor),

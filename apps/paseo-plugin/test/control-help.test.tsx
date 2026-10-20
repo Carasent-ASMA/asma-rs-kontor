@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { View } from "react-native";
 const hooks = vi.hoisted(() => ({ slots: [] as unknown[], cursor: 0, effects: [] as (() => void | (() => void))[], controller: null as unknown }));
 vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(),
-  useContext: () => hooks.controller,
+  useContext: () => hooks.controller, useId: () => "test-help",
   useRef: (current: unknown) => { const i = hooks.cursor++; return hooks.slots[i] ??= { current }; },
   useState: (value: unknown) => { const i = hooks.cursor++; if (!(i in hooks.slots)) hooks.slots[i] = value; return [hooks.slots[i], (next: unknown) => { hooks.slots[i] = next; }]; },
   useMemo: (factory: () => unknown) => { const i = hooks.cursor++; return hooks.slots[i] ??= factory(); },
@@ -46,6 +46,7 @@ function mount(width = 390, height = 320) {
 describe("hover and focus help", () => {
   it("appears on focus, stays while the pointer moves away, and Escape dismisses without moving focus", () => {
     const screen = mount(); screen.control.bindings.onFocus(); screen.render(); expect(screen.tooltip()).toBeDefined();
+    expect(screen.control.bindings["aria-describedby"]).toBe(screen.tooltip()!.props.nativeID);
     screen.control.bindings.onHoverOut(); vi.advanceTimersByTime(1000); screen.render(); expect(screen.tooltip()).toBeDefined();
     const event = { key: "Escape", preventDefault: vi.fn(), stopPropagation: vi.fn(), stopImmediatePropagation: vi.fn() };
     handlers.get("keydown")!(event as never); screen.render(); expect(screen.tooltip()).toBeUndefined(); expect(event.stopImmediatePropagation).toHaveBeenCalled();

@@ -84,7 +84,7 @@ import { Action, COARSE_POINTER, Disclosure } from "./page-controls";
 import { nativeFreshnessLabel } from "./native-freshness";
 import { sessionTimeLines, useClock, useUpdatedTime, type RowTime, type TimeFreshness } from "./session-time";
 import { sessionUsageLabel } from "./session-usage";
-import { compactUsage, SESSION_METADATA_HELP } from "./session-usage-density";
+import { compactUsage } from "./session-usage-density";
 import { useControlHelp } from "./control-help";
 import { SessionUsage, SessionUsageLines } from "./session-usage-view";
 
@@ -377,7 +377,7 @@ export const SessionRow = memo(function SessionRow({
 
   return (
     <Pressable
-      ref={usageHint.bindings.ref} onFocus={usageHint.bindings.onFocus} onBlur={usageHint.bindings.onBlur}
+      ref={usageHint.bindings.ref} onFocus={usageHint.bindings.onFocus} onBlur={usageHint.bindings.onBlur} aria-describedby={usageHint.bindings["aria-describedby"]}
       testID={`sessions-row-${entry.id}`}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
@@ -541,7 +541,7 @@ export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<t
 export function SessionDetailsButton({ title, expanded, compact, colors, onPress, ref }: {
   readonly title: string; readonly expanded: boolean; readonly compact: boolean; readonly colors: ThemeColors; readonly onPress: () => void; readonly ref?: Ref<View>;
 }) {
-  const help = useControlHelp(`Details: exact times, model, token report, role and placement. ${SESSION_METADATA_HELP}`, ref);
+  const help = useControlHelp("Details: exact times, models, report counters and placement. Model icons describe sources, not current execution. Counter arrows are reported input/output, not session totals; missing values differ from zero. Report age and model attribution are unknown.", ref);
   const size = compact || COARSE_POINTER ? 44 : 30;
   return (
     <Pressable {...help.bindings} testID="sessions-row-details" accessibilityRole="button" accessibilityLabel={`Details: ${title}`} accessibilityHint="Shows exact times with their time zone, model, token report, role and placement details"
@@ -608,7 +608,7 @@ const SessionResultRow = memo(function SessionResultRow({ entry, provenance, col
   return (
     <View testID={`sessions-result-${entry.id}`} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
       <Pressable
-        ref={usageHint.bindings.ref} onFocus={usageHint.bindings.onFocus} onBlur={usageHint.bindings.onBlur}
+        ref={usageHint.bindings.ref} onFocus={usageHint.bindings.onFocus} onBlur={usageHint.bindings.onBlur} aria-describedby={usageHint.bindings["aria-describedby"]}
       testID={`sessions-row-${entry.id}`}
         accessibilityRole="button"
         accessibilityLabel={[resultAccessibilityLabel(entry, provenance), time?.spoken].filter(Boolean).join(". ")}
