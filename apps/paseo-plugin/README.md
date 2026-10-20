@@ -123,13 +123,14 @@ whole of it:
 - the full desk, or workstream, epic and workspace chain;
 - absent values by name, such as "No linked epic" or "No workspace · <cwd>".
 
-On a compact screen the details cover the session list and scroll. On a wide
-screen they open beside the row. Escape, a tap outside, or Close dismisses them
-and returns focus to the button. The row itself still opens the session.
+On a compact screen the details open over the list, from its top, and their
+lines scroll when the screen is too short for them. On a wide screen they open
+beside the row. Escape, a tap outside, or Close dismisses them and returns
+focus to the button. The row itself still opens the session.
 
 On a touch screen, session rows, Details, favorites and the Arrange handle are
-44 pt at any width. A mouse keeps the denser sizes: 40 pt rows and 30 pt
-controls.
+44 pt at any width. A mouse keeps the denser sizes: 40 pt rows, 30 pt Details
+and favorites, and a 28 × 32 pt Arrange handle.
 
 The Role header keys (`roles/role:<code>`, `roles/no-role`) are new. Disclosure
 and order saved for the former per-placement Role groups (`roles/scope:…/role:…`)
