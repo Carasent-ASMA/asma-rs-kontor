@@ -1826,6 +1826,95 @@ describe("SessionsScreen mobile filter page", () => {
     layout(harness.current() as ElementLike, { height: 300 });
     expect(frame().maxHeight).toBe(132);
   });
+  it("chooses Workspace scope and Group by from compact selects that keep every choice, mark the current one and return focus", () => {
+    const save = vi.fn(async () => true);
+    const organization = {
+      state: { status: "ready", values: DEFAULT_ORGANIZATION_SETTINGS, revision: "revision-a", saving: false, saveError: null, save, reload: async () => {}, reset: async () => true },
+      save,
+    } as unknown as NonNullable<Parameters<typeof SessionsScreen>[0]["organization"]>;
+    directory.state = { ...(directory.state as object), entries: [sessionEntry("desk", { labels: { desk: "Ops" } }), sessionEntry("epic-work")] };
+    patchSessionView("host-a", { ...toolbarOpenPatch(true), advancedOpen: true });
+    renderScreen(organization, true);
+    openMobileFilters();
+    const select = (id: string) => findByTestID(harness.current(), id).props;
+    const menus = () => walk(harness.current()).filter((element) => /^sessions-(scope|grouping)-menu$/.test(String(element.props.testID))).map((element) => element.props.testID);
+    const items = () => walk(harness.current()).filter((element) => typeof element.props.onPress === "function" && typeof element.props.selected === "boolean" && "tall" in element.props);
+    const choose = (label: string) => { (items().find((item) => item.props.label === label)!.props.onPress as () => void)(); harness.flush(); };
+    // React Native Web drops accessibilityState, so the open state reaches the DOM only as ARIA.
+    const ariaExpanded = (id: string) => {
+      const element = findByTestID(harness.current(), id) as ElementLike & { readonly type: (props: unknown) => unknown };
+      return walk(element.type(element.props)).find((node) => node.props.accessibilityRole === "button")!.props["aria-expanded"];
+    };
+    const scopeFocus = vi.fn(), groupingFocus = vi.fn();
+    (select("sessions-scope").anchor as RefLike).current = { focus: scopeFocus };
+    (select("sessions-grouping").anchor as RefLike).current = { focus: groupingFocus };
+    expect([select("sessions-scope").value, select("sessions-scope").expanded, menus()]).toEqual(["All Paseo workspaces", false, []]);
+    expect(select("sessions-filter-all").count).toBe(2);
+
+    (select("sessions-scope").onPress as () => void)(); harness.flush();
+    expect([select("sessions-scope").expanded, ariaExpanded("sessions-scope"), menus()]).toEqual([true, true, ["sessions-scope-menu"]]);
+    // The menu frame is clamped to the screen (390x320: 130pt for five 44pt choices), so the choices scroll inside it.
+    const choices = (id: string) => {
+      const menu = findByTestID(harness.current(), `sessions-${id}-menu`);
+      const children = [menu.props.children].flat() as (ElementLike & { readonly type: unknown })[];
+      expect(children.map((child) => child.type)).toEqual(["ScrollView"]);
+      expect(children[0]!.props.style).toEqual({ flexGrow: 0, flexShrink: 1 });
+      return walk(children[0]).filter((element) => "tall" in element.props).map((element) => element.props.label);
+    };
+    expect(choices("scope")).toEqual(["All Paseo workspaces", "Durable desks", "PR Review desk", "Adam desk", "Other workspaces"]);
+    // Durable desks lives only here; the four others repeat the desk shortcuts.
+    expect(items().map((item) => [item.props.label, item.props.selected])).toEqual([["All Paseo workspaces", true], ["Durable desks", false], ["PR Review desk", false], ["Adam desk", false], ["Other workspaces", false]]);
+    choose("Durable desks");
+    expect([select("sessions-scope").value, select("sessions-scope").expanded, ariaExpanded("sessions-scope"), menus(), scopeFocus.mock.calls.length]).toEqual(["Durable desks", false, false, [], 1]);
+    expect(readSessionView("host-a").shortcut).toBe("Desks");
+    expect(select("sessions-filter-all").count).toBe(1);
+    expect([0, 1, 2, 3].map((index) => select(`sessions-shortcut-${index}`).active)).toEqual([false, false, false, false]);
+    // A desk shortcut picks the same scope, and the select follows it.
+    (select("sessions-shortcut-2").onPress as () => void)(); harness.flush();
+    expect(select("sessions-scope").value).toBe("Adam desk");
+
+    // Escape, a tap outside or Android back close through onClose without a choice.
+    (select("sessions-scope").onPress as () => void)(); harness.flush();
+    (findByTestID(harness.current(), "sessions-scope-menu").props.onClose as () => void)(); harness.flush();
+    expect([select("sessions-scope").value, select("sessions-scope").expanded, menus()]).toEqual(["Adam desk", false, []]);
+
+    (select("sessions-grouping").onPress as () => void)(); harness.flush();
+    expect(items().map((item) => [item.props.label, item.props.selected])).toEqual([["Workstreams", true], ["Desks & workspaces", false], ["Role", false], ["Flat", false]]);
+    expect(choices("grouping")).toEqual(["Workstreams", "Desks & workspaces", "Role", "Flat"]);
+    choose("Role");
+    expect([select("sessions-grouping").value, menus(), groupingFocus.mock.calls.length]).toEqual(["Role", [], 1]);
+    expect(save).toHaveBeenCalledWith({ grouping: "role" });
+
+    // Menus keep no Tab, so the other select is reachable with one open; it swaps its menu in without a close, as a new
+    // opening against its own trigger, and back again.
+    const opening = (id: string) => AnchoredMenu(findByTestID(harness.current(), `sessions-${id}-menu`).props as Parameters<typeof AnchoredMenu>[0]);
+    (select("sessions-grouping").onPress as () => void)(); harness.flush();
+    const grouping = opening("grouping");
+    (select("sessions-scope").onPress as () => void)(); harness.flush();
+    expect([menus(), opening("scope").props.anchor]).toEqual([["sessions-scope-menu"], select("sessions-scope").anchor]);
+    expect(opening("scope").key).not.toBe(grouping.key);
+    (select("sessions-grouping").onPress as () => void)(); harness.flush();
+    expect([menus(), opening("grouping").key]).toEqual([["sessions-grouping-menu"], grouping.key]);
+    (findByTestID(harness.current(), "sessions-grouping-menu").props.onClose as () => void)(); harness.flush();
+
+    // A menu left open closes with the options panel and does not come back when it reopens.
+    (select("sessions-scope").onPress as () => void)(); harness.flush();
+    closeMobileFilters();
+    expect(menus()).toEqual([]);
+    openMobileFilters();
+    expect([select("sessions-scope").expanded, menus()]).toEqual([false, []]);
+  });
+
+  it("keeps source warnings visible outside the closed compact toolbar", () => {
+    directory.state = { ...(directory.state as object), status: "stale", live: false, staleReason: "Live updates are unavailable." };
+    renderCompact();
+    expect(fullToolbarShown()).toBe(false);
+    const notices = findByTestID(harness.current(), "sessions-notices");
+    const banner = findByTestID(notices, "sessions-source-banner");
+    expect(banner.props.disabled).toBeUndefined();
+    expect(banner.props.actionLabel).toBe("Retry");
+  });
+
   it("keeps only search and one Filters entry beside results, ignoring the old inline-open preference", () => {
     patchSessionView("host-a", { toolbarOpen: true, advancedOpen: true, status: "idle", grouping: "role" });
     renderCompact();
