@@ -39,7 +39,10 @@ const press = (key: Key): Event => {
 const mounted: (() => void)[] = [];
 
 type Options = { panel: Node; dialog?: boolean; anchor?: Node; onClose?: () => void };
-const menuOf = ({ dialog, anchor = node(), onClose = vi.fn() }: Options) => AnchoredMenu({ anchor: { current: anchor } as never,
+/** Each trigger keeps one ref across draws, as `useRef` does. */
+const refs = new WeakMap<Node, { current: Node }>();
+const refOf = (anchor: Node) => { let ref = refs.get(anchor); if (!ref) refs.set(anchor, ref = { current: anchor }); return ref; };
+const menuOf = ({ dialog, anchor = node(), onClose = vi.fn() }: Options) => AnchoredMenu({ anchor: refOf(anchor) as never,
   root: { current: { contains: (target: unknown) => target !== page.body && target !== host, measureInWindow: () => {} } } as never, rootSize: { width: 800, height: 600 },
   placement: { align: "start", width: 200 }, onClose, colors: {} as never, label: "Choices", dialog, children: null }) as ReactElement<Record<string, unknown>>;
 
@@ -166,7 +169,9 @@ describe("anchored menu keys on web", () => {
   it("opens afresh when one trigger's opening changes mode, or the slot moves to another trigger", () => {
     const draw = slot();
     const [trigger, other, item, stop] = [node(), node(), node(), node()];
-    draw({ panel: panelOf([item]), anchor: trigger });
+    const menu = draw({ panel: panelOf([item]), anchor: trigger });
+    // Drawn again as it was (the parent redraws while it is open), it stays the same opening.
+    expect(draw({ panel: panelOf([item]), anchor: trigger })).toBe(menu);
     draw({ panel: panelOf([stop]), dialog: true, anchor: trigger });
     page.activeElement = page.body;
     expect(press({ key: "Tab" }).preventDefault).toHaveBeenCalledTimes(1);
