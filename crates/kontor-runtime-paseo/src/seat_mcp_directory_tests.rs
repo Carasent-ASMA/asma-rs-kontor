@@ -472,6 +472,7 @@ fn ancestry_substitution_between_parent_validation_and_replace_is_refused() {
         let cwd = host.join("desk");
         std::fs::rename(old_cwd, &cwd).unwrap();
         seed(&cwd);
+        let canonical_cwd = std::fs::canonicalize(&cwd).unwrap();
         let before = originals(&cwd);
         let foreign = fixture.path().join("foreign");
         std::fs::create_dir(&foreign).unwrap();
@@ -498,7 +499,7 @@ fn ancestry_substitution_between_parent_validation_and_replace_is_refused() {
         assert!(error.to_string().contains("identity"));
         assert_eq!(originals(&foreign_cwd), foreign_before);
         assert_eq!(std::fs::read_dir(&foreign_cwd).unwrap().count(), 2);
-        assert!(publication_record(&seat, &cwd).unwrap().exists());
+        assert!(publication_record(&seat, &canonical_cwd).unwrap().exists());
         std::fs::remove_file(&host).unwrap();
         std::fs::rename(saved, &host).unwrap();
         // Pending rollback uses the saved originals, then a supported retry.

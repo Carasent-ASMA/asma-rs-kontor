@@ -730,9 +730,11 @@ impl DirectoryIo {
 
 #[cfg(test)]
 fn directory_file(path: &Path) -> io::Result<Option<Vec<u8>>> {
-    let root = std::fs::canonicalize(path.parent().unwrap_or(Path::new("/")))
-        .or_else(|_| std::fs::canonicalize(path.parent().unwrap().parent().unwrap()))?;
-    DirectoryIo::new(&root, &root)?.read(path)
+    let parent = path.parent().unwrap_or(Path::new("/"));
+    let root = std::fs::canonicalize(parent)
+        .or_else(|_| std::fs::canonicalize(parent.parent().unwrap()))?;
+    let file = root.join(path.strip_prefix(parent).unwrap());
+    DirectoryIo::new(&root, &root)?.read(&file)
 }
 
 fn check_directory(path: &Path) -> io::Result<bool> {
