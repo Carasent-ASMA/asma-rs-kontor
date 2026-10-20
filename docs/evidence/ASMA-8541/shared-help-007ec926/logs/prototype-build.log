@@ -1,0 +1,15 @@
+vite v8.2.1 building client environment for production...
+[2K
+transforming...✓ 2349 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                        0.55 kB │ gzip:   0.38 kB
+dist/assets/react-dom-DWoAlO1Z.js      3.61 kB │ gzip:   1.39 kB │ map:    12.32 kB
+dist/assets/index-Cnd11y5I.js          4.05 kB │ gzip:   1.84 kB │ map:     2.04 kB
+dist/assets/react-D7arRFtS.js          7.59 kB │ gzip:   2.91 kB │ map:    27.15 kB
+dist/assets/studio-C4lrfmKp.js         8.88 kB │ gzip:   3.28 kB │ map:    22.76 kB
+dist/assets/scenarios-DLgap2Cp.js      9.84 kB │ gzip:   3.32 kB │ map:    19.02 kB
+dist/assets/client-dz03U-Yv.js       171.75 kB │ gzip:  54.54 kB │ map:   770.43 kB
+dist/assets/shell-ZkwSzUg5.js      1,410.22 kB │ gzip: 383.74 kB │ map: 5,433.89 kB
+
+✓ built in 787ms

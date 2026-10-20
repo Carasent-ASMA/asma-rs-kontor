@@ -1,0 +1,172 @@
+{
+  "source": {
+    "core": "007ec9269c0c8b0ddbd445ae211421842623d195",
+    "coreRootTree": "c4a32fe215b6668211f2920cab647095875563d9",
+    "corePluginTree": "2d77796f545cd5528d44988ece5004efd1fe1d9a",
+    "app": "6423d7afbf5448265eb41891b903eaedde426140",
+    "appRootTree": "997f389f7c6256c1f9770c6386efe2e71c0c594c",
+    "appTree": "4ade0ecf8befb7b6679f933d75d90536ab682c69",
+    "mechanicsCommits": [
+      "f3e64f2949ee34345f69fa62bd55f8393122b56f",
+      "007ec9269c0c8b0ddbd445ae211421842623d195"
+    ]
+  },
+  "exportedBlobs": {
+    "apps/paseo-plugin": {
+      "exact": 157,
+      "mismatches": 0
+    },
+    "apps/kontor-prototype": {
+      "exact": 25,
+      "mismatches": 0
+    }
+  },
+  "sourceMaps": {
+    "apps/kontor-prototype/src/scenarios.ts": "f69a40d23b2ef39eb9ed5b7a600d9d172fc5226be1d69f2df68e94359c2a3c28",
+    "apps/kontor-prototype/src/main.tsx": "c30005e565c2e44689ddc74ec013656f72414e146b15e02117765ef86d7aa78e",
+    "apps/kontor-prototype/src/studio.tsx": "1abcdb2d4b911b74718bf94ec7c5fb5ff53ce315e55689d7d6f35221971d5c08",
+    "apps/paseo-plugin/client/session-directory.ts": "17fe7f7e24faf476e195d38d747afc4b385b84b2e81b022504620b0c6dbf388f",
+    "apps/paseo-plugin/client/session-view.ts": "e6d5a77116a01a4e8993798d24b681d5900ef30d44c2d35d33bd110117557bd0",
+    "apps/paseo-plugin/client/session-view-store.ts": "eb4d1e6791b8223f4f2e070819b410deb8991ba806d1a077691f699556af92d9",
+    "apps/paseo-plugin/client/page-data.ts": "2fdbb93312648a90e3d7ed66bbfe811ba6c61e0816768df7a80dfa5836e543e4",
+    "apps/paseo-plugin/client/source-scope.ts": "e3d987e74df2d53ad66f9eb72cd34ced9e9e1a3778615239fdc8c5a7c4c2ab05",
+    "apps/paseo-plugin/client/navigation-state.ts": "1cdc5200b1b63e4443bdef2395578ee44a2b177d6818e97f0b7150c10e7eb42e",
+    "apps/kontor-prototype/src/host/event-log.ts": "67893217450eadbe763a5b89121d9c9a208d1310ff54cc8063aa635b35b49ea6",
+    "apps/kontor-prototype/src/host/sdk-react-native.tsx": "6907dd5c88edf4d3bbc1e6cd0bb0789be3270f366c8096ed4773253bee00c875",
+    "apps/kontor-prototype/src/host/theme.ts": "13143aa2b2ca3789bebb34efc6db153bcbb314a1e1882408ebd3389d93b1fd6d",
+    "apps/kontor-prototype/src/host/sdk-ui.tsx": "98f5585d31f13be9bcdfb48df9ec6534b0d706b57543a23abbe1187938fc53a8",
+    "apps/paseo-plugin/client/return-control.ts": "cd847909ead8eeda20ddb68c2d106cb2976ba462c249e0059709cb686342a137",
+    "apps/paseo-plugin/shared/organization.ts": "0369ab0ca4ffca21df04d0c901a5d5d9226c9634ca04d15350593e695072ee22",
+    "apps/paseo-plugin/shared/keyboard.ts": "44babd684a918e6897183d8d35354f8b04feaaa26aba1fd11b972492626561da",
+    "apps/kontor-prototype/src/fixtures/sessions.ts": "6943285f80671a85ccfeaaf81d93d1bdf530b33e864e6696da75a2bdd3ab999d",
+    "apps/kontor-prototype/src/fixtures/model-usage.ts": "c5f58fa4b692d047c4542d3758d9fa2e0b33fb59e9482b0f5331a6ea58fd25de",
+    "apps/kontor-prototype/src/fixtures/lifecycle.ts": "53209be17a2ea6bca2b2ed59d71fd74de2a2ad44c366af5ee5efd4cab438df72",
+    "apps/kontor-prototype/src/fixtures/integration.ts": "36c349b958a8d7b68a98d114a860f4e83736156c1abe713ef74555430d6a3353",
+    "apps/kontor-prototype/src/fixtures/sources.ts": "9a2e302ac36cdc5f20bfa8164e04b66950ab3c809472348f38504d08159f28fa",
+    "apps/kontor-prototype/src/host/runtime.ts": "cfff24b91fd68850dfff34186641a973d77ce1681f6f4f60a4b3c1b123b4a368",
+    "apps/kontor-prototype/src/host/sdk-client.ts": "71b354e5fb6c9b46d373a27bff4a8111655621ec1a066db4dbab99c4c3047956",
+    "apps/kontor-prototype/src/host/react-native.ts": "7a321fba9a9488a98320159a9ec98f766631f81828934f63be7ec026de1cc63c",
+    "apps/paseo-plugin/client/page-controls.tsx": "75bbc887e415183fd96cfd2bd1dee0f384c0223500a4d377d357be76026d3486",
+    "apps/paseo-plugin/client/anchored-menu.tsx": "1924486668fc24365563cb5470fd08ac798c5d238740dd5ac597a8d2688484dc",
+    "apps/paseo-plugin/client/control-help.tsx": "93df3478c383b37ab8845b7ac4e12b594f176644e3150cf5bd6c3851dccf04e3",
+    "apps/paseo-plugin/client/session-actions.ts": "0267ed860996b424db69599570063156f5d3fd3fd397b1c1dafe3affdd935a9f",
+    "apps/paseo-plugin/client/session-organization.ts": "351d4f652b5d4b8e71f2d299ed87b2b06a318fd40ec702c4b8f0857f825cf755",
+    "apps/paseo-plugin/client/session-results.ts": "ab06ae3080bff7d95671de1742eeb028efbf88c2175cdacf11480ca137f58cb8",
+    "apps/paseo-plugin/client/toolbar-visibility.ts": "ff019b074b7b3fa2518af57c25920877abb95289c154b65624db36716f704d07",
+    "apps/paseo-plugin/client/use-session-directory.ts": "43359883b7f183cf8af0a1eaaa0f28aec20b8e98accd7558d49caee77ed3e8eb",
+    "apps/paseo-plugin/client/organization-order.ts": "a5409017be5739aaf2e1730cd69bd6d3c0be3a8a6457ec7349b3334cd0ae1f9e",
+    "apps/paseo-plugin/client/organization-row.tsx": "17182fca8c6e888dcbf5e1265b7c1f93716921b644bb0a4ebc13e6ebccb673aa",
+    "apps/paseo-plugin/client/native-freshness.tsx": "7a7c6cda059af69e9cb13df196e2ea7dbc5188dce434a4d4cf0666dbfbba2a71",
+    "apps/paseo-plugin/client/session-time.ts": "953e7e9d409aae297d3ce8d16993f2abe0df3942f882dbff2d18d9500d5dd15f",
+    "apps/paseo-plugin/client/session-usage.ts": "dda61b288acddb9b77604ca3e9393e9f769b828cacd06a4f8c8e97b9ff5fd36f",
+    "apps/paseo-plugin/client/session-usage-density.ts": "75d013e5c66f542b689fd21a5aa44dbc2506b3e12b1b545c95e81aa6abf289c3",
+    "apps/paseo-plugin/client/session-usage-view.tsx": "ce3e4a4502e5341ddfa43385ee252d784cabae25c6a8f068f8ad7647bd3955b2",
+    "apps/paseo-plugin/client/sessions-screen.tsx": "515ae75018304fbe3c20e9453bd7c325979708537461cdf9bfaec54f8f47f038",
+    "apps/paseo-plugin/client/use-organization-settings.ts": "0e3e1c1fad51e192ffd55a061859078f6511078b78a3d3c91cead080bec80c97",
+    "apps/paseo-plugin/client/use-keyboard-settings.ts": "806ab5dbee6a4e68bc80d27891e1c3041533ee8573c4faaa4203f934ac46b9c7",
+    "apps/paseo-plugin/client/keyboard-shortcuts.ts": "5b491f5f1f205c65d905caff6dd90d1dd75b93298e82412f4043bcf7ee5764aa",
+    "apps/paseo-plugin/client/keyboard-settings-card.tsx": "072a638759af6e5641b7a38494a438970bd92b3d07ca0903b328109b398d00f4",
+    "apps/paseo-plugin/shared/read-sources.ts": "af2a9a473b4c5d44fb0c9da0117ebd559aa955c35a3000ff15b299cf1e7d3338",
+    "apps/paseo-plugin/shared/teams-source-snapshot.ts": "cc941bff4df7641eeb868641c0e045fd9a30c7aea076fc21c5e3ead9c05e518e",
+    "apps/paseo-plugin/shared/teams-source-bindings.ts": "565dc9512c3c6db497226caee50d130e964662c3412460f5b48563977cebadd4",
+    "apps/paseo-plugin/client/use-read-sources.ts": "829b866142e7c93d2ca30f5ff3aee73a6f32cc9759b7aac709dfd9b002de45fa",
+    "apps/paseo-plugin/client/teams-binding-detail.tsx": "4f0543bef62d2ec75f19a2e3879fd4f084083cddb3efe31c1b7062eab8c3325a",
+    "apps/paseo-plugin/client/teams-role-cards.tsx": "7d817c7a20ce6dc3e0e8fbf9207f5834d7064744cf0eac230ea91ac9427fd8a6",
+    "apps/paseo-plugin/client/teams-source-page.tsx": "fcd6cbfe740ad16d0bd99e3a54ee0f6a7472af96db17e52dbe45ac52bfc2c527",
+    "apps/paseo-plugin/client/source-details.tsx": "0db69122d97d04a1e4d552fe3a12b19032e077b7d9ef9b283fcb92215a09ba9e",
+    "apps/paseo-plugin/client/plan-links.ts": "894c58399a40708ac4ba908668732782380698b8005a574ad292ab02433bd755",
+    "apps/paseo-plugin/client/overview-page.tsx": "b5c35ff6849b0fcd78337b47ac910cbe762afd5d66096f9fbc2e76105cde1900",
+    "apps/paseo-plugin/client/plan-document.tsx": "f6cbfdb354a3991d5f7ce58d1d2f53b40f7f8f316802d1aa7dde25062be19a06",
+    "apps/paseo-plugin/client/plan-reader.tsx": "5490d69d5189048f750713976eca6152e00350e4ec1b214e774df13fcf39d455",
+    "apps/paseo-plugin/client/read-only-pages.tsx": "841e21edc24ffaf2322fbe51f223e1acb8809022f1fb8fd7972a7f0bfbeba425",
+    "apps/paseo-plugin/client/organization-draft.ts": "b7bd3fd1d786519f903c328b44e56a4611e34dcdbb7e90d63815d6d0ecbfc667",
+    "apps/paseo-plugin/client/plan-graph/contract.ts": "54d01bf4b550d0e6f7d5b7af80ff0fe4e00bbf0718ad55fbac70fe5f50c5bd1d",
+    "apps/paseo-plugin/client/plan-graph/layout.ts": "3c155c98ff294e7eea181e800f2d0105d90de9c9d3cee9cb7539e9a46f3fdc3a",
+    "apps/paseo-plugin/client/plan-graph/graph.tsx": "72db85219ef57c1b047fad373585ba0eea1edf4b85e75b95dcba8d29eee12404",
+    "apps/paseo-plugin/client/task-teams.ts": "e5c363e8228d6e666f29b3c10adde7b1c01f57efce196376ae2ea2cf1cd39875",
+    "apps/paseo-plugin/client/board-sessions.tsx": "f6ba67761b376839e29680d426dca9142af9082bab49d46f21c6056b019efebb",
+    "apps/paseo-plugin/client/graph-page.tsx": "0082d5568fe2891d5aa5e3b47c79bb2e94238de897ce64cbcc4ca8eb4df82d17",
+    "apps/paseo-plugin/client/organization-settings-page.tsx": "122063369b79850dc6634835802124d8b663d2f22538341f4e0df5006b802e30",
+    "apps/paseo-plugin/client/use-workspace-directory.ts": "b14055b6882c4ce5ba57b2be0df7aa713c6ef99faf536b3ad642cf3c4d1737b9",
+    "apps/paseo-plugin/client/task-team-source.ts": "de59f53d5a8148bd25198921cb449ded797ffa8003b87db9c8d37914518faec3",
+    "apps/kontor-prototype/src/fixtures/teams.ts": "0c098cd4faf6010d6cae8d44f6aceaef3dddb7e72faedc37ff4d0929ead20084",
+    "apps/kontor-prototype/src/host/task-team-source.ts": "a2a89eb4b83434ddba8dd786d75d0ea096855d4101234350ed0bf2e5e7b1d89f",
+    "apps/paseo-plugin/client/kontor-screen.tsx": "d0a49a4e7f1ee2338cb4cb5d3494f76b23446bdc6b3ab3e57372b44229f810f1",
+    "apps/paseo-plugin/client/plan-control.ts": "afddc2e9968f2c738333305f515cdec434695e955baccae2a405366ebe8533a3",
+    "apps/paseo-plugin/index.client.tsx": "c7c90c3c1b07f0f0b45030c9ee02bc5e17d297d4cd9a180526276cb5fca987ab",
+    "apps/kontor-prototype/src/host/plugin-host.ts": "f98edd2bc133bc207cabbb9c1ac2391eb8bdc463c71fac7fd826b264246452f2",
+    "apps/kontor-prototype/src/host/shell.tsx": "b57fd18a51e298c61f569992be6f453bc16e6b37f0d70f4e4928dfa30695ab10"
+  },
+  "servedAssets": {
+    "assets/client-dz03U-Yv.js": {
+      "sha256": "b541a09b655f4a38235de18dea4b3ae0e19e819a9389cb1be7d6381d0d31cd87",
+      "bytes": 171758
+    },
+    "assets/client-dz03U-Yv.js.map": {
+      "sha256": "ded463ae1fc72b632fa6134f8552e76691de6b3746f42fcbed2f09741924b1c7",
+      "bytes": 770435
+    },
+    "assets/index-Cnd11y5I.js": {
+      "sha256": "7beb1a77a5609cc7785497874723f7811a8f1bf309408412baf2fb2e96dbaf07",
+      "bytes": 4055
+    },
+    "assets/index-Cnd11y5I.js.map": {
+      "sha256": "672ad00742ef9b371cb0b8baa19a965a445cdce720114cea8e37db4f73ef7964",
+      "bytes": 2056
+    },
+    "assets/react-D7arRFtS.js": {
+      "sha256": "0c1b720885d6fb7740df95651f3084c7900e09c6fdae796c741b4a91be3e39dc",
+      "bytes": 7599
+    },
+    "assets/react-D7arRFtS.js.map": {
+      "sha256": "5680c83cc327df548dab18dae5f0c303002d9987f9d4e01ce3428e73734faf4e",
+      "bytes": 27159
+    },
+    "assets/react-dom-DWoAlO1Z.js": {
+      "sha256": "7dba9e5e96fdfb57c515cc84d23384683f921b3e41d92e00749b146eece850e3",
+      "bytes": 3619
+    },
+    "assets/react-dom-DWoAlO1Z.js.map": {
+      "sha256": "29aa30385b0629e257328902bce6f011bfa0ef5433531b6bf03ac3b509194f96",
+      "bytes": 12325
+    },
+    "assets/scenarios-DLgap2Cp.js": {
+      "sha256": "79350144a021969ef6829d7465807cd07b4896bead04b89efbeb3ba76bf1b13d",
+      "bytes": 9848
+    },
+    "assets/scenarios-DLgap2Cp.js.map": {
+      "sha256": "09066eca8b894ed85fd406c314bcd6e395baad3754148fc079c67c0ec4c7bec9",
+      "bytes": 19025
+    },
+    "assets/shell-ZkwSzUg5.js": {
+      "sha256": "80cc78020a8d4ee3532d31f8b25c25ae4b5c2c8f639a523789e4d1ee304b1afc",
+      "bytes": 1410224
+    },
+    "assets/shell-ZkwSzUg5.js.map": {
+      "sha256": "2cfd0e82ba75a42fe4a6658d2b2812b95208227ceed90fb8ca24ef58dc15b9d6",
+      "bytes": 5433898
+    },
+    "assets/studio-C4lrfmKp.js": {
+      "sha256": "54e102288e660c19517de0e7821b5c4180f0c0ec16c31933b2ba0a48f9dd488a",
+      "bytes": 8882
+    },
+    "assets/studio-C4lrfmKp.js.map": {
+      "sha256": "b3d8632a1670317cd078426bfff357ff61b755b159855b2161a556b8e09885dd",
+      "bytes": 22766
+    },
+    "index.html": {
+      "sha256": "de6d90b545fbd8a8a1b441ea4fc1d6544cf49ab43907a4e7392fd8f7fc1b7252",
+      "bytes": 557
+    },
+    "provenance.json": {
+      "sha256": "93cfbbcceda08c44d27ac165f7e8b8ad3e9cd5c954f0f0d17f2b70531e2fc02a",
+      "bytes": 478
+    }
+  },
+  "rootManifests": {
+    "package.json": "d5a9cebfdeefaab26c0751e3c2e1800d76008432c7ebfcf214b74276f6e598e0",
+    "pnpm-lock.yaml": "6c1a6b2cebc14affb2303b3616f9878de8f4cf06d46a7edf07fce6f961f13ce8",
+    "pnpm-workspace.yaml": "bea704eb6f74a5c026718988f9080741b79ef74d5f423b0f917aa30e7b55fa31"
+  },
+  "frozenPreserved": true
+}

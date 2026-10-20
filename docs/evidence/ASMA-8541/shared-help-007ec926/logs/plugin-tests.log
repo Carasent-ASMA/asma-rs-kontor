@@ -1,0 +1,9 @@
+
+ RUN  v4.1.10 <source-checkout>/apps/paseo-plugin
+
+
+ Test Files  69 passed (69)
+      Tests  1006 passed (1006)
+   Start at  01:54:09
+   Duration  25.49s (transform 40.07s, setup 0ms, import 80.38s, tests 51.10s, environment 25ms)
+

@@ -1,0 +1,51 @@
+{
+  "origin": "http://127.0.0.1:58154/",
+  "source": "007ec9269c0c8b0ddbd445ae211421842623d195",
+  "app": "6423d7afbf5448265eb41891b903eaedde426140",
+  "evidenceClass": "Chrome, react-native-web fixture; touch and viewport emulation",
+  "checks": [
+    "320x640 coarse Details target remains at least 44pt",
+    "touch disclosure does not open the host session",
+    "Details Close restores its own Info focus",
+    "focus return leaves no obstructing tooltip",
+    "the next real touch reaches the next session action",
+    "one Escape closes Details and restores the trigger",
+    "keyboard Details return also leaves help dismissed",
+    "hover: initial help explains the selected-model source",
+    "hover: updated report preserves the explanatory counter caveat",
+    "hover: report reset preserves explicit zero and explanatory help",
+    "hover: model change retains unknown-attribution caveat",
+    "hover: stationary help refreshes to missing model after provider switch",
+    "focus: initial help explains the selected-model source",
+    "focus: updated report preserves the explanatory counter caveat",
+    "dynamic refresh retains keyboard ownership",
+    "dynamic refresh preserves aria-describedby association",
+    "focus: report reset preserves explicit zero and explanatory help",
+    "focus: model change retains unknown-attribution caveat",
+    "focus: stationary help refreshes to missing model after provider switch",
+    "escaped: initial help explains the selected-model source",
+    "a scripted text update does not reopen Escape-dismissed help",
+    "no browser runtime errors"
+  ],
+  "errors": [],
+  "observations": [
+    {
+      "nextTap": {
+        "x": 12,
+        "y": 339,
+        "width": 181.46875,
+        "height": 84
+      }
+    },
+    {
+      "mode": "hover",
+      "finalHelp": "Model not supplied; custom IDs are shown verbatim when supplied. Arrows: reported input / output counters, not whole-session totals. Dash = not reported; zero = explicit zero. Report age and model attribution are unknown. Open Details for exact model IDs, counts and provider limits."
+    },
+    {
+      "mode": "focus",
+      "finalHelp": "Model not supplied; custom IDs are shown verbatim when supplied. Arrows: reported input / output counters, not whole-session totals. Dash = not reported; zero = explicit zero. Report age and model attribution are unknown. Open Details for exact model IDs, counts and provider limits."
+    }
+  ],
+  "browser": "155.0.8059.85",
+  "status": "pass"
+}

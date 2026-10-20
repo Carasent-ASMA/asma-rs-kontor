@@ -1,0 +1,8 @@
+{
+  "host": "Paseo installed compiler 0.12",
+  "installation": "none",
+  "clientBytes": 554454,
+  "clientSha256": "3e8e23ad58a30c5a4c656af0a3d9ad4d6621b5a26431e96d1312d96bb176b7d0",
+  "serverSha256": "fc18091da4bef5dee2f9ef7b5151ac39ff2d7140574c08489ee5b19853764e35",
+  "hermesExit": 0
+}

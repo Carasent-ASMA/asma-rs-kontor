@@ -1,0 +1,83 @@
+{
+  "jira": "ASMA-8541",
+  "epic": "ASMA-8539",
+  "scope": "Details focus-return dismissal and shared active-anchor dynamic-text refresh",
+  "source": {
+    "core": "007ec9269c0c8b0ddbd445ae211421842623d195",
+    "coreRootTree": "c4a32fe215b6668211f2920cab647095875563d9",
+    "corePluginTree": "2d77796f545cd5528d44988ece5004efd1fe1d9a",
+    "app": "6423d7afbf5448265eb41891b903eaedde426140",
+    "appRootTree": "997f389f7c6256c1f9770c6386efe2e71c0c594c",
+    "appTree": "4ade0ecf8befb7b6679f933d75d90536ab682c69",
+    "mechanicsCommits": [
+      "f3e64f2949ee34345f69fa62bd55f8393122b56f",
+      "007ec9269c0c8b0ddbd445ae211421842623d195"
+    ]
+  },
+  "preview": {
+    "origin": "http://127.0.0.1:58154/",
+    "scenario": "compact-icons",
+    "fixtureOnly": true
+  },
+  "verification": {
+    "pluginTests": 1006,
+    "testFiles": 69,
+    "pluginTypecheck": "pass",
+    "prototypeTypecheck": "pass",
+    "prototypeBuild": "pass",
+    "hostCompiler": "pass",
+    "hermes": "pass",
+    "browserChecks": 22,
+    "browserRuntimeErrors": 0,
+    "browserVersion": "155.0.8059.85",
+    "exportedBlobs": {
+      "apps/paseo-plugin": {
+        "exact": 157,
+        "mismatches": 0
+      },
+      "apps/kontor-prototype": {
+        "exact": 25,
+        "mismatches": 0
+      }
+    },
+    "sourceMapFiles": 74,
+    "servedFiles": 16
+  },
+  "regressions": [
+    "Details Close restores Info focus without opening help; next 320x640 coarse-emulated tap reaches the intended next row",
+    "Dropped-entry Details fallback restores its target and dismisses help (unit test)",
+    "Stationary hover and keyboard focus refresh help when provider/model availability changes",
+    "Text replacement preserves focus ownership and aria-describedby",
+    "Escape-dismissed help stays dismissed on subsequent text commits",
+    "Pending 160ms pointer-leave deadline survives active text replacement; other anchors cannot replace active help (unit tests)",
+    "Empty active help text dismisses the overlay (unit test)"
+  ],
+  "constraints": {
+    "publicUseControlHelpAndActionAPI": "unchanged",
+    "rowPollingAdded": false,
+    "rowEffectsAdded": false,
+    "rowWorkaroundAdded": false,
+    "dependenciesChanged": false,
+    "trackedAppChanged": false
+  },
+  "historicalEvidence": {
+    "core": "403960076464f2e40732f1a300e98fa987777f32",
+    "app": "6423d7afbf5448265eb41891b903eaedde426140",
+    "previewPort": 58147,
+    "preserved": true,
+    "historicalBrowserChecks": 67,
+    "historicalCoverageLimit": "The old 67 checks omitted the next-touch-after-Details-Close case. The 22 new checks are separate additive evidence.",
+    "observedOldPreview": "offline; not restarted"
+  },
+  "limits": [
+    "Browser evidence uses Chrome and react-native-web fixtures; coarse pointer, touch and viewports are emulated.",
+    "Physical devices, VoiceOver and the installed native renderer are unverified.",
+    "Independent QA/AUD, composed consumer qualification, integration, merge, install and live verification remain with their owning seats."
+  ],
+  "nextOwner": {
+    "seat": "SWE \u2022 ASMA-8541 \u2022 organization and integration owner",
+    "nativeId": "6bf05c87-be11-4163-bca5-5355bdaea0f1",
+    "predecessor": "7230c615-766b-4799-82c1-b40ab385c411",
+    "action": "Qualify this exact composed dependency and issue the single successor pin through TPM."
+  }
+}
