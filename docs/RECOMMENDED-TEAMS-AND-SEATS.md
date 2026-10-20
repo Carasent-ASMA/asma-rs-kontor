@@ -37,10 +37,8 @@ catalogs, chains, committees, advisors and completion profiles are versioned
 data published through `/v1` (see [CONFIGURATION.md](CONFIGURATION.md)); in the
 AgentsRoom/Paseo manifests they are JSON files. No model name belongs in
 source. The current concrete instantiation — which model sits on which rung
-today — lives in the deployment repo
-(`asma-modules/_docs/ai-orchestration/architecture/2026-08-05-01-07-architecture-agent-fleet-roles-model-policy.md`
-§0, and `asma-modules/_tools/ai-orchestration/manifest/{teams,advisors}/`) and
-is expected to change without this document changing.
+today — lives in the deployment's fleet policy and manifest files and is
+expected to change without this document changing.
 
 ## 1. Capability dimensions — the vocabulary
 
@@ -98,8 +96,8 @@ class from the fleet.*
 
 Overlap is expected — one model may be both `strong` and vision-attested; the
 table counts capabilities, not exclusive slots. A current working
-instantiation of this sizing (six budget domains, ten models) lives in the
-deployment repo referenced above; treat it as an existence proof, not a quota.
+instantiation of this sizing lives in the deployment's fleet policy and
+manifests referenced above; treat it as an existence proof, not a quota.
 
 **Within a class, diversity is counted in vendors, not in models.** Two
 sibling models from the same vendor count as *one* toward every floor in the
@@ -268,8 +266,8 @@ For a model whose measured safe ceiling lies between class targets, apply the
 living policy's required/best-effort clamp and refusal rules; do not invent an
 accepted `large` value or automatic promotion. Context growth follows the
 snapshotted policy and authorized overrides, not a model's own difficulty estimate.
-See the [implementation inventory](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/reference/2026-09-05-11-36-reference-kontor-implementation-inventory.md) and the living context policy
-for implemented versus approved scope.
+See the historical implementation inventory and the living context policy for
+implemented versus approved scope.
 
 ## 3. Recommended teams — what each team is for
 
@@ -405,7 +403,6 @@ receipts are what admission reads.
 - [QUOTA-FALLBACK-PLAN.md](QUOTA-FALLBACK-PLAN.md) — the durable quota state
   behind the rung walk (account-before-rung, blocked-until, headroom).
 - Deployment-side instantiation (current pins, live chains, calibration
-  tickets): `asma-modules/_docs/ai-orchestration/architecture/2026-08-05-01-07-architecture-agent-fleet-roles-model-policy.md` §0
-  and `asma-modules/_tools/ai-orchestration/manifest/{teams,advisors}/`.
-- Seat context classes: the seat context-window and compaction policy in the
-  deployment repo's `_docs/ai-orchestration/architecture/`.
+  tickets): the deployment's fleet policy and manifest files.
+- Seat context classes: the deployment's seat context-window and compaction
+  policy.

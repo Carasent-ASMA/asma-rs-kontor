@@ -84,5 +84,4 @@ cargo test -p kontor-api --test openapi_contract         # 3
 
 Reference documents: [`docs/CONFIGURATION.md`](../../docs/CONFIGURATION.md) (operator guide),
 [`_docs/architecture/2026-09-24-20-45-architecture-live-fleet-routing.md`](../architecture/2026-09-24-20-45-architecture-live-fleet-routing.md) (decision),
-[plan](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/plans/2026-09-24-07-30-plan-kontor-live-fleet-configuration.md),
-[ASMA-8255](https://carasent.atlassian.net/browse/ASMA-8255), PR #271.
+the live-fleet configuration plan (historical private record), ASMA-8255, PR #271.

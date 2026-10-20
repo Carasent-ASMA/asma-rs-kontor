@@ -1,12 +1,12 @@
 # Kontor — Documentation Index
 
-> Canonical implementation-documentation root for the Kontor Rust control plane. Last updated: 2026-10-19 (ASMA-8511 leaked-secret runbook and history-scan report added; routing and statuses checked against `master` at `0971674d`, PR #300, 2026-10-11).
+> Canonical implementation-documentation root for the Kontor Rust control plane. Statuses follow the [evidence ladder](../docs/GLOSSARY.md#the-evidence-ladder).
 
 ## Overview
 
-This documentation covers implementation-local knowledge for the `asma-rs-kontor` workspace. Platform-wide Kontor product principles, architecture, decisions and implementation plans remain in the [AI orchestration documentation](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/index.md); this router contains audits, contracts and other documents whose scope is the Kontor repository implementation itself.
+This documentation covers implementation-local knowledge for the `asma-rs-kontor` workspace. The public workflow method, vocabulary, principles and Kontor decisions are in [`docs/WORKFLOW.md`](../docs/WORKFLOW.md), [`docs/GLOSSARY.md`](../docs/GLOSSARY.md), [`docs/PRINCIPLES.md`](../docs/PRINCIPLES.md) and [`docs/decisions/`](../docs/decisions/README.md). This router contains audits, contracts and other documents whose scope is the Kontor repository implementation itself.
 
-**Start here for *why*:** [Kontor governing principles](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/architecture/2026-08-26-11-30-architecture-kontor-governing-principles.md) — Autonomy and Delivery Quality, and the fourteen principles every rule in this repository serves. They define thin as a narrow authority boundary, require a rich mission-control projection, prefer reuse over duplication and make human escalation a prepared last resort. The repository-local restatement, readable without the parent checkout, is [`ARCHITECTURE.md`](../ARCHITECTURE.md).
+**Start here for *why*:** [Kontor governing principles](../docs/PRINCIPLES.md) — Autonomy and Delivery Quality, and the fourteen principles every rule in this repository serves. They define thin as a narrow authority boundary, require a rich mission-control projection, prefer reuse over duplication and make human escalation a prepared last resort. The repository-local restatement is [`ARCHITECTURE.md`](../ARCHITECTURE.md).
 
 **Merged is not deployed.** Statuses below say *merged* for source on `master`; qualification and deployment are claimed only where a dated report records them.
 
@@ -86,7 +86,6 @@ Reports are dated, point-in-time records; their bodies are not rewritten. The St
 | [`../docs/CONFIGURATION.md`](../docs/CONFIGURATION.md) | Where configuration lives, experience-memory transport, Jira-derived names and reconciliation, seat supervision and permission posture, live `fleet.yml` and activated fleet policy, quota signals, seat MCP surface and serve profiles, GitHub App publication identity |
 | [`../docs/CONSULTATION_LIFECYCLE.md`](../docs/CONSULTATION_LIFECYCLE.md) | Consultation seat permissions and guard, idle-session release, governed planning pairs |
 | [`../docs/NATIVE_NAMING.md`](../docs/NATIVE_NAMING.md) | Current pinned-definition naming contract, branch and worktree naming, desk, desk-seat, desk-Adam and PR-review titles, and legacy-import correction |
-| [Canonical implementation inventory](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/reference/2026-09-05-11-36-reference-kontor-implementation-inventory.md) | Current revision-stamped schema, registry, merge and deployment distinctions |
 | [`../RECOVERY.md`](../RECOVERY.md) | Offline `kontor-daemon` runbook: snapshot, restore, export, import, credential rotation and stopped-realm Jira credential install (`install-jira-credential`, PR #278); upgrade and binary rollback (snapshot and restore accept only the running build's exact schema, so a rollback stops the daemon, puts the old binary back, moves the migrated `kontor.db` and its `-wal`/`-shm` aside and restores the pre-upgrade snapshot with the old build); and pointers to live control-plane recovery, which a serving daemon exposes as tools rather than subcommands |
 | [`../SECURITY.md`](../SECURITY.md) | Reporting and supported-version policy |
 | [`../docs/QUOTA-FALLBACK-PLAN.md`](../docs/QUOTA-FALLBACK-PLAN.md) | Provider quota routing behind the rung walk; the document carries its own dated status |
@@ -105,9 +104,9 @@ Reports are dated, point-in-time records; their bodies are not rewritten. The St
 
 ## Related authoritative documentation
 
-- [AI Orchestration documentation index](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/index.md) — product principles, architecture, plans, operational reports and historical decisions governing Kontor.
-- [Kontor governing principles](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/architecture/2026-08-26-11-30-architecture-kontor-governing-principles.md) — Autonomy and Delivery Quality, reuse boundaries, mission-control UI and last-resort human escalation; read before proposing any Kontor change.
-- [Kontor control-plane architecture](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/architecture/2026-08-08-20-12-architecture-asma-kontor-control-plane.md) — the authoritative platform-wide *how*.
-- [Kontor codes and terms](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/reference/2026-08-16-13-02-reference-kontor-codes-and-terms.md) — canonical Jira identities, epic backlog namespaces, derived item codes and topology naming revisions.
-- [`ARCHITECTURE.md`](../ARCHITECTURE.md) — repository-local architecture overview.
-- [`README.md`](../README.md) — build, usage, and current repository overview.
+- [`docs/WORKFLOW.md`](../docs/WORKFLOW.md) — the delivery method on both orchestration surfaces, from kickoff to closeout.
+- [`docs/GLOSSARY.md`](../docs/GLOSSARY.md) — codes, roles, records, evidence and status.
+- [`docs/PRINCIPLES.md`](../docs/PRINCIPLES.md) — Autonomy and Delivery Quality, and the fourteen governing principles.
+- [`docs/decisions/`](../docs/decisions/README.md) — the reviewed decisions that govern this repository and the workflow pack.
+- [`ARCHITECTURE.md`](../ARCHITECTURE.md) — repository-local architecture and authority boundaries.
+- [`README.md`](../README.md) — build, usage and the current repository overview.
