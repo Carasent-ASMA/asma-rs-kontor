@@ -91,6 +91,7 @@ waiver. The governing, explicitly reversible decision is the
 [local verification policy](_docs/architecture/2026-09-01-13-25-architecture-kontor-local-verification-policy.md).
 
 ```sh
+python3 -B -m unittest discover -s scripts/tests
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace

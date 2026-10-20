@@ -14,9 +14,9 @@ Modes (KON-MVP-02 verification requirement):
 
 Every mode runs the full gate list: the public-tree refusal of home paths,
 run receipts and provider-account aliases (scripts/public_tree.py) and its
-tests, cargo fmt --check, clippy -D warnings, workspace tests, cargo audit,
-cargo deny check, frozen pnpm install, typecheck, vitest run and the
-production dependency audit.
+tests, the scripts' own tests, cargo fmt --check, clippy -D warnings,
+workspace tests, cargo audit, cargo deny check, frozen pnpm install, typecheck,
+vitest run and the production dependency audit.
 
 Exit code 0 only when every gate passes.
 """

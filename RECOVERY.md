@@ -274,6 +274,99 @@ the aggregate back afterwards. Examples are
   [desk Adams](_docs/reference/2026-10-11-05-36-reference-kontord-desk-adams.md),
   [PR reviews](_docs/reference/2026-10-11-11-35-reference-kontord-pr-reviews.md).
 
+## Deploy into a launchd job
+
+`scripts/kontor-deploy.py` is the one deploy script for a daemon that runs as a
+launchd job. It names the job only by explicit arguments: `--label` and
+`--domain` have no default, and `--plist` has no default but is required for
+`bootstrap` and `replace`. It reads the daemon path, state root and port from
+the plist's `ProgramArguments`; a missing `--port` uses the daemon default 7717,
+and a relative `--state-root` is resolved against the plist's
+`WorkingDirectory`, as launchd runs it. `--timeout` caps each subprocess
+(default 120 s) and `--wait` bounds the port and `realm-get` polls (default
+15 s).
+
+```sh
+python3 scripts/kontor-deploy.py --label <label> --domain gui/<uid> --plist <plist> \
+  replace --candidates <dir> --backup-dir <new dir> --realm-id <realm>
+```
+
+A deploy of the production label is declared with
+`--production-deploy <JIRA-KEY>` and must pin each candidate:
+
+```sh
+python3 scripts/kontor-deploy.py --label com.asma.kontor.daemon --domain gui/<uid> \
+  --plist ~/Library/LaunchAgents/com.asma.kontor.daemon.plist \
+  --production-deploy <JIRA-KEY> replace --candidates <dir> --backup-dir <new dir> \
+  --realm-id <realm> \
+  --expected-sha256 kontor-daemon=<sha256> \
+  --expected-sha256 kontor=<sha256> \
+  --expected-sha256 kontor-mcp=<sha256>
+```
+
+Take the hashes from the build or release that produced the candidates (for
+example its `SHA256SUMS` or CI digest output), not by hashing the files in
+`--candidates`: hashing the copies would pin whatever bytes are present and
+defeat the check. The script compares every candidate before it stops the job;
+a missing or mismatched hash fails the deploy with the old job still running.
+
+`replace` backs up the installed binaries and boots the job out. It snapshots
+the realm into the backup directory with the installed daemon, installs the
+candidates, bootstraps the job and waits until `realm-get` returns the named
+realm. If a step fails after the bootout, it restores the old binaries,
+bootstraps the old job and writes `rollback.json`. It does not restore the
+database; restore the snapshot as above. `bootout` needs only `--label` and
+`--domain`, so it can stop a job whose plist is missing or truncated; without a
+readable plist it skips the port wait. `bootstrap` runs one step.
+
+Before it changes any launchctl job, the script refuses (exit 3):
+
+* the production label `com.asma.kontor.daemon`, unless the deploy is declared
+  with `--production-deploy <JIRA-KEY>`;
+* a declared production deploy outside the `gui/<uid>` domain of the user whose
+  home holds the canonical plist, or from any plist but that user's
+  `~/Library/LaunchAgents/com.asma.kontor.daemon.plist`;
+* `--production-deploy` with any other label;
+* a non-production `bootstrap` or `replace` whose daemon or state root is the
+  production one, or that uses the production port (7717 when unset), compared
+  against the canonical plist, the recorded target and the loaded
+  `com.asma.kontor.daemon` job. An unreadable canonical plist is skipped; a
+  loaded production job whose `launchctl print` cannot be parsed is refused;
+* a plist whose `Label` differs from `--label`. `launchctl bootstrap` registers
+  the label written in the plist, and that is how a test once replaced the
+  production job.
+
+### What `replace` verifies
+
+Before installing, the installed daemon takes a snapshot: it runs SQLite
+`integrity_check` on the live database and on the copy, and checks that both
+carry the expected schema version and exactly one realm row. A damaged source is
+never copied. `integrity_check` is the stronger form of `quick_check`. After the
+restart, `replace` requires `realm-get` to return the expected realm id.
+
+The deploy deliberately does not also run `foreign_key_check` or config-hash
+comparisons. Foreign-key enforcement and the migration-time
+`foreign_key_check` are the store's contract, and a pre-existing violation is a
+state-root condition that the deploy neither creates nor masks. The deploy
+installs binaries and does not touch the state root or config. The old
+ASMA-8121/8196 checks belonged to their copy scripts, not to this path.
+
+### Timing
+
+`--timeout` bounds every subprocess and `--wait` bounds the port and
+`realm-get` polls. A snapshot that exceeds the timeout fails the deploy after
+the bootout; the rollback restores the old binaries and restarts the old job.
+The operator can rerun with a larger `--timeout` once the production snapshot
+duration is known. The defaults are 120 s and 15 s.
+
+Tests and rehearsals use a disposable label such as
+`com.asma.kontor.test.daemon`. The script's own tests inject a recording runner
+and never reach launchctl:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -v
+```
+
 ## Troubleshooting
 
 | Symptom | Meaning | What to do |

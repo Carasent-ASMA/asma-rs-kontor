@@ -221,7 +221,7 @@ record exit 0 from the exact merged-source archive, unchanged executable source
 relative to qualified 6b, and the three candidate binary hashes.
 
 The guarded deployment plan,
-actual apply script,
+actual apply script `deployment-apply.py` (sha256 `079b09dc483844717c9734ba3c1c64dbf2ff3e549851627d976bad31c86efd59`),
 and deployment receipt
 record the controlled restart at `2026-09-26T10:45:33.519752Z`, consistent DB
 backup, exact realm, schema 119, `quick_check=ok`, zero foreign-key violations,
@@ -229,6 +229,15 @@ unchanged runtime/fleet configuration hashes and preserved ASMA-8098 Done@14.
 The identity checkpoint
 binds unchanged run/parent/runtime/native/seat identities and ASMA-8188's actual
 verification-gate sequence 2 across the restart. No manual SQLite write occurred.
+
+> **2026-10-17 (ASMA-8506):** `deployed-e29b895d/deployment-apply.py` was
+> removed from this evidence directory and from its
+> [hash manifest](evidence/ASMA-8196/replacement-bridges/SHA256SUMS.json)
+> because it hard-coded the production launchd label (gap G-01). Its bytes
+> remain in git history:
+> `git show eef31733cd987986f93a763aa98ad00d22a869fc:_docs/reports/evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/deployment-apply.py`
+> returns the file with the sha256 above. The executable deploy path is now
+> [`scripts/kontor-deploy.py`](../../scripts/kontor-deploy.py).
 
 Five fresh read-only Paseo conformance tests passed, zero failed, and the sole
 mutating test was filtered; encoded raw output
