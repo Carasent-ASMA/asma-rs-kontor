@@ -1,4 +1,25 @@
 {
+  "consumer_classification": {
+    "classification": "LSA-WP01-CUSTODY-CONSUMERS-003",
+    "note": "The five log JSONs carried only a neutral custody pointer and were restored to their exact 0fbe9253 baseline bytes; their historical manifest pins remain historical and are not re-attested. The retained files are public derivatives whose original bytes and certified hashes remain TPM-owned. Historical baseline pins, including the mutation-report.json 390d9449/10163 mismatch, are preserved.",
+    "restored_to_baseline": [
+      "prepared-diagnostic-source/original/01-focused.log.json",
+      "prepared-diagnostic-source/original/02-runtime-regression.log.json",
+      "prepared-diagnostic-source/original/03-clippy.log.json",
+      "prepared-diagnostic-source/original/04-fmt.log.json",
+      "prepared-diagnostic-source/original/07-diff-check.log.json"
+    ],
+    "retained_derivatives": [
+      "attestation-verifier-source/MANIFEST.json",
+      "prepared-diagnostic-source/ROOT-PROVENANCE.json",
+      "prepared-diagnostic-source/original/01-source-hashes.json",
+      "prepared-diagnostic-source/original/final-owned-hashes.json",
+      "prepared-diagnostic-source/original/manifest.json",
+      "prepared-diagnostic-source/original/mutation-baseline-hashes.json",
+      "prepared-diagnostic-source/original/mutation-report.json",
+      "prepared-diagnostic-source/original/temporal-provenance.json"
+    ]
+  },
   "consumers": [
     "PUBLIC-REDACTION.md",
     "attestation-verifier-source/MANIFEST.json",

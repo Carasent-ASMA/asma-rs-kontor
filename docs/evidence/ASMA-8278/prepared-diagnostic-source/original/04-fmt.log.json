@@ -12,11 +12,5 @@
   "elapsed_seconds": 3.384,
   "exit_code": 0,
   "log": "logs/04-fmt.log",
-  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "public_derivative": {
-    "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
-    "ledger": "../../PUBLIC-REDACTION.json",
-    "note": "Custody pointer added; this file is unchanged. Any certified source hash describes the original; public candidate files are redacted derivatives."
-  },
-  "derivatives": {}
+  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 }

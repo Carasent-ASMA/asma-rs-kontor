@@ -18,11 +18,5 @@
   "elapsed_seconds": 36.46,
   "exit_code": 0,
   "log": "logs/03-clippy.log",
-  "sha256": "839618ef8df52c08c0f88a4757409d5732a36d8e10a85425fe6576a0dc3a99eb",
-  "public_derivative": {
-    "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
-    "ledger": "../../PUBLIC-REDACTION.json",
-    "note": "Custody pointer added; this file is unchanged. Any certified source hash describes the original; public candidate files are redacted derivatives."
-  },
-  "derivatives": {}
+  "sha256": "839618ef8df52c08c0f88a4757409d5732a36d8e10a85425fe6576a0dc3a99eb"
 }

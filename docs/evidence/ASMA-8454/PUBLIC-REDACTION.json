@@ -10,6 +10,15 @@
     }
   ],
   "additional_redactions_note": "additional_redactions supersedes derivative_sha256 in files for the named paths; files retains the original first-pass pair unchanged.",
+  "consumer_classification": {
+    "classification": "LSA-WP01-CUSTODY-CONSUMERS-003",
+    "note": "These three preserved records carry a neutral custody pointer and are public derivatives; their certified source or historical carrier hashes remain TPM-owned. Their historical pins are unchanged and are not re-attested.",
+    "retained_derivatives": [
+      "mcp-rework/preserved-scopes-after.json",
+      "mcp-rework/preserved-scopes-before.json",
+      "mcp-rework/previous-evidence-preserved.json"
+    ]
+  },
   "consumers": [
     "archive-failure/base-provenance.json",
     "mcp-repair/manifest.json",
