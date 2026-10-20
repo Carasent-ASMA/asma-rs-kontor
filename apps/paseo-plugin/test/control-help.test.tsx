@@ -1,7 +1,7 @@
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { View } from "react-native";
-const hooks = vi.hoisted(() => ({ slots: [] as unknown[], cursor: 0, effects: [] as (() => void | (() => void))[], controller: null as unknown }));
+const hooks = vi.hoisted(() => ({ slots: [] as unknown[], cursor: 0, effects: [] as (() => void | (() => void))[], panelOpen: false, controller: null as unknown }));
 vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(),
   useContext: () => hooks.controller, useId: () => "test-help",
   useRef: (current: unknown) => { const i = hooks.cursor++; return hooks.slots[i] ??= { current }; },
@@ -9,6 +9,7 @@ vi.mock("react", async (original) => ({ ...await original<typeof import("react")
   useMemo: (factory: () => unknown) => { const i = hooks.cursor++; return hooks.slots[i] ??= factory(); },
   useEffect: (effect: () => void | (() => void)) => { const i = hooks.cursor++; if (!(i in hooks.slots)) { hooks.slots[i] = true; hooks.effects.push(effect); } },
 }));
+vi.mock("../client/anchored-menu", async (original) => ({ ...await original<typeof import("../client/anchored-menu")>(), anchoredPanelOpen: () => hooks.panelOpen }));
 vi.mock("react-native", () => ({ Pressable: "Pressable", View: "View", Text: "Text", ScrollView: "ScrollView", BackHandler: { addEventListener: () => ({ remove() {} }) } }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
 import { ControlHelpProvider, useControlHelp } from "../client/control-help";
@@ -25,7 +26,7 @@ const colors = {} as Parameters<typeof ControlHelpProvider>[0]["colors"];
 let cleanup: (() => void)[] = [];
 let handlers: Map<string, (event: never) => void>;
 beforeEach(() => {
-  vi.useFakeTimers(); hooks.slots = []; hooks.cursor = 0; hooks.effects = []; hooks.controller = null;
+  vi.useFakeTimers(); hooks.slots = []; hooks.cursor = 0; hooks.effects = []; hooks.controller = null; hooks.panelOpen = false;
   handlers = new Map();
   const target = { addEventListener: (type: string, fn: (event: never) => void) => handlers.set(type, fn), removeEventListener: (type: string) => handlers.delete(type) };
   vi.stubGlobal("document", target); vi.stubGlobal("window", target);
@@ -52,6 +53,12 @@ describe("hover and focus help", () => {
     handlers.get("keydown")!(event as never); screen.render(); expect(screen.tooltip()).toBeUndefined(); expect(event.stopImmediatePropagation).toHaveBeenCalled();
     vi.advanceTimersByTime(1000); screen.render(); expect(screen.tooltip()).toBeUndefined();
   });
+  it("lets one Escape also close an enclosing dialog or menu with its existing focus return", () => {
+    const screen = mount(); screen.control.bindings.onFocus(); screen.render(); hooks.panelOpen = true;
+    const event = { key: "Escape", preventDefault: vi.fn(), stopPropagation: vi.fn(), stopImmediatePropagation: vi.fn() };
+    handlers.get("keydown")!(event as never); screen.render(); expect(screen.tooltip()).toBeUndefined();
+    expect(event.preventDefault).not.toHaveBeenCalled(); expect(event.stopImmediatePropagation).not.toHaveBeenCalled();
+  });
   it("allows the pointer to enter the tooltip and read indefinitely, then leaves after a short bridge", () => {
     const screen = mount(); screen.control.bindings.onHoverIn(); screen.render(); screen.control.bindings.onHoverOut();
     (screen.tooltip()!.props.onPointerEnter as () => void)(); vi.advanceTimersByTime(10000); screen.render(); expect(screen.tooltip()).toBeDefined();
@@ -63,12 +70,14 @@ describe("hover and focus help", () => {
     expect(style.left).toBeGreaterThanOrEqual(6); expect(style.left + style.width).toBeLessThanOrEqual(width - 6); expect(style.bottom).toBeGreaterThan(0); expect(style.maxHeight).toBeLessThanOrEqual(height - 12);
     expect(all(screen.tooltip()).some(e => e.props.accessibilityRole === "button")).toBe(false);
   });
-  it("dismisses on source scroll and resize, while scrolling the tooltip remains possible", () => {
+  it("keeps focus help through source scrolling; hover help closes and tooltip scrolling stays usable", () => {
     const screen = mount(); screen.control.bindings.onFocus(); screen.render();
     const panel = screen.tooltip()!; const child = {};
     (panel.props.ref as { current: unknown }).current = { contains: (target: unknown) => target === child };
     handlers.get("scroll")!({ target: child } as never); screen.render(); expect(screen.tooltip()).toBeDefined();
-    handlers.get("scroll")!({ target: {} } as never); screen.render(); expect(screen.tooltip()).toBeUndefined();
+    handlers.get("scroll")!({ target: {} } as never); screen.render(); expect(screen.tooltip()).toBeDefined();
+    screen.control.bindings.onBlur(); vi.advanceTimersByTime(160); screen.render();
+    screen.control.bindings.onHoverIn(); screen.render(); handlers.get("scroll")!({ target: {} } as never); screen.render(); expect(screen.tooltip()).toBeUndefined();
     screen.control.bindings.onHoverIn(); screen.render(); handlers.get("resize")!({} as never); screen.render(); expect(screen.tooltip()).toBeUndefined();
   });
   it("keeps touch labels and normal activation; it never makes an action a help-only tap", () => {
