@@ -1519,7 +1519,7 @@
           "applications"
         ],
         "summary": "Abandon a run that was admitted but never bound, so its task can be\nscheduled again.",
-        "description": "Refused for a run that *is* bound: that run has a native session, and closing\nKontor's row without cancelling it would leave an agent running that nothing\nis steering. `runtime:settle` is the path for those.\n\nIdempotent: a run that is already closed reports its stored closure.",
+        "description": "Refused for a run that *is* bound: that run has a native session, and closing\nKontor's row without cancelling it would leave an agent running that nothing\nis steering. `runtime:settle` is the path for those.\n\nIdempotent: a run that is already closed reports its stored closure. An\nalready-closed TeamRun envelope is answered from that closure even while a\nTeam Definition migration is in flight. An envelope that is still open and\nstranded needs settlement, and is refused with `409 placement_blocked` until\nthat migration settles.",
         "operationId": "abandon_run",
         "parameters": [
           {
@@ -1595,7 +1595,7 @@
           "applications"
         ],
         "summary": "Settle one run against what its runtime reports right now.",
-        "description": "The request body is empty and stays empty. Kontor loads the run's immutable\nbinding, asks the runtime that issued it for a fresh `inspect`, persists what\ncame back, and only then asks whether that observation is allowed to close the\nrun — a question answered by the binding's *frozen* trust grade, not by\nanything the caller said. An operator who could post an outcome would be\nclosing a run on their own authority while it looked like the runtime's, which\nis the one thing a control plane must never let happen quietly.\n\nIdempotent: a run that is already closed reports its stored closure and no\nsecond observation is taken.",
+        "description": "The request body is empty and stays empty. Kontor loads the run's immutable\nbinding, asks the runtime that issued it for a fresh `inspect`, persists what\ncame back, and only then asks whether that observation is allowed to close the\nrun — a question answered by the binding's *frozen* trust grade, not by\nanything the caller said. An operator who could post an outcome would be\nclosing a run on their own authority while it looked like the runtime's, which\nis the one thing a control plane must never let happen quietly.\n\nIdempotent: a run that is already closed reports its stored closure and no\nsecond observation is taken. An already-closed TeamRun envelope is answered\nfrom that closure even while a Team Definition migration is in flight. An\nenvelope that is still open and stranded needs settlement, and is refused\nwith `409 placement_blocked` until that migration settles.",
         "operationId": "settle_runtime",
         "parameters": [
           {
