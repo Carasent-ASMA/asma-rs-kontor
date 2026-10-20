@@ -2,7 +2,7 @@
 
 > **Stamped to `0971674d` (PR #300, 2026-10-11):** the state-root file inventory, section status labels, the Jira connector and credential contract, fleet, quota-signal, supervision, seat permission posture, seat MCP surface, desk and GitHub App configuration were re-verified against the source at that commit. Merged is not qualified, deployed or enabled for a realm; each section says what its pull request recorded. The 2026-09-05 note below is kept as history.
 
-> **Historical checkout disposition — 2026-09-05 (superseded by the stamp above):** This document accompanies the older `e6da270` branch baseline and preserves its pending/uncommitted work. Its implementation counts and “no engine” statements describe that baseline, not the current released control plane. For released source `082b63ad`, schema/tool counts, merged OP-21 supervision and OP-22 convergence, use the [revision-stamped inventory](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/reference/2026-09-05-11-36-reference-kontor-implementation-inventory.md). Release-documentation corrections are isolated from this checkout’s runtime changes.
+> **Historical checkout disposition — 2026-09-05 (superseded by the stamp above):** This document accompanies the older `e6da270` branch baseline and preserves its pending/uncommitted work. Its implementation counts and “no engine” statements describe that baseline, not the current released control plane. For released source `082b63ad`, the revision-stamped schema/tool counts and the merged OP-21 supervision and OP-22 convergence are recorded in the release documentation for that source; this historical note does not certify them. Release-documentation corrections are isolated from this checkout’s runtime changes.
 
 Kontor separates invariants from deployment behavior. Rust enforces safety
 properties such as one non-terminal session per role slot and uncertainty not
@@ -725,7 +725,7 @@ adapter remains responsible for native inspection and placement.
 
 > **Release status — 2026-09-05:** KON-OP-21 is implemented and merged through PR #164 (`3d7c6043`, 2026-09-04), included in the inspected release `082b63ad`. Local contract coverage is recorded; independent qualification, coherent fleet deployment and realm enablement require their own receipts and are not certified by this documentation refresh.
 
-See the [canonical implementation inventory](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/reference/2026-09-05-11-36-reference-kontor-implementation-inventory.md) for source and deployment distinctions.
+The release-status note above separates source coverage from independent qualification and deployment; this documentation refresh does not certify either.
 
 ## Seat permission posture
 
