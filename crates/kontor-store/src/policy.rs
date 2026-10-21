@@ -44,8 +44,9 @@
 use kontor_core::DomainError;
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, BoundedText, CanonicalDocument,
-    CommandReceiptId, ContentHash, ExternalId, GateKey, GuardrailEvaluationId, IdempotencyKey,
-    ProjectId, RoleKey, SpecVersion, TaskId, TaskWorkflowId, TeamRunId, Timestamp,
+    CommandReceiptId, ContentHash, ExternalId, ExternalName, GateKey, GuardrailEvaluationId,
+    IdempotencyKey, MiniProjectId, ProjectId, RoleKey, SpecVersion, TaskId, TaskWorkflowId,
+    TeamRunId, Timestamp,
 };
 use kontor_core::receipt::{AggregateRef, CommandKind, CommandReceiptState};
 use kontor_core::repository::{RepositoryError, RepositoryResult};
@@ -62,6 +63,7 @@ use kontor_policy::recovery::{Escalation, RecoveryRequest, RecoveryTransition};
 use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::SqliteStore;
+use crate::attention::{AttentionSignal, AttentionSignalKind};
 use crate::commands::receipts::append_transition;
 use crate::repository::{
     backend, conflict, read_timestamp, revision_column, revision_of, text, to_json,
@@ -664,8 +666,21 @@ impl SqliteStore {
 
         let sequence = read_count(sequence)?;
         if let Some(parked) = prepared {
-            finish_park(&transaction, request, workflow.task_id, &parked)?;
+            let parked_task = finish_park(&transaction, request, workflow.task_id, &parked)?;
             transaction.commit().map_err(backend)?;
+            if let Some(task) = parked_task {
+                self.notify_attention(AttentionSignal {
+                    realm_id: self.realm_id(),
+                    project_id: task.project_id,
+                    mini_project_id: task.mini_project_id,
+                    task_id: Some(task.task_id),
+                    task_title: Some(task.title),
+                    command_kind: Some(CommandKind::AbandonRun),
+                    receipt_id: Some(parked.closure_receipt_id),
+                    kind: AttentionSignalKind::TaskParked,
+                    occurred_at: task.occurred_at,
+                });
+            }
             return Ok(RejectionOutcome {
                 sequence,
                 rejections_since_pass: count,
@@ -912,7 +927,7 @@ fn finish_park(
     request: &GateRejection,
     task_id: TaskId,
     parked: &ParkedRecovery,
-) -> RepositoryResult<()> {
+) -> RepositoryResult<Option<ParkedTask>> {
     let plan = &request.park;
     let agent_run_id = parked.parked_agent_run_id;
     let run = crate::repository::read_agent_run(transaction, request.project_id, agent_run_id)?
@@ -1016,8 +1031,16 @@ fn finish_park(
         request.project_id,
         task_id,
         request.recorded_at,
-    )?;
-    Ok(())
+    )
+}
+
+/// The task fact a gate-rejection park settled, for post-commit observation.
+struct ParkedTask {
+    project_id: ProjectId,
+    mini_project_id: Option<MiniProjectId>,
+    task_id: TaskId,
+    title: ExternalName,
+    occurred_at: Timestamp,
 }
 
 /// Write the receipt that records the park decision.
@@ -1100,16 +1123,17 @@ fn park_task(
     project_id: ProjectId,
     task_id: TaskId,
     at: Timestamp,
-) -> RepositoryResult<()> {
-    let found: Option<(String, i64)> = transaction
+) -> RepositoryResult<Option<ParkedTask>> {
+    let found: Option<(String, i64, String, Option<String>)> = transaction
         .query_row(
-            "SELECT state, revision FROM tasks WHERE project_id = ?1 AND id = ?2",
+            "SELECT state, revision, title, mini_project_id
+             FROM tasks WHERE project_id = ?1 AND id = ?2",
             params![project_id.to_string(), task_id.to_string()],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .optional()
         .map_err(backend)?;
-    let Some((state, revision)) = found else {
+    let Some((state, revision, title, mini_project_id)) = found else {
         return Err(RepositoryError::NotFound { subject: "task" });
     };
     let current = TaskState::parse(&state)?;
@@ -1117,7 +1141,7 @@ fn park_task(
     // task is not an error, and re-parking would advance a revision for no
     // change.
     if current == TaskState::Parked {
-        return Ok(());
+        return Ok(None);
     }
     let next = apply_task_transition(current, &TaskTransition::to(TaskState::Parked))?;
     let revision = revision_of(revision)?;
@@ -1142,7 +1166,16 @@ fn park_task(
     if changed != 1 {
         return Err(conflict("task", "the task revision moved during the park"));
     }
-    Ok(())
+    Ok(Some(ParkedTask {
+        project_id,
+        mini_project_id: mini_project_id
+            .as_deref()
+            .map(MiniProjectId::parse)
+            .transpose()?,
+        task_id,
+        title: ExternalName::parse(&title)?,
+        occurred_at: at,
+    }))
 }
 
 fn read_episode(

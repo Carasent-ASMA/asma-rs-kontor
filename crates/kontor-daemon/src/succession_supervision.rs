@@ -488,6 +488,7 @@ pub async fn poll_until_stopped(
     coordinator: Arc<dyn SuccessionSupervisionCoordinator>,
     state: ApiState,
     policy: SupervisionPolicy,
+    attention: Option<Arc<crate::attention::AttentionChannel>>,
 ) {
     if policy.max_concurrent_successions().is_none()
         || policy.watchdog.lifecycle != WatchdogLifecycle::WhileTeamRunsActive
@@ -564,6 +565,32 @@ pub async fn poll_until_stopped(
                 detail = %error,
                 "automatic succession supervision could not read its durable inventory"
             ),
+        }
+
+        // The waiting-seat class has no writer to push it: nothing tells Kontor
+        // when Paseo silently suppresses a permission alert or never raises an
+        // idle seat. This rides the deployment's existing supervision cadence
+        // rather than adding a resident task (CON-006), and the channel
+        // suppresses a repeat on the same unchanged evidence.
+        if let Some(channel) = &attention {
+            match crate::attention::observe_waiting_seats(
+                &state,
+                policy.watchdog.stale_after_seconds,
+                channel,
+            )
+            .await
+            {
+                Ok(emitted) if emitted > 0 => info!(
+                    realm_id = %state.realm_id(),
+                    emitted,
+                    "waiting-seat attention emitted"
+                ),
+                Ok(_) => {}
+                Err(_) => warn!(
+                    realm_id = %state.realm_id(),
+                    "waiting-seat observation could not read its durable inventory"
+                ),
+            }
         }
     }
 }

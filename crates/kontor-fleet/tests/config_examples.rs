@@ -912,6 +912,7 @@ fn document_contains_key(value: &Value, key: &str) -> bool {
 fn the_remaining_neutral_files_are_well_formed_yaml() {
     for relative in [
         "config/examples/paseo-supervision.yml",
+        "config/examples/attention.yml",
         "config/examples/quota-signals.yml",
         "config/examples/tracker/jira.yml",
         "config/examples/packs/team.yml",

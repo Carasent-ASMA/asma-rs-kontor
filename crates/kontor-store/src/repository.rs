@@ -13,6 +13,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use kontor_core::DomainError;
 use kontor_core::backlog_identity::EpicBacklogCode;
+
+use crate::attention::{AttentionSignal, AttentionSignalKind};
 use kontor_core::calendar::{
     CalendarExceptionRevision, CalendarProfileSpec, ChildCalendarWindows, ExceptionKind,
     ExceptionProvenance, ExecutionAuthorization, HolidayImportBatch, HolidayImportKind,
@@ -14646,7 +14648,7 @@ fn reduce_gate_states(
 fn transition_task_in_transaction(
     transaction: &Transaction<'_>,
     request: &TaskTransitionRequest,
-) -> RepositoryResult<Task> {
+) -> RepositoryResult<(Task, TaskState)> {
     crate::authority::require_backlog_authority(transaction, request.project_id)?;
     let row: Option<(String, i64)> = transaction
         .query_row(
@@ -14798,7 +14800,7 @@ fn transition_task_in_transaction(
     if changed != 1 {
         return Err(conflict("task", "the task revision moved during the write"));
     }
-    transaction
+    let task = transaction
         .query_row(
             &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE project_id = ?1 AND id = ?2"),
             params![request.project_id.to_string(), request.task_id.to_string()],
@@ -14807,7 +14809,33 @@ fn transition_task_in_transaction(
         .optional()
         .map_err(backend)?
         .transpose()?
-        .ok_or(RepositoryError::NotFound { subject: "task" })
+        .ok_or(RepositoryError::NotFound { subject: "task" })?;
+    Ok((task, current))
+}
+
+/// Emit the settled task fact after its transaction has committed.
+///
+/// This is the one place both task-state writers reach after commit, so a future
+/// task-state writer still has an obvious seam to reuse. A transition that did
+/// not change the state raises nothing.
+fn emit_task_attention(store: &SqliteStore, task: &Task, from: TaskState) {
+    if from == task.state {
+        return;
+    }
+    let Some(kind) = AttentionSignalKind::from_task_state(task.state) else {
+        return;
+    };
+    store.notify_attention(AttentionSignal {
+        realm_id: store.realm_id(),
+        project_id: task.project_id,
+        mini_project_id: task.mini_project_id,
+        task_id: Some(task.id),
+        task_title: Some(task.title.clone()),
+        command_kind: None,
+        receipt_id: None,
+        kind,
+        occurred_at: task.updated_at,
+    });
 }
 
 fn command_receipt_by_key(
@@ -17255,8 +17283,9 @@ impl WorkflowRepository for SqliteStore {
 
     fn transition_task(&self, request: &TaskTransitionRequest) -> RepositoryResult<Task> {
         let transaction = self.begin()?;
-        let moved = transition_task_in_transaction(&transaction, request)?;
+        let (moved, from) = transition_task_in_transaction(&transaction, request)?;
         transaction.commit().map_err(backend)?;
+        emit_task_attention(self, &moved, from);
         Ok(moved)
     }
 }
@@ -17296,10 +17325,11 @@ impl SqliteStore {
             return Ok((result, existing, crate::graph::Applied::Unchanged));
         }
 
-        let moved = transition_task_in_transaction(&transaction, request)?;
+        let (moved, from) = transition_task_in_transaction(&transaction, request)?;
         let payload = task_transition_result_payload(&intent.intent, &moved)?;
         let receipt = record_atomic_local_result(&transaction, intent, &payload)?;
         transaction.commit().map_err(backend)?;
+        emit_task_attention(self, &moved, from);
         Ok((
             TaskTransitionResult {
                 task_id: moved.id,
@@ -18196,6 +18226,17 @@ impl RunRepository for SqliteStore {
             request.recorded_at,
         )?;
         transaction.commit().map_err(backend)?;
+        self.notify_attention(AttentionSignal {
+            realm_id: self.realm_id(),
+            project_id: request.project_id,
+            mini_project_id: None,
+            task_id: None,
+            task_title: None,
+            command_kind: Some(CommandKind::AbandonRun),
+            receipt_id: Some(request.receipt_id),
+            kind: AttentionSignalKind::CommandConfirmed,
+            occurred_at: request.recorded_at,
+        });
         Ok(request.receipt_id)
     }
 

@@ -226,6 +226,8 @@ struct WorldComposition {
     runtime_summarizer: Option<String>,
     /// Start from an empty state root and let the daemon create the Realm.
     created_realm: bool,
+    /// A test-owned `attention.yml` written before the daemon starts.
+    attention: Option<String>,
 }
 
 impl World {
@@ -342,6 +344,43 @@ impl World {
             DEFAULT_CAPACITY,
             WorldComposition {
                 jira_connectors: Some(connectors),
+                ..WorldComposition::default()
+            },
+        )
+        .await
+    }
+
+    /// Start an empty Realm with a native Jira boundary and a test-owned
+    /// `attention.yml` installed before the daemon reads it.
+    pub(crate) async fn open_empty_with_jira_and_attention(
+        connectors: kontor_jira::JiraConnectors,
+        attention: &str,
+    ) -> Self {
+        Self::compose_with_connector(
+            every_capability(),
+            true,
+            false,
+            false,
+            DEFAULT_CAPACITY,
+            WorldComposition {
+                jira_connectors: Some(connectors),
+                attention: Some(attention.to_owned()),
+                ..WorldComposition::default()
+            },
+        )
+        .await
+    }
+
+    /// Start the seeded Realm with a test-owned `attention.yml`.
+    pub(crate) async fn open_with_attention(attention: &str) -> Self {
+        Self::compose_with_connector(
+            every_capability(),
+            true,
+            true,
+            false,
+            DEFAULT_CAPACITY,
+            WorldComposition {
+                attention: Some(attention.to_owned()),
                 ..WorldComposition::default()
             },
         )
@@ -542,6 +581,10 @@ impl World {
                 document,
             )
             .expect("the quota signals fixture is installed");
+        }
+        if let Some(document) = composition.attention.as_deref() {
+            std::fs::write(directory.path().join("attention.yml"), document)
+                .expect("the attention fixture is installed");
         }
         let fake = Arc::new(if planed {
             ScriptedFakeRuntime::requiring_a_plane(capabilities)

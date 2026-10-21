@@ -66,6 +66,9 @@ mod desk_adams;
 #[path = "loopback/pr_reviews.rs"]
 mod pr_reviews;
 
+#[path = "loopback/attention.rs"]
+mod attention;
+
 #[tokio::test]
 async fn open_question_commands_preserve_authority_history_and_completion_blockers() {
     use kontor_core::id::OpenQuestionId;
@@ -6062,6 +6065,26 @@ struct KickoffWorld {
 }
 
 async fn kickoff_world(label: &str, epic_key: &str, task_key: &str) -> KickoffWorld {
+    kickoff_world_inner(label, epic_key, task_key, None).await
+}
+
+/// The same kickoff world, with a test-owned attention policy installed before
+/// the daemon starts.
+async fn kickoff_world_with_attention(
+    label: &str,
+    epic_key: &str,
+    task_key: &str,
+    attention: &str,
+) -> KickoffWorld {
+    kickoff_world_inner(label, epic_key, task_key, Some(attention)).await
+}
+
+async fn kickoff_world_inner(
+    label: &str,
+    epic_key: &str,
+    task_key: &str,
+    attention: Option<&str>,
+) -> KickoffWorld {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path(format!("/rest/api/3/issue/{epic_key}")))
@@ -6122,7 +6145,11 @@ async fn kickoff_world(label: &str, epic_key: &str, task_key: &str) -> KickoffWo
         Arc::new(JiraFixtureKeychain),
     )
     .expect("Jira configuration loads");
-    let world = World::open_empty_with_jira(connectors).await;
+    let world = if let Some(attention) = attention {
+        World::open_empty_with_jira_and_attention(connectors, attention).await
+    } else {
+        World::open_empty_with_jira(connectors).await
+    };
     world.daemon.reconcile().await;
     world.daemon.state().with_store(|store| {
         store

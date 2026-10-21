@@ -812,6 +812,29 @@ The `completion` block remains the orchestration policy contract; KON-OP-21 does
 not add a notification transport. Its resident supervisor is the bounded
 durable-recovery backstop described below, not a replacement event bus.
 
+## Attention channel
+
+Copy [`config/examples/attention.yml`](../config/examples/attention.yml) to
+`<state-root>/attention.yml` only when this Realm should emit attention alerts.
+An absent file means Kontor emits nothing; there is no default destination.
+
+The document mirrors the supervision policy's shape and rules:
+
+- `schema_version` must be `1`;
+- `sink.url` is one absolute `http`/`https` Workflows webhook, and
+  `sink.timeout_seconds` / `sink.max_attempts` are bounded;
+- `mention.target` is required: a channel post without a mention does not
+  reliably raise a phone notification;
+- `emit.kinds` is a closed list of Kontor-semantic kinds. Raw agent attention
+  (`permission_requested`, `turn_finished`) is refused because Paseo's native
+  push already owns it. `task_needs_human` always emits, even when omitted;
+- invalid documents refuse the start with a typed rule rather than a panic.
+
+Delivery is one `POST` per alert in a detached one-shot task: the command path
+never awaits it, a failed delivery is logged with its receipt id and discarded,
+and bounded retries stay inside that task. The waiting-seat observation class
+rides the `supervision.yml` cadence; it adds no resident task.
+
 The resident loop waits for the startup reconciliation barrier, first resumes
 due durable attempts, then rebuilds its inventory on the configured cadence and
 on committed append signals when `runtime_error` is configured as a wake

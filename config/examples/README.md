@@ -38,6 +38,7 @@ may sit anywhere on the machine and have any name.
   host.yml                     this machine only; git-ignored, never committed
   quota-signals.yml            optional vendor refusal wording
   paseo-supervision.yml        sample for <state-root>/supervision.yml, not a project key
+  attention.yml                sample for <state-root>/attention.yml; absent means no alerts
   .gitignore                   ignores host.yml
 ```
 
