@@ -162,6 +162,10 @@ fn assert_historical_shape(path: &Path, version: i64) {
         !column_exists(&connection, "execution_hold_conditions", "review_by"),
         "the v136 rebuild must not be present before the upgrade"
     );
+    // ASMA-8520 rewound these fixtures past 0136 so the retained attention
+    // table could not collide with the replayed migration. #431's ordered
+    // prefix is the stronger form of that repair: the pre-upgrade fixture now
+    // proves the table is absent rather than merely dropping it.
     assert!(
         !table_exists(&connection, "execution_hold_attention"),
         "v136 attention records must not exist before the upgrade"

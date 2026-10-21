@@ -2870,6 +2870,7 @@ fn rewind_to_schema_121(path: &std::path::Path) {
         )
         .expect("the later triggers are removed");
     for table in [
+        "execution_hold_attention",
         "operational_gaps",
         "pr_review_subjects",
         "desk_adam_subjects",

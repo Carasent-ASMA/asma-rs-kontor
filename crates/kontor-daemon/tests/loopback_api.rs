@@ -27621,6 +27621,11 @@ async fn a_credential_rotation_during_the_transcript_fetch_still_redacts_the_pre
         )
         .expect("the native session reaches a quota refusal");
 
+    // A stall here used to park the whole test binary: `entered()` is satisfied
+    // only if the recovery reaches the transcript fetch, and a recovery that
+    // settles earlier (for example on an unmet quota precondition) never wakes
+    // it. Both waits are bounded so an early return fails this test with the
+    // recovery's own status instead of hanging the suite.
     let history = world.fake.pause_next_history();
     let route = format!("/v1/projects/{project}/agent-runs/{predecessor_id}/successors:recover");
     let recovery = Call::post_raw(&route, "")
