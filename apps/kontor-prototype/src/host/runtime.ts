@@ -5,6 +5,7 @@ import { baseSessions, deskSessions, DESK_PROJECTS, DESK_WORKSPACES, roleSession
 import { modelUsageSessions } from "../fixtures/model-usage";
 import { lifecycleSessions } from "../fixtures/lifecycle";
 import { integrationSessions } from "../fixtures/integration";
+import { PLAN_WORKSTREAM_READS, PLAN_WORKSTREAM_REGISTRY } from "../fixtures/plan-workstreams";
 import { SOURCE_READS } from "../fixtures/sources";
 import { SCENARIOS, type Scenario } from "../scenarios";
 import { logHostEvent } from "./event-log";
@@ -38,6 +39,13 @@ export function subscribeHost(listener: () => void): () => void {
 const sessions = new Map<string, FixtureSession>();
 const inventory = { none: () => [], large: scrollSessions, roles: roleSessions, times: timeSessions, base: baseSessions, usage: modelUsageSessions, desks: deskSessions, lifecycle: lifecycleSessions, integration: integrationSessions }[scenario.inventory];
 for (const value of inventory()) sessions.set(value.agent.id, value);
+if (scenario.id === "plan-workstreams") {
+  const base = inventory()[0]!;
+  for (const [index, epic] of ["ASMA-7575", "ASMA-8353", "ASMA-8108"].entries()) {
+    const value = { ...base, agent: { ...base.agent, id: `simulated-real-plan-${index}`, title: `SIMULATED · linked session ${epic}`, labels: { epic }, workspaceId: WORKSPACES[0]!.id } };
+    sessions.set(value.agent.id, value);
+  }
+}
 
 type Observer = { snapshot?: (value: unknown) => void; update?: (message: unknown) => void; error?: (error: unknown) => void };
 const observers = new Set<Observer>();
@@ -127,10 +135,10 @@ export const fakePaseo = refusingProxy("paseo", {
 export async function invokeRpc(method: string, input: unknown): Promise<unknown> {
   await new Promise((resolve) => setTimeout(resolve, 60));
   if (hostStatus !== "online") throw new Error("Prototype host is offline (simulated).");
-  const reads = scenario.sources ? SOURCE_READS : [];
+  const reads = scenario.id === "plan-workstreams" ? PLAN_WORKSTREAM_READS : scenario.sources ? SOURCE_READS : [];
   switch (method) {
     case "sources.list":
-      return { sources: reads.map((read) => read.source), diagnostics: [] };
+      return { sources: reads.map((read) => read.source), diagnostics: [], ...(scenario.id === "plan-workstreams" ? { registry: PLAN_WORKSTREAM_REGISTRY } : {}) };
     case "sources.read": {
       const id = (input as { sourceId: string }).sourceId;
       const read = reads.find((value) => value.source.id === id);

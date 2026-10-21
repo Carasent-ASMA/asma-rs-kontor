@@ -42,6 +42,7 @@ const EXPANDED: Partial<OrganizationSettings> = {
 };
 
 export const SCENARIOS: readonly Scenario[] = [
+  { id: "plan-workstreams", title: "Plan workstreams: real declarations", summary: "Read-only metadata from real ASMA-7575, ASMA-8353 and ASMA-8108 plans; registered keys from the authoritative registry. Linked sessions are simulated, including an ordinary workspace with no ESW. No live inventory or lifecycle claim.", inventory: "integration", sources: true },
   { id: "compact-icons", title: "Compact controls: combined review", summary: "Fictional combined inventory: configured/reported/missing/custom models, absent/zero token reports, stale cases, roles and long titles. Hover or focus controls for help; touch opens exact Details. Source and status semantics remain unchanged.", inventory: "integration", sources: true, start: { grouping: "flat", query: "Model report" } },
   { id: "compact-icons-stale", title: "Compact controls: stale inventory", summary: "The combined fixture host goes offline at 3 seconds; model and counter report age remains unknown. Details preserves all source limits.", inventory: "integration", sources: true, start: { grouping: "flat", query: "Model report" }, hostOfflineAfterMs: 3000 },
   { id: "baseline", title: "Baseline", summary: "Default inventory, Sessions tree with one epic open.", inventory: "base", sources: true, settings: EXPANDED },

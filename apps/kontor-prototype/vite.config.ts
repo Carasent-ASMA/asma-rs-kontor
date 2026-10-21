@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const pluginRoot = path.resolve(here, "../paseo-plugin");
+const pluginRoot = path.resolve(process.env.KONTOR_PROTOTYPE_PLUGIN_ROOT || path.resolve(here, "../paseo-plugin"));
 // Resolve the SDK through the plugin package so the prototype and the plugin
 // share one module instance (and so one React context for useRpc).
 const fromPlugin = createRequire(path.join(pluginRoot, "package.json"));
@@ -15,6 +15,7 @@ export default defineConfig({
   base: "./",
   resolve: {
     alias: [
+      { find: /^(?:\.\.\/)+paseo-plugin\/(.*)$/, replacement: `${pluginRoot}/$1` },
       // The three host-supplied SDK modules (Paseo compiler: PLUGIN_CLIENT_ONLY_SDK_SPECIFIERS).
       { find: /^@getpaseo\/plugin\/client$/, replacement: host("sdk-client.ts") },
       { find: /^@getpaseo\/plugin\/client\/react-native$/, replacement: host("sdk-react-native.tsx") },
@@ -36,7 +37,7 @@ export default defineConfig({
     __DEV__: "false",
     "process.env.NODE_ENV": JSON.stringify(process.env.NODE_ENV ?? "development"),
   },
-  server: { port: 58091, strictPort: true, fs: { allow: [path.resolve(here, "../..")] } },
+  server: { port: 58091, strictPort: true, fs: { allow: [path.resolve(here, "../.."), pluginRoot] } },
   preview: { port: 58092, strictPort: true },
   build: { outDir: "dist", sourcemap: true, chunkSizeWarningLimit: 4000 },
 });

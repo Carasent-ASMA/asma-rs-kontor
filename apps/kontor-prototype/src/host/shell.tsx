@@ -66,7 +66,7 @@ export function HostShell() {
 
   const prototypeBar = <View testID="prototype-bar" style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10, minHeight: 28, backgroundColor: themeName === "light" ? "#fff4d6" : "#3a3220", borderBottomWidth: 1, borderColor: colors.border }}>
     <Text numberOfLines={1} style={{ flex: 1, color: colors.foreground, fontSize: 11 }}>
-      <Text style={{ fontWeight: "700" }}>PROTOTYPE</Text> · fictional fixture data · no Paseo host · {scenario.title}{scenario.script ? " · simulated updates" : ""}{scenario.simulatedTeams ? " · SIMULATED team declarations" : ""}
+      <Text style={{ fontWeight: "700" }}>PROTOTYPE</Text> · {scenario.id === "plan-workstreams" ? "real plan metadata · simulated sessions" : "fictional fixture data"} · no Paseo host · {scenario.title}{scenario.script ? " · simulated updates" : ""}{scenario.simulatedTeams ? " · SIMULATED team declarations" : ""}
     </Text>
     <Pressable testID="prototype-log-toggle" accessibilityRole="button" accessibilityState={{ expanded: logOpen }} onPress={() => setLogOpen(!logOpen)} style={{ minHeight: 28, justifyContent: "center", paddingHorizontal: 6 }}>
       <Text style={{ color: colors.foreground, fontSize: 11, textDecorationLine: "underline" }}>Host log ({events})</Text>
