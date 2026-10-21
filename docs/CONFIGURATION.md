@@ -331,12 +331,12 @@ and ASMA's concrete values are the test case in
 | `holiday_countries` | list | ISO country codes for the holiday import. |
 | `currency` | string | ISO 4217 code for budgets and costs. |
 
-`max_parallel_tasks` and `start_admission` come from the placement source.
-`max_parallel_tasks` is the hard ceiling for concurrent team-run tasks;
-`start_admission` is the initial concurrent admission and must be less than or
-equal to it. `max_delivery_seats` is the distinct delivery-seat count from that
-same placement source (ASMA 2); it is not a global team-run ceiling and does
-not gate team-run admission.
+`max_parallel_tasks` and `start_admission` are the Paseo-direct placement
+capacity ceiling and initial admission: ASMA 7 and 4. `start_admission` must be
+less than or equal to `max_parallel_tasks`. `max_delivery_seats` is an
+owner-set project value scoped per team run (ASMA 2); the placement rule does
+not supply it, it is not a global team-run ceiling, and kontord has no such
+field.
 
 ASMA's values, exercised by the schema test:
 
@@ -353,7 +353,7 @@ ASMA's values, exercised by the schema test:
 | `project.supervision` | `orchestration/tpm-supervision.yml` (`autonomous_tpm_v1` TPM cadence profile; the Paseo watchdog is `<state-root>/supervision.yml`) |
 | `documentation_roots` | `modules/_docs`, `kontor/docs` |
 | `check_runs` | `asma/publication-branch-title`, `asma/publication-identity` |
-| `capacity` | `max_delivery_seats: 2` (placement-source delivery seats, not a team-run ceiling), `max_parallel_tasks: 7`, `start_admission: 4` |
+| `capacity` | `max_delivery_seats: 2` (owner-set, per team run), `max_parallel_tasks: 7` (Paseo-direct placement ceiling), `start_admission: 4` (placement start) |
 | `time_zone`, `holiday_countries`, `currency` | `Europe/Oslo`, `[NO]`, `NOK` |
 
 ## Configuration authoring inventory (WP-02 refresh)

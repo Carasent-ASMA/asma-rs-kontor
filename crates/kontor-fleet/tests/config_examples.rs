@@ -1882,7 +1882,7 @@ fn capacity_separates_delivery_seats_from_the_admission_ceiling() {
         assert_eq!(
             capacity["max_parallel_tasks"].as_i64(),
             Some(ceiling),
-            "{relative}: max_parallel_tasks is the hard ceiling"
+            "{relative}: max_parallel_tasks is the Paseo-direct placement ceiling"
         );
         assert_eq!(
             capacity["start_admission"].as_i64(),

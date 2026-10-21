@@ -56,7 +56,7 @@ project:
       required: [role, policy]
     capacity:
       required: [max_delivery_seats, max_parallel_tasks, start_admission]
-      rule: max_parallel_tasks and start_admission come from the placement source; max_parallel_tasks is the hard ceiling and start_admission must be <= it; max_delivery_seats is the distinct delivery-seat count from that source, not a global team-run ceiling, and does not gate team-run admission
+      rule: max_parallel_tasks and start_admission are the Paseo-direct placement capacity ceiling and initial admission; start_admission must be <= max_parallel_tasks; max_delivery_seats is an owner-set project value scoped per team run, not supplied by the placement rule, not a global team-run ceiling, and kontord has no such field
 
 # The two supervision files are distinct contracts.
 supervision_contract:

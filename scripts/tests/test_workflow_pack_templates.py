@@ -13,6 +13,7 @@ values, and relative links that resolve.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -33,11 +34,11 @@ def read(path: Path) -> str:
 
 
 def canonical_plan_graph() -> Path | None:
-    for root in (REPO_ROOT, *REPO_ROOT.parents):
-        candidate = root / "_tools" / "ai-orchestration" / "plan_graph.py"
-        if candidate.is_file():
-            return candidate
-    return None
+    configured = os.environ.get("ASMA_PLAN_GRAPH_VALIDATOR")
+    if not configured:
+        return None
+    candidate = Path(configured).expanduser()
+    return candidate if candidate.is_file() else None
 
 
 def replace_once(text: str, old: str, new: str) -> str:
@@ -257,7 +258,7 @@ class ContentContractTests(unittest.TestCase):
     def test_a_filled_plan_template_passes_the_canonical_validator(self) -> None:
         validator = canonical_plan_graph()
         if validator is None:
-            self.skipTest("canonical plan-graph validator is not available")
+            self.skipTest("set ASMA_PLAN_GRAPH_VALIDATOR to run canonical validation")
         with tempfile.TemporaryDirectory() as directory:
             plan = Path(directory) / "plan.md"
             plan.write_text(filled_plan_template(), encoding="utf-8")
