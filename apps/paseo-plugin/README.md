@@ -665,20 +665,30 @@ Center commands and the per-agent **← Kontor** composer pill described above.
 
 ## Kontor placement
 
-A labelled seat may register an existing directory only inside its own binding:
-the native project its own workspace belongs to and the canonical worktree
-named by its `kontor.worktree` label. The binding is read from the seat's
-`kontor.workspace_id` and `kontor.worktree` labels plus a read-only Paseo
-workspace read. Everything else is refused as outside Kontor placement:
+A seat with any `kontor.*` label may register an existing directory only inside
+its own binding: the native project its own workspace belongs to and the
+canonical worktree named by its `kontor.worktree` label. The binding is read
+from the seat's `kontor.workspace_id` and `kontor.worktree` labels plus a
+read-only Paseo workspace read.
+
+Kontor never binds a Paseo-direct seat (`orchestration=paseo-direct` without a
+`kontor.*` label). The guard still owns that seat, but applies only the checks
+that need no binding. A seat that carries both label sets gets the full binding
+enforcement.
+
+Every guarded seat is refused for:
 
 - a Paseo-owned worktree source (`kind: "worktree"`);
 - a directory without an explicit `projectId` (Paseo would infer a project);
 - a relative directory path;
 - a directory inside Paseo's own `~/.paseo/worktrees` root;
+- a directory outside `KONTOR_PLUGIN_PLACEMENT_ROOTS`, when configured.
+
+A seat with a `kontor.*` label is additionally refused for:
+
 - a project other than the seat binding's native project;
 - a directory other than the seat binding's canonical worktree;
-- a directory outside `KONTOR_PLUGIN_PLACEMENT_ROOTS`, when configured;
-- an unresolved binding for a labelled seat.
+- an unresolved binding.
 
 The plugin resolves the binding read-only and holds no Kontor write credential;
 `kontord` still owns the native binding and readback.

@@ -9,7 +9,7 @@ import {
   readConfig,
   type KontorPluginConfig,
 } from "./config";
-import { isKontorSeat, seatBinding, type AgentLabels } from "./labels";
+import { hasKontorLabels, isKontorSeat, seatBinding, type AgentLabels } from "./labels";
 import { evaluatePlacement } from "./placement";
 import { readPlacementBinding } from "./placement-binding";
 
@@ -142,9 +142,13 @@ function initialAgentLabelsOf(request: WorkspaceCreateRequest): Record<string, s
  * interactive, and an unreadable caller lookup with no seat labels on the
  * request fails open; in those cases the request is unchanged. Both label sets
  * are checked: the request's initial agent and, when the release passes it, the
- * caller. When either marks a Kontor seat, the request must match that seat's
- * binding — the native project its own workspace belongs to and the canonical
- * worktree its labels name.
+ * caller.
+ *
+ * A seat with any `kontor.*` label must match its binding — the native project
+ * its own workspace belongs to and the canonical worktree its labels name. A
+ * Paseo-direct-only seat (`orchestration=paseo-direct` without `kontor.*`) has
+ * no binding to resolve, so only the binding-free checks apply. A seat that
+ * carries both label sets gets the full binding enforcement.
  */
 export async function guardWorkspaceCreate(
   request: WorkspaceCreateRequest,
@@ -166,11 +170,14 @@ export async function guardWorkspaceCreate(
     return;
   }
   for (const labels of seatLabels) {
-    const binding = await readPlacementBinding(context.paseo, labels, {
-      timeoutMs: config.labelReadTimeoutMs,
-      signal: context.signal,
-    });
-    if (binding === null) {
+    const bound = hasKontorLabels(labels);
+    const binding = bound
+      ? await readPlacementBinding(context.paseo, labels, {
+          timeoutMs: config.labelReadTimeoutMs,
+          signal: context.signal,
+        })
+      : null;
+    if (bound && binding === null) {
       throw new Error(
         "Kontor workspace guard refused: the seat's placement binding could not be resolved",
       );
