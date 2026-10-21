@@ -546,6 +546,61 @@ fn a_requested_route_is_admitted_only_as_the_chain_offers_it() {
     }
 }
 
+/// ASMA-8433: a characterization guard for the fleet gate the host-local pool
+/// edit depends on — no `kontor-fleet` production change is involved. A host
+/// that lists the ZeroSub pool's plain `claude` account first admits the
+/// launch receipt that names it; the same receipt is refused on the unamended
+/// policy, which is the non-opted-in host.
+#[test]
+fn a_fleet_that_lists_the_pool_provider_first_admits_its_route() {
+    let seats = leadership_seats();
+    let roster = revision(SpecVersion::FIRST, &seats);
+    let (tpm, lsa) = (key(&roster, &seats[0]), key(&roster, &seats[1]));
+    let yaml = policy(lsa.as_str(), tpm.as_str()).replace(
+        "claude: { provider: claude, accounts: [claude-personal, claude-work] }",
+        "claude: { provider: claude, accounts: [claude, claude-work, claude-personal] }",
+    );
+    let snapshot = FleetSnapshot::parse_policy(&yaml).expect("valid pool policy");
+    let resolution = snapshot.resolve(TEAM).expect("TEAM is bound");
+    let rung = |provider: &str, model: &str, effort: Option<EffortLevel>| ModelRung {
+        provider: ProviderRef(provider.to_owned()),
+        model: ModelRef(model.to_owned()),
+        effort,
+    };
+    let pooled = resolution
+        .route_for(&rung("claude", "claude-opus-5", Some(EffortLevel::Xhigh)))
+        .expect("the pool route the launch receipt names");
+    assert_eq!((pooled.step, pooled.sub_step), (1, 1));
+    assert_eq!(
+        accounts(&resolution)[0],
+        ("claude", "claude-opus-5", 1, 1),
+        "the pool comes first"
+    );
+    assert_eq!(
+        resolution
+            .select(&Eligibility::default())
+            .selected
+            .expect("the pool is eligible")
+            .rung
+            .provider
+            .0,
+        "claude"
+    );
+
+    // The same receipt is refused on the unamended policy, which is the
+    // non-opted-in host: `claude` is not an account of its Claude domain.
+    let unamended =
+        FleetSnapshot::parse_policy(&policy(lsa.as_str(), tpm.as_str())).expect("valid policy");
+    assert!(
+        unamended
+            .resolve(TEAM)
+            .expect("TEAM is bound")
+            .route_for(&rung("claude", "claude-opus-5", Some(EffortLevel::Xhigh)))
+            .is_none(),
+        "the non-opted-in host must keep refusing the pool route"
+    );
+}
+
 /// A policy with one route of every exclusion kind, for selection tests.
 fn selection_policy(lsa: &str) -> String {
     format!(

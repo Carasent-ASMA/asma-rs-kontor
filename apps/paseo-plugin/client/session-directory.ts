@@ -82,6 +82,16 @@ export type DirectoryEntry = {
   readonly workspaceName: string | null;
   /** Lower-cased haystack for search over names, workspace context and cwd. */
   readonly searchText: string;
+  /** The screen's Jira capture, for epic resolution; never native. Absent means none was read. */
+  readonly jira?: JiraCapture;
+};
+
+/** Epics as the ready historical Jira captures record them: evidence of an observation time, not live Jira. */
+export type JiraCapture = {
+  /** A captured epic maps to itself and a captured child to its epic; null where captures disagree. */
+  readonly epics: ReadonlyMap<string, string | null>;
+  /** Observation time of each ready capture; empty when none is ready. */
+  readonly observed: readonly string[];
 };
 
 /** An unread error notice can outlive the native error state after recovery or close. */

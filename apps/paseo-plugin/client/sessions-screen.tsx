@@ -77,7 +77,7 @@ import {
 import { useSessionDirectory } from "./use-session-directory";
 import { DEFAULT_ORGANIZATION_SETTINGS, type OrganizationSettings } from "../shared/organization";
 import type { useOrganizationSettings } from "./use-organization-settings";
-import { allGroupKeys, buildOrganizationTree, declaredScope, defaultGroupExpanded, deriveDeskScopes, filterOrganizationTree, flattenOrganizationTree, inEpicScope, matchesScope, nativeDesk, NO_LINKED_EPIC, NO_ROLE_KEY, organizationScope, organizationGroupRank, organizationWorkspaceCount, OTHER_WORKSTREAM, ROLE_ROOT_KEY, scopeKeepsGroup, sessionRole, sessionState, STATE_LABELS, titleRoleCode, UNASSIGNED_EPIC, visibleSessions, workstreamRank, type OrganizationGroup, type OrganizationRow, type OrganizationWorkspace, type OrganizationProject, type RoleSource } from "./session-organization";
+import { allGroupKeys, buildOrganizationTree, declaredScope, defaultGroupExpanded, deriveDeskScopes, epicDetail, filterOrganizationTree, flattenOrganizationTree, inEpicScope, matchesScope, nativeDesk, NO_ROLE_KEY, organizationScope, organizationGroupRank, organizationWorkspaceCount, OTHER_WORKSTREAM, ROLE_ROOT_KEY, scopeKeepsGroup, sessionEpic, sessionRole, sessionState, STATE_LABELS, titleRoleCode, UNASSIGNED_EPIC, visibleSessions, workstreamRank, type OrganizationGroup, type OrganizationRow, type OrganizationWorkspace, type OrganizationProject, type RoleSource } from "./session-organization";
 import { rowKey, siblingKeys, reorderSavedSiblingOrder } from "./organization-order";
 import { OrganizationRowView, stateColor as sessionStateColor } from "./organization-row";
 import { SessionStateMarker, SessionStatusIcon } from "./session-state-marker";
@@ -546,14 +546,14 @@ export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<t
       { label: "Workspace", value: provenance.workspace },
       { label: "Native workspace ID", value: provenance.nativeDesk.workspaceId ?? "Unavailable" },
       { label: "Workstream association", value: declared.workstream ?? "Not declared" },
-      { label: "Epic association", value: declared.epic ?? NO_LINKED_EPIC },
+      { label: "Epic association", value: epicDetail(sessionEpic(entry, mappings)) },
       { label: "Association verification", value: "Workstream registry membership and epic/plan links are not checked here." }];
   }
   if (provenance.desk) return [...lines, { label: "Desk", value: provenance.parts[0]! }, { label: "Workspace", value: provenance.workspace }];
   const declared = declaredScope(entry, mappings);
   return [...lines,
     { label: "Workstream", value: declared.workstream ?? (nativeDesk(entry.projectName) !== null ? `${organizationScope(entry, mappings).workstream} (native desk project)` : `${OTHER_WORKSTREAM}: no workstream or desk label and no display mapping`) },
-    { label: "Epic", value: declared.epic ?? NO_LINKED_EPIC },
+    { label: "Epic", value: epicDetail(sessionEpic(entry, mappings)) },
     { label: "Workspace", value: provenance.workspace }];
 }
 
