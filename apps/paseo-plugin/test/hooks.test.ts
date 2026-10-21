@@ -108,6 +108,14 @@ function seatContext(
   return context(labels, workspaces);
 }
 
+function paseoDirectLabels(overrides: Record<string, string> = {}): Record<string, string> {
+  return {
+    orchestration: "paseo-direct",
+    "asma.slot": "SWE",
+    ...overrides,
+  };
+}
+
 function createRequest(overrides: Partial<AgentCreateRequest> = {}): AgentCreateRequest {
   return {
     config: {
@@ -454,6 +462,143 @@ describe("workspace.create hook", () => {
     await expect(
       guardWorkspaceCreate(workspaceRequest(), seatContext(), config()),
     ).resolves.toBeUndefined();
+  });
+
+  it("allows a Paseo-direct-only caller creating an explicit directory placement", async () => {
+    await expect(
+      guardWorkspaceCreate(workspaceRequest(), context(paseoDirectLabels()), config()),
+    ).resolves.toBeUndefined();
+  });
+
+  it("allows a Paseo-direct-only initial agent creating an explicit directory placement", async () => {
+    await expect(
+      guardWorkspaceCreate(
+        workspaceRequest({
+          callerAgentId: undefined,
+          agent: {
+            config: { provider: "claude", cwd: "/Users/test/carasent/asma-modules" },
+            labels: paseoDirectLabels(),
+          },
+        }),
+        context({}),
+        config(),
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it("refuses a Paseo-direct-only seat creating a directory without an explicit project", async () => {
+    await expect(
+      guardWorkspaceCreate(
+        workspaceRequest({
+          source: {
+            kind: "directory",
+            path: CANONICAL,
+          },
+        }),
+        context(paseoDirectLabels()),
+        config(),
+      ),
+    ).rejects.toThrow("explicit projectId");
+  });
+
+  it("refuses a Paseo-direct-only seat creating a Paseo worktree", async () => {
+    await expect(
+      guardWorkspaceCreate(
+        workspaceRequest({
+          source: {
+            kind: "worktree",
+            cwd: "/Users/test/carasent/asma-modules",
+            projectId: PROJECT,
+          },
+        }),
+        context(paseoDirectLabels()),
+        config(),
+      ),
+    ).rejects.toThrow("worktree creation is outside it");
+  });
+
+  it("refuses a Paseo-direct-only seat using a relative directory path", async () => {
+    await expect(
+      guardWorkspaceCreate(
+        workspaceRequest({
+          source: {
+            kind: "directory",
+            path: ".worktrees/asma-8507",
+            projectId: PROJECT,
+          },
+        }),
+        context(paseoDirectLabels()),
+        config(),
+      ),
+    ).rejects.toThrow("absolute");
+  });
+
+  it("refuses a Paseo-direct-only seat creating a workspace in Paseo's worktree root", async () => {
+    await expect(
+      guardWorkspaceCreate(
+        workspaceRequest({
+          source: {
+            kind: "directory",
+            path: "/Users/test/.paseo/worktrees/0vl4ss0m/asma-8507",
+            projectId: PROJECT,
+          },
+        }),
+        context(paseoDirectLabels()),
+        config(),
+      ),
+    ).rejects.toThrow("Paseo's own worktree root");
+  });
+
+  it("refuses a Paseo-direct-only seat outside the configured placement roots", async () => {
+    await expect(
+      guardWorkspaceCreate(
+        workspaceRequest({
+          source: {
+            kind: "directory",
+            path: "/Users/test/elsewhere/asma-8507",
+            projectId: PROJECT,
+          },
+        }),
+        context(paseoDirectLabels()),
+        config({ placementRoots: ["/Users/test/carasent/asma-modules"] }),
+      ),
+    ).rejects.toThrow("placement roots");
+  });
+
+  it("still refuses a Kontor seat with an unresolved binding", async () => {
+    await expect(
+      guardWorkspaceCreate(
+        workspaceRequest(),
+        seatContext(seatLabels(), {}),
+        config(),
+      ),
+    ).rejects.toThrow("placement binding could not be resolved");
+  });
+
+  it("enforces the binding for a seat with both Kontor and Paseo-direct labels", async () => {
+    await expect(
+      guardWorkspaceCreate(
+        workspaceRequest(),
+        seatContext(seatLabels({ orchestration: "paseo-direct" }), {}),
+        config(),
+      ),
+    ).rejects.toThrow("placement binding could not be resolved");
+  });
+
+  it("enforces the bound project for a seat with both Kontor and Paseo-direct labels", async () => {
+    await expect(
+      guardWorkspaceCreate(
+        workspaceRequest({
+          source: {
+            kind: "directory",
+            path: CANONICAL,
+            projectId: "prj_epic_b",
+          },
+        }),
+        seatContext(seatLabels({ orchestration: "paseo-direct" })),
+        config(),
+      ),
+    ).rejects.toThrow("project outside the seat's binding");
   });
 
   it("leaves an interactive request with no agent caller alone", async () => {

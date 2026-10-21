@@ -22,6 +22,20 @@ export interface SeatBinding {
 }
 
 /**
+ * Whether the labels carry a Kontor-owned label (`kontor.*`).
+ *
+ * Only these labels name a native project and canonical worktree the guard can
+ * enforce. A Paseo-direct delivery seat carries `orchestration=paseo-direct`
+ * alone, is still guarded, and has no binding of its own.
+ */
+export function hasKontorLabels(labels: AgentLabels): boolean {
+  if (!labels) {
+    return false;
+  }
+  return Object.keys(labels).some((key) => key.startsWith(KONTOR_LABEL_PREFIX));
+}
+
+/**
  * Whether the labels mark a Kontor-managed seat.
  *
  * `kontor.*` is the runtime-owned namespace. Paseo-direct delivery seats carry
@@ -32,7 +46,7 @@ export function isKontorSeat(labels: AgentLabels): boolean {
   if (!labels) {
     return false;
   }
-  if (Object.keys(labels).some((key) => key.startsWith(KONTOR_LABEL_PREFIX))) {
+  if (hasKontorLabels(labels)) {
     return true;
   }
   return labels["orchestration"] === PASEO_DIRECT_ORCHESTRATION;

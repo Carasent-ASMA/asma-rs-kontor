@@ -47,14 +47,16 @@ function refuse(reason: string): PlacementDecision {
  * Paseo's own `~/.paseo/worktrees` root (the fallback project from the
  * QNR-P1-06 misplacement).
  *
- * The binding is resolved read-only before this check. The exact native
- * readback and every write stay with `kontord`; the plugin holds no Kontor
- * credential.
+ * A `binding` of `null` marks a Paseo-direct seat, which Kontor never binds:
+ * only the binding-free checks apply. A resolved binding adds the native
+ * project and canonical worktree checks. The binding is resolved read-only
+ * before this check. The exact native readback and every write stay with
+ * `kontord`; the plugin holds no Kontor credential.
  */
 export function evaluatePlacement(
   request: WorkspaceCreateLike,
   rules: PlacementRules,
-  binding: PlacementBinding,
+  binding: PlacementBinding | null,
 ): PlacementDecision {
   const source = request.source;
   if (!source || typeof source !== "object") {
@@ -82,6 +84,9 @@ export function evaluatePlacement(
     !rules.placementRoots.some((root) => within(resolved, resolve(root)))
   ) {
     return refuse("the path is outside the configured Kontor placement roots");
+  }
+  if (binding === null) {
+    return { allowed: true };
   }
   const permittedProject = binding.projectId.trim();
   const permittedDirectory = binding.directory.trim();
