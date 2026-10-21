@@ -127,9 +127,45 @@ project, epic, exact source identity and revision. Organization placement uses
 explicit display mapping, then desk, then workstream. Back retains the previous query, position and session
 filters; the native **← Kontor** control returns to the last host-local view.
 
-Sessions supports Hierarchy, Role and Flat views. In Hierarchy, repeated
-workspace-kind and session-role prefixes before the first `•` become groups within
-their original parent. Unclassified sessions and empty native workspaces remain visible.
+Sessions supports **Desks & workstreams**, **Desks & workspaces**, Role and Flat
+views. Native durable desks use the host's project ID, then its actual workspace
+IDs, then their sessions in both tree views. Every desk session stays in its
+native workspace, including sessions with different or conflicting epic, desk or
+workstream declarations. Those declarations remain searchable/filterable
+associations in Details; they never become workspace-like parents within a desk.
+Optional role subgroups below a workspace are a presentation view. Empty native
+workspaces remain visible, and a desk with none says **No native workspaces in
+this desk**. Desk counts describe actual workspaces and sessions. Same-named
+projects and workspaces remain separate by native ID.
+
+Outside native desks, the workstream/epic tree and repeated workspace-kind/role
+prefix groups keep their existing behavior. Explicit epic contexts and workstream
+association filters explore declared associations without changing native placement.
+
+The workstream association choices list only values resolved from sessions in the
+current scope: session mapping, workspace mapping, `desk` label, `workstream`
+label, native DESK project fallback, then Other work, in that order. These choices
+are neither a native project inventory nor a complete registry of workstreams.
+Native projects/workspaces have their own context scope and native IDs. Sessions
+of non-desk projects without declarations remain under Other work and their
+labelled epic, or No linked epic; no workstream is inferred from their titles.
+
+The authoritative workstream registry and its separate desk categories are not
+loaded by this selector. Neither are plan frontmatter declarations or verified
+epic-to-workstream links. Available choices can include unregistered names;
+missing choices do not mean that a registered workstream has no work. Missing
+plan headers remain unassigned, and catalog metadata alone does not propagate
+plan declarations into session filters. Native desk Details explicitly says
+that registry membership and epic/plan links are not checked. Native project
+counts, registered workstream counts and these metadata choices describe
+different things; they must not be presented as one complete inventory.
+
+Native desk keys are `project:<native-id>/workspace:id%3A<native-id>` in both tree
+views, reusing the former Desks & workspaces keys. Saved expansion/order under
+those keys still applies across renames. Former hierarchy keys rooted in
+`workstream:<desk>` or containing an epic match no native desk row; their branches
+start in the default order/disclosure once. Those entries remain in settings for
+other views and history. No settings, favorites or mappings are wiped or migrated.
 
 Role shows one header per role across the visible scope, including roles with a
 single session, and **No role** last; each session appears under exactly one.
@@ -150,7 +186,7 @@ Headers start closed. Saved disclosure and Expand all still apply.
 A Role row shows a short place. The **Details** button beside it shows the
 whole of it:
 - the role and where it came from, and every other role declaration;
-- the full desk, or workstream, epic and workspace chain;
+- the native desk/project and workspace IDs with separate epic/workstream associations, or the non-desk workstream, epic and workspace chain;
 - absent values by name, such as "No linked epic" or "No workspace · <cwd>".
   A value is absent only when no display mapping or label supplies it, so a
   label that says "Other work" is shown as declared.
@@ -223,7 +259,7 @@ is absent or blank, the server reads the operator-owned file
 `$PASEO_HOME/plugin-config/kontor/read-sources.json` (default
 `~/.paseo/plugin-config/kontor/read-sources.json`). This uses the existing Paseo
 home configuration and the same JSON entry validation, unique IDs and maximum
-of 64 entries. The file must be regular and at most 2 MiB. An absent file leaves
+of 512 entries. The file must be regular and at most 2 MiB. An absent file leaves
 an honest no-sources state; malformed or unreadable files report diagnostics.
 
 The server rereads the catalog for each list, read and association request. An
@@ -256,23 +292,55 @@ documentation file's directory is not assumed to contain the validator. Reads
 are bounded to 2 MiB; each export has a 15-second timeout. Invalid configuration,
 missing files and exporter diagnostics identify the specific source.
 
-Offline discovery can prepare a candidate from one explicitly selected documentation
-checkout (no network access, installation or checkout changes):
+Offline discovery prepares candidates from 1–16 explicitly selected documentation
+checkouts. It reads tracked Markdown under `_docs/`, `plan/` or `plans/`, excluding
+routers, histories, reports, audits, references and adoption records. It does not
+walk worktrees automatically or scan from React renders.
 
 ```sh
 bun scripts/discover-plan-sources.ts /srv/asma-docs > coverage.json
-bun scripts/discover-plan-sources.ts /srv/asma-docs --catalog > candidate.json
+bun scripts/discover-plan-sources.ts /srv/asma-docs /srv/selected-worktree --existing /srv/read-sources.json --catalog > candidate.json
 ```
 
-Discovery examines tracked Markdown with a `plan-graph` block and validates each
-exact file through the same exporter and hash checks as the RPC. Only canonical
-ASMA epic bindings become catalog entries. Unbound plans, parse failures, hashes,
-task binding coverage and multiple plans per epic stay in the report; multiple
-plans retain an explicit choice. The report identifies the checkout HEAD and
-working-copy hashes. It does not choose between divergent checkouts, supersede an
-orchestration plan pin, prove approval or infer an epic from a title. Review the
-candidate against the owning plan pins before installation. Paths in this output
-belong to that host; keep live candidates and coverage outside published source.
+Plans without a canonical task graph or a workspace remain discoverable. Explicit
+top-level frontmatter scalars supply workstreams and `epic`, `jira_epic` or `jira`
+may supply a confirmed ASMA key. Conflicting, missing, malformed, alias and nested
+values stay unknown; titles never supply identity. Graph-bearing plans still use
+`asma plan export` and exact path/hash validation. Graph failures stay diagnostic,
+with readable Markdown and independent frontmatter retained. No graph is invented.
+
+Every source read parses metadata from the exact file bytes after the configured
+pin check. This repairs omitted catalog metadata in the read projection without
+editing the catalog. A catalog/frontmatter workstream conflict disables automatic
+association and appears in Source details. The registry is read separately from
+`config/orchestration/workstreams.json` in `KONTOR_PLUGIN_ASMA_WORKSPACE` on each
+catalog refresh. Missing registry configuration is reported; no roster is hard-coded.
+
+Discovery deduplicates copies by repository common directory, relative plan path
+and content revision. Divergent revisions remain separate source choices. Existing
+entries, IDs, pins, project bindings and explicit catalog mappings are preserved;
+regeneration does not repin a selected source or silently replace a user mapping.
+Missing pinned paths remain unavailable until the owner repairs the path with the
+same bytes or explicitly authorizes another revision. Review candidate coverage
+and conflicts before the integrator installs it; the command never writes live config.
+
+Sessions shows global registered keys, declarations in the project/epic context,
+and observed native session classifications as distinct facts. Counts precede
+search/state/workstream filters; zero sessions means none linked in the current
+inventory. Registered desk categories are separate from workstreams. Native desk,
+workspace and project identities remain native, including unlabelled sessions.
+
+Display precedence is: saved session mapping, saved workspace mapping, desk label,
+workstream label, native desk classification, then an unambiguous declared-plan
+fallback through an exact epic or explicit session-to-plan association. Explicit
+plan project bindings constrain that fallback. Missing, unavailable or conflicting
+plans do not attach arbitrarily. Derived mappings remain in memory and never write
+preferences or native labels. Plan context includes the declaration and exact source
+revision; graphless plans have no task graph or inferred lifecycle. Historical,
+completed and draft plan declarations do not imply active work or live sessions.
+
+Keep host-specific candidates and read evidence outside published source.
+
 
 A projectless source can appear in several native projects through exact confirmed
 epic labels on sessions in each project. An explicit source `projectId` constrains

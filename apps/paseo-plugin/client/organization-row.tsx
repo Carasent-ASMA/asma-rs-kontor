@@ -91,7 +91,7 @@ export function OrganizationRowView({ row, colors, compact, children, details, l
   if (row.kind === "empty") {
     return <View style={{ minHeight: compact ? 36 : 30, justifyContent: "center", paddingLeft: indentOf(row.depth, compact) + 8 }}>
       <Guides depth={row.depth} compact={compact} colors={colors} />
-      <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>No non-archived sessions in this workspace</Text>
+      <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>{row.entity === "project" ? "No native workspaces in this desk" : "No non-archived sessions in this workspace"}</Text>
     </View>;
   }
   const label = row.kind === "group" ? groupDisplayLabel(row.group) : row.entry.title;

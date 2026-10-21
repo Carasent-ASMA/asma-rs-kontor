@@ -77,7 +77,7 @@ import {
 import { useSessionDirectory } from "./use-session-directory";
 import { DEFAULT_ORGANIZATION_SETTINGS, type OrganizationSettings } from "../shared/organization";
 import type { useOrganizationSettings } from "./use-organization-settings";
-import { allGroupKeys, buildOrganizationTree, declaredScope, defaultGroupExpanded, deriveDeskScopes, filterOrganizationTree, flattenOrganizationTree, inEpicScope, matchesScope, nativeDesk, NO_LINKED_EPIC, NO_ROLE_KEY, organizationScope, OTHER_WORKSTREAM, ROLE_ROOT_KEY, scopeKeepsGroup, sessionRole, sessionState, STATE_LABELS, titleRoleCode, UNASSIGNED_EPIC, visibleSessions, workstreamRank, type OrganizationGroup, type OrganizationRow, type OrganizationWorkspace, type OrganizationProject, type RoleSource } from "./session-organization";
+import { allGroupKeys, buildOrganizationTree, declaredScope, defaultGroupExpanded, deriveDeskScopes, filterOrganizationTree, flattenOrganizationTree, inEpicScope, matchesScope, nativeDesk, NO_LINKED_EPIC, NO_ROLE_KEY, organizationScope, organizationGroupRank, organizationWorkspaceCount, OTHER_WORKSTREAM, ROLE_ROOT_KEY, scopeKeepsGroup, sessionRole, sessionState, STATE_LABELS, titleRoleCode, UNASSIGNED_EPIC, visibleSessions, workstreamRank, type OrganizationGroup, type OrganizationRow, type OrganizationWorkspace, type OrganizationProject, type RoleSource } from "./session-organization";
 import { rowKey, siblingKeys, reorderSavedSiblingOrder } from "./organization-order";
 import { OrganizationRowView, StateBadge, stateColor as sessionStateColor, WORKSPACE_KINDS } from "./organization-row";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
@@ -85,6 +85,8 @@ import { Action, COARSE_POINTER, Disclosure } from "./page-controls";
 import { nativeFreshnessLabel } from "./native-freshness";
 import { sessionTimeLines, useClock, useUpdatedTime, type RowTime, type TimeFreshness } from "./session-time";
 import { sessionUsageLabel } from "./session-usage";
+import { planWorkstreamOptions } from "./plan-workstreams";
+import type { ReadSourceSummary, SourceRead, WorkstreamRegistry } from "../shared/read-sources";
 import { SessionUsage, SessionUsageLines } from "./session-usage-view";
 import { MobileFiltersPage, focusControl } from "./mobile-filters";
 import { MobileQuickToolbar } from "./mobile-quick-toolbar";
@@ -121,7 +123,7 @@ const SCOPE_CHOICES: readonly { readonly id: string | null; readonly label: stri
   { id: "Other work", label: "Other workspaces" },
 ];
 const GROUPINGS: readonly { readonly id: SessionGrouping; readonly label: string }[] = [
-  { id: "hierarchy", label: "Workstreams" },
+  { id: "hierarchy", label: "Desks & workstreams" },
   { id: "placement", label: "Desks & workspaces" },
   { id: "role", label: "Role" },
   { id: "flat", label: "Flat" },
@@ -532,6 +534,17 @@ export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<t
     { label: "Role", value: role.code === null ? "No role: no kontor.role or role label, and no role prefix in the title" : `${role.code}, from the ${ROLE_SOURCE_NAMES[role.source!]}` },
     { label: "Other role declarations", value: role.conflicts.length ? role.conflicts.map(({ source, code }) => `${ROLE_SOURCE_NAMES[source]} says ${code}`).join("; ") : "None" },
   ];
+  if (provenance.nativeDesk) {
+    const declared = declaredScope(entry, mappings);
+    return [...lines,
+      { label: "Native desk", value: provenance.nativeDesk.name },
+      { label: "Native project ID", value: provenance.nativeDesk.id },
+      { label: "Workspace", value: provenance.workspace },
+      { label: "Native workspace ID", value: provenance.nativeDesk.workspaceId ?? "Unavailable" },
+      { label: "Workstream association", value: declared.workstream ?? "Not declared" },
+      { label: "Epic association", value: declared.epic ?? NO_LINKED_EPIC },
+      { label: "Association verification", value: "Workstream registry membership and epic/plan links are not checked here." }];
+  }
   if (provenance.desk) return [...lines, { label: "Desk", value: provenance.parts[0]! }, { label: "Workspace", value: provenance.workspace }];
   const declared = declaredScope(entry, mappings);
   return [...lines,
@@ -1095,6 +1108,8 @@ export function FilterChip({
       onPress={onPress}
       style={{
         minHeight: COARSE_POINTER ? FILTERS_TOUCH_TARGET : compact ? 36 : 30,
+        maxWidth: checkbox ? "100%" : undefined,
+        paddingVertical: checkbox ? 4 : undefined,
         flexDirection: "row",
         alignItems: "center",
         gap: 6,
@@ -1107,7 +1122,7 @@ export function FilterChip({
       }}
     >
       {dot ? <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: dot }} /> : null}
-      <Text style={{ color: colors.foreground, fontSize: compact ? 12 : 11, fontWeight: active ? "600" : "400" }}>
+      <Text style={{ flexShrink: checkbox ? 1 : undefined, color: colors.foreground, fontSize: compact ? 12 : 11, fontWeight: active ? "600" : "400" }}>
         {label}
       </Text>
       {count !== undefined ? (
@@ -1329,10 +1344,15 @@ type SessionsScreenProps = PluginScreenProps & {
   scopeLabel?: string | null;
   onClearScope?: () => void;
   /** Configured plan source IDs by upper-case epic key; epics without one get no Plan/Board/Graph actions. */
+  planMappings?: Parameters<typeof organizationScope>[1];
+  workstreamRegistry?: WorkstreamRegistry;
+  workstreamSources?: readonly ReadSourceSummary[];
+  workstreamReads?: Readonly<Record<string, SourceRead>>;
+  workstreamNote?: string | null;
   planSources?: Readonly<Record<string, readonly string[]>>;
   onEpicTab?: (tab: "Plan" | "Board" | "Graph", epicKey: string, sourceId: string | null) => void;
 };
-export function SessionsScreen({ host, layout, navigation, theme, directory, organization, projectId = null, onIncludeArchived, workspaces, projects, workspaceNote, epicKey = null, viewScope = host.id, scopeLabel = null, onClearScope, planSources, onEpicTab }: SessionsScreenProps) {
+export function SessionsScreen({ host, layout, navigation, theme, directory, organization, projectId = null, onIncludeArchived, workspaces, projects, workspaceNote, epicKey = null, viewScope = host.id, scopeLabel = null, onClearScope, planSources, onEpicTab, planMappings, workstreamRegistry, workstreamSources = [], workstreamReads = {}, workstreamNote }: SessionsScreenProps) {
   const colors = theme.colors;
   const compact = layout.compact;
   const [mobileFilterScope, setMobileFilterScope] = useState<string | null>(null);
@@ -1878,18 +1898,21 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     [arranging, compact, compactToolbarHeight, layout.platform, viewScope, setToolbarVisibility],
   );
 
-  const mappings = preferences.displayMappings;
+  const mappings = planMappings ?? preferences.displayMappings;
   const favorites = preferences.favorites;
   const scoped = useMemo(
     () => state.entries.filter((entry) => (projectId === null || entry.projectKey === projectId) && (epicKey === null || inEpicScope(entry, mappings, epicKey))),
     [state.entries, projectId, epicKey, mappings],
   );
-  const deskScopes = useMemo(() => deriveDeskScopes(scoped, workspaces,
-    projects?.filter((project) => projectId === null || project.id === projectId)), [scoped, workspaces, projects, projectId]);
+  const scopedWorkspaces = useMemo(() => workspaces?.filter((workspace) => (projectId === null || workspace.projectKey === projectId)
+    && (epicKey === null || mappings[`workspace:${workspace.id}`]?.epic?.trim().toLocaleLowerCase() === epicKey.trim().toLocaleLowerCase())), [workspaces, projectId, epicKey, mappings]);
+  const scopedProjects = useMemo(() => projects?.filter((project) => (projectId === null || project.id === projectId)
+    && (epicKey === null || scoped.some((entry) => entry.projectKey === project.id))), [projects, projectId, epicKey, scoped]);
+  const deskScopes = useMemo(() => deriveDeskScopes(scoped, scopedWorkspaces, scopedProjects), [scoped, scopedWorkspaces, scopedProjects]);
   // Retain legacy shortcuts; native ID choices distinguish same-named desks and survive renames.
   const scopeChoices = [...SCOPE_CHOICES.slice(0, -1), ...deskScopes, SCOPE_CHOICES[SCOPE_CHOICES.length - 1]!];
   const scopeChoiceLabel = shortcut === null ? null : scopeChoices.find(({ id }) => id === shortcut)?.label ?? (shortcut?.startsWith("desk-project:") ? "Native desk project" : shortcut);
-  const tree = useMemo(() => buildOrganizationTree({ entries: scoped, ...preferences, grouping, workspaces }), [scoped, preferences, grouping, workspaces]);
+  const tree = useMemo(() => buildOrganizationTree({ entries: scoped, ...preferences, displayMappings: mappings, grouping, workspaces: scopedWorkspaces, projects: scopedProjects }), [scoped, preferences, mappings, grouping, scopedWorkspaces, scopedProjects]);
   const tokens = useMemo(() => view.query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean), [view.query]);
   const task = view.task ?? null;
   const resultMode = isResultMode(view);
@@ -1906,11 +1929,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const statusCounts = useMemo(() => Object.fromEntries([...QUICK_STATUS_FILTERS, ...MORE_STATUS_FILTERS].map((status) => [status, candidates.filter((entry) => matchesStatus(entry, status, favorites)).length])) as Record<StatusFilter, number>,
     [candidates, favorites]);
   const shortcutCounts = useMemo(() => SESSION_SHORTCUTS.map(({ id }) => scoped.filter((entry) => matchesShortcut(entry, id, mappings)).length), [scoped, mappings]);
-  const streamChoices = useMemo(() => {
-    const labels = new Map<string, string>();
-    for (const entry of scoped) { const label = organizationScope(entry, mappings).workstream; labels.set(workstreamKey(label), label); }
-    return [...labels].sort(([, left], [, right]) => workstreamRank(left) - workstreamRank(right) || left.localeCompare(right));
-  }, [scoped, mappings]);
+  const workstreamOptions = useMemo(() => planWorkstreamOptions(workstreamSources, workstreamReads, workstreamRegistry, scoped, mappings, scopedWorkspaces), [workstreamSources, workstreamReads, workstreamRegistry, scoped, mappings, scopedWorkspaces]);
+  const streamChoices = workstreamOptions.map((option) => [option.key, option.label] as const);
   const localExpansion = readLocalExpansion(host.id);
   const expanded = useMemo(() => ({ ...preferences.expandedGroups, ...localExpansion }), [preferences.expandedGroups, localExpansion]);
   const peek = resultMode ? view.peek ?? null : null;
@@ -1938,7 +1958,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     }
   }, [compact, rowSignature]);
   const shown = useMemo(() => resultMode ? results : visibleSessions(filtered), [resultMode, results, filtered]);
-  const workspaceCount = new Set(shown.map((entry) => entry.workspaceId ?? entry.workspaceName ?? entry.cwd)).size;
+  const workspaceCount = resultMode ? new Set(shown.map((entry) => entry.workspaceId ?? entry.workspaceName ?? entry.cwd)).size : organizationWorkspaceCount(filtered);
   // The full count and read statement; Filters shows it, the visible count line only when it adds something.
   const sessionCount = `${shown.length === scoped.length ? `${scoped.length}` : `${shown.length} of ${scoped.length}`} session${scoped.length === 1 ? "" : "s"}`;
   const inventoryRead = state.lastUpdatedAt === null
@@ -1974,7 +1994,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const moveRow = (row: OrganizationRow, distance: number) => {
     const parent = row.kind === "group" ? row.group.parentKey ?? "root" : row.parentKey;
     const peers = siblingKeys(tree, parent).filter((key) => (row.kind === "session") === key.startsWith("session:"));
-    const movable = parent === "root" && row.kind === "group" ? peers.filter((key) => workstreamRank(tree.find((group) => group.key === key)?.label ?? "") === workstreamRank(row.group.label))
+    const movable = parent === "root" && row.kind === "group" ? peers.filter((key) => organizationGroupRank(tree.find((group) => group.key === key) ?? row.group) === organizationGroupRank(row.group))
       // No role stays last.
       : parent === ROLE_ROOT_KEY && row.kind === "group" ? peers.filter((key) => (key === NO_ROLE_KEY) === (row.group.key === NO_ROLE_KEY)) : peers;
     savePreference({ siblingOrder: { ...preferences.siblingOrder, [parent]: reorderSavedSiblingOrder(preferences.siblingOrder[parent] ?? [], siblingKeys(tree, parent), movable, rowKey(row), distance) } });
@@ -2300,13 +2320,12 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         >
           <OptionSelect testID="sessions-grouping" label="Group by" value={GROUPINGS.find(({ id }) => id === grouping)?.label ?? grouping} expanded={optionMenu === "grouping"} anchor={groupingRef} compact={compact} colors={colors} {...focusProps} onPress={() => setOptionMenu(optionMenu === "grouping" ? null : "grouping")} />
           <OptionLine label={streams === null ? `Workstream associations · all ${streamChoices.length} available` : `Workstream associations · ${streams.length} selected of ${streamChoices.length} available`} colors={colors}>
-            <Text testID="sessions-workstream-availability" style={{ width: "100%", color: colors.foregroundMuted, fontSize: 12, lineHeight: 18 }}>
-              Choices come from session metadata and display mappings, with desk and Other work fallbacks. Names may be unregistered. The full workstream registry and plan declarations are not loaded here; this list may be incomplete.
-            </Text>
-            {streamChoices.length === 0 ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>No workstream associations available in this context.</Text> : null}
-            {streamChoices.map(([key, label]) => <FilterChip key={key} checkbox label={label} compact={compact} active={streams === null || streams.includes(key)} colors={colors} {...focusProps} onPress={() => toggleStream(key)} />)}
+            {workstreamOptions.map(({key, label, sessions, plans, workspaces, registered, desk}) => <FilterChip key={key} testID={`workstream-option-${key}`} checkbox label={workstreamRegistry || workstreamSources.length ? `${label} · ${sessions} sessions · ${workspaces} workspaces · ${plans} plans · ${desk ? "desk category" : registered ? "registered" : workstreamRegistry?.revision ? "unregistered" : "registration unavailable"}` : label} compact={compact} active={streams === null || streams.includes(key)} colors={colors} {...focusProps} onPress={() => toggleStream(key)} />)}
+            <FilterChip label="None" compact={compact} active={streams?.length === 0} colors={colors} {...focusProps} onPress={() => { pinFilterInteraction(); updateView({ streams: [], scrollOffset: 0 }); }} />
             {streams !== null ? <FilterChip label="All" compact={compact} active={false} colors={colors} {...focusProps} onPress={() => { pinFilterInteraction(); updateView({ streams: null, scrollOffset: 0 }); }} /> : null}
+            {streamChoices.length === 0 ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>No workstream associations available in this context.</Text> : null}
           </OptionLine>
+          <Text testID="sessions-workstream-availability" style={{ color: colors.foregroundMuted, fontSize: 11 }}>{!workstreamRegistry?.revision && workstreamSources.length === 0 ? "Choices come from session metadata and display mappings, with desk and Other work fallbacks. Names may be unregistered. The full workstream registry and plan declarations are not loaded here; this list may be incomplete. " : ""}{workstreamRegistry?.revision ? `${Object.keys(workstreamRegistry.workstreams).length} registered workstreams · ${workstreamOptions.filter((option) => option.plans > 0).length} declared plan keys here · ${Object.keys(workstreamRegistry.desks).length} registered desk categories. ` : ""}Registered keys are global. Plan and session counts use this project/epic context, before search, state and workstream filters. Zero sessions means none linked in this inventory. Plans without workspaces are included. Native desks stay separate.{workstreamNote ? ` ${workstreamNote}` : ""}</Text>
           <OptionSelect testID="sessions-scope" label="Workspace scope" value={scopeChoiceLabel ?? SCOPE_CHOICES[0]!.label} expanded={optionMenu === "scope"} anchor={scopeRef} compact={compact} colors={colors} {...focusProps} onPress={() => setOptionMenu(optionMenu === "scope" ? null : "scope")} />
           <OptionLine label="Epic lifecycle" colors={colors}>
             <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>Not captured in session data; no lifecycle is inferred from idle or closed sessions.</Text>

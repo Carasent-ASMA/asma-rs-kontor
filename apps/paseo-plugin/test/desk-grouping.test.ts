@@ -82,33 +82,33 @@ describe("desk grouping from native desk projects", () => {
 
   it("puts the Adam desk and the PR desk's unlabelled LSA tabs under their desks, each session once", () => {
     const tree = buildOrganizationTree({ entries: inventory(), workspaces: emptyWorkspaces });
-    expect(tree.map((group) => group.label)).toEqual(["pr-review", "adam", "kontor", "unrecognised-stream", OTHER_WORKSTREAM]);
+    expect(tree.map((group) => group.label)).toEqual([ADAM.projectName, REVIEW.projectName, "unrecognised-stream", OTHER_WORKSTREAM]);
     const where = placement(tree);
     expect([...where.values()].every((keys) => keys.length === 1)).toBe(true);
     expect(where.size).toBe(inventory().length);
     // One native workspace, one place: the labelled TPMs and the unlabelled LSAs stay together.
-    expect(where.get("review-lsa-1")).toEqual(["workstream:pr-review/workspace:id%3Awks_review_adam/role:lsa"]);
-    expect(where.get("review-tpm-1")).toEqual(["workstream:pr-review/workspace:id%3Awks_review_adam/role:tpm"]);
-    expect(where.get("adam-lsa-1")).toEqual(["workstream:adam/workspace:id%3Awks_adam/role:lsa"]);
-    expect(workstream(tree, "adam").desk).toBe(true);
+    expect(where.get("review-lsa-1")).toEqual(["project:prj_review/workspace:id%3Awks_review_adam/role:lsa"]);
+    expect(where.get("review-tpm-1")).toEqual(["project:prj_review/workspace:id%3Awks_review_adam/role:tpm"]);
+    expect(where.get("adam-lsa-1")).toEqual(["project:prj_adam/workspace:id%3Awks_adam/role:lsa"]);
+    expect(tree.find((group) => group.project?.id === ADAM.projectKey)?.desk).toBe(true);
     expect(workstream(tree, OTHER_WORKSTREAM).desk).toBe(false);
   });
 
-  it("keeps the saved PR desk keys and adds the Adam desk as a new key", () => {
+  it("keeps native project/workspace keys stable as unlabelled peers arrive", () => {
     const before = buildOrganizationTree({ entries: inventory().filter((session) => session.labels.desk) });
     const after = buildOrganizationTree({ entries: inventory() });
     const keys = (groups: readonly OrganizationGroup[]) => allGroups(groups).map((group) => group.key);
     expect(keys(after)).toEqual(expect.arrayContaining(keys(before)));
-    expect(keys(after)).toEqual(expect.arrayContaining(["workstream:adam", "workstream:adam/workspace:id%3Awks_adam"]));
+    expect(keys(after)).toEqual(expect.arrayContaining(["project:prj_adam", "project:prj_adam/workspace:id%3Awks_adam"]));
   });
 
   it("treats a missing epic and a missing workstream as separate facts", () => {
     const tree = buildOrganizationTree({ entries: inventory() });
     const where = placement(tree);
-    // Native desk work with an epic stays in the desk, in that epic.
-    expect(where.get("adam-epic")).toEqual(["workstream:adam/project:prj_adam/epic:ex-300/workspace:id%3Awks_adam"]);
-    // A declared workstream wins over the desk; the epic stays.
-    expect(where.get("adam-declared")).toEqual(["workstream:kontor/project:prj_adam/epic:ex-400/workspace:id%3Awks_adam"]);
+    // Native parentage stays fixed; declared epic/workstream remain associations.
+    expect(where.get("adam-epic")).toEqual(["project:prj_adam/workspace:id%3Awks_adam/role:tpm"]);
+    // An explicit association never splits a native desk workspace.
+    expect(where.get("adam-declared")).toEqual(["project:prj_adam/workspace:id%3Awks_adam/role:tpm"]);
     // An epic without a workstream is honest Other work, not a fabricated desk.
     expect(organizationScope(inventory().find((session) => session.id === "epic-labelled")!, {})).toEqual({ workstream: OTHER_WORKSTREAM, epic: "EX-100" });
     expect(where.get("epic-unlabelled")?.[0]).toContain(`workstream:${OTHER_WORKSTREAM.toLocaleLowerCase()}/project:prj_epic/epic:unassigned`);
@@ -124,14 +124,14 @@ describe("desk grouping from native desk projects", () => {
     expect(placement(tree).get("unknown-stream")?.[0]).toMatch(/^workstream:unrecognised-stream\//);
   });
 
-  it("keeps empty desk workspaces under their desk, and a mapping still wins", () => {
+  it("keeps empty desk workspaces under their native desk across association mappings", () => {
     const tree = buildOrganizationTree({ entries: inventory(), workspaces: emptyWorkspaces });
     const empty = (id: string) => allGroups(tree).find((group) => group.kind === "workspace" && group.key.endsWith(`workspace:id%3A${id}`))!;
-    expect(empty("wks_review_idle").key).toBe("workstream:pr-review/workspace:id%3Awks_review_idle");
-    expect(empty("wks_adam_idle").key).toBe("workstream:adam/workspace:id%3Awks_adam_idle");
+    expect(empty("wks_review_idle").key).toBe("project:prj_review/workspace:id%3Awks_review_idle");
+    expect(empty("wks_adam_idle").key).toBe("project:prj_adam/workspace:id%3Awks_adam_idle");
     expect(empty("wks_epic_idle").key).toContain("workstream:other work/project:prj_epic/epic:unassigned/");
     const mapped = buildOrganizationTree({ entries: [], workspaces: emptyWorkspaces, displayMappings: { [workspaceMappingKey("wks_adam_idle")]: { workstream: "kontor", epic: "EX-400" } } });
-    expect(allGroups(mapped).find((group) => group.label === "CSW • EX-8 • review")?.key).toBe("workstream:kontor/project:prj_adam/epic:ex-400/workspace:id%3Awks_adam_idle");
+    expect(allGroups(mapped).find((group) => group.label === "CSW • EX-8 • review")?.key).toBe("project:prj_adam/workspace:id%3Awks_adam_idle");
   });
 });
 
@@ -164,7 +164,7 @@ describe("desk scope contexts", () => {
       const filtered = filterOrganizationTree(tree, (session) => matchesScope(session, scope, {}), (group) => scopeKeepsGroup(group, scope), (session) => matchesScope(session, scope, {}));
       return { ids: treeIds(filtered), empty: allGroups(filtered).filter((group) => group.kind === "workspace" && group.totalCount === 0).map((group) => group.label) };
     };
-    expect(shown("Adam")).toEqual({ ids: ["adam-epic", "adam-lsa-1", "adam-lsa-2", "adam-declared"], empty: ["CSW • EX-8 • review"] });
+    expect(shown("Adam")).toEqual({ ids: ["adam-lsa-1", "adam-lsa-2", "adam-epic", "adam-declared"], empty: ["CSW • EX-8 • review"] });
     expect(shown("PR Review").empty).toEqual(["RSW • EX-9 • repo#9"]);
     expect(shown("Desks").empty.sort()).toEqual(["CSW • EX-8 • review", "RSW • EX-9 • repo#9"]);
     expect(shown("Other work")).toEqual({ ids: expect.arrayContaining(count("Other work")), empty: [] });
@@ -176,8 +176,8 @@ describe("native identity is never merged by name", () => {
   it("keeps same-named and differently cased desk projects apart by workspace, each session once", () => {
     const twin = { projectKey: "prj_adam_2", projectName: "DESK • Adam" };
     const tree = buildOrganizationTree({ entries: [entry("one", ADAM, "wks_one", "ADAM", "LSA • one"), entry("two", twin, "wks_two", "ADAM", "LSA • two")] });
-    expect(tree.map((group) => group.label)).toEqual(["adam"]);
-    expect(tree[0]!.groups.map((group) => group.key)).toEqual(["workstream:adam/workspace:id%3Awks_one", "workstream:adam/workspace:id%3Awks_two"]);
+    expect(tree.map((group) => group.label)).toEqual([twin.projectName, ADAM.projectName]);
+    expect(tree.flatMap((group) => group.groups.map((child) => child.key)).sort()).toEqual(["project:prj_adam/workspace:id%3Awks_one", "project:prj_adam_2/workspace:id%3Awks_two"].sort());
     expect(treeIds(tree).sort()).toEqual(["one", "two"]);
   });
 
