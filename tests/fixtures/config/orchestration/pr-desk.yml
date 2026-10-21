@@ -1,6 +1,8 @@
 # ASMA's PR desk policy values as the schema's test case. Test data, not a
-# live config file: the values mirror `_tools/ai-orchestration/pr_desk.py` in
-# the asma-modules checkout.
+# live config file: the values mirror `_tools/ai-orchestration/pr_desk.py` and
+# `.github/skills/asma-pr-review/SKILL.md` in the asma-modules checkout.
+# ASMA's existing decision keys (desk, skip_repositories, durable_seats) may
+# sit beside these required seven keys.
 schema_version: 1
 poll_start_budget: 3
 active_pr_policy: unlimited

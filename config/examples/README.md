@@ -51,11 +51,13 @@ file carries the full consumer shape; the schema test requires every top-level
 and nested key so a new project cannot copy an incomplete profile.
 
 `project.pr_desk` also follows plan §1.1. `command` is the command line that
-invokes the project's desk; `settings` names `orchestration/pr-desk.yml`, the
-folder-relative policy file; and `history_root` is relative to
-`host.paths.data_root`, with the learning log at
-`<history_root>/learning.log`. An optional absolute `host.paths.pr_desk` is
-this host's history root and wins over the data-root resolution when present.
+invokes the project's desk; `settings` names the pinned
+`orchestration/pr-desk.yml` policy file; and `history_root` is relative to
+`host.paths.data_root`. The learning log has one resolved root, in precedence
+order: `PR_DESK_DIR` when set, then an absolute `host.paths.pr_desk`, then
+`<host.paths.data_root>/<history_root>`; the log is `<root>/learning.log`.
+`orchestration/pr-desk.yml` carries the required seven keys and may carry
+project-owned keys beside them.
 
 Paths are classified, not resolved uniformly:
 
@@ -67,8 +69,8 @@ Paths are classified, not resolved uniformly:
   `<state-root>/supervision.yml`.
 - **Desk history paths** (`project.pr_desk.history_root`) resolve under
   `host.paths.data_root`, stay inside it, and are not config references. The
-  learning log is `<data_root>/<history_root>/learning.log`. An absolute
-  `host.paths.pr_desk` overrides that history root on this host.
+  learning log is `<resolved root>/learning.log`, resolved by `PR_DESK_DIR`,
+  then `host.paths.pr_desk`, then `<data_root>/<history_root>`.
 - **Project resource paths** (`documentation_roots`, `gap_ledger`, `glossary`,
   `decision_records_root`) start with a `project.resource_roots` entry. Each
   root maps to a repository in `project.forge.repositories`; the rest resolves

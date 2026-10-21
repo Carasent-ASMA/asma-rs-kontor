@@ -66,18 +66,26 @@ supervision_contract:
   project.supervision: folder-relative autonomous_tpm_v1 TPM cadence profile, read from the selected config folder
   paseo_watchdog: <state-root>/supervision.yml, read by the Paseo watchdog and recovery path; it is not a project key
 
-# The PR desk contract. The project block owns the invocation, the policy file
-# reference and the data-root-relative history root; the host owns an optional
-# absolute override.
+# The PR desk contract. The project block owns the invocation, the pinned
+# policy file name and the data-root-relative history root; the host owns an
+# optional absolute override, and the desk's explicit environment override
+# ranks above it.
 pr_desk_contract:
   project.pr_desk:
     command: the command line that invokes the project's PR desk
-    settings: folder-relative orchestration/pr-desk.yml, read from the selected config folder
-    history_root: relative to host.paths.data_root; the learning log is <history_root>/learning.log
-  host_override: host.paths.pr_desk, an absolute history root; when present it wins over <host.paths.data_root>/<project.pr_desk.history_root>
+    settings: the pinned folder-relative orchestration/pr-desk.yml, read from the selected config folder
+    history_root: relative to host.paths.data_root; the root is resolved by learning_log_root below
+  learning_log_root:
+    precedence:
+      - 'PR_DESK_DIR: the explicit desk host override, highest precedence'
+      - 'host.paths.pr_desk: an absolute history root in host bootstrap data'
+      - '<host.paths.data_root>/<project.pr_desk.history_root>: the project default'
+    resolved_log: '<resolved root>/learning.log; there is no second candidate'
   settings_file:
+    name: orchestration/pr-desk.yml
     required: [schema_version, poll_start_budget, active_pr_policy, ready_silence_days, draft_silence_days, fix_round_limit, revise_round_limit]
     active_pr_policy_values: [unlimited, one_active]
+    extra_keys: allowed; project-owned keys may sit beside the required seven
     rule: poll_start_budget, the silence days and both round limits are positive integers
 
 # Path classes. Only config_file_references are contained by the selected

@@ -205,6 +205,36 @@ fn validate_pr_desk(project: &Value, path: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_pr_desk_policy(policy: &Value, path: &str) -> Result<(), String> {
+    let policy = policy
+        .as_mapping()
+        .ok_or_else(|| format!("{path} is a mapping"))?;
+    if policy.get("schema_version").and_then(Value::as_i64) != Some(1) {
+        return Err(format!("{path}.schema_version is 1"));
+    }
+    for key in [
+        "poll_start_budget",
+        "ready_silence_days",
+        "draft_silence_days",
+        "fix_round_limit",
+        "revise_round_limit",
+    ] {
+        if !policy
+            .get(key)
+            .and_then(Value::as_i64)
+            .is_some_and(|value| value > 0)
+        {
+            return Err(format!("{path}.{key} is a positive integer"));
+        }
+    }
+    match policy.get("active_pr_policy").and_then(Value::as_str) {
+        Some("unlimited") | Some("one_active") => Ok(()),
+        _ => Err(format!(
+            "{path}.active_pr_policy is unlimited or one_active"
+        )),
+    }
+}
+
 fn learning_log(host: &Value, project: &Value) -> Result<PathBuf, String> {
     let paths = host
         .get("paths")
@@ -833,7 +863,10 @@ fn both_examples_define_the_pr_desk_contract_and_its_settings_file() {
         );
 
         let root = repo_root().join(folder);
-        let settings = root.join("orchestration/pr-desk.yml");
+        let settings_reference = desk["settings"]
+            .as_str()
+            .expect("the settings reference is a string");
+        let settings = root.join(settings_reference);
         assert!(
             settings.is_file(),
             "{relative}: the settings file exists in the config folder"
@@ -891,18 +924,33 @@ fn a_missing_pr_desk_key_or_an_escaping_path_is_refused() {
         );
     }
 
-    let mut escaped_history = project.clone();
-    escaped_history["pr_desk"]
+    let mut wrong_settings = project.clone();
+    wrong_settings["pr_desk"]
         .as_mapping_mut()
         .expect("a pr_desk mapping")
         .insert(
-            Value::String("history_root".to_owned()),
-            Value::String("../pr-review".to_owned()),
+            Value::String("settings".to_owned()),
+            Value::String("orchestration/other.yml".to_owned()),
         );
     assert!(
-        validate_pr_desk(&escaped_history, "project").is_err(),
-        "a history root that escapes the data root is refused"
+        validate_pr_desk(&wrong_settings, "project").is_err(),
+        "the contained but wrong settings name is refused"
     );
+
+    for escaped in ["../x", "/x"] {
+        let mut escaped_history = project.clone();
+        escaped_history["pr_desk"]
+            .as_mapping_mut()
+            .expect("a pr_desk mapping")
+            .insert(
+                Value::String("history_root".to_owned()),
+                Value::String(escaped.to_owned()),
+            );
+        assert!(
+            validate_pr_desk(&escaped_history, "project").is_err(),
+            "a history root that escapes the data root is refused: {escaped}"
+        );
+    }
 }
 
 #[test]
@@ -953,22 +1001,32 @@ fn the_pr_desk_learning_log_resolves_under_data_root_or_the_host_override() {
 #[test]
 fn the_pr_desk_policy_files_carry_the_required_values() {
     let neutral = read("config/examples/orchestration/pr-desk.yml");
+    validate_pr_desk_policy(&neutral, "config/examples/orchestration/pr-desk.yml")
+        .expect("the neutral policy is valid");
     assert_eq!(neutral["schema_version"].as_i64(), Some(1));
     assert_eq!(neutral["active_pr_policy"].as_str(), Some("one_active"));
-    for key in [
-        "poll_start_budget",
-        "ready_silence_days",
-        "draft_silence_days",
-        "fix_round_limit",
-        "revise_round_limit",
-    ] {
-        assert!(
-            neutral[key].as_i64().is_some_and(|value| value > 0),
-            "the neutral pr-desk.yml.{key} is a positive integer"
-        );
-    }
+
+    let mut with_project_keys = neutral.clone();
+    let project_keys = with_project_keys
+        .as_mapping_mut()
+        .expect("the neutral policy mapping");
+    project_keys.insert(
+        Value::String("desk".to_owned()),
+        Value::String("project-owned".to_owned()),
+    );
+    project_keys.insert(
+        Value::String("skip_repositories".to_owned()),
+        Value::Sequence(Vec::new()),
+    );
+    validate_pr_desk_policy(
+        &with_project_keys,
+        "config/examples/orchestration/pr-desk.yml",
+    )
+    .expect("project-owned keys are allowed beside the required seven");
 
     let asma = read("tests/fixtures/config/orchestration/pr-desk.yml");
+    validate_pr_desk_policy(&asma, "tests/fixtures/config/orchestration/pr-desk.yml")
+        .expect("ASMA's policy is valid");
     assert_eq!(asma["schema_version"].as_i64(), Some(1));
     assert_eq!(asma["poll_start_budget"].as_i64(), Some(3));
     assert_eq!(asma["active_pr_policy"].as_str(), Some("unlimited"));
@@ -980,17 +1038,49 @@ fn the_pr_desk_policy_files_carry_the_required_values() {
     let schema = read("config/examples/orchestration/orchestration.schema.yml");
     let contract = &schema["pr_desk_contract"];
     assert_eq!(
+        schema_keys(
+            &schema["project"]["nested"]["pr_desk"]["required"],
+            "pr_desk required"
+        ),
+        ["command", "settings", "history_root"],
+        "the schema pins the pr_desk block's required key list"
+    );
+    assert_eq!(
         contract["project.pr_desk"]["settings"]
             .as_str()
             .map(|text| text.contains("orchestration/pr-desk.yml")),
         Some(true),
-        "the schema names the settings file"
+        "the schema names the pinned settings file"
     );
     assert!(
-        contract["host_override"]
+        contract["settings_file"]["extra_keys"]
             .as_str()
-            .is_some_and(|text| text.contains("host.paths.pr_desk")),
-        "the schema names the host override"
+            .is_some_and(|text| text.contains("allowed")),
+        "the settings contract allows project-owned keys beside the required seven"
+    );
+    let precedence = schema_keys(
+        &contract["learning_log_root"]["precedence"],
+        "learning log precedence",
+    );
+    assert_eq!(
+        precedence.len(),
+        3,
+        "the learning log root has one precedence chain"
+    );
+    for (position, expected) in ["PR_DESK_DIR", "host.paths.pr_desk", "host.paths.data_root"]
+        .iter()
+        .enumerate()
+    {
+        assert!(
+            precedence[position].contains(expected),
+            "precedence {position} names {expected}"
+        );
+    }
+    assert!(
+        contract["learning_log_root"]["resolved_log"]
+            .as_str()
+            .is_some_and(|text| text.contains("no second candidate")),
+        "the schema states the single resolved learning log"
     );
     assert_eq!(
         schema_keys(
