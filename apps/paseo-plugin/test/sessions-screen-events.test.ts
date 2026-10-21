@@ -227,6 +227,7 @@ vi.mock("react-native", () => ({
 }));
 
 vi.mock("@getpaseo/plugin/client", () => ({
+  useRpc: () => async () => { throw new Error("Lifecycle RPC unavailable in this fixture"); },
   getPaseoClient: directory.getClient,
   useHosts: () => [
     { serverId: "host-a", status: "online" },
@@ -250,6 +251,7 @@ vi.mock("../client/use-session-directory", () => ({
 }));
 
 import { emptyDirectoryState } from "../client/session-directory";
+import { SessionLifecycleDialog } from "../client/session-lifecycle-view";
 import {
   ActiveFilterSummary,
   COMPACT_COLLAPSE_DISTANCE,
@@ -439,6 +441,33 @@ function fullToolbarShown(): boolean {
 }
 
 describe("SessionsScreen toolbar events", () => {
+  it.each([true, false])("keeps exactly one enabled recovery entry on compact=%s", (compact) => {
+    renderScreen(undefined, compact);
+    const tree = walk(harness.current());
+    const recovery = tree.filter((element) => element.props.accessibilityLabel === "Recover sessions");
+    const slim = tree.find((element) => element.type === SlimToolbar);
+    const inSlim = slim?.props.action as ElementLike | undefined;
+    expect(recovery.length + (inSlim ? 1 : 0)).toBe(1);
+    expect((inSlim ?? recovery[0]!)?.props.disabled).toBe(false);
+    expect(tree.some((element) => element.type === MobileQuickToolbar)).toBe(compact);
+    expect(inSlim).toBeUndefined();
+  });
+  it("opens recovery from the mobile quick toolbar and keeps the existing search after close", () => {
+    renderScreen(undefined, true);
+    const quick = walk(harness.current()).find((element) => element.type === MobileQuickToolbar)!;
+    (quick.props.onQuery as (query: string) => void)("session-a");
+    harness.flush();
+    const recovery = walk(harness.current()).find((element) => element.props.accessibilityLabel === "Recover sessions")!;
+    (recovery.props.onPress as () => void)();
+    harness.flush();
+    const dialog = walk(harness.current()).find((element) => element.type === SessionLifecycleDialog)!;
+    expect(dialog.props.scopeIds).toEqual(["session-a"]);
+    expect(walk(harness.current()).some((element) => element.type === MobileQuickToolbar)).toBe(true);
+    (dialog.props.onClose as () => void)();
+    harness.flush();
+    expect(walk(harness.current()).some((element) => element.type === SessionLifecycleDialog)).toBe(false);
+    expect(readSessionView("host-a").query).toBe("session-a");
+  });
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(0);

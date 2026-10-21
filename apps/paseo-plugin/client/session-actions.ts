@@ -30,6 +30,9 @@ export function openSessionById(input: {
       message: "That session is no longer in the directory. Refresh the list and try again.",
     };
   }
+  if (entry.availability?.state === "missing" && entry.availability.revision === entry.updatedAt) {
+    return { ok: false, reason: "missing", message: "The host could not find this exact session ID at the last availability check. Refresh availability before opening it again." };
+  }
   if (!input.navigation) {
     return {
       ok: false,

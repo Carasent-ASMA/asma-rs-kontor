@@ -7,8 +7,10 @@ import { teamsSourceBindings } from "./shared/teams-source-bindings";
 import { createTeamsSourceAdapter } from "./server/teams-source-adapter";
 import { readTeamsSource } from "./shared/teams-source-snapshot";
 import { sourceCatalog, contributeReadSources } from "./server/read-sources";
+import { contributeSessionLifecycle } from "./server/session-lifecycle";
 
 export default function plugin(server: PluginServerContext): () => void {
+  contributeSessionLifecycle(server);
   const settings = server.registerSettings(organizationSettings);
   server.registerSettings(keyboardSettings);
   server.handle(readTeamsSource, (input) => {
