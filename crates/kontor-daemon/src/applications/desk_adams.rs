@@ -854,6 +854,20 @@ impl Services {
             Err(error) if error.proves_hosted_predecessor_absent() => {
                 (kontor_api::now(), absent_reason)
             }
+            // A retirement is a write. A transport failure after it was sent
+            // cannot prove the session survived, so saying "the runtime could
+            // not be reached; nothing was changed" would be false and would
+            // invite a caller to act as though the seat were still live.
+            Err(error) if matches!(error, RuntimeError::Transport { .. }) => {
+                return Err(ApiError::new(
+                    state.realm_id(),
+                    ApiErrorCode::DeliveryUnconfirmed,
+                    "the session's retirement was put on the wire and the runtime did not confirm its outcome",
+                )
+                .advising(
+                    "retry the same operation with the same idempotency key; a retirement that already landed is replay-safe",
+                ));
+            }
             Err(error) => return Err(ApiError::from_runtime(state.realm_id(), &error)),
         };
         state
