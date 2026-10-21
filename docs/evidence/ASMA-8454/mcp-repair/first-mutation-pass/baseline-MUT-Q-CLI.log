@@ -1,7 +1,7 @@
    Compiling hyper v1.11.1
    Compiling tower v0.5.3
    Compiling tokio-util v0.7.19
-   Compiling kontor-scheduler v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-scheduler)
+   Compiling kontor-scheduler v0.2.1 ([qualification-workspace]/crates/kontor-scheduler)
    Compiling tokio-tungstenite v0.30.0
    Compiling float-cmp v0.10.0
    Compiling tokio-stream v0.1.19
@@ -13,17 +13,17 @@
    Compiling hyper-util v0.1.20
    Compiling hyper-rustls v0.27.9
    Compiling axum v0.8.9
-   Compiling kontor-accounts v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-accounts)
+   Compiling kontor-accounts v0.2.1 ([qualification-workspace]/crates/kontor-accounts)
    Compiling reqwest v0.13.4
-   Compiling kontor-calendar v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-calendar)
-   Compiling kontor-jira v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-jira)
-   Compiling kontor-runtime-paseo v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-runtime-paseo)
-   Compiling kontor-store v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-store)
-   Compiling kontor-mcp v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-mcp)
-   Compiling kontor-cli v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-cli)
-   Compiling kontor-memory-cognee v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-memory-cognee)
-   Compiling kontor-api v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-api)
-   Compiling kontor-daemon v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-daemon)
+   Compiling kontor-calendar v0.2.1 ([qualification-workspace]/crates/kontor-calendar)
+   Compiling kontor-jira v0.2.1 ([qualification-workspace]/crates/kontor-jira)
+   Compiling kontor-runtime-paseo v0.2.1 ([qualification-workspace]/crates/kontor-runtime-paseo)
+   Compiling kontor-store v0.2.1 ([qualification-workspace]/crates/kontor-store)
+   Compiling kontor-mcp v0.2.1 ([qualification-workspace]/crates/kontor-mcp)
+   Compiling kontor-cli v0.2.1 ([qualification-workspace]/crates/kontor-cli)
+   Compiling kontor-memory-cognee v0.2.1 ([qualification-workspace]/crates/kontor-memory-cognee)
+   Compiling kontor-api v0.2.1 ([qualification-workspace]/crates/kontor-api)
+   Compiling kontor-daemon v0.2.1 ([qualification-workspace]/crates/kontor-daemon)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 35.04s
      Running tests/durable_desk_parity.rs (.qualification/target-carrier-archive/debug/deps/durable_desk_parity-7af01c73fe2303f5)
 

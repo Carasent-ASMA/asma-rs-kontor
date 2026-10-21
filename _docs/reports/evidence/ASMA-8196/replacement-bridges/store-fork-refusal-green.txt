@@ -1,6 +1,6 @@
-   Compiling kontor-store v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-store)
+   Compiling kontor-store v0.2.1 ([task-workspace])
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.67s
-     Running tests/team_definition_migration_completeness.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/team_definition_migration_completeness-f7b8bbf4d0c6389a)
+     Running tests/team_definition_migration_completeness.rs ([parent-tools])
 
 running 2 tests
 test a_genuine_delivery_fork_refuses_the_native_migration_census ... ok

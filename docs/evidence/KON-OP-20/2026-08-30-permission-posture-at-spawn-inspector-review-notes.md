@@ -8,7 +8,7 @@
   on topology node `01a0306e-6de7-7c90-aaa6-4995ea6dc074`.
 - **Reviewed:** `feat/KON-OP-20-permission-posture-at-spawn` at `4c93739`
   (`44c247c`, `2a6fd8e`, `eeed9ad`, `4c93739`), baseline `origin/master` `e814661`.
-- **Plan:** `_docs/ai-orchestration/plans/2026-08-30-15-05-plan-kontor-op20-permission-posture-reconciliation.md`.
+- **Plan:** the parent-workspace OP-20 permission-posture reconciliation plan.
 - **Verdict:** **BLOCKED on two findings (F1, F5).** Everything else inspected
   passes.
 

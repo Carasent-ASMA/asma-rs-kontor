@@ -1,7 +1,7 @@
     Blocking waiting for file lock on package cache
     Blocking waiting for file lock on package cache
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.61s
-     Running tests/loopback_api.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/reproduction/target-base/debug/deps/loopback_api-6520399e83adc025)
+     Running tests/loopback_api.rs ([qualification-workspace]/.qualification/reproduction/target-base/debug/deps/loopback_api-6520399e83adc025)
 
 running 614 tests
 test a_body_overtaken_during_a_lost_confirmation_is_refused ... ok

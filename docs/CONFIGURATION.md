@@ -2,7 +2,7 @@
 
 > **Stamped to `0971674d` (PR #300, 2026-10-11):** the state-root file inventory, section status labels, the Jira connector and credential contract, fleet, quota-signal, supervision, seat permission posture, seat MCP surface, desk and GitHub App configuration were re-verified against the source at that commit. Merged is not qualified, deployed or enabled for a realm; each section says what its pull request recorded. The 2026-09-05 note below is kept as history.
 
-> **Historical checkout disposition — 2026-09-05 (superseded by the stamp above):** This document accompanies the older `e6da270` branch baseline and preserves its pending/uncommitted work. Its implementation counts and “no engine” statements describe that baseline, not the current released control plane. For released source `082b63ad`, schema/tool counts, merged OP-21 supervision and OP-22 convergence, use the [revision-stamped inventory](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/reference/2026-09-05-11-36-reference-kontor-implementation-inventory.md). Release-documentation corrections are isolated from this checkout’s runtime changes.
+> **Historical checkout disposition — 2026-09-05 (superseded by the stamp above):** This document accompanies the older `e6da270` branch baseline and preserves its pending/uncommitted work. Its implementation counts and “no engine” statements describe that baseline, not the current released control plane. For released source `082b63ad`, the revision-stamped schema/tool counts and the merged OP-21 supervision and OP-22 convergence are recorded in the release documentation for that source; this historical note does not certify them. Release-documentation corrections are isolated from this checkout’s runtime changes.
 
 Kontor separates invariants from deployment behavior. Rust enforces safety
 properties such as one non-terminal session per role slot and uncertainty not
@@ -16,10 +16,421 @@ what lets Kontor run research, architecture, UX, QA and operations work without 
 core-code branch per work type, and what lets an operator's own conventions become
 system behaviour instead of instructions somebody has to remember.
 
+## The selected config folder (YAML-only)
+
+> **Status:** the folder contract, `host.yml` schema and `project:` block are
+> defined by WP-02 (ASMA-8564, workflow-pack plan v0.5). Consumers adopt them in
+> WP-05, WP-08 and WP-10; this section is the contract they implement, not a
+> claim that every current reader already follows it.
+
+One folder, anywhere on the machine and with any name, holds every authored
+setting that varies by project, user or machine. It is the configuration source
+for both workflow options: `kontord` and the tools that coordinate through Paseo
+(the PR desk, asma-cli and the pack tool). Unmodified Paseo does not read
+Kontor YAML; a harness-owned file is a generated projection instead.
+
+### Selection
+
+- Select the folder explicitly with `--config-dir <path>`. When both are set,
+  `--config-dir` wins over `KONTOR_CONFIG_DIR`.
+- Resolve a relative input once, against the working directory of the setup
+  invocation, then persist the absolute selection for later commands and service
+  launches. Record and show the resolved absolute path.
+- Do not guess the folder from the current directory, a state root, a legacy
+  project path or an old state-root file. An absent selection, a missing folder, a missing
+  referenced file or invalid YAML is refused by name.
+- The same selected YAML source serves Paseo-direct and `kontord`-governed work.
+  Setting up the direct option does not require `kontord`.
+
+### Layout and references
+
+```text
+<config folder>/                    explicitly selected; any path, any name
+  orchestration/orchestration.yml   entry: schema_version, bundle selectors, project: block
+  orchestration/orchestration.schema.yml  the project: block's required-key schema
+  orchestration/fleet.yml           fleet policy (schema_version 2)
+  orchestration/route-qualifications.yml  hash-bound route qualification records
+  orchestration/teams/core-team.yml one pinned Core Team roster
+  orchestration/*.yml               workstreams and other project policy
+  orchestration/tpm-supervision.yml  autonomous TPM cadence profile
+  tracker/*.yml                     tracker connection, field/workflow specs and credential references
+  packs/*.yml                       team and profile overlay, committee presets and role prompts
+  forge/github-app.example.yml      committed GitHub App placeholder
+  quota-signals.yml                 optional vendor refusal wording
+  paseo-supervision.yml             sample for <state-root>/supervision.yml, not a project key
+  host.example.yml                  committed host schema example
+  host.yml                          this machine only; git-ignored
+```
+
+`project.supervision` follows plan §1.1 and names
+`orchestration/tpm-supervision.yml`, the autonomous TPM cadence profile. The
+Paseo watchdog policy is a different file: the daemon reads
+`<state-root>/supervision.yml`; `paseo-supervision.yml` here is only the sample
+copied to that state-root path. It is not a key in `project:`.
+
+A path is not one class. The schema distinguishes these, and each class has
+its own base and validation:
+
+| Class | Keys | Base | Validation |
+| --- | --- | --- | --- |
+| Config-file reference | `fleet`, `core_team`, `project.team_pack`, `project.fleet`, `project.supervision`, `project.tracker.spec` | the selected config folder root | Relative only, contained in the folder, must exist. `..` escapes and absolute paths are refused. |
+| Project resource path | `project.documentation_roots`, `project.gap_ledger`, `project.glossary`, `project.decision_authorities.decision_records_root` | a declared `project.resource_roots` entry | The first segment is a root key; the root maps to a repository in `project.forge.repositories`, and the rest resolves inside that checkout. Absolute paths and `..` segments are refused. Never resolved from, or checked for containment inside, the config folder. |
+| Host path | `host.paths.*`, `host.binaries.*`, `host.project_cli.*` | this machine's filesystem | Absolute or `PATH`-resolved host state. Not a config reference. |
+| Convention | `project.worktree_layout` | the project's checkout convention | A pattern with `<key-slug>` and `<module>`, not a path to resolve. |
+| Credential reference | `credential`, `project.tracker.credential_alias` | the deployment's secret store | A non-secret reference such as `keychain:<service>/<account>`; never a value. |
+
+`project.resource_roots` names each checkout the project resources live in, so
+one project can span several repositories. ASMA, for example, declares
+`modules: Carasent-ASMA/asma-modules` and
+`kontor: Carasent-ASMA/asma-rs-kontor`, then writes
+`documentation_roots: [modules/_docs, kontor/docs]`. A path whose root is not
+declared, whose root is not one of the project's forge repositories, or that is
+absolute or contains `..` is refused by name rather than guessed.
+
+An external config folder therefore cannot capture a project's documentation,
+gap ledger, glossary or worktree paths: those resolve from the project roots the
+consumer supplies. The checked-in neutral example is
+[`config/examples/`](../config/examples/README.md); its schema tests are in
+`crates/kontor-fleet/tests/config_examples.rs`.
+
+### Bootstrap and activated settings
+
+Moving a file into the folder does not loosen governance. A published policy
+keeps the existing preview, publish and activate path, content hashes,
+last-valid behaviour and active run pins; an unactivated edit has no live
+effect.
+
+| Class | Settings | Read when | Effect of an edit |
+| --- | --- | --- | --- |
+| Bootstrap | folder selection, `host.yml`, state root, endpoints and ports, credential references | before daemon start | restart required for new placements; invalid input refuses start; active runs keep their frozen `resolved_route` snapshot |
+| Activated policy | fleet policy, orchestration bundle, Core Team roster, route qualification records, tracker specs, team/profile packs, committee presets | preview → publish → activate, bound by content hash | no live effect until activated; running work keeps its pins |
+| Startup-read | `quota-signals.yml`, `<state-root>/supervision.yml` (Paseo watchdog) | daemon start | validated then; invalid input refuses start |
+| Generated projection | a native-format file rendered from YAML | consumer read | never hand-edited; regenerate from its YAML source |
+| Test data | fixtures under `tests/fixtures/` | tests only | not deployment configuration |
+
+Authored configuration is YAML only (`.yml` or `.yaml`). Where a runtime or
+external tool requires JSON or another native format, that file is a generated
+projection with a recorded YAML source and content hash, not a second editable
+source. Credential values remain in the deployment's secret store; YAML holds
+credential references such as `keychain:<service>/<account>`.
+
+### `host.yml`
+
+`host.example.yml` is committed beside the neutral example. The real `host.yml`
+sits in the selected folder, is git-ignored, and holds this user/machine only.
+It is a bootstrap input, never an activated policy.
+
+| Key | Type | Contract |
+| --- | --- | --- |
+| `schema_version` | integer | `1` |
+| `time_zone` | IANA zone | Default zone for human-facing times; a captured vendor message keeps its own zone. |
+| `paths` | mapping | `state_root`, `data_root`, `worktrees_root`, `paseo_home`, `logs`; absolute paths on this machine. |
+| `binaries` | mapping | Absolute or `PATH`-resolved host commands for `paseo`, `git`, `gh`, `python`, `cargo`. |
+| `project_cli` | mapping | `project.cli.command` → this host's executable. A new project supplies its own name; no tool name is assumed. |
+| `runtime` | mapping | `kontord.endpoint`, `kontord.port`, `paseo.endpoint`, `paseo.port`; loopback addresses only. |
+| `provider_accounts` | mapping | Logical fleet slot → `{provider, native_alias, harness, credential, serves, efforts?, qualification?}`. `native_alias` is this host's runtime account id; `credential` is a reference, never a value; `serves` maps each canonical fleet model to the model id this route launches (`route_model_id`); a cross-provider route, or a route with a different launch id, also states `qualification`. |
+| `routes` | mapping | Fleet domain → ordered logical slots this host enables. A slot omitted here is unavailable on this host. |
+| `keychain` | mapping | `service_prefix` for credential references. |
+| `launchd` | mapping | Service labels for the daemon and desk. |
+
+**Route join (Q-04).** The fleet owns the canonical policy; the host owns the
+working route. They meet on two keys: the logical slot and the canonical model.
+
+1. `orchestration/fleet.yml` owns the canonical model identity and policy:
+   model id, vendor, efforts, chains and seat bindings.
+   `domains.<domain>.provider` names the model's canonical/native provider
+   family; it is not a restriction on a host's working route.
+2. `host.yml` `provider_accounts.<slot>` binds the slot to this host's working
+   route: `provider`, `harness`, `native_alias`, `credential`, `serves`
+   (a mapping from each canonical fleet model to the model id this route
+   actually launches), optional `efforts` (a subset of the fleet model's
+   efforts), and `qualification` (required when the working provider differs
+   from the fleet domain's provider or the route-native launch id differs from
+   the canonical model id; the exact reference `<route>@<revision>` into the
+   activated qualification records described below).
+3. `host.yml` `routes.<domain>` selects and orders the slots this host enables.
+   Every route slot must exist in `provider_accounts` and belong to that
+   domain. A domain omitted from `routes` is unavailable on this host, so its
+   chain descends. The slot name keeps the provider prefix (`claude-`,
+   `codex-`, or the bare provider) because the current fleet validator requires
+   it; the working route may still be a different provider.
+4. Compatibility is checked against the canonical policy, not assumed from the
+   slot name. A route is eligible only when its `serves` mapping contains the
+   canonical model, maps it to a route-native model id, and supports the pinned
+   effort (the route's `efforts`, when stated, contains it). Without a
+   qualification record, `serves[model]` must equal `models.<model>.id`;
+   otherwise placement is refused with `route_model_id_unproven`. Any other
+   launch id, and every cross-provider route, carries a qualification reference
+   that matches an activated, hash-bound record covering that exact route,
+   harness, symbolic model, canonical id/vendor, route-native launch id and
+   effort. `<route>@<revision>` is split exactly once and compared for equality;
+   a malformed reference, a missing activation record, a record hash mismatch or
+   a record that does not cover the pinned identity, launch id or effort is
+   refused. The resolver never substitutes a different provider merely because
+   it is available, and never requires a fleet edit to make a host route work.
+5. `project.runtime.matrix` is an allowlist of `{harness, provider}` pairs the
+   project may launch. A host route whose pair is absent is refused with
+   `runtime_pair_not_allowed` before placement; the matrix does not own model
+   ids, effort or vendor independence. The neutral example lists
+   `paseo/claude`, `paseo/codex`, `paseo/cursor`, `opencode/opencode` and
+   `acp-agent/glm-acp-agent`.
+6. Fallback skips an incompatible route and continues `routes.<domain>`; if no
+   route in the step serves the pinned model and effort, it descends to the
+   next chain step. If no step has a compatible route, the placement is refused
+   with a typed reason. A fallback never changes the canonical model or effort
+   to make a route fit, and never lands on a vendor excluded by
+   `rules.independent_of`; if no route preserves real vendor independence, the
+   placement is refused with `vendor_independence_unpreserved`.
+7. A host edit that changes a native alias, provider, harness or route order
+   changes only new placements. Two hosts with different aliases and route
+   order resolve the same fleet chain to the same canonical model id, effort
+   and vendor; a cross-provider route preserves those canonical values too,
+   while `route_model_id` is the route's own launch id.
+   `config/examples/host.example.yml`,
+   `tests/fixtures/config/host-alternate.yml` (alias/order) and
+   `tests/fixtures/config/host-cross-provider.yml` (different provider/harness)
+   are the labelled compatibility fixtures. A user's native alias or working
+   provider changes only in `host.yml`; it never requires a fleet edit. The
+   fleet changes only when the canonical model policy or a logical slot
+   changes.
+
+**Qualification records.** A cross-provider route, or a same-provider route
+whose launch id differs from the canonical id, is enabled by a record in
+`orchestration/route-qualifications.yml`, not by a string in `host.yml`. The
+authored file has no activation flag or timestamp. It is published and
+activated through the same policy path as the other project policy; a generated
+activation record names `source`, binds the exact file bytes with `source_hash`
+(SHA-256) and carries `activated_at`. The file is not the fleet policy and not
+the host bootstrap file. Each record binds `route`, `harness`, the symbolic
+`model`, `canonical_model_id`, `canonical_vendor`, `route_model_id`, `efforts`,
+`revision` and `record_hash`. The record hash is SHA-256 over ordered
+`key=value` lines joined by newlines, with no trailing newline: `route`,
+`harness`, `model`, `canonical_model_id`, `canonical_vendor`,
+`route_model_id`, `efforts` in declared order, comma-separated, and `revision`.
+Activation time is not part of that hash.
+A host reference is exactly `<route>@<revision>`; the resolver splits once,
+compares both parts exactly, requires the activation record's `source_hash` to
+match the file bytes and `activated_at` to be present, verifies the record hash,
+and requires the record to cover the pinned canonical identity, the
+route-native launch id and the effort. A changed `serves` mapping or a changed
+canonical id/vendor under the same model name no longer matches the record and
+is refused. A missing or mismatched activation record, a record hash mismatch,
+a malformed reference, or a record whose route/harness/symbolic
+model/canonical identity/launch id/effort does not cover the placement is
+refused as `route_qualification_unproven`,
+`route_qualification_hash_mismatch` or `route_qualification_malformed`. The
+record is separate from the fleet, so a new qualified route does not require a
+fleet policy edit.
+
+**Successor and migration contract.** The current `schema_version: 2` parser
+still validates `domains.accounts` with the provider-prefix rule and has no
+host-route layer. That is a current parser constraint, not the Q-04 contract.
+WP-08 adopts this successor contract without changing the daemon before KR-14:
+existing `accounts` values are read as logical slots; each legacy native alias
+is mapped to a host route with the provider and harness that served it; active
+run snapshots are preserved; and a host route change never requires a fleet
+policy edit.
+
+The bundle base also changes. The current reader resolves selectors from
+`<config folder>/orchestration/` and requires the manifest names `fleet.yml` and
+`teams/core-team.yml`. The successor resolves from the selected folder root:
+`fleet: orchestration/fleet.yml` and
+`core_team: orchestration/teams/core-team.yml`. Migration maps the old manifest
+name `fleet.yml` to `orchestration/fleet.yml` and `teams/core-team.yml` to
+`orchestration/teams/core-team.yml`, compares the resolved bytes by content
+hash, preserves active pins and refuses a conflicting old and new source. No
+manifest reader changes before KR-14.
+
+For ASMA, the selected folder is `asma-modules/config/`. Its successor
+references are `fleet: orchestration/fleet.yml`,
+`supervision: orchestration/tpm-supervision.yml` (the TPM cadence profile),
+`tracker.spec: tracker/jira.yml` and `team_pack: packs/team.yml`; its project
+resources use `resource_roots` `modules`/`kontor` against the two repositories.
+The Paseo watchdog policy is not a project key: it is
+`<state-root>/supervision.yml`. The fixtures above are labelled for that
+migration and are test data, not deployment files.
+
+The vendor-independence rule uses the canonical `models.<name>.vendor`, never
+the working provider or harness. A `glm-acp-agent` route that serves a canonical
+model with vendor `example` is still `example` for the reviewer-vendor rule, so
+a cross-provider substitution cannot silently defeat independence. Current
+availability, funding and quota remain observed runtime state, not copied YAML
+facts.
+
+**Active-run resolved-route snapshot (PIN-001).** A placement freezes one
+immutable `resolved_route` before the run starts:
+
+```yaml
+resolved_route:
+  policy_hash: <fleet policy content hash>
+  host_route_hash: <hash of host.yml and the resolved slot order>
+  slot: opencode
+  route_provider: glm-acp-agent
+  route_harness: acp-agent
+  native_alias: desktop-glm-acp-1
+  qualification: glm-acp-agent@1
+  route_model_id: glm-5.3
+  canonical_model: example/model
+  canonical_effort: max
+  canonical_vendor: example
+  resolved_at: <timestamp>
+```
+
+The snapshot records the working route (`route_provider`, `route_harness`,
+`native_alias`, `qualification`, `route_model_id`) and the canonical policy
+(`canonical_model`, `canonical_effort`, `canonical_vendor`). `route_model_id`
+is the id the working route actually launches; it may differ from
+`canonical_model`. It is authoritative for that run.
+Editing `host.yml` or the fleet policy never rewrites an active run's snapshot:
+it is read from the run's launch intent and receipt, not re-resolved from the
+current files. A daemon restart
+keeps the same snapshot for work that resumes on the same run. A new placement
+— a fresh run, a replacement, or an explicit reroute — resolves anew and
+records a new snapshot under the existing recovery and reroute rules; an
+unactivated policy edit still has no effect. If a slot or native
+alias named by an active snapshot disappears, the run is not silently remapped
+to another account; it fails closed with a typed reason and follows the normal
+recovery path. Implementation belongs to WP-08; this contract is what its
+consumers must record and preserve.
+
+### The `project:` block in `orchestration.yml`
+
+The block is additive to the existing bundle selector (`schema_version`,
+`fleet`, `core_team`). Until WP-08 extends the bundle reader, the selector keys
+are the only ones read; this document and the schema test define the block so
+the readers cannot drift apart. The machine-readable key list is
+[`config/examples/orchestration/orchestration.schema.yml`](../config/examples/orchestration/orchestration.schema.yml);
+the neutral example is
+[`config/examples/orchestration/orchestration.yml`](../config/examples/orchestration/orchestration.yml)
+and ASMA's concrete values are the test case in
+[`tests/fixtures/config/asma-orchestration.yml`](../tests/fixtures/config/asma-orchestration.yml).
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `key` | string | Confirmed tracker key; the public identifier. |
+| `name` | string | Project display name. |
+| `owner` | string | Role, not a person; the escalation owner. |
+| `decision_authorities` | mapping | `platform`, `architecture`, `decision_records_root`. |
+| `tracker` | mapping | `kind`, `site`, `project_key`, `key_pattern`, `credential_alias`, `spec`. |
+| `branch` | mapping | `types`, `pattern`, `commit_pattern`; the grammar, not a copy of one branch. |
+| `forge` | mapping | `kind`, `organization`, `repositories`, `base_branch`. |
+| `runtime` | mapping | `matrix` of `{name, harness, provider}` launch combinations. |
+| `cli` | mapping | `command` and `verbs` for text and checks that must not hard-code one tool; `host.project_cli.<command>` binds the executable. |
+| `team_pack` | path | Folder-relative team/profile overlay. |
+| `fleet` | path | Folder-relative fleet policy; must agree with the bundle selector. |
+| `supervision` | path | Folder-relative `autonomous_tpm_v1` cadence profile. Not the Paseo watchdog policy, which is `<state-root>/supervision.yml`. |
+| `merge_authority` | mapping | `role`, `policy`. |
+| `documentation_roots` | list | Project documentation roots. |
+| `gap_ledger` | path | Project gap ledger. |
+| `attention_channel` | string | Where typed attention is raised. |
+| `glossary` | path | Project glossary. |
+| `worktree_layout` | string | Checkout convention, with `<key-slug>` and `<module>` placeholders. |
+| `check_runs` | list | Required check-run names. |
+| `capacity` | mapping | `max_delivery_seats`, `max_parallel_tasks`, `start_admission`; see the capacity rules below. |
+| `time_zone` | IANA zone | Project default. |
+| `holiday_countries` | list | ISO country codes for the holiday import. |
+| `currency` | string | ISO 4217 code for budgets and costs. |
+
+`max_parallel_tasks` and `start_admission` are the Paseo-direct placement
+capacity ceiling and initial admission: ASMA 7 and 4. `start_admission` must be
+less than or equal to `max_parallel_tasks`. `max_delivery_seats` is an
+owner-set project value scoped per team run (ASMA 2); the placement rule does
+not supply it, it is not a global team-run ceiling, and kontord has no such
+field.
+
+ASMA's values, exercised by the schema test:
+
+| Key | ASMA value |
+| --- | --- |
+| `key`, `tracker.project_key` | `ASMA` |
+| `tracker.kind` | `jira` |
+| `tracker.key_pattern` | `^ASMA-[0-9]+$` |
+| `forge.kind` | `github` |
+| `forge.organization` | `Carasent-ASMA` |
+| `forge.repositories` | `Carasent-ASMA/asma-modules`, `Carasent-ASMA/asma-rs-kontor` |
+| `forge.base_branch` | `master` |
+| `cli.command` | `asma` |
+| `project.supervision` | `orchestration/tpm-supervision.yml` (`autonomous_tpm_v1` TPM cadence profile; the Paseo watchdog is `<state-root>/supervision.yml`) |
+| `documentation_roots` | `modules/_docs`, `kontor/docs` |
+| `check_runs` | `asma/publication-branch-title`, `asma/publication-identity` |
+| `capacity` | `max_delivery_seats: 2` (owner-set, per team run), `max_parallel_tasks: 7` (Paseo-direct placement ceiling), `start_admission: 4` (placement start) |
+| `time_zone`, `holiday_countries`, `currency` | `Europe/Oslo`, `[NO]`, `NOK` |
+
+## Configuration authoring inventory (WP-02 refresh)
+
+This refresh replaces the 2026-10-17 snapshot for WP-02 at the current
+revision. It covers every human-edited JSON source and its readers, the YAML
+replacement, the migration and any generated native-format projection. A
+source that is generated, test data, evidence or a tool-native manifest is
+recorded as such instead of being migrated.
+
+| Source | Class and reader | Disposition | Migration and projection | Owner |
+| --- | --- | --- | --- | --- |
+| `config/examples/orchestration/fleet.yml` | neutral example; tests | Keep neutral schema-version-2 example. The runtime/parser tests use `tests/fixtures/config/fleet.yml`. | None; no real account is named. | WP-02 (fixed) |
+| `config/examples/quota-signals.yml` | neutral example; tests | Keep neutral example. The parser tests use `tests/fixtures/config/quota-signals.yml`. | None; example markers match no live vendor copy. | WP-02 (fixed) |
+| `docs/CONFIGURATION.md` GitHub App example | documentation | Placeholders only. | None. | WP-02 (fixed) |
+| `<state-root>/jira.json` | human-edited; daemon Jira connector | YAML `tracker/jira.yml`. | Read the old file once, back it up, compare resolved values, then refuse both old and new sources together; project the native JSON only if a consumer still requires it. | WP-08, WP-10 |
+| `<state-root>/config/github-app.json` | human-edited; daemon publication gateway | YAML `forge/github-app.yml` plus a credential/PEM reference. | Same backup/equivalence migration; keep the PEM outside the repository. Native JSON is a generated projection with provenance. | WP-08 |
+| `<state-root>/memory-cognee.json` | human-edited; daemon experience transport | YAML `orchestration/memory.yml`. | Same migration; disabled stays the default. | WP-08 |
+| `<state-root>/runtimes.json` | human-edited; daemon runtime composition | YAML `host.yml` (`runtime`, `provider_accounts`, `routes`) plus project `runtime.matrix`. | Migrate per host; no credential value moves into YAML. | WP-08 |
+| `<state-root>/succession-summarizer.json` | human-edited; daemon succession | YAML `orchestration/succession.yml`. | Same migration; absent keeps the typed degraded handoff. | WP-08 |
+| `<state-root>/fleet-activation.json`, `credentials.json`, `endpoint.json` | generated or secret state | Keep in the state root. | Never an authoring source; the activation record remains a generated pointer. | WP-08 |
+| `config/orchestration/workstreams.json` (ASMA) | human-edited; asma-cli, PR desk and mirrored skills | YAML `orchestration/workstreams.yml`. | Move, update every reader and the skills, then remove the JSON path. | WP-10 |
+| `crates/kontor-teams/fixtures/mvp-team-pack.json` | human-edited seed compiled by `kontor-teams/src/spec.rs` | YAML team pack in the selected folder; neutral default in the pack. | Back up, convert, compare resolved teams and slots, update the reader, remove the bundled editable copy. A native JSON projection is generated only if a runtime still reads it. | WP-08 |
+| `crates/kontor-profiles/fixtures/mvp-profile-pack.json`, `operational-domain.json`, `consultation-presets.json` | human-edited seeds compiled by `kontor-profiles/src/seeds.rs` | YAML profile/domain/preset packs in the selected folder. | Same conversion and equivalence check; ASMA's overlay moves to its folder, the neutral default stays neutral. | WP-08 |
+| `crates/kontor-jira/fixtures/*.json` | human-edited ASMA tracker fixtures compiled by `kontor-jira/src/jira.rs` | YAML tracker specs installed per Realm from the selected folder. | Move ASMA's compiled tracker fixtures, install the specs per Realm, keep active pins, remove the compiled ASMA catalog. | WP-08 |
+| `crates/kontor-mcp/seats/*.json` | human-edited MCP seat configurations; external clients, `crates/kontor-mcp/tests/seats.rs` and `seats/README.md` | YAML seat profiles in `packs/`, rendered to the native seat files. | Generate the three native JSON files from YAML with source provenance; do not add a second authority model. | WP-08, WP-10 |
+| `plugin-config/kontor/floor.json` | operator-owned server file; Paseo plugin server start (KN-04 / ASMA-8551) | **Proposal:** YAML source `orchestration/plugin-floor.yml`; generated projection at `<PASEO_HOME>/plugin-config/kontor/floor.json`. | See the KN-04 proposal below. The decision's value table, read-once/reload-only behaviour and doubt-leaves-floor-on rule are unchanged. | WP-05, WP-08, KN-04 successor |
+| `opencode.json`, `.github/mcp.json` | harness-native files (ASMA) | Generated projections from YAML. | Q-03: no handwritten JSON exception; render deterministically and record the YAML source. | WP-11 |
+| `.github/agent-policy-inventory.json` | generated inventory read by agent-policy checks | Keep generated. | Render deterministically from the source metadata; never hand-edit. | WP-11 |
+| `.cursor/agent-policy-inventory.json` | generated inventory read by Cursor adapter checks | Keep generated. | Same generated-projection rule as the GitHub inventory. | WP-11 |
+| `.cursor/mcp.json` | symlink to `.github/mcp.json` in ASMA, not a separate projection | Keep the symlink; the target is the generated projection. | Regenerate the target from the YAML MCP source with provenance; no handwritten JSON exception. | WP-11 |
+| `.claude/settings.json` | tool-native Claude harness settings | Keep; not Kontor authoring configuration. | No Kontor migration; WP-11 reviews any project value it carries. | Not a WP-02 migration |
+| `.agentsroom/project.json` | tool-native AgentsRoom project settings | Keep; not Kontor authoring configuration. | No Kontor migration; WP-11 reviews any project value it carries. | Not a WP-02 migration |
+| `apps/paseo-plugin/paseo-plugin.json`, `package.json`, `tsconfig.json`, `apps/desktop/src-tauri/tauri.conf.json`, `capabilities/default.json` | tool-native manifests and build metadata | Keep; not Kontor authoring configuration. | None. | Not a WP-02 migration |
+| `crates/kontor-api/contract/openapi.json`, `apps/console/src/api/schema.d.ts`, `crates/kontor-context/schemas/*.json` | generated contracts and schemas | Keep generated. | Regenerate from source; never hand-edit. | Not a WP-02 migration |
+| `apps/paseo-plugin/test/fixtures/*`, `apps/paseo-plugin/test/teams-source-*.test.ts*` | synthetic test data; not Kontor authoring configuration | Keep as tests; ASMA-8539 replaced the live aliases with synthetic values and a synthetic home. | None for WP-02; WP-12 owns any remaining synthetic-value pass. | WP-12 |
+| `scripts/*.json` (`durable-desk-mutants.json`, `test-timings.json`), test fixtures and evidence JSON | machine data, test data and evidence | Keep. | None. | Not a WP-02 migration |
+
+### KN-04 projection proposal (decision unchanged)
+
+KN-04 (ASMA-8551) selected an operator-owned server file at
+`<PASEO_HOME>/plugin-config/kontor/floor.json`, read once at plugin server start
+and re-read only by a supported install/reload. The file has one key, `floor`,
+with exact value `on` or `off`; formatting whitespace is permitted inside the
+value, every other state leaves the floor enabled with a structured diagnostic,
+and an absent file is enabled. The decision is recorded in the navigator plan
+(Revision 1.4) and is not changed here.
+
+**Proposal for the YAML-only rule.** Author the value once in the selected
+config folder as `orchestration/plugin-floor.yml`:
+
+```yaml
+schema_version: 1
+floor: 'on'   # 'on' or 'off'; invalid or absent means floor-on
+```
+
+Generate `<PASEO_HOME>/plugin-config/kontor/floor.json` from that source with a
+recorded source path and content hash, and keep the plugin reading the JSON file
+exactly as KN-04 specifies. This preserves the decision's read-once/reload-only
+boundary, the `on`/`off` value table, the doubt-means-on rule and the
+plugin-disable rollback. It requires a successor decision or an explicit
+KN-04 amendment plus the WP-05 generator; WP-02 records the proposal and does
+not change the plugin or its decision.
+
+### WP-02 inventory rows fixed
+
+| Original row | Disposition |
+| --- | --- |
+| `config/examples/orchestration/fleet.yml`, `quota-signals.yml` carried owner aliases, dated switch-offs and real account wording | Neutral examples hold placeholder accounts and fake markers; the test fixtures' narrative comments are stripped. Tests use `tests/fixtures/config/` and pass without the owner's fleet. |
+| `docs/CONFIGURATION.md` GitHub App example carried a real project UUID, a home path and Carasent repositories | The example uses placeholders only. |
+| ASMA `config/orchestration/fleet.yml` carried the owner's four provider aliases | `host.yml` owns the host-local account mapping; the fleet policy names domains and account slots. The schema is defined here; WP-08/WP-10 migrate the ASMA reader and file. |
+
 ## Where configuration lives
 
 | Location | Holds | Schema; when absent |
 | --- | --- | --- |
+| Selected config folder (§1.1) | Authored settings that vary by project, user or machine: orchestration, tracker, packs, fleet, quota signals and `host.yml` | YAML only; selected explicitly with `--config-dir` or `KONTOR_CONFIG_DIR`; a missing or invalid folder is refused by name |
 | `<state-root>/kontor.db` | Every versioned specification published through `/v1`: Team Definitions, topology specs, role catalogs, work profiles, team templates, advisor profiles, committee templates, completion profiles, Core Team revisions, connector field/workflow specs; also Team Definition defaults, epic pins and migration evidence, desk, durable-seat, desk-Adam and PR-review records, and the durable capacity ceilings, which are read once at startup | Store migrations through v134; created and migrated at first start |
 | `<state-root>/kontor.lock` | The exclusive state-root lock a serving daemon, and every stopped-realm operator command, holds | Generated |
 | `<state-root>/credentials.json` | The realm's three tier secrets, `0600`, read by the CLI and every MCP server | `schema_version: 1`; generated at first start |
@@ -43,6 +454,12 @@ system behaviour instead of instructions somebody has to remember.
 | `crates/kontor-mcp/seats/*.json` | Which tier and serve profile one MCP server process runs at | See [the seats README](../crates/kontor-mcp/seats/README.md) |
 | Project checkout `config/orchestration/` | `orchestration.yml`, `fleet.yml` and `teams/core-team.yml`, the authoring sources of an orchestration bundle (see below) | Sent as exact bytes to the bundle operations; the daemon never reads a checkout |
 | Daemon environment `KONTOR_SEAT_MCP` | `off` disables seat MCP composition (files and creation frames) for every plane | Absent or any other value: composition on |
+
+The state-root rows above describe the current runtime layout. Every
+human-edited setting that varies by project, user or machine belongs in the
+selected YAML folder instead; WP-08 migrates the remaining JSON readers and
+WP-10 migrates ASMA's orchestration files. Generated state and secrets stay in
+the state root.
 
 Everything in the database is published through a preview/apply pair with a
 content hash: the apply is compared against the hash the preview returned, so a
@@ -232,14 +649,17 @@ credential:
     {
       "project_id": "<kontor project id>",
       "endpoint": "https://example.atlassian.net",
-      "project_key": "ASMA",
-      "credential_alias": "work",
+      "project_key": "<TRACKER-KEY>",
+      "credential_alias": "<credential-alias>",
       "create_fields": { "epic": {}, "task": {} }
     }
   ]
 }
 ```
 
+- This native JSON file is the current reader's shape. It is a human-edited
+  source and migrates to `tracker/jira.yml` in the selected config folder; the
+  native file then becomes a generated projection or is removed with its reader.
 - Absent means Jira is not configured. A file that cannot be read, does not
   parse, declares another `schema_version` or configures one project twice
   refuses the daemon start.
@@ -363,7 +783,9 @@ child work.
 
 Copy [`config/examples/paseo-supervision.yml`](../config/examples/paseo-supervision.yml)
 to `<state-root>/supervision.yml` only when this Realm should opt into the
-resident succession engine. Enablement is deliberately explicit:
+resident succession engine. This is the Paseo watchdog/recovery policy, not
+`project.supervision`; that project key names the autonomous TPM cadence
+profile. Enablement is deliberately explicit:
 
 - with no file, no supervisor starts;
 - schema v1 remains readable for legacy classification and starts no automatic
@@ -408,7 +830,7 @@ adapter remains responsible for native inspection and placement.
 
 > **Release status — 2026-09-05:** KON-OP-21 is implemented and merged through PR #164 (`3d7c6043`, 2026-09-04), included in the inspected release `082b63ad`. Local contract coverage is recorded; independent qualification, coherent fleet deployment and realm enablement require their own receipts and are not certified by this documentation refresh.
 
-See the [canonical implementation inventory](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/reference/2026-09-05-11-36-reference-kontor-implementation-inventory.md) for source and deployment distinctions.
+The release-status note above separates source coverage from independent qualification and deployment; this documentation refresh does not certify either.
 
 ## Seat permission posture
 
@@ -582,34 +1004,56 @@ claimable rather than assumed.
 
 > **Status:** OpenCode and Cursor also expose an `auto_accept` per-agent feature.
 > Kontor derives the intended value alongside the mode, but nothing sets it:
-> verified against Paseo 0.6.1, neither `paseo agent run` nor `paseo agent update`
-> exposes a flag for it, and Kontor drives the CLI rather than the MCP surface
-> where it is settable. Recorded rather than implied.
+> the supported Paseo CLI surface exposes no `auto_accept` flag on
+> `paseo agent run` or `paseo agent update`, and Kontor drives the CLI rather
+> than the MCP surface where it may be settable. Check the installed Paseo
+> version's CLI help rather than relying on a copied version stamp; the
+> capability is read from the live surface.
 
 ## Fleet configuration (`fleet.yml`)
 
-Copy [`config/examples/fleet.yml`](../config/examples/fleet.yml) to
-`<state-root>/fleet.yml` to let one live file, rather than published template
-revisions, own model routing. Kontor re-reads it on **every seat placement** —
-seat fill, seat replacement, quota takeover, succession refresh, Committee
-invoke, Committee seat recovery and Advisor invoke — so one edit changes the
-next placement with no rebuild, restart or template republish.
+[`config/examples/orchestration/fleet.yml`](../config/examples/orchestration/fleet.yml)
+is the neutral schema-version-2 example: placeholder accounts, synthetic model
+ids and no real account. The runtime tests use
+`tests/fixtures/config/fleet.yml` instead, so they pass without the owner's
+fleet. The example is the successor policy; copy it into the selected config
+folder under `orchestration/fleet.yml` and replace every placeholder before
+publishing it.
 
-The file lives in the state root, outside every git checkout, so a branch switch
-can never change routing.
+**Current reader (state root, schema_version 1).** The live, unmigrated
+`<state-root>/fleet.yml` re-reads on **every seat placement** — seat fill, seat
+replacement, quota takeover, succession refresh, Committee invoke, Committee
+seat recovery and Advisor invoke — so one edit changes the next placement with
+no rebuild, restart or template republish. It lives outside every git checkout,
+so a branch switch can never change routing. Its `domains.accounts` values are
+the native account aliases that reader routes through; it has no host-route
+layer.
 
-> **Status:** merged in PR #271 (`7ffd650d`, ASMA-8255). The shipped example is
-> a starting point, not a record of any realm's live file.
+**Successor reader (selected config folder, schema_version 2).** The selected
+folder is the authoring source. The policy is previewed, published and activated
+through the policy path and bound by content hash; an unactivated edit has no
+live effect. The successor treats `domains.accounts` as logical slots and
+resolves native aliases and provider/harness routes from `host.yml`. The neutral
+example is this successor. WP-08 makes the daemon read it through the same
+activation path; until then the example is a schema fixture.
+
+> **Status:** merged in PR #271 (`7ffd650d`, ASMA-8255). The committed example is
+> a parseable schema-version-2 policy, not a record of any realm's live file.
 
 ### File rules
 
-- `<state-root>/fleet.yml` must be a regular file, not a symlink, owned by the
-  same user as the state root, and not writable by group or others (`chmod 600`).
-- It is at most 256 KiB and must be UTF-8; unknown fields are rejected at every
-  level, and the shipped example is a parseable starting point.
-- It names accounts by alias only. It never holds credentials, tokens or
-  environment values, and Kontor never logs its contents — only the hash and the
-  name of the failing rule.
+- Current reader: `<state-root>/fleet.yml` must be a regular file, not a
+  symlink, owned by the same user as the state root, and not writable by group
+  or others (`chmod 600`). It is at most 256 KiB and must be UTF-8; unknown
+  fields are rejected at every level, and the shipped example is a parseable
+  starting point.
+- Successor policy: `orchestration/fleet.yml` is a config-file reference
+  relative to the selected folder, contained in it, and must exist. It is
+  activated through preview/publish/activate and bound by content hash.
+- The current reader's `domains.accounts` values are native account aliases. The
+  successor treats them as logical slots; native aliases live in `host.yml`.
+- Neither form holds credentials, tokens or environment values, and Kontor never
+  logs its contents — only the hash and the name of the failing rule.
 
 ### Schema
 
@@ -646,6 +1090,12 @@ rules:
   independent_of:
     team/<team_template_id>/verify: team/<team_template_id>/implement
 ```
+
+> The state-root `fleet.yml` reader reads only `schema_version: 1` at this
+> revision. The committed neutral example is `schema_version: 2`, the published
+> policy successor described below; publish it through the policy operations
+> rather than copying it to the state root. WP-08 makes both forms readable from
+> the selected config folder.
 
 A **domain** is one failure domain: the accounts that go down together, for
 example one vendor plan. A **chain** is an ordered list of **steps**, each step
@@ -956,9 +1406,11 @@ through the production Paseo runtime. See
 
 ## Provider quota signals
 
-Copy [`config/examples/quota-signals.yml`](../config/examples/quota-signals.yml)
-to `<state-root>/quota-signals.yml` to tell Kontor how each vendor words an
-exhaustion refusal. The sentences are data on purpose: a vendor rewords its
+[`config/examples/quota-signals.yml`](../config/examples/quota-signals.yml) is
+the neutral example: its markers are deliberately fake and match no live vendor
+copy. The parser tests use `tests/fixtures/config/quota-signals.yml`. Copy the
+example to `<state-root>/quota-signals.yml` (and, after WP-08, into the selected
+config folder) and replace every marker with captured vendor wording. The sentences are data on purpose: a vendor rewords its
 message far more often than Kontor ships, and encoding them as Rust constants
 would make tracking a copy change a rebuild.
 
@@ -1186,27 +1638,34 @@ CLI, and nothing is posted to GitHub.
 Create the App once per organisation (Settings → Developer settings → GitHub
 Apps → New GitHub App) with:
 
-- name `asma-publication-policy`; webhooks disabled (Kontor polls);
+- name `<publication-app-name>`; webhooks disabled (Kontor polls);
 - repository permissions: **Checks: read and write**, **Pull requests: read**,
   **Contents: read and write** (the squash merge), **Metadata: read**;
 - install it on exactly the governed repositories;
 - generate one private key and store the PEM outside every repository, mode
-  `0600`, for example `~/.local/state/kontor/asma/config/github-app.pem`.
+  `0600`, for example `<state-root>/config/github-app.pem`.
 
-Then write `<state root>/config/github-app.json`:
+The successor authoring source is `forge/github-app.yml` in the selected config
+folder; the committed placeholder is
+[`config/examples/forge/github-app.example.yml`](../config/examples/forge/github-app.example.yml):
 
-```json
-{
-  "schema_version": 1,
-  "app_id": 123456,
-  "installation_id": 7890123,
-  "private_key_path": "/Users/me/.local/state/kontor/asma/config/github-app.pem",
-  "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
-  "repositories": ["Carasent-ASMA/asma-modules", "Carasent-ASMA/asma-rs-kontor"],
-  "check_name": "asma/publication-identity",
-  "poll_seconds": 60
-}
+```yaml
+schema_version: 1
+app_id: 123456
+installation_id: 654321
+private_key_path: <absolute-path-outside-every-repository>/github-app.pem
+project_id: <kontor-project-id>
+repositories: [<owner>/<repository>]
+check_name: <check-run-name>
+poll_seconds: 60
 ```
+
+`app_id` and `installation_id` are integers; replace the numeric placeholders
+with the App's own ids. The PEM path is a reference; the key itself stays
+outside every repository. Today the native `<state root>/config/github-app.json`
+file is a human-edited source. It migrates to `forge/github-app.yml`, with the
+PEM path as a reference; the JSON file then becomes a generated projection with
+provenance.
 
 `check_name` defaults to `asma/publication-identity` and `poll_seconds` to 60
 (at least 1). An optional `api_base` (default `https://api.github.com`) points

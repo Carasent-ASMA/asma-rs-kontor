@@ -15,5 +15,14 @@
   "initial_focused_count": 16,
   "final_focused_count": 16,
   "changes": "Strengthened existing test assertions for exact absent-task direction, request-scope equality, 256 UTF8 byte acceptance, DER lower bound, and another real RSA key. All production/export bytes identical since first focus. Final full runtime regression and Clippy cover strengthened test bytes; mutant/restored baselines bind exact final3 hashes.",
-  "repeated_counts": "New16 diagnostic cases are included in157 runtime unit tests; focused/mutation reruns are not added to177 unique runtime tests."
+  "repeated_counts": "New16 diagnostic cases are included in157 runtime unit tests; focused/mutation reruns are not added to177 unique runtime tests.",
+  "public_derivative": {
+    "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+    "ledger": "../../PUBLIC-REDACTION.json",
+    "note": "Certified source hashes describe the originals; the public candidate files are redacted derivatives."
+  },
+  "derivatives": {
+    "crates/kontor-runtime/src/planning_pair/attestation.rs": "a6e46758a48ae9d48cb2e719541fc055288126621370820a58418f7d0e9f8779",
+    "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic.rs": "48a5baf647c4e0d10f45d5a0fb176ce389a14a09d342e22b77800ec9096a986f"
+  }
 }

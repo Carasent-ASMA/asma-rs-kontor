@@ -3,7 +3,7 @@
 > **Date:** 2026-09-25 06:44
 > **Status:** 🟡 Ready for verification (implementer scope complete through TASK-035)
 > **Category:** report
-> **Scope:** `asma-rs-kontor` branch `feat/ASMA-8255-live-fleet-config` (draft PR #271), the plan `2026-09-24-07-30-plan-kontor-live-fleet-configuration.md`, and the live realm `01a00649-9ee6-73e0-ba1b-6a6c35cfd065`
+> **Scope:** `asma-rs-kontor` branch `feat/ASMA-8255-live-fleet-config` (draft PR #271), the private ASMA-8255 plan (revision `2026-09-24-07-30`), and the live realm `01a00649-9ee6-73e0-ba1b-6a6c35cfd065`
 > **Summary:** LF-01…LF-07 are implemented and committed; LF-06 was investigation only (verdict: DEF-005). LF-08's mutation pass killed all 20 mutants and TASK-035's gates are green except the two known pre-existing reds. The live system is untouched: nothing is merged, deployed, installed or drilled. This document is the verifier's entry point.
 
 ---
@@ -75,7 +75,7 @@
 ## How to re-run the implementer's evidence
 
 ```sh
-export CARGO_TARGET_DIR=$HOME/carasent/asma-modules/.worktrees/kontor-settled-turn-evidence/target
+export CARGO_TARGET_DIR=[task-workspace]
 cargo test -p kontor-daemon --lib                       # 119 unit tests, incl. fleet + independence
 cargo test -p kontor-daemon --test loopback_api          # 473 pass, 1 ignored
 cargo test -p kontor-runtime-paseo                       # 126 + 285
@@ -84,5 +84,4 @@ cargo test -p kontor-api --test openapi_contract         # 3
 
 Reference documents: [`docs/CONFIGURATION.md`](../../docs/CONFIGURATION.md) (operator guide),
 [`_docs/architecture/2026-09-24-20-45-architecture-live-fleet-routing.md`](../architecture/2026-09-24-20-45-architecture-live-fleet-routing.md) (decision),
-[plan](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/plans/2026-09-24-07-30-plan-kontor-live-fleet-configuration.md),
-[ASMA-8255](https://carasent.atlassian.net/browse/ASMA-8255), PR #271.
+the live-fleet configuration plan (historical private record), ASMA-8255, PR #271.

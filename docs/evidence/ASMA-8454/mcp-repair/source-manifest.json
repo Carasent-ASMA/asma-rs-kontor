@@ -21,5 +21,10 @@
     "crates/kontor-runtime-paseo/tests/contract.rs",
     "crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs"
   ],
-  "qualification": "own-author production-adapter/recorded transport plus real filesystem; not released executable acceptance"
+  "qualification": "own-author production-adapter/recorded transport plus real filesystem; not released executable acceptance",
+  "public_derivative": {
+    "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+    "ledger": "../PUBLIC-REDACTION.json",
+    "note": "This public copy is a redacted derivative. The root ledger records original and derivative digests."
+  }
 }

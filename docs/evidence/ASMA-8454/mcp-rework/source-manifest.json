@@ -9,5 +9,10 @@
     "crates/kontor-runtime-paseo/src/seat_mcp_directory_tests.rs": "084f367b03a6dad78c643d8d368c896b125e2808bdaa2d77aa9db6e7ed48dcdc",
     "crates/kontor-runtime-paseo/tests/contract.rs": "bc213f1745ae6edd8500d4f943a89a5d176fea76ab79bdf96b6ad664fbc018bd",
     "crates/kontor-runtime-paseo/tests/contract/hosted_directory.rs": "238f40e06460462c733182f63c22787225bdb8cbb348b80e8a11a362d4b1a095"
+  },
+  "public_derivative": {
+    "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+    "ledger": "../PUBLIC-REDACTION.json",
+    "note": "This public copy is a redacted derivative. The root ledger records original and derivative digests."
   }
 }

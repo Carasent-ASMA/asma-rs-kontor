@@ -1,5 +1,5 @@
-   Compiling kontor-jira v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-jira)
-   Compiling kontor-daemon v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-daemon)
+   Compiling kontor-jira v0.2.1 ([compat-workspace]/crates/kontor-jira)
+   Compiling kontor-daemon v0.2.1 ([compat-workspace]/crates/kontor-daemon)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 27.53s
      Running tests/loopback_api.rs (target/qualification/debug/deps/loopback_api-b5159e50cf44b3f2)
 

@@ -1,0 +1,18 @@
+{
+  "consumers": [
+    "PUBLIC-REDACTION.md"
+  ],
+  "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+  "files": {
+    "EVD-INPUTS.md": {
+      "bytes": 2884,
+      "derivative_sha256": "82511ecae00e2cf5d42e2c2828f0c28c1ad8049189ab4dc32406f00d03ea7d67",
+      "original_sha256": "a1fa4952ca8e88439d2604f0e7f990c7136abe6cffd6cc14c86f3508e40ecb09",
+      "private_references_redacted": 1
+    }
+  },
+  "model": "The public copy is a redacted derivative. Original bytes and SHA-256 are retained in the access-controlled evidence store; the TPM owns the exact-path disposition ledger.",
+  "original_archive": "access-controlled evidence store outside the public repo; TPM-owned disposition ledger",
+  "placeholders": {},
+  "scope": "docs/evidence/KON-MVP-20"
+}

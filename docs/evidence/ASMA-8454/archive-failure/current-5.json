@@ -1,7 +1,7 @@
 {
   "name": "current-5",
   "source_commit": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
-  "cwd": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor",
+  "cwd": "[qualification-workspace]",
   "command": [
     "cargo",
     "test",
@@ -16,7 +16,7 @@
     "--nocapture",
     "--test-threads=2"
   ],
-  "target_dir": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target",
+  "target_dir": "[qualification-workspace]/target",
   "started_at": "2026-10-11T15:11:42.079356+00:00",
   "exit_code": 0,
   "log": ".qualification/reproduction/current-5.log",

@@ -51,11 +51,18 @@
     "daemon": "jira-materialization-daemon.log",
     "scope": "Typed refusal explains the exact mismatch; unchanged guards refuse before confirmation, preserve batch/item identities, resume the original key after repair, and produce only Jira GET requests."
   },
-  "live_recovery_receipt": "https://github.com/Carasent-ASMA/asma-modules/blob/1f2974a2525e7bb462dc64048f0ae30782ecbc46/_docs/ai-orchestration/reports/evidence/kcadr/jira-and-ecp-recovery.json",
+  "live_recovery_receipt": "[archived-private-evidence]",
   "deployment": {
     "performed_by_this_source_lane": false,
     "owner": "parent session /root",
     "pending": "Deploy the exact merged diagnostic correction and verify preserved state; prior PR167 merge1b0b27e is already deployed."
   },
-  "independent_kontor_gate_verdict": null
+  "independent_kontor_gate_verdict": null,
+  "public_derivative": {
+    "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+    "ledger": "PUBLIC-REDACTION.json",
+    "note": "This public copy is a redacted derivative. Original bytes and SHA-256 are retained in the access-controlled evidence store; the ledger records original and derivative digests."
+  },
+  "public_log_sha256": "710137ac738e43b6f506797d0c7f40050eee25451c8497c683f3862fd6a45124",
+  "live_recovery_receipt_redaction": "LSA-WP01-PUBLIC-EVIDENCE-001"
 }

@@ -1,4 +1,4 @@
-   Compiling kontor-daemon v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-daemon)
+   Compiling kontor-daemon v0.2.1 ([compat-workspace]/crates/kontor-daemon)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 25.91s
      Running tests/loopback_api.rs (target/debug/deps/loopback_api-14bd20164fbab49c)
 

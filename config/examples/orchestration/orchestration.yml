@@ -1,0 +1,90 @@
+# Neutral orchestration example. It is the entry file of one explicitly
+# selected config folder: every relative config reference below resolves from
+# the folder root, never from the consumer's current directory.
+#
+# `schema_version`, `fleet` and `core_team` are the existing bundle selector.
+# The `project:` block is the parameter block the workflow pack renders from;
+# WP-08 extends the bundle reader to read it. Until then this file is a schema
+# fixture, not a live bundle: the current reader accepts only the selector.
+schema_version: 1
+fleet: orchestration/fleet.yml
+core_team: orchestration/teams/core-team.yml
+
+project:
+  # The confirmed tracker key. It is the public identifier; internal ids stay
+  # internal.
+  key: EXM
+  name: Example Project
+  owner: Platform Owner
+
+  # Project resource paths begin with one of these logical roots. Each root is
+  # a repository checkout the consumer supplies; no root is the config folder.
+  resource_roots:
+    project: example-org/example-project
+
+  decision_authorities:
+    platform: Platform Owner
+    architecture: Architecture Review
+    decision_records_root: project/docs/decisions/
+
+  tracker:
+    kind: jira
+    site: https://example.atlassian.invalid
+    project_key: EXM
+    # A key-shaped identifier, not a UUID, slug or legacy code.
+    key_pattern: '^[A-Z][A-Z0-9]{1,9}-[0-9]+$'
+    credential_alias: tracker-api-token
+    spec: tracker/jira.yml
+
+  branch:
+    types: [feat, fix, docs, refactor, test, chore, ci, build, perf]
+    pattern: '^(feat|fix|docs|refactor|test|chore|ci|build|perf)/<KEY>-<number>-<slug>$'
+    commit_pattern: '^<KEY>-<number> <summary>$'
+
+  forge:
+    kind: github
+    organization: example-org
+    repositories:
+      - example-org/example-project
+    base_branch: main
+
+  # Allowlist of provider/harness pairs this project may launch. It never
+  # owns model ids, effort or vendor independence; those stay in fleet.yml.
+  # A host route whose pair is absent here is refused before placement.
+  runtime:
+    matrix:
+      - {name: claude, harness: paseo, provider: claude}
+      - {name: codex, harness: paseo, provider: codex}
+      - {name: cursor, harness: paseo, provider: cursor}
+      - {name: opencode, harness: opencode, provider: opencode}
+      - {name: glm-acp, harness: acp-agent, provider: glm-acp-agent}
+
+  # The project's CLI verbs, for text and checks that must not hard-code one
+  # tool's command set.
+  cli:
+    command: example
+    verbs: [status, epic, task, git, fleet]
+
+  team_pack: packs/team.yml
+  fleet: orchestration/fleet.yml
+  supervision: orchestration/tpm-supervision.yml
+
+  merge_authority:
+    role: Platform Owner
+    policy: independent-review-then-owner
+
+  documentation_roots: [project/docs]
+  gap_ledger: project/docs/GAPS.md
+  attention_channel: 'attention:platform-owner'
+  glossary: project/docs/GLOSSARY.md
+  worktree_layout: '.worktrees/<key-slug>/<module>'
+  check_runs: [publication-branch-title]
+
+  capacity:
+    max_delivery_seats: 1
+    max_parallel_tasks: 2
+    start_admission: 1
+
+  time_zone: Europe/Oslo
+  holiday_countries: [NO]
+  currency: NOK

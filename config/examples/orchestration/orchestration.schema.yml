@@ -1,0 +1,149 @@
+# Machine-readable companion to the `project:` block documented in
+# docs/CONFIGURATION.md. It states required key presence plus the named
+# cross-field rules; the schema tests in
+# crates/kontor-fleet/tests/config_examples.rs prove those against both the
+# neutral example and ASMA's concrete values.
+schema_version: 1
+kind: kontor-orchestration-project
+description: The project parameter block of orchestration.yml.
+
+required:
+  - schema_version
+  - fleet
+  - core_team
+  - project
+
+project:
+  required:
+    - key
+    - name
+    - owner
+    - resource_roots
+    - decision_authorities
+    - tracker
+    - branch
+    - forge
+    - runtime
+    - cli
+    - team_pack
+    - fleet
+    - supervision
+    - merge_authority
+    - documentation_roots
+    - gap_ledger
+    - attention_channel
+    - glossary
+    - worktree_layout
+    - check_runs
+    - capacity
+    - time_zone
+    - holiday_countries
+    - currency
+  nested:
+    decision_authorities:
+      required: [platform, architecture, decision_records_root]
+    tracker:
+      required: [kind, site, project_key, key_pattern, credential_alias, spec]
+    branch:
+      required: [types, pattern, commit_pattern]
+    forge:
+      required: [kind, organization, repositories, base_branch]
+    runtime:
+      required: [matrix]
+    cli:
+      required: [command, verbs]
+    merge_authority:
+      required: [role, policy]
+    capacity:
+      required: [max_delivery_seats, max_parallel_tasks, start_admission]
+      rule: max_parallel_tasks and start_admission are the Paseo-direct placement capacity ceiling and initial admission; start_admission must be <= max_parallel_tasks; max_delivery_seats is an owner-set project value scoped per team run, not supplied by the placement rule, not a global team-run ceiling, and kontord has no such field
+
+# The two supervision files are distinct contracts.
+supervision_contract:
+  project.supervision: folder-relative autonomous_tpm_v1 TPM cadence profile, read from the selected config folder
+  paseo_watchdog: <state-root>/supervision.yml, read by the Paseo watchdog and recovery path; it is not a project key
+
+# Path classes. Only config_file_references are contained by the selected
+# config folder; project resource paths belong to the project root, and host
+# paths belong to this machine.
+paths:
+  config_file_references:
+    base: selected config folder
+    rule: relative, contained, must exist
+    keys:
+      - fleet
+      - core_team
+      - project.team_pack
+      - project.fleet
+      - project.supervision
+      - project.tracker.spec
+  project_resource_paths:
+    base: a declared project.resource_roots entry
+    rule: the first path segment is a resource-root key; it maps to a repository in project.forge.repositories, and the rest resolves inside that checkout. Absolute paths and `..` segments are refused.
+    roots_key: project.resource_roots
+    keys:
+      - project.documentation_roots
+      - project.gap_ledger
+      - project.glossary
+      - project.decision_authorities.decision_records_root
+  host_paths:
+    base: host filesystem
+    rule: absolute or PATH-resolved host state; not a config reference
+    keys:
+      - host.paths.*
+      - host.binaries.*
+      - host.project_cli.*
+  conventions:
+    project.worktree_layout: a pattern with <key-slug> and <module>, not a resolved path
+
+# The fleet/host join. The fleet owns canonical model/vendor/effort policy; the
+# host owns the working provider/harness/account route. The logical slot is the
+# join key, and the canonical model name is the compatibility key.
+route_binding:
+  slot_universe: fleet.domains.<domain>.accounts[]
+  host_slot: host.provider_accounts.<slot>
+  host_order: host.routes.<domain>[]
+  join_key: slot
+  canonical:
+    owner: fleet
+    fields: [model_id, vendor, efforts, chains, bindings]
+    note: domains.<domain>.provider is the canonical/native family, not a host restriction
+  host_route:
+    fields: [provider, harness, native_alias, credential, serves, efforts, qualification]
+    serves: mapping from canonical fleet model name to the model id this route launches (route_model_id); without a qualification it must equal models.<model>.id
+    efforts: optional subset of the fleet model's efforts
+    qualification: reference `<route>@<revision>`; required when provider differs from the fleet domain provider or the route-native launch id differs from the canonical model id
+  runtime_matrix:
+    owner: project
+    rule: project.runtime.matrix is an allowlist of provider/harness pairs; a host route not listed is refused before placement
+  qualification:
+    source: orchestration/route-qualifications.yml
+    activation: a generated activation record names this source, its exact SHA-256 source_hash and activated_at; the authored source carries no activation flag
+    activation_record_fields: [schema_version, source, source_hash, activated_at]
+    record_fields: [route, harness, model, canonical_model_id, canonical_vendor, route_model_id, efforts, revision, record_hash]
+    record_hash: SHA-256 over ordered key=value lines joined by newlines with no trailing newline, listing route, harness, model, canonical_model_id, canonical_vendor, route_model_id, efforts (declared order, comma-separated), revision
+    rule: the activation source_hash must match the exact file bytes and the record must hash-match and cover the pinned canonical identity, route-native launch id and effort; `<route>@<revision>` is split exactly and compared for equality
+  compatibility:
+    rule: the route maps the canonical model to a route-native id in serves and supports the pinned effort; a different launch id or a cross-provider route needs a matching activated qualification record
+    refusal: an unproven or malformed cross-provider route, or a same-provider route that changes the launch id without proof, is refused with route_model_id_unproven, route_unqualified or route_qualification_*; a different provider is never substituted merely because it is available
+    fleet_edit: a host route change never requires a fleet policy edit
+  fallback: skip an incompatible route, continue routes.<domain>, then descend to the next chain step; never change the canonical model or effort to fit a route; a fallback never lands on a vendor excluded by rules.independent_of
+  vendor_independence: the canonical fleet vendor, not the working provider or harness; if no route preserves it, placement is refused
+  migration: schema_version 2 accounts become logical slots; legacy native aliases map to host routes; active-run snapshots are preserved; the current bundle base config/orchestration/ moves to the selected-folder root with manifest-name equivalence; no daemon change before KR-14
+
+# A placement freezes this record. A later host edit changes new placements,
+# never the snapshot an active run already holds.
+route_snapshot:
+  fields:
+    - policy_hash
+    - host_route_hash
+    - slot
+    - route_provider
+    - route_harness
+    - native_alias
+    - qualification
+    - route_model_id
+    - canonical_model
+    - canonical_effort
+    - canonical_vendor
+    - resolved_at

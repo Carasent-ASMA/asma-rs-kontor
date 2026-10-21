@@ -1,0 +1,21 @@
+# Route-qualification records. This file is published and activated through the
+# policy path; the activation record binds its exact bytes, so this file carries
+# no activation flag or timestamp. It is not fleet policy and not host.yml.
+#
+# A record proves one working provider/harness route for one canonical fleet
+# model, its canonical id/vendor, its route-native launch id and a stated effort
+# subset. The record hash is SHA-256 over these fields, in order, as
+# `key=value` lines joined by newlines (no trailing newline): route, harness,
+# model, canonical_model_id, canonical_vendor, route_model_id, efforts (declared
+# order, comma-separated), revision.
+schema_version: 1
+records:
+  - route: glm-acp-agent
+    harness: acp-agent
+    model: open-example
+    canonical_model_id: example/model
+    canonical_vendor: example
+    route_model_id: glm-5.3
+    efforts: [high, max]
+    revision: '1'
+    record_hash: '46b75ec7735f12f1cebdf5c43595bc08da0f20329a78eb3e406d2a7e85ba8844'

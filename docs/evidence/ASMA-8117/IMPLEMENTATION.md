@@ -13,7 +13,7 @@ no verification seat, no deployment, no publication and no Jira transition.
 
 ## Bootstrap
 
-The canonical worktree `asma-modules/.worktrees/asma-8117/asma-rs-kontor` and
+The canonical worktree `[task-workspace]` and
 its branch were preserved throughout. No worktree, branch, session, topology
 node, TeamRun, AgentRun or external identity was created or replaced.
 

@@ -2,9 +2,7 @@
 """Render the recheck report from the raw receipts. Nothing here is retyped."""
 import pathlib, re, subprocess
 
-K = pathlib.Path.home() / ("carasent/asma-modules/.worktrees/feat/"
-                 "ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/"
-                 "_tools/asma-rs-kontor")
+K = pathlib.Path("[parent-workspace]")
 R = pathlib.Path("/tmp/asma8187-rc")
 
 def block(log, marker):

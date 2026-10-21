@@ -1,0 +1,12 @@
+# Neutral tracker connection example. The credential alias names a value in the
+# deployment's secret store; the value itself is never written here.
+schema_version: 1
+kind: jira
+site: https://example.atlassian.invalid
+project_key: EXM
+credential_alias: tracker-api-token
+
+# Tracker field, option, issue-type and status maps are installed per Realm
+# like Team Definitions. Point at the project's own YAML specs here; the
+# default example ships none.
+specs: []

@@ -203,7 +203,9 @@ mod tests {
     use kontor_core::id::parse_utc_timestamp;
     use kontor_core::spec::ProviderQuotaKind;
 
-    const EXAMPLE: &str = include_str!("../../../config/examples/quota-signals.yml");
+    const EXAMPLE: &str = include_str!("../../../tests/fixtures/config/quota-signals.yml");
+
+    const NEUTRAL_EXAMPLE: &str = include_str!("../../../config/examples/quota-signals.yml");
 
     /// The message Claude actually produced on 2026-08-30, verbatim.
     const CLAUDE_LIMIT: &str = "You've hit your individual spend limit · ask your admin to raise \
@@ -214,6 +216,68 @@ mod tests {
     const CODEX_LIMIT: &str = "[System Error] You've hit your usage limit. Visit \
          https://chatgpt.com/codex/settings/usage to purchase more credits or try \
          again at Aug 23rd, 2026 9:35 AM.";
+
+    #[test]
+    fn the_neutral_example_parses_without_real_vendor_copy() {
+        let document = parse(NEUTRAL_EXAMPLE).expect("the neutral example is valid");
+        assert_eq!(document.schema_version, 1);
+        assert!(!document.signals.is_empty());
+        for signal in &document.signals {
+            assert!(
+                signal
+                    .markers
+                    .iter()
+                    .all(|marker| !marker.contains("claude.ai")),
+                "the neutral example carries no captured vendor wording"
+            );
+        }
+        for provider in ["claude-primary", "codex-primary", "opencode"] {
+            assert!(
+                document
+                    .signals
+                    .iter()
+                    .any(|signal| signal.provider == provider),
+                "the neutral example declares {provider}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_neutral_example_does_not_classify_live_credit_wording() {
+        let document = parse(NEUTRAL_EXAMPLE).expect("the neutral example is valid");
+        let opencode: Vec<QuotaSignal> = document
+            .signals
+            .iter()
+            .filter(|signal| signal.provider == "opencode")
+            .cloned()
+            .collect();
+        assert!(
+            !opencode.is_empty(),
+            "the neutral example declares opencode"
+        );
+        assert!(
+            opencode
+                .iter()
+                .flat_map(|signal| &signal.markers)
+                .all(|marker| marker != "insufficient" && marker != "credits"),
+            "the neutral example carries no active credit fingerprint"
+        );
+
+        let at = parse_utc_timestamp("2026-08-21T07:00:00Z").expect("a canonical instant");
+        let synthetic = "example credit balance exhausted; see example.invalid/billing";
+        let observed = classify(synthetic, &opencode, at).expect("the synthetic marker classifies");
+        assert_eq!(observed.kind, ProviderQuotaKind::Drained);
+
+        for live in [
+            "This request failed because of insufficient credits",
+            "402 Payment Required: insufficient credits for this request",
+        ] {
+            assert!(
+                classify(live, &opencode, at).is_none(),
+                "the neutral example must not classify live credit wording: {live}"
+            );
+        }
+    }
 
     #[test]
     fn the_shipped_example_names_exact_catalog_aliases_not_vendor_families() {

@@ -1,0 +1,98 @@
+# Neutral host example. Copy it to `host.yml` beside this file, replace every
+# value with this machine's own, and keep `host.yml` out of version control
+# (the folder's .gitignore already does that).
+#
+# host.yml is a bootstrap input: it is read before the daemon starts, so a
+# change needs a restart for new placements. It holds paths, binaries,
+# endpoints, ports, account slots and credential references. It never holds a
+# credential value, a token or a private key.
+schema_version: 1
+time_zone: Europe/Oslo
+
+paths:
+  state_root: /var/lib/kontor/example/realm
+  data_root: /var/lib/kontor/example/data
+  worktrees_root: /var/lib/kontor/example/worktrees
+  paseo_home: /var/lib/kontor/example/paseo
+  logs: /var/log/kontor/example
+
+binaries:
+  paseo: /usr/local/bin/paseo
+  git: /usr/bin/git
+  gh: /usr/local/bin/gh
+  python: /usr/bin/python3
+  cargo: /usr/local/bin/cargo
+
+# The project's own command, keyed by the value of project.cli.command. A new
+# project supplies its own executable here; no tool name is assumed.
+project_cli:
+  example: /usr/local/bin/example
+
+runtime:
+  kontord:
+    endpoint: http://127.0.0.1:7717
+    port: 7717
+  paseo:
+    endpoint: ws://127.0.0.1:6767/ws
+    port: 6767
+
+# A fleet domain's accounts are logical slots, not native logins. The slot name
+# is the join key: it appears in fleet.yml `domains.<domain>.accounts`, in
+# `routes` below, and as a key here. `native_alias` is this host's own runtime
+# account id; the shared fleet policy never names it. `serves` maps a
+# canonical fleet model to the model id this route actually launches.
+provider_accounts:
+  claude-primary:
+    provider: claude
+    native_alias: laptop-claude-1
+    harness: paseo
+    credential: keychain:kontor-example/claude-primary
+    serves:
+      opus-example: claude-opus-example
+  claude-secondary:
+    provider: claude
+    native_alias: laptop-claude-2
+    harness: paseo
+    credential: keychain:kontor-example/claude-secondary
+    serves:
+      opus-example: claude-opus-example
+  codex-primary:
+    provider: codex
+    native_alias: laptop-codex-1
+    harness: paseo
+    credential: keychain:kontor-example/codex-primary
+    serves:
+      sol-example: gpt-example
+  cursor:
+    provider: cursor
+    native_alias: laptop-cursor-1
+    harness: paseo
+    credential: keychain:kontor-example/cursor
+    serves:
+      grok-example: grok-example
+  opencode:
+    provider: opencode
+    native_alias: laptop-open-model-1
+    harness: opencode
+    credential: keychain:kontor-example/opencode
+    serves:
+      open-example: example/model
+
+# Route order and availability: a fleet domain maps to the logical slots this
+# host enables, in preference order. A slot omitted here is unavailable on this
+# host. A slot present in the fleet domain but not here is skipped, then the
+# policy descends to its next step. The canonical model id, effort and vendor
+# never change with the mapping.
+routes:
+  claude: [claude-primary, claude-secondary]
+  codex: [codex-primary]
+  cursor: [cursor]
+  opencode: [opencode]
+
+keychain:
+  service_prefix: kontor-example
+
+launchd:
+  labels:
+    daemon: com.example.kontor.daemon
+    desk: com.example.kontor.desk

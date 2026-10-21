@@ -8,7 +8,7 @@ Governing record: `high-scope-record-asma-8237-20260920` rev 1,
 revision_id `01a0bfde-c2fe-7051-a52b-8b6d5a080a40`,
 approval `01a0bfde-d8c0-70d1-b2f3-078d038ddfec`.
 Scope turn settled: `01a0bfe8-2813-78d2-a06c-f4ba18374efa`.
-Worktree: `asma-modules/.worktrees/asma-8237/asma-rs-kontor`, branch
+Worktree: `[task-workspace]`, branch
 `feat/ASMA-8237-kontor-model-catalog-add-luna-glm-5-3-flash-cursorauto-nemotron-publish-approved-watchdog-chain-poli`.
 
 **This document records no gate verdict.** It hands evidence to independent

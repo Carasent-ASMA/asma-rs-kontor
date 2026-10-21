@@ -1,0 +1,31 @@
+{
+  "consumers": [
+    "PUBLIC-REDACTION.md"
+  ],
+  "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+  "files": {
+    "2026-08-30-permission-posture-at-spawn-builder-evidence.md": {
+      "bytes": 27545,
+      "derivative_sha256": "75f22e93076b290c09d1c9fe570b9f264a686db253a6dd01a6d9289b3eb6a403",
+      "original_sha256": "7a197e4f407ff73b8283c17b450fe7a8ef17ebe34185d82832d0ca7dab71153c",
+      "private_references_redacted": 2
+    },
+    "2026-08-30-permission-posture-at-spawn-inspector-review-notes.md": {
+      "bytes": 17670,
+      "derivative_sha256": "e912d25cd9587c776d078fb4de88030841b1eff9aba1a139f11ff2b8c0fde8de",
+      "original_sha256": "370fd16806a6913d2ce41fba27b495317e92b5e1bbfbdca3e7016b103a1e493b",
+      "private_references_redacted": 1
+    }
+  },
+  "model": "The public copy is a redacted derivative. Original bytes and SHA-256 are retained in the access-controlled evidence store; the TPM owns the exact-path disposition ledger.",
+  "original_archive": "access-controlled evidence store outside the public repo; TPM-owned disposition ledger",
+  "placeholders": {
+    "[deployment-manifests]": "private deployment manifest path",
+    "[parent-plan]": "private parent plan path",
+    "[parent-report]": "private parent report path",
+    "[parent-repository]": "private parent repository",
+    "[project-cli-checkout]": "private project CLI path",
+    "[task-workspace]": "private task workspace path"
+  },
+  "scope": "docs/evidence/KON-OP-20"
+}

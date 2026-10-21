@@ -25,7 +25,7 @@ is green. This is an incomplete and partly defective ticket, not a careless one.
 ## Authority used
 
 Authoritative plan:
-`_docs/ai-orchestration/plans/2026-08-14-23-21-plan-kontor-operational-mvp.md`,
+the parent-workspace Kontor operational MVP plan,
 § `### KON-OP-07`, verified **byte-identical** between superproject `master`
 (`da86706f`) and this worktree — so no plan-drift caveat applies to this review.
 
@@ -41,7 +41,7 @@ or waived.
 | --- | --- |
 | Superproject branch | `feat/ASMA-7876-kontor-jira-policy-cutover` |
 | Superproject HEAD | `27814691` |
-| Superproject gitlink → `_tools/asma-rs-kontor` | **`65412ba`** (docs only) |
+| Superproject gitlink → `asma-rs-kontor` | **`65412ba`** (docs only) |
 | Submodule branch | `feat/ASMA-7876-kontor-jira-policy-cutover` |
 | Submodule HEAD | **`3b95141`** — `feat(asma-7876): Own memory authority per project and subject` |
 | Range reviewed | `65412ba..3b95141` — 1 commit, 26 files, +2463 / −131 |
@@ -221,8 +221,8 @@ A generated client branching on documented statuses gets this endpoint wrong.
 - Submodule HEAD `3b95141` is **not pushed**: `git branch -r --contains 3b95141`
   is empty. It exists only in this local worktree.
 - The superproject gitlink still points at `65412ba` — the docs-only handoff. The
-  code commit is invisible to `asma-modules`.
-- `.gitmodules` sets `ignore = all` for `_tools/asma-rs-kontor`, so the
+  code commit is invisible to the parent workspace.
+- `.gitmodules` sets `ignore = all` for `asma-rs-kontor`, so the
   superproject reports a **clean** tree despite the drift. `git show`/`git status`
   on the pointer commits look empty; only tree-hash comparison reveals them
   (`27814691` tree `dadea3d` ≠ `1c9e88b2` tree `cc0e502`).
@@ -297,7 +297,7 @@ Evidence resolution:
   `65412ba..3b95141`, branch `feat/ASMA-7876-kontor-jira-policy-cutover`.
   Not yet pushed; see Finding 5.
 - **`review-notes`** → this document,
-  `_tools/asma-rs-kontor/docs/evidence/KON-OP-07/CODE-REVIEW-01.md`.
+  `asma-rs-kontor/docs/evidence/KON-OP-07/CODE-REVIEW-01.md`.
 
 The profile sets `waiver_allowed: false` on this gate, so the rejection cannot be
 waived — it routes to `implementation` and must be re-earned.
@@ -535,8 +535,8 @@ either side: both reports are still `🟡 In Review`, and Kontor holds no gap fo
 either run. No gap-recording tool is served at this seat's authority, so this is
 recorded rather than performed.
 
-- `_docs/ai-orchestration/reports/2026-08-18-09-53-report-kontor-op07-qa-control-plane-gap.md`
-- `_docs/ai-orchestration/reports/2026-08-19-10-40-report-kontor-op07-timeline-refetch-gap.md`
+- the parent-workspace OP-07 QA control-plane gap report
+- the parent-workspace OP-07 timeline-refetch gap report
 
 The second is a live product defect, not bookkeeping: an unbounded
 `timeline_refetch_required` loop returning no cursor or revision. Its step 2 asks

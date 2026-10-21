@@ -7,7 +7,7 @@
     "e376f4059e47de8fb40956d4dbfbf6920dabc4ec"
   ],
   "archive_sha256": "66a8624b719bbb970ab46123284a96449e08d1dbcdcc433c8b1b930e0e140950",
-  "clean_export": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/reproduction/base-e376f405",
+  "clean_export": "[qualification-workspace]/.qualification/reproduction/base-e376f405",
   "files": {
     ".githooks/pre-push": "ab7166b38497d7e07417613c1681cebcc26b4c7bde24d7907cddf794bf7b8e46",
     ".github/scripts/publication_branch_title.py": "4e3d59b578cc7875b38b376ed59fe5694b57f08c2c75f9c3ef47067b70af15e0",
@@ -4098,5 +4098,10 @@
     "tests/fixtures/pilot/project.json": "311b8cd0ae3c208b4fb36607c0cc9c304325793f2b946ed983e2c45dead176c6",
     "tests/fixtures/pilot/slot-role-fence-pack.json": "f92866d764959f39b518113963984d2220045de7a2bbb417000e4edd3142a714"
   },
-  "source_writes": 0
+  "source_writes": 0,
+  "public_derivative": {
+    "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+    "ledger": "../PUBLIC-REDACTION.json",
+    "note": "This public copy is a redacted derivative. files maps original SHA-256; clean_export is a redacted placeholder."
+  }
 }

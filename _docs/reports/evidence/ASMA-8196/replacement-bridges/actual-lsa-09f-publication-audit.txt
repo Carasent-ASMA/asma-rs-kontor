@@ -6,13 +6,13 @@ Verified:
 
 - Worktree clean; publication head is docs-only over 6b.
 - All seven source/test hashes remain byte-identical to 6b; no lockfile or application drift.
-- All 81 [manifest entries](<$HOME/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/_docs/reports/evidence/ASMA-8196/replacement-bridges/SHA256SUMS.json>) match.
+- All 81 [manifest entries](<[task-workspace]>) match.
 - Preserved a488 audit hashes exactly to `ae092056…`; its receipt retains the native session and records no terminator.
 - Both JSON carriers decode byte-for-byte to the immutable a488 raw logs:
   - Historical 3b: `396bcfdb…`, 758,099 bytes.
   - Qualified 6b: `56ca45ff…`, 729,542 bytes.
 - Updated qualification receipts correctly bind carrier paths, carrier hashes, decoded hashes, and unchanged original receipts.
-- The stale footer and leading `+` characters are corrected in the [owning report](<$HOME/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/_docs/reports/2026-09-26-11-08-report-asma-8196-abandoned-bridge-lineage-kontor-operational-gap.md:209>).
+- The stale footer and leading `+` characters are corrected in the [owning report](<[task-workspace]>).
 - `git diff --check dddb7287..09f02b24` exits 0.
 
 The publication-only P2 is closed. Prior diagnosis, 3b P1/P2 findings, conditional 6b audit, and a488 publication finding remain preserved as history.

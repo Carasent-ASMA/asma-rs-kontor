@@ -48710,7 +48710,7 @@ mod tests {
             )),
             "without a fleet the compiled list does not carry the route"
         );
-        let document = include_str!("../../../config/examples/fleet.yml");
+        let document = include_str!("../../../tests/fixtures/config/fleet.yml");
         let snapshot =
             crate::fleet::FleetSnapshot::parse(document).expect("the shipped example parses");
         assert_eq!(

@@ -1,6 +1,6 @@
-   Compiling kontor-store v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-store)
-   Compiling kontor-api v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-api)
-   Compiling kontor-daemon v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-daemon)
+   Compiling kontor-store v0.2.1 ([compat-workspace]/crates/kontor-store)
+   Compiling kontor-api v0.2.1 ([compat-workspace]/crates/kontor-api)
+   Compiling kontor-daemon v0.2.1 ([compat-workspace]/crates/kontor-daemon)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 18.77s
      Running tests/loopback_api.rs (target/qualification/debug/deps/loopback_api-85725f7dd1eb38be)
 
@@ -17,7 +17,7 @@ test an_unaccounted_slot_or_an_undischarged_gate_withholds_closure ... ok
 
 test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 263 filtered out; finished in 27.01s
 
-   Compiling kontor-daemon v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-daemon)
+   Compiling kontor-daemon v0.2.1 ([compat-workspace]/crates/kontor-daemon)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 13.76s
      Running tests/loopback_api.rs (target/qualification/debug/deps/loopback_api-85725f7dd1eb38be)
 

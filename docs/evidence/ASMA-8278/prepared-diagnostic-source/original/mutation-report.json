@@ -216,5 +216,14 @@
     "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic.rs": "8d4b5040642c68b58986fb8d3d8614584e48bb70ff5ac3ba7728b9679efd1a2d",
     "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic/tests.rs": "a353b4aeb87f0ff27f3bde04fda45e0c926a2707664304500f13295fcd4e2c1e"
   },
-  "all_restored": true
+  "all_restored": true,
+  "public_derivative": {
+    "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+    "ledger": "../../PUBLIC-REDACTION.json",
+    "note": "Certified source hashes describe the originals; the public candidate files are redacted derivatives."
+  },
+  "derivatives": {
+    "crates/kontor-runtime/src/planning_pair/attestation.rs": "a6e46758a48ae9d48cb2e719541fc055288126621370820a58418f7d0e9f8779",
+    "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic.rs": "48a5baf647c4e0d10f45d5a0fb176ce389a14a09d342e22b77800ec9096a986f"
+  }
 }

@@ -1,8 +1,8 @@
 {
   "source_commit": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
-  "fresh_target_dir": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/target-source-archive",
+  "fresh_target_dir": "[qualification-workspace]/.qualification/target-source-archive",
   "reason": "Prior shared target reused an account-security binary with a deleted archive CARGO_MANIFEST_DIR; no source change.",
-  "prior_embedded_manifest_dir": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-accounts",
+  "prior_embedded_manifest_dir": "[qualification-workspace]/.qualification/tmp/kontor-verify-2yq53il4/tree/crates/kontor-accounts",
   "prior_fixture_exists": false,
   "invalidation": "Use an empty target per archive invocation, preserving every source file and gate command."
 }

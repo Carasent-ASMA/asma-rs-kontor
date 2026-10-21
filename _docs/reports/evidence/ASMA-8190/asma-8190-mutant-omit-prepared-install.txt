@@ -10,9 +10,9 @@ failures:
 
 test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 476 filtered out; finished in 2.07s
 
-   Compiling kontor-daemon v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-daemon)
+   Compiling kontor-daemon v0.2.1 ([task-workspace])
     Finished `test` profile [unoptimized + debuginfo] target(s) in 31.43s
-     Running tests/loopback_api.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/loopback_api-b347fa1894c0337e)
+     Running tests/loopback_api.rs ([parent-tools])
 
 thread 'materializing_reconciles_a_bound_seats_prepared_intent' (55876070) panicked at crates/kontor-daemon/tests/loopback_api.rs:64279:9:
 assertion `left == right` failed
