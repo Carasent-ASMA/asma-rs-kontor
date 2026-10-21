@@ -279,7 +279,7 @@ class WorkflowContractTest(unittest.TestCase):
         self.assertRegex(
             self.text,
             r"(?m)^\s{4}name:\s*\$\{\{\s*vars\.KONTOR_CHECK_NAME\s*\|\|\s*"
-            r"'asma/publication-branch-title'\s*\}\}\s*$",
+            r"'publication-branch-title'\s*\}\}\s*$",
         )
         self.assertEqual(self.text.count("vars.KONTOR_CHECK_NAME"), 2)
 

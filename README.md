@@ -361,7 +361,7 @@ security findings follow [Security](SECURITY.md), and participation follows the
 [Code of Conduct](CODE_OF_CONDUCT.md).
 
 Kontor deliberately does not run build or test CI in GitHub Actions. Its one
-workflow, `asma/publication-branch-title`, checks only a pull request's base,
+workflow, the configured publication check, checks only a pull request's base,
 branch name and title key and builds nothing. A
 `dependabot/` branch opened by `dependabot[bot]` is accepted as
 `bot_branch_exempt`; the base and head-sha checks still run.

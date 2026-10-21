@@ -36,7 +36,7 @@ concurrency:
 
 jobs:
   identity:
-    name: ${{ vars.KONTOR_CHECK_NAME || 'asma/publication-branch-title' }}
+    name: ${{ vars.KONTOR_CHECK_NAME || 'publication-branch-title' }}
     runs-on: ubuntu-latest
     steps:
       - name: Fetch the trusted sources from the exact workflow revision

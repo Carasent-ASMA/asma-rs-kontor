@@ -44,7 +44,7 @@ inspection. The setting exists because parallel worktrees each keep a
 
 ## Work in one focused branch
 
-- Name the branch `<type>/ASMA-<number>-<slug>` from the confirmed Jira key
+- Name the branch `<type>/<KEY>-<number>-<slug>` from the confirmed tracker key
   (`feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `perf`, `build`, `ci`,
   `releases`); the only keyless form is a hotpatch line
   `releases/v<major>.<minor>.<patch>`.
@@ -203,9 +203,9 @@ The retired escape hatch `ASMA_ALLOW_AGENT_PUSH` is now
 ## Pull requests
 
 The pull-request title leads with the branch's key and one space
-(`ASMA-<number> <summary>`); a `releases/v<X>.<Y>.<Z>` branch takes exactly
-`Release v<X>.<Y>.<Z>`, and the base is `master`. The
-`asma/publication-branch-title` check
+(`<KEY>-<number> <summary>`); a `releases/v<X>.<Y>.<Z>` branch takes exactly
+`Release v<X>.<Y>.<Z>`, and the base is the configured
+`project.forge.base_branch`. The publication check
 (`.github/workflows/publication-branch-title.yml`) reports any other branch,
 title or base as a failure, with one exception: a `dependabot/` branch
 opened by `dependabot[bot]` is accepted as `bot_branch_exempt`, and the base and
