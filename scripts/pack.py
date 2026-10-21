@@ -241,6 +241,8 @@ def _parse_scalar(value: str) -> object:
                 raise YamlError(f"invalid flow mapping entry: {part}")
             result[key] = _parse_scalar(rest)
         return result
+    if re.search(r":[ \t]", value):
+        raise YamlError(f"unquoted mapping separator in scalar: {value}")
     lowered = value.lower()
     if lowered in ("null", "~"):
         return None
@@ -1384,7 +1386,7 @@ def _link_errors(
                 continue
             for match in LINK_RE.finditer(INLINE_CODE_RE.sub("", line)):
                 target = match.group(1)
-                if target.startswith(("http://", "https://", "mailto:", "skill://", "#")):
+                if target.startswith(("http://", "https://", "mailto:", "skill://")):
                     continue
                 if "{{" in target:
                     continue
@@ -2054,10 +2056,24 @@ def _changed_plan_paths(project_root: Path, base: str | None) -> set[Path]:
     }
 
 
+def _plan_label(
+    path: Path, project_root: Path, roots: list[tuple[str, Path]]
+) -> str:
+    try:
+        return path.relative_to(project_root).as_posix()
+    except ValueError:
+        for key, root in roots:
+            try:
+                return f"{key}/{path.relative_to(root).as_posix()}"
+            except ValueError:
+                continue
+        return path.as_posix()
+
+
 def _plan_graph_errors(
     project_root: Path,
     config: Config,
-    roots: list[Path],
+    roots: list[tuple[str, Path]],
     mode: str = "all",
     base: str | None = None,
 ) -> list[str]:
@@ -2068,7 +2084,7 @@ def _plan_graph_errors(
         text = path.read_text(encoding="utf-8", errors="replace")
         if not _is_plan(path, text):
             continue
-        relative = path.relative_to(project_root)
+        relative = _plan_label(path, project_root, roots)
         marker = _has_graph_marker(text)
         required = mode == "all" or (mode == "changed" and path.resolve() in changed)
         if not marker:

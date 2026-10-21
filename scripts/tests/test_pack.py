@@ -20,6 +20,7 @@ import tempfile
 import unittest
 from datetime import date, timedelta
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PACK = REPO_ROOT / "scripts" / "pack.py"
@@ -65,6 +66,13 @@ class YamlReaderTests(unittest.TestCase):
     def test_an_unclosed_quoted_scalar_is_refused(self) -> None:
         with self.assertRaises(pack.YamlError):
             pack.load_yaml_text("owner: 'Platform Owner\n")
+
+    def test_an_unquoted_mapping_separator_is_refused_in_the_fallback(
+        self,
+    ) -> None:
+        with mock.patch.object(pack, "_pyyaml", None):
+            with self.assertRaises(pack.YamlError):
+                pack.load_yaml_text("owner: Platform: Owner\n")
 
 
 class PackCase(unittest.TestCase):
@@ -543,6 +551,23 @@ class CheckTests(PackCase):
         self.assertIn("unrouted document", result.stderr)
         self.assertIn("extra.md", result.stderr)
 
+    def test_rendered_skill_same_file_anchor_is_checked(self) -> None:
+        config = self.config()
+        project = self.project(config)
+        for base in (".github", ".agents"):
+            path = project / base / "skills" / "epic-orchestration" / "SKILL.md"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + "\n[missing heading](#nonexistent-heading)\n",
+                encoding="utf-8",
+            )
+        result = self.run_pack(
+            "--config-dir", str(config), "check", str(project)
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("broken anchor", result.stderr)
+        self.assertIn("#nonexistent-heading", result.stderr)
+
     def test_rendered_skill_links_are_checked(self) -> None:
         config = self.config()
         project = self.project(config)
@@ -744,6 +769,27 @@ class CheckTests(PackCase):
         self.assertIn("two/docs/guide.md", checked.stderr)
         self.assertIn("broken link", checked.stderr)
         self.assertNotIn("candidate/docs", checked.stderr)
+
+        (one / "docs" / "plans").mkdir()
+        (one / "docs" / "plans" / "plan-one.md").write_text(
+            "# Plan one\n", encoding="utf-8"
+        )
+        sibling_plan = self.run_pack(
+            "--config-dir",
+            str(config),
+            "check",
+            str(candidate),
+            "--resource-root",
+            f"one={one}",
+            "--resource-root",
+            f"two={two}",
+            "--plan-graphs",
+            "marker",
+            "--no-links",
+            "--no-routed-once",
+            "--no-public-lint",
+        )
+        self.assertEqual(sibling_plan.returncode, 0, sibling_plan.stderr)
 
     def test_an_undeclared_resource_override_is_refused(self) -> None:
         config = self.config()
