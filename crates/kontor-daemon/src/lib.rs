@@ -43,6 +43,7 @@
 //! until that inventory has been taken.
 
 pub mod applications;
+pub mod attention;
 pub mod credentials;
 pub mod endpoint;
 pub mod fleet;
@@ -253,6 +254,9 @@ pub enum StartupError {
     /// The configured seat-supervision policy could not be loaded.
     #[error(transparent)]
     Supervision(#[from] SupervisionError),
+    /// The optional attention policy could not be loaded.
+    #[error(transparent)]
+    Attention(#[from] attention::config::AttentionConfigError),
     /// The optional memory transport configuration was invalid or needs the
     /// later authorized credential/activation composition.
     #[error("the memory transport could not be composed: {source}")]
@@ -456,6 +460,8 @@ pub struct Daemon {
     applications: Arc<applications::Services>,
     config: DaemonConfig,
     supervision: Option<SupervisionPolicy>,
+    /// The one configured attention channel. Absence emits nothing.
+    attention: Option<Arc<attention::AttentionChannel>>,
     usage_poller: usage::UsagePoller,
     github_publication: Option<Arc<github_publication::GithubPublicationGateway>>,
     /// Held for its `Drop`. The claim on the state root lasts exactly as long as
@@ -623,6 +629,25 @@ impl Daemon {
             applications.attach_memory_cognee(client);
         }
 
+        // Absence is valid and emits nothing. A *present* document that will not
+        // parse refuses the start: serving a Realm whose operator believes
+        // attention is armed is worse than not starting. The store receives the
+        // observer only after this composition, and the observer itself performs
+        // no egress — it formats a payload and spawns a detached one-shot.
+        let attention = attention::config::read(&config.state_root)?
+            .map(|policy| {
+                attention::AttentionChannel::from_policy(policy, config.bind, realm_id)
+                    .map(Arc::new)
+            })
+            .transpose()?;
+        if let Some(channel) = &attention {
+            applications.attach_attention(Arc::clone(channel));
+            let channel = Arc::clone(channel);
+            store.set_attention_observer(Some(Arc::new(move |signal| {
+                channel.notify_signal(signal);
+            })));
+        }
+
         let state = ApiState::new(ApiParts {
             store,
             credentials,
@@ -654,6 +679,7 @@ impl Daemon {
             applications,
             config,
             supervision,
+            attention,
             usage_poller,
             github_publication,
             lock,
@@ -701,6 +727,26 @@ impl Daemon {
     #[must_use]
     pub fn state(&self) -> ApiState {
         self.state.clone()
+    }
+
+    /// Observe every open seat once and emit each new waiting-seat fact.
+    ///
+    /// The resident supervisor calls this on its configured cadence; tests and
+    /// an operator recovery can call the same seam without waiting for a tick.
+    ///
+    /// # Errors
+    /// A store refusal while reading the durable seat inventory.
+    pub async fn observe_waiting_seats_once(
+        &self,
+    ) -> Result<u32, kontor_core::repository::RepositoryError> {
+        let Some(channel) = &self.attention else {
+            return Ok(0);
+        };
+        let stale_after_seconds = self
+            .supervision
+            .as_ref()
+            .map_or(1200, |policy| policy.watchdog.stale_after_seconds);
+        attention::observe_waiting_seats(&self.state, stale_after_seconds, channel).await
     }
 
     /// Run one bounded automatic Jira convergence pass.
@@ -960,6 +1006,7 @@ impl Daemon {
             coordinator,
             state,
             policy,
+            self.attention.clone(),
         )))
     }
 

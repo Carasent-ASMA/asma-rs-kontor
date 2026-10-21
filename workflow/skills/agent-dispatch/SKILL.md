@@ -79,17 +79,19 @@ work, use the
 ## Seat start and communication
 
 The first message carries everything: the exact seat name alone on the first
-line, the seat card (role, personality, hard rules, steps, output format), then
-facts collected by a script. Fixed text comes first and is the same for every
-seat of the same role, so the provider's prompt cache works.
+line, the [seat card](../seat-cards/SKILL.md) (role, personality, hard rules,
+steps, output format), then facts collected by a script. Fixed text comes first
+and is the same for every seat of the same role, so the provider's prompt cache
+works.
 
-Every seat follows the project's communication contract for comments, reviews,
-status messages and handoffs. It owns the shared plain language, brevity and
-requested-language rules; the exact first-line rule above still applies to seat
-prompts.
+Every seat follows the project's
+[communication contract](../kontor-communication/SKILL.md) for comments,
+reviews, status messages and handoffs. It owns the shared plain language,
+brevity and requested-language rules; the exact first-line rule above still
+applies to seat prompts.
 
 Seats also keep the
-[three homes for information](../../../docs/WORKFLOW.md#3-kickoff-to-closeout):
+[three homes for information](../document-organization/SKILL.md#three-homes-for-information):
 decisions in Git with owner and date, facts read live, history in dated reports.
 
 <a id="adam-lsa-and-advisor-triggers"></a>
@@ -165,7 +167,7 @@ Select protocol by purpose, not by surface:
 | --- | --- |
 | Advisor | Supported Advisor profile; read-only; caller records disposition |
 | Planning pair | Only after a qualified planning-pair protocol is selected; two contrasting vendors; no Judge |
-| Independent Review | Required reviewers plus Judge; conjunctive gate; never replace with planning pair |
+| Independent Review | Required reviewers plus Judge; conjunctive gate; never replace with planning pair. Follow the [committee protocol](../committee-protocol/SKILL.md). |
 
 Reuse the same ASW/CSW and seats for the same topic; a materially different
 subject creates another workspace

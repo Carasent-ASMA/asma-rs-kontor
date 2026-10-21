@@ -1,0 +1,35 @@
+# Copy to <state-root>/attention.yml only when this Realm should emit alerts.
+# An absent file means Kontor emits nothing; there is no default destination.
+schema_version: 1
+
+# A list even though only one channel is implemented today: a second channel
+# is another entry plus one formatting function, not a schema change (REQ-013).
+sinks:
+  - channel: teams_workflow
+    # The Teams Power Automate Workflows URL (DEP-003). A different webhook
+    # mechanism is a URL change, not a code change (GUD-002).
+    url: https://example.logic.azure.com/workflows/attention
+    # Bounds each attempt. The whole loop is bounded by
+    # max_attempts * timeout_seconds plus backoff.
+    timeout_seconds: 10
+    max_attempts: 3
+
+mention:
+  # Required: a channel post without a mention does not reliably raise a phone
+  # notification (OQ-OS-2).
+  target: operator@example.com
+
+emit:
+  # Closed list of Kontor-semantic kinds. Raw agent attention (permission
+  # requested, turn finished) is refused: Paseo's native push owns it (REQ-004).
+  # `task_needs_human` always emits, even when omitted here.
+  kinds:
+    - task_needs_human
+    - task_blocked
+    - task_parked
+    - task_failed
+    - command_confirmed
+    - hold_review_overdue
+    - waiting_seat_pending_permission
+    - waiting_seat_waiting_input
+    - waiting_seat_stalled

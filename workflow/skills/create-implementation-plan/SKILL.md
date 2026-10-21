@@ -267,8 +267,9 @@ shows it as a badge. Values (badge colour): `Completed` (bright green),
 Green tests prove nothing until something has tried to break them. Every phase
 that changed runtime behavior ends with a mutation pass over that phase's
 changed files, and the plan's **final phase** is a mutation-validation phase
-over the whole change set, per the project's mutation-testing procedure: seed a
-deliberate defect, rerun the suite, and treat a still-green suite as a broken
+over the whole change set, per the
+[mutation-testing procedure](../mutation-testing/SKILL.md): seed a deliberate
+defect, rerun the suite, and treat a still-green suite as a broken
 test. Record each mutant as a `MUT-` entry in §6 Testing (mutant, `file:line`,
 suite, KILLED/SURVIVED/EQUIVALENT). **A plan must not reach `status: Completed`
 while any mutant is still SURVIVED and unaddressed** — an unaddressed survivor

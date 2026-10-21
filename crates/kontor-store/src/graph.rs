@@ -4850,6 +4850,42 @@ impl SqliteStore {
         }
         Ok(found)
     }
+
+    /// One persisted binding snapshot, by binding id.
+    ///
+    /// The same digest rule as [`Self::list_binding_snapshots`]: a document
+    /// edited underneath the daemon is refused rather than handed to a runtime.
+    ///
+    /// # Errors
+    /// Backend failures and a document that no longer matches its digest.
+    pub fn get_binding_snapshot(
+        &self,
+        binding_id: RuntimeBindingId,
+    ) -> RepositoryResult<Option<StoredBindingSnapshot>> {
+        let stored: Option<(String, String, String)> = self
+            .connection
+            .query_row(
+                "SELECT agent_run_id, document, document_hash
+                 FROM runtime_binding_snapshots WHERE binding_id = ?1",
+                params![binding_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((agent_run_id, document, hash)) = stored else {
+            return Ok(None);
+        };
+        if ContentHash::of(document.as_bytes()).as_str() != hash {
+            return Err(RepositoryError::Backend {
+                detail: "a runtime binding snapshot no longer matches its digest".to_owned(),
+            });
+        }
+        Ok(Some(StoredBindingSnapshot {
+            binding_id,
+            agent_run_id: AgentRunId::parse(&agent_run_id)?,
+            document,
+        }))
+    }
 }
 
 // ---------------------------------------------------------------------------

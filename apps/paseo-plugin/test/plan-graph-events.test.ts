@@ -46,10 +46,11 @@ const hooks = vi.hoisted(() => {
     },
   };
 });
-vi.mock("react", async (importOriginal) => ({ ...await importOriginal<typeof import("react")>(), ...hooks }));
+vi.mock("react", async (importOriginal) => ({ ...await importOriginal<typeof import("react")>(), useContext: () => null, ...hooks }));
 vi.mock("react-native", () => ({ View: "View", Text: "Text", Pressable: "Pressable" }));
-vi.mock("@getpaseo/plugin/client/react-native", () => ({ ScrollView: "ScrollView" }));
+vi.mock("@getpaseo/plugin/client/react-native", () => ({ ScrollView: "ScrollView", Icon: "Icon" }));
 
+import { Action } from "../client/page-controls";
 import { PlanGraph, createPlanGraphStore, createPlanTapGuard, activePlanNode, planGraphViewKey, type PlanGraphProps } from "../client/plan-graph/graph";
 
 const theme: PluginTheme = { colors: {
@@ -62,6 +63,7 @@ function walk(node: unknown): Element[] {
   if (Array.isArray(node)) return node.flatMap(walk);
   if (!node || typeof node !== "object" || !("props" in node)) return [];
   const element = node as Element;
+  if (element.type === Action) return walk(Action(element.props as Parameters<typeof Action>[0]));
   return [element, ...walk(element.props.children)];
 }
 function content(node: unknown): string {

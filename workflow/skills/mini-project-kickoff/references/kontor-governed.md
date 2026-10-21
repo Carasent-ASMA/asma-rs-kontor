@@ -165,7 +165,8 @@ kickoff completion; keep the existing admission hold in force while repairing.
 ### 7. Publish project memory
 
 For a durable lesson from already settled work, use the project's
-experience-memory procedure to collect exact evidence, preview the typed
+[experience-memory procedure](../../experience-memory/SKILL.md) to collect
+exact evidence, preview the typed
 revision and propose through the supported canonical surface. Proposal and
 authorized approval are separate; read back the exact revision/hash and record
 projection/recall observations only when performed. Use the accepted

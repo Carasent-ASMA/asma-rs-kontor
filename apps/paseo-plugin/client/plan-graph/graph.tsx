@@ -2,6 +2,7 @@ import type { PluginTheme } from "@getpaseo/plugin";
 import { ScrollView } from "@getpaseo/plugin/client/react-native";
 import { useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentRef, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
+import { Action } from "../page-controls";
 import { planSourceActions, type PlanGraphData, type PlanSourceAction, type SourcedPlanState } from "./contract";
 import {
   cameraAtGraphPoint, canvasMinHeight, clampGraphScale, edgeEmphasis, edgeSegments, fitPlanGraph, graphScrollEnvelope,
@@ -164,13 +165,10 @@ function PlanGraphView({ graph, hostId, theme, store, compact = false, textScale
   const label = (value: ReactNode, muted = false) => <Text style={{ color: muted ? colors.foregroundMuted : colors.foreground }}>{value}</Text>;
   const small = (value: ReactNode) => <Text selectable style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 18 }}>{value}</Text>;
   /** `expanded` marks a disclosure trigger; plain controls omit it. */
-  const control = (title: string, onPress: () => void, disabled = false, caption = title, expanded?: boolean) => (
-    <Pressable focusable accessibilityRole="button" accessibilityLabel={title} accessibilityState={{ disabled, ...(expanded === undefined ? {} : { expanded }) }} aria-expanded={expanded} disabled={disabled}
-      onPress={onPress} style={{ minWidth: MIN_TOUCH_TARGET, minHeight: MIN_TOUCH_TARGET, paddingHorizontal: compact ? 8 : 12,
-        justifyContent: "center", alignItems: "center", borderWidth: 1, borderColor: colors.border, borderRadius: 8, opacity: disabled ? 0.5 : 1 }}>
-      {label(caption)}
-    </Pressable>
-  );
+  const control = (title: string, onPress: () => void, disabled = false, caption = title, expanded?: boolean) => {
+    const icons: Record<string, string> = { "Zoom out": "Minus", "Fit graph": "Maximize", "Zoom in": "Plus", "Previous task": "ChevronLeft", "Next task": "ChevronRight", "Copy the canonical graph JSON": "Copy" };
+    return <Action label={caption} accessibilityLabel={title} help={title} icon={icons[title]} iconOnly={!!icons[title]} colors={colors} onPress={onPress} disabled={disabled} expanded={expanded} />;
+  };
   const disclosure = (title: string, caption: string, field: "controls" | "details") => {
     const open = view[field] === true;
     return control(title, () => store.update(key, { [field]: !open }), false, `${open ? "▾" : "▸"} ${caption}`, open);

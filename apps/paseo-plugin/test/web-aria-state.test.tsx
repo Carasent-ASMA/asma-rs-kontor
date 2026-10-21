@@ -1,6 +1,6 @@
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
-vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useState: (initial: unknown) => [initial, () => {}] }));
+vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useContext: () => null, useRef: (current: unknown) => ({ current }), useState: (initial: unknown) => [initial, () => {}] }));
 vi.mock("react-native", () => ({ BackHandler: { addEventListener: () => ({ remove: () => undefined }) }, Pressable: "Pressable", Text: "Text", View: "View" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
 import { MenuItem } from "../client/anchored-menu";

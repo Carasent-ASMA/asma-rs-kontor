@@ -1,3 +1,4 @@
+import { sessionStatusInk } from "./session-status-ink";
 import { useRef, type RefObject } from "react";
 import { Pressable, Text, View } from "react-native";
 import { Icon, ScrollView } from "@getpaseo/plugin/client/react-native";
@@ -32,7 +33,7 @@ export function MobileQuickChooser({ root, rootSize, anchor, colors, status, cou
         onPress={() => { onStatus(choice); close(); }}
         style={({ pressed, focused }: { pressed: boolean; focused?: boolean }) => ({ minHeight: 48, flexDirection: "row", alignItems: "center", gap: 10, padding: 8, borderRadius: 7,
           borderWidth: 1, borderColor: choice === status || focused ? colors.accent : colors.border, backgroundColor: choice === status || pressed ? colors.surface2 : colors.surface1 })}>
-        <Icon name={QUICK_FILTER_ICONS[choice]} size={20} color={colors.foreground} />
+        <Icon name={QUICK_FILTER_ICONS[choice]} size={20} color={sessionStatusInk(choice, colors)} />
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text style={{ color: colors.foreground, fontSize: 14, fontWeight: "600" }}>{quickFilterLabel(choice)} · {counts[choice]}{choice === status ? " · Selected" : ""}</Text>
           <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 18 }}>{QUICK_FILTER_MEANINGS[choice]}</Text>

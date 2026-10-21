@@ -59,9 +59,9 @@ function ConfiguredBindings({ data, view, onView, filter, colors }: SourceProps 
   return <Disclosure label={`Configured bindings (${bindings.length === data.bindings.length ? data.bindings.length : `${bindings.length} of ${data.bindings.length}`})`} colors={colors} open={view.bindings} onToggle={(open) => onView({ bindings: open })}>
     <Copy colors={colors} muted small>Declared group/slot → chain mappings are known configuration. Template ID/version candidates and leadership identities remain separate and unresolved. These mappings do not assign native sessions or attest activation.</Copy>
     <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center" }}>
-      <Action label="Previous bindings" colors={colors} disabled={current === 0} onPress={() => onView({ bindingPage: current - 1 })} />
+      <Action label="Previous bindings" icon="ChevronLeft" iconOnly colors={colors} disabled={current === 0} onPress={() => onView({ bindingPage: current - 1 })} />
       <Copy colors={colors} muted small>Bindings {bindings.length ? start + 1 : 0}–{Math.min(start + BINDINGS_PER_PAGE, bindings.length)} of {bindings.length} · page {current + 1}/{pages}</Copy>
-      <Action label="Next bindings" colors={colors} disabled={current + 1 >= pages} onPress={() => onView({ bindingPage: current + 1 })} />
+      <Action label="Next bindings" icon="ChevronRight" iconOnly colors={colors} disabled={current + 1 >= pages} onPress={() => onView({ bindingPage: current + 1 })} />
     </View>
     {bindings.slice(start, start + BINDINGS_PER_PAGE).map((binding) => <Disclosure key={binding.reference} label={`${binding.reference} → ${binding.chainName}`} colors={colors} open={view.openBindings.includes(binding.reference)}
       onToggle={(open) => onView({ openBindings: open ? [...view.openBindings, binding.reference] : view.openBindings.filter((reference) => reference !== binding.reference) })}>
@@ -151,7 +151,7 @@ export function TeamsSourcePage({ sources, snapshots = {}, errors = {}, bindingD
           <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
             <TextInput accessibilityLabel="Filter configured teams, roles and templates" placeholder="Filter by template, group or role name" value={current.filter} onChangeText={setFilter}
               style={{ flexGrow: 1, flexBasis: 220, color: colors.foreground, minHeight: 44, paddingHorizontal: 10, borderWidth: 1, borderColor: colors.border, borderRadius: 8 }} />
-            {current.filter ? <Action label="Clear filter" colors={colors} onPress={() => setFilter("")} /> : null}
+            {current.filter ? <Action label="Clear filter" icon="X" iconOnly colors={colors} onPress={() => setFilter("")} /> : null}
           </View>
           {configured.map((source) => {
             const snapshot = snapshots[source.id];
