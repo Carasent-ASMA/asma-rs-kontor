@@ -3,7 +3,7 @@
 > **Date:** 2026-09-25 06:44
 > **Status:** 🟡 Ready for verification (implementer scope complete through TASK-035)
 > **Category:** report
-> **Scope:** `asma-rs-kontor` branch `feat/ASMA-8255-live-fleet-config` (draft PR #271), the plan `2026-09-24-07-30-plan-kontor-live-fleet-configuration.md`, and the live realm `01a00649-9ee6-73e0-ba1b-6a6c35cfd065`
+> **Scope:** `asma-rs-kontor` branch `feat/ASMA-8255-live-fleet-config` (draft PR #271), the private ASMA-8255 plan (revision `2026-09-24-07-30`), and the live realm `01a00649-9ee6-73e0-ba1b-6a6c35cfd065`
 > **Summary:** LF-01…LF-07 are implemented and committed; LF-06 was investigation only (verdict: DEF-005). LF-08's mutation pass killed all 20 mutants and TASK-035's gates are green except the two known pre-existing reds. The live system is untouched: nothing is merged, deployed, installed or drilled. This document is the verifier's entry point.
 
 ---

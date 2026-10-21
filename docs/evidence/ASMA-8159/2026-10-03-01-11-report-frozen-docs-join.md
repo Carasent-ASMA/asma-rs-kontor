@@ -17,9 +17,8 @@ docs-join.json.
 ## Pins and method
 
 Docs repository: parent repository, frozen commit
-9b5b538c269deca55058f3fdd9efc66ee8046ab9, worktree
-$HOME/.paseo/worktrees/0vl4ss0m/docs-asma-8157-experience-memory-skill-and-runbook.
-HEAD matched the frozen commit and status was clean. All comparisons read
+9b5b538c269deca55058f3fdd9efc66ee8046ab9, in a private docs worktree
+(path withheld). HEAD matched the frozen commit and status was clean. All comparisons read
 immutable git-show blobs; this checkout was never modified.
 
 Source: ASMA-8156 655e07ead8b87bebf3a5d43ddccc15c860114e05 and
@@ -34,7 +33,7 @@ pins, not fresh reviewer readbacks or acceptance of this integration package.
 | --- | --- | --- |
 | DOC-01 — final typed contract and names absent | [parent-experience-memory-skill]:26–30, 151–153; runbook:5, 8, 37–49, 262–264 | Says encoding/names are provisional or await 8156. Neither main document names any of the eight accepted registry operations below. Pin accepted source/schema/fixture and replace only the now-resolved provisional statements through the ASMA-8157 docs owner. Wire-valid example/evidence validation is still not demonstrated by a prose worksheet. |
 | DOC-02 — accepted transport configuration absent | Skill's capability/projection sections; runbook:1 and 5 | Neither names memory-cognee.json, enabled, credential_alias, dataset_prefix, timeout_ms, cognee_unavailable or the explicit DaemonConfig::with_memory_cognee composition gate. Add source-accurate configuration/reference and distinguish fixture composition, qualification, activation and ordinary-startup/public-rebuild unavailability. Route to docs owner; live enablement remains a later product frontier. |
-| DOC-03 — loader note stale at frozen tip | runbook:266–270 | Still says the Claude catalog link and generated inventory refresh are needed. Frozen 9b5b538c actually contains .claude/skills/experience-memory and the refreshed .github/agent-policy-inventory.json; its commit changes those two paths. Route this resolved source-configuration note to docs/loader owners. Presence is not an installed harness/runtime attestation. |
+| DOC-03 — loader note stale at frozen tip | runbook:266–270 | Still says the Claude catalog link and generated inventory refresh are needed. Frozen 9b5b538c actually contains the parent experience-memory loader and the refreshed agent-policy inventory; its commit changes those two paths. Route this resolved source-configuration note to docs/loader owners. Presence is not an installed harness/runtime attestation. |
 
 These are omissions/stale references, not detected misspellings of a published
 operation. No conflicting literal operation/configuration name was found:

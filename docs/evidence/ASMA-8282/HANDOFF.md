@@ -3,7 +3,8 @@
 - Task: ASMA-8282 / TASK-004
 - Workspace: TSW `wks_8062e92dee85f5b3`
 - Branch: `feat/ASMA-8282-qualify-shared-advisor-and-committee-protocols`, local, not pushed, no pull request
-- Orchestration: paseo-direct (plan `2026-09-27-20-14-plan-shared-orchestration-workflow.md`). No Kontor step, receipt or obligation is proposed here.
+- Orchestration: paseo-direct (private shared-orchestration workflow plan,
+  ASMA-8282 revision `2026-09-27-20-14`). No Kontor step, receipt or obligation is proposed here.
 - Slice one (2026-09-29): the domain and the shared reader. It was fast-forwarded from `173d399bfd44ec598332b4fe1cdf882af024fe5c` to the published `739debaacfb0ace894b36114aaa1eef6835cdfc1` (`origin/feat/ASMA-8278-shared-orchestration-workflow`) before any feature edit, and committed as `d876055ba73f6d56577a60782888cfe4a0209df8` (tree `0b5b2cce8fbb9bdfaf70daf4e6265f48ef6139c3`).
 - Slice two (2026-09-30): the direct CLI `planning_pair@1` mode, committed as `d9dce9c8ecb8f529de4e3967e87ab25f78af112a` (tree `5deed40edebddcce49d6496f61b8cb3a744f92ed`). It is built on the accepted `d876055b` (tree `0b5b2cce`) and was dispatched by TPM generation 2 `7fc26706-dce2-4a02-be87-e0f933b25fd4` (predecessor `3c52abda-4fd0-4af6-b086-476bc51eb305`, archived). Every ancestor, `d876055b` included, is unchanged.
 - Slice three (2026-10-02): immutable profile identity, the run's durable record and MUT-003, with the reserved governed decisions reported rather than adopted. It is built on the accepted `d9dce9c8` (tree `5deed40e`), was dispatched by TPM successor `47cb9a74-a798-4f40-9b54-2a818afe0a42`, and was committed as `3b05abce237593b88d4bb83fc41440967479dd8e` (tree `7c92ee34dd825b1feaa7f46583174eb0ea2258d6`). Verify passed and audit 6f failed it: a sealed finding was readable through the public `PlanningPairRun::record()`.

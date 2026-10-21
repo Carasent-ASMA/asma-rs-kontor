@@ -3,7 +3,8 @@
 This repository is created by Carasent ASMA for the Kontor control plane MVP
 (plan `2026-08-08-20-12-plan-asma-kontor-mvp-control-plane.md`, Jira epic
 `ASMA-7744`). The scaffold (KON-MVP-02) was authored from that plan and the
-Kontor architecture (`2026-08-08-20-12-architecture-asma-kontor-control-plane.md`).
+Kontor architecture (the private ASMA-7744 architecture record, revision
+`2026-08-08-20-12`).
 
 ## What lives here
 

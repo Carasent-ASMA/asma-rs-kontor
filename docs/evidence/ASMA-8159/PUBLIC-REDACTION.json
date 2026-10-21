@@ -11,10 +11,10 @@
       "private_references_redacted": 1
     },
     "2026-10-03-01-11-report-frozen-docs-join.md": {
-      "bytes": 6656,
-      "derivative_sha256": "2606f441a9b576876a354262de01bb9fc8889cccf0791de0031c5846e7a463bf",
+      "bytes": 6597,
+      "derivative_sha256": "667b7a92deabe460ca17b4574a23a44a4bca4741ef9def96b7139dcbe6e05ce0",
       "original_sha256": "f39bbb049ab315aa41b82fbb158abf30981e50cfae590ae64fedb494ca081fd7",
-      "private_references_redacted": 1
+      "private_references_redacted": 3
     },
     "2026-10-03-09-41-report-production-prep-boundary-stop.md": {
       "bytes": 14487,

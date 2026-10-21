@@ -196,8 +196,8 @@
       "private_references_redacted": 2
     },
     "archive-failure/current-full-observed.log": {
-      "bytes": 106820,
-      "derivative_sha256": "aff967878e90f34dbbcdd0e55e19777e31891cc8058392f45608e049244c9810",
+      "bytes": 105411,
+      "derivative_sha256": "e35a0b1a980c6fe37396a6e0981212078b48740bfbd44dcf2e25d76821bf7087",
       "original_sha256": "2cce8fe0331ee4f72b30f105b75b157734be8aed6ad3dcbda67684608bce94cc",
       "private_references_redacted": 11
     },
@@ -208,8 +208,8 @@
       "private_references_redacted": 2
     },
     "archive-failure/current-full.log": {
-      "bytes": 104325,
-      "derivative_sha256": "97bbde38b99055a0c9b68aee80a261d318282ad5074da3ddb05edea4df8f682a",
+      "bytes": 102916,
+      "derivative_sha256": "dfa43d3ab172d53c3d105394967bbaf817698dc71b137e14f0bfb087c0e9d6d5",
       "original_sha256": "31a1699ec259c4b8d80e4d6d1a45ff0e38f64a43687f67fee5793dc9a349fd7d",
       "private_references_redacted": 10
     },
@@ -262,8 +262,8 @@
       "private_references_redacted": 2
     },
     "asma-8419-comparison.json": {
-      "bytes": 2198,
-      "derivative_sha256": "87e2969a71cae114e0e9419196519d876ce1bf50304d6bc57d1f746dfbbe9226",
+      "bytes": 2116,
+      "derivative_sha256": "2451166865cc405f339faa634f1de19acaed8702e62b69b4e9571043fab7752c",
       "original_sha256": "61987b9ec8fe2595fc63613ed59928ca42141456fee6cbc9329ea51e3c99a705",
       "private_references_redacted": 1
     },
@@ -568,8 +568,8 @@
       "private_references_redacted": 4
     },
     "gates/baseline-pr_reviews.log": {
-      "bytes": 47139,
-      "derivative_sha256": "72a7d7a040226bba2e13893408609a92075b1123b335a328073834a6c698c7b6",
+      "bytes": 45730,
+      "derivative_sha256": "f02c6d0cdf55c171978ad2e0a16957bf7bb968fca32b04c63952f149ccd557bc",
       "original_sha256": "149d55cdb55933f3a8d96fea19924e667faeac72e7c0df5a3a4d8232ab8e7326",
       "private_references_redacted": 10
     },
@@ -598,8 +598,8 @@
       "private_references_redacted": 10
     },
     "integrated-evidence.json": {
-      "bytes": 72837,
-      "derivative_sha256": "105da45a48b497b8bdfb481dfe5d5c52298486676dd9b845a8c953c8f75bb953",
+      "bytes": 71428,
+      "derivative_sha256": "93b1ed6cc695ba2c62729fb7cfa73f1bcdb161d7d89aac38701e61b5f07a27e5",
       "original_sha256": "4774fc1fd896de54d6ec6ac05e9e28aacaf7e7dbcfa779e16c8d602f86743c3e",
       "private_references_redacted": 10
     },
@@ -1649,7 +1649,7 @@
     },
     "package-manifest.json": {
       "bytes": 32541,
-      "derivative_sha256": "8611d7df4facbe6eeae6e30da280f359e87e6179cf229a1a4c62c78ab07c427e",
+      "derivative_sha256": "d8d43cebd224097538560a36717b653b8a18180c84328fe23f5045d05609273e",
       "original_sha256": "e419787217301911299714419f1a9bfc810932902a278ed1fbac6b5edb4d98d7",
       "previous_derivative_sha256": "db0ca88477804594189656fb29c54c70395644fc83f9f47f9867f374bd94917c",
       "private_references_redacted": 0

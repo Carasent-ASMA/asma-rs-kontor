@@ -8,7 +8,7 @@
         "decided_on": "2026-10-08",
         "decision": "none",
         "declared_at": "2026-10-11T14:57:55.981854Z",
-        "procedure": ".github/skills/pr-draft-status-checker/SKILL.md",
+        "procedure": "[private-procedure-id]",
         "reason": "paseo_direct_owner",
         "recovery_owner": "paseo_direct",
         "role_code": "LSA",
@@ -43,7 +43,7 @@
         "decided_on": "2026-10-08",
         "decision": "none",
         "declared_at": "2026-10-11T14:57:55.975176Z",
-        "procedure": ".github/skills/asma-pr-review/SKILL.md",
+        "procedure": "[private-procedure-id]",
         "reason": "paseo_direct_owner",
         "recovery_owner": "paseo_direct",
         "role_code": "LSA",
@@ -67,7 +67,7 @@
       {
         "adam": {
           "container": {
-            "cwd": "[qualification-workspace]/.qualification/tmp/.tmpddg4wu/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12b78-70ca-7ec2-bc9a-de0b9e2768b3",
+            "cwd": "[qualification-runtime-root]",
             "native_id": "native-container-4",
             "observed_kind": "workspace",
             "parent_native_id": "native-container-3",
@@ -97,7 +97,7 @@
         "repository": "Carasent-ASMA/asma-rs-kontor",
         "room": {
           "container": {
-            "cwd": "[qualification-workspace]/.qualification/tmp/.tmpddg4wu/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12b78-70ca-7ec2-bc9a-de0b9e2768b3-room-01a12b78-73a7-7630-b5ac-d848bc40c50b",
+            "cwd": "[qualification-runtime-root]",
             "native_id": "native-container-9",
             "observed_kind": "workspace",
             "parent_native_id": "native-container-3",
@@ -142,7 +142,7 @@
       {
         "adam": {
           "container": {
-            "cwd": "[qualification-workspace]/.qualification/tmp/.tmpddg4wu/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12b78-70ca-7ec2-bc9a-de0b9e2768b3",
+            "cwd": "[qualification-runtime-root]",
             "native_id": "native-container-4",
             "observed_kind": "workspace",
             "parent_native_id": "native-container-3",
@@ -172,7 +172,7 @@
         "repository": "Carasent-ASMA/asma-rs-kontor",
         "room": {
           "container": {
-            "cwd": "[qualification-workspace]/.qualification/tmp/.tmpddg4wu/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12b78-70ca-7ec2-bc9a-de0b9e2768b3-room-01a12b78-741e-7d23-b748-eeae776be0f1",
+            "cwd": "[qualification-runtime-root]",
             "native_id": "native-container-14",
             "observed_kind": "workspace",
             "parent_native_id": "native-container-3",
@@ -1315,7 +1315,7 @@
       },
       {
         "container": {
-          "cwd": "[qualification-workspace]/.qualification/tmp/.tmpddg4wu/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12b78-7086-7553-a620-8f81b3000328",
+          "cwd": "[qualification-runtime-root]",
           "id": "01a12b78-70ad-7b60-ad57-6ce9a6a62250",
           "identity": {
             "generation": 1,
@@ -1348,7 +1348,7 @@
       },
       {
         "container": {
-          "cwd": "[qualification-workspace]/.qualification/tmp/.tmpddg4wu/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12b78-7086-7553-a620-8f81b3000328",
+          "cwd": "[qualification-runtime-root]",
           "id": "01a12b78-70b0-73b2-997c-f4fbeebbe2f1",
           "identity": {
             "generation": 1,
@@ -1386,7 +1386,7 @@
       },
       {
         "container": {
-          "cwd": "[qualification-workspace]/.qualification/tmp/.tmpddg4wu/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12b78-70ca-7ec2-bc9a-de0b9e2768b3",
+          "cwd": "[qualification-runtime-root]",
           "id": "01a12b78-70f1-7513-98dd-46382e5120a3",
           "identity": {
             "generation": 1,
@@ -1419,7 +1419,7 @@
       },
       {
         "container": {
-          "cwd": "[qualification-workspace]/.qualification/tmp/.tmpddg4wu/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12b78-70ca-7ec2-bc9a-de0b9e2768b3",
+          "cwd": "[qualification-runtime-root]",
           "id": "01a12b78-70f4-7151-8acf-63621b2ac09a",
           "identity": {
             "generation": 1,
@@ -1818,7 +1818,7 @@
       },
       {
         "container": {
-          "cwd": "[qualification-workspace]/.qualification/tmp/.tmpddg4wu/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12b78-70ca-7ec2-bc9a-de0b9e2768b3-room-01a12b78-73a7-7630-b5ac-d848bc40c50b",
+          "cwd": "[qualification-runtime-root]",
           "id": "01a12b78-73da-7b72-8a0b-b2232d8bc4a5",
           "identity": {
             "generation": 1,
@@ -2029,7 +2029,7 @@
       },
       {
         "container": {
-          "cwd": "[qualification-workspace]/.qualification/tmp/.tmpddg4wu/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/desk-01a12b78-70ca-7ec2-bc9a-de0b9e2768b3-room-01a12b78-741e-7d23-b748-eeae776be0f1",
+          "cwd": "[qualification-runtime-root]",
           "id": "01a12b78-744e-7fb2-a24e-b7c3035d005b",
           "identity": {
             "generation": 1,
