@@ -56,17 +56,19 @@ The selected config folder is explicit:
 - A missing selection, missing folder, missing referenced file or invalid YAML
   is refused by name.
 
-## 2. Implementation steps
+## 2. Implementation Steps
 
 | Task | Tracker key | Description | Closure condition | Completed | Date |
 | --- | --- | --- | --- | --- | --- |
 | TASK-001 | {{ task.key }} | {{ task.description }} | {{ task.closure }} | | |
 | TASK-002 | {{ task.key }} | {{ task.description }} | {{ task.closure }} | | |
 
-### 2.5 Dependency graph
+### 2.5 Dependency Graph and Waves
 
 The graph is the only editable dependency source. The `jira` field is the
 plan-graph v1 field name; it holds the confirmed tracker key for any tracker.
+After filling the template, run the project's canonical plan sync and validate
+before review; do not hand-edit the derived block.
 
 ```plan-graph
 {
@@ -75,15 +77,25 @@ plan-graph v1 field name; it holds the confirmed tracker key for any tracker.
   "tasks": [
     {"id": "TASK-001", "title": "{{ task.title }}", "phase": "Phase 1", "jira": "{{ task.key }}", "kontor_id": null, "depends_on": []},
     {"id": "TASK-002", "title": "{{ task.title }}", "phase": "Phase 1", "jira": "{{ task.key }}", "kontor_id": null, "depends_on": ["TASK-001"]}
-  ]
+  ],
+  "external_fences": []
 }
 ```
 
 <!-- plan-graph:derived:start -->
 
 ```text
-wave 0   TASK-001
-wave 1   TASK-002
+wave 0   TASK-001   (1 nodes)
+wave 1   TASK-002   (1 nodes)
+
+Dependencies (prerequisite -> dependent):
+  TASK-001 -> TASK-002
+
+{{ document.epic }}
+  TASK-001 · {{ task.key }} · Phase 1 · wave 0 · {{ task.title }}
+  TASK-002 · {{ task.key }} · Phase 1 · wave 1 · {{ task.title }}
+
+Structural waves only; external fences, gates and capacity still govern admission.
 ```
 
 <!-- plan-graph:derived:end -->
