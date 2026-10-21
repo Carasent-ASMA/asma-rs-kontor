@@ -206,8 +206,8 @@ pub struct AttentionPayload {
     pub mini_project_id: Option<MiniProjectId>,
     /// The task, when the alert names one.
     pub task_id: Option<TaskId>,
-    /// The seat/role code, when the alert names one.
-    pub seat: Option<RoleKey>,
+    /// The seat/role code that owns or last worked the task.
+    pub seat: RoleKey,
     /// The command kind, when the alert names a receipt.
     pub command_kind: Option<CommandKind>,
     /// The receipt, when the alert names one.
@@ -238,7 +238,7 @@ impl AttentionPayload {
         project_id: ProjectId,
         mini_project_id: Option<MiniProjectId>,
         task_id: Option<TaskId>,
-        seat: Option<RoleKey>,
+        seat: RoleKey,
         command_kind: Option<CommandKind>,
         receipt_id: Option<CommandReceiptId>,
         resulting_state: ResultingState,
@@ -303,6 +303,8 @@ impl AttentionPayload {
         if self.kind == AlertKind::HoldReviewOverdue && self.mini_project_id.is_none() {
             return invalid("a hold alert must name its epic");
         }
+        // Every alert names a seat; `team_run` and `operator` are explicit
+        // role codes, never an absent field (REQ-005).
         Ok(())
     }
 
@@ -418,7 +420,22 @@ fn plain_text(field: &'static str, value: &str, limit: usize) -> Result<(), Payl
 fn is_markdown_control(character: char) -> bool {
     matches!(
         character,
-        '<' | '>' | '@' | '\\' | '`' | '*' | '[' | ']' | '(' | ')' | '#' | '|' | '~' | '!'
+        '<' | '>'
+            | '@'
+            | '\\'
+            | '`'
+            | '*'
+            | '['
+            | ']'
+            | '('
+            | ')'
+            | '#'
+            | '|'
+            | '~'
+            | '!'
+            | '$'
+            | '{'
+            | '}'
     )
 }
 
@@ -455,7 +472,7 @@ mod tests {
             ProjectId::generate(),
             Some(MiniProjectId::generate()),
             Some(TaskId::generate()),
-            None,
+            RoleKey::parse("harness-seat").expect("a seat"),
             None,
             None,
             ResultingState::NeedsHuman,
@@ -477,6 +494,10 @@ mod tests {
         let document = serde_json::to_string(&payload).expect("serializes");
         for forbidden in ["<", ">", "@", "<at>", "<!channel>", "[", "]", "*", "`"] {
             assert!(!document.contains(forbidden), "{forbidden} in {document}");
+        }
+        for forbidden in ['$', '{', '}'] {
+            assert!(!payload.title.contains(forbidden));
+            assert!(!payload.body.contains(forbidden));
         }
         payload
             .ensure_no_session_content()
@@ -510,6 +531,10 @@ mod tests {
 
         let mut value = payload();
         value.body = "**bold**".to_owned();
+        assert!(value.validate().is_err());
+
+        let mut value = payload();
+        value.body = "${secret}".to_owned();
         assert!(value.validate().is_err());
     }
 

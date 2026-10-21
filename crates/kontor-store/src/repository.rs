@@ -14842,7 +14842,7 @@ fn emit_task_attention(store: &SqliteStore, task: &Task, from: TaskState) {
 
 /// The seat/role that last worked a task. REQ-005 wants a seat on every alert;
 /// a task transition has no caller-supplied run, so name the most recent one.
-fn task_seat(store: &SqliteStore, project_id: ProjectId, task_id: TaskId) -> Option<RoleKey> {
+fn task_seat(store: &SqliteStore, project_id: ProjectId, task_id: TaskId) -> RoleKey {
     store
         .connection
         .query_row(
@@ -14860,6 +14860,7 @@ fn task_seat(store: &SqliteStore, project_id: ProjectId, task_id: TaskId) -> Opt
         .ok()
         .flatten()
         .and_then(|role| RoleKey::parse(&role).ok())
+        .unwrap_or_else(crate::attention::team_run_seat)
 }
 
 /// The task and seat an abandoned aggregate belongs to, for the alert allowlist.
@@ -14867,7 +14868,7 @@ struct AbandonContext {
     task_id: TaskId,
     mini_project_id: Option<MiniProjectId>,
     title: ExternalName,
-    seat: Option<RoleKey>,
+    seat: RoleKey,
 }
 
 fn abandon_context(
@@ -14875,7 +14876,7 @@ fn abandon_context(
     project_id: ProjectId,
     target: &AggregateRef,
 ) -> RepositoryResult<Option<AbandonContext>> {
-    let (team_run_id, seat): (TeamRunId, Option<RoleKey>) = match target {
+    let (team_run_id, seat): (TeamRunId, RoleKey) = match target {
         AggregateRef::AgentRun { agent_run_id } => {
             let row: Option<(String, String)> = transaction
                 .query_row(
@@ -14889,12 +14890,9 @@ fn abandon_context(
             let Some((team_run_id, role)) = row else {
                 return Ok(None);
             };
-            (
-                TeamRunId::parse(&team_run_id)?,
-                Some(RoleKey::parse(&role)?),
-            )
+            (TeamRunId::parse(&team_run_id)?, RoleKey::parse(&role)?)
         }
-        AggregateRef::TeamRun { team_run_id } => (*team_run_id, None),
+        AggregateRef::TeamRun { team_run_id } => (*team_run_id, crate::attention::team_run_seat()),
         _ => return Ok(None),
     };
     let task_id: Option<String> = transaction
@@ -18389,7 +18387,11 @@ impl RunRepository for SqliteStore {
             mini_project_id: context.as_ref().and_then(|context| context.mini_project_id),
             task_id: context.as_ref().map(|context| context.task_id),
             task_title: context.as_ref().map(|context| context.title.clone()),
-            seat: context.as_ref().and_then(|context| context.seat.clone()),
+            seat: context
+                .as_ref()
+                .map_or_else(crate::attention::team_run_seat, |context| {
+                    context.seat.clone()
+                }),
             command_kind: Some(CommandKind::AbandonRun),
             receipt_id: Some(request.receipt_id),
             kind: AttentionSignalKind::CommandConfirmed,

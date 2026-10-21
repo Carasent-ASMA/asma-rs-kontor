@@ -1083,7 +1083,7 @@ pub(crate) fn finish_park(
         request.recorded_at,
     )?;
     Ok(parked_task.map(|task| ParkedTask {
-        seat: Some(run.role.clone()),
+        seat: run.role.clone(),
         ..task
     }))
 }
@@ -1094,7 +1094,7 @@ pub(crate) struct ParkedTask {
     mini_project_id: Option<MiniProjectId>,
     task_id: TaskId,
     title: ExternalName,
-    seat: Option<RoleKey>,
+    seat: RoleKey,
     occurred_at: Timestamp,
 }
 
@@ -1229,7 +1229,7 @@ fn park_task(
             .transpose()?,
         task_id,
         title: ExternalName::parse(&title)?,
-        seat: None,
+        seat: crate::attention::team_run_seat(),
         occurred_at: at,
     }))
 }

@@ -211,7 +211,7 @@ impl AttentionChannel {
             hold.project_id,
             Some(hold.epic_id),
             None,
-            None,
+            kontor_core::id::RoleKey::parse("operator").expect("the operator seat code is valid"),
             None,
             None,
             ResultingState::HoldReviewOverdue,
@@ -231,7 +231,7 @@ impl AttentionChannel {
         project_id: ProjectId,
         mini_project_id: Option<MiniProjectId>,
         task_id: Option<kontor_core::id::TaskId>,
-        seat: Option<kontor_core::id::RoleKey>,
+        seat: kontor_core::id::RoleKey,
         command_kind: Option<CommandKind>,
         receipt_id: Option<CommandReceiptId>,
         resulting_state: ResultingState,
@@ -501,7 +501,9 @@ impl AttentionChannel {
             seat.project_id,
             seat.mini_project_id,
             seat.task_id,
-            seat.role.clone(),
+            seat.role
+                .clone()
+                .unwrap_or_else(kontor_store::team_run_seat),
             None,
             None,
             resulting_state,

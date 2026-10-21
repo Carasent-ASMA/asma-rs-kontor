@@ -77,8 +77,11 @@ pub struct AttentionSignal {
     pub task_id: Option<TaskId>,
     /// The task's normalized human title.
     pub task_title: Option<ExternalName>,
-    /// The seat/role code that owns or last worked the task, when known.
-    pub seat: Option<RoleKey>,
+    /// The seat/role code that owns or last worked the task.
+    ///
+    /// A task with no agent run uses the explicit `team-run` role code rather
+    /// than omitting the field: every alert names a seat (REQ-005).
+    pub seat: RoleKey,
     /// The command kind, when the signal names a receipt.
     pub command_kind: Option<CommandKind>,
     /// The receipt, when the signal names one.
@@ -87,6 +90,12 @@ pub struct AttentionSignal {
     pub kind: AttentionSignalKind,
     /// When it settled.
     pub occurred_at: Timestamp,
+}
+
+/// The explicit seat code for a team-level or not-yet-seated alert.
+#[must_use]
+pub fn team_run_seat() -> RoleKey {
+    RoleKey::parse("team-run").expect("the team-run seat code is valid")
 }
 
 /// The daemon-installed observer.

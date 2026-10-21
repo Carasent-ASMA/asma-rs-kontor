@@ -233,9 +233,7 @@ pub fn teams_document(payload: &AttentionPayload, mention: &str) -> serde_json::
     if let Some(task) = payload.task_id {
         facts.push(fact("Task", &task.to_string()));
     }
-    if let Some(seat) = &payload.seat {
-        facts.push(fact("Seat", seat.as_str()));
-    }
+    facts.push(fact("Seat", payload.seat.as_str()));
     if let Some(command) = payload.command_kind {
         facts.push(fact("Command", command.as_str()));
     }
@@ -297,7 +295,20 @@ fn escape_with(value: &str, underscore: bool) -> String {
     for character in value.chars() {
         if matches!(
             character,
-            '\\' | '`' | '*' | '[' | ']' | '(' | ')' | '#' | '!' | '|' | '>' | '~'
+            '\\' | '`'
+                | '*'
+                | '['
+                | ']'
+                | '('
+                | ')'
+                | '#'
+                | '!'
+                | '|'
+                | '>'
+                | '~'
+                | '$'
+                | '{'
+                | '}'
         ) || (underscore && character == '_')
         {
             escaped.push('\\');
@@ -320,7 +331,7 @@ mod tests {
             kontor_core::id::ProjectId::generate(),
             None,
             Some(kontor_core::id::TaskId::generate()),
-            None,
+            kontor_core::id::RoleKey::parse("harness-seat").expect("a seat"),
             None,
             None,
             crate::attention::payload::ResultingState::NeedsHuman,
@@ -331,12 +342,13 @@ mod tests {
         )
         .expect("a valid payload");
         payload.title = "[click](https://example)".to_owned();
-        payload.body = "**bold** and _emphasis_".to_owned();
+        payload.body = "**bold** and _emphasis_ and ${secret}".to_owned();
         let document = teams_document(&payload, "operator@example.com");
         let rendered = document.to_string();
         assert!(rendered.contains("\\\\[click\\\\]"), "{rendered}");
         assert!(rendered.contains("\\\\*\\\\*bold\\\\*\\\\*"), "{rendered}");
         assert!(rendered.contains("\\\\_emphasis\\\\_"), "{rendered}");
+        assert!(rendered.contains("\\\\$\\\\{secret\\\\}"), "{rendered}");
     }
 
     #[test]
@@ -348,7 +360,7 @@ mod tests {
             kontor_core::id::ProjectId::generate(),
             None,
             Some(kontor_core::id::TaskId::generate()),
-            None,
+            kontor_core::id::RoleKey::parse("harness-seat").expect("a seat"),
             None,
             None,
             crate::attention::payload::ResultingState::NeedsHuman,

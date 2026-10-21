@@ -31,7 +31,7 @@ mod artifact_submissions;
 pub use artifact_submissions::NewArtifactSubmission;
 
 mod attention;
-pub use attention::{AttentionObserver, AttentionSignal, AttentionSignalKind};
+pub use attention::{AttentionObserver, AttentionSignal, AttentionSignalKind, team_run_seat};
 
 pub mod authority;
 pub mod backup;
