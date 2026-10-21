@@ -60,7 +60,7 @@ fn rung(provider: &str, model: &str) -> ModelRung {
 /// worktree file, Codex, Cursor and OpenCode receive the creation frame.
 #[test]
 fn every_admitted_delivery_seat_composes_the_worker_profile() {
-    for provider in ["claude", "claude-work", "claude-personal"] {
+    for provider in ["claude", "claude-a", "claude-b"] {
         let repository = git_repository();
         kontor_runtime_paseo::seat_mcp::compose_for_delivery_seat(
             Some(&seat()),
@@ -78,8 +78,8 @@ fn every_admitted_delivery_seat_composes_the_worker_profile() {
 
     for (provider, model) in [
         ("codex", "gpt-5.6-sol"),
-        ("codex-work", "gpt-5.6-sol"),
-        ("codex-personal", "gpt-5.6-sol"),
+        ("codex-a", "gpt-5.6-sol"),
+        ("codex-b", "gpt-5.6-sol"),
         ("opencode", "deepseek/deepseek-v4-flash"),
         ("opencode-zai", "zai-coding-plan/glm-5.3"),
         ("cursor", "gpt-5.6-sol"),
@@ -116,7 +116,7 @@ fn every_admitted_delivery_seat_composes_the_worker_profile() {
 /// compose the consultation profile, and nothing wider.
 #[test]
 fn every_admitted_consultation_and_committee_seat_composes_the_consultation_profile() {
-    for provider in ["claude", "claude-work", "claude-personal"] {
+    for provider in ["claude", "claude-a", "claude-b"] {
         let repository = git_repository();
         seat()
             .compose_consultation(repository.path())
@@ -140,11 +140,11 @@ fn every_admitted_consultation_and_committee_seat_composes_the_consultation_prof
 
     for (provider, model) in [
         ("claude", "claude-opus-5"),
-        ("claude-work", "claude-opus-5"),
-        ("claude-personal", "claude-opus-5"),
+        ("claude-a", "claude-opus-5"),
+        ("claude-b", "claude-opus-5"),
         ("codex", "gpt-5.6-sol"),
-        ("codex-work", "gpt-5.6-sol"),
-        ("codex-personal", "gpt-5.6-sol"),
+        ("codex-a", "gpt-5.6-sol"),
+        ("codex-b", "gpt-5.6-sol"),
         ("opencode", "deepseek/deepseek-v4-flash"),
         ("opencode-zai", "zai-coding-plan/glm-5.3"),
         ("cursor", "gpt-5.6-sol"),
