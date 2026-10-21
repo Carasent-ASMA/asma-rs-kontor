@@ -11,7 +11,6 @@
 //! once at start, so a change needs a daemon restart.
 
 use std::collections::BTreeSet;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use kontor_fleet::FleetError;
@@ -333,44 +332,36 @@ pub fn read(state_root: &Path) -> Result<Option<AttentionPolicy>, AttentionConfi
     parse_with(&document, &read_env(state_root)?).map(Some)
 }
 
-/// The `.env` file must be owner-only; checked before the shared guard, which
-/// only refuses group/other *write* bits.
-const ENV_READABLE: &str = ".env must be readable only by its owner (chmod 600)";
-
 /// The `.env` file rules, read by the shared guarded reader so it is checked
 /// like every other state-root file: a regular file (a symlink or a FIFO is
-/// refused before it is opened), owned by the state root's owner, bounded and
-/// the same inode when read as when checked.
+/// refused before it is opened), owner-only on the path and again on the open
+/// handle, owned by the state root's owner, bounded and the same inode when
+/// read as when checked.
 const ENV_GUARD: Guard = Guard {
     symlink: ".env must be a regular file, not a symlink",
-    writable: ENV_READABLE,
+    writable: ".env must be readable only by its owner (chmod 600)",
     owner: ".env must be owned by the state root's owner",
     oversized: ".env exceeds 64 KiB",
     swapped: ".env changed while it was being read",
     utf8: ".env is not UTF-8",
     limit: 64 * 1024,
+    forbidden_mode: 0o077,
 };
 
 /// Read the optional owner-only `<state root>/.env`.
 fn read_env(state_root: &Path) -> Result<EnvOverrides, AttentionConfigError> {
     let path = state_root.join(ENV_FILE);
-    let metadata = match std::fs::symlink_metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+    let document = match read_guarded(state_root, &path, &ENV_GUARD) {
+        Ok(document) => document,
+        Err(FleetError::Read { source }) if source.kind() == std::io::ErrorKind::NotFound => {
             return Ok(EnvOverrides::default());
         }
-        Err(source) => return Err(AttentionConfigError::Read { path, source }),
+        Err(FleetError::Read { source }) => {
+            return Err(AttentionConfigError::Read { path, source });
+        }
+        Err(FleetError::Invalid { rule }) => return invalid(rule),
+        Err(_) => return invalid(".env could not be read safely"),
     };
-    if metadata.file_type().is_file() && metadata.mode() & 0o077 != 0 {
-        return invalid(ENV_READABLE);
-    }
-    let document = read_guarded(state_root, &path, &ENV_GUARD).map_err(|error| match error {
-        FleetError::Read { source } => AttentionConfigError::Read { path, source },
-        FleetError::Invalid { rule } => AttentionConfigError::Invalid { rule },
-        _ => AttentionConfigError::Invalid {
-            rule: ".env could not be read safely",
-        },
-    })?;
     parse_env(&document)
 }
 

@@ -908,8 +908,8 @@ placeholder sample.
 - **File rules.** `.env` is read by the same guarded reader as other
   state-root files. It must be a regular file (a symlink, FIFO or device is
   refused without being opened), owned by the state root's owner, readable only
-  by its owner (`chmod 600`; any group or other permission bit is refused), at
-  most 64 KiB, UTF-8, and the same file when read as when checked. Each
+  by its owner (`chmod 600`; any group or other permission bit is refused,
+  checked on the path and enforced again on the opened file), at most 64 KiB, UTF-8, and the same file when read as when checked. Each
   failure refuses the start with a typed rule.
 - **Format.** Plain `KEY=VALUE` lines and `#` comments; a leading UTF-8 BOM and
   a shell `export ` prefix are accepted, and one pair of surrounding quotes is

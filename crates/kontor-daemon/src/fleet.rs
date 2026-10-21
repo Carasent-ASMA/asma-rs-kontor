@@ -84,6 +84,7 @@ const FLEET_GUARD: Guard = Guard {
     swapped: F05,
     utf8: F06,
     limit: MAX_FILE_BYTES,
+    forbidden_mode: 0o022,
 };
 
 /// The rungs one delivery seat may walk, and the fleet binding they came from.
