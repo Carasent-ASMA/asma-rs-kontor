@@ -128,6 +128,26 @@ python3 operations/scripts/kontor-ops.py verify-build \
   --install-dir "$INSTALL_DIR" --commit "$commit"
 ```
 
+### Operational notes from the 2026-10-21 live run
+
+- `replace` performs the gated stop itself. A `bootout` before it makes the
+  script exit 3 (the job is no longer loaded when it checks). Call `replace`
+  with the job loaded and let it stop the daemon.
+- The Jira credential installer takes the state-root lock, so it cannot run
+  while the daemon holds it: after `replace` returns, run one declared
+  `bootout` → `kontor-daemon install-jira-credential --alias "$ALIAS"` with the
+  credential document on stdin (never a flag, never a file, never printed) →
+  `bootstrap`, then continue with the readback. Do not pass the value through a
+  shell argument.
+- `replace`'s pre-upgrade snapshot is the rollback source. Under a no-backups
+  order, skip the optional second snapshot; the mandatory one is transient and
+  must be deleted, with `deploy-backup/`, after a green readback. That removes
+  the binary/DB rollback source by design — record it in the receipt and do not
+  recreate it later.
+- Set the live `attention` `.env` to mode 600 and owned by the state-root owner
+  before the restart; the daemon refuses to start otherwise. Check key names
+  only, never values.
+
 ## 4. Readback set
 
 Run all five checks after every deploy. The tool performs the HTTP, CLI and MCP
