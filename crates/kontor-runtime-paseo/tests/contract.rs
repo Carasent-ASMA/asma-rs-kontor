@@ -98,6 +98,9 @@ mod hosted_directory;
 #[path = "contract/paseo_0_11_2.rs"]
 mod paseo_0_11_2;
 
+#[path = "contract/seat_profiles.rs"]
+mod seat_profiles;
+
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
@@ -716,6 +719,24 @@ impl Plane {
         workspace: &WorkspaceBindingSnapshot,
         model_rung: ModelRung,
     ) -> RuntimeResult<LaunchRequest> {
+        self.launch_request_for_with_autonomy(
+            agent_run_id,
+            slot_id,
+            workspace,
+            model_rung,
+            SeatAutonomy::standard(),
+        )
+        .await
+    }
+
+    async fn launch_request_for_with_autonomy(
+        &self,
+        agent_run_id: AgentRunId,
+        slot_id: &RoleSlotId,
+        workspace: &WorkspaceBindingSnapshot,
+        model_rung: ModelRung,
+        autonomy: SeatAutonomy,
+    ) -> RuntimeResult<LaunchRequest> {
         let binding_id = RuntimeBindingId::generate();
         let authority = self
             .adapter
@@ -742,7 +763,7 @@ impl Plane {
             prompt: text("bootstrap the role"),
             model_rung,
             context_policy: standard_context_policy(),
-            autonomy: kontor_core::spec::SeatAutonomy::standard(),
+            autonomy,
             requested_at: at("2026-08-10T09:00:00Z"),
         }))
     }

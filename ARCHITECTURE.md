@@ -588,10 +588,11 @@ A **serve profile** narrows presentation *and* the callable set within a tier, a
 can never widen it. Profiles are declared in the registry beside the tier
 declarations — deliberately not in a seat file, because a free-form tool list in
 configuration would be a second authority model that drifts. Five are declared:
-`worker` is the delivery surface a seat file or an OpenCode creation frame
-selects; `consultation` is an advisor or committee filler's minimum, and is also
-what the Paseo adapter composes into a Claude delivery seat's worktree
-`.mcp.json` (`kontor-runtime-paseo/src/seat_mcp.rs`, `compose_for_seat`); `planning_pair_member` is a planning-pair member's
+`worker` is the delivery surface, composed into a Claude delivery seat's
+worktree `.mcp.json` or into a Codex, Cursor or OpenCode delivery seat's
+creation frame (`kontor-runtime-paseo/src/seat_mcp.rs`,
+`compose_for_delivery_seat`); `consultation` is an advisor or committee filler's
+minimum, composed the same way under the consultation guard; `planning_pair_member` is a planning-pair member's
 own run read plus its finding and answer; `planning_pair_caller` is the opt-in
 caller surface that invokes a pair, asks its clarification and records the
 disposition; `leadership` is completion read/remediation, open-question

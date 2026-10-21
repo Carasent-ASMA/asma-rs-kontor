@@ -162,3 +162,11 @@ export function archivedLabel(entry: DirectoryEntry): string | null {
 export function earlierErrorLabel(entry: DirectoryEntry): string | null {
   return hasEarlierError(entry) ? `Earlier error · now ${entry.status}` : null;
 }
+
+export function sessionAvailabilityLabel(entry: DirectoryEntry): string | null {
+  if (!entry.requiresAttention) return null;
+  const evidence = entry.availability?.revision === entry.updatedAt ? entry.availability : undefined;
+  if (evidence?.state === "missing") return "Unavailable: exact native ID missing";
+  if (evidence?.state === "readable") return "Record available · recovery unverified";
+  return "Availability unknown";
+}

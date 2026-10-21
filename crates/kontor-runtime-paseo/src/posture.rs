@@ -1043,9 +1043,10 @@ mod tests {
         }
     }
 
-    /// The gate is OpenCode's alone: every other provider still resolves.
+    /// Only OpenCode renders a permission block here; every other provider
+    /// still resolves its mode through the same renderer.
     #[test]
-    fn the_delivery_gate_does_not_touch_other_providers() {
+    fn providers_outside_the_opencode_permission_block_still_resolve() {
         assert_eq!(
             seat_posture("claude", SeatAutonomy::Bounded, &[])
                 .expect("claude is unaffected")

@@ -5,6 +5,7 @@ import type {
   PaseoAgentUpdate,
   PaseoApi,
 } from "@getpaseo/client";
+import type { SessionAvailability } from "../shared/session-lifecycle";
 import type { SessionTelemetry } from "./session-usage";
 
 export const SESSION_STATUSES = [
@@ -47,6 +48,8 @@ const AGENT_SORT: NonNullable<PaseoAgentListOptions["sort"]> = [
 ];
 
 export type DirectoryEntry = {
+  /** Exact-ID read evidence; absent or probe failure is unknown, never dead by age. */
+  readonly availability?: SessionAvailability;
   readonly id: string;
   readonly title: string;
   /** Raw native lifecycle. Never replaced by the derived needs-input state. */
@@ -88,7 +91,8 @@ export function hasEarlierError(entry: DirectoryEntry): boolean {
 
 /** Retained error history does not create a current Attention signal. */
 export function hasSessionAttention(entry: DirectoryEntry): boolean {
-  return entry.requiresAttention && !hasEarlierError(entry);
+  return entry.archivedAt === null && !(entry.availability?.state === "missing" && entry.availability.revision === entry.updatedAt) &&
+    entry.requiresAttention && !hasEarlierError(entry);
 }
 
 export type DirectoryStatus = "idle" | "loading" | "ready" | "stale" | "error";
