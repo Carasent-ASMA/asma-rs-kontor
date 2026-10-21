@@ -1,0 +1,11 @@
+# Neutral PR desk policy. The project's `project.pr_desk.settings` names this
+# file from the selected config folder. These are sample values, not a copy of
+# any deployment's policy. `history_root: pr-review` in the orchestration
+# example is intentional: it yields <data_root>/pr-review/learning.log.
+schema_version: 1
+poll_start_budget: 1
+active_pr_policy: one_active
+ready_silence_days: 5
+draft_silence_days: 14
+fix_round_limit: 1
+revise_round_limit: 1

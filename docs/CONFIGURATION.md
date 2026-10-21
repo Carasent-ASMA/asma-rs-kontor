@@ -53,6 +53,7 @@ Kontor YAML; a harness-owned file is a generated projection instead.
   orchestration/teams/core-team.yml one pinned Core Team roster
   orchestration/*.yml               workstreams and other project policy
   orchestration/tpm-supervision.yml  autonomous TPM cadence profile
+  orchestration/pr-desk.yml         PR desk policy: start budget, active-PR policy, silence windows, round limits
   tracker/*.yml                     tracker connection, field/workflow specs and credential references
   packs/*.yml                       team and profile overlay, committee presets and role prompts
   forge/github-app.example.yml      committed GitHub App placeholder
@@ -73,8 +74,9 @@ its own base and validation:
 
 | Class | Keys | Base | Validation |
 | --- | --- | --- | --- |
-| Config-file reference | `fleet`, `core_team`, `project.team_pack`, `project.fleet`, `project.supervision`, `project.tracker.spec` | the selected config folder root | Relative only, contained in the folder, must exist. `..` escapes and absolute paths are refused. |
+| Config-file reference | `fleet`, `core_team`, `project.team_pack`, `project.fleet`, `project.supervision`, `project.tracker.spec`, `project.pr_desk.settings` | the selected config folder root | Relative only, contained in the folder, must exist. `..` escapes and absolute paths are refused. |
 | Project resource path | `project.documentation_roots`, `project.gap_ledger`, `project.glossary`, `project.decision_authorities.decision_records_root` | a declared `project.resource_roots` entry | The first segment is a root key; the root maps to a repository in `project.forge.repositories`, and the rest resolves inside that checkout. Absolute paths and `..` segments are refused. Never resolved from, or checked for containment inside, the config folder. |
+| Desk history path | `project.pr_desk.history_root` | `host.paths.data_root` | Relative only and contained; absolute paths and `..` segments are refused. The learning log is `<resolved root>/learning.log`, resolved by `PR_DESK_DIR`, then `host.paths.pr_desk`, then `<data_root>/<history_root>`. |
 | Host path | `host.paths.*`, `host.binaries.*`, `host.project_cli.*` | this machine's filesystem | Absolute or `PATH`-resolved host state. Not a config reference. |
 | Convention | `project.worktree_layout` | the project's checkout convention | A pattern with `<key-slug>` and `<module>`, not a path to resolve. |
 | Credential reference | `credential`, `project.tracker.credential_alias` | the deployment's secret store | A non-secret reference such as `keychain:<service>/<account>`; never a value. |
@@ -124,7 +126,7 @@ It is a bootstrap input, never an activated policy.
 | --- | --- | --- |
 | `schema_version` | integer | `1` |
 | `time_zone` | IANA zone | Default zone for human-facing times; a captured vendor message keeps its own zone. |
-| `paths` | mapping | `state_root`, `data_root`, `worktrees_root`, `paseo_home`, `logs`; absolute paths on this machine. |
+| `paths` | mapping | `state_root`, `data_root`, `worktrees_root`, `paseo_home`, `logs`; optional `pr_desk`, an absolute desk history root that overrides `project.pr_desk.history_root`; absolute paths on this machine. |
 | `binaries` | mapping | Absolute or `PATH`-resolved host commands for `paseo`, `git`, `gh`, `python`, `cargo`. |
 | `project_cli` | mapping | `project.cli.command` → this host's executable. A new project supplies its own name; no tool name is assumed. |
 | `runtime` | mapping | `kontord.endpoint`, `kontord.port`, `paseo.endpoint`, `paseo.port`; loopback addresses only. |
@@ -244,7 +246,8 @@ manifest reader changes before KR-14.
 For ASMA, the selected folder is `asma-modules/config/`. Its successor
 references are `fleet: orchestration/fleet.yml`,
 `supervision: orchestration/tpm-supervision.yml` (the TPM cadence profile),
-`tracker.spec: tracker/jira.yml` and `team_pack: packs/team.yml`; its project
+`tracker.spec: tracker/jira.yml`, `pr_desk.settings: orchestration/pr-desk.yml`
+and `team_pack: packs/team.yml`; its project
 resources use `resource_roots` `modules`/`kontor` against the two repositories.
 The Paseo watchdog policy is not a project key: it is
 `<state-root>/supervision.yml`. The fixtures above are labelled for that
@@ -319,6 +322,7 @@ and ASMA's concrete values are the test case in
 | `team_pack` | path | Folder-relative team/profile overlay. |
 | `fleet` | path | Folder-relative fleet policy; must agree with the bundle selector. |
 | `supervision` | path | Folder-relative `autonomous_tpm_v1` cadence profile. Not the Paseo watchdog policy, which is `<state-root>/supervision.yml`. |
+| `pr_desk` | mapping | `command` (the desk invocation line), `settings` (folder-relative `orchestration/pr-desk.yml`), `history_root` (relative to `host.paths.data_root`); see the PR desk contract below. |
 | `merge_authority` | mapping | `role`, `policy`. |
 | `documentation_roots` | list | Project documentation roots. |
 | `gap_ledger` | path | Project gap ledger. |
@@ -338,6 +342,41 @@ owner-set project value scoped per team run (ASMA 2); the placement rule does
 not supply it, it is not a global team-run ceiling, and kontord has no such
 field.
 
+### The PR desk contract
+
+`project.pr_desk` is the owning parameter block for the project's PR desk:
+
+- `command` is the command line that invokes the desk in the project checkout.
+  ASMA's is `python3 _tools/ai-orchestration/pr_desk.py`; a neutral project
+  supplies its own executable or script.
+- `settings` is a config-file reference to the pinned name
+  `orchestration/pr-desk.yml`. It resolves from the selected config folder,
+  stays inside it, and must exist.
+- `history_root` is the desk history root relative to `host.paths.data_root`.
+
+The learning log has exactly one resolved root, in this precedence order:
+
+1. `PR_DESK_DIR`, when set. The desk keeps this environment variable as the
+   explicit top-precedence host override.
+2. `host.paths.pr_desk`, when present, an absolute history root in host
+   bootstrap data.
+3. `<host.paths.data_root>/<project.pr_desk.history_root>`, the project
+   default.
+
+The learning log is `<resolved root>/learning.log`. There is no second
+candidate. ASMA uses the host override: its `host.yml` sets
+`host.paths.pr_desk` to the current desk folder, so the learning log stays
+where it is and the live path stays in host data, not this repository.
+
+`orchestration/pr-desk.yml` carries `schema_version` and six desk policy keys:
+`poll_start_budget`, `active_pr_policy`, `ready_silence_days`,
+`draft_silence_days`, `fix_round_limit` and `revise_round_limit`. The budget,
+the two silence windows and both round limits are positive integers.
+`active_pr_policy` is `unlimited` or `one_active`. Project-owned keys beyond
+those seven are allowed beside them, including ASMA's `desk`,
+`skip_repositories` and `durable_seats`. The neutral example uses sample
+values; ASMA's values are in the schema test fixture.
+
 ASMA's values, exercised by the schema test:
 
 | Key | ASMA value |
@@ -351,6 +390,10 @@ ASMA's values, exercised by the schema test:
 | `forge.base_branch` | `master` |
 | `cli.command` | `asma` |
 | `project.supervision` | `orchestration/tpm-supervision.yml` (`autonomous_tpm_v1` TPM cadence profile; the Paseo watchdog is `<state-root>/supervision.yml`) |
+| `project.pr_desk.command` | `python3 _tools/ai-orchestration/pr_desk.py` |
+| `project.pr_desk.settings`, `project.pr_desk.history_root` | `orchestration/pr-desk.yml`, `pr-review` |
+| `host.paths.pr_desk` | ASMA's `host.yml` sets it to the current desk folder (host data, not committed), so the learning log stays there |
+| `orchestration/pr-desk.yml` policy | `poll_start_budget: 3`, `active_pr_policy: unlimited`, `ready_silence_days: 3`, `draft_silence_days: 15`, `fix_round_limit: 2`, `revise_round_limit: 2` |
 | `documentation_roots` | `modules/_docs`, `kontor/docs` |
 | `check_runs` | `asma/publication-branch-title`, `asma/publication-identity` |
 | `capacity` | `max_delivery_seats: 2` (owner-set, per team run), `max_parallel_tasks: 7` (Paseo-direct placement ceiling), `start_admission: 4` (placement start) |
@@ -376,6 +419,7 @@ recorded as such instead of being migrated.
 | `<state-root>/succession-summarizer.json` | human-edited; daemon succession | YAML `orchestration/succession.yml`. | Same migration; absent keeps the typed degraded handoff. | WP-08 |
 | `<state-root>/fleet-activation.json`, `credentials.json`, `endpoint.json` | generated or secret state | Keep in the state root. | Never an authoring source; the activation record remains a generated pointer. | WP-08 |
 | `config/orchestration/workstreams.json` (ASMA) | human-edited; asma-cli, PR desk and mirrored skills | YAML `orchestration/workstreams.yml`. | Move, update every reader and the skills, then remove the JSON path. | WP-10 |
+| `config/orchestration/pr-desk.yml` (ASMA) | human-edited desk decision file; `pr_desk.py` reads `desk`, `skip_repositories` and `durable_seats` | Keep it as the project's `project.pr_desk.settings` file. Add the six policy keys (`poll_start_budget`, `active_pr_policy`, `ready_silence_days`, `draft_silence_days`, `fix_round_limit`, `revise_round_limit`) beside `schema_version`; extra project-owned keys are allowed beside the required seven. | Its `desk.desk_folder` key retires in favour of `project.pr_desk.history_root` plus `host.paths.pr_desk`. ASMA's host sets `host.paths.pr_desk` to the current desk folder so the learning log stays in place. `PR_DESK_DIR` stays the explicit top-precedence host override. The live desk path stays in `host.yml`, never in this public tree. | WP-10 |
 | `crates/kontor-teams/fixtures/mvp-team-pack.json` | human-edited seed compiled by `kontor-teams/src/spec.rs` | YAML team pack in the selected folder; neutral default in the pack. | Back up, convert, compare resolved teams and slots, update the reader, remove the bundled editable copy. A native JSON projection is generated only if a runtime still reads it. | WP-08 |
 | `crates/kontor-profiles/fixtures/mvp-profile-pack.json`, `operational-domain.json`, `consultation-presets.json` | human-edited seeds compiled by `kontor-profiles/src/seeds.rs` | YAML profile/domain/preset packs in the selected folder. | Same conversion and equivalence check; ASMA's overlay moves to its folder, the neutral default stays neutral. | WP-08 |
 | `crates/kontor-jira/fixtures/*.json` | human-edited ASMA tracker fixtures compiled by `kontor-jira/src/jira.rs` | YAML tracker specs installed per Realm from the selected folder. | Move ASMA's compiled tracker fixtures, install the specs per Realm, keep active pins, remove the compiled ASMA catalog. | WP-08 |
@@ -458,8 +502,10 @@ not change the plugin or its decision.
 The state-root rows above describe the current runtime layout. Every
 human-edited setting that varies by project, user or machine belongs in the
 selected YAML folder instead; WP-08 migrates the remaining JSON readers and
-WP-10 migrates ASMA's orchestration files. Generated state and secrets stay in
-the state root.
+WP-10 migrates ASMA's orchestration files, including adding the six desk
+policy keys to the existing `config/orchestration/pr-desk.yml` and retiring
+its `desk_folder` in favour of `project.pr_desk.history_root` plus
+`host.paths.pr_desk`. Generated state and secrets stay in the state root.
 
 Everything in the database is published through a preview/apply pair with a
 content hash: the apply is compared against the hash the preview returned, so a
