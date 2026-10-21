@@ -39,7 +39,7 @@ intent before its first effect and confirms it only from a refetch. The daemon
 derives all desired Jira values from stored Kontor facts and pinned specs; no
 API or MCP body accepts an arbitrary field, status, assignee or comment.
 
-`_tools/asma-cli` gets fail-closed compatibility behavior in OP-07. Until OP-08
+The ASMA CLI gets fail-closed compatibility behavior in OP-07. Until OP-08
 publishes the matching Kontor CLI commands, legacy mutation modes refuse before
 their Jira effect. They do not acquire a temporary HTTP client or a second
 policy implementation.
@@ -69,7 +69,7 @@ The missing composition is narrow but currently total:
 - `Services::apply_epic` accepts caller-asserted ticket keys without live
   verification, and the scheduler deliberately permits an unlinked task;
 - there is no epic-level Jira binding; and
-- `_tools/asma-cli` still has direct writes in human sync/import, the legacy
+- The ASMA CLI still has direct writes in human sync/import, the legacy
   machine request, Git/ACP transition helpers and prompt interpretation.
 
 Memory has the same single choke point: migration `0021_native_memory.sql`

@@ -6,8 +6,8 @@
   "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
   "files": {
     "2026-08-19-11-39-architecture-kontor-operational-control-surfaces.md": {
-      "bytes": 44940,
-      "derivative_sha256": "2adec721582fa28b3d7744b7b143a07c01fe3b4bd1097867e8f4c3daf494fdb9",
+      "bytes": 44931,
+      "derivative_sha256": "5390b3f9c098b662199ca7ca223bf0bb9e880f3c92731fbea9be93a78fc42e0b",
       "original_sha256": "878b9d33b78dedd00978e3166fa522911480f9d009a2185ddba87b016695aa60",
       "private_references_redacted": 1
     },

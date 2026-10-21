@@ -76,9 +76,15 @@
   "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
   "files": {
     "attestation-verifier-source/MANIFEST.json": {
-      "bytes": 5781,
-      "derivative_sha256": "6fcba75a3a7347c47828a5f87586113cb21d3c1417b6dcc2dd1602e616c42635",
+      "bytes": 5877,
+      "derivative_sha256": "335865e36b0fb5328e60aea40274c9a18f126ca4a2a4532f41ad07eefbf451ea",
       "original_sha256": "265a07947d00259ff5ad34a7c0843633b25f37ba513859d9fa52e4085ef1d7c3",
+      "private_references_redacted": 0
+    },
+    "attestation-verifier-source/README.md": {
+      "bytes": 2494,
+      "derivative_sha256": "8e2837b3f29c136750eeac49798bf85fa113cb181478e2a260c3257341979aef",
+      "original_sha256": "19fb9896a679840d8d65b5d18dfe9e4b97fb5595148670aa61ec94fba58cb660",
       "private_references_redacted": 0
     },
     "attestation-verifier-source/review-attestation-source.md": {

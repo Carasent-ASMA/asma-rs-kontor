@@ -18,7 +18,7 @@ Kontor architecture (`2026-08-08-20-12-architecture-asma-kontor-control-plane.md
 
 - Paseo, Agent Orchestrator and Codex runtimes: separately installed by the
   operator; Kontor only talks to their supported interfaces.
-- The `asma` CLI (`_tools/asma-cli`): a separate repository. It calls Kontor's
+- The `asma` CLI: a separate repository. It calls Kontor's
   publication endpoints; Kontor itself no longer shells out to it — Jira goes
   through the native `kontor-jira` connector and account capacity through
   `kontor-accounts`.
