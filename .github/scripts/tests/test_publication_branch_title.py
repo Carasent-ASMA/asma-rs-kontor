@@ -290,11 +290,9 @@ class WorkflowContractTest(unittest.TestCase):
         self.assertNotIn("vars.KONTOR_CHECK_NAME ||", self.text)
         run = _step_run(self.open)
         self.assertIn(
-            'check_name=$(python3 "$PROJECT_HELPER_PATH" \\', run
+            'committed_name=$(python3 "$PROJECT_HELPER_PATH" \\', run
         )
-        self.assertIn(
-            '--config-file "$SELECTED_PROJECTION" check-name)', run
-        )
+        self.assertIn('--config-file "$COMMITTED_PROJECTION" check-name)', run)
         self.assertIn('name="$check_name"', run)
         self.assertIn('"repos/${GITHUB_REPOSITORY}/check-runs"', run)
         complete = _step_run(self.complete)
@@ -324,9 +322,12 @@ class WorkflowContractTest(unittest.TestCase):
                     "GITHUB_OUTPUT": str(output),
                     "GITHUB_REPOSITORY": "example/project",
                     "PROJECT_HELPER_PATH": str(REPO_ROOT / "scripts" / "kontor_project.py"),
-                    "SELECTED_PROJECTION": str(PROJECT_CONFIG),
+                    "COMMITTED_PROJECTION": str(PROJECT_CONFIG),
                     "HEAD_SHA": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4",
                     "PR_NUMBER": "42",
+                    "KONTOR_PROJECT_KEY": "",
+                    "KONTOR_BASE_BRANCH": "",
+                    "KONTOR_CHECK_NAME": "",
                 }
             )
             result = subprocess.run(
@@ -345,6 +346,82 @@ class WorkflowContractTest(unittest.TestCase):
         self.assertIn(
             "check_name=asma/publication-branch-title", emitted
         )
+
+    def test_partial_variables_on_an_edited_title_fail_after_previous_success(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            fake_gh = fake_bin / "gh"
+            fake_gh.write_text(
+                "#!/bin/sh\n"
+                'printf "%s\\n" "$*" >> "$GH_LOG"\n'
+                'case "$*" in\n'
+                '  *"--method POST"*) printf "777\\n" ;;\n'
+                '  *"--method PATCH"*) printf "failure\\n" >> "$GH_STATE" ;;\n'
+                'esac\n',
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+            state = root / "state"
+            state.write_text("success\n", encoding="utf-8")
+            output = root / "output"
+            selected = root / "selected.yml"
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "PATH": f"{fake_bin}:{environment['PATH']}",
+                    "GH_LOG": str(root / "log"),
+                    "GH_STATE": str(state),
+                    "GITHUB_OUTPUT": str(output),
+                    "GITHUB_REPOSITORY": "example/project",
+                    "PROJECT_HELPER_PATH": str(REPO_ROOT / "scripts" / "kontor_project.py"),
+                    "COMMITTED_PROJECTION": str(PROJECT_CONFIG),
+                    "SELECTED_PROJECTION": str(selected),
+                    "WORKFLOW_SHA": "a" * 40,
+                    "HEAD_SHA": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4",
+                    "PR_NUMBER": "42",
+                    "KONTOR_PROJECT_KEY": "ASMA",
+                    "KONTOR_BASE_BRANCH": "",
+                    "KONTOR_CHECK_NAME": "",
+                }
+            )
+            opened = subprocess.run(
+                ["bash", "-c", _step_run(self.open)],
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(opened.returncode, 0, opened.stderr)
+            self.assertIn("check_run_id=777", output.read_text(encoding="utf-8"))
+            project = subprocess.run(
+                ["bash", "-c", _step_run(self.project)],
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(project.returncode, 0)
+            completed = subprocess.run(
+                ["bash", "-c", _step_run(self.complete)],
+                env={
+                    **environment,
+                    "CHECK_RUN_ID": "777",
+                    "JOB_STATUS": "failure",
+                },
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            log = (root / "log").read_text(encoding="utf-8")
+            self.assertEqual(
+                state.read_text(encoding="utf-8").splitlines(),
+                ["success", "failure"],
+            )
+        self.assertIn("name=asma/publication-branch-title", log)
+        self.assertIn("conclusion=failure", log)
 
     def test_projection_step_writes_quoted_strings_that_reload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -373,7 +450,7 @@ class WorkflowContractTest(unittest.TestCase):
         self.assertEqual(project.base_branch, "2026")
         self.assertEqual(project.check_name, "on/publication-branch-title")
 
-    def test_steps_are_fetch_project_open_evaluate_complete(self) -> None:
+    def test_steps_are_fetch_open_project_evaluate_complete(self) -> None:
         names = [
             line.strip().removeprefix("- name: ")
             for step in self.steps
@@ -384,8 +461,8 @@ class WorkflowContractTest(unittest.TestCase):
             names,
             [
                 FETCH_STEP_NAME,
-                PROJECT_STEP_NAME,
                 OPEN_STEP_NAME,
+                PROJECT_STEP_NAME,
                 EVALUATE_STEP_NAME,
                 COMPLETE_STEP_NAME,
             ],

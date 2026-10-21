@@ -15,9 +15,11 @@
 # recording them as the source. Otherwise it reads the committed projection
 # `.github/kontor-project.yml`, generated from the named ASMA schema fixture
 # `tests/fixtures/config/asma-orchestration.yml` (not the live config).
-# The job opens a check run named by the selected projection and completes it
-# with this job's result, so branch protection can require the configured name
-# even when the committed projection supplies it. A `dependabot/` branch opened
+# The job opens a check run named by the selected projection before validating
+# repository variables, then completes it with this job's result. A partial or
+# invalid variable set therefore completes the committed projection's check as
+# failure instead of leaving an earlier success on the same head SHA. A
+# `dependabot/` branch opened
 # by `dependabot[bot]` is exempt from the branch and title grammar; PR_AUTHOR
 # carries the PR author's login for that exemption.
 name: Publication branch and title identity
@@ -84,6 +86,59 @@ jobs:
           fetch "crates/kontor-core/src/branch.rs" "$BRANCH_SOURCE_PATH"
           fetch ".github/kontor-project.yml" "$COMMITTED_PROJECTION_PATH"
 
+      - name: Open the configured publication check
+        id: configured-check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROJECT_HELPER_PATH: ${{ runner.temp }}/kontor_project.py
+          COMMITTED_PROJECTION: ${{ runner.temp }}/kontor-project.yml
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          KONTOR_PROJECT_KEY: ${{ vars.KONTOR_PROJECT_KEY }}
+          KONTOR_BASE_BRANCH: ${{ vars.KONTOR_BASE_BRANCH }}
+          KONTOR_CHECK_NAME: ${{ vars.KONTOR_CHECK_NAME }}
+        run: |
+          set -euo pipefail
+
+          committed_name=$(python3 "$PROJECT_HELPER_PATH" \
+            --config-file "$COMMITTED_PROJECTION" check-name)
+          test -n "$committed_name"
+
+          all_set=1
+          for value in "$KONTOR_PROJECT_KEY" "$KONTOR_BASE_BRANCH" "$KONTOR_CHECK_NAME"; do
+            [ -n "$value" ] || all_set=0
+          done
+          valid=1
+          case "$KONTOR_PROJECT_KEY" in
+            ''|[0-9]*|*[!A-Z0-9]*) valid=0 ;;
+          esac
+          case "$KONTOR_BASE_BRANCH" in
+            ''|*[!A-Za-z0-9._/-]*) valid=0 ;;
+          esac
+          case "$KONTOR_CHECK_NAME" in
+            ''|*[!A-Za-z0-9._/-]*) valid=0 ;;
+          esac
+          if [ "$all_set" = 1 ] && [ "$valid" = 1 ]; then
+            check_name="$KONTOR_CHECK_NAME"
+            check_source=repository-variables
+          else
+            check_name="$committed_name"
+            check_source=committed-projection
+          fi
+          test -n "$check_name"
+          check_run_id=$(gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/check-runs" \
+            -f name="$check_name" \
+            -f head_sha="$HEAD_SHA" \
+            -f status=in_progress \
+            -f external_id="kontor-publication-${PR_NUMBER}-${HEAD_SHA}" \
+            --jq .id)
+          test -n "$check_run_id"
+          printf 'check_run_id=%s\n' "$check_run_id" >> "$GITHUB_OUTPUT"
+          printf 'check_name=%s\n' "$check_name" >> "$GITHUB_OUTPUT"
+          printf 'check_source=%s\n' "$check_source" >> "$GITHUB_OUTPUT"
+
       - name: Project the repository variables
         shell: bash
         env:
@@ -143,32 +198,6 @@ jobs:
             printf '  check_runs: ["%s"]\n' "$KONTOR_CHECK_NAME"
           } > "$SELECTED_PROJECTION"
           printf 'project_source=repository-variables\n'
-
-      - name: Open the configured publication check
-        id: configured-check
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PROJECT_HELPER_PATH: ${{ runner.temp }}/kontor_project.py
-          SELECTED_PROJECTION: ${{ runner.temp }}/selected-project.yml
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          set -euo pipefail
-
-          check_name=$(python3 "$PROJECT_HELPER_PATH" \
-            --config-file "$SELECTED_PROJECTION" check-name)
-          test -n "$check_name"
-          check_run_id=$(gh api --method POST \
-            "repos/${GITHUB_REPOSITORY}/check-runs" \
-            -f name="$check_name" \
-            -f head_sha="$HEAD_SHA" \
-            -f status=in_progress \
-            -f external_id="kontor-publication-${PR_NUMBER}-${HEAD_SHA}" \
-            --jq .id)
-          test -n "$check_run_id"
-          printf 'check_run_id=%s\n' "$check_run_id" >> "$GITHUB_OUTPUT"
-          printf 'check_name=%s\n' "$check_name" >> "$GITHUB_OUTPUT"
 
       - name: Evaluate the current branch and title
         shell: bash
