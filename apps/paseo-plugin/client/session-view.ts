@@ -1,3 +1,4 @@
+import { freshAvailability } from "../shared/session-lifecycle";
 import {
   hasEarlierError,
   hasSessionAttention,
@@ -165,8 +166,9 @@ export function earlierErrorLabel(entry: DirectoryEntry): string | null {
 
 export function sessionAvailabilityLabel(entry: DirectoryEntry): string | null {
   if (!entry.requiresAttention) return null;
-  const evidence = entry.availability?.revision === entry.updatedAt ? entry.availability : undefined;
-  if (evidence?.state === "missing") return "Unavailable: exact native ID missing";
-  if (evidence?.state === "readable") return "Record available · recovery unverified";
+  const evidence = freshAvailability(entry);
+  if (evidence?.state === "missing") return "Native record absent · check availability to retry";
+  if (evidence?.archivedAt) return "Already archived";
+  if (evidence?.state === "readable") return `${entry.attentionReason === "finished" ? "Unread result · " : ""}Native record found · provider history ${evidence.providerHistory === "not-reported" ? "not reported" : "unverified"}`;
   return "Availability unknown";
 }

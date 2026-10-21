@@ -452,7 +452,7 @@ describe("SessionsScreen toolbar events", () => {
   it.each([true, false])("keeps exactly one enabled recovery entry on compact=%s", (compact) => {
     renderScreen(undefined, compact);
     const tree = walk(harness.current());
-    const recovery = tree.filter((element) => element.props.accessibilityLabel === "Recover sessions");
+    const recovery = tree.filter((element) => element.props.accessibilityLabel === "Resume sessions");
     const slim = tree.find((element) => element.type === SlimToolbar);
     const inSlim = slim?.props.action as ElementLike | undefined;
     expect(recovery.length + (inSlim ? 1 : 0)).toBe(1);
@@ -465,7 +465,7 @@ describe("SessionsScreen toolbar events", () => {
     const quick = walk(harness.current()).find((element) => element.type === MobileQuickToolbar)!;
     (quick.props.onQuery as (query: string) => void)("session-a");
     harness.flush();
-    const recovery = walk(harness.current()).find((element) => element.props.accessibilityLabel === "Recover sessions")!;
+    const recovery = walk(harness.current()).find((element) => element.props.accessibilityLabel === "Resume sessions")!;
     (recovery.props.onPress as () => void)();
     harness.flush();
     const dialog = walk(harness.current()).find((element) => element.type === SessionLifecycleDialog)!;
