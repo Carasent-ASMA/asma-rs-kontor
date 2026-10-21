@@ -1,6 +1,6 @@
 # WP-05 to WP-07 consumer gaps
 
-The ASMA consumer leg is WP-07 (ASMA-8569). WP-05 does not claim that ASMA's
+The ASMA consumer leg is WP-07. WP-05 does not claim that ASMA's
 current checks pass, and this pull request does not edit the private ASMA
 checkout.
 
