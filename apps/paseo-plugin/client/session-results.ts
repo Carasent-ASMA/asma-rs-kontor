@@ -1,6 +1,6 @@
 import type { DirectoryEntry } from "./session-directory";
 import { earlierErrorLabel } from "./session-view";
-import { epicLabel, isDeskWork, nativeDesk, labelRoleCode, organizationScope, ROLE_ORDER, sessionState, UNASSIGNED_EPIC, workspaceLabel, type OrganizationGroup, type OrganizationState } from "./session-organization";
+import { epicLabel, isDeskWork, nativeDesk, labelRoleCode, organizationScope, ROLE_ORDER, sessionState, TASK_JIRA_LABELS, UNASSIGNED_EPIC, workspaceLabel, type OrganizationGroup, type OrganizationState } from "./session-organization";
 
 type Mappings = Parameters<typeof organizationScope>[1];
 
@@ -49,8 +49,8 @@ export function labelledRole(entry: DirectoryEntry): string | null {
   return labelRoleCode(entry.labels["kontor.role"]) ?? labelRoleCode(entry.labels.role);
 }
 
-/** Label keys whose exact value may name a task's Jira key. */
-export const TASK_JIRA_LABELS = ["jira.issue", "task"] as const;
+/** Shared with epic resolution, so a session joins the task whose epic it is filed under. */
+export { TASK_JIRA_LABELS };
 /** Label key whose exact value may name a task's Kontor ticket. */
 export const TASK_TICKET_LABEL = "kontor.ticket";
 

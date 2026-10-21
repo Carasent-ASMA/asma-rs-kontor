@@ -14,6 +14,7 @@ import { KeyboardSettingsCard } from "./keyboard-settings-card";
 import { useReadSources } from "./use-read-sources";
 import { projectEpicKeys, sourceEpic, sourceInProject } from "./source-scope";
 import { useSessionDirectory } from "./use-session-directory";
+import type { DirectoryEntry } from "./session-directory";
 import { patchSessionView, readSessionView, sessionViewTransition } from "./session-view-store";
 import { DESTINATIONS, contextHeading, goBack, hostNavigation, navigate, NO_SCOPE, readPageView, readRouteView, refreshSourceRevision, routeViewKey, sessionScopeKey, tabScope, writePageView, writeRouteView, type Destination, type KontorRoute } from "./navigation-state";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
@@ -23,7 +24,7 @@ import { DEFAULT_PLAN_VIEW } from "./plan-reader";
 import { DEFAULT_TEAMS_VIEW } from "./teams-source-page";
 import { OrganizationSettingsPage } from "./organization-settings-page";
 import { openSessionById } from "./session-actions";
-import { confirmedEpic, jiraIssueUrl } from "./page-data";
+import { confirmedEpic, jiraCapture, jiraIssueUrl, withJiraCapture } from "./page-data";
 import { linkedPlans } from "./navigation-state";
 import { useWorkspaceDirectory } from "./use-workspace-directory";
 import { GraphPage } from "./graph-page";
@@ -62,8 +63,15 @@ function HostScreen(props: PluginScreenProps) {
   const [includeArchived, setIncludeArchived] = useState(() => readSessionView(sessionScopeKey(host.id, route)).includeArchived);
   // The Teams page is controlled by its view in the navigation store, which does not render by itself.
   const [, setTeamsViewRevision] = useState(0);
-  const directory = useSessionDirectory({ hostId: host.id, hostStatus, includeArchived });
+  const native = useSessionDirectory({ hostId: host.id, hostStatus, includeArchived });
   const sourceState = useReadSources(host.id, hostStatus);
+  // Every page reads one epic per session: the Jira capture rides on the entries, never written to native.
+  // Reads refresh every 30 s with a new read time; rebuild only when a ready capture's content changes, so rows keep their identity.
+  const captureRevisions = Object.values(sourceState.reads).flatMap((read) => read.source.kind === "jira" && read.status === "ready" ? [`${read.source.id}@${read.revision}`] : []).sort().join(" ");
+  const jira = useMemo(() => jiraCapture(Object.values(sourceState.reads)), [captureRevisions]);
+  const linked = useMemo(() => new WeakMap<DirectoryEntry, DirectoryEntry>(), [jira]);
+  const directory = useMemo(() => ({ refresh: native.refresh, state: { ...native.state, entries: withJiraCapture(native.state.entries, jira, linked) } }),
+    [native.refresh, native.state, jira, linked]);
   const projectEpics = useMemo(() => projectEpicKeys(route.projectId, directory.state.entries), [route.projectId, directory.state.entries]);
   const taskTeams = useMemo(() => taskTeamReader(sourceState.sources, sourceState.teamsSnapshots), [sourceState.sources, sourceState.teamsSnapshots]);
   const workspaces = useWorkspaceDirectory(host.id, hostStatus === "online");
