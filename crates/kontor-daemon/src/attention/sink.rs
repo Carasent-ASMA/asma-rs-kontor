@@ -151,7 +151,7 @@ impl Destination {
         // A new destination channel adds one arm here and one formatter; the
         // payload and the trigger set stay unchanged (REQ-013).
         let document = match self.policy.channel {
-            DestinationChannel::TeamsWorkflow => teams_document(payload, &self.mention.target),
+            DestinationChannel::TeamsWorkflow => teams_document(payload, &self.mention.targets),
         };
         let mut last = SinkError::Exhausted;
         for attempt in 1..=self.policy.max_attempts {
@@ -215,11 +215,25 @@ fn retry_delay(attempt: u32) -> Duration {
 /// Render the destination document.
 ///
 /// The only channel-specific words in the whole channel live in this function:
-/// the Adaptive Card shape and the `<at>` mention entity. The payload supplies
-/// no markup and no mention syntax.
+/// the Adaptive Card shape and the `<at>` mention entities, one per target. The
+/// payload supplies no markup and no mention syntax.
 #[must_use]
-pub fn teams_document(payload: &AttentionPayload, mention: &str) -> serde_json::Value {
-    let mention_text = format!("<at>{mention}</at>");
+pub fn teams_document(payload: &AttentionPayload, mentions: &[String]) -> serde_json::Value {
+    let entities: Vec<_> = mentions
+        .iter()
+        .map(|mention| {
+            serde_json::json!({
+                "type": "mention",
+                "text": format!("<at>{mention}</at>"),
+                "mentioned": {"id": mention, "name": mention}
+            })
+        })
+        .collect();
+    let mention_text = mentions
+        .iter()
+        .map(|mention| format!("<at>{mention}</at>"))
+        .collect::<Vec<_>>()
+        .join(" ");
     let mut facts = vec![
         fact("Realm", &payload.realm_id.to_string()),
         fact("Project", &payload.project_id.to_string()),
@@ -259,13 +273,7 @@ pub fn teams_document(payload: &AttentionPayload, mention: &str) -> serde_json::
                     "title": "Open in Kontor",
                     "url": payload.deep_link
                 }],
-                "msteams": {
-                    "entities": [{
-                        "type": "mention",
-                        "text": mention_text,
-                        "mentioned": {"id": mention, "name": mention}
-                    }]
-                }
+                "msteams": {"entities": entities}
             }
         }]
     })
@@ -333,7 +341,7 @@ mod tests {
         .expect("a valid payload");
         payload.title = "[click](https://example)".to_owned();
         payload.body = "**bold** and _emphasis_ and ${secret}".to_owned();
-        let document = teams_document(&payload, "operator@example.com");
+        let document = teams_document(&payload, &["operator@example.com".to_owned()]);
         let rendered = document.to_string();
         assert!(rendered.contains("\\\\[click\\\\]"), "{rendered}");
         assert!(rendered.contains("\\\\*\\\\*bold\\\\*\\\\*"), "{rendered}");
@@ -361,7 +369,7 @@ mod tests {
             "The task entered needs_human.".to_owned(),
         )
         .expect("a valid payload");
-        let document = teams_document(&payload, "operator@example.com");
+        let document = teams_document(&payload, &["operator@example.com".to_owned()]);
         let rendered = document.to_string();
         assert!(rendered.contains("<at>operator@example.com</at>"));
         assert!(
@@ -369,5 +377,51 @@ mod tests {
                 .expect("serializes")
                 .contains("<at>")
         );
+    }
+
+    #[test]
+    fn every_mention_target_gets_its_own_text_and_entity() {
+        let payload = crate::attention::payload::AttentionPayload::new(
+            crate::attention::payload::AlertKind::TaskNeedsHuman,
+            crate::attention::payload::Severity::Critical,
+            kontor_core::id::RealmId::generate(),
+            kontor_core::id::ProjectId::generate(),
+            None,
+            Some(kontor_core::id::TaskId::generate()),
+            kontor_core::id::RoleKey::parse("harness-seat").expect("a seat"),
+            None,
+            None,
+            crate::attention::payload::ResultingState::NeedsHuman,
+            kontor_core::id::Timestamp::now(),
+            "http://127.0.0.1:7717/v1/projects/x/tasks/y".to_owned(),
+            "Task needs a human".to_owned(),
+            "The task entered needs_human.".to_owned(),
+        )
+        .expect("a valid payload");
+        let document = teams_document(
+            &payload,
+            &[
+                "first@example.com".to_owned(),
+                "second@example.com".to_owned(),
+            ],
+        );
+        let content = &document["attachments"][0]["content"];
+        assert_eq!(
+            content["body"][0]["text"],
+            "<at>first@example.com</at> <at>second@example.com</at>"
+        );
+        let entities = content["msteams"]["entities"]
+            .as_array()
+            .expect("an entity list");
+        assert_eq!(entities.len(), 2);
+        for (entity, target) in entities
+            .iter()
+            .zip(["first@example.com", "second@example.com"])
+        {
+            assert_eq!(entity["type"], "mention");
+            assert_eq!(entity["text"], format!("<at>{target}</at>"));
+            assert_eq!(entity["mentioned"]["id"], target);
+            assert_eq!(entity["mentioned"]["name"], target);
+        }
     }
 }
