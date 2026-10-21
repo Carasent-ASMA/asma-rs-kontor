@@ -30,6 +30,9 @@
 mod artifact_submissions;
 pub use artifact_submissions::NewArtifactSubmission;
 
+mod attention;
+pub use attention::{AttentionObserver, AttentionSignal, AttentionSignalKind, team_run_seat};
+
 pub mod authority;
 pub mod backup;
 mod commands;
@@ -181,6 +184,9 @@ pub struct SqliteStore {
     /// Loaded once at open and never mutated, so every ingress check compares
     /// against the same value for the lifetime of the store.
     realm: RealmMetadata,
+    /// The optional post-commit attention observer the daemon installs. It is
+    /// deliberately a plain call and never performs egress here (CON-003).
+    attention: attention::AttentionNotifier,
 }
 
 /// Deterministic crash points a recovery test can stand in.
@@ -268,9 +274,27 @@ impl SqliteStore {
         Ok(Self {
             connection,
             realm,
+            attention: attention::AttentionNotifier::default(),
             #[cfg(feature = "fault-injection")]
             faults: StoreFaults::default(),
         })
+    }
+
+    /// Install the daemon's post-commit attention observer.
+    ///
+    /// `None` disarms it. The observer is called after a settling transaction
+    /// commits and must never call back into this store or block; the daemon
+    /// installs one that formats a channel-neutral payload and spawns a detached
+    /// one-shot delivery.
+    pub fn set_attention_observer(&self, observer: Option<AttentionObserver>) {
+        self.attention.install(observer);
+    }
+
+    /// Hand one settled fact to the installed observer, if any.
+    ///
+    /// Callers invoke this only after the settling transaction has committed.
+    pub(crate) fn notify_attention(&self, signal: AttentionSignal) {
+        self.attention.notify(signal);
     }
 
     /// This database's immutable Realm identity.
