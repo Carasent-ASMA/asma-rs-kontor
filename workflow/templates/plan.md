@@ -63,7 +63,7 @@ The selected config folder is explicit:
 | TASK-001 | {{ task.key }} | {{ task.description }} | {{ task.closure }} | | |
 | TASK-002 | {{ task.key }} | {{ task.description }} | {{ task.closure }} | | |
 
-### 2.5 Dependency graph
+### 2.5 Dependency Graph and Waves
 
 The graph is the only editable dependency source. The `jira` field is the
 plan-graph v1 field name; it holds the confirmed tracker key for any tracker.
@@ -75,7 +75,8 @@ plan-graph v1 field name; it holds the confirmed tracker key for any tracker.
   "tasks": [
     {"id": "TASK-001", "title": "{{ task.title }}", "phase": "Phase 1", "jira": "{{ task.key }}", "kontor_id": null, "depends_on": []},
     {"id": "TASK-002", "title": "{{ task.title }}", "phase": "Phase 1", "jira": "{{ task.key }}", "kontor_id": null, "depends_on": ["TASK-001"]}
-  ]
+  ],
+  "external_fences": []
 }
 ```
 

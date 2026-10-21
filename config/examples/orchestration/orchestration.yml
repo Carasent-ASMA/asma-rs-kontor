@@ -67,7 +67,7 @@ project:
 
   team_pack: packs/team.yml
   fleet: orchestration/fleet.yml
-  supervision: paseo-supervision.yml
+  supervision: orchestration/tpm-supervision.yml
 
   merge_authority:
     role: Platform Owner
@@ -83,6 +83,7 @@ project:
   capacity:
     max_delivery_seats: 1
     max_parallel_tasks: 2
+    start_admission: 1
 
   time_zone: Europe/Oslo
   holiday_countries: [NO]

@@ -1,5 +1,5 @@
 # Machine-readable companion to the `project:` block documented in
-# docs/CONFIGURATION.md. It states required key presence, not value types or
+# docs/CONFIGURATION.md. It states required key presence plus the named
 # cross-field rules; the schema tests in
 # crates/kontor-fleet/tests/config_examples.rs prove those against both the
 # neutral example and ASMA's concrete values.
@@ -55,7 +55,13 @@ project:
     merge_authority:
       required: [role, policy]
     capacity:
-      required: [max_delivery_seats, max_parallel_tasks]
+      required: [max_delivery_seats, max_parallel_tasks, start_admission]
+      rule: max_parallel_tasks is the hard ceiling for concurrent team-run tasks; start_admission is the initial admission and must be <= max_parallel_tasks; max_delivery_seats is the distinct delivery-seat count and does not gate team-run admission
+
+# The two supervision files are distinct contracts.
+supervision_contract:
+  project.supervision: folder-relative autonomous TPM cadence profile, read from the selected config folder
+  paseo_watchdog: <state-root>/supervision.yml, read by the Paseo watchdog and recovery path; it is not a project key
 
 # Path classes. Only config_file_references are contained by the selected
 # config folder; project resource paths belong to the project root, and host

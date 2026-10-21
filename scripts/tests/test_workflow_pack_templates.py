@@ -12,6 +12,7 @@ values, and relative links that resolve.
 
 from __future__ import annotations
 
+import json
 import re
 import unittest
 from pathlib import Path
@@ -139,6 +140,42 @@ class ContentContractTests(unittest.TestCase):
         self.assertEqual(text.count("```plan-graph"), 1)
         self.assertIn("<!-- plan-graph:derived:start -->", text)
         self.assertIn("<!-- plan-graph:derived:end -->", text)
+
+    def test_the_plan_template_matches_the_plan_graph_contract(self) -> None:
+        text = read(TEMPLATES / "plan.md")
+        self.assertIn("### 2.5 Dependency Graph and Waves", text)
+        self.assertNotIn("### 2.5 Dependency graph", text)
+
+        match = re.search(r"```plan-graph\n(.*?)\n```", text, re.DOTALL)
+        self.assertIsNotNone(match, "the template has one plan-graph JSON block")
+        graph = json.loads(match.group(1))
+
+        self.assertEqual(
+            set(graph),
+            {"schema_version", "epic", "tasks", "external_fences"},
+            "the graph root matches the v1 contract",
+        )
+        self.assertEqual(graph["schema_version"], 1)
+        self.assertEqual(set(graph["epic"]), {"jira", "kontor_id"})
+        self.assertEqual(graph["external_fences"], [])
+        self.assertTrue(graph["tasks"], "the graph has at least one task")
+
+        task_keys = {"id", "title", "phase", "jira", "kontor_id", "depends_on"}
+        task_ids: list[str] = []
+        for task in graph["tasks"]:
+            self.assertEqual(set(task), task_keys)
+            self.assertIsInstance(task["depends_on"], list)
+            task_ids.append(task["id"])
+        self.assertEqual(len(task_ids), len(set(task_ids)), "task ids are unique")
+        for task in graph["tasks"]:
+            self.assertEqual(
+                len(task["depends_on"]),
+                len(set(task["depends_on"])),
+                f"{task['id']} has unique prerequisites",
+            )
+            for prerequisite in task["depends_on"]:
+                self.assertIn(prerequisite, task_ids)
+                self.assertNotEqual(prerequisite, task["id"])
 
     def test_the_agents_template_has_both_parts(self) -> None:
         text = read(TEMPLATES / "AGENTS.md")

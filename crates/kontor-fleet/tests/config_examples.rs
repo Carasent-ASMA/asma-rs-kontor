@@ -362,7 +362,11 @@ fn validate_project(value: &Value, path: &str) -> Mapping {
         );
     }
     let capacity = required_map(value, "capacity", path);
-    for key in ["max_delivery_seats", "max_parallel_tasks"] {
+    for key in [
+        "max_delivery_seats",
+        "max_parallel_tasks",
+        "start_admission",
+    ] {
         assert!(
             capacity
                 .get(key)
@@ -371,6 +375,16 @@ fn validate_project(value: &Value, path: &str) -> Mapping {
             "{path}.capacity.{key} is a positive integer"
         );
     }
+    let ceiling = capacity["max_parallel_tasks"]
+        .as_i64()
+        .expect("max_parallel_tasks is an integer");
+    let start = capacity["start_admission"]
+        .as_i64()
+        .expect("start_admission is an integer");
+    assert!(
+        start <= ceiling,
+        "{path}.capacity.start_admission ({start}) must not exceed max_parallel_tasks ({ceiling})"
+    );
     for key in [
         "gap_ledger",
         "attention_channel",
@@ -639,6 +653,7 @@ fn every_folder_reference_resolves_inside_the_example() {
         "orchestration/fleet.yml",
         "orchestration/route-qualifications.yml",
         "orchestration/teams/core-team.yml",
+        "orchestration/tpm-supervision.yml",
         "paseo-supervision.yml",
         "packs/team.yml",
         "tracker/jira.yml",
@@ -902,6 +917,7 @@ fn the_remaining_neutral_files_are_well_formed_yaml() {
         "config/examples/packs/team.yml",
         "config/examples/orchestration/teams/core-team.yml",
         "config/examples/orchestration/route-qualifications.yml",
+        "config/examples/orchestration/tpm-supervision.yml",
         "config/examples/forge/github-app.example.yml",
     ] {
         let value = read(relative);
@@ -1848,6 +1864,85 @@ fn placement_refuses_a_route_outside_the_project_matrix() {
         Err("runtime_pair_not_allowed"),
         "placement refuses a host route not listed by project.runtime.matrix"
     );
+}
+
+#[test]
+fn capacity_separates_delivery_seats_from_the_admission_ceiling() {
+    for (relative, delivery_seats, ceiling, start_admission) in [
+        ("config/examples/orchestration/orchestration.yml", 1, 2, 1),
+        ("tests/fixtures/config/asma-orchestration.yml", 2, 7, 4),
+    ] {
+        let project = read(relative);
+        let capacity = &project["project"]["capacity"];
+        assert_eq!(
+            capacity["max_delivery_seats"].as_i64(),
+            Some(delivery_seats),
+            "{relative}: max_delivery_seats"
+        );
+        assert_eq!(
+            capacity["max_parallel_tasks"].as_i64(),
+            Some(ceiling),
+            "{relative}: max_parallel_tasks is the hard ceiling"
+        );
+        assert_eq!(
+            capacity["start_admission"].as_i64(),
+            Some(start_admission),
+            "{relative}: start_admission"
+        );
+        assert!(
+            start_admission <= ceiling,
+            "{relative}: start_admission must not exceed the ceiling"
+        );
+    }
+}
+
+#[test]
+fn supervision_names_the_tpm_profile_not_the_paseo_watchdog() {
+    for relative in [
+        "config/examples/orchestration/orchestration.yml",
+        "tests/fixtures/config/asma-orchestration.yml",
+    ] {
+        let document = read(relative);
+        let project = &document["project"];
+        assert_eq!(
+            project["supervision"].as_str(),
+            Some("orchestration/tpm-supervision.yml"),
+            "{relative}: project.supervision names the TPM cadence profile"
+        );
+        assert!(
+            project.get("paseo_supervision").is_none(),
+            "{relative}: the Paseo watchdog is not a project key"
+        );
+    }
+
+    let root = repo_root().join("config/examples");
+    assert!(
+        root.join("orchestration/tpm-supervision.yml").is_file(),
+        "the neutral TPM cadence profile exists"
+    );
+    assert!(
+        root.join("paseo-supervision.yml").is_file(),
+        "the Paseo watchdog sample remains available for the state root"
+    );
+
+    let schema = read("config/examples/orchestration/orchestration.schema.yml");
+    let contract = &schema["supervision_contract"];
+    assert!(
+        contract["project.supervision"]
+            .as_str()
+            .is_some_and(|text| text.contains("TPM cadence profile")),
+        "the schema names project.supervision as the TPM profile"
+    );
+    assert!(
+        contract["paseo_watchdog"]
+            .as_str()
+            .is_some_and(|text| text.contains("<state-root>/supervision.yml")),
+        "the schema names the Paseo watchdog state-root path"
+    );
+
+    let docs = text("docs/CONFIGURATION.md");
+    assert!(docs.contains("project.supervision"));
+    assert!(docs.contains("<state-root>/supervision.yml"));
 }
 
 #[test]

@@ -1,0 +1,7 @@
+# Neutral autonomous TPM supervision cadence profile.
+# Replace these placeholders with the project's approved cadence.
+schema_version: 1
+cadence:
+  heartbeat_seconds: 900
+  stale_after_seconds: 1800
+  checkpoint_seconds: 3600
