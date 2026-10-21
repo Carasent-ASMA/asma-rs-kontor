@@ -2,7 +2,7 @@
 
 PR-specific first-message parts and output formats. The Done-means rule is
 owned by [review-checklist.md](review-checklist.md); the JUDGE fragment below
-repeats it because the seat reads only this first message. Role identity,
+links check (11) and does not restate it. Role identity,
 purpose, tool profile and personality come from the matching card in
 [`seat-cards`](../../seat-cards/SKILL.md); do not restate them here. The desk
 assembles the card first and then the parts below. The common tool boundary is
@@ -163,7 +163,7 @@ Steps:
    ending with `<!-- pr-desk -->`, that the author can merge it as it is, edit
    the fix branch themselves, or close it.
 7. Learning log: for each posted finding, add one line to the desk's
-   host-configured history folder, exactly like this:
+   `<host.paths.data_root>/pr-review/learning.log`, exactly like this:
    `<date> · <repository>#<number> · <seat> (round <n>) · <label> · <file>:<line> · posted`
    When the author answers, add the same line again ending in `accepted` or
    `rejected`; a short note in brackets may follow that word. The desk itself
@@ -245,14 +245,8 @@ Hard rules:
   the problem and the proof holds. Drop anything without proof and give the
   reason.
 - Do not invent findings and do not praise; a matter-of-fact check is enough.
-- Check the Done means too (check (11)): compare the head with the tracker
-  ticket's Done means or acceptance criteria. A pull request that says it
-  completes the ticket must meet all of them; one that delivers part of a
-  ticket must meet the part its description names and break nothing else. A
-  ticket without usable criteria uses its summary and description as the goal;
-  answer `unchecked` only when nothing usable is there. A keyless release pull
-  request uses its own description as the goal. Without your `yes` for this head
-  nothing merges.
+- Check Done means (check (11)) exactly as the review checklist defines it.
+  Without your `yes` for this head nothing merges.
 - Plain English and short reasons.
 Steps:
 1. Read the repository's nearest AGENTS.md and CLAUDE.md.

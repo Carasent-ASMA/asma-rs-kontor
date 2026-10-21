@@ -17,6 +17,21 @@ The desk is the project's watchdog implementation. Its commands, refusals,
 limits and internals are in the project's PR desk runbook under
 `{{ project.documentation_roots }}`; its flags are in its own help.
 
+### Configuration dependency
+
+The learning log resolves to
+`<host.paths.data_root>/pr-review/learning.log`. The desk executable and the
+settings that own the per-poll start budget, active-PR policy, silence windows,
+churn threshold and round limits have no key in the WP-02 `project:` block or
+the committed host schema. Until WP-02 adds one, read them from the project's
+own desk configuration and its documented entry point.
+
+The proposed WP-02 key is a `project.pr_desk` block with `command`, `settings`
+and `history_root`; the host override would be `host.paths.pr_desk`. This pack
+does not invent or add that key. WP04-INV-02 and WP04-INV-04 are therefore
+partially fixed: the absolute home path and copied limits are gone, but the
+desk settings and limits remain a named dependency, not a closed parameter.
+
 One desk only: the host owner's machine runs the desk. Never enable a second
 desk on another machine: two desks would post duplicate reviews and push
 conflicting fixes. This holds until the project adds coordination for several
@@ -223,8 +238,8 @@ every author.
 
 ## Still needed and silence notices
 
-- **Still needed?** On every review round, and once a day while the PR waits for
-  its author, the desk flags a PR whose tracker ticket is closed or won't do;
+- **Still needed?** On every review round, and on the configured still-needed
+  cadence while the PR waits for its author, the desk flags a PR whose tracker ticket is closed or won't do;
   whose tracker key another PR in the same repository merged after it opened;
   whose changes are already on the base; that conflicts with the base; or whose
   files the base changed by more than the configured churn threshold. A failed
@@ -240,8 +255,8 @@ every author.
   large base churn, an empty diff and a still-needed warning alone never close;
   those keep the note.
 - **Silence notices:** a ready PR silent for the configured window after a
-  review round gets one desk comment. The approved text promises what the next
-  day does: if all checks pass, the desk marks the PR ready for the merge
+  review round gets one desk comment. The approved text promises what the scheduled
+  follow-up does: if all checks pass, the desk marks the PR ready for the merge
   authority's merge on a stated date; that authority merges it. If a check
   fails, the desk sets it to draft and tells the author why. Any comment or push
   from the author stops this. A repository that is not granted, and a pull
@@ -259,20 +274,20 @@ every author.
 
 ## Merge on silence
 
-One calendar day after the confirmed day-three notice the desk runs the shared
-merge check on the silent pull request and acts on its outcome. The desk never
-merges on silence.
+After the configured follow-up delay from the confirmed silence notice, the desk
+runs the shared merge check on the silent pull request and acts on its outcome.
+The desk never merges on silence.
 
 - **Pass:** the pull request is marked ready for the merge authority. The board
   shows it under "waiting for merge"; it still needs the configured merge
   command or the author's standing `/desk merge` order. A later push clears the
-  mark and the normal route applies again; the desk re-runs the check once a day
-  and clears the mark when a real failure appears.
+  mark and the normal route applies again; the desk re-runs the check on the
+  configured follow-up cadence and clears the mark when a real failure appears.
 - **Fail:** the desk sets the pull request to draft with one comment naming each
   failed check and how to come back. A failure that means the work is no longer
   needed (the still-needed check is flagged, or the tracker ticket is closed)
   takes the same route.
-- **Old day-three text:** a pull request warned before this rule gets no second
+- **Old notice text:** a pull request warned before this rule gets no second
   notice; its next pass decides — a ready mark when the check passes, and a
   takeover instead of a draft when it fails. Until the takeover support is
   deployed it gets no draft and no comment: the board lists it as waiting for
@@ -380,8 +395,8 @@ seat cards say who runs which.
 
 ## Learning log
 
-The PR Adam writes one line per finding to the desk's host-configured history
-folder:
+The PR Adam writes one line per finding to
+`<host.paths.data_root>/pr-review/learning.log`:
 
 ```text
 <date> · <repository>#<number> · <seat> (round <n>) · <label> · <file>:<line> · posted | accepted | rejected | merged open

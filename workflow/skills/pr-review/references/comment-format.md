@@ -82,12 +82,13 @@ the facts say `still_needed: flagged`, then the link to the round's fix PR when
 there is one, then the JUDGE-kept findings, `blocking` first. Questions and
 `pre-existing` findings never block.
 
-## The day-four comments
+## The scheduled follow-up comments
 
-The desk, not a seat, posts the silence notice and the day-four comments. They
+The desk, not a seat, posts the silence notice and the scheduled follow-up
+comments. They
 are plain English for a non-native reader, end with the hidden mark
 `<!-- pr-desk -->`, and each carries a hidden
-`<!-- pr-desk day4 <word> <head> -->` line so one effect posts once per head:
+`<!-- pr-desk follow-up <word> <head> -->` line so one effect posts once per head:
 
 - **draft:** the check failed; the comment names each failed check and says to
   fix them and set the pull request ready again.

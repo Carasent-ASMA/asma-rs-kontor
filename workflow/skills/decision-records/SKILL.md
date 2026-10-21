@@ -138,7 +138,7 @@ the renamed file. The number never changes.
 - Positive and negative consequences; mitigations where they exist.
 - Alternatives with rejection rationale.
 - Coded bullets for every multi-item section: a short code and number
-  (`DR-001`, `POS-002`, `NEG-001`, `MIT-003`, `ALT-002`, `IMP-001`, `REF-004`).
+  (`DEC-001`, `POS-002`, `NEG-001`, `MIT-003`, `ALT-002`, `IMP-001`, `REF-004`).
   These are stable citation anchors: never renumber an existing code; append.
 
 ### Template
@@ -169,8 +169,8 @@ document.]
 
 ## Decision
 
-- **DR-001**: [First concrete decision and its rationale]
-- **DR-002**: [Second decision]
+- **DEC-001**: [First concrete decision and its rationale]
+- **DEC-002**: [Second decision]
 
 ## Consequences
 
@@ -228,7 +228,7 @@ changes.
 
 | Stays in the record | Moves out (link via `REF-*`) |
 |---|---|
-| The decision (`DR-*`) and rationale | Full pseudo-code, folder layouts, SQL/DDL |
+| The decision (`DEC-*`) and rationale | Full pseudo-code, folder layouts, SQL/DDL |
 | Trade-offs (`POS`/`NEG`/`MIT`) | Step-by-step migration mechanics |
 | Alternatives and why rejected | Long narrative or meeting history |
 | Just enough context to grasp why now | How to build it → a spec document |

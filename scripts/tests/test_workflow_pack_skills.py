@@ -19,6 +19,7 @@ the workflow-only lane; WP-05 owns moving or wiring them there.
 
 from __future__ import annotations
 
+import json
 import re
 import unittest
 from pathlib import Path
@@ -73,7 +74,6 @@ NEVER_PUBLIC = (
     "/Users/",
     "/home/",
     "agentsroom",
-    "DEC-0",
     "ASMA-",
     "ASMA_",
     "claude" + "-work",
@@ -91,6 +91,11 @@ EXPECTED_WP04_ROWS = {
 }
 
 SEAT_CARDS = SKILLS / "seat-cards" / "SKILL.md"
+TEAM_PACK = REPO_ROOT / "crates" / "kontor-teams" / "fixtures" / "mvp-team-pack.json"
+OPERATIONAL_DOMAIN = REPO_ROOT / "crates" / "kontor-profiles" / "fixtures" / "operational-domain.json"
+CONSULTATION_PRESETS = REPO_ROOT / "crates" / "kontor-profiles" / "fixtures" / "consultation-presets.json"
+CORE_TEAM = REPO_ROOT / "config" / "examples" / "orchestration" / "teams" / "core-team.yml"
+PR_REVIEW = SKILLS / "pr-review" / "SKILL.md"
 
 SEAT_CARD_FIELDS = (
     "Purpose",
@@ -101,24 +106,435 @@ SEAT_CARD_FIELDS = (
     "Personality",
 )
 
-EXPECTED_SEAT_LABELS = {
-    "LSA • <epic key>",
-    "TPM • <epic key>",
-    "ADAM",
-    "SA • <topic>",
-    "SWE • <task key>",
-    "QA • <task key>",
-    "AUD • <task key>",
-    "UAT • <task key>",
-    "SEAT A",
-    "SEAT B",
-    "REV A",
-    "REV B",
-    "REV SEC",
-    "REV DB",
-    "JUDGE",
-    "FINAL REVIEWER",
-}
+
+def load_json(path: Path) -> dict[str, object]:
+    return json.loads(read(path))
+
+
+def team_contract() -> tuple[
+    dict[str, str], dict[str, str], dict[str, str], dict[str, str], dict[str, str]
+]:
+    """Return the authoritative role bindings and the slots each family uses."""
+    team_pack = load_json(TEAM_PACK)
+    operational = load_json(OPERATIONAL_DOMAIN)
+    bindings = {
+        binding["role"]: binding["role_code"]
+        for binding in operational["delivery"]["role_bindings"]
+    }
+    team_slots: dict[str, str] = {}
+    for team in team_pack["teams"]:
+        for slot in team["slots"]:
+            team_slots[slot["id"]] = slot["role"]["role"]
+    core_slots = dict(
+        re.findall(
+            r"role_slot_id:\s*(\S+)\s*\n\s*role_code:\s*(\S+)",
+            read(CORE_TEAM),
+        )
+    )
+    presets = load_json(CONSULTATION_PRESETS)
+    committee_slots = {
+        slot["id"]: slot["role"]
+        for slot in presets["committee_templates"][0]["slots"]
+    }
+    asw_slots: dict[str, str] = {}
+    for team in operational["team_definitions"]:
+        for container in team.get("containers", []):
+            if container.get("kind") != "ASW":
+                continue
+            for slot in container.get("slots", []):
+                asw_slots[slot["slot_id"]] = slot["role_code"]
+    return bindings, team_slots, core_slots, committee_slots, asw_slots
+
+
+def desk_slots() -> dict[str, str]:
+    """Derive the PR desk slots from its own seat table and role bindings."""
+    text = read(PR_REVIEW)
+    table = table_starting_with(text, "Seat")
+    if table is None:
+        raise AssertionError("the PR review skill has no seat table")
+    slots: dict[str, str] = {}
+    for row in table[1:]:
+        label = row[0].split(" — ", 1)[0].strip().strip("`")
+        if label == "PR Adam":
+            slots["adam"] = "TPM"
+        elif label == "SWE":
+            slots["swe"] = "SWE"
+        else:
+            slots[label.lower().replace(" ", "-")] = "AUD"
+    return slots
+
+
+def card_sections(text: str) -> tuple[dict[str, str], list[str]]:
+    sections: dict[str, str] = {}
+    duplicates: list[str] = []
+    for block in re.split(r"^## ", text, flags=re.MULTILINE)[1:]:
+        heading, _, body = block.partition("\n")
+        name = heading.split(" — ", 1)[0].strip()
+        if name in ("Crosswalk", "Common tool boundary", "Keeping the cards current"):
+            continue
+        if name in sections:
+            duplicates.append(name)
+        sections[name] = body
+    return sections, duplicates
+
+
+def field_values(body: str, field: str) -> set[str]:
+    match = re.search(
+        rf"- \*\*{re.escape(field)}:\*\* (.*?)(?=\n- \*\*|\Z)",
+        body,
+        re.DOTALL,
+    )
+    if match is None:
+        return set()
+    return {value.strip() for value in re.findall(r"`([^`]+)`", match.group(1))}
+
+
+def card_records(text: str) -> tuple[dict[str, dict[str, set[str]]], list[str]]:
+    sections, duplicates = card_sections(text)
+    records: dict[str, dict[str, set[str]]] = {}
+    for name, body in sections.items():
+        records[name] = {
+            "role_codes": field_values(body, "Role code"),
+            "seed_roles": field_values(body, "Seed role"),
+            "labels": field_values(body, "Seat labels"),
+        }
+    return records, duplicates
+
+
+def crosswalk_rows(text: str) -> list[dict[str, object]]:
+    table = table_starting_with(text, "Role code")
+    if table is None:
+        raise AssertionError("the seat-cards skill has no crosswalk")
+    rows: list[dict[str, object]] = []
+    for row in table[1:]:
+        role = re.match(r"`([^`]+)`", row[0])
+        if role is None:
+            raise AssertionError(f"crosswalk row has no role code: {row[0]}")
+        rows.append(
+            {
+                "role": role.group(1),
+                "slots": [slot.strip().strip("`") for slot in row[1].split(",")],
+                "seed": row[2].strip().strip("`"),
+                "label": row[3].strip().strip("`"),
+            }
+        )
+    return rows
+
+
+def crosswalk_slot_errors(
+    rows: list[dict[str, object]],
+    team_slots: dict[str, str],
+    core_slots: dict[str, str],
+    committee_slots: dict[str, str],
+    desk_slots_: dict[str, str],
+) -> list[str]:
+    errors: list[str] = []
+    for row in rows:
+        for slot in row["slots"]:
+            if slot.startswith("leadership/"):
+                target = slot.rsplit("/", 1)[1]
+                if target not in core_slots:
+                    errors.append(f"{row['label']} uses unknown core slot {target}")
+            elif slot.startswith("committee/"):
+                target = slot.rsplit("/", 1)[1]
+                if target not in committee_slots:
+                    errors.append(f"{row['label']} uses unknown committee slot {target}")
+            elif slot.startswith("team/<desk-team-id>/"):
+                target = slot.rsplit("/", 1)[1]
+                if target not in desk_slots_:
+                    errors.append(f"{row['label']} uses unknown desk slot {target}")
+            elif slot.startswith("team/"):
+                target = slot.rsplit("/", 1)[1]
+                if target not in team_slots:
+                    errors.append(f"{row['label']} uses unknown team slot {target}")
+            elif slot.startswith("advisor/"):
+                continue
+            else:
+                errors.append(f"{row['label']} uses unknown slot family {slot}")
+    return errors
+
+
+def crosswalk_role_errors(
+    rows: list[dict[str, object]],
+    bindings: dict[str, str],
+    asw_slots: dict[str, str],
+) -> list[str]:
+    errors: list[str] = []
+    for row in rows:
+        seed = row["seed"]
+        role = row["role"]
+        if seed == "advisor":
+            if role not in set(asw_slots.values()):
+                errors.append(f"{row['label']} maps advisor to {role}")
+        elif seed in bindings:
+            if bindings[seed] != role:
+                errors.append(
+                    f"{row['label']} maps {seed} to {role}, expected {bindings[seed]}"
+                )
+        elif seed in ("LSA", "TPM"):
+            if role != seed:
+                errors.append(f"{row['label']} maps {seed} to {role}")
+        else:
+            errors.append(f"{row['label']} uses unknown seed role {seed}")
+    return errors
+
+
+def crosswalk_label_errors(
+    rows: list[dict[str, object]],
+    records: dict[str, dict[str, set[str]]],
+) -> list[str]:
+    errors: list[str] = []
+    label_to_cards: dict[str, list[str]] = {}
+    for name, record in records.items():
+        for label in record["labels"]:
+            label_to_cards.setdefault(label, []).append(name)
+    for row in rows:
+        names = label_to_cards.get(row["label"], [])
+        if len(names) != 1:
+            errors.append(
+                f"{row['label']} maps to {len(names)} cards: {', '.join(names)}"
+            )
+            continue
+        record = records[names[0]]
+        if row["role"] not in record["role_codes"]:
+            errors.append(f"{row['label']} role {row['role']} is not on {names[0]}")
+        if row["seed"] not in record["seed_roles"]:
+            errors.append(f"{row['label']} seed {row['seed']} is not on {names[0]}")
+    return errors
+
+
+def team_slot_errors(
+    rows: list[dict[str, object]], team_slots: dict[str, str]
+) -> list[str]:
+    errors: list[str] = []
+    for slot_id, seed in team_slots.items():
+        matches = [
+            row
+            for row in rows
+            if row["seed"] == seed
+            and any(slot.endswith(f"/{slot_id}") for slot in row["slots"])
+        ]
+        if not matches:
+            errors.append(f"team slot {slot_id} ({seed}) has no crosswalk row")
+    return errors
+
+
+def team_card_errors(
+    records: dict[str, dict[str, set[str]]],
+    team_slots: dict[str, str],
+    bindings: dict[str, str],
+) -> list[str]:
+    errors: list[str] = []
+    for slot_id, seed in team_slots.items():
+        role = bindings[seed]
+        matches = [
+            name
+            for name, record in records.items()
+            if role in record["role_codes"] and seed in record["seed_roles"]
+        ]
+        if not matches:
+            errors.append(f"team slot {slot_id} ({seed}, {role}) has no card")
+    return errors
+
+
+def core_slot_errors(
+    rows: list[dict[str, object]], core_slots: dict[str, str]
+) -> list[str]:
+    errors: list[str] = []
+    for slot_id, role in core_slots.items():
+        matches = [
+            row
+            for row in rows
+            if row["role"] == role
+            and any(slot.endswith(f"/{slot_id}") for slot in row["slots"])
+        ]
+        if not matches:
+            errors.append(f"core slot {slot_id} ({role}) has no crosswalk row")
+    return errors
+
+
+def committee_slot_errors(
+    rows: list[dict[str, object]], committee_slots: dict[str, str]
+) -> list[str]:
+    errors: list[str] = []
+    for slot_id, seed in committee_slots.items():
+        matches = [
+            row
+            for row in rows
+            if row["seed"] == seed
+            and any(slot.endswith(f"/{slot_id}") for slot in row["slots"])
+        ]
+        if not matches:
+            errors.append(f"committee slot {slot_id} ({seed}) has no crosswalk row")
+    return errors
+
+
+def desk_slot_errors(
+    rows: list[dict[str, object]], desk_slots_: dict[str, str]
+) -> list[str]:
+    errors: list[str] = []
+    for slot_id, role in desk_slots_.items():
+        matches = [
+            row
+            for row in rows
+            if row["role"] == role
+            and any(slot.endswith(f"/{slot_id}") for slot in row["slots"])
+        ]
+        if not matches:
+            errors.append(f"desk slot {slot_id} ({role}) has no crosswalk row")
+    return errors
+
+
+class SeatCardTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.text = read(SEAT_CARDS)
+        self.records, self.duplicates = card_records(self.text)
+        self.rows = crosswalk_rows(self.text)
+        (
+            self.bindings,
+            self.team_slots,
+            self.core_slots,
+            self.committee_slots,
+            self.asw_slots,
+        ) = team_contract()
+        self.desk_slots = desk_slots()
+
+    def test_no_duplicate_card_sections(self) -> None:
+        self.assertEqual(self.duplicates, [])
+
+    def test_a_duplicate_card_section_is_rejected(self) -> None:
+        _, duplicates = card_records(
+            self.text + "\n## LSA — duplicate\n\n- **Purpose:** duplicate\n"
+        )
+        self.assertIn("LSA", duplicates)
+
+    def test_every_card_has_the_six_required_fields(self) -> None:
+        for name, body in card_sections(self.text)[0].items():
+            with self.subTest(card=name):
+                for field in SEAT_CARD_FIELDS:
+                    self.assertIn(f"- **{field}:**", body, f"{name} lacks {field}")
+
+    def test_every_card_has_one_personality_line(self) -> None:
+        for name, body in card_sections(self.text)[0].items():
+            with self.subTest(card=name):
+                matches = re.findall(r"- \*\*Personality:\*\* (.+)", body)
+                self.assertEqual(len(matches), 1)
+                self.assertTrue(matches[0].strip())
+
+    def test_every_card_has_a_role_code_seed_role_and_labels(self) -> None:
+        for name, record in self.records.items():
+            with self.subTest(card=name):
+                self.assertTrue(record["role_codes"], name)
+                self.assertTrue(record["seed_roles"], name)
+                self.assertTrue(record["labels"], name)
+
+    def test_every_team_slot_has_a_crosswalk_row(self) -> None:
+        self.assertEqual(team_slot_errors(self.rows, self.team_slots), [])
+
+    def test_every_team_slot_has_a_card(self) -> None:
+        self.assertEqual(
+            team_card_errors(self.records, self.team_slots, self.bindings), []
+        )
+
+    def test_every_core_committee_and_desk_slot_has_a_row(self) -> None:
+        self.assertEqual(core_slot_errors(self.rows, self.core_slots), [])
+        self.assertEqual(committee_slot_errors(self.rows, self.committee_slots), [])
+        self.assertEqual(desk_slot_errors(self.rows, self.desk_slots), [])
+
+    def test_every_crosswalk_role_matches_the_authoritative_binding(self) -> None:
+        self.assertEqual(
+            crosswalk_role_errors(self.rows, self.bindings, self.asw_slots), []
+        )
+
+    def test_every_crosswalk_slot_exists(self) -> None:
+        self.assertEqual(
+            crosswalk_slot_errors(
+                self.rows,
+                self.team_slots,
+                self.core_slots,
+                self.committee_slots,
+                self.desk_slots,
+            ),
+            [],
+        )
+
+    def test_every_crosswalk_label_maps_to_exactly_one_card(self) -> None:
+        self.assertEqual(crosswalk_label_errors(self.rows, self.records), [])
+
+    def test_every_card_is_reachable_from_a_crosswalk_row(self) -> None:
+        labels = {row["label"] for row in self.rows}
+        for name, record in self.records.items():
+            with self.subTest(card=name):
+                self.assertTrue(record["labels"] & labels, name)
+
+    def test_the_uat_seed_role_is_therapist_verifier(self) -> None:
+        uat = [row for row in self.rows if row["role"] == "UAT"]
+        self.assertTrue(uat)
+        for row in uat:
+            self.assertEqual(row["seed"], "therapist-verifier")
+
+    def test_a_wrong_uat_seed_role_is_rejected(self) -> None:
+        rows = [dict(row) for row in self.rows]
+        uat = next(row for row in rows if row["role"] == "UAT")
+        uat["seed"] = "verifier"
+        self.assertTrue(crosswalk_role_errors(rows, self.bindings, self.asw_slots))
+        self.assertTrue(team_slot_errors(rows, self.team_slots))
+
+    def test_the_final_reviewer_is_an_audit_role(self) -> None:
+        final = [row for row in self.rows if row["label"] == "FINAL REVIEWER"]
+        self.assertEqual(len(final), 1)
+        self.assertEqual(final[0]["role"], "AUD")
+        self.assertEqual(final[0]["seed"], "reviewer")
+
+    def test_the_research_spike_roles_are_covered(self) -> None:
+        for slot_id in ("researcher-a", "researcher-b", "judge", "synthesizer"):
+            with self.subTest(slot=slot_id):
+                self.assertIn(slot_id, self.team_slots)
+                self.assertTrue(
+                    any(
+                        any(slot.endswith(f"/{slot_id}") for slot in row["slots"])
+                        for row in self.rows
+                    ),
+                    slot_id,
+                )
+        self.assertIn("BA", self.records)
+        self.assertIn("TW", self.records)
+
+    def test_a_final_reviewer_mapped_to_the_reviewer_role_code_is_rejected(self) -> None:
+        rows = [dict(row) for row in self.rows]
+        final = next(row for row in rows if row["label"] == "FINAL REVIEWER")
+        final["role"] = "reviewer"
+        self.assertTrue(crosswalk_role_errors(rows, self.bindings, self.asw_slots))
+
+    def test_a_missing_team_card_is_rejected(self) -> None:
+        records = dict(self.records)
+        records.pop("BA")
+        self.assertTrue(team_card_errors(records, self.team_slots, self.bindings))
+
+    def test_an_unknown_slot_is_rejected(self) -> None:
+        rows = [dict(row) for row in self.rows]
+        rows[3]["slots"] = ["team/<team-definition-id>/does-not-exist"]
+        self.assertTrue(
+            crosswalk_slot_errors(
+                rows,
+                self.team_slots,
+                self.core_slots,
+                self.committee_slots,
+                self.desk_slots,
+            )
+        )
+
+    def test_the_crosswalk_keeps_contrasting_reviewer_slots(self) -> None:
+        reviewer_slots = [
+            slot
+            for row in self.rows
+            if row["seed"] == "reviewer"
+            for slot in row["slots"]
+        ]
+        self.assertTrue(any("reviewer-a" in slot for slot in reviewer_slots))
+        self.assertTrue(any("reviewer-b" in slot for slot in reviewer_slots))
+        self.assertTrue(any("rev-sec" in slot for slot in reviewer_slots))
+        self.assertTrue(any("rev-db" in slot for slot in reviewer_slots))
 
 
 def read(path: Path) -> str:
@@ -479,6 +895,18 @@ class NeutralityTests(unittest.TestCase):
                 for value in never_anywhere:
                     self.assertNotIn(value, text)
 
+    def test_a_generic_decision_citation_is_allowed(self) -> None:
+        text = "The record uses DEC-001 as a stable citation anchor."
+        self.assertNotIn("DEC-0", NEVER_PUBLIC)
+        for value in NEVER_PUBLIC:
+            self.assertNotIn(value.lower(), text.lower())
+
+    def test_a_private_record_reference_is_rejected(self) -> None:
+        text = "ASMA-8562 DEC-015 records the private decision."
+        self.assertTrue(
+            any(value.lower() in text.lower() for value in NEVER_PUBLIC)
+        )
+
 
 class LinkTests(unittest.TestCase):
     def test_every_link_and_anchor_resolves(self) -> None:
@@ -704,116 +1132,6 @@ class Wp04InventoryRowTests(unittest.TestCase):
         )
 
 
-def seat_card_sections(text: str) -> dict[str, str]:
-    sections: dict[str, str] = {}
-    for block in re.split(r"^## ", text, flags=re.MULTILINE)[1:]:
-        heading, _, body = block.partition("\n")
-        name = heading.split(" — ", 1)[0].strip()
-        if name in ("Crosswalk", "Common tool boundary", "Keeping the cards current"):
-            continue
-        sections[name] = body
-    return sections
-
-
-class SeatCardTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.text = read(SEAT_CARDS)
-        self.cards = seat_card_sections(self.text)
-        table = table_starting_with(self.text, "Role code")
-        self.assertIsNotNone(table)
-        self.crosswalk = table[1:]
-
-    def test_every_expected_role_has_one_card(self) -> None:
-        self.assertEqual(
-            set(self.cards),
-            {
-                "LSA",
-                "TPM",
-                "Adam",
-                "SA",
-                "SWE",
-                "QA",
-                "AUD",
-                "UAT",
-                "Reviewer",
-                "Judge",
-                "Security reviewer",
-                "Database reviewer",
-                "Advisor",
-            },
-        )
-
-    def test_every_card_has_the_six_required_fields(self) -> None:
-        for name, body in self.cards.items():
-            with self.subTest(card=name):
-                for field in SEAT_CARD_FIELDS:
-                    self.assertIn(f"- **{field}:**", body, f"{name} lacks {field}")
-
-    def test_every_card_has_one_personality_line(self) -> None:
-        for name, body in self.cards.items():
-            with self.subTest(card=name):
-                matches = re.findall(r"- \*\*Personality:\*\* (.+)", body)
-                self.assertEqual(len(matches), 1)
-                self.assertTrue(matches[0].strip())
-
-    def test_the_crosswalk_has_four_columns_and_no_empty_cell(self) -> None:
-        for row in self.crosswalk:
-            with self.subTest(row=row):
-                self.assertEqual(len(row), 4)
-                self.assertTrue(all(cell.strip() for cell in row))
-
-    def test_every_fleet_slot_uses_an_existing_binding_family(self) -> None:
-        for row in self.crosswalk:
-            for slot in row[1].replace("`", "").split(","):
-                with self.subTest(row=row[0], slot=slot):
-                    self.assertRegex(
-                        slot.strip(),
-                        r"^(leadership|team|committee|advisor)/[^\s]+$",
-                    )
-
-    def test_every_crosswalk_role_has_a_card(self) -> None:
-        card_roles = {
-            self._card_role(name, body) for name, body in self.cards.items()
-        }
-        for row in self.crosswalk:
-            token = re.match(r"`([^`]+)`", row[0])
-            self.assertIsNotNone(token, row[0])
-            with self.subTest(row=row[0]):
-                self.assertIn(token.group(1), card_roles)
-
-    def test_every_card_role_appears_in_the_crosswalk(self) -> None:
-        crosswalk_roles = {
-            re.match(r"`([^`]+)`", row[0]).group(1) for row in self.crosswalk
-        }
-        for name, body in self.cards.items():
-            with self.subTest(card=name):
-                self.assertIn(self._card_role(name, body), crosswalk_roles)
-
-    def test_the_crosswalk_covers_the_workflow_seat_labels(self) -> None:
-        labels = {
-            label.strip()
-            for row in self.crosswalk
-            for label in row[3].replace("`", "").split(",")
-        }
-        for label in EXPECTED_SEAT_LABELS:
-            with self.subTest(label=label):
-                self.assertIn(label, labels)
-
-    def test_the_crosswalk_keeps_contrasting_reviewer_slots(self) -> None:
-        groups = [row[1] for row in self.crosswalk if row[0].startswith("`reviewer`")]
-        self.assertTrue(any("reviewer-a" in slot for slot in groups))
-        self.assertTrue(any("reviewer-b" in slot for slot in groups))
-        self.assertTrue(any("rev-sec" in slot for slot in groups))
-        self.assertTrue(any("rev-db" in slot for slot in groups))
-
-    @staticmethod
-    def _card_role(name: str, body: str) -> str:
-        match = re.search(r"- \*\*(?:Role code|Template role):\*\* `([^`]+)`", body)
-        if match is None:
-            raise AssertionError(f"{name} has no role code or template role")
-        return match.group(1)
-
-
 class Wp04OwnershipTests(unittest.TestCase):
     def test_the_review_skill_links_its_rule_owners(self) -> None:
         text = read(SKILLS / "pr-review" / "SKILL.md")
@@ -867,6 +1185,16 @@ class Wp04OwnershipTests(unittest.TestCase):
         self.assertIn(
             '<a id="three-homes-for-information">',
             read(SKILLS / "document-organization" / "SKILL.md"),
+        )
+
+    def test_the_pr_desk_configuration_dependency_is_named(self) -> None:
+        text = read(SKILLS / "pr-review" / "SKILL.md")
+        self.assertIn("Configuration dependency", text)
+        self.assertIn("project.pr_desk", text)
+        self.assertIn("partially fixed", text)
+        self.assertIn(
+            "project.pr_desk",
+            read(SKILLS / "README.md"),
         )
 
     def test_the_execution_plan_links_the_mutation_owner(self) -> None:
