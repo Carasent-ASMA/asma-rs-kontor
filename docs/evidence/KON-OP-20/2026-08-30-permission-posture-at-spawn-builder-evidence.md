@@ -12,7 +12,8 @@
 - **Jira:** none — Kontor-native. **This is not ASMA-7968** (see `README.md` in this directory).
 - **Module:** `asma-rs-kontor`, branch `feat/KON-OP-20-permission-posture-at-spawn`, baseline `origin/master` = `e814661`.
 - **Plan:** the parent-workspace OP-20 permission-posture reconciliation plan (supersedes the 2026-08-23 plan).
-- **Design authority:** `2026-08-22-13-00-design-agent-permission-posture-at-spawn.md` (LSA ASMA-8001 → TPM ASMA-7869 handoff).
+- **Design authority:** the private ASMA-8001 permission-posture design record
+  (2026-08-22 revision; LSA ASMA-8001 → TPM ASMA-7869 handoff).
 
 ## What was wrong
 

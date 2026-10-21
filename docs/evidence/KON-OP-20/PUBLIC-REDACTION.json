@@ -5,10 +5,10 @@
   "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
   "files": {
     "2026-08-30-permission-posture-at-spawn-builder-evidence.md": {
-      "bytes": 27530,
-      "derivative_sha256": "6018c07d81a53a6ec481fb5b368af22d980230a6a03dabd64fd98c8c925289e5",
+      "bytes": 27545,
+      "derivative_sha256": "75f22e93076b290c09d1c9fe570b9f264a686db253a6dd01a6d9289b3eb6a403",
       "original_sha256": "7a197e4f407ff73b8283c17b450fe7a8ef17ebe34185d82832d0ca7dab71153c",
-      "private_references_redacted": 1
+      "private_references_redacted": 2
     },
     "2026-08-30-permission-posture-at-spawn-inspector-review-notes.md": {
       "bytes": 17670,
