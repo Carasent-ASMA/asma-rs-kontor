@@ -133,7 +133,7 @@ describe("Kontor shell native actions", () => {
     expect(sessions.props.workspaces).toEqual([]);
   });
 
-  it.each([true, false])("keeps the title on one line, the confirmed key on the selector's lower border and the full accessible label (compact=%s)", (compact) => {
+  it.each([true, false])("keeps the title bounded and the native project distinct from the epic in the accessible label (compact=%s)", (compact) => {
     const title = "A long configured source title that must remain available to assistive technology";
     model.sources = [{ id: "long-plan", title, kind: "plan", path: "/configured/long.md", projectId: null, epic: "ASMA-8539", workstream: null, revisionKind: "working copy" }];
     const screen = mount(compact, { tab: "Plan", sourceId: "long-plan", epicKey: "ASMA-8539" });
@@ -143,13 +143,13 @@ describe("Kontor shell native actions", () => {
     expect(elements(row).some((node) => node.props.children === screen.props.host.label)).toBe(false);
     expect(screen.picker()!.props).toMatchObject({ label: title, epicKey: "ASMA-8539", expanded: false });
     const field = pickerField(screen.picker()!);
-    expect(field.props).toMatchObject({ testID: "kontor-context-picker", accessibilityRole: "button", accessibilityLabel: `Plan / project: ASMA-8539 · ${title}`, accessibilityState: { expanded: false } });
+    expect(field.props).toMatchObject({ testID: "kontor-context-picker", accessibilityRole: "button", accessibilityLabel: `Plan: ${title}. ASMA-8539 · All projects`, accessibilityState: { expanded: false } });
     // React Native Web drops accessibilityState; the web trigger states open or closed through ARIA.
     expect(field.props["aria-expanded"]).toBe(false);
-    expect(field.props.style).toMatchObject({ height: 44, maxWidth: 420 });
+    expect(field.props.style).toMatchObject({ minHeight: 44, maxWidth: 420 });
     expect(elements(field).find((node) => node.props.numberOfLines === 1)?.props.ellipsizeMode).toBe("tail");
     const key = elements(field).find((node) => node.props.testID === "kontor-context-epic")!;
-    expect(key.props.children).toBe("ASMA-8539"); expect(key.props.style).toMatchObject({ position: "absolute", bottom: 2, fontSize: 9 });
+    expect(key.props.children).toBe("ASMA-8539 · All projects"); expect(key.props.style).toMatchObject({ fontSize: 11 });
     expect(key.props.accessible).toBe(false); expect(key.props.pointerEvents).toBe("none");
     screen.openPicker(title);
     expect(screen.picker()!.props.expanded).toBe(true);
@@ -160,7 +160,7 @@ describe("Kontor shell native actions", () => {
     expect(screen.menu()).toBeUndefined();
     expect(screen.picker()!.props).toMatchObject({ label: "All projects", epicKey: null, expanded: false });
     expect(pickerField(screen.picker()!).props["aria-expanded"]).toBe(false);
-    expect(pickerField(screen.picker()!).props.accessibilityLabel).toBe("Plan / project: All projects");
+    expect(pickerField(screen.picker()!).props.accessibilityLabel).toBe("All projects");
     // Dismissing without a choice (Escape, a tap outside, Android back) closes through onClose.
     screen.openPicker("All projects");
     expect(pickerField(screen.picker()!).props["aria-expanded"]).toBe(true);
@@ -174,8 +174,8 @@ describe("Kontor shell native actions", () => {
     model.sources = [{ id: "source", title: "Source", kind: "plan", path: "/configured/source.md", projectId: null, epic: "unconfirmed", workstream: null, revisionKind: "working copy" }];
     const screen = mount(compact, { tab: "Plan", sourceId: "source" });
     expect(screen.picker()!.props).toMatchObject({ label: "Source", epicKey: null });
-    expect(pickerField(screen.picker()!).props.accessibilityLabel).toBe("Plan / project: Source");
-    expect(elements(pickerField(screen.picker()!)).some((node) => node.props.testID === "kontor-context-epic")).toBe(false);
+    expect(pickerField(screen.picker()!).props.accessibilityLabel).toBe("Plan: Source. All projects");
+    expect(elements(pickerField(screen.picker()!)).find((node) => node.props.testID === "kontor-context-epic")?.props.children).toBe("All projects");
     screen.openPicker("Source");
     expect(screen.menuItems().find((node) => node.props.label === "Source")?.props).toMatchObject({ accessibilityLabel: "Plan: Source, unconfirmed", detail: null });
   });
@@ -239,7 +239,7 @@ describe("Kontor shell native actions", () => {
   it("resolves epic → Graph/Plan only for an exact unique catalog plan, and preserves Back", () => {
     model.sources = [{ id: "explicit", title: "Chosen source", kind: "plan", path: "/plans/explicit.md", projectId: null, epic: "ASMA-1", workstream: null, revisionKind: "working copy" }];
     const screen = mount(true);
-    expect(screen.picker()).toBeUndefined();
+    expect(screen.picker()!.props.label).toBe("All projects");
     const sessions = screen.elements().find((node) => node.type === SessionsScreen)!;
     expect(sessions.props.planSources).toEqual({ "ASMA-1": ["explicit"] });
     (sessions.props.onEpicTab as (tab: string, epicKey: string, sourceId: string | null) => void)("Graph", "ASMA-1", null); screen.render();
@@ -391,9 +391,9 @@ describe("Kontor shell native actions", () => {
     (page().props.onPlanView as (view: PlanView) => void)({ mode: "source", target: null, revealed: false });
     (page().props.onScroll as (offset: number) => void)(120);
     screen.click("Overview");
-    expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab: "Overview", sourceId: null, epicKey: null, originAgentId: null });
+    expect(hostNavigation(screen.props.host.id).route).toEqual({ ...linkedRoute, tab: "Overview" });
     (page().props.onScroll as (offset: number) => void)(800);
-    screen.openPicker("All projects"); expect(screen.choices()).toEqual(["Plan: linked-plan", "Plan: linked-next", "Plan: unrelated"]);
+    screen.openPicker("linked-plan"); expect(screen.choices()).toEqual(["Plan: linked-plan", "Plan: linked-next", "Plan: unrelated"]);
     screen.choose(`Plan: ${targetId}`);
     expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab: "Overview", sourceId: targetId, originAgentId: null });
     screen.click("Plan");
@@ -409,7 +409,7 @@ describe("Kontor shell native actions", () => {
     screen.click("Back");
     expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab: "Overview", sourceId: targetId, originAgentId: null });
     screen.click("Back");
-    expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab: "Overview", sourceId: null, originAgentId: null });
+    expect(hostNavigation(screen.props.host.id).route).toEqual({ ...linkedRoute, tab: "Overview" });
     expect(page().props.initialOffset).toBe(800);
     screen.click("Back");
     expect(hostNavigation(screen.props.host.id).route).toEqual(linkedRoute);
@@ -417,20 +417,37 @@ describe("Kontor shell native actions", () => {
     expect(screen.action("Return to conversation").props.disabled).toBe(false);
     expect(readRouteView(`other-${screen.props.host.id}`, linkedRoute)).toEqual({ query: "", offset: 0 });
   });
-  it("keeps the linked work context when Overview stays on All projects, and opens Sessions unscoped", () => {
+  it("clears shared selection only through All projects; Back restores the previous context", () => {
     model.sources = ["linked-plan", "linked-next"].map((id) => ({ id, title: id, kind: "plan", path: `/configured/${id}.md`, projectId: null, epic: "ASMA-1", workstream: null, revisionKind: "working copy" }));
     model.values = { ...DEFAULT_ORGANIZATION_SETTINGS, planAssociations: { native: ["linked-plan", "linked-next"] } };
     const screen = mount(true, { tab: "Plan", sourceId: "linked-plan", epicKey: "ASMA-1", originAgentId: "native" });
     const linkedRoute = { ...hostNavigation(screen.props.host.id).route };
-    screen.click("Overview"); screen.openPicker("All projects"); screen.choose("All projects");
+    screen.click("Overview"); screen.openPicker("linked-plan"); screen.choose("All projects");
     expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab: "Overview", sourceId: null, epicKey: null, originAgentId: null });
-    expect(screen.menu()).toBeUndefined();
-    screen.click("Plan");
-    expect(hostNavigation(screen.props.host.id).route).toEqual(linkedRoute);
-    expect(screen.action("Return to conversation").props.disabled).toBe(false);
-    screen.click("Sessions");
+    screen.click("Plan"); screen.click("Sessions");
     expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab: "Sessions", sourceId: null, epicKey: null, projectId: null, originAgentId: null });
-    expect(screen.picker()).toBeUndefined();
+    expect(screen.picker()!.props.label).toBe("All projects");
+    screen.click("Back"); screen.click("Back"); screen.click("Back");
+    expect(hostNavigation(screen.props.host.id).route).toEqual({ ...linkedRoute, tab: "Overview" });
+    expect(screen.action("Return to conversation").props.disabled).toBe(false);
+  });
+  it.each([true, false])("keeps native project and exact plan through every main view (compact=%s)", (compact) => {
+    model.entries = [sessionEntry("one", { projectKey: "native-project", projectName: "Long native project name", labels: { epic: "ASMA-8539" } })];
+    model.sources = [{ id: "plan", title: "Chosen plan", kind: "plan", path: "/configured/plan.md", projectId: "native-project", epic: "ASMA-8539", workstream: null, revisionKind: "working copy" }];
+    const screen = mount(compact);
+    screen.openPicker("All projects"); screen.choose("Plan: Chosen plan");
+    const chosen = { ...hostNavigation(screen.props.host.id).route };
+    expect(pickerField(screen.picker()!).props.accessibilityLabel).toBe("Plan: Chosen plan. Epic sessions · ASMA-8539 · Project: Long native project name");
+    for (const tab of ["Overview", "Plan", "Board", "Graph", "Delivery", "Sessions"] as const) {
+      if (compact && (tab === "Graph" || tab === "Delivery")) { screen.click("More"); screen.choose(tab); } else screen.click(tab);
+      expect(hostNavigation(screen.props.host.id).route).toEqual({ ...chosen, tab });
+      expect(screen.picker()!.props).toMatchObject({ label: "Chosen plan", epicKey: "ASMA-8539", projectLabel: "Project: Long native project name" });
+    }
+    screen.click("Back"); expect(hostNavigation(screen.props.host.id).route).toEqual({ ...chosen, tab: "Delivery" });
+    screen.openPicker(); screen.choose("All projects"); screen.openPicker(); screen.choose("Long native project name");
+    expect(hostNavigation(screen.props.host.id).route).toMatchObject({ projectId: "native-project", sourceId: null, epicKey: null });
+    expect(pickerField(screen.picker()!).props.accessibilityLabel).toBe("Project: Long native project name");
+    screen.click("Sessions"); expect(screen.elements().find((node) => node.type === SessionsScreen)?.props.projectId).toBe("native-project");
   });
   it("hands the Back shortcut the saved choice once read, on web only, and the same Back as the button", () => {
     const screen = mount(false);
@@ -624,13 +641,13 @@ describe("Kontor shell native actions", () => {
   });
   it("scopes Overview by a confirmed epic without a plan, returns with Back, and clears to All projects", () => {
     const screen = mount(true);
-    expect(screen.picker()).toBeUndefined();
+    expect(screen.picker()!.props.label).toBe("All projects");
     screen.click("Overview"); screen.openPicker("All projects"); screen.choose("ASMA-1");
     expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab: "Overview", projectId: null, epicKey: "ASMA-1" });
     expect(screen.picker()!.props).toMatchObject({ label: "No plan linked", epicKey: "ASMA-1" });
     screen.click("Back"); expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab: "Overview", epicKey: null });
     screen.openPicker(); screen.choose("ASMA-1"); screen.click("Sessions");
-    expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab: "Sessions", epicKey: null });
+    expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab: "Sessions", epicKey: "ASMA-1" });
     screen.click("Overview"); expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab: "Overview", epicKey: "ASMA-1" });
     screen.openPicker("No plan linked"); screen.choose("All projects");
     expect(hostNavigation(screen.props.host.id).route).toMatchObject({ projectId: null, epicKey: null, sourceId: null, tab: "Overview" });
@@ -650,6 +667,27 @@ describe("Kontor shell native actions", () => {
     const sessions = screen.elements().find((node) => node.type === SessionsScreen)!;
     expect((sessions.props.directory as { state: { entries: DirectoryEntry[] } }).state.entries[0]!.jira?.epics.get("ASMA-8541")).toBe("ASMA-8539");
     expect(model.entries[0]!.jira).toBeUndefined();
+  });
+  it("keeps captured, uncaptured and conflicting task attribution distinct through the header and Board", () => {
+    const history: ReadSourceSummary = { id: "history", title: "Historical Jira", kind: "jira", path: "/configured/history.json", projectId: null, epic: null, workstream: null, revisionKind: "working copy" };
+    const plan: ReadSourceSummary = { id: "captured-plan", title: "Captured epic plan", kind: "plan", path: "/configured/plan.md", projectId: null, epic: "ASMA-8539", workstream: null, revisionKind: "working copy" };
+    model.sources = [history];
+    model.reads = { history: { source: history, status: "ready", revision: capturedHistory.provenance.sha256, readAt: "2026-10-21T09:00:00Z", modifiedAt: null, content: null, graph: null, records: null, diagnostics: [], jiraHistory: capturedHistory } };
+    model.entries = [sessionEntry("captured", { labels: { "asma.task": "ASMA-8541" } }), sessionEntry("uncaptured", { labels: { task: "ASMA-99999" } }), sessionEntry("conflict", { labels: { epic: "ASMA-1", task: "ASMA-8541" } })];
+    const screen = mount(false);
+    const directory = screen.elements().find(node => node.type === SessionsScreen)!.props.directory as { state: { entries: DirectoryEntry[] } };
+    expect(directory.state.entries.map(confirmedEpic)).toEqual(["ASMA-8539", null, null]);
+    screen.openPicker();
+    expect(screen.menuItems().find(node => node.props.label === "ASMA-8539")!.props.detail).toBe("1 session");
+    expect(screen.menuItems().some(node => node.props.label === "ASMA-1")).toBe(false);
+    screen.closeMenu(); model.sources = [history, plan]; screen.render(); screen.openPicker();
+    screen.choose("Plan: Captured epic plan"); screen.click("Overview");
+    expect((screen.elements().find(node => node.type === ReadOnlyPage)!.props.entries as DirectoryEntry[]).map(entry => entry.id)).toEqual(["captured"]);
+    screen.click("Board");
+    const board = screen.elements().find(node => node.type === GraphPage)!;
+    const sessions = board.props.sessions as { state: { entries: DirectoryEntry[] } };
+    expect(sessions.state.entries.map(confirmedEpic)).toEqual(["ASMA-8539", null, null]);
+    expect(model.entries.every(entry => entry.jira === undefined)).toBe(true);
   });
   it("groups and searches picker choices, reports no match, and starts each opening unfiltered", () => {
     model.entries = [sessionEntry("one", { projectKey: "p-one", projectName: "Kontor", labels: { epic: "ASMA-1" } }), sessionEntry("two", { projectKey: "p-two", projectName: "Billing", labels: { epic: "ASMA-2" } })];
@@ -718,4 +756,10 @@ it("finds a graphless plan by its explicit workstream and shows exact Plan conte
   expect(screen.picker()?.props).toMatchObject({ label: source.title, epicKey: "ASMA-7575" });
   const page = screen.elements().find((node) => node.type === ReadOnlyPage)!;
   expect(page.props.entries).toEqual([]);
+  for (const tab of ["Sessions", "Overview", "Board", "Graph", "Delivery", "Plan"]) {
+    if (tab === "Graph" || tab === "Delivery") { screen.click("More"); screen.choose(tab); }
+    else screen.click(tab);
+    expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab, sourceId: source.id, sourceRevision: read.revision, epicKey: "ASMA-7575" });
+    expect(screen.picker()?.props).toMatchObject({ label: source.title, epicKey: "ASMA-7575" });
+  }
 });

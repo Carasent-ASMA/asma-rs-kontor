@@ -173,7 +173,12 @@ function HostScreen(props: PluginScreenProps) {
   const canGoBack = hostNavigation(host.id).back.length > 0;
   // Desktop keeps Back in place, disabled when there is nowhere to go, so the views beside it never move.
   const backButton = <IconButton label="Back" icon="ChevronLeft" colors={colors} disabled={!canGoBack} onPress={back} />;
-  const contextPicker = route.tab !== "Sessions" ? <ContextPicker ref={contextRef} label={heading.title} epicKey={heading.key} compact={layout.compact} expanded={menu === "context"} colors={colors} onPress={() => toggle("context")} /> : null;
+  let contextKind: "Project" | "Epic" | "Plan" | null = null;
+  if (route.projectId) contextKind = "Project";
+  if (route.epicKey) contextKind = "Epic";
+  if (route.sourceId || heading.plan) contextKind = "Plan";
+  const sessionScopeLabel = route.tab === "Sessions" && contextKind === "Plan" ? route.epicKey ? "Epic sessions" : route.projectId ? "Project sessions" : "All sessions" : null;
+  const contextPicker = <ContextPicker ref={contextRef} label={heading.title} epicKey={heading.key} projectLabel={route.projectId === null ? "All projects" : `Project: ${projectName ?? "unavailable"}`} kind={contextKind} sessionScopeLabel={sessionScopeLabel} compact={layout.compact} expanded={menu === "context"} colors={colors} onPress={() => toggle("context")} />;
   const freshness = <NativeFreshnessPill state={directory.state} hostStatus={hostStatus} hostLabel={host.label} colors={colors} />;
   const moreActive = !primary.includes(route.tab);
   const navigationItems = <>
@@ -199,6 +204,9 @@ function HostScreen(props: PluginScreenProps) {
   const projectChoices = linkedContext ? [] : projects.filter(([id, name]) => matches(name, id));
   const group = (label: string) => <Text key={`group:${label}`} style={{ color: colors.foregroundMuted, fontSize: 10, fontWeight: "600", letterSpacing: 0.4, paddingHorizontal: 10, paddingTop: 8, paddingBottom: 3 }}>{label.toLocaleUpperCase()}</Text>;
   const unscoped = route.projectId === null && route.epicKey === null && route.sourceId === null;
+  let sourceChoiceNote = "No plan sources configured. Native project selection remains available.";
+  if (sourceState.loading) sourceChoiceNote = "Reading plan sources…";
+  else if (sourceState.error) sourceChoiceNote = "Plan sources unavailable. Native project selection remains available.";
   const menus = menu === "more" ? <AnchoredMenu testID="kontor-more-menu" anchor={moreRef} root={rootRef} rootSize={rootSize} colors={colors} label="More Kontor views" onClose={() => setMenu(null)}
     placement={layout.compact ? { align: "stretch", width: 0, gap: 6, maxHeight: Math.min(rootSize.height * 0.6, 430) } : { align: "end", width: 190 }}>
     {/* The frame is clamped to the screen, so a short screen scrolls the views instead of cutting off the last ones. */}
@@ -208,8 +216,10 @@ function HostScreen(props: PluginScreenProps) {
   </AnchoredMenu> : menu === "context" ? <AnchoredMenu testID="kontor-context-menu" dialog anchor={contextRef} root={rootRef} rootSize={rootSize} colors={colors} label="Choose plan or project" onClose={() => setMenu(null)}
     placement={layout.compact ? { align: "stretch", width: 0, maxHeight: Math.min(rootSize.height * 0.7, 480) } : { align: "start", width: 380, maxHeight: 460 }}
     header={<TextInput accessibilityLabel="Search plans, epics and projects" placeholder="Search plans, epics, projects…" autoFocus={!layout.compact} value={pickerQuery} onChangeText={setPickerQuery}
-      placeholderTextColor={colors.foregroundMuted} style={{ color: colors.foreground, fontSize: 12, minHeight: 34, paddingHorizontal: 9, borderWidth: 1, borderColor: colors.border, borderRadius: 6, marginBottom: 4 }} />}>
+      placeholderTextColor={colors.foregroundMuted} style={{ color: colors.foreground, fontSize: 12, minHeight: layout.compact ? 44 : 34, paddingHorizontal: 9, borderWidth: 1, borderColor: colors.border, borderRadius: 6, marginBottom: 4 }} />}>
     <ScrollView role="menu" accessibilityLabel="Plan and project choices" keyboardShouldPersistTaps="handled" style={{ flexGrow: 0, flexShrink: 1 }}>
+      <Text style={{ color: colors.foregroundMuted, fontSize: 11, paddingHorizontal: 10, paddingVertical: 6 }}>Native projects group workspaces and sessions. Epic / plan selects the work within a project or across projects.</Text>
+      {route.tab === "Sessions" ? <Text style={{ color: colors.foregroundMuted, fontSize: 11, paddingHorizontal: 10, paddingVertical: 6 }}>Sessions use project and epic scope. Plans in the same epic share sessions, counts and filters; the selected plan stays available in the other views.</Text> : null}
       <MenuItem label="All projects" accessibilityLabel="All projects, clear selection" tall={layout.compact} selected={unscoped} colors={colors} onPress={() => visit({ ...NO_SCOPE })} />
       {planChoices.length ? group(linkedContext ? "Plans linked to this conversation" : "Configured plans") : null}
       {planChoices.map((source) => { const key = sourceEpic(source, sourceState.reads[source.id]); return <MenuItem key={`source:${source.id}`} label={source.title} detail={[key && jiraIssueUrl(key) ? key : null, declaredPlanWorkstream(source, sourceState.reads[source.id])].filter(Boolean).join(" · ") || null} accessibilityLabel={`Plan: ${source.title}${key ? `, ${key}` : ""}`} tall={layout.compact} selected={route.sourceId === source.id} colors={colors} onPress={() => selectSource(source.id)} />; })}
@@ -217,6 +227,7 @@ function HostScreen(props: PluginScreenProps) {
       {epicChoices.map((epicKey) => { const count = directory.state.entries.filter((entry) => confirmedEpic(entry) === epicKey).length; return <MenuItem key={`epic:${epicKey}`} label={epicKey} detail={`${count} session${count === 1 ? "" : "s"}`} tall={layout.compact} selected={route.sourceId === null && route.epicKey === epicKey} colors={colors} onPress={() => visitContext({ projectId: null, epicKey, sourceId: null, sourceRevision: null, originAgentId: null })} />; })}
       {projectChoices.length ? group("Native projects") : null}
       {projectChoices.map(([id, name]) => <MenuItem key={`project:${id}`} label={name} tall={layout.compact} selected={route.projectId === id && route.epicKey === null && route.sourceId === null} colors={colors} onPress={() => visit({ projectId: id, epicKey: null, sourceId: null, originAgentId: null })} />)}
+      {!sourceState.sources.length ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, padding: 10 }}>{sourceChoiceNote}</Text> : null}
       {!planChoices.length && !epicChoices.length && !projectChoices.length && needle ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, padding: 10 }}>No plan, epic or project matches “{pickerQuery.trim()}”.</Text> : null}
     </ScrollView>
   </AnchoredMenu> : null;
@@ -263,7 +274,6 @@ function HostScreen(props: PluginScreenProps) {
     {layout.compact ? <View testID="kontor-context-row" style={{ flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 6, paddingVertical: 3, minHeight: 51, borderBottomWidth: 1, borderColor: colors.border, backgroundColor: colors.surface0 }}>
       {canGoBack ? backButton : null}
       {contextPicker}
-      <View style={{ flex: 1 }} />
       {freshness}
     </View> : <View testID="kontor-context-row" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 12, paddingHorizontal: 10, paddingVertical: 3, minHeight: 51, borderBottomWidth: 1, borderColor: colors.border, backgroundColor: colors.surface0 }}>
       {/* One row when it fits; on a narrow screen the context, status and return wrap below the views instead of hiding. */}
@@ -285,13 +295,15 @@ function HostScreen(props: PluginScreenProps) {
     </View>
   </KeyboardAvoidingView></SafeAreaView></ControlHelpProvider>;
 }
-/** Bounded, left-aligned title-only selector; the confirmed Jira key floats on its lower border. */
-function ContextPicker({ label, epicKey, compact, expanded, colors, onPress, ref }: { label: string; epicKey: string | null; compact: boolean; expanded: boolean; colors: Colors; onPress: () => void; ref?: Ref<View> }) {
-  return <Pressable ref={ref} testID="kontor-context-picker" accessibilityRole="button" accessibilityLabel={`Plan / project: ${epicKey ? `${epicKey} · ` : ""}${label}`} accessibilityHint="Choose a plan, epic or project" accessibilityState={{ expanded }} aria-expanded={expanded} onPress={onPress}
-    style={{ flexGrow: 1, flexShrink: 1, flexBasis: compact ? 180 : 220, minWidth: compact ? 44 : 100, maxWidth: 420, height: 44, justifyContent: "center", paddingLeft: 9, paddingRight: 26 }}>
-    <View pointerEvents="none" style={{ position: "absolute", top: 5, bottom: 8, left: 0, right: 0, borderWidth: 1, borderColor: expanded ? colors.accent : colors.border, borderRadius: 6, backgroundColor: colors.surface1 }} />
-    <Text numberOfLines={1} ellipsizeMode="tail" style={{ color: colors.foreground, fontSize: 12, lineHeight: 16, fontWeight: "600", marginBottom: 3 }}>{label}</Text>
-    {epicKey ? <Text testID="kontor-context-epic" accessible={false} pointerEvents="none" numberOfLines={1} style={{ position: "absolute", left: 7, bottom: 2, maxWidth: "80%", paddingHorizontal: 4, fontSize: 9, lineHeight: 12, fontFamily: "monospace", color: colors.foregroundMuted, backgroundColor: colors.surface1 }}>{epicKey}</Text> : null}
-    <View pointerEvents="none" style={{ position: "absolute", right: 8, top: 13 }}><Icon name="ChevronDown" size={14} color={colors.foregroundMuted} /></View>
+/** A single toolbar control; the project boundary stays distinct from epic/plan identity. */
+function ContextPicker({ label, epicKey, projectLabel, kind, sessionScopeLabel, compact, expanded, colors, onPress, ref }: { label: string; epicKey: string | null; projectLabel: string; kind: "Project" | "Epic" | "Plan" | null; sessionScopeLabel: string | null; compact: boolean; expanded: boolean; colors: Colors; onPress: () => void; ref?: Ref<View> }) {
+  const detail = kind === "Plan" || kind === "Epic" ? [sessionScopeLabel, epicKey, projectLabel].filter(Boolean).join(" · ") : null;
+  return <Pressable ref={ref} testID="kontor-context-picker" accessibilityRole="button" accessibilityLabel={`${kind ? `${kind}: ` : ""}${label}${detail ? `. ${detail}` : ""}`} accessibilityHint="Choose a native project, epic or plan. Selection stays when changing views." accessibilityState={{ expanded }} aria-expanded={expanded} onPress={onPress}
+    style={{ flexGrow: 1, flexShrink: 1, flexBasis: compact ? 180 : 220, minWidth: compact ? 44 : 100, maxWidth: 420, minHeight: 44, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 9, paddingVertical: 5, borderWidth: 1, borderColor: expanded ? colors.accent : colors.border, borderRadius: 6, backgroundColor: colors.surface1 }}>
+    <View style={{ flex: 1, minWidth: 0 }}>
+      <Text numberOfLines={1} ellipsizeMode="tail" style={{ color: colors.foreground, fontSize: 12, fontWeight: "600" }}>{kind ? `${kind}: ` : ""}{label}</Text>
+      {detail ? <Text testID="kontor-context-epic" accessible={false} pointerEvents="none" numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 11, marginTop: 2 }}>{detail}</Text> : null}
+    </View>
+    <View pointerEvents="none"><Icon name="ChevronDown" size={14} color={colors.foregroundMuted} /></View>
   </Pressable>;
 }
