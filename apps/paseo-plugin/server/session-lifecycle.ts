@@ -112,24 +112,37 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
   async function preview(input: { action: LifecycleReview["action"]; scope: LifecycleReview["scope"]; agentIds: string[]; target: RecoveryTarget }): Promise<LifecycleReview> {
     if (input.action === "archive" && (input.scope !== "filtered" || input.agentIds.length !== 1)) throw new Error("Archive requires one exact session ID.");
     const all = await inventory(client), ids = new Set(input.agentIds);
-    const selected = input.scope === "host" ? all.filter((agent) => agent.archivedAt == null) : all.filter((agent) => ids.has(agent.id));
-    const rows = selected.map((agent) => lifecycleRow(agent, all, input.action, input.target));
-    for (const id of ids) if (!all.some((agent) => agent.id === id)) rows.push({ id, title: id, workspaceId: null, cwd: "", provider: "", model: null, effort: null, mode: null, nativeStatus: "missing", fingerprint: "missing", category: "unknown", eligible: false, reason: "Exact native ID was not in the host inventory. Refresh/probe before concluding it is permanently unavailable.", children: [], outcome: "pending", message: null });
+    const selectedIds = input.scope === "host" ? all.filter((agent) => agent.archivedAt == null).map((agent) => agent.id) : [...ids];
+    const rows: LifecycleRow[] = [];
+    for (const id of selectedIds) {
+      const observed = await observe(id), listed = all.find((agent) => agent.id === id);
+      const record = observed.agent ?? listed;
+      const row: LifecycleRow = record ? lifecycleRow(record, all, input.action, input.target) : {
+        id, title: id, workspaceId: null, cwd: "", provider: "", model: null, effort: null, mode: null,
+        nativeStatus: "missing", fingerprint: "missing", category: "unknown", eligible: false, reason: "", children: [], outcome: "pending", message: null,
+      };
+      row.availability = observed.availability;
+      if (!observed.agent) { row.eligible = false; row.category = "unknown"; row.reason = observed.availability.reason; }
+      rows.push(row);
+    }
     const review: LifecycleReview = { id: randomUUID(), createdAt: new Date().toISOString(), action: input.action, scope: input.scope, target: input.target, rows, limitation: TAKEOVER_LIMIT };
     await save(review); return review;
   }
+  async function observe(id: string): Promise<{ agent?: Agent; availability: SessionAvailability }> {
+    const checkedAt = new Date().toISOString();
+    try {
+      const found = await client.agents.ref(id).refresh();
+      if (!found) return { availability: { agentId: id, state: "missing", reason: "No native record returned for this exact ID on this host. Nothing to archive; check availability to retry the read.", checkedAt, revision: "missing" } };
+      if (found.agent.id !== id) return { availability: { agentId: id, state: "unknown", reason: "Availability unknown: the host reply identified a different session. This is not evidence that the requested session is missing.", checkedAt, revision: "unknown" } };
+      return { agent: found.agent, availability: { agentId: id, state: "readable", reason: "Native record found. Provider history and ability to continue have not been verified.", checkedAt,
+        revision: found.agent.updatedAt, nativeStatus: found.agent.status, archivedAt: found.agent.archivedAt ?? null,
+        providerHistory: found.agent.persistence?.sessionId ? "unverified" : "not-reported" } };
+    } catch (error) { return { availability: { agentId: id, state: "unknown", reason: `Native read failed: ${errorText(error)}. Absence is not confirmed.`, checkedAt, revision: "unknown" } }; }
+  }
   async function probe(ids: string[]): Promise<Record<string, SessionAvailability>> {
     const result: Record<string, SessionAvailability> = {};
-    // Bounded sequential reads; no send, resume, create or archive operation.
-    for (const id of new Set(ids)) {
-      const checkedAt = new Date().toISOString();
-      try {
-        const found = await client.agents.ref(id).refresh();
-        if (!found) { result[id] = { state: "missing", reason: "The host returned no session for this exact ID. Check again to reconcile a concurrent change.", checkedAt, revision: "missing" }; continue; }
-        if (found.agent.id !== id) { result[id] = { state: "unknown", reason: "Availability unknown: the host reply identified a different session. This is not evidence that the requested session is missing.", checkedAt, revision: "unknown" }; continue; }
-        result[id] = { state: "readable", reason: "Native session record is readable. Provider execution/recovery has not been tested.", checkedAt, revision: found.agent.updatedAt };
-      } catch (error) { result[id] = { state: "unknown", reason: `Availability unknown: ${errorText(error)}`, checkedAt, revision: "unknown" }; }
-    }
+    // Metadata reads only: no provider history load, send, create or archive.
+    for (const id of new Set(ids)) result[id] = (await observe(id)).availability;
     return result;
   }
   async function execute(reviewId: string, agentId: string): Promise<LifecycleRow> {
@@ -156,8 +169,11 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
       try { await readFile(doneFile, "utf8"); throw new Error("This exact session revision already has a dispatched action. Reconcile its receipt before another action."); }
       catch (error) { if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error; }
       const agent = client.agents.ref(agentId);
-      const found = await agent.refresh();
-      if (!found || found.agent.id !== agentId || lifecycleRevision(found.agent) !== row.fingerprint) throw new Error("Session changed or disappeared while review was open. Nothing dispatched; create a fresh review.");
+      const observed = await observe(agentId); row.availability = observed.availability;
+      if (!observed.agent) throw new Error(observed.availability.reason);
+      const found = { agent: observed.agent };
+      if (found.agent.archivedAt != null) throw new Error("Already archived on this host. No archive request was sent.");
+      if (lifecycleRevision(found.agent) !== row.fingerprint) throw new Error("Session changed or disappeared while review was open. Nothing dispatched; create a fresh review.");
       const all = await inventory(client);
       const current = lifecycleRow(found.agent, all, review.action, review.target);
       if (!current.eligible || (review.action === "archive" && current.children.length)) throw new Error(current.reason);
@@ -172,8 +188,11 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
         if (history.error || !history.entries.length) throw new Error(`Native history is unavailable; no continuation prompt sent. ${history.error ?? "No retained conversation entries."}`);
       }
       // Final read after all potentially slow preflight calls. Never prompt an archived predecessor.
-      const final = await agent.refresh();
-      if (!final || final.agent.id !== agentId || lifecycleRevision(final.agent) !== row.fingerprint) throw new Error("Session changed during preflight. Nothing dispatched; review again.");
+      const latest = await observe(agentId); row.availability = latest.availability;
+      if (!latest.agent) throw new Error(latest.availability.reason);
+      const final = { agent: latest.agent };
+      if (final.agent.archivedAt != null) throw new Error("Already archived on this host. No archive request was sent.");
+      if (lifecycleRevision(final.agent) !== row.fingerprint) throw new Error("Session changed during preflight. Nothing dispatched; review again.");
       const finalDecision = lifecycleRow(final.agent, review.action === "archive" ? await inventory(client) : all, review.action, review.target);
       if (!finalDecision.eligible) throw new Error(finalDecision.reason);
       row.outcome = "intent"; row.message = "Durable intent saved. An interrupted dispatch must be reconciled before retry."; await saveRow(reviewId, row);
@@ -184,12 +203,13 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
         row.outcome = "submitted"; row.message = "Resume prompt accepted in the same session. Completion and resolution of the original failure are not verified.";
       } else {
         await agent.archive();
-        const after = await agent.refresh();
-        if (!after || after.agent.id !== agentId || !after.agent.archivedAt || after.agent.status !== "closed" || after.agent.activeTurn) throw new Error("Archive returned but exact-ID terminal retirement readback is unavailable. Do not retry automatically.");
+        const observedAfter = await observe(agentId); row.availability = observedAfter.availability;
+        const after = observedAfter.agent;
+        if (!after || !after.archivedAt || after.status !== "closed" || after.activeTurn) throw new Error("Archive returned but exact-ID terminal retirement readback is unavailable. Do not retry automatically.");
         row.outcome = "archived"; row.message = "Native archive succeeded and closed state was verified. Durable history and files remain with the host.";
       }
     } catch (error) {
-      row.outcome = dispatchStarted ? "uncertain" : "blocked"; row.message = errorText(error);
+      row.outcome = dispatchStarted ? "uncertain" : row.availability?.state === "missing" ? "absent" : review.action === "archive" && row.availability?.archivedAt ? "already_archived" : "blocked"; row.message = errorText(error);
     }
     await saveRow(reviewId, row);
     await writeFile(lockPath, JSON.stringify({ reviewId, agentId, action: review.action, phase: row.outcome, fingerprint: row.fingerprint, message: row.message }), { mode: 0o600 });

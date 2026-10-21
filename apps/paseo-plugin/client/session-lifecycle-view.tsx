@@ -3,19 +3,19 @@ import { Platform, Pressable, Text, View } from "react-native";
 import { ScrollView, Icon } from "@getpaseo/plugin/client/react-native";
 import { Action, COARSE_POINTER, Disclosure, type Colors } from "./page-controls";
 import { AnchoredMenu, type MenuSize } from "./anchored-menu";
+import { useControlHelp } from "./control-help";
 import { RESUME_PROMPT, TAKEOVER_LIMIT } from "../shared/session-lifecycle";
 import type { useSessionLifecycle } from "./use-session-lifecycle";
 
 export function ArchiveSessionButton({ session, onPress, colors, disabled = false, compact = false, buttonRef }: { session: { id: string; title: string }; onPress: () => void; colors: Colors; disabled?: boolean; compact?: boolean; buttonRef?: (node: View | null) => void }) {
-  const [help, setHelp] = useState(false);
-  return <View style={{ position: "relative" }}>
-    <Pressable ref={buttonRef} accessibilityRole="button" accessibilityLabel={`Archive session: ${session.title} (${session.id})`} accessibilityHint="Review this exact session before native archive. History and files remain."
-      disabled={disabled} accessibilityState={{ disabled }} onPress={() => { setHelp(false); onPress(); }} onHoverIn={() => setHelp(true)} onHoverOut={() => setHelp(false)} onFocus={() => setHelp(true)} onBlur={() => setHelp(false)}
+  const help = useControlHelp("Archive session", buttonRef);
+  return <>
+    <Pressable {...help.bindings} accessibilityRole="button" accessibilityLabel={`Archive session: ${session.title} (${session.id})`} accessibilityHint="Review this exact session before native archive. History and files remain."
+      disabled={disabled} accessibilityState={{ disabled }} onPress={() => { help.dismiss(); onPress(); }}
       style={{ width: compact || COARSE_POINTER ? 44 : 30, height: compact || COARSE_POINTER ? 44 : 30, alignItems: "center", justifyContent: "center", opacity: disabled ? 0.4 : 1 }}>
       <Icon name="X" size={14} color={colors.foregroundMuted} />
     </Pressable>
-    {help ? <View pointerEvents="none" style={{ position: "absolute", right: 0, bottom: "100%", zIndex: 30, backgroundColor: colors.surface2, padding: 6, borderRadius: 5 }}><Text style={{ color: colors.foreground, fontSize: 12 }}>Archive session</Text></View> : null}
-  </View>;
+  </>;
 }
 
 export function SessionLifecycleDialog({ lifecycle, scopeIds, root, anchor, rootSize, colors, compact, onClose }: {
@@ -32,13 +32,14 @@ export function SessionLifecycleDialog({ lifecycle, scopeIds, root, anchor, root
   const efforts = models.find((model) => model.id === target.model)?.efforts ?? [];
   const text = (value: string, muted = false) => <Text style={{ color: muted ? colors.foregroundMuted : colors.foreground, fontSize: 12, lineHeight: 18 }}>{value}</Text>;
   const close = () => { lifecycle.stop(); onClose(); };
-  return <AnchoredMenu anchor={anchor} root={root} rootSize={rootSize} placement={{ align: compact ? "stretch" : "end", width: 660, cover: true }} onClose={close} colors={colors} label={archive ? "Archive session review" : "Recover sessions"} dialog testID="session-lifecycle-dialog"
-    header={<View style={{ gap: 6 }}><View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}><Text accessibilityRole="header" style={{ color: colors.foreground, fontWeight: "600", fontSize: 16 }}>{archive ? "Archive session" : "Recover sessions"}</Text><Action ref={closeButton} colors={colors} label="Close" onPress={close} /></View>
+  return <AnchoredMenu anchor={anchor} root={root} rootSize={rootSize} placement={{ align: compact ? "stretch" : "end", width: 660, cover: true }} onClose={close} colors={colors} label={archive ? "Archive session review" : "Resume sessions"} dialog testID="session-lifecycle-dialog"
+    header={<View style={{ gap: 6 }}><View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}><Text accessibilityRole="header" style={{ color: colors.foreground, fontWeight: "600", fontSize: 16 }}>{archive ? "Archive session" : "Resume sessions"}</Text><Action ref={closeButton} colors={colors} label="Close" onPress={close} /></View>
       {review ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}><Action colors={colors} label={running ? "Executing one session at a time…" : archive ? "Archive selected session" : `Resume ${eligibleSelected} eligible · ${selected.length} selected`} disabled={running || eligibleSelected === 0} onPress={() => { void lifecycle.run(); }} />
-        {running ? <Action colors={colors} label="Cancel before next session" onPress={lifecycle.stop} /> : null}</View> : null}
+        {running ? <Action colors={colors} label="Cancel before next session" onPress={lifecycle.stop} /> : null}
+        {archive && !running ? <Action colors={colors} label="Check again" disabled={busy} onPress={() => { void lifecycle.prepare("archive", "filtered", review.rows.map((row) => row.id)); }} /> : null}</View> : null}
     </View>}>
     <ScrollView style={{ flexShrink: 1 }} contentContainerStyle={{ gap: 10, padding: 12 }}>
-      {text(TAKEOVER_LIMIT, true)}
+      {!archive ? text(TAKEOVER_LIMIT, true) : null}
       {!review && busy ? text("Reading the exact session scope and child impact…") : !review ? <>
         {text("Choose scope, then review exact sessions and reasons. Nothing runs during review.")}
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}><Action colors={colors} label={`Filtered scope (${scopeIds.length})`} selected={scope === "filtered"} onPress={() => setScope("filtered")} /><Action colors={colors} label="Whole selected host" selected={scope === "host"} onPress={() => setScope("host")} /></View>
@@ -77,7 +78,7 @@ export function SessionLifecycleDialog({ lifecycle, scopeIds, root, anchor, root
           {text(`${row.category === "unknown" ? "Unknown" : row.eligible ? "Eligible" : "Unavailable for this action"}: ${row.reason}`)}
           {text(`Workspace: ${row.workspaceId ?? "No workspace"} · ${row.cwd || "No checkout evidence"} · permissions ${row.mode ?? "unknown"}`, true)}
           {row.children.map((child) => text(`Protected child: ${child.title} · ${child.id} · ${child.status} · ${child.workspaceId ?? "no workspace"}`, true))}
-          {row.outcome !== "pending" ? text(`${row.outcome}: ${row.message ?? "Read receipt before retry."}`) : null}
+          {row.outcome !== "pending" ? <Text role="status" accessibilityLiveRegion="polite" style={{ color: colors.foreground, fontSize: 12 }}>{`${row.outcome}: ${row.message ?? "Read receipt before retry."}`}</Text> : null}
         </View>)}
         {text("Unselected and blocked sessions remain unchanged. Preflight blocks can be reviewed again; an uncertain dispatch is held for native reconciliation. Close/cancel does not undo a request already sent.", true)}
       </>}

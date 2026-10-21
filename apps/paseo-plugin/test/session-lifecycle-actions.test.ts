@@ -165,9 +165,9 @@ describe("Attention availability evidence", () => {
     const reads = await s.service.probe(["missing", "unknown", "a"]); expect(reads.missing?.state).toBe("missing"); expect(reads.unknown?.state).toBe("unknown"); expect(reads.a?.state).toBe("readable");
     const entry = toDirectoryEntry({ agent: agent("a"), project: null });
     expect(matchesStatus(entry, "attention")).toBe(true);
-    for (const state of ["readable", "unknown"] as const) expect(hasSessionAttention({ ...entry, availability: { state, reason: "probe", checkedAt: "now", revision: entry.updatedAt } })).toBe(true);
-    expect(hasSessionAttention({ ...entry, availability: { state: "missing", reason: "missing", checkedAt: "now", revision: entry.updatedAt } })).toBe(false);
-    expect(hasSessionAttention({ ...entry, availability: { state: "missing", reason: "old probe", checkedAt: "then", revision: "an earlier native revision" } })).toBe(true);
+    for (const state of ["readable", "unknown"] as const) expect(hasSessionAttention({ ...entry, availability: { agentId: entry.id, state, reason: "probe", checkedAt: new Date().toISOString(), revision: entry.updatedAt } })).toBe(true);
+    expect(hasSessionAttention({ ...entry, availability: { agentId: entry.id, state: "missing", reason: "missing", checkedAt: new Date().toISOString(), revision: entry.updatedAt } })).toBe(false);
+    expect(hasSessionAttention({ ...entry, availability: { agentId: entry.id, state: "missing", reason: "old probe", checkedAt: "then", revision: "an earlier native revision" } })).toBe(true);
     expect(hasSessionAttention({ ...entry, archivedAt: "now" })).toBe(false);
     expect(matchesStatus({ ...entry, status: "idle", attentionReason: "permission", needsInput: true, requiresAttention: false }, "needs_input")).toBe(true);
     expect(s.send).not.toHaveBeenCalled(); expect(s.archive).not.toHaveBeenCalled();
@@ -175,10 +175,49 @@ describe("Attention availability evidence", () => {
   it("only blocks opening a freshly confirmed missing ID; unknown and readable old sessions still open by ID", () => {
     const openAgent = vi.fn(), entry = toDirectoryEntry({ agent: agent("a"), project: null });
     for (const state of ["readable", "unknown", "missing"] as const) {
-      const evidence = { state, reason: "probe", checkedAt: "now", revision: entry.updatedAt };
+      const evidence = { agentId: entry.id, state, reason: "probe", checkedAt: new Date().toISOString(), revision: entry.updatedAt };
       const result = openSessionById({ entries: [{ ...entry, availability: evidence }], id: "a", serverId: "fixture-host", navigation: { openAgent, openWorkspace: vi.fn() } });
       expect(result.ok).toBe(state !== "missing");
     }
     expect(openAgent).toHaveBeenCalledTimes(2); expect(openAgent).toHaveBeenLastCalledWith({ agentId: "a", serverId: "fixture-host" });
+  });
+});
+
+
+describe("P1 fresh native record reconciliation", () => {
+  it("does not offer stale inventory as an archiveable record", async () => {
+    const s = await setup(); s.refresh.mockResolvedValueOnce(null);
+    const review = await s.preview("archive");
+    expect(review.rows[0]).toMatchObject({ id: "a", eligible: false, availability: { agentId: "a", state: "missing" } });
+    expect((await s.service.execute(review.id, "a")).outcome).toBe("blocked"); expect(s.archive).not.toHaveBeenCalled();
+  });
+  it.each(["401 Unauthorized", "Timeout", "API not responding"])("keeps %s unknown without a false absence claim", async (message) => {
+    const s = await setup(); s.refresh.mockRejectedValueOnce(new Error(message));
+    const review = await s.preview("archive");
+    expect(review.rows[0]).toMatchObject({ eligible: false, availability: { state: "unknown" } });
+    expect(review.rows[0]!.reason).toContain(message); expect(s.archive).not.toHaveBeenCalled();
+  });
+  it("rejects a cross-ID review reply even when its record is well formed", async () => {
+    const s = await setup(); s.refresh.mockResolvedValueOnce({ agent: agent("b"), project: null });
+    expect((await s.preview("archive")).rows[0]).toMatchObject({ id: "a", eligible: false, availability: { state: "unknown" } });
+    expect(s.archive).not.toHaveBeenCalled();
+  });
+  it("reports disappearance during confirmation as absent with no dispatch", async () => {
+    const s = await setup(), review = await s.preview("archive"); s.records.delete("a");
+    expect(await s.service.execute(review.id, "a")).toMatchObject({ outcome: "absent", availability: { state: "missing" } }); expect(s.archive).not.toHaveBeenCalled();
+  });
+  it("reports already archived truthfully, and keeps a closed readable unread result", async () => {
+    const s = await setup([agent("a", { status: "closed", attentionReason: "finished" })]);
+    const review = await s.preview("archive"); expect(review.rows[0]!.eligible).toBe(true);
+    s.records.set("a", agent("a", { status: "closed", archivedAt: "2026-10-21" }));
+    expect(await s.service.execute(review.id, "a")).toMatchObject({ outcome: "already_archived", availability: { state: "readable", archivedAt: "2026-10-21" } });
+    expect(s.archive).not.toHaveBeenCalled();
+  });
+  it("exposes absent persistence honestly without loading history or blocking native archive", async () => {
+    const s = await setup([agent("a", { persistence: null })]), original = s.client.agents.ref, history = vi.fn();
+    s.client.agents.ref = (id) => ({ ...original(id), timeline: { refetch: history } });
+    const review = await s.preview("archive");
+    expect(review.rows[0]).toMatchObject({ eligible: true, availability: { state: "readable", providerHistory: "not-reported" } });
+    expect((await s.service.execute(review.id, "a")).outcome).toBe("archived"); expect(history).not.toHaveBeenCalled();
   });
 });
