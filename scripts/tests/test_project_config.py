@@ -8,6 +8,7 @@ Run from the repository root:
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -34,11 +35,11 @@ def write_project(folder: Path, *, key: str, base: str, check: str | None = None
     path.write_text(
         "schema_version: 1\n"
         "project:\n"
-        f"  key: {key}\n"
+        f'  key: "{key}"\n'
         "  forge:\n"
-        f"    base_branch: {base}\n"
+        f'    base_branch: "{base}"\n'
         "  check_runs:\n"
-        f"    - {check}\n",
+        f'    - "{check}"\n',
         encoding="utf-8",
     )
     return path
@@ -107,7 +108,11 @@ class ProjectConfigurationTests(unittest.TestCase):
         self.assertEqual(project.key, "EXM")
         self.assertEqual(project.base_branch, "main")
         self.assertEqual(project.check_name, "exm/publication-branch-title")
-        self.assertEqual(project.provenance["source"], str(path))
+        self.assertEqual(
+            project.provenance["source"],
+            "selected-config-folder/orchestration/orchestration.yml",
+        )
+        self.assertEqual(project.provenance["source_revision"], "working-copy")
 
     def test_a_generated_projection_records_its_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -128,6 +133,54 @@ class ProjectConfigurationTests(unittest.TestCase):
             project = kontor_project.load_project_config(path)
         self.assertEqual(project.provenance["source"], "repository-variables")
         self.assertEqual(project.check_name, "publication-branch-title")
+
+    def test_the_yaml_projection_round_trips_generated_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "orchestration" / "orchestration.yml"
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                "schema_version: 1\n"
+                "project:\n"
+                '  key: "ON"\n'
+                "  forge:\n"
+                '    base_branch: "2026"\n'
+                "  check_runs: [\"on/publication-branch-title\"]\n",
+                encoding="utf-8",
+            )
+            project = kontor_project.load_project_config(path)
+            rendered = kontor_project.render_project_projection(
+                project, format="yaml"
+            )
+            self.assertIn('key: "ON"', rendered)
+            self.assertIn('base_branch: "2026"', rendered)
+            self.assertIn("generated:", rendered)
+            self.assertIn(
+                'source: "selected-config-folder/orchestration/orchestration.yml"',
+                rendered,
+            )
+            self.assertNotIn(tmp, rendered)
+
+            reloaded_path = Path(tmp) / "projection.yml"
+            reloaded_path.write_text(rendered, encoding="utf-8")
+            reloaded = kontor_project.load_project_config(reloaded_path)
+        self.assertEqual(reloaded.key, "ON")
+        self.assertEqual(reloaded.base_branch, "2026")
+        self.assertEqual(reloaded.check_name, "on/publication-branch-title")
+        self.assertEqual(reloaded.provenance, project.provenance)
+
+    def test_the_json_projection_also_carries_public_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_project(Path(tmp), key="EXM", base="main")
+            project = kontor_project.load_project_config(path)
+            rendered = kontor_project.render_project_projection(
+                project, format="json"
+            )
+            data = json.loads(rendered)
+        self.assertEqual(
+            data["generated"]["source"],
+            "selected-config-folder/orchestration/orchestration.yml",
+        )
+        self.assertNotIn(tmp, rendered)
 
     def test_a_missing_publication_check_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -40,6 +40,9 @@ except ImportError:  # imported by path, without scripts/ on sys.path
 PROJECT_CONFIG_RELATIVE = Path("orchestration") / "orchestration.yml"
 BRANCH_SOURCE_RELATIVE = Path("crates") / "kontor-core" / "src" / "branch.rs"
 PUBLICATION_CHECK_SUFFIX = "publication-branch-title"
+CONFIG_PROVENANCE_SOURCE = "selected-config-folder/orchestration/orchestration.yml"
+PROJECTION_PROVENANCE_SOURCE = "selected-projection"
+WORKING_COPY_REVISION = "working-copy"
 
 BRANCH_SHAPE_INVALID = "branch_shape_invalid"
 BRANCH_TYPE_UNKNOWN = "branch_type_unknown"
@@ -201,9 +204,15 @@ def load_project_config(path: Path) -> ProjectConfig:
     generated = data.get("generated")
     provenance: Mapping[str, object]
     if isinstance(generated, dict):
-        provenance = generated
+        provenance = dict(generated)
     else:
-        provenance = {"source": str(path)}
+        source = (
+            CONFIG_PROVENANCE_SOURCE
+            if path.name == PROJECT_CONFIG_RELATIVE.name
+            and path.parent.name == PROJECT_CONFIG_RELATIVE.parent.name
+            else PROJECTION_PROVENANCE_SOURCE
+        )
+        provenance = {"source": source, "source_revision": WORKING_COPY_REVISION}
 
     return ProjectConfig(
         source=path,
@@ -378,13 +387,90 @@ def branch_is_canonical(
 def _project_projection(project: ProjectConfig) -> dict[str, object]:
     return {
         "schema_version": 1,
+        "generated": dict(project.provenance),
         "project": {
             "key": project.key,
             "forge": {"base_branch": project.base_branch},
             "check_runs": list(project.check_names),
         },
-        "generated": dict(project.provenance),
     }
+
+
+_YAML_SAFE_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+
+
+def _yaml_scalar(value: object) -> str:
+    """Render one scalar as YAML 1.2, quoting every string."""
+
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return json.dumps(value)
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    raise ProjectConfigError(
+        f"projection provenance contains an unsupported value: {type(value).__name__}"
+    )
+
+
+def _yaml_key(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        raise ProjectConfigError("projection keys must be non-empty strings")
+    if _YAML_SAFE_KEY.fullmatch(value):
+        return value
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _render_yaml_node(value: object, indent: int, lines: list[str]) -> None:
+    pad = " " * indent
+    if isinstance(value, dict):
+        if not value:
+            lines.append(f"{pad}{{}}")
+            return
+        for key, item in value.items():
+            rendered_key = _yaml_key(key)
+            if isinstance(item, (dict, list)):
+                if item:
+                    lines.append(f"{pad}{rendered_key}:")
+                    _render_yaml_node(item, indent + 2, lines)
+                else:
+                    lines.append(
+                        f"{pad}{rendered_key}: {'{}' if isinstance(item, dict) else '[]'}"
+                    )
+            else:
+                lines.append(f"{pad}{rendered_key}: {_yaml_scalar(item)}")
+        return
+    if isinstance(value, list):
+        if not value:
+            lines.append(f"{pad}[]")
+            return
+        for item in value:
+            if isinstance(item, (dict, list)) and item:
+                lines.append(f"{pad}-")
+                _render_yaml_node(item, indent + 2, lines)
+            elif isinstance(item, (dict, list)):
+                lines.append(
+                    f"{pad}- {'{}' if isinstance(item, dict) else '[]'}"
+                )
+            else:
+                lines.append(f"{pad}- {_yaml_scalar(item)}")
+        return
+    raise ProjectConfigError("projection must be a mapping")
+
+
+def render_project_projection(project: ProjectConfig, *, format: str) -> str:
+    """Serialize the complete projection, including its provenance."""
+
+    projection = _project_projection(project)
+    if format == "json":
+        return json.dumps(projection, indent=2, sort_keys=True) + "\n"
+    if format == "yaml":
+        lines: list[str] = []
+        _render_yaml_node(projection, 0, lines)
+        return "\n".join(lines) + "\n"
+    raise ProjectConfigError(f"unsupported projection format: {format}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -416,16 +502,10 @@ def main(argv: list[str] | None = None) -> int:
             config_dir=args.config_dir, config_file=args.config_file
         )
         if args.command == "project":
-            projection = _project_projection(project)
-            if args.format == "json":
-                print(json.dumps(projection, indent=2, sort_keys=True))
-            else:
-                print("schema_version: 1")
-                print("project:")
-                print(f"  key: {project.key}")
-                print("  forge:")
-                print(f"    base_branch: {project.base_branch}")
-                print("  check_runs: [" + ", ".join(project.check_names) + "]")
+            print(
+                render_project_projection(project, format=args.format),
+                end="",
+            )
             return 0
         if args.command == "key":
             print(project.key)

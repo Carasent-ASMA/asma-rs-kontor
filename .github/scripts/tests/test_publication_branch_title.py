@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -47,7 +49,9 @@ REASON_CODES = {
 
 FETCH_STEP_NAME = "Fetch the trusted sources from the exact workflow revision"
 PROJECT_STEP_NAME = "Project the repository variables"
+OPEN_STEP_NAME = "Open the configured publication check"
 EVALUATE_STEP_NAME = "Evaluate the current branch and title"
+COMPLETE_STEP_NAME = "Complete the configured publication check"
 CHECKER_RELATIVE_PATH = ".github/scripts/publication_branch_title.py"
 PROJECT_HELPER_PATH = "scripts/kontor_project.py"
 YAML_HELPER_PATH = "scripts/pack.py"
@@ -259,7 +263,9 @@ class WorkflowContractTest(unittest.TestCase):
         cls.steps = _steps(cls.text)
         cls.fetch = _step_named(cls.steps, FETCH_STEP_NAME)
         cls.project = _step_named(cls.steps, PROJECT_STEP_NAME)
+        cls.open = _step_named(cls.steps, OPEN_STEP_NAME)
         cls.evaluate = _step_named(cls.steps, EVALUATE_STEP_NAME)
+        cls.complete = _step_named(cls.steps, COMPLETE_STEP_NAME)
 
     def test_trigger_is_pull_request_target_with_required_activities(self) -> None:
         self.assertRegex(self.text, r"(?m)^on:\s*$")
@@ -275,22 +281,111 @@ class WorkflowContractTest(unittest.TestCase):
     def test_no_trigger_level_base_filter(self) -> None:
         self.assertNotRegex(self.text, r"(?m)^\s*branches:")
 
-    def test_job_check_name_comes_from_the_project_projection(self) -> None:
-        self.assertRegex(
-            self.text,
-            r"(?m)^\s{4}name:\s*\$\{\{\s*vars\.KONTOR_CHECK_NAME\s*\|\|\s*"
-            r"'publication-branch-title'\s*\}\}\s*$",
+    def test_the_configured_check_name_is_the_emitted_check(self) -> None:
+        project = checker.load_project(config_file=str(PROJECT_CONFIG), env={})
+        self.assertEqual(project.check_name, "asma/publication-branch-title")
+        run = _step_run(self.open)
+        self.assertIn(
+            'check_name=$(python3 "$PROJECT_HELPER_PATH" \\', run
         )
-        self.assertEqual(self.text.count("vars.KONTOR_CHECK_NAME"), 2)
+        self.assertIn(
+            '--config-file "$SELECTED_PROJECTION" check-name)', run
+        )
+        self.assertIn('name="$check_name"', run)
+        self.assertIn('"repos/${GITHUB_REPOSITORY}/check-runs"', run)
+        complete = _step_run(self.complete)
+        self.assertIn('check-runs/${CHECK_RUN_ID}', complete)
+        self.assertIn('conclusion="$conclusion"', complete)
+        self.assertIn("if: always()", self.complete)
 
-    def test_steps_are_fetch_then_evaluate(self) -> None:
+    def test_open_step_names_the_check_from_the_projection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            fake_gh = fake_bin / "gh"
+            fake_gh.write_text(
+                "#!/bin/sh\n"
+                'printf "%s\\n" "$@" > "$GH_ARGS"\n'
+                'printf "123\\n"\n',
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+            output = root / "output"
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "PATH": f"{fake_bin}:{environment['PATH']}",
+                    "GH_ARGS": str(root / "args"),
+                    "GITHUB_OUTPUT": str(output),
+                    "GITHUB_REPOSITORY": "example/project",
+                    "PROJECT_HELPER_PATH": str(REPO_ROOT / "scripts" / "kontor_project.py"),
+                    "SELECTED_PROJECTION": str(PROJECT_CONFIG),
+                    "HEAD_SHA": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4",
+                    "PR_NUMBER": "42",
+                }
+            )
+            result = subprocess.run(
+                ["bash", "-c", _step_run(self.open)],
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            arguments = (root / "args").read_text(encoding="utf-8")
+            emitted = output.read_text(encoding="utf-8")
+        self.assertIn("name=asma/publication-branch-title", arguments)
+        self.assertIn("status=in_progress", arguments)
+        self.assertIn("check_run_id=123", emitted)
+        self.assertIn(
+            "check_name=asma/publication-branch-title", emitted
+        )
+
+    def test_projection_step_writes_quoted_strings_that_reload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            selected = Path(tmp) / "selected-project.yml"
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "KONTOR_PROJECT_KEY": "ON",
+                    "KONTOR_BASE_BRANCH": "2026",
+                    "KONTOR_CHECK_NAME": "on/publication-branch-title",
+                    "WORKFLOW_SHA": "a" * 40,
+                    "COMMITTED_PROJECTION": str(Path(tmp) / "unused.yml"),
+                    "SELECTED_PROJECTION": str(selected),
+                }
+            )
+            result = subprocess.run(
+                ["bash", "-c", _step_run(self.project)],
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            project = checker.load_project(config_file=str(selected), env={})
+        self.assertEqual(project.key, "ON")
+        self.assertEqual(project.base_branch, "2026")
+        self.assertEqual(project.check_name, "on/publication-branch-title")
+
+    def test_steps_are_fetch_project_open_evaluate_complete(self) -> None:
         names = [
             line.strip().removeprefix("- name: ")
             for step in self.steps
             for line in step.splitlines()
             if line.strip().startswith("- name: ")
         ]
-        self.assertEqual(names, [FETCH_STEP_NAME, PROJECT_STEP_NAME, EVALUATE_STEP_NAME])
+        self.assertEqual(
+            names,
+            [
+                FETCH_STEP_NAME,
+                PROJECT_STEP_NAME,
+                OPEN_STEP_NAME,
+                EVALUATE_STEP_NAME,
+                COMPLETE_STEP_NAME,
+            ],
+        )
 
     def test_no_checkout_or_repository_git_operation(self) -> None:
         self.assertNotIn("uses:", self.text)
@@ -345,7 +440,7 @@ class WorkflowContractTest(unittest.TestCase):
         self.assertNotIn("merge_commit_sha", self.text)
         self.assertNotIn("head.repo", self.text)
         self.assertNotIn("head.repository", self.text)
-        self.assertEqual(self.text.count("github.event.pull_request.head.sha"), 1)
+        self.assertEqual(self.text.count("github.event.pull_request.head.sha"), 2)
         for step in self.steps:
             run = _step_run(step)
             self.assertNotIn("pull_request", run)
@@ -374,29 +469,38 @@ class WorkflowContractTest(unittest.TestCase):
         self.assertEqual(
             _step_env(self.fetch).get("GH_TOKEN"), "${{ github.token }}"
         )
-        self.assertEqual(self.text.count("github.token"), 1)
-        self.assertEqual(self.text.count("GH_TOKEN"), 2)
+        self.assertEqual(self.text.count("github.token"), 3)
+        self.assertEqual(self.text.count("GH_TOKEN"), 4)
+        self.assertEqual(
+            _step_env(self.open).get("GH_TOKEN"), "${{ github.token }}"
+        )
+        self.assertEqual(
+            _step_env(self.complete).get("GH_TOKEN"), "${{ github.token }}"
+        )
         self.assertNotIn("GH_TOKEN", self.evaluate)
         self.assertNotIn("github.token", self.evaluate)
         self.assertNotIn("secrets.", self.text)
         self.assertIsNone(_indented_block(self.text, "env:", indent=0))
         self.assertIsNone(_indented_block(self.text, "env:", indent=4))
 
-    def test_permissions_are_exactly_contents_read(self) -> None:
+    def test_permissions_read_contents_and_write_checks(self) -> None:
         block = _indented_block(self.text, "permissions:", indent=0)
         self.assertIsNotNone(block)
         lines = [
             line.strip() for line in (block or "").splitlines() if line.strip()
         ]
-        self.assertEqual(lines, ["contents: read"])
+        self.assertEqual(lines, ["contents: read", "checks: write"])
         self.assertEqual(
             re.findall(r"(?m)^permissions:", self.text), ["permissions:"]
         )
         self.assertNotIn("secrets.", self.text)
 
-    def test_downloaded_checker_is_the_only_python_source(self) -> None:
+    def test_downloaded_checker_is_the_only_checker_source(self) -> None:
         self.assertEqual(_step_run(self.evaluate), 'python3 "$CHECKER_PATH"')
-        self.assertEqual(self.text.count("python3"), 1)
+        self.assertIn(
+            'python3 "$PROJECT_HELPER_PATH"', _step_run(self.open)
+        )
+        self.assertEqual(self.text.count("python3"), 2)
         self.assertEqual(
             _step_env(self.fetch).get("CHECKER_PATH"), RUNNER_TEMP_CHECKER
         )
@@ -435,8 +539,11 @@ class WorkflowContractTest(unittest.TestCase):
             projection_env.get("COMMITTED_PROJECTION"), RUNNER_TEMP_PROJECTION
         )
         run = _step_run(self.project)
-        self.assertIn("source: repository-variables", run)
-        self.assertIn("source_revision: %s", run)
+        self.assertIn('source: "repository-variables"', run)
+        self.assertIn('source_revision: "%s"', run)
+        self.assertIn('key: "%s"', run)
+        self.assertIn('base_branch: "%s"', run)
+        self.assertIn('check_runs: ["%s"]', run)
         self.assertIn("KONTOR_PROJECT_KEY", run)
         self.assertIn("cp \"$COMMITTED_PROJECTION\" \"$SELECTED_PROJECTION\"", run)
         self.assertNotIn("${{", run)

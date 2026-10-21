@@ -14,8 +14,11 @@
 # KONTOR_CHECK_NAME when all three are set and writes a temporary projection
 # recording them as the source. Otherwise it reads the committed projection
 # `.github/kontor-project.yml`, itself generated from the config folder.
-# A `dependabot/` branch opened by `dependabot[bot]` is exempt from the branch
-# and title grammar; PR_AUTHOR carries the PR author's login for that exemption.
+# The job opens a check run named by the selected projection and completes it
+# with this job's result, so branch protection can require the configured name
+# even when the committed projection supplies it. A `dependabot/` branch opened
+# by `dependabot[bot]` is exempt from the branch and title grammar; PR_AUTHOR
+# carries the PR author's login for that exemption.
 name: Publication branch and title identity
 
 on:
@@ -29,6 +32,7 @@ on:
 
 permissions:
   contents: read
+  checks: write
 
 concurrency:
   group: publication-branch-title-${{ github.event.pull_request.number }}
@@ -36,7 +40,7 @@ concurrency:
 
 jobs:
   identity:
-    name: ${{ vars.KONTOR_CHECK_NAME || 'publication-branch-title' }}
+    name: publication-branch-title
     runs-on: ubuntu-latest
     steps:
       - name: Fetch the trusted sources from the exact workflow revision
@@ -128,16 +132,42 @@ jobs:
             printf '# Generated projection of repository variables.\n'
             printf 'schema_version: 1\n'
             printf 'generated:\n'
-            printf '  source: repository-variables\n'
-            printf '  source_revision: %s\n' "$WORKFLOW_SHA"
-            printf '  variables: [KONTOR_PROJECT_KEY, KONTOR_BASE_BRANCH, KONTOR_CHECK_NAME]\n'
+            printf '  source: "repository-variables"\n'
+            printf '  source_revision: "%s"\n' "$WORKFLOW_SHA"
+            printf '  variables: ["KONTOR_PROJECT_KEY", "KONTOR_BASE_BRANCH", "KONTOR_CHECK_NAME"]\n'
             printf 'project:\n'
-            printf '  key: %s\n' "$KONTOR_PROJECT_KEY"
+            printf '  key: "%s"\n' "$KONTOR_PROJECT_KEY"
             printf '  forge:\n'
-            printf '    base_branch: %s\n' "$KONTOR_BASE_BRANCH"
-            printf '  check_runs: [%s]\n' "$KONTOR_CHECK_NAME"
+            printf '    base_branch: "%s"\n' "$KONTOR_BASE_BRANCH"
+            printf '  check_runs: ["%s"]\n' "$KONTOR_CHECK_NAME"
           } > "$SELECTED_PROJECTION"
           printf 'project_source=repository-variables\n'
+
+      - name: Open the configured publication check
+        id: configured-check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROJECT_HELPER_PATH: ${{ runner.temp }}/kontor_project.py
+          SELECTED_PROJECTION: ${{ runner.temp }}/selected-project.yml
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          check_name=$(python3 "$PROJECT_HELPER_PATH" \
+            --config-file "$SELECTED_PROJECTION" check-name)
+          test -n "$check_name"
+          check_run_id=$(gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/check-runs" \
+            -f name="$check_name" \
+            -f head_sha="$HEAD_SHA" \
+            -f status=in_progress \
+            -f external_id="kontor-publication-${PR_NUMBER}-${HEAD_SHA}" \
+            --jq .id)
+          test -n "$check_run_id"
+          printf 'check_run_id=%s\n' "$check_run_id" >> "$GITHUB_OUTPUT"
+          printf 'check_name=%s\n' "$check_name" >> "$GITHUB_OUTPUT"
 
       - name: Evaluate the current branch and title
         shell: bash
@@ -153,3 +183,23 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: python3 "$CHECKER_PATH"
+
+      - name: Complete the configured publication check
+        if: always() && steps.configured-check.outputs.check_run_id != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHECK_RUN_ID: ${{ steps.configured-check.outputs.check_run_id }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+
+          case "$JOB_STATUS" in
+            success) conclusion=success ;;
+            cancelled) conclusion=cancelled ;;
+            *) conclusion=failure ;;
+          esac
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/check-runs/${CHECK_RUN_ID}" \
+            -f status=completed \
+            -f conclusion="$conclusion" >/dev/null

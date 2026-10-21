@@ -70,6 +70,23 @@ Regenerate the committed projection with:
 python3 scripts/kontor_project.py --config-dir <config folder> project --format yaml
 ```
 
+## Review corrections
+
+- **Configured check name.** The workflow no longer prints the configured name
+  only in the checker record. It opens a check run through the Checks API with
+  the name read from the selected projection, then completes that check run
+  with the job result. The job's own check name is a static,
+  project-neutral label; branch protection must require the configured name.
+  The workflow gains `checks: write`.
+- **Regeneration provenance.** `scripts/kontor_project.py project --format
+  yaml` now serializes the complete projection, including `generated:`.
+  Authored-folder output uses the public-safe source
+  `selected-config-folder/orchestration/orchestration.yml` and
+  `source_revision: working-copy`; JSON output carries the same provenance.
+- **Quoted strings.** Both generators quote every string. A config with
+  `key: "ON"` or `base_branch: "2026"` round-trips as strings instead of
+  reloading as a boolean or integer.
+
 ## Blocked rows
 
 | Row | Owner | Why it is blocked here |

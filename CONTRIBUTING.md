@@ -197,6 +197,12 @@ python3 scripts/kontor_project.py --config-dir <config folder> \
   project --format yaml
 ```
 
+The generated YAML carries the complete `generated:` provenance and quotes
+every string, so values such as `ON` or `2026` stay strings on reload. The
+workflow opens an API check run whose name it reads from the selected
+projection and completes it with the job result; branch protection must
+require that configured name.
+
 The retired escape hatch `ASMA_ALLOW_AGENT_PUSH` is now
 `KONTOR_ALLOW_AGENT_PUSH`.
 
