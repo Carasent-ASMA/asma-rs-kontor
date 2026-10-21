@@ -117,6 +117,7 @@ config folder, which may live outside the repository.
     .gitignore                    ignores host.yml
     README.md                     neutral folder notes
     attention.yml                 attention channel and message-class policy
+    attention.env                 sample for <state-root>/.env (mode 600): attention URL, mentions
     orchestration/
       orchestration.yml           entry: schema_version, fleet, core_team, project:
       orchestration.schema.yml    required-key schema for project:
