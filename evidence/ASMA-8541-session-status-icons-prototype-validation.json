@@ -1,0 +1,84 @@
+{
+  "schema": 1,
+  "issue": "ASMA-8541",
+  "epic": "ASMA-8539",
+  "purpose": "Immutable validation receipt for unified session status icons; own-scope candidate only, independent QA/AUD and supported composition pending.",
+  "observedAt": "2026-10-21T01:33:43.812948+00:00",
+  "sourceArtifact": "af7cd93c2af6f9fdaadf7edb331a309dc62c5ef0",
+  "pluginTree": "f7a47b4f9d62d054d44b9291d8237dc064ea3097",
+  "prototypeArtifact": "c8f8d5f81b6088ebb5a9eea63ab32ef7392683a6",
+  "prototypeTree": "5830a1f3f2e772338c82d743f8af556c8e8548b4",
+  "sourceRuntimePaths": [
+    "apps/paseo-plugin/client/mobile-quick-filter-options.ts",
+    "apps/paseo-plugin/client/organization-row.tsx",
+    "apps/paseo-plugin/client/session-state-marker.tsx",
+    "apps/paseo-plugin/client/session-status-ink.ts",
+    "apps/paseo-plugin/client/sessions-screen.tsx",
+    "apps/paseo-plugin/test/session-state-marker.test.tsx",
+    "apps/paseo-plugin/test/sessions-screen-events.test.ts"
+  ],
+  "canonicalMapping": {
+    "ownerSource": "bef436233a63a9a7f05274d04a031506c309a224",
+    "blob": "0aafe11f060190e352f1b5d2ec780a8c41b6e66c",
+    "identity": "QUICK_FILTER_ICONS direct lookup; native failed adapts to presentation error only"
+  },
+  "validation": {
+    "pluginTests": {
+      "files": 70,
+      "tests": 1013,
+      "result": "pass"
+    },
+    "pluginTypes": "pass",
+    "prototypeTypes": "pass after correcting new scenario grouping from workstream to hierarchy; initial failed log retained",
+    "prototypeBuild": "pass",
+    "installedPaseoCompiler": "pass; no install",
+    "hermes": "pass",
+    "browserMatrix": "24 viewport/theme/scenario configurations; all visible row assertions pass; virtualized offscreen rows not claimed",
+    "sourceMaps": {
+      "pluginSources": 58,
+      "prototypeSources": 20,
+      "exact": true
+    },
+    "servedAssets": {
+      "count": 15,
+      "exact": true,
+      "port": 58160
+    }
+  },
+  "holds": [
+    "007ec926 shared mechanics not adopted; supported integration refused configured_execution_unqualified; no retry/bypass",
+    "Details Close reproduces inherited restored-focus tooltip; final touch-help/QA remains held",
+    "Sibling mobile quick toolbar/chooser color-only composition prepared but unapplied and runtime unqualified",
+    "No physical VoiceOver/TalkBack or OS touch-gesture claim"
+  ],
+  "touchHelpContractSha256": "2bc11ddd3f1c84dd329b149fed5dcbaa058805eef00057af6df535e61373f3ee",
+  "effectClaims": {
+    "consumerAdoption": false,
+    "helperEdits": false,
+    "reviewerDispatch": false,
+    "merge": false,
+    "install": false,
+    "live": false
+  },
+  "evidencePacketId": "2026-10-21-session-status-icons-successor",
+  "evidenceFiles": {
+    "COMPOSITION.json": "ffc10f48dd6919071ff150bf1260ff6bc9c16e5b059a83664081b79a270926f1",
+    "BROWSER-PARITY.json": "29923c0044fc160578c52bce7d7f60ce8491ddeb14444bce7dda0c672cbeaf11",
+    "INTERACTIONS.json": "45b9e5dc916003ad9d55dfb8917c29474b0617d7da3ab7c8c175b879e0b85e38",
+    "SOURCE-MAPS.json": "36e9e2e1195b8146f28de03edfad7e792bba462d18fd2a1fed98e477fb9c7810",
+    "SERVED-ASSETS.json": "f27db263ad6e0688c426261101b145b2898f7b96b7c41af03b631152c674b754",
+    "host-compile/report.json": "b4631c2f877998510d145047ef2e2a5d37cdfcdec520b2e6c13d778532cac558",
+    "plugin-tests.log": "5b215534655761e4356fe3feb73c6b85c7d706bcdba5eba5834f4215a49af4a7",
+    "plugin-typecheck.log": "8366207267355d3e3d5bf3bf6e8c94c5f93f6078c34f08973fa2b38cdda6cc92",
+    "app-typecheck-corrected.log": "8366207267355d3e3d5bf3bf6e8c94c5f93f6078c34f08973fa2b38cdda6cc92",
+    "app-build-corrected.log": "0a07c7e1a1558d078f1c6ef5a5d94591ed29d73cf457a4e41b55a05e505c4f17",
+    "QUICK-FILTER-COMPOSITION.json": "2f35e993ef4071e51801eae7c1c1aed269663006248882becb1a222ce73b2fbf",
+    "quick-filter-ink-composition.patch": "6c63844b4297aa45e2c12ccadf10006d51285e558d9c2f87830e79e1908b916b",
+    "phone-390-dark.png": "649f598d625a8d27c2bdfd3d83ac9dd7e0f56a0c0374530eebb82088b9452e36",
+    "desktop-1280-light.png": "9a68864bd6567d9db3af090ee4d7f37e6b49e5d797f068df447ebf83d9012e31"
+  },
+  "publication": "Append-only evidence commit; runtime artifact and trees above remain immutable. The containing commit is a publication identity, not a new runtime build.",
+  "checkoutRole": "prototype-companion",
+  "trackedPluginBaseline": "869fd5fa8757392f56980a1fe6a70cfc2f562781",
+  "trackedPluginBaselineUnchanged": true
+}
