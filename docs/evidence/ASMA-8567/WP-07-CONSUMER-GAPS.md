@@ -36,6 +36,10 @@ silently skipping validation.
 - PyYAML parity: the PyYAML-first branch is dispatch-tested with a stub because
   the public test environment has no PyYAML. Real PyYAML duplicate-key and
   YAML-1.1 scalar behavior needs an optional-dependency test.
+- WP-02 country codes: `holiday_countries: [NO]` parses as `[False]` under
+  YAML 1.1, including the fallback after the YAML 1.1 alignment. No current
+  pack render consumes it. WP-02 must quote/type-check the ISO country codes
+  (for example `["NO"]`) and validate the list.
 
 ## Evidence boundary
 
