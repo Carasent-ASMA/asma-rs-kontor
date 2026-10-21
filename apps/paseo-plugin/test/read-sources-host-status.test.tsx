@@ -18,6 +18,7 @@ vi.mock("react-native", () => ({ SafeAreaView: "SafeAreaView", KeyboardAvoidingV
 vi.mock("@getpaseo/plugin/client", () => ({ useHosts: () => [{ serverId: "source-host", label: "Host", status: model.status }], useRpc: () => model.rpc }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Modal: Object.assign(() => null, { Content: () => null }), TextInput: "TextInput", ScrollView: "ScrollView", FlatList: "FlatList", Icon: "Icon", useToast: () => ({ error: vi.fn() }) }));
 vi.mock("@tanstack/react-query", () => ({ useQuery: (options: typeof model.queryOptions) => { model.queryOptions = options; return { data: model.data, isError: model.error !== null, error: model.error, isFetching: false, refetch: model.refetch }; } }));
+vi.mock("../client/use-responsibility", () => ({ useResponsibility: () => null }));
 vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: () => ({ state: { entries: model.entries, status: "ready", live: true, lastUpdatedAt: 1, error: null, staleReason: null, pages: 1, includeArchived: false }, refresh: vi.fn() }) }));
 vi.mock("../client/use-workspace-directory", () => ({ useWorkspaceDirectory: () => ({ entries: [], error: null, readAt: null }) }));
 vi.mock("../client/use-organization-settings", () => ({ useOrganizationSettings: () => ({ state: { status: "ready", values: DEFAULT_ORGANIZATION_SETTINGS, saving: false, saveError: null } }) }));
