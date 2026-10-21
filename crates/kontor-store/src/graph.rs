@@ -45,7 +45,8 @@ use kontor_core::repository::{
     Task, TicketLink, validate_dependency_graph,
 };
 use kontor_core::spec::{
-    HoldLiftCondition, ResolvedWorkProfileSnapshot, TeamTemplateRevision, WorkProfileSpec,
+    HoldAttentionCode, HoldLiftCondition, HoldReasonCode, ResolvedWorkProfileSnapshot,
+    TeamTemplateRevision, WorkProfileSpec,
 };
 use kontor_core::state::{ImportedTaskState, TaskState};
 use kontor_core::ticket::StatusConflictKind;
@@ -762,6 +763,74 @@ impl StoredAuthorization {
     ) -> bool {
         self.revocation.is_none() && self.authorization.arms(now, mini_project, task)
     }
+}
+
+/// The terms one hold is recorded under.
+///
+/// `reason_code` is optional because holds recorded before the closed
+/// vocabulary existed have no honest code to carry. Every hold written after
+/// v135 states one, and the application boundary refuses an absence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredHoldTerms {
+    /// What would lift the hold.
+    pub condition: HoldLiftCondition,
+    /// Why the work is held, in the closed vocabulary.
+    pub reason_code: Option<HoldReasonCode>,
+    /// When the owner must review the hold.
+    pub review_by: Option<Timestamp>,
+    /// The exact task a `dependency_done` hold waits on.
+    pub dependency_task_id: Option<TaskId>,
+}
+
+/// The new terms written with one revocation.
+///
+/// Review date and reason code are required here even though the stored row
+/// allows a null reason code for legacy evidence: a *new* hold cannot be born
+/// without them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewHoldTerms {
+    /// What would lift the hold.
+    pub condition: HoldLiftCondition,
+    /// Why the work is held.
+    pub reason_code: HoldReasonCode,
+    /// When the owner must review the hold.
+    pub review_by: Timestamp,
+    /// The exact task a `dependency_done` hold waits on.
+    pub dependency_task_id: Option<TaskId>,
+}
+
+/// One typed attention record raised by a hold.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredHoldAttention {
+    /// The typed reason the owner is being asked to look.
+    pub code: HoldAttentionCode,
+    /// The account profile that owns the hold.
+    pub owner: AccountProfileId,
+    /// The review date that passed.
+    pub review_by: Timestamp,
+    /// When the attention was raised.
+    pub raised_at: Timestamp,
+}
+
+/// One recorded hold, joined to its ordinary authorization and revocation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredHold {
+    /// The project that owns it.
+    pub project_id: ProjectId,
+    /// The covering authorization persisted already revoked.
+    pub authorization_id: ExecutionAuthorizationId,
+    /// The epic it holds.
+    pub epic_id: MiniProjectId,
+    /// The account profile that owns it.
+    pub owner: AccountProfileId,
+    /// The prose reason recorded with the revocation.
+    pub reason: ExternalName,
+    /// Its recorded terms.
+    pub terms: StoredHoldTerms,
+    /// Whether the epic already has a live covering grant.
+    pub live_grant: bool,
+    /// Its review-overdue attention, once raised.
+    pub attention: Option<StoredHoldAttention>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1998,11 +2067,14 @@ impl SqliteStore {
             .transpose()
     }
 
-    /// Revoke one authorization, appending the evidence that says who and why.
+    /// Revoke one authorization and record the hold terms beside it.
     ///
-    /// The row itself is never touched: an authorization is what was granted, and
-    /// a revocation is a second fact about it. Revoking twice is refused by the
-    /// child table's primary key, so a replayed disarm cannot record two.
+    /// The row itself is never touched: an authorization is what was granted,
+    /// and a revocation is a second fact about it. The terms are written in the
+    /// same transaction, so a disarm can never leave a revocation that is a hold
+    /// with no owner, reason or review date — the shape REQ-008 refuses.
+    /// Revoking twice is refused by the child table's primary key, so a replayed
+    /// disarm cannot record two.
     ///
     /// # Errors
     /// Returns [`RepositoryError::NotFound`] for an unknown authorization and
@@ -2012,6 +2084,7 @@ impl SqliteStore {
         project_id: ProjectId,
         id: ExecutionAuthorizationId,
         revocation: &AuthorizationRevocation,
+        terms: &NewHoldTerms,
     ) -> RepositoryResult<()> {
         let transaction = self.begin()?;
         let known: Option<String> = transaction
@@ -2058,45 +2131,58 @@ impl SqliteStore {
                 ],
             )
             .map_err(backend)?;
+        transaction
+            .execute(
+                "INSERT INTO execution_hold_conditions
+                     (project_id, authorization_id, condition, reason_code,
+                      review_by, dependency_task_id, recorded_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    project_id.to_string(),
+                    id.to_string(),
+                    terms.condition.as_str(),
+                    terms.reason_code.as_str(),
+                    text(terms.review_by),
+                    terms.dependency_task_id.map(|task| task.to_string()),
+                    text(revocation.revoked_at)
+                ],
+            )
+            .map_err(backend)?;
         transaction.commit().map_err(backend)?;
         Ok(())
     }
 
-    /// Record what would lift one already-revoked authorization.
+    /// Record the terms of one hold that was revoked before this schema.
     ///
-    /// Separate from the revocation because a revocation is evidence and this
-    /// schema never updates evidence. The caller records the revocation first;
-    /// the foreign key makes "a lift condition on something that is not a hold"
-    /// unrepresentable rather than merely discouraged.
-    ///
-    /// Converges on replay, and refuses to move. Epic apply is replay-safe as a
-    /// whole, so this runs again with the same inputs whenever a receipt is
-    /// served rather than recorded; a plain insert made the second call a
-    /// revision conflict and broke the replay it sits inside. Recording the
-    /// same condition twice is therefore a no-op, and recording a *different*
-    /// one is refused — the terms of a hold do not move while it holds.
+    /// Kept only for tests and recovery paths that must backfill an old
+    /// revocation. New holds write their terms inside
+    /// [`Self::revoke_authorization`], so the two can never diverge.
     ///
     /// # Errors
-    /// Refuses an unknown or unrevoked authorization, and a second, different
-    /// condition for one hold.
-    pub fn record_hold_lift_condition(
+    /// Refuses unknown values from the closed vocabularies, a second row for one
+    /// hold, and a review date that is not canonical UTC.
+    pub fn record_hold_terms(
         &self,
         project_id: ProjectId,
         authorization_id: ExecutionAuthorizationId,
-        condition: HoldLiftCondition,
+        terms: &NewHoldTerms,
         recorded_at: Timestamp,
     ) -> RepositoryResult<()> {
         let transaction = self.begin()?;
         transaction
             .execute(
                 "INSERT INTO execution_hold_conditions
-                     (project_id, authorization_id, condition, recorded_at)
-                 VALUES (?1, ?2, ?3, ?4)
+                     (project_id, authorization_id, condition, reason_code,
+                      review_by, dependency_task_id, recorded_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                  ON CONFLICT (project_id, authorization_id) DO NOTHING",
                 params![
                     project_id.to_string(),
                     authorization_id.to_string(),
-                    condition.as_str(),
+                    terms.condition.as_str(),
+                    terms.reason_code.as_str(),
+                    text(terms.review_by),
+                    terms.dependency_task_id.map(|task| task.to_string()),
                     text(recorded_at)
                 ],
             )
@@ -2104,55 +2190,247 @@ impl SqliteStore {
         // Read back rather than trusting the insert: `DO NOTHING` is silent
         // about *why* it did nothing, and "a row already said something else"
         // must not be mistaken for "this call succeeded".
-        let stored: String = transaction
+        let stored: (String, Option<String>, String, Option<String>) = transaction
             .query_row(
-                "SELECT condition FROM execution_hold_conditions
+                "SELECT condition, reason_code, review_by, dependency_task_id
+                 FROM execution_hold_conditions
                  WHERE project_id = ?1 AND authorization_id = ?2",
                 params![project_id.to_string(), authorization_id.to_string()],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .map_err(backend)?;
-        if stored != condition.as_str() {
+        let unchanged = stored.0 == terms.condition.as_str()
+            && stored.1.as_deref() == Some(terms.reason_code.as_str())
+            && stored.2 == text(terms.review_by)
+            && stored.3 == terms.dependency_task_id.map(|task| task.to_string());
+        if !unchanged {
             return Err(conflict(
                 "execution hold condition",
-                "already records a different lift condition for this hold",
+                "already records different terms for this hold",
             ));
         }
         transaction.commit().map_err(backend)?;
         Ok(())
     }
 
-    /// What would lift one hold.
+    /// The terms of one hold.
     ///
     /// A hold with no row is [`HoldLiftCondition::Manual`], which is what every
-    /// hold recorded before this table existed actually meant: nothing about
-    /// self-lifting was promised to it, so it must not acquire one.
+    /// hold recorded before v101 actually meant: nothing about self-lifting was
+    /// promised to it, so it must not acquire one. The migration backfills a
+    /// review date for every existing revocation, so on a migrated realm the
+    /// absence is a defensive fallback rather than a live shape.
     ///
     /// # Errors
-    /// Backend failures, and a stored value outside the closed vocabulary —
-    /// which is a condition nothing can evaluate, and therefore a hold that
-    /// would never lift.
-    pub fn get_hold_lift_condition(
+    /// Backend failures, and a stored value outside a closed vocabulary —
+    /// which is a hold nothing can evaluate.
+    pub fn get_hold_terms(
         &self,
         project_id: ProjectId,
         authorization_id: ExecutionAuthorizationId,
-    ) -> RepositoryResult<HoldLiftCondition> {
-        let stored: Option<String> = self
+    ) -> RepositoryResult<StoredHoldTerms> {
+        let stored: Option<(String, Option<String>, String, Option<String>)> = self
             .connection
             .query_row(
-                "SELECT condition FROM execution_hold_conditions
+                "SELECT condition, reason_code, review_by, dependency_task_id
+                 FROM execution_hold_conditions
                  WHERE project_id = ?1 AND authorization_id = ?2",
                 params![project_id.to_string(), authorization_id.to_string()],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()
             .map_err(backend)?;
         match stored {
-            None => Ok(HoldLiftCondition::Manual),
-            // A stored value outside the vocabulary is a hold nothing can ever
-            // evaluate, so it is surfaced rather than quietly read as manual.
-            Some(stored) => Ok(HoldLiftCondition::parse(&stored)?),
+            None => Ok(StoredHoldTerms {
+                condition: HoldLiftCondition::Manual,
+                reason_code: None,
+                review_by: None,
+                dependency_task_id: None,
+            }),
+            Some((condition, reason_code, review_by, dependency_task_id)) => Ok(StoredHoldTerms {
+                condition: HoldLiftCondition::parse(&condition)?,
+                reason_code: reason_code
+                    .map(|code| HoldReasonCode::parse(&code))
+                    .transpose()?,
+                review_by: Some(crate::repository::read_timestamp(&review_by)?),
+                dependency_task_id: dependency_task_id
+                    .map(|task| TaskId::parse(&task))
+                    .transpose()?,
+            }),
         }
+    }
+
+    /// Every recorded hold in the Realm, with its terms and any attention.
+    ///
+    /// A hold is a revoked authorization scoped to an epic. The query reports
+    /// whether the epic already has a live covering grant, so a sweep does not
+    /// raise attention for a historical hold on an epic somebody already armed.
+    ///
+    /// # Errors
+    /// Backend failures and any stored value outside a closed vocabulary.
+    pub fn list_holds(&self) -> RepositoryResult<Vec<StoredHold>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT c.project_id, c.authorization_id, a.scope_mini_project_id,
+                        r.revoked_by, r.reason, c.condition, c.reason_code,
+                        c.review_by, c.dependency_task_id,
+                        EXISTS (
+                            SELECT 1
+                            FROM execution_authorizations live
+                            LEFT JOIN execution_authorization_revocations lr
+                              ON lr.project_id = live.project_id
+                             AND lr.authorization_id = live.id
+                            WHERE live.project_id = a.project_id
+                              AND live.scope_kind = 'mini_project'
+                              AND live.scope_mini_project_id = a.scope_mini_project_id
+                              AND lr.authorization_id IS NULL
+                        ) AS live_grant,
+                        att.attention_code, att.owner, att.review_by, att.raised_at
+                 FROM execution_hold_conditions c
+                 JOIN execution_authorization_revocations r
+                   ON r.project_id = c.project_id
+                  AND r.authorization_id = c.authorization_id
+                 JOIN execution_authorizations a
+                   ON a.project_id = c.project_id
+                  AND a.id = c.authorization_id
+                 LEFT JOIN execution_hold_attention att
+                   ON att.project_id = c.project_id
+                  AND att.authorization_id = c.authorization_id
+                  AND att.attention_code = 'hold_review_overdue'
+                 WHERE a.scope_kind = 'mini_project'
+                 ORDER BY c.project_id, c.authorization_id",
+            )
+            .map_err(backend)?;
+        let mut rows = statement.query([]).map_err(backend)?;
+        let mut holds = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            let scope: String = row.get(2).map_err(backend)?;
+            holds.push(StoredHold {
+                project_id: ProjectId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
+                authorization_id: ExecutionAuthorizationId::parse(
+                    &row.get::<_, String>(1).map_err(backend)?,
+                )?,
+                epic_id: MiniProjectId::parse(&scope)?,
+                owner: AccountProfileId::parse(&row.get::<_, String>(3).map_err(backend)?)?,
+                reason: ExternalName::parse(&row.get::<_, String>(4).map_err(backend)?)?,
+                terms: StoredHoldTerms {
+                    condition: HoldLiftCondition::parse(
+                        &row.get::<_, String>(5).map_err(backend)?,
+                    )?,
+                    reason_code: row
+                        .get::<_, Option<String>>(6)
+                        .map_err(backend)?
+                        .map(|code| HoldReasonCode::parse(&code))
+                        .transpose()?,
+                    review_by: Some(crate::repository::read_timestamp(
+                        &row.get::<_, String>(7).map_err(backend)?,
+                    )?),
+                    dependency_task_id: row
+                        .get::<_, Option<String>>(8)
+                        .map_err(backend)?
+                        .map(|task| TaskId::parse(&task))
+                        .transpose()?,
+                },
+                live_grant: row.get::<_, i64>(9).map_err(backend)? != 0,
+                attention: match row.get::<_, Option<String>>(10).map_err(backend)? {
+                    None => None,
+                    Some(code) => Some(StoredHoldAttention {
+                        code: HoldAttentionCode::parse(&code)?,
+                        owner: AccountProfileId::parse(
+                            &row.get::<_, String>(11).map_err(backend)?,
+                        )?,
+                        review_by: crate::repository::read_timestamp(
+                            &row.get::<_, String>(12).map_err(backend)?,
+                        )?,
+                        raised_at: crate::repository::read_timestamp(
+                            &row.get::<_, String>(13).map_err(backend)?,
+                        )?,
+                    }),
+                },
+            });
+        }
+        Ok(holds)
+    }
+
+    /// One hold's review-overdue attention, once it has been raised.
+    ///
+    /// # Errors
+    /// Backend failures and any stored value outside a closed vocabulary.
+    pub fn hold_attention(
+        &self,
+        project_id: ProjectId,
+        authorization_id: ExecutionAuthorizationId,
+    ) -> RepositoryResult<Option<StoredHoldAttention>> {
+        self.connection
+            .query_row(
+                "SELECT attention_code, owner, review_by, raised_at
+                 FROM execution_hold_attention
+                 WHERE project_id = ?1 AND authorization_id = ?2
+                   AND attention_code = 'hold_review_overdue'",
+                params![project_id.to_string(), authorization_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?
+            .map(|(code, owner, review_by, raised_at)| {
+                Ok(StoredHoldAttention {
+                    code: HoldAttentionCode::parse(&code)?,
+                    owner: AccountProfileId::parse(&owner)?,
+                    review_by: crate::repository::read_timestamp(&review_by)?,
+                    raised_at: crate::repository::read_timestamp(&raised_at)?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Raise one typed attention for a hold, once.
+    ///
+    /// Returns `true` when this call inserted the record and `false` when it
+    /// already existed. The distinction is what lets a sweep count what it
+    /// actually raised without treating a replay as a second alert.
+    ///
+    /// # Errors
+    /// Backend failures and an unknown attention code.
+    pub fn raise_hold_attention(
+        &self,
+        project_id: ProjectId,
+        authorization_id: ExecutionAuthorizationId,
+        attention: &StoredHoldAttention,
+    ) -> RepositoryResult<bool> {
+        let changed = self
+            .connection
+            .execute(
+                "INSERT INTO execution_hold_attention
+                     (project_id, authorization_id, attention_code, owner,
+                      reason_code, review_by, raised_at)
+                 SELECT ?1, ?2, ?3, ?4,
+                        (SELECT reason_code FROM execution_hold_conditions
+                         WHERE project_id = ?1 AND authorization_id = ?2),
+                        ?5, ?6
+                 WHERE NOT EXISTS (
+                     SELECT 1 FROM execution_hold_attention
+                     WHERE project_id = ?1 AND authorization_id = ?2
+                       AND attention_code = ?3
+                 )",
+                params![
+                    project_id.to_string(),
+                    authorization_id.to_string(),
+                    attention.code.as_str(),
+                    attention.owner.to_string(),
+                    text(attention.review_by),
+                    text(attention.raised_at)
+                ],
+            )
+            .map_err(backend)?;
+        Ok(changed > 0)
     }
 }
 

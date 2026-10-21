@@ -4702,9 +4702,11 @@ closed_enum! {
     HoldLiftCondition, "HoldLiftCondition" {
         /// Only a human lifts it, by arming.
         ///
-        /// The default, and what every existing hold means: a hold recorded
-        /// before this type existed said nothing about lifting, and must not
-        /// acquire a self-lift it was never given.
+        /// This is a stated condition, never a default: a caller must name it,
+        /// and it is accepted only with an owner, a reason code and a review
+        /// date. A hold recorded before this type existed is read as `manual`
+        /// because it said nothing about lifting and must not acquire a
+        /// self-lift it was never given.
         Manual => "manual",
         /// Kickoff finished: the graph is externally bound, and every task it
         /// owns has somewhere to run.
@@ -4720,6 +4722,49 @@ closed_enum! {
         /// fact admission itself produces — so a kickoff hold that waited on
         /// one would be waiting on the thing it is holding back.
         KickoffReady => "kickoff_ready",
+        /// A named dependency task reached `done`.
+        ///
+        /// The hold names the exact task it waits on, so "the dependency is
+        /// done" is a fact about one durable row rather than a judgement about
+        /// a prose reason. A dependency that fails or is cancelled never
+        /// satisfies it: those are outcomes, not completion.
+        DependencyDone => "dependency_done",
+        /// The recorded review date arrived.
+        ///
+        /// This is the self-lifting spelling of a review. At the date the owner
+        /// resumes the work, closes it, or renews it once; a hold that records
+        /// this condition chooses the first instead of waiting to be asked.
+        ReviewDate => "review_date",
+    }
+}
+
+closed_enum! {
+    /// Why work is held, in the closed vocabulary REQ-008 names.
+    ///
+    /// A prose reason reads well and decides nothing. This is the part a
+    /// report, a sweep and an owner can act on without interpreting English.
+    HoldReasonCode, "HoldReasonCode" {
+        /// Waiting on one named dependency.
+        WaitingOnDependency => "waiting_on_dependency",
+        /// Waiting on capacity.
+        WaitingOnCapacity => "waiting_on_capacity",
+        /// Waiting on one named decision.
+        WaitingOnDecision => "waiting_on_decision",
+        /// Waiting on an external party.
+        WaitingOnExternalParty => "waiting_on_external_party",
+        /// Deliberately set aside by Igor.
+        Deprioritised => "deprioritised",
+    }
+}
+
+closed_enum! {
+    /// The typed human attention a hold can raise.
+    ///
+    /// Typed rather than prose so a notification channel, a collector and an
+    /// operator all select on the same value instead of matching a sentence.
+    HoldAttentionCode, "HoldAttentionCode" {
+        /// The hold's review date passed and it is still holding.
+        ReviewOverdue => "hold_review_overdue",
     }
 }
 

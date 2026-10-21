@@ -51,16 +51,16 @@ use kontor_api::applications::{
     BudgetBoundsDto, BudgetBoundsRequest, CreditBalanceDto, DisarmRequest,
     EnsureAccountProfileRequest, EnsureProjectRequest, EpicControlPlaneDto, EpicExecutionScopeDto,
     EpicImportStateDto, EpicProjectionDto, EpicTaskProjectionDto, HeadroomCeilingsDto,
-    InitialExecutionHoldPreviewDto, InitialExecutionHoldRequest, LifecycleAction,
-    LifecycleOutcomeDto, LifecycleRequest, ModelCatalogDto, PreviewEpicDto, PreviewEpicTaskDto,
-    ProbeProviderQuotaRequest, ProjectDto, ProviderQuotaStateDto, ProviderUsageObservationDto,
-    PublicationDecisionDto, PublicationIdentityRequest, PublicationMergeDto,
-    PublicationMergeRequest, PublishedTeamRevisionDto, QuotaProvenanceDto, QuotaSourceRangeDto,
-    QuotaWindowDto, ReadyTaskDto, ResumeAdmissionsRequest, RevisionRefDto, RuntimeCapabilityDto,
-    SchedulerPlanDto, SchedulerResumeDto, SchedulerStartDto, SeatProjectionDto,
-    SeatProviderQuotaDto, SeatQuotaStateDto, StartRequest, StartedSeatDto, SubjectAuthorityDto,
-    TeamDraftDto, TeamDraftRequest, TeamDraftSlotDto, TeamRunProjectionDto, TeamTemplateCatalogDto,
-    TeamsProjectionDto, WorkProfileCatalogDto,
+    HoldAttentionDto, HoldTermsDto, InitialExecutionHoldPreviewDto, InitialExecutionHoldRequest,
+    LifecycleAction, LifecycleOutcomeDto, LifecycleRequest, ModelCatalogDto, PreviewEpicDto,
+    PreviewEpicTaskDto, ProbeProviderQuotaRequest, ProjectDto, ProviderQuotaStateDto,
+    ProviderUsageObservationDto, PublicationDecisionDto, PublicationIdentityRequest,
+    PublicationMergeDto, PublicationMergeRequest, PublishedTeamRevisionDto, QuotaProvenanceDto,
+    QuotaSourceRangeDto, QuotaWindowDto, ReadyTaskDto, ResumeAdmissionsRequest, RevisionRefDto,
+    RuntimeCapabilityDto, SchedulerPlanDto, SchedulerResumeDto, SchedulerStartDto,
+    SeatProjectionDto, SeatProviderQuotaDto, SeatQuotaStateDto, StartRequest, StartedSeatDto,
+    SubjectAuthorityDto, TeamDraftDto, TeamDraftRequest, TeamDraftSlotDto, TeamRunProjectionDto,
+    TeamTemplateCatalogDto, TeamsProjectionDto, WorkProfileCatalogDto,
 };
 use kontor_api::applications::{
     AccountAvailabilityDto, AdaptiveWindowDto, AvailabilityOverrideDto,
@@ -229,7 +229,6 @@ use kontor_core::repository::{
     TopologyContainerRecovery, TopologyContainerRecoveryDisposition, TopologyRepository,
     WorkflowRepository,
 };
-use kontor_core::spec::HoldLiftCondition;
 use kontor_core::spec::{
     AutoArmPolicy, CanonicalSourceEvent, CatalogRoleRef, CodeCategory, ContextEnforcement,
     ContextPolicySnapshot, EffectiveContextPolicy, EffortLevel, EpicPresence, IntakeReceipt,
@@ -239,6 +238,7 @@ use kontor_core::spec::{
     TeamDefinitionSnapshot, TeamDefinitionSpec, TeamDeskDeclaration, TeamRunSnapshot,
     TeamTemplateRevision, TopologySnapshot, TriggerSpec,
 };
+use kontor_core::spec::{HoldAttentionCode, HoldLiftCondition, HoldReasonCode};
 use kontor_core::state::{
     DerivedRunState, Freshness, GateVerdict, ImportedTaskState, NativeContainerBinding,
     NativeContainerReadback, ObservedContainerKind, ObservedContainerProjection, RuntimeContact,
@@ -325,11 +325,12 @@ use kontor_store::{
     AdmissionCommit, AdmissionScanKey, Applied, AppliedEpic, AuthorizationRevocation,
     BacklogImport, ConsultationPermissionDecision, ConsultationPermissionResponseStatus,
     EpicApplication, EpicExecutionScopeDeclaration, EpicTask, EpicTicketLink, IdempotencyBinding,
-    JiraIntentKind, JiraItemKind, JiraMaterializationRecoveryItem, NewJiraMaterializationBatch,
-    NewJiraMaterializationItem, NewRoleTurn, ProfileSelection, ProjectEnsure, RegisteredPack,
-    RoleTurnReplay, RoleTurnRuntimeProof, SettledTurn, SqliteStore, StoredConflict,
-    StoredConsultationPermissionResponse, StoredTeamDraft, StoredTeamsProjection,
-    TaskWorktreeCorrection, TeamTemplateSource, TurnDispatch, UnconfirmedAdmission,
+    JiraIntentKind, JiraItemKind, JiraMaterializationRecoveryItem, NewHoldTerms,
+    NewJiraMaterializationBatch, NewJiraMaterializationItem, NewRoleTurn, ProfileSelection,
+    ProjectEnsure, RegisteredPack, RoleTurnReplay, RoleTurnRuntimeProof, SettledTurn, SqliteStore,
+    StoredConflict, StoredConsultationPermissionResponse, StoredHoldAttention, StoredHoldTerms,
+    StoredTeamDraft, StoredTeamsProjection, TaskWorktreeCorrection, TeamTemplateSource,
+    TurnDispatch, UnconfirmedAdmission,
 };
 use kontor_teams::run::{SlotLaunch, TeamClosureCertificate, TeamRunLease, TeamRunSlots};
 use kontor_teams::{
@@ -2525,15 +2526,14 @@ impl Services {
                 })?;
         }
         if let Some(hold) = &request.initial_hold {
-            state
-                .with_store(|store| store.get_account_profile(project_id, hold.held_by))
-                .map_err(|error| self.refuse(&error))?
-                .ok_or_else(|| {
-                    self.deny(
-                        ApiErrorCode::NotFound,
-                        "the account profile recording the initial hold does not exist in this project",
-                    )
-                })?;
+            self.validate_hold_terms(
+                project_id,
+                hold.held_by,
+                hold.reason_code,
+                hold.lift_condition,
+                hold.dependency_task_id,
+                hold.review_by,
+            )?;
         }
 
         let (bundle, team_source) =
@@ -2855,6 +2855,80 @@ impl Services {
             .map_err(|error| self.refuse(&error))
     }
 
+    /// Refuse hold terms that would make a hold indefinite or unevaluable.
+    ///
+    /// The four REQ-008 fields are all present in the type; this checks the two
+    /// relationships a type cannot carry: the review date is no more than 30
+    /// days ahead, and `dependency_done` names exactly one task that exists.
+    /// `manual` is accepted here like every other condition — its owner, reason
+    /// code and review date are the fields that make a person's decision
+    /// reviewable rather than open-ended.
+    fn validate_hold_terms(
+        &self,
+        project_id: ProjectId,
+        owner: AccountProfileId,
+        _reason_code: HoldReasonCode,
+        condition: HoldLiftCondition,
+        dependency_task_id: Option<TaskId>,
+        review_by: Timestamp,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        state
+            .with_store(|store| store.get_account_profile(project_id, owner))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the account profile that owns the hold does not exist in this project",
+                )
+            })?;
+        let horizon = kontor_api::now()
+            .checked_add(jiff::SignedDuration::from_secs(30 * 24 * 60 * 60))
+            .map_err(|_| {
+                self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "the hold review date is outside the supported range",
+                )
+            })?;
+        if review_by > horizon {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "a hold review date must be at most 30 days ahead",
+            ));
+        }
+        match condition {
+            HoldLiftCondition::DependencyDone => {
+                let Some(task_id) = dependency_task_id else {
+                    return Err(self.deny(
+                        ApiErrorCode::InvalidRequest,
+                        "a dependency_done hold must name the task it waits on",
+                    ));
+                };
+                if state
+                    .with_store(|store| store.get_task(project_id, task_id))
+                    .map_err(|error| self.refuse(&error))?
+                    .is_none()
+                {
+                    return Err(self.deny(
+                        ApiErrorCode::NotFound,
+                        "the task named by a dependency_done hold does not exist in this project",
+                    ));
+                }
+            }
+            HoldLiftCondition::Manual
+            | HoldLiftCondition::KickoffReady
+            | HoldLiftCondition::ReviewDate => {
+                if dependency_task_id.is_some() {
+                    return Err(self.deny(
+                        ApiErrorCode::InvalidRequest,
+                        "only a dependency_done hold may name a dependency task",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Persist a covering authorization already revoked for a new epic.
     ///
     /// Epic graph creation initially leaves the graph ungoverned, which is a
@@ -2888,7 +2962,10 @@ impl Services {
         )
         .await?;
         let disarm_key = self.epic_apply_child_key(parent_key, "initial-hold-disarm")?;
-        let held = <Self as ApplicationOperations>::disarm(
+        // The disarm writes the revocation and the hold terms in one store
+        // transaction. A hold can therefore never exist without the owner,
+        // reason code, lift condition and review date REQ-008 requires.
+        <Self as ApplicationOperations>::disarm(
             self,
             &disarm_key,
             project_id,
@@ -2896,38 +2973,14 @@ impl Services {
             &DisarmRequest {
                 authorization_id: authorization.authorization_id,
                 revoked_by: request.held_by,
+                reason_code: request.reason_code,
                 reason: request.reason.clone(),
+                lift_condition: request.lift_condition,
+                dependency_task_id: request.dependency_task_id,
+                review_by: request.review_by,
             },
         )
-        .await?;
-        // After the revocation, never before it: the condition's foreign key
-        // points at the revocation, which is what makes "a lift condition on
-        // something that is not a hold" unrepresentable.
-        //
-        // Recorded even when it is `manual`, so the hold states its terms
-        // explicitly rather than by saying nothing. The read path still treats
-        // an absent row as manual, because holds predating this table said
-        // nothing and must not acquire a self-lift they were never given.
-        let condition = request.lift_condition.unwrap_or(HoldLiftCondition::Manual);
-        let authorization_id = ExecutionAuthorizationId::parse(&held.authorization_id)
-            .map_err(|error| self.refuse_domain(&error))?;
-        self.state()?
-            .with_store(|store| {
-                store.record_hold_lift_condition(
-                    project_id,
-                    authorization_id,
-                    condition,
-                    kontor_api::now(),
-                )
-            })
-            .map_err(|error| self.refuse(&error))?;
-        // The disarm answered before the condition existed, so the terms are
-        // stated here. A caller that applied a hold reads back what would end
-        // it, rather than having to ask the epic again.
-        Ok(AuthorizationProjectionDto {
-            lift_condition: Some(condition),
-            ..held
-        })
+        .await
     }
 
     /// Every agent run in one team run, loaded whole.
@@ -8111,11 +8164,26 @@ impl Services {
         &self,
         project_id: ProjectId,
         epic_id: MiniProjectId,
-        condition: HoldLiftCondition,
+        terms: &StoredHoldTerms,
     ) -> Result<bool, ApiError> {
         let state = self.state()?;
-        match condition {
+        match terms.condition {
             HoldLiftCondition::Manual => Ok(false),
+            HoldLiftCondition::DependencyDone => {
+                let Some(task_id) = terms.dependency_task_id else {
+                    // The schema refuses this shape and the write boundary
+                    // refuses it before persistence. A row that still reached
+                    // here names nothing to evaluate, so it must not lift.
+                    return Ok(false);
+                };
+                Ok(state
+                    .with_store(|store| store.get_task(project_id, task_id))
+                    .map_err(|error| self.refuse(&error))?
+                    .is_some_and(|task| task.state == TaskState::Done))
+            }
+            HoldLiftCondition::ReviewDate => Ok(terms
+                .review_by
+                .is_some_and(|review_by| kontor_api::now() >= review_by)),
             HoldLiftCondition::KickoffReady => {
                 let epic_bound = state
                     .with_store(|store| store.confirmed_jira_epic_key(project_id, epic_id))
@@ -8204,17 +8272,18 @@ impl Services {
                 continue;
             }
             let id = entry.authorization.id;
-            let condition = state
-                .with_store(|store| store.get_hold_lift_condition(project_id, id))
+            let terms = state
+                .with_store(|store| store.get_hold_terms(project_id, id))
                 .map_err(|error| self.refuse(&error))?;
-            if !self.hold_lift_satisfied(project_id, epic_id, condition)? {
+            if !self.hold_lift_satisfied(project_id, epic_id, &terms)? {
                 continue;
             }
             let epic = self.epic_row(project_id, epic_id)?;
             let key = IdempotencyKey::parse(&format!("hold-lift-{id}"))
                 .map_err(|error| self.refuse_domain(&error))?;
             let reason = ExternalName::parse(&format!(
-                "self-lifted: the recorded condition {condition} is satisfied"
+                "self-lifted: the recorded condition {} is satisfied",
+                terms.condition
             ))
             .map_err(|error| self.refuse_domain(&error))?;
             <Self as ApplicationOperations>::arm(
@@ -8246,6 +8315,84 @@ impl Services {
             return Ok(());
         }
         Ok(())
+    }
+
+    /// Lift every satisfied hold and raise one typed attention per overdue hold.
+    ///
+    /// This is the boundary the self-lifting conditions need when nothing else
+    /// touches the epic: `dependency_done` becomes true when another epic's task
+    /// closes, and `review_date` becomes true with the clock. Both are facts
+    /// Kontor already owns, so the sweep reads only durable state and never a
+    /// runtime or an external ticket.
+    ///
+    /// The order matters. Lifting runs first, so a hold whose condition has come
+    /// true does not also alert its owner that it is overdue. Attention is raised
+    /// only for a hold that is still holding, has no live covering grant, and
+    /// whose review date has passed; the store's primary key makes a repeated
+    /// sweep a no-op rather than a second alert.
+    pub(crate) async fn sweep_holds(&self) -> Result<u32, ApiError> {
+        let state = self.state()?;
+        let holds = state
+            .with_store(|store| store.list_holds())
+            .map_err(|error| self.refuse(&error))?;
+        let epics: BTreeSet<(ProjectId, MiniProjectId)> = holds
+            .iter()
+            .map(|hold| (hold.project_id, hold.epic_id))
+            .collect();
+        for (project_id, epic_id) in epics {
+            if let Err(error) = self.lift_satisfied_holds(project_id, epic_id).await {
+                // One epic's refusal must not stop the sweep for every other
+                // hold. The refusal is logged and the next sweep retries it.
+                tracing::warn!(
+                    project_id = %project_id,
+                    epic_id = %epic_id,
+                    detail = %error.code.as_str(),
+                    "a hold sweep could not evaluate one epic"
+                );
+            }
+        }
+
+        let now = kontor_api::now();
+        let holds = state
+            .with_store(|store| store.list_holds())
+            .map_err(|error| self.refuse(&error))?;
+        let mut raised = 0_u32;
+        for hold in holds {
+            if hold.live_grant {
+                continue;
+            }
+            let Some(review_by) = hold.terms.review_by else {
+                continue;
+            };
+            if review_by > now {
+                continue;
+            }
+            if self.hold_lift_satisfied(hold.project_id, hold.epic_id, &hold.terms)? {
+                continue;
+            }
+            let attention = StoredHoldAttention {
+                code: HoldAttentionCode::ReviewOverdue,
+                owner: hold.owner,
+                review_by,
+                raised_at: now,
+            };
+            if state
+                .with_store(|store| {
+                    store.raise_hold_attention(hold.project_id, hold.authorization_id, &attention)
+                })
+                .map_err(|error| self.refuse(&error))?
+            {
+                raised = raised.saturating_add(1);
+                tracing::warn!(
+                    project_id = %hold.project_id,
+                    authorization = %hold.authorization_id,
+                    owner = %hold.owner,
+                    review_by = %review_by,
+                    "a hold passed its review date"
+                );
+            }
+        }
+        Ok(raised)
     }
 
     /// Whether one epic has the governed leadership its roster mandates.
@@ -16163,10 +16310,24 @@ fn evidence_of(authorization: &ExecutionAuthorization) -> AuthorizationEvidence 
 /// instead of implying `manual`.
 fn authorization_dto(
     stored: &kontor_store::StoredAuthorization,
-    lift_condition: Option<HoldLiftCondition>,
+    terms: Option<StoredHoldTerms>,
+    attention: Option<StoredHoldAttention>,
 ) -> AuthorizationProjectionDto {
+    let lift_condition = terms.as_ref().map(|terms| terms.condition);
+    let hold = terms.map(|terms| HoldTermsDto {
+        reason_code: terms.reason_code,
+        review_by: terms.review_by,
+        dependency_task_id: terms.dependency_task_id,
+        attention: attention.map(|attention| HoldAttentionDto {
+            code: attention.code,
+            owner: attention.owner,
+            review_by: attention.review_by,
+            raised_at: attention.raised_at,
+        }),
+    });
     AuthorizationProjectionDto {
         lift_condition,
+        hold,
         authorization_id: stored.authorization.id.to_string(),
         scope: match stored.authorization.scope {
             WorkScope::Project => "project".to_owned(),
@@ -32804,25 +32965,17 @@ impl ApplicationOperations for Services {
                 );
         }
         if let Some(hold) = &request.initial_hold {
-            let mut hold_intent = serde_json::json!({
-                "held_by": hold.held_by.to_string(),
-                "reason": hold.reason.as_str(),
-            });
             // The hold's terms are part of the operation, so idempotency
-            // protects them: the same key with a different lift condition is a
-            // different command, not a replay of this one. Widened only when a
-            // condition was actually named, in the same way ASMA-7941 widened
-            // the task intent — a caller that says nothing keeps the pre-field
-            // intent bytes, so its existing apply receipt stays replayable.
-            if let Some(condition) = hold.lift_condition {
-                hold_intent
-                    .as_object_mut()
-                    .expect("a hold intent is an object")
-                    .insert(
-                        "lift_condition".to_owned(),
-                        serde_json::json!(condition.as_str()),
-                    );
-            }
+            // protects them: the same key with a different owner, reason,
+            // condition or review date is a different command, not a replay.
+            let hold_intent = serde_json::json!({
+                "held_by": hold.held_by.to_string(),
+                "reason_code": hold.reason_code.as_str(),
+                "reason": hold.reason.as_str(),
+                "lift_condition": hold.lift_condition.as_str(),
+                "dependency_task_id": hold.dependency_task_id.map(|task| task.to_string()),
+                "review_by": hold.review_by.to_string(),
+            });
             intent_document
                 .as_object_mut()
                 .expect("an epic intent is an object")
@@ -33180,10 +33333,11 @@ impl ApplicationOperations for Services {
                     scope: "epic".to_owned(),
                     state: "revoked".to_owned(),
                     held_by: hold.held_by,
+                    reason_code: hold.reason_code,
                     reason: hold.reason.clone(),
-                    // Resolved, not echoed: a caller that named no condition
-                    // sees `manual` rather than an absence it has to interpret.
-                    lift_condition: hold.lift_condition.unwrap_or(HoldLiftCondition::Manual),
+                    lift_condition: hold.lift_condition,
+                    dependency_task_id: hold.dependency_task_id,
+                    review_by: hold.review_by,
                 }
             }),
             tasks: preview
@@ -33435,23 +33589,23 @@ impl ApplicationOperations for Services {
                 .map(|stored| {
                     // Only a revoked authorization is a hold, and only a hold
                     // has terms. Reading the ledger for a live grant would
-                    // report `manual` for something that is not waiting on
-                    // anyone.
-                    let lift_condition = if stored.revocation.is_some() {
-                        Some(
-                            state
-                                .with_store(|store| {
-                                    store.get_hold_lift_condition(
-                                        project_id,
-                                        stored.authorization.id,
-                                    )
-                                })
-                                .map_err(|error| self.refuse(&error))?,
-                        )
+                    // report terms for something that is not waiting on anyone.
+                    let (terms, attention) = if stored.revocation.is_some() {
+                        let terms = state
+                            .with_store(|store| {
+                                store.get_hold_terms(project_id, stored.authorization.id)
+                            })
+                            .map_err(|error| self.refuse(&error))?;
+                        let attention = state
+                            .with_store(|store| {
+                                store.hold_attention(project_id, stored.authorization.id)
+                            })
+                            .map_err(|error| self.refuse(&error))?;
+                        (Some(terms), attention)
                     } else {
-                        None
+                        (None, None)
                     };
-                    Ok(authorization_dto(stored, lift_condition))
+                    Ok(authorization_dto(stored, terms, attention))
                 })
                 .collect::<Result<Vec<_>, ApiError>>()?,
             scheduling_open: state.barrier().state().is_open(),
@@ -33546,7 +33700,7 @@ impl ApplicationOperations for Services {
                         "the replayed receipt names an authorization this realm no longer has",
                     )
                 })?;
-            return Ok(authorization_dto(&granted, None));
+            return Ok(authorization_dto(&granted, None, None));
         }
 
         let receipt = self.record(
@@ -33584,6 +33738,7 @@ impl ApplicationOperations for Services {
                 revocation: None,
             },
             None,
+            None,
         ))
     }
 
@@ -33606,7 +33761,11 @@ impl ApplicationOperations for Services {
             "operation": "execution_disarm",
             "authorization_id": request.authorization_id,
             "revoked_by": request.revoked_by.to_string(),
+            "reason_code": request.reason_code.as_str(),
             "reason": request.reason.as_str(),
+            "lift_condition": request.lift_condition.as_str(),
+            "dependency_task_id": request.dependency_task_id.map(|task| task.to_string()),
+            "review_by": request.review_by.to_string(),
         }))?;
         let target = AggregateRef::MiniProject {
             mini_project_id: epic_id,
@@ -33635,11 +33794,26 @@ impl ApplicationOperations for Services {
             // the same one. Re-asserting something already true is an answer, and
             // it answers with the hold's terms, which a caller re-reading a hold
             // is precisely what wants.
-            let condition = state
-                .with_store(|store| store.get_hold_lift_condition(project_id, id))
+            let terms = state
+                .with_store(|store| store.get_hold_terms(project_id, id))
                 .map_err(|error| self.refuse(&error))?;
-            return Ok(authorization_dto(&stored, Some(condition)));
+            let attention = state
+                .with_store(|store| store.hold_attention(project_id, id))
+                .map_err(|error| self.refuse(&error))?;
+            return Ok(authorization_dto(&stored, Some(terms), attention));
         }
+        // A revocation *is* a hold, so it cannot be written without the terms
+        // REQ-008 requires. The key and body were judged first, so a replay of
+        // the same disarm is answered above rather than re-validated against a
+        // review horizon that has since moved.
+        self.validate_hold_terms(
+            project_id,
+            request.revoked_by,
+            request.reason_code,
+            request.lift_condition,
+            request.dependency_task_id,
+            request.review_by,
+        )?;
         if replay {
             // The key recorded this disarm, but the authorization is not revoked:
             // the receipt landed and the revocation did not. Finishing it is the
@@ -33664,14 +33838,26 @@ impl ApplicationOperations for Services {
             receipt,
             reason: request.reason.clone(),
         };
+        let terms = NewHoldTerms {
+            condition: request.lift_condition,
+            reason_code: request.reason_code,
+            review_by: request.review_by,
+            dependency_task_id: request.dependency_task_id,
+        };
         state
-            .with_store(|store| store.revoke_authorization(project_id, id, &revocation))
+            .with_store(|store| store.revoke_authorization(project_id, id, &revocation, &terms))
             .map_err(|error| self.refuse(&error))?;
         Ok(authorization_dto(
             &kontor_store::StoredAuthorization {
                 authorization: stored.authorization,
                 revocation: Some(revocation),
             },
+            Some(StoredHoldTerms {
+                condition: terms.condition,
+                reason_code: Some(terms.reason_code),
+                review_by: Some(terms.review_by),
+                dependency_task_id: terms.dependency_task_id,
+            }),
             None,
         ))
     }

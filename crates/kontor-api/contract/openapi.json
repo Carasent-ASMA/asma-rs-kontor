@@ -15038,12 +15038,23 @@
             "type": "string",
             "description": "The account profile that granted it."
           },
+          "hold": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/HoldTermsDto",
+                "description": "The rest of the hold's terms, and any typed attention it raised.\n\n`None` exactly when [`Self::lift_condition`] is `None`."
+              }
+            ]
+          },
           "lift_condition": {
             "type": [
               "string",
               "null"
             ],
-            "description": "What would end this hold, beside the prose that says why it exists.\n\n`None` on a live grant, which has no terms left to meet, and on the\nnarrow arm and disarm answers that do not consult the ledger. A hold\nread back from its epic always states it, because \"why work is held\" and\n\"what would release it\" are different questions and only the second one\ncan be acted on."
+            "description": "What would end this hold, beside the prose that says why it exists.\n\n`None` on a live grant, which has no terms left to meet, and on the\nnarrow arm answer that does not consult the ledger. A hold read back from\nits epic always states it, because \"why work is held\" and \"what would\nrelease it\" are different questions and only the second one can be acted\non."
           },
           "max_concurrency": {
             "type": "integer",
@@ -19494,24 +19505,47 @@
       },
       "DisarmRequest": {
         "type": "object",
-        "description": "What `execution:disarm` is asked for.",
+        "description": "What `execution:disarm` is asked for.\n\nA revoked authorization is a hold, so disarming is a typed hold and not a\nbare revocation. The four REQ-008 fields are required here: `revoked_by` is\nthe owner, `reason_code` and `reason` say why, `lift_condition` says what\nwould end it, and `review_by` says when the owner must look again.",
         "required": [
           "authorization_id",
           "revoked_by",
-          "reason"
+          "reason_code",
+          "reason",
+          "lift_condition",
+          "review_by"
         ],
         "properties": {
           "authorization_id": {
             "type": "string",
             "description": "The authorization to revoke."
           },
+          "dependency_task_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The exact task a `dependency_done` hold waits on."
+          },
+          "lift_condition": {
+            "type": "string",
+            "description": "What would end the hold."
+          },
           "reason": {
             "type": "string",
-            "description": "Why it is being disarmed."
+            "description": "The prose that explains the reason. It never decides anything."
+          },
+          "reason_code": {
+            "type": "string",
+            "description": "Why work is held, from the closed REQ-008 vocabulary."
+          },
+          "review_by": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the owner must review the hold. At most 30 days ahead."
           },
           "revoked_by": {
             "type": "string",
-            "description": "The account profile acting as the revoking authority."
+            "description": "The account profile acting as the revoking authority. The hold's owner."
           }
         }
       },
@@ -21892,6 +21926,75 @@
           }
         }
       },
+      "HoldAttentionDto": {
+        "type": "object",
+        "description": "One typed attention raised by a hold.",
+        "required": [
+          "code",
+          "owner",
+          "review_by",
+          "raised_at"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "What the owner is being asked to look at."
+          },
+          "owner": {
+            "type": "string",
+            "description": "The account profile that owns the hold."
+          },
+          "raised_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the attention was raised."
+          },
+          "review_by": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The review date that passed."
+          }
+        }
+      },
+      "HoldTermsDto": {
+        "type": "object",
+        "description": "The owner, reason and review terms of one hold.",
+        "properties": {
+          "attention": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/HoldAttentionDto",
+                "description": "The typed attention raised once the review date passed."
+              }
+            ]
+          },
+          "dependency_task_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The exact task a `dependency_done` hold waits on."
+          },
+          "reason_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The closed REQ-008 reason code. `None` only for a hold recorded before\nthe vocabulary existed."
+          },
+          "review_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the owner must review the hold. `None` only for a hold recorded\nbefore review dates were required."
+          }
+        }
+      },
       "HostedSeatMessageDto": {
         "type": "object",
         "description": "Runtime acknowledgement for a persistent Core Team seat message.",
@@ -22080,21 +22183,39 @@
           "scope",
           "state",
           "held_by",
+          "reason_code",
           "reason",
-          "lift_condition"
+          "lift_condition",
+          "review_by"
         ],
         "properties": {
+          "dependency_task_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The exact task a `dependency_done` hold waits on."
+          },
           "held_by": {
             "type": "string",
             "description": "The account profile that will record the hold. Its owner."
           },
           "lift_condition": {
             "type": "string",
-            "description": "The machine-checkable condition apply will record, resolved — so a\ncaller that named none sees `manual` here rather than an absence it has\nto interpret."
+            "description": "The machine-checkable condition apply will record."
           },
           "reason": {
             "type": "string",
-            "description": "The durable reason apply will record."
+            "description": "The prose reason apply will record."
+          },
+          "reason_code": {
+            "type": "string",
+            "description": "The closed reason code apply will record."
+          },
+          "review_by": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The review date apply will record."
           },
           "scope": {
             "type": "string",
@@ -22111,25 +22232,42 @@
         "description": "A covering revoked authorization created before a new epic becomes\ngovernable by the scheduler.",
         "required": [
           "held_by",
-          "reason"
+          "reason_code",
+          "reason",
+          "lift_condition",
+          "review_by"
         ],
         "properties": {
+          "dependency_task_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The exact task a `dependency_done` hold waits on.\n\nRequired for `dependency_done`, refused for every other condition: a\ndependency the condition never reads is a term nobody can evaluate."
+          },
           "held_by": {
             "type": "string",
             "description": "The account profile recording the kickoff hold. Its owner."
           },
           "lift_condition": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "What would end the hold, as something Kontor can evaluate.\n\n`reason` is prose: it reads well and decides nothing, so before this\nfield the only thing that ever lifted a hold was a human calling\n`execution-arm`, and an epic whose stated condition had been true for\ndays sat idle because nobody was asked to look.\n\nAbsent means [`HoldLiftCondition::Manual`], which is what every hold\nrecorded before this field existed actually meant. A caller that says\nnothing gets exactly the behaviour it already had."
+            "type": "string",
+            "description": "What would end the hold, as something Kontor can evaluate.\n\nRequired. A hold that names no condition is an indefinite hold, which is\nexactly what REQ-008 forbids. `manual` is still a condition: it says a\nperson decides, and it is accepted only with an owner, a reason code and\na review date."
           },
           "reason": {
             "type": "string",
-            "description": "Why work must remain ineligible after the graph is created."
+            "description": "The prose that explains the reason. It never decides anything."
+          },
+          "reason_code": {
+            "type": "string",
+            "description": "Why work is held, from the closed REQ-008 vocabulary."
+          },
+          "review_by": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the owner must review the hold. At most 30 days ahead."
           }
-        }
+        },
+        "additionalProperties": false
       },
       "InstallWorkflowSpecRequest": {
         "type": "object",

@@ -648,7 +648,11 @@ export interface paths {
          *     Kontor's row without cancelling it would leave an agent running that nothing
          *     is steering. `runtime:settle` is the path for those.
          *
-         *     Idempotent: a run that is already closed reports its stored closure.
+         *     Idempotent: a run that is already closed reports its stored closure. An
+         *     already-closed TeamRun envelope is answered from that closure even while a
+         *     Team Definition migration is in flight. An envelope that is still open and
+         *     stranded needs settlement, and is refused with `409 placement_blocked` until
+         *     that migration settles.
          */
         post: operations["abandon_run"];
         delete?: never;
@@ -677,7 +681,10 @@ export interface paths {
          *     is the one thing a control plane must never let happen quietly.
          *
          *     Idempotent: a run that is already closed reports its stored closure and no
-         *     second observation is taken.
+         *     second observation is taken. An already-closed TeamRun envelope is answered
+         *     from that closure even while a Team Definition migration is in flight. An
+         *     envelope that is still open and stranded needs settlement, and is refused
+         *     with `409 placement_blocked` until that migration settles.
          */
         post: operations["settle_runtime"];
         delete?: never;
@@ -4784,14 +4791,15 @@ export interface components {
             capability_receipt_id: string;
             /** @description The account profile that granted it. */
             created_by: string;
+            hold?: null | components["schemas"]["HoldTermsDto"];
             /**
              * @description What would end this hold, beside the prose that says why it exists.
              *
              *     `None` on a live grant, which has no terms left to meet, and on the
-             *     narrow arm and disarm answers that do not consult the ledger. A hold
-             *     read back from its epic always states it, because "why work is held" and
-             *     "what would release it" are different questions and only the second one
-             *     can be acted on.
+             *     narrow arm answer that does not consult the ledger. A hold read back from
+             *     its epic always states it, because "why work is held" and "what would
+             *     release it" are different questions and only the second one can be acted
+             *     on.
              */
             lift_condition?: string | null;
             /**
@@ -6930,13 +6938,31 @@ export interface components {
             /** @description The subject's topology node. */
             topology_node_id: string;
         };
-        /** @description What `execution:disarm` is asked for. */
+        /**
+         * @description What `execution:disarm` is asked for.
+         *
+         *     A revoked authorization is a hold, so disarming is a typed hold and not a
+         *     bare revocation. The four REQ-008 fields are required here: `revoked_by` is
+         *     the owner, `reason_code` and `reason` say why, `lift_condition` says what
+         *     would end it, and `review_by` says when the owner must look again.
+         */
         DisarmRequest: {
             /** @description The authorization to revoke. */
             authorization_id: string;
-            /** @description Why it is being disarmed. */
+            /** @description The exact task a `dependency_done` hold waits on. */
+            dependency_task_id?: string | null;
+            /** @description What would end the hold. */
+            lift_condition: string;
+            /** @description The prose that explains the reason. It never decides anything. */
             reason: string;
-            /** @description The account profile acting as the revoking authority. */
+            /** @description Why work is held, from the closed REQ-008 vocabulary. */
+            reason_code: string;
+            /**
+             * Format: date-time
+             * @description When the owner must review the hold. At most 30 days ahead.
+             */
+            review_by: string;
+            /** @description The account profile acting as the revoking authority. The hold's owner. */
             revoked_by: string;
         };
         /**
@@ -7995,6 +8021,40 @@ export interface components {
              */
             schema_version: number;
         };
+        /** @description One typed attention raised by a hold. */
+        HoldAttentionDto: {
+            /** @description What the owner is being asked to look at. */
+            code: string;
+            /** @description The account profile that owns the hold. */
+            owner: string;
+            /**
+             * Format: date-time
+             * @description When the attention was raised.
+             */
+            raised_at: string;
+            /**
+             * Format: date-time
+             * @description The review date that passed.
+             */
+            review_by: string;
+        };
+        /** @description The owner, reason and review terms of one hold. */
+        HoldTermsDto: {
+            attention?: null | components["schemas"]["HoldAttentionDto"];
+            /** @description The exact task a `dependency_done` hold waits on. */
+            dependency_task_id?: string | null;
+            /**
+             * @description The closed REQ-008 reason code. `None` only for a hold recorded before
+             *     the vocabulary existed.
+             */
+            reason_code?: string | null;
+            /**
+             * Format: date-time
+             * @description When the owner must review the hold. `None` only for a hold recorded
+             *     before review dates were required.
+             */
+            review_by?: string | null;
+        };
         /** @description Runtime acknowledgement for a persistent Core Team seat message. */
         HostedSeatMessageDto: {
             /**
@@ -8076,16 +8136,21 @@ export interface components {
         };
         /** @description The no-write projection of a requested covering kickoff hold. */
         InitialExecutionHoldPreviewDto: {
+            /** @description The exact task a `dependency_done` hold waits on. */
+            dependency_task_id?: string | null;
             /** @description The account profile that will record the hold. Its owner. */
             held_by: string;
-            /**
-             * @description The machine-checkable condition apply will record, resolved — so a
-             *     caller that named none sees `manual` here rather than an absence it has
-             *     to interpret.
-             */
+            /** @description The machine-checkable condition apply will record. */
             lift_condition: string;
-            /** @description The durable reason apply will record. */
+            /** @description The prose reason apply will record. */
             reason: string;
+            /** @description The closed reason code apply will record. */
+            reason_code: string;
+            /**
+             * Format: date-time
+             * @description The review date apply will record.
+             */
+            review_by: string;
             /** @description The hold always covers the whole epic. */
             scope: string;
             /** @description Apply persists the authorization already revoked. */
@@ -8096,23 +8161,33 @@ export interface components {
          *     governable by the scheduler.
          */
         InitialExecutionHoldRequest: {
+            /**
+             * @description The exact task a `dependency_done` hold waits on.
+             *
+             *     Required for `dependency_done`, refused for every other condition: a
+             *     dependency the condition never reads is a term nobody can evaluate.
+             */
+            dependency_task_id?: string | null;
             /** @description The account profile recording the kickoff hold. Its owner. */
             held_by: string;
             /**
              * @description What would end the hold, as something Kontor can evaluate.
              *
-             *     `reason` is prose: it reads well and decides nothing, so before this
-             *     field the only thing that ever lifted a hold was a human calling
-             *     `execution-arm`, and an epic whose stated condition had been true for
-             *     days sat idle because nobody was asked to look.
-             *
-             *     Absent means [`HoldLiftCondition::Manual`], which is what every hold
-             *     recorded before this field existed actually meant. A caller that says
-             *     nothing gets exactly the behaviour it already had.
+             *     Required. A hold that names no condition is an indefinite hold, which is
+             *     exactly what REQ-008 forbids. `manual` is still a condition: it says a
+             *     person decides, and it is accepted only with an owner, a reason code and
+             *     a review date.
              */
-            lift_condition?: string | null;
-            /** @description Why work must remain ineligible after the graph is created. */
+            lift_condition: string;
+            /** @description The prose that explains the reason. It never decides anything. */
             reason: string;
+            /** @description Why work is held, from the closed REQ-008 vocabulary. */
+            reason_code: string;
+            /**
+             * Format: date-time
+             * @description When the owner must review the hold. At most 30 days ahead.
+             */
+            review_by: string;
         };
         /** @description The exact shipped external-workflow revision an Admin wants to pin. */
         InstallWorkflowSpecRequest: {

@@ -626,18 +626,36 @@ const INITIAL_EXECUTION_HOLD: &[FieldSpec] = &[
     field(
         "held_by",
         ArgType::AccountProfileId,
-        "The project account profile that records both the grant and revocation.",
+        "The project account profile that records both the grant and revocation. \
+         The hold's owner.",
+    ),
+    field(
+        "reason_code",
+        ArgType::Text,
+        "Why work is held: `waiting_on_dependency`, `waiting_on_capacity`, \
+         `waiting_on_decision`, `waiting_on_external_party` or `deprioritised`.",
     ),
     field(
         "reason",
         ArgType::ExternalName,
-        "Why work must remain ineligible after kickoff.",
+        "The prose that explains the reason. It never decides anything.",
     ),
-    optional_field(
+    field(
         "lift_condition",
         ArgType::Text,
-        "What would end the hold, so it can state its own terms rather than only \
-         its prose reason. Absent still means `manual`.",
+        "What would end the hold: `manual`, `kickoff_ready`, `dependency_done` \
+         or `review_date`. Required; a hold that names no end is indefinite.",
+    ),
+    optional_field(
+        "dependency_task_id",
+        ArgType::TaskId,
+        "The exact task a `dependency_done` hold waits on. Required for that \
+         condition and refused for every other.",
+    ),
+    field(
+        "review_by",
+        ArgType::Timestamp,
+        "When the owner must review the hold, at most 30 days ahead.",
     ),
 ];
 
@@ -2413,16 +2431,43 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "revoked_by",
                 Place::Body,
                 ArgType::AccountProfileId,
-                "Who revoked it.",
+                "Who revoked it. The hold's owner.",
+            ),
+            req(
+                "reason_code",
+                Place::Body,
+                ArgType::Text,
+                "Why work is held: `waiting_on_dependency`, `waiting_on_capacity`, \
+                 `waiting_on_decision`, `waiting_on_external_party` or `deprioritised`.",
             ),
             req(
                 "reason",
                 Place::Body,
                 ArgType::ExternalName,
-                "Why it was revoked.",
+                "The prose that explains the reason. It never decides anything.",
+            ),
+            req(
+                "lift_condition",
+                Place::Body,
+                ArgType::Text,
+                "What would end the hold: `manual`, `kickoff_ready`, `dependency_done` \
+                 or `review_date`.",
+            ),
+            opt(
+                "dependency_task_id",
+                Place::Body,
+                ArgType::TaskId,
+                "The exact task a `dependency_done` hold waits on. Required for that \
+                 condition and refused for every other.",
+            ),
+            req(
+                "review_by",
+                Place::Body,
+                ArgType::Timestamp,
+                "When the owner must review the hold, at most 30 days ahead.",
             ),
         ],
-        about: "Revoke a bounded execution authorization.",
+        about: "Revoke a bounded execution authorization as a typed, reviewable hold.",
     },
     ToolSpec {
         name: "kontor_profile_select",

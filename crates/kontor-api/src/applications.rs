@@ -53,8 +53,8 @@ use kontor_core::id::{
 use kontor_core::naming::AiShortName;
 use kontor_core::selector::{EpicSelector, TaskSelector};
 use kontor_core::spec::{
-    CodeCategory, CodeLifecycle, EpicPresence, HoldLiftCondition, RoleSegment, ShareabilityClass,
-    ShareabilityClassifier, ShareabilityProvenance,
+    CodeCategory, CodeLifecycle, EpicPresence, HoldAttentionCode, HoldLiftCondition,
+    HoldReasonCode, RoleSegment, ShareabilityClass, ShareabilityClassifier, ShareabilityProvenance,
 };
 use kontor_core::state::{PlacementState, TopologyLifecycle};
 use kontor_runtime::observation::ControlPlaneObservation;
@@ -4967,26 +4967,35 @@ pub struct EpicExecutionScopeDto {
 /// A covering revoked authorization created before a new epic becomes
 /// governable by the scheduler.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct InitialExecutionHoldRequest {
     /// The account profile recording the kickoff hold. Its owner.
     #[schema(value_type = String)]
     pub held_by: AccountProfileId,
-    /// Why work must remain ineligible after the graph is created.
+    /// Why work is held, from the closed REQ-008 vocabulary.
+    #[schema(value_type = String)]
+    pub reason_code: HoldReasonCode,
+    /// The prose that explains the reason. It never decides anything.
     #[schema(value_type = String)]
     pub reason: ExternalName,
     /// What would end the hold, as something Kontor can evaluate.
     ///
-    /// `reason` is prose: it reads well and decides nothing, so before this
-    /// field the only thing that ever lifted a hold was a human calling
-    /// `execution-arm`, and an epic whose stated condition had been true for
-    /// days sat idle because nobody was asked to look.
+    /// Required. A hold that names no condition is an indefinite hold, which is
+    /// exactly what REQ-008 forbids. `manual` is still a condition: it says a
+    /// person decides, and it is accepted only with an owner, a reason code and
+    /// a review date.
+    #[schema(value_type = String)]
+    pub lift_condition: HoldLiftCondition,
+    /// The exact task a `dependency_done` hold waits on.
     ///
-    /// Absent means [`HoldLiftCondition::Manual`], which is what every hold
-    /// recorded before this field existed actually meant. A caller that says
-    /// nothing gets exactly the behaviour it already had.
-    #[serde(default)]
+    /// Required for `dependency_done`, refused for every other condition: a
+    /// dependency the condition never reads is a term nobody can evaluate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<String>)]
-    pub lift_condition: Option<HoldLiftCondition>,
+    pub dependency_task_id: Option<TaskId>,
+    /// When the owner must review the hold. At most 30 days ahead.
+    #[schema(value_type = String, format = DateTime)]
+    pub review_by: Timestamp,
 }
 
 /// The no-write projection of a requested covering kickoff hold.
@@ -4999,14 +5008,21 @@ pub struct InitialExecutionHoldPreviewDto {
     /// The account profile that will record the hold. Its owner.
     #[schema(value_type = String)]
     pub held_by: AccountProfileId,
-    /// The durable reason apply will record.
+    /// The closed reason code apply will record.
+    #[schema(value_type = String)]
+    pub reason_code: HoldReasonCode,
+    /// The prose reason apply will record.
     #[schema(value_type = String)]
     pub reason: ExternalName,
-    /// The machine-checkable condition apply will record, resolved — so a
-    /// caller that named none sees `manual` here rather than an absence it has
-    /// to interpret.
+    /// The machine-checkable condition apply will record.
     #[schema(value_type = String)]
     pub lift_condition: HoldLiftCondition,
+    /// The exact task a `dependency_done` hold waits on.
+    #[schema(value_type = Option<String>)]
+    pub dependency_task_id: Option<TaskId>,
+    /// The review date apply will record.
+    #[schema(value_type = String, format = DateTime)]
+    pub review_by: Timestamp,
 }
 
 /// What `epics:apply` is asked for.
@@ -5465,12 +5481,53 @@ pub struct AuthorizationProjectionDto {
     /// What would end this hold, beside the prose that says why it exists.
     ///
     /// `None` on a live grant, which has no terms left to meet, and on the
-    /// narrow arm and disarm answers that do not consult the ledger. A hold
-    /// read back from its epic always states it, because "why work is held" and
-    /// "what would release it" are different questions and only the second one
-    /// can be acted on.
+    /// narrow arm answer that does not consult the ledger. A hold read back from
+    /// its epic always states it, because "why work is held" and "what would
+    /// release it" are different questions and only the second one can be acted
+    /// on.
     #[schema(value_type = Option<String>)]
     pub lift_condition: Option<HoldLiftCondition>,
+    /// The rest of the hold's terms, and any typed attention it raised.
+    ///
+    /// `None` exactly when [`Self::lift_condition`] is `None`.
+    #[schema(value_type = Option<HoldTermsDto>)]
+    pub hold: Option<HoldTermsDto>,
+}
+
+/// The owner, reason and review terms of one hold.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct HoldTermsDto {
+    /// The closed REQ-008 reason code. `None` only for a hold recorded before
+    /// the vocabulary existed.
+    #[schema(value_type = Option<String>)]
+    pub reason_code: Option<HoldReasonCode>,
+    /// When the owner must review the hold. `None` only for a hold recorded
+    /// before review dates were required.
+    #[schema(value_type = Option<String>, format = DateTime)]
+    pub review_by: Option<Timestamp>,
+    /// The exact task a `dependency_done` hold waits on.
+    #[schema(value_type = Option<String>)]
+    pub dependency_task_id: Option<TaskId>,
+    /// The typed attention raised once the review date passed.
+    #[schema(value_type = Option<HoldAttentionDto>)]
+    pub attention: Option<HoldAttentionDto>,
+}
+
+/// One typed attention raised by a hold.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct HoldAttentionDto {
+    /// What the owner is being asked to look at.
+    #[schema(value_type = String)]
+    pub code: HoldAttentionCode,
+    /// The account profile that owns the hold.
+    #[schema(value_type = String)]
+    pub owner: AccountProfileId,
+    /// The review date that passed.
+    #[schema(value_type = String, format = DateTime)]
+    pub review_by: Timestamp,
+    /// When the attention was raised.
+    #[schema(value_type = String, format = DateTime)]
+    pub raised_at: Timestamp,
 }
 
 /// The resource bounds one grant was taken under, on the wire.
@@ -5597,16 +5654,34 @@ pub struct ArmRequest {
 }
 
 /// What `execution:disarm` is asked for.
+///
+/// A revoked authorization is a hold, so disarming is a typed hold and not a
+/// bare revocation. The four REQ-008 fields are required here: `revoked_by` is
+/// the owner, `reason_code` and `reason` say why, `lift_condition` says what
+/// would end it, and `review_by` says when the owner must look again.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 pub struct DisarmRequest {
     /// The authorization to revoke.
     pub authorization_id: String,
-    /// The account profile acting as the revoking authority.
+    /// The account profile acting as the revoking authority. The hold's owner.
     #[schema(value_type = String)]
     pub revoked_by: AccountProfileId,
-    /// Why it is being disarmed.
+    /// Why work is held, from the closed REQ-008 vocabulary.
+    #[schema(value_type = String)]
+    pub reason_code: HoldReasonCode,
+    /// The prose that explains the reason. It never decides anything.
     #[schema(value_type = String)]
     pub reason: ExternalName,
+    /// What would end the hold.
+    #[schema(value_type = String)]
+    pub lift_condition: HoldLiftCondition,
+    /// The exact task a `dependency_done` hold waits on.
+    #[serde(default)]
+    #[schema(value_type = Option<String>)]
+    pub dependency_task_id: Option<TaskId>,
+    /// When the owner must review the hold. At most 30 days ahead.
+    #[schema(value_type = String, format = DateTime)]
+    pub review_by: Timestamp,
 }
 
 // ---------------------------------------------------------------------------

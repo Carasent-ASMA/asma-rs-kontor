@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 134;
+pub const SCHEMA_VERSION: i64 = 135;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -460,6 +460,11 @@ const MIGRATIONS: &[&str] = &[
     // and review room serve, and the receipt kinds that open and close a
     // review (ASMA-8453).
     include_str!("../migrations/0134_pr_review_subjects.sql"),
+    // Schema v135. Every hold records an owner, a reason code, a lift condition
+    // and a review date; `dependency_done` and `review_date` can lift a hold
+    // themselves; and an overdue review raises one typed attention record
+    // (ASMA-8517 / REQ-008).
+    include_str!("../migrations/0135_hold_terms_and_attention.sql"),
 ];
 
 const _: () = assert!(
