@@ -1,7 +1,8 @@
-//! The one outbound webhook and its isolated delivery task.
+//! The configured outbound destinations and their isolated delivery tasks.
 //!
-//! Delivery is a detached one-shot per alert (CON-006): spawned, bounded by the
-//! configured timeout and attempt count, and never awaited by the command path.
+//! Delivery is a detached one-shot per alert (CON-006): spawned, then each
+//! destination gets its own bounded POST sequence using that destination's
+//! timeout and attempt count, and the command path never awaits it.
 //! A failure is logged with the receipt id and discarded (GUD-001); nothing here
 //! can roll back or delay the receipt it observed.
 //!

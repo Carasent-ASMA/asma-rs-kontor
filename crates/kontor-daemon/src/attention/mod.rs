@@ -1,18 +1,20 @@
-//! The Kontor attention channel: one channel-neutral payload, one isolated
-//! outbound webhook, and the triggers that settle it.
+//! The Kontor attention channel: one channel-neutral payload, the configured
+//! outbound destinations, and the triggers that settle it.
 //!
 //! The split is deliberate:
 //!
 //! * [`payload`] owns the allowlist and the plain-text boundary;
 //! * [`config`] owns `attention.yml`, including the channel split that refuses
 //!   raw agent attention because Paseo's own push already owns it;
-//! * [`sink`] owns the one `POST` and the detached, bounded, isolated delivery;
+//! * [`sink`] owns each destination's `POST` and the detached, bounded,
+//!   isolated delivery;
 //! * this module owns the triggers and the two observation classes that have no
 //!   writer to push them: a waiting seat and an expired hold.
 //!
 //! Delivery never happens in a store transaction and never in the store at all
 //! (CON-003). The store hands settled facts to an observer after commit; the
-//! observer formats and spawns one detached task (CON-006).
+//! observer formats and spawns one detached task per alert, which fans out to
+//! the configured destinations (CON-006).
 
 pub mod config;
 pub mod payload;
@@ -38,7 +40,7 @@ use crate::attention::payload::{
 };
 use crate::attention::sink::AttentionSink;
 
-/// The one configured channel.
+/// The configured attention channel.
 #[derive(Debug)]
 pub struct AttentionChannel {
     policy: AttentionPolicy,
