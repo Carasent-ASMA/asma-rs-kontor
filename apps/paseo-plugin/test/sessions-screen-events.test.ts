@@ -1663,7 +1663,7 @@ describe("SessionsScreen toolbar events", () => {
       .toEqual(compact ? ["Last known", 1, 1] : ["Last known", 1, "needs input", 1, "error"]);
   });
 
-  it("shows a Role row's conflict cue and place, keeping the place beside the title on compact", () => {
+  it("shows a Role row's conflict cue and place, giving the compact title its whole line above the place and age", () => {
     const { renderItem, drawn } = renderRoles([
       sessionEntry("conflict", { title: "QA • check results", labels: { "kontor.role": "AUD", workstream: "Kontor", epic: "ASMA-1" } }),
       sessionEntry("plain", { title: "aud • sign off", labels: { desk: "PR Review" } }),
@@ -1693,7 +1693,11 @@ describe("SessionsScreen toolbar events", () => {
     // The harness's memo returns the component itself.
     const drawnRow = row.type(row.props);
     expect([findByTestID(drawnRow, "sessions-row-title").props.children, findByTestID(drawnRow, "sessions-row-meta").props.children]).toEqual(["QA • check results", "title says QA · ASMA-1 · Workspace"]);
-    expect((findByTestID(drawnRow, "sessions-row-meta").props.style as { maxWidth: string }).maxWidth).toBe("55%");
+    // No line holds the title beside anything else; the place and the age share the line below, the place in up to two lines.
+    const lineOf = (testID: string) => walk(drawnRow).filter((element) => (element.props.style as { flexDirection?: string } | undefined)?.flexDirection === "row" && testIDs(element.props.children).includes(testID)).at(-1);
+    expect(lineOf("sessions-row-title")).toBeUndefined();
+    expect(testIDs(lineOf("sessions-row-meta")!.props.children)).toEqual(["sessions-row-meta", "sessions-row-age"]);
+    expect(findByTestID(drawnRow, "sessions-row-meta").props).toMatchObject({ numberOfLines: 2, style: { flex: 1, minWidth: 0 } });
     expect(String(drawnRow.props.accessibilityLabel)).toContain("Role AUD from the kontor.role label. title says QA. Workstream Kontor, epic ASMA-1, workspace Workspace");
   });
 
