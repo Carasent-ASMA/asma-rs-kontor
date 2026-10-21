@@ -2124,13 +2124,13 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     pinFilterInteraction();
     updateView({ sort: next, sortDirection: next === "current" ? undefined : defaultSortDirection(next), scrollOffset: 0 });
   };
-  // The profile is per host and tracker realm; a change ends peeks so nothing shown for the previous person stays pinned.
+  // The profile is per host and tracker realm; the store ends the peeks it affects, this view's included.
   const chooseWorkingAs = (accountId: string | null) => {
     if (realm === null) return;
     pinFilterInteraction();
     writeWorkingAs(host.id, realm, accountId);
     setDetailsId(null);
-    updateView({ peek: null, scrollOffset: 0 });
+    updateView({ scrollOffset: 0 });
   };
   const handleResetView = () => {
     pinFilterInteraction();

@@ -2644,7 +2644,7 @@ describe("My work, explicit order and Reset view on the Sessions screen", () => 
 
   it("ends a peek when Working as changes", () => {
     render(ready());
-    patchSessionView("host-a", { work: "all", query: "alpha", peek: { sessionId: "alpha-old", resultsOffset: 0 } });
+    patchSessionView("host-a", { work: "mine", query: "alpha", peek: { sessionId: "alpha-old", resultsOffset: 0 } });
     harness.flush();
     expect(readSessionView("host-a").peek).not.toBeNull();
     choose("workingAs", "Blair Example");

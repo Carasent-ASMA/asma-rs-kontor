@@ -156,11 +156,29 @@ export function readWorkingAs(hostId: string, realm: string | null): string | nu
   return realm === null ? null : workingAs.get(profileKey(hostId, realm)) ?? null;
 }
 
-/** A changed profile ends every peek, so no result shown for the previous person stays pinned. */
+/** The host a view belongs to: app scopes are `sessionScopeKey` JSON arrays led by the host ID; the default scope is the host ID. */
+function viewHost(key: string): string {
+  try {
+    const parsed: unknown = JSON.parse(key);
+    if (Array.isArray(parsed) && typeof parsed[0] === "string") return keyOf(parsed[0]);
+  } catch {
+    // A plain host scope.
+  }
+  return key;
+}
+
+/**
+ * A changed profile ends the peeks it could have produced: this host's views in My work or Unknown
+ * responsibility. Other hosts, person scopes and All work keep theirs, and choosing the same person changes nothing.
+ */
 export function writeWorkingAs(hostId: string, realm: string, accountId: string | null): void {
+  if (readWorkingAs(hostId, realm) === accountId) return;
   if (accountId === null) workingAs.delete(profileKey(hostId, realm));
   else workingAs.set(profileKey(hostId, realm), accountId);
-  for (const [key, view] of views) if (view.peek) views.set(key, { ...view, peek: null });
+  for (const [key, view] of views) {
+    const work = workScopeOf(view);
+    if (view.peek && viewHost(key) === keyOf(hostId) && (work === "mine" || work === "unknown")) views.set(key, { ...view, peek: null });
+  }
 }
 
 /**

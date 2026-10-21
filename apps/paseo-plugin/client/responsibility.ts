@@ -104,15 +104,26 @@ export function sessionResponsibility(entry: DirectoryEntry, index: Responsibili
 
 /**
  * Roster choices for Working as and person scope. Same-named people stay apart by status, account type and,
- * last, a stable ordinal; account IDs are never shown.
+ * last, a stable ordinal; account IDs are never shown. Every final label is unique across the whole roster.
  */
 export function rosterChoices(index: ResponsibilityIndex): { readonly accountId: string; readonly label: string }[] {
   const base = [...index.people.values()]
     .sort((left, right) => left.displayName.localeCompare(right.displayName) || (left.accountId < right.accountId ? -1 : 1))
     .map((person) => ({ accountId: person.accountId,
       label: `${person.displayName}${person.active ? "" : " (inactive)"}${person.accountType === "atlassian" ? "" : ` (${person.accountType})`}` }));
-  return base.map((choice) => {
-    const same = base.filter(({ label }) => label === choice.label);
-    return same.length < 2 ? choice : { ...choice, label: `${choice.label} · ${same.indexOf(choice) + 1} of ${same.length}` };
-  });
+  const groups = new Map<string, string[]>();
+  for (const { accountId, label } of base) groups.set(label, [...groups.get(label) ?? [], accountId]);
+  const numbered = new Set([...groups].filter(([, ids]) => ids.length > 1).map(([label]) => label));
+  const final = ({ accountId, label }: { accountId: string; label: string }) => {
+    const ids = groups.get(label)!;
+    return numbered.has(label) ? `${label} · ${ids.indexOf(accountId) + 1} of ${ids.length}` : label;
+  };
+  // Two numbered labels never match: the ordinal is each one's last " · n of m", so equal labels mean equal bases.
+  // A plain name can still read like a numbered one (a person literally named "A · 1 of 2"); number it too, until none does.
+  for (;;) {
+    const taken = new Set(base.filter(({ label }) => numbered.has(label)).map(final));
+    const clashing = [...groups.keys()].filter((label) => !numbered.has(label) && taken.has(label));
+    if (!clashing.length) return base.map((choice) => ({ accountId: choice.accountId, label: final(choice) }));
+    for (const label of clashing) numbered.add(label);
+  }
 }

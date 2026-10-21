@@ -53,6 +53,8 @@ describe("responsibility projection schema", () => {
     ["a workstream naming someone outside people", { workstreams: [{ key: "alpha", responsible: ["account-x"], participants: [] }] }],
     ["an expiry before the observation", { expiresAt: "2026-10-20T12:00:00Z" }],
     ["an unknown field", { owner: "account-a" }],
+    ["a declared workstream that names nobody", { workstreams: [{ key: "alpha", responsible: [], participants: [] }] }],
+    ["a declaration with no workstream", { workstreams: [] }],
   ])("rejects %s", (_name, overrides) => {
     expect(() => projection(overrides as Partial<Responsibility>)).toThrow();
   });
@@ -114,6 +116,26 @@ describe("one person's relation to one session", () => {
     const labels = rosterChoices(indexResponsibility(projection())).map(({ label }) => label);
     expect(labels).toEqual(["Alex Example", "Alex Example (inactive) · 1 of 2", "Alex Example (inactive) · 2 of 2", "Blair Example", "Collector (app)"]);
     expect(labels.join(" ")).not.toContain("account-");
+  });
+
+  it("keeps every label unique when a real name reads like a numbered one", () => {
+    const people = [
+      { accountId: "account-c", displayName: "Alex", active: false, accountType: "atlassian" },
+      { accountId: "account-d", displayName: "Alex", active: false, accountType: "atlassian" },
+      { accountId: "account-e", displayName: "Alex (inactive) · 1 of 2", active: true, accountType: "atlassian" },
+      { accountId: "account-f", displayName: "Alex (inactive) · 1 of 2 · 1 of 1", active: true, accountType: "atlassian" },
+    ];
+    const roster = rosterChoices(indexResponsibility(projection({ people, issues: [], workstreams: [], provenance: { collector: "c", selection: ["ASMA-100"], complete: true, workstreams: null } })));
+    expect(roster.map(({ label }) => label)).toEqual(["Alex (inactive) · 1 of 2", "Alex (inactive) · 2 of 2",
+      "Alex (inactive) · 1 of 2 · 1 of 1", "Alex (inactive) · 1 of 2 · 1 of 1 · 1 of 1"]);
+    expect(new Set(roster.map(({ label }) => label)).size).toBe(people.length);
+  });
+
+  it("never reads an unknown relation as someone else's through an undeclared workstream", () => {
+    // A declaration names only decided workstreams; beta is undeclared, and the epic has no assignee.
+    expect(match({ epic: "ASMA-200" }, "account-b")).toEqual({ status: "unknown", unknown: ["ASMA-200 assignee not read", "workstream beta not declared"] });
+    const unassigned = indexResponsibility(projection({ issues: [{ key: "ASMA-200", type: "Epic", level: 1, parent: null, assignee: null, workstreams: ["beta"] }] }));
+    expect(match({ epic: "ASMA-200" }, "account-b", unassigned)).toEqual({ status: "unknown", unknown: ["workstream beta not declared"] });
   });
 });
 

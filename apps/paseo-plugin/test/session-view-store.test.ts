@@ -160,7 +160,7 @@ describe("work scope, order and reset", () => {
     expect(sessionViewTransition(current, { sortDirection: "asc" })).toEqual({ sortDirection: "asc", peek: null });
   });
 
-  it("keeps Working as per host and tracker realm, and a change ends every peek", () => {
+  it("keeps Working as per host and tracker realm, and a change ends this host's My work peek", () => {
     patchSessionView("host-a", { query: "qa", peek: { sessionId: "s", resultsOffset: 40 } });
     writeWorkingAs("host-a", "tracker.example", "account-a");
     expect(readWorkingAs("host-a", "tracker.example")).toBe("account-a");
@@ -173,5 +173,24 @@ describe("work scope, order and reset", () => {
     writeWorkingAs("host-a", "tracker.example", "account-a");
     clearSessionViews();
     expect(readWorkingAs("host-a", "tracker.example")).toBeNull();
+  });
+
+  it("ends only the peeks the changed profile affects: this host, in My work or Unknown responsibility", () => {
+    const scope = (host: string, epic: string) => JSON.stringify([host, "sessions", null, epic]);
+    const peek = (resultsOffset: number) => ({ query: "qa", peek: { sessionId: `s-${resultsOffset}`, resultsOffset } });
+    patchSessionView(scope("host-a", "ASMA-1"), { ...peek(1), work: "mine" });
+    patchSessionView(scope("host-a", "ASMA-2"), { ...peek(2), work: "unknown" });
+    patchSessionView(scope("host-a", "ASMA-3"), { ...peek(3), work: "all" });
+    patchSessionView(scope("host-a", "ASMA-4"), { ...peek(4), work: "person:account-b" });
+    patchSessionView(scope("host-b", "ASMA-1"), { ...peek(700), work: "mine" });
+    patchSessionView("host-b", { ...peek(5), work: "mine" });
+    writeWorkingAs("host-a", "tracker.example", "account-a");
+    const peeks = () => [scope("host-a", "ASMA-1"), scope("host-a", "ASMA-2"), scope("host-a", "ASMA-3"), scope("host-a", "ASMA-4"), scope("host-b", "ASMA-1"), "host-b"]
+      .map((key) => readSessionView(key).peek?.resultsOffset ?? null);
+    expect(peeks()).toEqual([null, null, 3, 4, 700, 5]);
+    // Choosing the same person again changes nothing.
+    patchSessionView(scope("host-a", "ASMA-1"), peek(1));
+    writeWorkingAs("host-a", "tracker.example", "account-a");
+    expect(readSessionView(scope("host-a", "ASMA-1")).peek?.resultsOffset).toBe(1);
   });
 });

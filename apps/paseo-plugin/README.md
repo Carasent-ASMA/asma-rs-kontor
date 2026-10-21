@@ -540,7 +540,8 @@ responsibility** and is never counted as someone else's.
 
 Collect it read-only from explicitly selected epics with asma-cli's Jira
 credential helper (importable, or under `$ASMA_ROOT`). Credentials never
-enter arguments, the output or logs:
+enter arguments, the output or logs, and a redirect to another origin is
+refused before it is followed:
 
 ```bash
 python3 apps/paseo-plugin/scripts/collect-responsibility.py ASMA-100 ASMA-200 \
@@ -557,6 +558,8 @@ every account in it is confirmed with a Jira user read:
 {"realm":"tracker.example","workstreams":[{"key":"alpha","responsible":["account-b"],"participants":[]}]}
 ```
 
+Each declared workstream names at least one account, as lists of account ID
+strings. Repeated members, empty rosters and an empty declaration are refused.
 Undecided workstreams are left out, so they stay unknown. Without a
 declaration, every workstream relation is unknown, and My work matches only
 epic and task assignees. `--self-check` runs the offline check on synthetic

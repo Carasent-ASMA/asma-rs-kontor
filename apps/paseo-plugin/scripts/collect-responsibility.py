@@ -24,10 +24,12 @@ import json
 import os
 import re
 import sys
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 COLLECTOR = "collect-responsibility@1"
 FIELDS = "assignee,issuetype,parent,labels"
@@ -53,21 +55,43 @@ def person(user: dict) -> dict:
             "active": bool(user.get("active")), "accountType": user.get("accountType") or "unknown"}
 
 
+def unique_members(pairs: list[tuple[str, object]]) -> dict:
+    keys = [key for key, _ in pairs]
+    if len(set(keys)) != len(keys):
+        raise ValueError("Declaration repeats a member name")
+    return dict(pairs)
+
+
+def account_ids(value: object, limit: int) -> list[str] | None:
+    """A list of account ID strings, or None; never a string, an object or a coerced value."""
+    if not isinstance(value, list) or len(value) > limit or not all(isinstance(i, str) and ACCOUNT_ID.fullmatch(i) for i in value):
+        return None
+    return sorted(set(value))
+
+
 def parse_declaration(raw: bytes, realm: str) -> list[dict]:
-    """The operator's declaration, checked for shape only; accounts are confirmed against Jira separately."""
-    data = json.loads(raw)
+    """The operator's declaration, checked strictly; accounts are confirmed against Jira separately.
+
+    Only decided workstreams appear, each naming at least one account: an empty roster would read as
+    "nobody here", turning every unknown relation into someone else's.
+    """
+    data = json.loads(raw, object_pairs_hook=unique_members)
     if not isinstance(data, dict) or set(data) != {"realm", "workstreams"} or data["realm"] != realm:
         raise ValueError(f"Declaration must be {{\"realm\", \"workstreams\"}} for realm {realm}")
+    if not isinstance(data["workstreams"], list) or not 1 <= len(data["workstreams"]) <= 256:
+        raise ValueError("Declare 1 to 256 workstreams, or leave out --workstreams")
     seen, streams = set(), []
     for stream in data["workstreams"]:
         if not isinstance(stream, dict) or set(stream) != {"key", "responsible", "participants"}:
             raise ValueError("Each workstream declares exactly key, responsible and participants")
-        key = str(stream["key"]).strip()
-        ids = [*stream["responsible"], *stream["participants"]]
-        if not key or key.lower() in seen or not all(isinstance(i, str) and ACCOUNT_ID.match(i) for i in ids):
-            raise ValueError(f"Workstream {key or '(empty)'} is duplicated or names an invalid account ID")
+        key = stream["key"].strip() if isinstance(stream["key"], str) else ""
+        if not key or len(key) > 128 or key.lower() in seen:
+            raise ValueError(f"Workstream key {stream['key']!r} must be a unique, non-empty string")
+        responsible, participants = account_ids(stream["responsible"], 64), account_ids(stream["participants"], 256)
+        if responsible is None or participants is None or not responsible + participants:
+            raise ValueError(f"Workstream {key} must name at least one account, as lists of account ID strings")
         seen.add(key.lower())
-        streams.append({"key": key, "responsible": sorted(set(stream["responsible"])), "participants": sorted(set(stream["participants"]))})
+        streams.append({"key": key, "responsible": responsible, "participants": participants})
     return streams
 
 
@@ -88,8 +112,33 @@ def project(selection: list[str], realm: str, raw_issues: list[dict], declared_p
             "workstreams": streams or []}
 
 
+def origin(url: str) -> tuple[str, str, int | None]:
+    parts = urllib.parse.urlsplit(url)
+    scheme = parts.scheme.lower()
+    return scheme, (parts.hostname or "").lower(), parts.port or {"http": 80, "https": 443}.get(scheme)
+
+
+class CrossOriginRedirect(urllib.error.HTTPError):
+    pass
+
+
+class SameOriginRedirects(urllib.request.HTTPRedirectHandler):
+    """The credential goes only to the configured origin: a redirect elsewhere is refused before it is followed."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        if origin(newurl) != origin(req.full_url):
+            raise CrossOriginRedirect(req.full_url, code, "cross-origin redirect refused", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 class Jira:
-    def __init__(self) -> None:
+    def __init__(self, base: str, headers: dict) -> None:
+        self.base, self.headers = base, headers
+        self.realm = (urllib.parse.urlparse(base).hostname or "").lower()
+        self.opener = urllib.request.build_opener(SameOriginRedirects)
+
+    @classmethod
+    def from_asma_cli(cls) -> "Jira":
         try:
             import asma_cli.jira_config  # noqa: F401
         except ImportError:
@@ -99,19 +148,21 @@ class Jira:
             sys.path.insert(0, os.path.join(root, "_tools", "asma-cli", "src"))
         environment = dict(os.environ)
         from asma_cli.jira_config import build_jira_headers, normalized_base_url
-        self.base, self.headers = normalized_base_url(), build_jira_headers()
+        base, headers = normalized_base_url(), build_jira_headers()
         # The helper may load its own settings into the environment; nothing else in this process needs them.
         os.environ.clear()
         os.environ.update(environment)
-        if not self.base or not self.headers:
+        if not base or not headers:
             raise SystemExit("asma-cli has no Jira configuration on this host")
-        self.realm = (urllib.parse.urlparse(self.base).hostname or "").lower()
+        return cls(base, headers)
 
     def get(self, path: str, query: dict) -> dict | None:
         request = urllib.request.Request(f"{self.base}{path}?{urllib.parse.urlencode(query)}", headers=self.headers)
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
+            with self.opener.open(request, timeout=30) as response:
                 return json.load(response)
+        except CrossOriginRedirect:
+            raise SystemExit(f"Jira read {path} refused a redirect to another origin") from None
         except urllib.error.HTTPError as error:
             if error.code == 404:
                 return None
@@ -131,7 +182,7 @@ class Jira:
 
 
 def collect(selection: list[str], declaration_path: str | None, ttl_hours: float) -> dict:
-    jira = Jira()
+    jira = Jira.from_asma_cli()
     epics = jira.levels("key", selection)
     children = jira.levels("parent", [issue["key"] for issue in epics])
     subtasks = jira.levels("parent", [issue["key"] for issue in children])
@@ -153,6 +204,52 @@ def collect(selection: list[str], declaration_path: str | None, ttl_hours: float
     return project(selection, jira.realm, unique, declared_people, streams, declaration, datetime.now(timezone.utc), ttl_hours)
 
 
+def redirect_check() -> None:
+    """The credential is never sent to another origin: a redirect there is refused before the second request."""
+    seen: list[str | None] = []
+
+    class Quiet(BaseHTTPRequestHandler):
+        def log_message(self, *args) -> None:  # noqa: ANN002
+            pass
+
+        def reply(self, code: int, location: str | None = None) -> None:
+            self.send_response(code)
+            if location:
+                self.send_header("Location", location)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"ok": true}')
+
+    class Elsewhere(Quiet):
+        def do_GET(self) -> None:  # noqa: N802
+            seen.append(self.headers.get("Authorization"))
+            self.reply(200)
+
+    other = ThreadingHTTPServer(("127.0.0.1", 0), Elsewhere)
+
+    class Origin(Quiet):
+        def do_GET(self) -> None:  # noqa: N802
+            self.reply(*{"/away": (302, f"http://127.0.0.1:{other.server_port}/taken"), "/here": (302, "/done")}.get(self.path.split("?")[0], (200,)))
+
+    home = ThreadingHTTPServer(("127.0.0.1", 0), Origin)
+    for server in (home, other):
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        jira = Jira(f"http://127.0.0.1:{home.server_port}", {"Authorization": "Basic c3ludGhldGlj"})
+        jira.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), SameOriginRedirects)
+        assert jira.get("/here", {}) == {"ok": True}
+        try:
+            jira.get("/away", {})
+            raise AssertionError("a cross-origin redirect was followed")
+        except SystemExit as refusal:
+            assert "another origin" in str(refusal)
+        assert seen == [], seen
+    finally:
+        for server in (home, other):
+            server.shutdown()
+            server.server_close()
+
+
 def self_check() -> dict:
     """Synthetic data only; prints a projection the plugin's schema test parses."""
     user = lambda i, name: {"accountId": i, "displayName": name, "active": True, "accountType": "atlassian"}
@@ -168,12 +265,22 @@ def self_check() -> dict:
     assert by_key["ASMA-100"] == {"key": "ASMA-100", "type": "Epic", "level": 1, "parent": None, "assignee": "account-a", "workstreams": ["alpha"]}
     assert by_key["ASMA-101"]["assignee"] is None and "assignee" not in by_key["ASMA-102"] and "workstreams" not in by_key["ASMA-102"]
     assert [p["accountId"] for p in out["people"]] == ["account-a", "account-b"] and out["expiresAt"] == "2026-01-02T00:00:00Z"
-    for bad in ['{"realm": "other.example", "workstreams": []}', '{"realm": "tracker.example", "workstreams": [{"key": "a", "responsible": ["x y"], "participants": []}]}']:
+    stream = lambda key="a", responsible=("account-b",), participants=(): json.dumps({"key": key, "responsible": responsible, "participants": participants})
+    for bad in ['{"realm": "other.example", "workstreams": [%s]}' % stream(), '{"realm": "tracker.example", "workstreams": []}',
+                *('{"realm": "tracker.example", "workstreams": [%s]}' % entry for entry in [
+                    stream(responsible=["x y"]), stream(responsible=["account-b\n"]), stream(key=7), stream(key=None), stream(key=" "),
+                    stream(responsible="account-b"), stream(responsible={"account-b": 1}), stream(responsible=[]), stream(participants=[1]),
+                    stream(responsible=["account-b", None]), '{"key": "a", "responsible": ["account-b"], "responsible": ["account-c"], "participants": []}',
+                    f'{stream("a")}, {stream("A")}']),
+                '{"realm": "tracker.example", "realm": "tracker.example", "workstreams": [%s]}' % stream()]:
         try:
             parse_declaration(bad.encode(), "tracker.example")
             raise AssertionError(bad)
         except ValueError:
             pass
+    assert parse_declaration(('{"realm": "tracker.example", "workstreams": [%s]}' % stream(responsible=[], participants=["account-c", "account-c"])).encode(),
+                             "tracker.example") == [{"key": "a", "responsible": [], "participants": ["account-c"]}]
+    redirect_check()
     try:
         project(["ASMA-101"], "tracker.example", issues, [], None, None, datetime(2026, 1, 1, tzinfo=timezone.utc), 24)
         raise AssertionError("a non-epic selection")
@@ -193,7 +300,7 @@ def main() -> None:
         output = self_check()
     else:
         selection = list(dict.fromkeys(key.strip().upper() for key in args.epics))
-        if not 1 <= len(selection) <= 64 or not all(ISSUE_KEY.match(key) for key in selection):
+        if not 1 <= len(selection) <= 64 or not all(ISSUE_KEY.fullmatch(key) for key in selection):
             parser.error("give 1 to 64 epic keys")
         if not 0 < args.ttl_hours <= 168:
             parser.error("--ttl-hours must be within (0, 168]")

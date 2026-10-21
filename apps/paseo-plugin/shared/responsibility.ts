@@ -9,7 +9,7 @@ const workstreamKey = z.string().trim().min(1).max(128);
 /**
  * Bounded, read-only responsibility projection, separate from consumption/data@2. People are keyed by
  * stable tracker account ID. An absent `assignee` was not read; null is unassigned at `generatedAt`.
- * `workstreams` facts exist only when an operator declaration was supplied and validated.
+ * `workstreams` facts exist only when an operator declaration was supplied and validated; each names at least one person.
  */
 export const responsibilitySchema = z.object({
   schema: z.literal("kontor/responsibility@1"),
@@ -50,11 +50,14 @@ export const responsibilitySchema = z.object({
     if (issue.assignee && !people.has(issue.assignee)) context.addIssue({ code: "custom", message: `Assignee of ${issue.key} is not in people` });
   }
   if (value.provenance.workstreams === null && value.workstreams.length) context.addIssue({ code: "custom", message: "Workstream facts need a declaration" });
+  // A declaration names only decided workstreams; an empty one or an empty roster would read as "nobody", not unknown.
+  if (value.provenance.workstreams !== null && !value.workstreams.length) context.addIssue({ code: "custom", message: "A declaration declares at least one workstream" });
   const streams = new Set<string>();
   for (const stream of value.workstreams) {
     const key = stream.key.toLocaleLowerCase();
     if (streams.has(key)) context.addIssue({ code: "custom", message: `Duplicate workstream ${stream.key}` });
     streams.add(key);
+    if (!stream.responsible.length && !stream.participants.length) context.addIssue({ code: "custom", message: `Workstream ${stream.key} declares nobody` });
     if ([...stream.responsible, ...stream.participants].some((id) => !people.has(id))) context.addIssue({ code: "custom", message: `Workstream ${stream.key} names someone not in people` });
   }
 });
