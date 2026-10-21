@@ -118,6 +118,16 @@ impl GithubPublicationConfig {
         let config: Self = serde_json::from_str(&text).map_err(|error| ConfigError::Invalid {
             detail: error.classify_detail(),
         })?;
+        config.validate()?;
+        Ok(Some(config))
+    }
+
+    /// Validate settings decoded from the explicitly selected YAML source.
+    ///
+    /// # Errors
+    /// Refuses unsupported schemas, invalid repositories and a zero poll interval.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        let config = self;
         if config.schema_version != 1 {
             return Err(ConfigError::Invalid {
                 detail: "schema_version must be 1".to_owned(),
@@ -141,7 +151,7 @@ impl GithubPublicationConfig {
                 detail: "poll_seconds must be at least 1".to_owned(),
             });
         }
-        Ok(Some(config))
+        Ok(())
     }
 }
 

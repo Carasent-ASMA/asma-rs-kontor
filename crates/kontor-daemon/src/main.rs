@@ -23,7 +23,7 @@ use kontor_api::state::BarrierState;
 use kontor_core::id::{ProjectId, Timestamp};
 use kontor_daemon::{
     COMPLETION_SCAN_INTERVAL, DEFAULT_PORT, Daemon, DaemonConfig, endpoint, jira_sync, logging,
-    recovery, runtimes, usage,
+    recovery, usage,
 };
 use tracing::{error, info, warn};
 
@@ -34,6 +34,9 @@ struct Arguments {
     /// The state root holding this realm's database, lock and credentials.
     #[arg(long, global = true)]
     state_root: Option<PathBuf>,
+    /// Explicit project YAML folder; overrides KONTOR_CONFIG_DIR.
+    #[arg(long, global = true)]
+    config_dir: Option<PathBuf>,
     /// The loopback port to bind.
     #[arg(long, default_value_t = DEFAULT_PORT)]
     port: u16,
@@ -104,6 +107,8 @@ enum Command {
 enum OperatorError {
     #[error(transparent)]
     Recovery(#[from] recovery::RecoveryError),
+    #[error(transparent)]
+    Config(#[from] kontor_daemon::config_folder::ConfigError),
     #[error("another daemon holds the state root, or its lock is unavailable")]
     CredentialLock,
     #[error(transparent)]
@@ -120,6 +125,7 @@ impl OperatorError {
     fn category(&self) -> &'static str {
         match self {
             Self::Recovery(error) => error.category(),
+            Self::Config(_) => "configuration",
             Self::CredentialLock => "state_root_locked",
             Self::Jira(_) | Self::CredentialScope | Self::CredentialInstall(_) => "jira_credential",
         }
@@ -135,8 +141,13 @@ async fn main() -> std::process::ExitCode {
         return std::process::ExitCode::FAILURE;
     };
 
+    let environment = std::env::var_os("KONTOR_CONFIG_DIR").map(PathBuf::from);
     if let Some(command) = arguments.command {
-        return match run(&state_root, command) {
+        return match run(
+            &state_root,
+            command,
+            arguments.config_dir.as_deref().or(environment.as_deref()),
+        ) {
             Ok(()) => std::process::ExitCode::SUCCESS,
             Err(error) => {
                 error!(category = error.category(), detail = %error, "the command did not run");
@@ -145,11 +156,32 @@ async fn main() -> std::process::ExitCode {
         };
     }
 
-    serve(state_root, arguments.port, arguments.origins).await
+    let folder = match kontor_daemon::config_folder::ConfigFolder::select(
+        arguments.config_dir.as_deref(),
+        environment.as_deref(),
+    ) {
+        Ok(folder) => folder,
+        Err(error) => {
+            error!(detail = %error, "kontor could not select its config folder");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    info!(config_dir = %folder.root().display(), project_key = %folder.project.key, "project configuration selected");
+    serve(
+        state_root,
+        folder.root().to_path_buf(),
+        arguments.port,
+        arguments.origins,
+    )
+    .await
 }
 
 /// Run one operator command against a state root.
-fn run(state_root: &Path, command: Command) -> Result<(), OperatorError> {
+fn run(
+    state_root: &Path,
+    command: Command,
+    config_dir: Option<&Path>,
+) -> Result<(), OperatorError> {
     let now = Timestamp::now();
     match command {
         Command::Snapshot { into } => {
@@ -218,16 +250,22 @@ fn run(state_root: &Path, command: Command) -> Result<(), OperatorError> {
             recovery::rotate_credentials(state_root)?;
             Ok(())
         }
-        Command::InstallJiraCredential { alias } => install_jira_credential(
-            state_root,
-            &alias,
-            std::io::stdin().lock(),
-            |scope, secret| kontor_jira::install_credentials(scope, &alias, secret),
-        ),
+        Command::InstallJiraCredential { alias } => {
+            let folder = kontor_daemon::config_folder::ConfigFolder::select(config_dir, None)?;
+            folder.refuse_legacy(state_root)?;
+            install_jira_credential(
+                Some(&folder),
+                state_root,
+                &alias,
+                std::io::stdin().lock(),
+                |scope, secret| kontor_jira::install_credentials(scope, &alias, secret),
+            )
+        }
     }
 }
 
 fn install_jira_credential(
+    folder: Option<&kontor_daemon::config_folder::ConfigFolder>,
     state_root: &Path,
     alias: &str,
     reader: impl std::io::Read,
@@ -251,7 +289,15 @@ fn install_jira_credential(
     // initializing, migrating, or replacing any realm. Read stdin only last.
     let realm = kontor_store::SqliteStore::read_existing_realm(&recovery::database_in(&root))
         .map_err(|_| OperatorError::CredentialScope)?;
-    let connectors = kontor_jira::JiraConnectors::read(&root, realm.realm_id)?;
+    let connectors = match folder {
+        Some(folder) => match folder.optional("tracker/connectors.yml")? {
+            Some(document) => {
+                kontor_jira::JiraConnectors::from_config(&root, realm.realm_id, document)?
+            }
+            None => return Err(OperatorError::CredentialScope),
+        },
+        None => kontor_jira::JiraConnectors::read(&root, realm.realm_id)?,
+    };
     if !connectors.references_alias(alias) {
         return Err(OperatorError::CredentialScope);
     }
@@ -293,15 +339,20 @@ where
 }
 
 /// Serve one Realm until the process is asked to stop.
-async fn serve(state_root: PathBuf, port: u16, origins: Vec<String>) -> std::process::ExitCode {
-    let mut config = DaemonConfig::at(state_root).with_port(port);
+async fn serve(
+    state_root: PathBuf,
+    config_dir: PathBuf,
+    port: u16,
+    origins: Vec<String>,
+) -> std::process::ExitCode {
+    let mut config = DaemonConfig::at(state_root)
+        .with_config_dir(config_dir)
+        .with_port(port);
     if !origins.is_empty() {
         config.allowed_origins = origins;
     }
-    // The fleet comes from the state root, so the shipped daemon's session routes
-    // are backed by the adapters this Realm is configured with. A Realm with no
-    // `runtimes.json` composes an empty fleet and says so below rather than
-    // pretending to have one.
+    // Runtime planes come from the selected host YAML. A project with no planes
+    // still serves its control plane and reports the empty registry.
     let daemon = match Daemon::start_configured(config) {
         Ok(daemon) => daemon,
         Err(error) => {
@@ -318,7 +369,7 @@ async fn serve(state_root: PathBuf, port: u16, origins: Vec<String>) -> std::pro
     if families.is_empty() {
         info!(
             realm_id = %daemon.realm_id(),
-            settings = %runtimes::path_in(&daemon.config().state_root).display(),
+            config_dir = ?daemon.config().config_dir,
             "no runtime is configured; session routes will answer as unconfigured"
         );
     } else {
@@ -537,7 +588,7 @@ mod tests {
             (configured.path(), "unknown"),
         ] {
             assert!(
-                install_jira_credential(root, alias, MustNotRead, |_, _| panic!(
+                install_jira_credential(None, root, alias, MustNotRead, |_, _| panic!(
                     "no credential effects"
                 ))
                 .is_err()
@@ -546,7 +597,7 @@ mod tests {
         assert!(!recovery::database_in(empty.path()).exists());
         std::fs::write(configured.path().join("jira.json"), b"{invalid}").unwrap();
         assert!(
-            install_jira_credential(configured.path(), "work", MustNotRead, |_, _| panic!(
+            install_jira_credential(None, configured.path(), "work", MustNotRead, |_, _| panic!(
                 "no credential effects"
             ))
             .is_err()
@@ -563,7 +614,7 @@ mod tests {
                 panic!("locked realm must refuse before reading credentials");
             }
         }
-        let result = install_jira_credential(root.path(), "work", MustNotRead, |_, _| {
+        let result = install_jira_credential(None, root.path(), "work", MustNotRead, |_, _| {
             panic!("locked realm must refuse before credential effects");
         });
         assert!(matches!(result, Err(OperatorError::CredentialLock)));
@@ -615,7 +666,7 @@ mod tests {
         std::fs::copy(a.path().join("jira.json"), b.path().join("jira.json")).unwrap();
         let fake = Fake::default();
         let old = br#"{"email":"old@example.test","api_token":"old-synthetic-token"}"#;
-        install_jira_credential(a.path(), "work", &old[..], |scope, secret| {
+        install_jira_credential(None, a.path(), "work", &old[..], |scope, secret| {
             kontor_jira::install_credentials_with(scope, "work", secret, &fake)
         })
         .unwrap();
@@ -626,7 +677,7 @@ mod tests {
         };
         let _running = kontor_daemon::lock::StateRootLock::acquire(a.path()).unwrap();
         let new = br#"{"email":"new@example.test","api_token":"new-synthetic-token"}"#;
-        install_jira_credential(b.path(), "work", &new[..], |scope, secret| {
+        install_jira_credential(None, b.path(), "work", &new[..], |scope, secret| {
             kontor_jira::install_credentials_with(scope, "work", secret, &fake)
         })
         .unwrap();
@@ -636,19 +687,62 @@ mod tests {
     }
 
     #[test]
+    fn selected_yaml_connector_installs_into_the_same_realm_credential_scope() {
+        mod support {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/support/config.rs"
+            ));
+        }
+        let root = configured_credential_root();
+        let folder = support::write_config_folder(root.path());
+        support::write_runtime_planes(
+            &folder,
+            &serde_json::json!({"schema_version":5,"runtimes":[]}),
+        );
+        let legacy_path = root.path().join("jira.json");
+        let legacy: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&legacy_path).unwrap()).unwrap();
+        std::fs::write(
+            folder.join("tracker/connectors.yml"),
+            serde_yaml_ng::to_string(&legacy).unwrap(),
+        )
+        .unwrap();
+        std::fs::remove_file(legacy_path).unwrap();
+        let selected =
+            kontor_daemon::config_folder::ConfigFolder::select(Some(&folder), None).unwrap();
+        selected.refuse_legacy(root.path()).unwrap();
+        let valid = br#"{"email":"operator@example.test","api_token":"synthetic-canary"}"#;
+        let installed = AtomicBool::new(false);
+        install_jira_credential(Some(&selected), root.path(), "work", &valid[..], |_, _| {
+            assert!(kontor_daemon::lock::StateRootLock::acquire(root.path()).is_err());
+            installed.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+        .unwrap();
+        assert!(installed.load(Ordering::SeqCst));
+        assert!(!root.path().join("jira.json").exists());
+    }
+
+    #[test]
     fn stopped_realm_installation_retains_its_lock_and_refuses_bad_input() {
         let root = configured_credential_root();
         let valid = br#"{"email":"operator@example.test","api_token":"synthetic-canary"}"#;
-        install_jira_credential(root.path(), "work", &valid[..], |_, _| {
+        install_jira_credential(None, root.path(), "work", &valid[..], |_, _| {
             assert!(kontor_daemon::lock::StateRootLock::acquire(root.path()).is_err());
             Ok(())
         })
         .unwrap();
         assert!(kontor_daemon::lock::StateRootLock::acquire(root.path()).is_ok());
-        let result =
-            install_jira_credential(root.path(), "work", &b"synthetic-canary"[..], |_, _| {
+        let result = install_jira_credential(
+            None,
+            root.path(),
+            "work",
+            &b"synthetic-canary"[..],
+            |_, _| {
                 panic!("malformed credentials cannot reach the installer");
-            });
+            },
+        );
         assert!(result.is_err());
         assert!(!format!("{:?}", result.unwrap_err()).contains("synthetic-canary"));
     }
@@ -908,6 +1002,7 @@ mod tests {
             let read_attempted = Arc::new(AtomicBool::new(false));
             let installed = Arc::new(AtomicBool::new(false));
             let outcome = install_jira_credential(
+                None,
                 &canonical,
                 "any-configured-alias",
                 WatchfulReader::new(&read_attempted, b""),
@@ -965,6 +1060,7 @@ mod tests {
         let read_attempted = Arc::new(AtomicBool::new(false));
         let installed = Arc::new(AtomicBool::new(false));
         let outcome = install_jira_credential(
+            None,
             root.path(),
             "work",
             WatchfulReader::new(&read_attempted, b"synthetic-canary"),

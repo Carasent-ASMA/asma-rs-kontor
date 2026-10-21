@@ -392,6 +392,16 @@ impl UsagePoller {
     /// Compose a poller over the accounts registered in a state root.
     #[must_use]
     pub fn discover(state_root: &Path) -> Self {
+        let settings = crate::runtimes::read(state_root).unwrap_or_default();
+        Self::discover_with_runtimes(state_root, &settings)
+    }
+
+    /// Compose from selected host YAML, without re-reading a legacy runtime file.
+    #[must_use]
+    pub fn discover_with_runtimes(
+        state_root: &Path,
+        settings: &crate::runtimes::RuntimeSettings,
+    ) -> Self {
         Self {
             homes: ProviderHomes::discover(state_root),
             // A failed builder falls back to the default client rather than
@@ -404,9 +414,7 @@ impl UsagePoller {
             exact_reporter: None,
             // A runtimes file that does not read is the daemon's own startup
             // refusal to make; here it only means no pool is opted in.
-            zerosub: crate::runtimes::read(state_root)
-                .ok()
-                .and_then(|settings| crate::runtimes::zerosub_transport(&settings))
+            zerosub: crate::runtimes::zerosub_transport(settings)
                 .map(|paseo| Arc::new(paseo) as Arc<dyn PaseoTransport>),
             backoffs: Arc::new(backoff::ProbeBackoffs::load(state_root)),
         }

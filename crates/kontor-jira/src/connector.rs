@@ -154,6 +154,31 @@ impl JiraConnectors {
                 "jira.json is not a strict supported document",
             )
         })?;
+        Self::from_scoped_config(config, scope, keychain)
+    }
+
+    /// Compose YAML-decoded settings while keeping credentials scoped to the realm.
+    pub fn from_config(
+        state_root: &Path,
+        realm: kontor_core::id::RealmId,
+        config: JiraConfig,
+    ) -> Result<Self, JiraError> {
+        let root = state_root.canonicalize().map_err(|_| {
+            JiraError::unavailable(
+                "configuration",
+                UnavailableReason::Configuration,
+                "the Jira state root could not be canonicalized",
+            )
+        })?;
+        let scope = JiraCredentialScope::at(&root, realm)?;
+        Self::from_scoped_config(config, scope, Arc::new(SystemKeychain))
+    }
+
+    fn from_scoped_config(
+        config: JiraConfig,
+        scope: JiraCredentialScope,
+        keychain: Arc<dyn KeychainBackend>,
+    ) -> Result<Self, JiraError> {
         if config.schema_version != CONFIG_SCHEMA {
             return Err(JiraError::unavailable(
                 "configuration",

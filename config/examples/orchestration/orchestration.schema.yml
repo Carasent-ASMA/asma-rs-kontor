@@ -64,7 +64,7 @@ project:
 # The two supervision files are distinct contracts.
 supervision_contract:
   project.supervision: folder-relative autonomous_tpm_v1 TPM cadence profile, read from the selected config folder
-  paseo_watchdog: <state-root>/supervision.yml, read by the Paseo watchdog and recovery path; it is not a project key
+  paseo_watchdog: paseo-supervision.yml in the selected folder, read by the Paseo watchdog and recovery path; it is not a project key
 
 # The PR desk contract. The project block owns the invocation, the pinned
 # policy file name and the data-root-relative history root; the host owns an

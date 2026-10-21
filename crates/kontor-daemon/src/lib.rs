@@ -45,6 +45,7 @@
 pub mod applications;
 pub mod attention;
 pub mod composition_snapshot;
+pub mod config_folder;
 pub mod credentials;
 pub mod endpoint;
 pub mod fleet;
@@ -149,6 +150,9 @@ pub const DEFAULT_CAPACITY: CapacityConfig = CapacityConfig {
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum StartupError {
+    /// The explicitly selected YAML authoring folder is absent or invalid.
+    #[error(transparent)]
+    Config(#[from] config_folder::ConfigError),
     /// The configured bind address is not loopback.
     ///
     /// There is deliberately no flag that widens this. A Kontor Realm holds the
@@ -280,6 +284,9 @@ pub enum StartupError {
 pub struct DaemonConfig {
     /// The directory that holds this Realm's database, lock and credentials.
     pub state_root: PathBuf,
+    /// Explicit authoring-folder selection; never inferred from a state root.
+    pub config_dir: Option<PathBuf>,
+    selected_config: Option<config_folder::ConfigFolder>,
     /// The loopback address to bind. Validated before anything is opened.
     pub bind: SocketAddr,
     /// Which browser origins to answer, beyond the loopback host rule.
@@ -328,6 +335,8 @@ impl DaemonConfig {
     pub fn at(state_root: impl Into<PathBuf>) -> Self {
         Self {
             state_root: state_root.into(),
+            config_dir: None,
+            selected_config: None,
             bind: SocketAddr::from(([127, 0, 0, 1], DEFAULT_PORT)),
             allowed_origins: kontor_api::auth::IngressPolicy::default().allowed_origins,
             evidence_window_seconds: DEFAULT_EVIDENCE_WINDOW_SECONDS,
@@ -336,6 +345,20 @@ impl DaemonConfig {
             jira_connectors: None,
             memory_cognee: None,
         }
+    }
+
+    /// Select project authoring sources explicitly. The path is resolved at startup.
+    #[must_use]
+    pub fn with_config_dir(mut self, directory: impl Into<PathBuf>) -> Self {
+        self.config_dir = Some(directory.into());
+        self.selected_config = None;
+        self
+    }
+
+    /// The absolute selection and bootstrap project identity used by this process.
+    #[must_use]
+    pub fn config_folder(&self) -> Option<&config_folder::ConfigFolder> {
+        self.selected_config.as_ref()
     }
 
     /// Admit work under different ceilings than [`DEFAULT_CAPACITY`].
@@ -539,6 +562,13 @@ impl Daemon {
         // The address can be judged before touching the state root. Capacity
         // selection must wait for the store: a durable policy supersedes the seed.
         config.ensure_loopback()?;
+        if config.selected_config.is_none() && config.config_dir.is_some() {
+            let folder = config_folder::ConfigFolder::select(config.config_dir.as_deref(), None)?;
+            folder.refuse_legacy(&config.state_root)?;
+            config.config_dir = Some(folder.root().to_path_buf());
+            config.selected_config = Some(folder);
+        }
+        let selected = config.selected_config.as_ref();
         std::fs::create_dir_all(&config.state_root)
             .map_err(|source| StartupError::StateRoot { source })?;
         let lock = StateRootLock::acquire(&config.state_root)?;
@@ -563,42 +593,77 @@ impl Daemon {
         // holds — so the services are built first, handed in, and given the state
         // immediately afterwards. Nothing can serve a request in between: the
         // router does not exist yet.
-        let jira = config
-            .jira_connectors
-            .clone()
-            .map_or_else(
-                || kontor_jira::JiraConnectors::read(&config.state_root, realm_id),
-                Ok,
-            )
-            .map_err(|source| StartupError::Connector { source })?;
-        let usage_poller =
-            usage_poller.unwrap_or_else(|| usage::UsagePoller::discover(&config.state_root));
+        let jira = config.jira_connectors.clone().map_or_else(
+            || match selected {
+                Some(folder) => match folder.optional("tracker/connectors.yml")? {
+                    Some(document) => kontor_jira::JiraConnectors::from_config(
+                        &config.state_root,
+                        realm_id,
+                        document,
+                    )
+                    .map_err(|source| StartupError::Connector { source }),
+                    None => Ok(kontor_jira::JiraConnectors::default()),
+                },
+                None => kontor_jira::JiraConnectors::read(&config.state_root, realm_id)
+                    .map_err(|source| StartupError::Connector { source }),
+            },
+            Ok,
+        )?;
+        let usage_poller = match usage_poller {
+            Some(poller) => poller,
+            None => match selected {
+                Some(folder) => usage::UsagePoller::discover_with_runtimes(
+                    &config.state_root,
+                    &folder.runtimes()?,
+                ),
+                None => usage::UsagePoller::discover(&config.state_root),
+            },
+        };
         // Absent is valid and leaves reactive classification inert. A *present*
         // document that will not parse refuses the start, because serving a
         // Realm whose operator believes classification is armed is worse than
         // not starting.
-        let quota_signals = kontor_accounts::read_quota_signals(&config.state_root)
-            .map_err(|source| StartupError::QuotaSignals { source })?
-            .map(|document| document.signals)
-            .unwrap_or_default();
+        let quota_signals = match selected {
+            Some(folder) => {
+                folder.parse_optional("quota-signals.yml", kontor_accounts::parse_quota_signals)?
+            }
+            None => kontor_accounts::read_quota_signals(&config.state_root)
+                .map_err(|source| StartupError::QuotaSignals { source })?,
+        }
+        .map(|document| document.signals)
+        .unwrap_or_default();
         // The GitHub App is optional configuration; a present document that
         // cannot be honoured refuses the start for the same reason a broken
         // quota-signal document does.
-        let github_publication =
-            github_publication::GithubPublicationConfig::read(&config.state_root)
-                .map_err(|source| StartupError::GithubApp { source })?
-                .map(github_publication::GithubPublicationGateway::from_config)
-                .transpose()
-                .map_err(|source| StartupError::GithubApp { source })?
-                .map(Arc::new);
+        let github_publication = match selected {
+            Some(folder) => folder.parse_optional("forge/github-app.yml", |text| {
+                let document: github_publication::GithubPublicationConfig =
+                    serde_yaml_ng::from_str(text).map_err(|_| ())?;
+                document.validate().map_err(|_| ())?;
+                Ok::<_, ()>(document)
+            })?,
+            None => github_publication::GithubPublicationConfig::read(&config.state_root)
+                .map_err(|source| StartupError::GithubApp { source })?,
+        }
+        .map(github_publication::GithubPublicationGateway::from_config)
+        .transpose()
+        .map_err(|source| StartupError::GithubApp { source })?
+        .map(Arc::new);
         // An explicitly composed transport is the embedding and black-box seam
         // and always wins. Ordinary startup reads the Realm's own selection and
         // composes the named runtime; an absent document keeps the honest
         // unavailable fallback, so an unconfigured Realm launches nothing.
         let succession_summarizer = match succession_summarizer {
             Some(transport) => Some(transport),
-            None => succession_summarizer::read(&config.state_root, &runtimes)
-                .map_err(|source| StartupError::SuccessionSummarizer { source })?,
+            None => match selected {
+                Some(folder) => folder
+                    .parse_optional("orchestration/succession.yml", |text| {
+                        succession_summarizer::read_yaml(text, &runtimes)
+                    })?
+                    .flatten(),
+                None => succession_summarizer::read(&config.state_root, &runtimes)
+                    .map_err(|source| StartupError::SuccessionSummarizer { source })?,
+            },
         };
         let succession_summarizer =
             succession_summarizer.unwrap_or_else(|| Arc::new(UnavailableSuccessionSummarizer));
@@ -610,14 +675,28 @@ impl Daemon {
             usage_poller.clone(),
             quota_signals,
             github_publication.clone(),
-            Arc::new(crate::fleet::FleetSource::at(&config.state_root)),
+            Arc::new(match selected {
+                Some(folder) => {
+                    crate::fleet::FleetSource::from_config_folder(&config.state_root, &folder.fleet)
+                }
+                None => crate::fleet::FleetSource::at(&config.state_root),
+            }),
             succession_summarizer,
         )
         .map_err(|source| StartupError::Applications { source })?;
 
-        let memory_config =
-            kontor_memory_cognee::Config::read(&config.state_root.join("memory-cognee.json"))
-                .map_err(|source| StartupError::MemoryCognee { source })?;
+        let memory_config = match selected {
+            Some(folder) => folder.parse_optional("orchestration/memory.yml", |text| {
+                let document: kontor_memory_cognee::Config =
+                    serde_yaml_ng::from_str(text).map_err(|_| ())?;
+                document.validate().map_err(|_| ())?;
+                Ok::<_, ()>(document)
+            })?,
+            None => {
+                kontor_memory_cognee::Config::read(&config.state_root.join("memory-cognee.json"))
+                    .map_err(|source| StartupError::MemoryCognee { source })?
+            }
+        };
         if memory_config.is_some_and(|document| document.enabled) && config.memory_cognee.is_none()
         {
             return Err(StartupError::MemoryCognee {
@@ -635,12 +714,14 @@ impl Daemon {
         // attention is armed is worse than not starting. The store receives the
         // observer only after this composition, and the observer itself performs
         // no egress — it formats a payload and spawns a detached one-shot.
-        let attention = attention::config::read(&config.state_root)?
-            .map(|policy| {
-                attention::AttentionChannel::from_policy(policy, config.bind, realm_id)
-                    .map(Arc::new)
-            })
-            .transpose()?;
+        let attention = match selected {
+            Some(folder) => folder.parse_optional("attention.yml", attention::config::parse)?,
+            None => attention::config::read(&config.state_root)?,
+        }
+        .map(|policy| {
+            attention::AttentionChannel::from_policy(policy, config.bind, realm_id).map(Arc::new)
+        })
+        .transpose()?;
         if let Some(channel) = &attention {
             applications.attach_attention(Arc::clone(channel));
             let channel = Arc::clone(channel);
@@ -703,18 +784,28 @@ impl Daemon {
     /// cannot be read or a configured runtime cannot be composed. A misconfigured
     /// fleet refuses the start rather than silently serving a Realm whose session
     /// routes go nowhere.
-    pub fn start_configured(config: DaemonConfig) -> Result<Self, StartupError> {
+    pub fn start_configured(mut config: DaemonConfig) -> Result<Self, StartupError> {
         // The address is judged before the filesystem is touched, exactly as in
         // `start`, so a misconfigured bind does not read a fleet it will not use.
         config.ensure_loopback()?;
-        let supervision = supervision::read(&config.state_root)?;
-        let settings = runtimes::read(&config.state_root)?;
+        let folder = config_folder::ConfigFolder::select(config.config_dir.as_deref(), None)?;
+        folder.refuse_legacy(&config.state_root)?;
+        let supervision = folder.parse_optional("paseo-supervision.yml", supervision::parse)?;
+        let settings = folder.runtimes()?;
+        config.config_dir = Some(folder.root().to_path_buf());
+        config.selected_config = Some(folder);
         // Seat MCP composition is resolved here — once, at daemon level — so the
         // `KONTOR_SEAT_MCP=off` kill switch governs every plane at once.
         let seat_mcp = runtimes::seat_mcp(&config.state_root);
         let registry = runtimes::build_registry(&settings, seat_mcp.as_ref())?;
-        let succession_summarizer = succession_summarizer::read(&config.state_root, &registry)
-            .map_err(|source| StartupError::SuccessionSummarizer { source })?;
+        let succession_summarizer = config
+            .selected_config
+            .as_ref()
+            .expect("folder selected above")
+            .parse_optional("orchestration/succession.yml", |text| {
+                succession_summarizer::read_yaml(text, &registry)
+            })?
+            .flatten();
         Self::start_with_supervision(config, registry, supervision, None, succession_summarizer)
     }
 
@@ -1707,21 +1798,31 @@ mod tests {
     /// root, so a document that names a runtime the fleet does not compose
     /// refuses the start instead of silently degrading every handoff.
     #[test]
-    fn configured_startup_reads_the_summarizer_selection_from_the_state_root() {
+    fn configured_startup_reads_the_summarizer_selection_from_the_selected_folder() {
+        mod support {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/support/config.rs"
+            ));
+        }
         let directory = tempfile::TempDir::new().expect("a temporary directory");
+        let folder = support::write_config_folder(directory.path());
+        support::write_runtime_planes(
+            &folder,
+            &serde_json::json!({"schema_version":5,"runtimes":[]}),
+        );
         std::fs::write(
-            directory.path().join(succession_summarizer::CONFIG_FILE),
-            r#"{"schema_version":1,"runtime_family":"paseo.agent"}"#,
+            folder.join("orchestration/succession.yml"),
+            "schema_version: 1\nruntime_family: paseo.agent\n",
         )
-        .expect("the selection document is written");
-        let error = Daemon::start_configured(DaemonConfig::at(directory.path()).with_port(0))
-            .expect_err("an uncomposed summarizer runtime must refuse the start");
-        assert!(matches!(
-            error,
-            StartupError::SuccessionSummarizer {
-                source: succession_summarizer::ConfigError::UnknownRuntime
-            }
-        ));
+        .unwrap();
+        let error = Daemon::start_configured(
+            DaemonConfig::at(directory.path())
+                .with_config_dir(&folder)
+                .with_port(0),
+        )
+        .expect_err("unknown runtime refuses startup");
+        assert!(error.to_string().contains("orchestration/succession.yml"));
     }
 
     /// Without a stored policy the seed must be valid. Opening the store is
