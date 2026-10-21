@@ -293,9 +293,10 @@ fn publish(
     };
 
     // The restored data now answers to the destination's name, so the copy's own
-    // name is redundant. Removing it is what makes a successful restore leave a
-    // state root with nothing in it but the files that belong there.
-    let _ = std::fs::remove_file(temporary);
+    // name is redundant. Its WAL and shared-memory sidecars are the copy's too:
+    // the rebuild opened it for writing, and a sidecar left beside the state root
+    // is exactly the residue this operation promises not to leave.
+    remove_database_files(temporary);
 
     // Whatever WAL and shared-memory files are left belong to the database that
     // was just set aside. Leaving them here is the one way a restored file can

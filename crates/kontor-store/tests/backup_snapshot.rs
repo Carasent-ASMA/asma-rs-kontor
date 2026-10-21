@@ -543,6 +543,19 @@ fn listing(directory: &Path) -> Vec<String> {
     names
 }
 
+/// No restore copy or its SQLite sidecars may remain in a state root.
+///
+/// `contains` rather than `ends_with(".partial")`: the residue under test is
+/// `.partial-wal` and `.partial-shm`, which a suffix check for `.partial`
+/// would miss.
+fn assert_no_partial_remains(directory: &Path, context: &str) {
+    let names = listing(directory);
+    assert!(
+        !names.iter().any(|entry| entry.contains(".partial")),
+        "{context}: {names:?}"
+    );
+}
+
 fn memory_document(text: &str) -> kontor_core::id::CanonicalDocument {
     kontor_core::id::CanonicalDocument::from_value(
         &serde_json::json!({"schema_version": 1, "text": text}),
@@ -1113,13 +1126,7 @@ fn a_restore_refuses_a_taken_superseded_name_and_leaves_the_destination_intact()
         .integrity_check()
         .expect("and it is whole after the refusal");
     drop(reopened);
-    assert!(
-        !listing(&state_root)
-            .iter()
-            .any(|entry| entry.ends_with(".partial")),
-        "a refused restore leaves no copy behind: {:?}",
-        listing(&state_root)
-    );
+    assert_no_partial_remains(&state_root, "a refused restore leaves no copy behind");
 
     // With the collision cleared, the same restore succeeds and sets the
     // occupant aside under a name of its own.
@@ -1133,12 +1140,9 @@ fn a_restore_refuses_a_taken_superseded_name_and_leaves_the_destination_intact()
         7,
         "and the database it replaced is whole, under the superseded name"
     );
-    assert!(
-        !listing(&state_root)
-            .iter()
-            .any(|entry| entry.ends_with(".partial")),
-        "a successful restore leaves no copy behind: {:?}",
-        listing(&state_root)
+    assert_no_partial_remains(
+        &state_root,
+        "a successful restore leaves no copy or sidecar behind",
     );
 }
 
@@ -1195,6 +1199,10 @@ fn a_restore_reinstates_the_same_realm_and_refuses_a_different_one() {
         projects_in(&superseded),
         6,
         "the superseded file is whole, WAL folded in"
+    );
+    assert_no_partial_remains(
+        &source_root,
+        "a same-realm restore leaves no copy or sidecar behind",
     );
 
     // 3. Into a *different* initialized Realm: refused, and refused before the
@@ -1560,11 +1568,8 @@ fn a_restore_that_cannot_rebuild_memory_search_publishes_nothing() {
         3,
         "the destination is never replaced by a database whose search index was not rebuilt"
     );
-    assert!(
-        !listing(&destination_root)
-            .iter()
-            .any(|entry| entry.ends_with(".partial")),
-        "a refused rebuild leaves no partial beside the destination: {:?}",
-        listing(&destination_root)
+    assert_no_partial_remains(
+        &destination_root,
+        "a refused rebuild leaves no partial beside the destination",
     );
 }
