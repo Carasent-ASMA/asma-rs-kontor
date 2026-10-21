@@ -45,9 +45,11 @@ startup, before a client exists.
 
 The registry declares four more profiles — `consultation`, `planning_pair_member`,
 `planning_pair_caller` and `leadership` (`../src/registry.rs`, `SERVE_PROFILES`).
-No seat file here selects them. The daemon composes the other three at
-`operator` tier for its own consultation, planning-pair member and hosted
-leadership seats; nothing composes `planning_pair_caller`. See
+No seat file here selects them. The daemon composes a profile by seat kind at
+`operator` tier: **delivery seats get `worker`**, **Advisor and Committee seats
+get `consultation`**, planning-pair members get `planning_pair_member`, and
+hosted leadership, LSA, TPM and desk seats get `leadership`. Nothing composes
+`planning_pair_caller`. See
 [Seat MCP surface](../../../docs/CONFIGURATION.md#seat-mcp-surface).
 
 ## Why the worker is not the Lead

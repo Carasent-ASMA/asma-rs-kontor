@@ -7,8 +7,9 @@
 //! was kontor at *admin* tier plus two unrelated servers, ~18k tokens of tool
 //! schemas per turn. Composing the config into the seat's own working directory
 //! gives every Claude seat exactly one kontor server at **operator** tier under
-//! a narrow serve profile: `consultation` for independent reviewers and
-//! `leadership` for persistent LSA/TPM seats. The inherited seat credential,
+//! the serve profile its seat kind selects: `worker` for a delivery seat,
+//! `consultation` for an independent Advisor or Committee reviewer and
+//! `leadership` for a persistent LSA/TPM seat. The inherited seat credential,
 //! not the profile, remains the authority and supplies the SeatBinding.
 //!
 //! Three files are touched, all local to the worktree and all kept out of the
@@ -101,6 +102,58 @@ const MEMBER_GUARD_ARGS: [&str; 3] = [
     "--serve-profile",
     kontor_core::planning_pair::MEMBER_SERVE_PROFILE,
 ];
+
+/// The serve profile every delivery seat composes.
+///
+/// A delivery seat produces the work rather than judging it, so it gets the
+/// registry's 25-tool `worker` surface. It is never the wider `consultation`
+/// surface: that one carries only the five Advisor and Committee operations.
+pub const DELIVERY_SERVE_PROFILE: &str = "worker";
+
+/// The serve profile every Advisor and Committee seat composes.
+pub const CONSULTATION_SERVE_PROFILE: &str = "consultation";
+
+/// The serve profile every hosted leadership, desk and desk-Adam seat composes.
+pub const LEADERSHIP_SERVE_PROFILE: &str = "leadership";
+
+/// The seat kinds Kontor composes an MCP surface for, and the profile each gets.
+///
+/// This is the one mapping the composition sites read. A new seat kind either
+/// selects an existing profile here or is refused by the absence of a variant,
+/// so a delivery seat cannot drift back onto the consultation surface and a
+/// reviewer cannot inherit the worker surface by accident.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeatKind {
+    /// A team-run role that produces the artefact, on any admitted provider.
+    Delivery,
+    /// An independent Advisor or Committee reviewer.
+    Consultation,
+    /// One member of a governed planning pair.
+    PlanningPairMember,
+    /// A persistent LSA, TPM, desk or desk-Adam seat.
+    Leadership,
+}
+
+impl SeatKind {
+    /// Every seat kind that composes a Kontor MCP surface.
+    pub const ALL: [Self; 4] = [
+        Self::Delivery,
+        Self::Consultation,
+        Self::PlanningPairMember,
+        Self::Leadership,
+    ];
+
+    /// The registry serve profile this seat kind composes.
+    #[must_use]
+    pub const fn serve_profile(self) -> &'static str {
+        match self {
+            Self::Delivery => DELIVERY_SERVE_PROFILE,
+            Self::Consultation => CONSULTATION_SERVE_PROFILE,
+            Self::PlanningPairMember => kontor_core::planning_pair::MEMBER_SERVE_PROFILE,
+            Self::Leadership => LEADERSHIP_SERVE_PROFILE,
+        }
+    }
+}
 
 /// Everything seat MCP composition needs to know, resolved once by the daemon.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -198,7 +251,7 @@ impl SeatMcp {
 
     /// Compose the consultation-only tool guard before starting Claude.
     pub fn compose_consultation(&self, cwd: &Path) -> io::Result<()> {
-        self.compose(cwd, "consultation")?;
+        self.compose(cwd, SeatKind::Consultation.serve_profile())?;
         self.compose_guard_hook(cwd, "--consultation-tool-guard")
     }
 
@@ -206,7 +259,7 @@ impl SeatMcp {
     /// member serve profile in `.mcp.json` and the member guard, which permits
     /// only that profile's three tools (ASMA-8282 D-3).
     pub fn compose_planning_pair_member(&self, cwd: &Path) -> io::Result<()> {
-        self.compose(cwd, kontor_core::planning_pair::MEMBER_SERVE_PROFILE)?;
+        self.compose(cwd, SeatKind::PlanningPairMember.serve_profile())?;
         self.compose_guard_hook(cwd, &MEMBER_GUARD_ARGS.join(" "))
     }
 
@@ -293,12 +346,14 @@ impl SeatMcp {
     }
 }
 
-/// Compose for one seat: a no-op unless composition is configured **and** the
-/// provider is one this composes for.
+/// Compose for one delivery seat: a no-op unless composition is configured
+/// **and** the provider has a worktree file to write.
 ///
-/// Claude gets its MCP files; opencode gets the permission block its declared
-/// posture rendered to. The two are disjoint because neither harness reads the
-/// other's files, and every other provider writes nothing.
+/// Claude gets the `worker` profile in its `.mcp.json`, which is the only
+/// delivery surface a worktree file carries. Codex, Cursor and OpenCode receive
+/// their `worker` profile in the creation frame instead, so this writes nothing
+/// for them. The surfaces are disjoint because no harness reads another's
+/// files, and every other provider writes nothing.
 ///
 /// `posture` arrives already rendered rather than being derived here, so the
 /// block a seat reads and the `--mode` it was launched under are two uses of one
@@ -306,7 +361,7 @@ impl SeatMcp {
 ///
 /// # Errors
 /// As [`SeatMcp::compose`].
-pub fn compose_for_seat(
+pub fn compose_for_delivery_seat(
     seat: Option<&SeatMcp>,
     provider: &str,
     posture: &SeatPosture,
@@ -329,7 +384,7 @@ pub fn compose_for_seat(
     // human did.
     let _ = posture;
     match seat {
-        Some(seat) if harness == "claude" => seat.compose(cwd, "consultation"),
+        Some(seat) if harness == "claude" => seat.compose(cwd, SeatKind::Delivery.serve_profile()),
         _ => Ok(()),
     }
 }
@@ -358,7 +413,7 @@ pub(crate) fn compose_for_hosted_seat(
     }
     match seat {
         Some(seat) if crate::client::built_in_provider(provider) == "claude" => {
-            seat.compose(cwd, "leadership")
+            seat.compose(cwd, SeatKind::Leadership.serve_profile())
         }
         _ => Ok(()),
     }
@@ -1026,7 +1081,7 @@ pub(crate) fn validate_recovered_hosted_directory(
             != Some(&mcp_file_entry(
                 &seat.command,
                 &seat.state_root,
-                "leadership",
+                SeatKind::Leadership.serve_profile(),
             ))
     {
         return Err(io::Error::other(
@@ -1055,7 +1110,7 @@ fn compose_hosted_directory(
         return Ok(());
     }
     if hosted_git_worktree(&cwd)? {
-        return seat.compose(&cwd, "leadership");
+        return seat.compose(&cwd, SeatKind::Leadership.serve_profile());
     }
     let (settings_path, mcp_path) = directory_paths(&cwd)?;
     let settings_original = fs.read(&settings_path)?;
@@ -1084,7 +1139,11 @@ fn compose_hosted_directory(
             })?;
             servers.insert(
                 "kontor".to_owned(),
-                mcp_file_entry(&seat.command, &seat.state_root, "leadership"),
+                mcp_file_entry(
+                    &seat.command,
+                    &seat.state_root,
+                    SeatKind::Leadership.serve_profile(),
+                ),
             );
             Ok(())
         })?,
@@ -1370,13 +1429,28 @@ mod tests {
         String::from_utf8_lossy(&output.stdout).into_owned()
     }
 
+    /// KR-29: each composed seat kind names its own profile, so a delivery
+    /// seat cannot drift back onto the reviewer surface.
+    #[test]
+    fn every_composed_seat_kind_selects_its_own_serve_profile() {
+        assert_eq!(
+            SeatKind::ALL.map(SeatKind::serve_profile),
+            [
+                "worker",
+                "consultation",
+                "planning_pair_member",
+                "leadership",
+            ]
+        );
+    }
+
     /// TEST-006: the three files are written, carry the right JSON, and none of
     /// them surfaces in `git status`.
     #[test]
     fn composition_writes_the_files_and_none_of_them_dirty_the_worktree() {
         let repo = repo();
         let cwd = repo.path();
-        compose_for_seat(
+        compose_for_delivery_seat(
             Some(&seat("/realm/state")),
             "claude",
             &SeatPosture::read_only(),
@@ -1396,9 +1470,9 @@ mod tests {
                 "--credential-tier",
                 "operator",
                 "--serve-profile",
-                "consultation"
+                "worker"
             ]),
-            "the seat gets operator tier under the consultation profile, nothing wider"
+            "a delivery seat gets operator tier under the worker profile, nothing wider"
         );
 
         let settings: serde_json::Value = serde_json::from_str(
@@ -1454,8 +1528,9 @@ mod tests {
 
         let repo = repo();
         // The daemon resolves the kill switch to `None` before the adapter sees it.
-        compose_for_seat(None, "claude", &SeatPosture::read_only(), repo.path()).expect("a no-op");
-        compose_for_seat(
+        compose_for_delivery_seat(None, "claude", &SeatPosture::read_only(), repo.path())
+            .expect("a no-op");
+        compose_for_delivery_seat(
             Some(&seat("/realm/state")),
             "codex",
             &SeatPosture::read_only(),
@@ -1521,9 +1596,9 @@ mod tests {
             .expect("advisory"),
         ] {
             for seat_mcp in [None, Some(seat("/realm/state"))] {
-                compose_for_seat(seat_mcp.as_ref(), "opencode", &posture, cwd)
+                compose_for_delivery_seat(seat_mcp.as_ref(), "opencode", &posture, cwd)
                     .expect("an OpenCode seat composes nothing");
-                compose_for_seat(seat_mcp.as_ref(), "opencode-work", &posture, cwd)
+                compose_for_delivery_seat(seat_mcp.as_ref(), "opencode-work", &posture, cwd)
                     .expect("an account alias is still the OpenCode harness");
             }
         }
@@ -1541,7 +1616,7 @@ mod tests {
     #[test]
     fn a_claude_account_alias_composes_the_same_seat_mcp_boundary() {
         let repo = repo();
-        compose_for_seat(
+        compose_for_delivery_seat(
             Some(&seat("/realm/state")),
             "claude-personal",
             &SeatPosture::read_only(),
@@ -1561,7 +1636,7 @@ mod tests {
                 "--credential-tier",
                 "operator",
                 "--serve-profile",
-                "consultation"
+                "worker"
             ])
         );
         assert_eq!(
@@ -1591,7 +1666,7 @@ mod tests {
         )
         .expect("seeded");
 
-        compose_for_seat(
+        compose_for_delivery_seat(
             Some(&seat("/realm/state")),
             "claude",
             &SeatPosture::read_only(),
@@ -1628,9 +1703,9 @@ mod tests {
         let repo = repo();
         let cwd = repo.path();
         let seat = seat("/realm/state");
-        seat.compose(cwd, "consultation")
+        seat.compose(cwd, SeatKind::Consultation.serve_profile())
             .expect("first composition");
-        seat.compose(cwd, "consultation")
+        seat.compose(cwd, SeatKind::Consultation.serve_profile())
             .expect("second composition");
 
         let output = std::process::Command::new("git")
@@ -1663,7 +1738,7 @@ mod tests {
         let cwd = repo.path();
         std::fs::write(cwd.join(".mcp.json"), "not json at all").expect("seeded");
         let error = seat("/realm/state")
-            .compose(cwd, "consultation")
+            .compose(cwd, SeatKind::Consultation.serve_profile())
             .expect_err("a human's broken file is not ours to overwrite");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert_eq!(
@@ -1678,7 +1753,7 @@ mod tests {
     fn a_non_git_cwd_is_refused() {
         let directory = tempfile::TempDir::new().expect("a temporary directory");
         seat("/realm/state")
-            .compose(directory.path(), "consultation")
+            .compose(directory.path(), SeatKind::Consultation.serve_profile())
             .expect_err("no worktree, no composition");
         assert!(
             !directory.path().join(".mcp.json").exists()
