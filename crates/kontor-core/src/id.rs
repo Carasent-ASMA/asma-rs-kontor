@@ -1406,6 +1406,37 @@ impl CanonicalDocument {
         })
     }
 
+    /// Canonicalize, validate and hash an externally authored value.
+    ///
+    /// Identical to [`CanonicalDocument::from_value`] except that it does not
+    /// reject sensitive-looking text. It exists for one caller: a Jira body is
+    /// written by a person and may legitimately discuss a token or a URL with
+    /// userinfo, and refusing the whole observation is how one such body wedged
+    /// reconciliation on every pass (ASMA-8515 N-02). Only the digest is kept;
+    /// the human-readable rendering is withheld by the connector, so no matched
+    /// text reaches storage.
+    ///
+    /// # Errors
+    /// Returns [`DomainError`] when the value is not a `schema_version`-bearing
+    /// object, exceeds the depth/size bounds or contains a non-finite number.
+    pub fn from_external_value(value: &serde_json::Value) -> DomainResult<Self> {
+        let schema_version = read_schema_version(value)?;
+        let mut json = String::new();
+        write_canonical(value, 0, &mut String::new(), &mut json)?;
+        if json.len() > MAX_CANONICAL_BYTES {
+            return Err(DomainError::invalid(
+                "CanonicalDocument",
+                OVER_CANONICAL_CEILING,
+            ));
+        }
+        let hash = ContentHash::of(json.as_bytes());
+        Ok(Self {
+            json,
+            hash,
+            schema_version,
+        })
+    }
+
     /// Canonicalize any serializable value.
     ///
     /// # Errors

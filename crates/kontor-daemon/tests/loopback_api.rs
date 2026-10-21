@@ -316,7 +316,7 @@ use kontor_store::{
 };
 use kontor_teams::spec::TeamTemplateSpec;
 use secrecy::SecretString;
-use wiremock::matchers::{any, method, path};
+use wiremock::matchers::{any, method, path, path_regex};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 // ---------------------------------------------------------------------------
@@ -1699,6 +1699,9 @@ struct DescriptionJira {
     status: (&'static str, &'static str, &'static str),
     body: Arc<Mutex<serde_json::Value>>,
     writes: Arc<AtomicUsize>,
+    /// Issue reads, so a test can prove an excluded epic was never even
+    /// observed.
+    reads: Arc<AtomicUsize>,
     /// When set, the first read *after* a write fails, which is exactly how a
     /// write that landed loses its confirmation.
     drop_confirmation: Arc<AtomicBool>,
@@ -1718,6 +1721,7 @@ impl DescriptionJira {
             status: ("10000", "To Do", "To Do"),
             body: Arc::new(Mutex::new(adf_document(body))),
             writes: Arc::new(AtomicUsize::new(0)),
+            reads: Arc::new(AtomicUsize::new(0)),
             drop_confirmation: Arc::new(AtomicBool::new(false)),
             overtake_with: Arc::new(Mutex::new(None)),
         }
@@ -1822,6 +1826,7 @@ impl Respond for DescriptionJira {
             }
             return ResponseTemplate::new(503);
         }
+        self.reads.fetch_add(1, Ordering::SeqCst);
         let held = self.body.lock().expect("the body is not poisoned").clone();
         ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "key": self.key,
@@ -12819,7 +12824,10 @@ async fn identical_mixed_jira_apply_resumes_its_pending_create_in_place() {
     let epic_id = MiniProjectId::generate();
     let task_id = TaskId::generate();
     let task_marker = format!("kontor-task-{task_id}");
-    let task_description = format!("Kontor task {task_id}: Resume pending create");
+    // A create planned and executed by the current materializer writes the
+    // authored title as the body, not the retired `Kontor task <uuid>: ...`
+    // marker prefix.
+    let task_description = "Resume pending create";
 
     Mock::given(method("GET"))
         .and(path("/rest/api/3/issue/ASMA-8049"))
@@ -18908,7 +18916,8 @@ async fn resident_jira_controller_confirms_each_epic_route_hop_once_and_replays_
                 "project_id": project_id.to_string(),
                 "endpoint": server.uri(),
                 "project_key": "ASMA",
-                "credential_alias": "work"
+                "credential_alias": "work",
+                "reconcile_epic_keys": ["ASMA-8201"]
             }]
         }))
         .expect("the Jira configuration serializes"),
@@ -19047,7 +19056,7 @@ async fn resident_jira_controller_confirms_each_epic_route_hop_once_and_replays_
 }
 
 #[tokio::test]
-async fn resident_jira_conflict_replay_waits_for_the_bounded_backstop() {
+async fn resident_jira_conflict_replay_stops_retrying_until_resolution() {
     let server = MockServer::start().await;
     let issue_reads = Arc::new(AtomicUsize::new(0));
     Mock::given(any())
@@ -19068,7 +19077,8 @@ async fn resident_jira_conflict_replay_waits_for_the_bounded_backstop() {
                 "project_id": project_id.to_string(),
                 "endpoint": server.uri(),
                 "project_key": "ASMA",
-                "credential_alias": "work"
+                "credential_alias": "work",
+                "reconcile_epic_keys": ["ASMA-8203"]
             }]
         }))
         .expect("the Jira configuration serializes"),
@@ -19132,9 +19142,24 @@ async fn resident_jira_conflict_replay_waits_for_the_bounded_backstop() {
     let append_signals = world.daemon.state().signals().appends();
     let first = world.daemon.reconcile_jira_once().await;
     assert_eq!(first.blocked, 1, "the first pass persists the conflict");
+    assert_eq!(
+        issue_reads.load(Ordering::SeqCst),
+        1,
+        "the first pass observes the epic once"
+    );
     let first_signal = *append_signals.borrow();
     let replay = world.daemon.reconcile_jira_once().await;
-    assert_eq!(replay.blocked, 1, "the replay remains blocked");
+    assert_eq!(replay.blocked, 0, "the replay does not re-refuse");
+    assert_eq!(replay.attention, 1, "the open conflict is typed attention");
+    assert_eq!(
+        replay.epic_subjects, 0,
+        "the held subject is not re-observed"
+    );
+    assert_eq!(
+        issue_reads.load(Ordering::SeqCst),
+        1,
+        "an open conflict is not re-read on the next pass"
+    );
     assert_eq!(
         *append_signals.borrow(),
         first_signal,
@@ -19145,22 +19170,13 @@ async fn resident_jira_conflict_replay_waits_for_the_bounded_backstop() {
         world.daemon.jira_reconciler(),
         world.daemon.state().clone(),
     ));
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while issue_reads.load(Ordering::SeqCst) < 3 {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("the resident controller performs its initial pass");
-    let settled = issue_reads.load(Ordering::SeqCst);
-    let settled_signal = *append_signals.borrow();
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(
         issue_reads.load(Ordering::SeqCst),
-        settled,
-        "an unchanged durable conflict must wait for the bounded backstop"
+        1,
+        "the resident controller leaves an open conflict alone"
     );
-    assert_eq!(*append_signals.borrow(), settled_signal);
+    assert_eq!(*append_signals.borrow(), first_signal);
     world.daemon.state().signals().stop();
     controller
         .await
@@ -19199,7 +19215,8 @@ async fn automatic_jira_reconciliation_records_and_resolves_an_unfinished_held_e
                 "project_id": project_id.to_string(),
                 "endpoint": server.uri(),
                 "project_key": "ASMA",
-                "credential_alias": "work"
+                "credential_alias": "work",
+                "reconcile_epic_keys": ["ASMA-8205"]
             }]
         }))
         .expect("the Jira configuration serializes"),
@@ -19283,10 +19300,15 @@ async fn automatic_jira_reconciliation_records_and_resolves_an_unfinished_held_e
         "refusing an external hold must not assign or transition the Jira epic"
     );
     let retried = world.daemon.reconcile_jira_once().await;
-    assert_eq!(retried.epic_subjects, 1, "{retried:?}");
-    assert_eq!(retried.blocked, 1, "{retried:?}");
+    assert_eq!(retried.epic_subjects, 0, "{retried:?}");
+    assert_eq!(retried.attention, 1, "{retried:?}");
+    assert_eq!(retried.blocked, 0, "{retried:?}");
     assert_eq!(retried.applied, 0, "{retried:?}");
-    assert_eq!(issue_reads.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        issue_reads.load(Ordering::SeqCst),
+        1,
+        "an open conflict is durable attention, not another Jira read"
+    );
     assert_eq!(
         external_mutations.load(Ordering::SeqCst),
         0,
@@ -19348,6 +19370,14 @@ async fn automatic_jira_reconciliation_records_and_resolves_an_unfinished_held_e
         .await;
     assert_eq!(open.status, 200, "{}", open.body);
     assert!(open.json().as_array().expect("open conflicts").is_empty());
+    let resumed = world.daemon.reconcile_jira_once().await;
+    assert_eq!(resumed.epic_subjects, 1, "{resumed:?}");
+    assert_eq!(resumed.blocked, 1, "{resumed:?}");
+    assert_eq!(
+        issue_reads.load(Ordering::SeqCst),
+        2,
+        "resolution releases the subject for one fresh observation"
+    );
     let historical = Call::get(format!("{conflicts_uri}?include_resolved=true"))
         .signed_as(&world, "observer")
         .send(&world)
@@ -19355,7 +19385,8 @@ async fn automatic_jira_reconciliation_records_and_resolves_an_unfinished_held_e
     assert_eq!(historical.status, 200, "{}", historical.body);
     assert_eq!(
         historical.json().as_array().expect("all conflicts").len(),
-        1
+        2,
+        "the resolved conflict stays historical; the still-held external move is recorded anew"
     );
 }
 
@@ -62073,7 +62104,7 @@ async fn reconcile_plan_refuses_to_call_a_placeholder_body_converged() {
         .respond_with(jira.clone())
         .mount(&server)
         .await;
-    let world = jira_configured_world(&server, project_id, "Placeholder body project").await;
+    let world = jira_configured_world(&server, project_id, "Placeholder body project", &[]).await;
 
     // The epic graph is applied through the API, so the task id — and therefore
     // the exact marker text — is the one Kontor itself would have written.
@@ -62181,6 +62212,296 @@ async fn reconcile_plan_refuses_to_call_a_placeholder_body_converged() {
     assert_eq!(repaired.json()["converged"], true, "{}", repaired.body);
 }
 
+/// The resident controller writes only the epics an operator confirmed, and it
+/// repairs a task body instead of warning about it forever.
+///
+/// This is the ASMA-8515 KR-10 boundary in one pass: the confirmed epic is
+/// observed and settled, the unconfirmed epic is not even read, and the
+/// placeholder task body becomes the authored title. A second pass is fully
+/// converged, which is the "no repeating refusal" half.
+#[tokio::test]
+async fn automatic_reconciliation_honours_confirmed_epics_and_repairs_task_bodies() {
+    const TASK_KEY: &str = "ASMA-9402";
+    const TASK_TITLE: &str = "A task whose body is repaired";
+    let project_id = ProjectId::generate();
+    let epic_key = test_jira_key("Confirmed epic-epic");
+    let epic_jira = DescriptionJira::new(
+        Box::leak(epic_key.clone().into_boxed_str()),
+        "Epic",
+        1,
+        "## Summary / purpose\nAn authored epic body.",
+    )
+    .with_status("10214", "In Development", "In Progress");
+    let task_jira = DescriptionJira::new(TASK_KEY, "Task", 0, "placeholder set below").with_status(
+        "10214",
+        "In Development",
+        "In Progress",
+    );
+    let epic_reads = Arc::clone(&epic_jira.reads);
+    let epic_writes = Arc::clone(&epic_jira.writes);
+    let task_reads = Arc::clone(&task_jira.reads);
+    let server = MockServer::start().await;
+    mount_jira_responder(&server, &epic_jira, &epic_key).await;
+    mount_jira_responder(&server, &task_jira, TASK_KEY).await;
+    let world =
+        jira_configured_world(&server, project_id, "Confirmed epic project", &[&epic_key]).await;
+
+    let project_read = Call::get(format!("/v1/projects/{project_id}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(project_read.status, 200, "{}", project_read.body);
+    let category = first_category(&world).await;
+    let account = Call::post(
+        format!("/v1/projects/{project_id}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead", "harness": "fake.runtime",
+            "credential_alias": "lead", "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("confirmed-epic-account")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let applied = Call::post(
+        format!("/v1/projects/{project_id}/epics:apply"),
+        &epic_body(
+            project_read.json()["revision"].as_u64().expect("revision"),
+            "Confirmed epic",
+            &category,
+            serde_json::json!([{
+                "title": TASK_TITLE,
+                "ticket_links": [{
+                    "connector": "connector.jira",
+                    "external_issue_key": TASK_KEY
+                }]
+            }]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("confirmed-epic-apply")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic_id = applied.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
+    let task_id = applied.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("a task id")
+        .to_owned();
+    confirm_test_epic_identity(&world, &project_id.to_string(), &epic_id);
+    // Both exact revisions the two entity kinds reconcile under.
+    for (kind, key) in [
+        ("task", "confirmed-epic-task"),
+        ("epic", "confirmed-epic-epic"),
+    ] {
+        let installed =
+            install_jira_workflow_for_issue_type(&world, &project_id.to_string(), key, kind).await;
+        assert_eq!(installed.status, 200, "{}", installed.body);
+    }
+    // The marker Kontor itself wrote at creation, with this server-assigned id.
+    task_jira.set_body(&format!("Kontor task {task_id}: {TASK_TITLE}"));
+
+    let first = world.daemon.reconcile_jira_once().await;
+    assert_eq!(first.excluded, 0, "the confirmed epic is in scope");
+    assert_eq!(first.epic_subjects, 1, "the confirmed epic is observed");
+    assert!(
+        epic_reads.load(Ordering::SeqCst) >= 1,
+        "a confirmed epic is actually read"
+    );
+    assert_eq!(first.task_subjects, 1, "the linked task is observed");
+    assert_eq!(first.blocked, 0, "nothing is refused: {first:?}");
+    assert_eq!(
+        first.content_conflicts, 0,
+        "the placeholder body was repaired, not warned about: {first:?}"
+    );
+    assert!(first.applied >= 1, "the repair wrote: {first:?}");
+    assert_eq!(
+        task_jira.rendered(),
+        TASK_TITLE,
+        "the reader now sees the authored title, not an internal id"
+    );
+    assert!(task_reads.load(Ordering::SeqCst) >= 2);
+    assert_eq!(
+        epic_writes.load(Ordering::SeqCst),
+        0,
+        "the epic status already agreed"
+    );
+    assert_eq!(
+        epic_jira.rendered(),
+        "## Summary / purpose\nAn authored epic body.",
+        "an authored epic body is not touched"
+    );
+
+    // The next pass sees a converged epic and a converged task, with no
+    // warning to emit and no conflict to re-record.
+    let second = world.daemon.reconcile_jira_once().await;
+    assert_eq!(second.blocked, 0, "{second:?}");
+    assert_eq!(second.content_conflicts, 0, "{second:?}");
+    assert_eq!(second.converged, 2, "{second:?}");
+}
+
+/// An epic outside the confirmed list is never observed, let alone written.
+#[tokio::test]
+async fn an_unconfirmed_epic_is_neither_observed_nor_written() {
+    const TASK_KEY: &str = "ASMA-9404";
+    let project_id = ProjectId::generate();
+    let epic_key = test_jira_key("Unconfirmed epic-epic");
+    let epic_jira = DescriptionJira::new(
+        Box::leak(epic_key.clone().into_boxed_str()),
+        "Epic",
+        1,
+        "## Summary / purpose\nAn authored epic body.",
+    )
+    .with_status("10237", "DRAFT", "To Do");
+    let task_jira = DescriptionJira::new(TASK_KEY, "Task", 0, "Authored task body.").with_status(
+        "10214",
+        "In Development",
+        "In Progress",
+    );
+    let epic_reads = Arc::clone(&epic_jira.reads);
+    let epic_writes = Arc::clone(&epic_jira.writes);
+    let server = MockServer::start().await;
+    mount_jira_responder(&server, &epic_jira, &epic_key).await;
+    mount_jira_responder(&server, &task_jira, TASK_KEY).await;
+    let world = jira_configured_world(&server, project_id, "Unconfirmed epic project", &[]).await;
+
+    let project_read = Call::get(format!("/v1/projects/{project_id}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(project_read.status, 200, "{}", project_read.body);
+    let category = first_category(&world).await;
+    let account = Call::post(
+        format!("/v1/projects/{project_id}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead", "harness": "fake.runtime",
+            "credential_alias": "lead", "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("unconfirmed-epic-account")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let applied = Call::post(
+        format!("/v1/projects/{project_id}/epics:apply"),
+        &epic_body(
+            project_read.json()["revision"].as_u64().expect("revision"),
+            "Unconfirmed epic",
+            &category,
+            serde_json::json!([{
+                "title": "A task with an authored body",
+                "ticket_links": [{
+                    "connector": "connector.jira",
+                    "external_issue_key": TASK_KEY
+                }]
+            }]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("unconfirmed-epic-apply")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic_id = applied.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
+    confirm_test_epic_identity(&world, &project_id.to_string(), &epic_id);
+    for (kind, key) in [
+        ("task", "unconfirmed-epic-task"),
+        ("epic", "unconfirmed-epic-epic"),
+    ] {
+        let installed =
+            install_jira_workflow_for_issue_type(&world, &project_id.to_string(), key, kind).await;
+        assert_eq!(installed.status, 200, "{}", installed.body);
+    }
+
+    let report = world.daemon.reconcile_jira_once().await;
+    assert_eq!(
+        report.excluded, 1,
+        "the only bound epic is excluded: {report:?}"
+    );
+    assert_eq!(report.epic_subjects, 0, "an excluded epic is not observed");
+    assert_eq!(
+        epic_reads.load(Ordering::SeqCst),
+        0,
+        "an excluded epic receives no Jira read at all"
+    );
+    assert_eq!(
+        epic_writes.load(Ordering::SeqCst),
+        0,
+        "and certainly no write"
+    );
+    assert_eq!(
+        epic_jira.rendered(),
+        "## Summary / purpose\nAn authored epic body.",
+        "the excluded epic's reader-facing status and body are untouched"
+    );
+}
+
+/// Mount one fake issue responder at both addresses the connector may use: the
+/// current key and the immutable REST id, plus its transitions route. `/myself`
+/// is shared and answers the same principal from either responder.
+async fn mount_jira_responder(server: &MockServer, responder: &DescriptionJira, key: &str) {
+    let id = jira_issue_id(key);
+    let pattern = format!(
+        r"^/rest/api/3/(myself|issue/({}|{})(/transitions)?)$",
+        key,
+        id.as_str()
+    );
+    Mock::given(any())
+        .and(path_regex(pattern))
+        .respond_with(responder.clone())
+        .mount(server)
+        .await;
+}
+
+/// Install one bundled Jira workflow by entity kind through the public surface.
+async fn install_jira_workflow_for_issue_type(
+    world: &World,
+    project: &str,
+    key: &str,
+    issue_type: &str,
+) -> Answer {
+    let catalogue = Call::get(format!(
+        "/v1/projects/{project}/connectors/jira/workflow-specs"
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(catalogue.status, 200, "{}", catalogue.body);
+    let catalogue = catalogue.json();
+    let shipped = catalogue
+        .as_array()
+        .expect("a workflow catalogue")
+        .iter()
+        .find(|spec| spec["issue_type"] == issue_type)
+        .unwrap_or_else(|| panic!("the catalogue ships a {issue_type} workflow: {catalogue}"));
+    let project_read = Call::get(format!("/v1/projects/{project}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(project_read.status, 200, "{}", project_read.body);
+    Call::post(
+        format!("/v1/projects/{project}/connectors/jira/workflow-specs:install"),
+        &serde_json::json!({
+            "external_project": shipped["external_project"],
+            "issue_type": shipped["issue_type"],
+            "version": shipped["version"],
+            "expected_revision": project_read.json()["revision"],
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key(key)
+    .send(world)
+    .await
+}
+
 /// Start a daemon whose configured Jira is this fake, with one stored project.
 ///
 /// The project is created in the store rather than through the API because the
@@ -62190,6 +62511,7 @@ async fn jira_configured_world(
     server: &MockServer,
     project_id: ProjectId,
     label: &'static str,
+    confirmed_epic_keys: &[&str],
 ) -> World {
     let config_root = tempfile::tempdir().expect("a Jira config root");
     std::fs::write(
@@ -62200,7 +62522,8 @@ async fn jira_configured_world(
                 "project_id": project_id.to_string(),
                 "endpoint": server.uri(),
                 "project_key": "ASMA",
-                "credential_alias": "work"
+                "credential_alias": "work",
+                "reconcile_epic_keys": confirmed_epic_keys,
             }]
         }))
         .expect("the Jira configuration serializes"),
@@ -62654,7 +62977,8 @@ async fn world_with_jira(server: &MockServer, project_id: ProjectId) -> (World, 
                 "project_id": project_id.to_string(),
                 "endpoint": server.uri(),
                 "project_key": "ASMA",
-                "credential_alias": "work"
+                "credential_alias": "work",
+                "reconcile_epic_keys": ["ASMA-1", "MOVED-9"]
             }]
         }))
         .expect("the Jira configuration serializes"),

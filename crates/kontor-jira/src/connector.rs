@@ -6,6 +6,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::StreamExt;
 use kontor_accounts::{KeychainBackend, SystemKeychain};
+use kontor_core::DomainError;
 use kontor_core::id::{
     BoundedText, CanonicalDocument, ContentHash, ExternalId, ExternalName, ProjectId, Timestamp,
 };
@@ -28,9 +29,21 @@ const CONFIG_FILE: &str = "jira.json";
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-const CREDENTIAL_TIMEOUT: Duration = Duration::from_secs(10);
+/// The outer bound on resolving one credential.
+///
+/// It deliberately exceeds [`kontor_accounts::KEYCHAIN_READ_TIMEOUT`] so the
+/// process-level read bound is the one that fires first and reports its own
+/// refusal. When both were ten seconds, the outer bound could win while the
+/// inner task was still waiting for a blocking slot, and the live host saw the
+/// keychain read reported as "exceeded its bound" with no usable cause
+/// (ASMA-8515 N-03).
+const CREDENTIAL_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CREATE_FIELDS: usize = 64;
 const MAX_CREATE_FIELDS_BYTES: usize = 64 * 1024;
+/// The readable evidence recorded instead of an external body that matched the
+/// sensitive-material guard. It names the refusal and never repeats the text.
+const EXTERNAL_BODY_WITHHELD: &str =
+    "[Kontor withheld this Jira body: it matched the sensitive-material guard]";
 const RESERVED_CREATE_FIELDS: [&str; 6] = [
     "project",
     "issuetype",
@@ -56,6 +69,16 @@ pub struct JiraProjectConfig {
     pub credential_alias: String,
     #[serde(default)]
     pub create_fields: JiraCreateFields,
+    /// The confirmed Jira epic keys `kontord` may reconcile.
+    ///
+    /// Empty means "none": an epic whose key is not named here is observed by
+    /// nobody and written by nothing. The list is operator-owned configuration
+    /// rather than graph state, because whether an epic's Jira status may be
+    /// moved from Kontor evidence is a decision about that epic, not a property
+    /// of its binding. Before KR-14 lets the repaired reconciliation run live,
+    /// every bound epic is either named here or explicitly excluded.
+    #[serde(default)]
+    pub reconcile_epic_keys: Vec<ExternalId>,
 }
 
 /// Operator-owned Jira fields required when Kontor creates an issue.
@@ -172,6 +195,7 @@ pub struct JiraConnector {
     credential_alias: String,
     credential_scope: JiraCredentialScope,
     create_fields: JiraCreateFields,
+    reconcile_epic_keys: BTreeSet<ExternalId>,
     keychain: Arc<dyn KeychainBackend>,
     client: Client,
 }
@@ -252,6 +276,14 @@ impl JiraConnector {
             ));
         }
         validate_create_fields(&config.create_fields)?;
+        let mut reconcile_epic_keys = BTreeSet::new();
+        for key in config.reconcile_epic_keys {
+            if !reconcile_epic_keys.insert(key) {
+                return Err(configuration(
+                    "reconcile_epic_keys names the same epic more than once",
+                ));
+            }
+        }
         endpoint.set_path("/");
         let client = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -265,9 +297,27 @@ impl JiraConnector {
             credential_alias: config.credential_alias,
             credential_scope,
             create_fields: config.create_fields,
+            reconcile_epic_keys,
             keychain,
             client,
         })
+    }
+
+    /// Whether the operator confirmed this exact epic for automatic
+    /// reconciliation.
+    ///
+    /// A confirmed epic is the only kind whose Jira status Kontor may move.
+    /// Absence is a refusal, so adding a binding cannot silently widen what the
+    /// resident controller writes.
+    #[must_use]
+    pub fn reconciles_epic(&self, issue_key: &ExternalId) -> bool {
+        self.reconcile_epic_keys.contains(issue_key)
+    }
+
+    /// Every confirmed epic key, in configuration order-independent order.
+    #[must_use]
+    pub fn reconcile_epic_keys(&self) -> &BTreeSet<ExternalId> {
+        &self.reconcile_epic_keys
     }
 
     async fn credentials(&self) -> Result<JiraCredentials, JiraError> {
@@ -1327,20 +1377,33 @@ fn observed_body(value: Option<&Value>) -> Result<Option<ObservedBody>, JiraErro
             plain_text: BoundedText::parse("")?,
         }));
     }
-    let content_hash = CanonicalDocument::from_serializable(&json!({
+    let content_hash = CanonicalDocument::from_external_value(&json!({
         "schema_version": 1,
         "body": value,
     }))?
     .hash()
     .clone();
     let rendered = adf_text(value);
-    let plain_text = BoundedText::parse(&rendered).or_else(|_| {
-        // An oversized body is still observable evidence: keep a bounded prefix
-        // so a refusal stays readable, and let the exact hash carry identity.
-        let mut truncated: String = rendered.chars().take(4000).collect();
-        truncated.push_str("\n[truncated]");
-        BoundedText::parse(&truncated)
-    })?;
+    let plain_text = match BoundedText::parse(&rendered) {
+        Ok(text) => text,
+        // The body is written by a person in Jira, not by Kontor. Refusing the
+        // whole observation because their prose happens to match a credential
+        // marker is how one issue wedged reconciliation about 1,040 times a day
+        // (ASMA-8515 N-02): every pass reached the same body and failed at the
+        // same rule. The exact document hash below still carries identity, so
+        // the body is observed, compared and reconciled; only the human-readable
+        // rendering is withheld. Withholding is visible in the evidence rather
+        // than silent, and no part of the matched text is echoed.
+        Err(DomainError::SensitiveMaterial { .. }) => BoundedText::parse(EXTERNAL_BODY_WITHHELD)?,
+        Err(_) => {
+            // An oversized body is still observable evidence: keep a bounded
+            // prefix so a refusal stays readable, and let the exact hash carry
+            // identity.
+            let mut truncated: String = rendered.chars().take(4000).collect();
+            truncated.push_str("\n[truncated]");
+            BoundedText::parse(&truncated)?
+        }
+    };
     Ok(Some(ObservedBody {
         present: true,
         content_hash,
@@ -1360,6 +1423,9 @@ fn observed_body(value: Option<&Value>) -> Result<Option<ObservedBody>, JiraErro
 /// Returns [`JiraError`] when the rendered text cannot be canonicalized or
 /// exceeds the bounded-text limit.
 pub fn description_hash(text: &str) -> Result<ContentHash, JiraError> {
+    // An intended body is authored through Kontor, where the sensitive-material
+    // guard still applies. Only observed external bodies relax it.
+    BoundedText::parse(text)?;
     let document = adf(text);
     let observed = observed_body(Some(&document))?
         .ok_or_else(|| JiraError::refused("description", "a rendered body is always observable"))?;
@@ -1526,6 +1592,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_exactly_confirmed_epic_keys_are_reconciled() {
+        let root = tempfile::tempdir().expect("a credential root");
+        let scope = JiraCredentialScope::at(root.path(), kontor_core::id::RealmId::generate())
+            .expect("a credential scope");
+        let confirmed = ExternalId::parse("ASMA-8501").expect("a key");
+        let config = JiraProjectConfig {
+            project_id: ProjectId::generate(),
+            endpoint: "https://example.test".to_owned(),
+            project_key: ExternalId::parse("ASMA").expect("a project"),
+            credential_alias: "work".to_owned(),
+            create_fields: JiraCreateFields::default(),
+            reconcile_epic_keys: vec![confirmed.clone()],
+        };
+        let connector = JiraConnector::new(config, scope.clone(), Arc::new(SystemKeychain))
+            .expect("the connector composes");
+        assert!(connector.reconciles_epic(&confirmed));
+        assert!(
+            !connector.reconciles_epic(&ExternalId::parse("ASMA-9999").expect("a key")),
+            "absence is a refusal: a new binding must not widen the write set"
+        );
+        assert_eq!(connector.reconcile_epic_keys().len(), 1);
+
+        let duplicate = JiraProjectConfig {
+            project_id: ProjectId::generate(),
+            endpoint: "https://example.test".to_owned(),
+            project_key: ExternalId::parse("ASMA").expect("a project"),
+            credential_alias: "work".to_owned(),
+            create_fields: JiraCreateFields::default(),
+            reconcile_epic_keys: vec![confirmed.clone(), confirmed],
+        };
+        assert!(
+            JiraConnector::new(duplicate, scope, Arc::new(SystemKeychain)).is_err(),
+            "a repeated confirmed epic is a configuration mistake, not a set"
+        );
+    }
+
+    #[test]
     fn a_blank_line_is_written_the_way_jira_stores_it() {
         // Jira drops an empty `content` array. Sending one means the confirming
         // readback compares against a document Jira will never return, so a
@@ -1600,6 +1703,60 @@ mod tests {
             observed.plain_text.as_str(),
             "Branches carrying no ASMA-<number> key are refused."
         );
+    }
+
+    #[test]
+    fn a_body_that_only_trips_the_guard_after_joining_is_still_observed() {
+        // The raw nodes are individually innocent; joining them inside the
+        // paragraph produces `token=...`. That is exactly how a hand-authored
+        // Jira body reached `BoundedText` and failed on every pass (ASMA-8515
+        // N-02): the document hash was valid, only the rendering was refused.
+        let document = json!({
+            "type": "doc",
+            "version": 1,
+            "content": [{
+                "type": "paragraph",
+                "content": [
+                    {"type": "text", "text": "The fixture uses token"},
+                    {"type": "text", "text": "=super-secret-value and must still be observed."}
+                ]
+            }]
+        });
+        let observed = observed_body(Some(&document))
+            .expect("an external body is evidence even when it looks sensitive")
+            .expect("body");
+        assert!(observed.present);
+        assert_eq!(observed.plain_text.as_str(), EXTERNAL_BODY_WITHHELD);
+        assert!(!observed.plain_text.as_str().contains("super-secret"));
+        assert_eq!(
+            observed.content_hash,
+            CanonicalDocument::from_external_value(&json!({
+                "schema_version": 1,
+                "body": document,
+            }))
+            .expect("the external document hashes")
+            .hash()
+            .clone(),
+            "the exact document hash still carries identity"
+        );
+    }
+
+    #[test]
+    fn a_body_whose_raw_node_is_sensitive_is_still_observed() {
+        // The stronger shape: one node already contains `password=...`. The
+        // sensitive-material guard must not turn a person's Jira prose into an
+        // unobservable issue.
+        let document = json!({
+            "type": "doc",
+            "version": 1,
+            "content": [{
+                "type": "paragraph",
+                "content": [{"type": "text", "text": "password=not-a-real-secret"}]
+            }]
+        });
+        let observed = observed_body(Some(&document)).expect("read").expect("body");
+        assert_eq!(observed.plain_text.as_str(), EXTERNAL_BODY_WITHHELD);
+        assert!(!observed.plain_text.as_str().contains("not-a-real-secret"));
     }
 
     #[test]

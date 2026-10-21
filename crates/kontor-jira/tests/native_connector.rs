@@ -1741,7 +1741,7 @@ async fn a_blocking_keychain_read_is_bounded_by_the_credential_timeout() {
     };
 
     let result = tokio::time::timeout(
-        Duration::from_secs(11),
+        Duration::from_secs(31),
         connector
             .for_project(project_id)
             .expect("project is configured")
