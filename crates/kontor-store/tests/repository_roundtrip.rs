@@ -2862,6 +2862,7 @@ fn apply_v115_to_legacy_fixture(fixture: &Fixture) {
          DROP TABLE desk_adam_subjects;
          DROP TABLE durable_seat_declarations;
          DROP TABLE desks;
+         DROP TABLE execution_hold_attention;
          DROP TABLE operational_gaps;
          PRAGMA user_version = 114;",
         )
