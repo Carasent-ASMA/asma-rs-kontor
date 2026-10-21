@@ -7,10 +7,11 @@ import { Disclosure, type Colors } from "./page-controls";
 export function SessionsLegend({ colors, compact, open, onToggle }: {
   colors: Colors; compact: boolean; open: boolean; onToggle: (open: boolean) => void;
 }) {
+  const referenceColors = { ...colors, accent: colors.foreground };
   const section = { flexGrow: 1, flexBasis: compact ? "auto" as const : 220, minWidth: 0, gap: 8 };
   const heading = { color: colors.foreground, fontSize: 13, fontWeight: "600" as const, lineHeight: 20 };
   const text = { color: colors.foreground, fontSize: 14, lineHeight: 21, flexShrink: 1, minWidth: 0 };
-  return <Disclosure label="Legend" colors={colors} open={open} onToggle={onToggle}>
+  return <Disclosure label="Legend" colors={referenceColors} open={open} onToggle={onToggle}>
     <View testID="sessions-legend" style={{ flexDirection: compact ? "column" : "row", flexWrap: "wrap", gap: 20, paddingVertical: 8 }}>
       <View style={section}>
         <Text accessibilityRole="header" style={heading}>Tree icons</Text>
@@ -32,7 +33,7 @@ export function SessionsLegend({ colors, compact, open, onToggle }: {
         <Text accessibilityRole="header" style={heading}>Grouping</Text>
         <Text style={text}>Role view groups sessions by their displayed role. Within a workspace, repeated title prefixes can also form groups.</Text>
         <Text style={text}>These groups and workspace codes are for display only. They do not authorize a role.</Text>
-        <Disclosure label="Role label rules" colors={colors} small>
+        <Disclosure label="Role label rules" colors={referenceColors}>
           <Text style={text}>Role view uses the kontor.role label, then the role label, then the title prefix before •.</Text>
         </Disclosure>
       </View>
