@@ -556,6 +556,19 @@ pub struct JiraReconcileReport {
     /// whose reader sees `Kontor <kind> <uuid>` is not reconciled. Collapsing it
     /// into either is the mistake ASMA-8123 exists to undo.
     pub content_conflicts: usize,
+    /// Bound epics the operator did not confirm for automatic reconciliation.
+    ///
+    /// They are skipped before any Jira read or write, so no status can move on
+    /// an epic outside the confirmed list.
+    pub excluded: usize,
+    /// Confirmed epics held at a durable typed conflict.
+    ///
+    /// A recorded unresolved conflict is the attention state for a subject in
+    /// the confirmed list. Retrying it every pass is what produced about 3,100
+    /// `revision_conflict` refusals a day (ASMA-8515 N-01); an operator
+    /// resolves the conflict to release it. Conflicts on excluded epics are
+    /// not counted here because those subjects are never read.
+    pub attention: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3962,8 +3975,14 @@ impl Services {
                     update_description: intent.mode == JiraMaterializationModeDto::Link
                         && intent.description.is_some(),
                     summary: task.title.as_str().to_owned(),
+                    // A task's title is authored text and is the body a reader
+                    // gets when the materializer was not given richer prose.
+                    // The old default wrote `Kontor task <uuid>: <title>`, so
+                    // every task created without a description published an
+                    // internal id as its reader-facing body (ASMA-8515 N-04).
+                    // Identity is carried by the marker label, not this text.
                     description: intent.description.as_ref().map_or_else(
-                        || format!("Kontor task {}: {}", task.id, task.title.as_str()),
+                        || task.title.as_str().to_owned(),
                         |description| description.as_str().to_owned(),
                     ),
                     parent_key: None,
@@ -3978,7 +3997,7 @@ impl Services {
                 description: (intent.mode == JiraMaterializationModeDto::Create)
                     .then(|| {
                         intent.description.as_ref().map_or_else(
-                            || format!("Kontor task {}: {}", task.id, task.title.as_str()),
+                            || task.title.as_str().to_owned(),
                             |description| description.as_str().to_owned(),
                         )
                     })
@@ -4649,6 +4668,94 @@ impl Services {
             outcome: JiraSubjectOutcome::Applied,
             content_conflict,
         })
+    }
+
+    /// Publish the authored body Kontor holds for one task whose ticket still
+    /// shows a creation marker.
+    ///
+    /// A task created before materialization required a description shows its
+    /// reader `Kontor task <uuid>: <title>` and nothing else (ASMA-8515 N-04).
+    /// The title is the authored text Kontor actually holds, and a previously
+    /// published body is better still, so this republishes that body once. It
+    /// never re-asserts one on every pass: the publication ledger records the
+    /// digest, and a later human edit is divergence, not a placeholder.
+    async fn repair_placeholder_task_bodies(
+        &self,
+        project_id: ProjectId,
+        task: &kontor_core::repository::Task,
+        plan: &PreparedTicketPlan,
+    ) -> Result<(bool, bool), ApiError> {
+        let mut resolved = false;
+        let mut applied = false;
+        for ticket in &plan.tickets {
+            if !matches!(
+                ticket.content_conflict,
+                Some(
+                    ContentConflictKind::PlaceholderBodyOnly
+                        | ContentConflictKind::MissingExternalBody
+                )
+            ) {
+                continue;
+            }
+            let state = self.state()?;
+            let authored = state
+                .with_store(|store| {
+                    store.latest_description_publication(
+                        project_id,
+                        DescriptionSubjectKind::Task,
+                        &task.id.to_string(),
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?
+                .map_or_else(
+                    || task.title.as_str().to_owned(),
+                    |publication| publication.body_text.as_str().to_owned(),
+                );
+            if authored.trim().is_empty() {
+                continue;
+            }
+            let preview = self
+                .preview_task_description(
+                    project_id,
+                    task.id,
+                    &DescriptionPublishRequest {
+                        body: authored.clone(),
+                    },
+                )
+                .await?;
+            if !preview.writes {
+                // The body already agrees; nothing was written. Count it as
+                // convergence, not as an apply.
+                resolved = true;
+                continue;
+            }
+            let body_hash = kontor_jira::description_hash(&authored)
+                .map_err(|error| self.refuse_jira(&error))?;
+            let key = IdempotencyKey::parse(&format!(
+                "jira-auto-task-description:{}:{}:{}",
+                task.id,
+                task.revision.get(),
+                body_hash.as_str()
+            ))
+            .map_err(|error| self.refuse_domain(&error))?;
+            self.apply_task_description(
+                &key,
+                project_id,
+                task.id,
+                &DescriptionApplyRequest {
+                    body: authored,
+                    preview_hash: preview.preview_hash,
+                    // A placeholder is not human-authored content. The preview
+                    // would have reported `human_authored_divergence` otherwise,
+                    // and this refusal stays in force.
+                    replace_human_authored: false,
+                },
+            )
+            .await?;
+            resolved = true;
+            applied = true;
+        }
+        Ok((resolved, applied))
     }
 
     /// Compile the internal facts the pure Jira policy is allowed to inspect.
@@ -39509,6 +39616,36 @@ impl Services {
                         continue;
                     }
                 };
+                // The confirmed list is the write boundary. An epic the
+                // operator did not name is not observed, planned or applied:
+                // adding a binding must never widen what the resident
+                // controller may move in Jira.
+                let confirmed = self
+                    .jira(project.project_id)
+                    .is_ok_and(|jira| jira.reconciles_epic(&issue_key));
+                if !confirmed {
+                    report.excluded = report.excluded.saturating_add(1);
+                    continue;
+                }
+                // A recorded unresolved conflict is this subject's attention
+                // state. Re-observing it every thirty seconds produced the
+                // refusal storm ASMA-8515 N-01 fixes, so a held subject is
+                // counted and left alone until its owner resolves it.
+                let open_conflict = match state.with_store(|store| {
+                    store.list_epic_status_conflicts(project.project_id, epic.id)
+                }) {
+                    Ok(conflicts) => conflicts
+                        .into_iter()
+                        .any(|conflict| conflict.resolved_at.is_none()),
+                    Err(_) => {
+                        report.blocked = report.blocked.saturating_add(1);
+                        continue;
+                    }
+                };
+                if open_conflict {
+                    report.attention = report.attention.saturating_add(1);
+                    continue;
+                }
                 report.epic_subjects = report.epic_subjects.saturating_add(1);
                 match self
                     .reconcile_jira_epic(project.project_id, epic, &issue_key, &mut report)
@@ -39631,7 +39768,30 @@ impl Services {
                     report.blocked = report.blocked.saturating_add(1);
                     continue;
                 }
-                if !plan.content_conflicts.is_empty() {
+                // A placeholder is repairable without asking a human: Kontor
+                // holds the task's authored title, and a previous publication
+                // is better evidence still. Repairing it here is what stops the
+                // same two tasks warning on every pass (ASMA-8515 N-04).
+                let (content_resolved, content_applied) = if plan.content_conflicts.is_empty() {
+                    (false, false)
+                } else {
+                    match self
+                        .repair_placeholder_task_bodies(project.project_id, &task, &plan)
+                        .await
+                    {
+                        Ok(outcome) => outcome,
+                        Err(error) => {
+                            tracing::warn!(
+                                project_id = %project.project_id,
+                                task_id = %task.id,
+                                code = %error.code.as_str(),
+                                "automatic Jira reconciliation could not repair a task body"
+                            );
+                            (false, false)
+                        }
+                    }
+                };
+                if !content_resolved && !plan.content_conflicts.is_empty() {
                     for conflict in &plan.content_conflicts {
                         tracing::warn!(
                             project_id = %project.project_id,
@@ -39644,7 +39804,9 @@ impl Services {
                     report.content_conflicts = report.content_conflicts.saturating_add(1);
                 }
                 if plan.diff.is_empty() {
-                    if plan.content_conflicts.is_empty() {
+                    if content_applied {
+                        report.applied = report.applied.saturating_add(1);
+                    } else if content_resolved || plan.content_conflicts.is_empty() {
                         report.converged = report.converged.saturating_add(1);
                     }
                     continue;

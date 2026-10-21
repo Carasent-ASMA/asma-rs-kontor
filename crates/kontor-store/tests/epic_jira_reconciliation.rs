@@ -311,14 +311,23 @@ fn one_open_epic_conflict_is_kept_until_operator_resolution() {
     );
     let mut repeated = conflict.clone();
     repeated.id = StatusConflictId::generate();
+    // The next controller pass observes the same conflict again, at a new
+    // instant and with a new payload hash. That is not different evidence: the
+    // status, issue, revision and milestone are the same, and the conflict is
+    // already the attention state. Including `observed_at` here is what made
+    // the live host refuse every pass (ASMA-8515 N-01).
+    repeated.observed_at = at("2026-09-03T10:02:30Z");
+    repeated.payload_hash = ContentHash::of(b"a later observation of the same conflict");
     assert!(
         !fixture
             .store
             .insert_epic_status_conflict(fixture.project_id, &repeated)
-            .expect("the exact observation de-duplicates")
+            .expect("the same conflict on a later pass de-duplicates")
     );
+    // A genuinely different status under the same kind is different evidence
+    // and must still refuse rather than overwrite the first observation.
     let mut contradictory = repeated;
-    contradictory.payload_hash = ContentHash::of(b"different evidence under the same kind");
+    contradictory.observed_status = status("10214", "In Development");
     assert!(matches!(
         fixture
             .store
