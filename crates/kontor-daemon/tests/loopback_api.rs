@@ -5826,8 +5826,10 @@ async fn a_kickoff_hold_lifts_itself_at_the_boundary_that_satisfies_its_terms() 
         }
         body["initial_hold"] = serde_json::json!({
             "held_by": account_id,
+            "reason_code": "waiting_on_dependency",
             "reason": "Kickoff hold until Jira binding and worktrees are confirmed",
             "lift_condition": condition,
+            "review_by": "2026-11-01T00:00:00Z",
         });
 
         // The preview resolves the condition rather than echoing it, so a
@@ -5998,6 +6000,7 @@ async fn a_kickoff_hold_lifts_itself_at_the_boundary_that_satisfies_its_terms() 
 /// dropping either would take the endpoint down mid-test.
 struct KickoffWorld {
     world: World,
+    #[allow(dead_code)]
     project_id: ProjectId,
     project: String,
     category: String,
@@ -6113,22 +6116,312 @@ async fn kickoff_world(label: &str, epic_key: &str, task_key: &str) -> KickoffWo
     }
 }
 
-/// A hold that never recorded any terms is manual, and stays held through the
-/// boundary that would have released one that had.
+/// A `dependency_done` hold lifts when the exact task it names is done.
 ///
-/// Every hold applied since v99 records a row, including `manual`, so the only
-/// way to hold an authorization with *no* row is the way that predates the
-/// table: arm, then disarm. That is exactly the shape of every hold this realm
-/// recorded before ASMA-8194, and it must not acquire a self-lift it was never
-/// given — the read that turns an absent row into `manual` is the only thing
-/// standing between those holds and an automatic release.
-///
-/// The graph is deliberately made fully kickoff-ready — epic and task bound,
-/// task placed — so that the *condition* is the only reason it does not lift.
-/// A legacy hold over a graph that could not have lifted anyway would prove
-/// nothing.
+/// The dependency is a durable task state Kontor already owns, so the sweep can
+/// answer it without a runtime call or an external fetch. A completed import is
+/// the cheapest honest way to seed that state without a full closure ceremony;
+/// the condition reads `TaskState::Done`, which is exactly what the import
+/// produced.
 #[tokio::test]
-async fn a_hold_that_recorded_no_terms_is_manual_and_survives_the_lift_boundary() {
+async fn a_dependency_hold_lifts_when_its_named_task_is_done() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(
+        &world,
+        "dependency-hold",
+        "Kontor",
+        "/tmp/kontor-dependency-hold",
+    )
+    .await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Kickoff holder",
+            "harness": "fake.runtime",
+            "credential_alias": "kickoff-holder",
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("dependency-account")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("an account id")
+        .to_owned();
+
+    // The dependency is a task in this project, already done when the hold is
+    // applied. A hold may name it because it exists before the held epic.
+    let mut dependency_body = epic_body(
+        revision,
+        "Dependency source",
+        &category,
+        serde_json::json!([{
+            "title": "Already done",
+            "import_state": "completed",
+            "short_code": "DEP-1"
+        }]),
+    );
+    dependency_body["execution_scope"]["kontor_backlog_code"] = serde_json::json!("DEP");
+    let dependency = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &dependency_body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("dependency-source-apply")
+    .send(&world)
+    .await;
+    assert_eq!(dependency.status, 200, "{}", dependency.body);
+    let dependency_task = dependency.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    let project_revision = Call::get(format!("/v1/projects/{project}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await
+        .json()["revision"]
+        .as_u64()
+        .expect("a project revision");
+    let mut held_body = epic_body(
+        project_revision,
+        "Dependent epic",
+        &category,
+        serde_json::json!([{"title": "Held work", "short_code": "HOLD-1"}]),
+    );
+    held_body["execution_scope"]["kontor_backlog_code"] = serde_json::json!("HOLD");
+    held_body["initial_hold"] = serde_json::json!({
+        "held_by": account_id,
+        "reason_code": "waiting_on_dependency",
+        "reason": "Wait for the prerequisite task",
+        "lift_condition": "dependency_done",
+        "dependency_task_id": dependency_task,
+        "review_by": "2026-11-01T00:00:00Z",
+    });
+    let preview = Call::post(format!("/v1/projects/{project}/epics:preview"), &held_body)
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert_eq!(
+        preview.json()["initial_hold"]["dependency_task_id"],
+        dependency_task
+    );
+    let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &held_body)
+        .signed_as(&world, "admin")
+        .with_key("dependency-hold-apply")
+        .send(&world)
+        .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+    assert!(
+        live_epic_grants(&world, &project, &epic).await.is_empty(),
+        "the epic starts held"
+    );
+
+    assert_eq!(
+        world.daemon.sweep_holds().await.expect("the sweep runs"),
+        0,
+        "a satisfied dependency lifts instead of raising overdue attention"
+    );
+    assert_eq!(
+        live_epic_grants(&world, &project, &epic).await.len(),
+        1,
+        "the named dependency is done, so the hold armed its replacement"
+    );
+}
+
+/// An overdue manual hold stays held and raises exactly one typed attention.
+#[tokio::test]
+async fn an_overdue_manual_hold_raises_one_typed_attention() {
+    const EPIC_KEY: &str = "ASMA-9431";
+    const TASK_KEY: &str = "ASMA-9432";
+    let fixture = kickoff_world("overdue", EPIC_KEY, TASK_KEY).await;
+    let (world, project) = (&fixture.world, fixture.project.as_str());
+
+    let mut body = epic_body(
+        1,
+        "Overdue hold",
+        &fixture.category,
+        serde_json::json!([{"title": "First"}]),
+    );
+    body["initial_hold"] = serde_json::json!({
+        "held_by": fixture.account_id,
+        "reason_code": "waiting_on_decision",
+        "reason": "Wait for the operator decision",
+        "lift_condition": "manual",
+        "review_by": "2020-01-01T00:00:00Z"
+    });
+    let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(world, "admin")
+        .with_key("overdue-apply")
+        .send(world)
+        .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+
+    assert_eq!(
+        world.daemon.sweep_holds().await.expect("the sweep runs"),
+        1,
+        "the hold passed its review date, so one attention is raised"
+    );
+    assert_eq!(
+        world.daemon.sweep_holds().await.expect("the sweep replays"),
+        0,
+        "a second sweep is not a second alert"
+    );
+    assert!(
+        live_epic_grants(world, project, &epic).await.is_empty(),
+        "manual means a person decides, so the hold still holds"
+    );
+
+    let held = epic_authorizations(world, project, &epic).await;
+    assert_eq!(held.len(), 1, "one covering hold: {held:?}");
+    assert_eq!(held[0]["lift_condition"], "manual");
+    assert_eq!(held[0]["hold"]["reason_code"], "waiting_on_decision");
+    assert_eq!(held[0]["hold"]["review_by"], "2020-01-01T00:00:00Z");
+    assert_eq!(held[0]["hold"]["attention"]["code"], "hold_review_overdue");
+    assert_eq!(held[0]["hold"]["attention"]["owner"], fixture.account_id);
+    assert_eq!(
+        held[0]["hold"]["attention"]["review_by"],
+        "2020-01-01T00:00:00Z"
+    );
+}
+
+/// An expired but unrevoked grant is not a live grant.
+///
+/// `arms` already refuses a grant outside its window. Regression: the overdue
+/// sweep used to treat any non-revoked covering authorization as live, so an
+/// expired grant suppressed `hold_review_overdue` forever.
+#[tokio::test]
+async fn an_expired_unrevoked_grant_does_not_suppress_overdue_attention() {
+    const EPIC_KEY: &str = "ASMA-9451";
+    const TASK_KEY: &str = "ASMA-9452";
+    let fixture = kickoff_world("expired-grant", EPIC_KEY, TASK_KEY).await;
+    let (world, project) = (&fixture.world, fixture.project.as_str());
+
+    let mut body = epic_body(
+        1,
+        "Expired grant hold",
+        &fixture.category,
+        serde_json::json!([{"title": "First"}]),
+    );
+    body["initial_hold"] = serde_json::json!({
+        "held_by": fixture.account_id,
+        "reason_code": "waiting_on_decision",
+        "reason": "Wait for the operator decision",
+        "lift_condition": "manual",
+        "review_by": "2020-01-01T00:00:00Z"
+    });
+    let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(world, "admin")
+        .with_key("expired-grant-apply")
+        .send(world)
+        .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+
+    // A covering grant that has not been revoked but whose window closed.
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": applied.json()["revision"],
+            "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2020-12-31T00:00:00Z",
+            "max_concurrency": 1,
+            "granted_by": fixture.account_id,
+            "reason": "A window that has already closed"
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("expired-grant-arm")
+    .send(world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+    assert!(
+        armed.json()["revoked_at"].is_null(),
+        "the grant is unrevoked: {}",
+        armed.body
+    );
+
+    assert_eq!(
+        world.daemon.sweep_holds().await.expect("the sweep runs"),
+        1,
+        "an expired unrevoked grant must not suppress the overdue attention"
+    );
+    let held = epic_authorizations(world, project, &epic).await;
+    let hold = held
+        .iter()
+        .find(|entry| entry["revoked_at"].is_string())
+        .expect("the hold is still recorded");
+    assert_eq!(hold["hold"]["attention"]["code"], "hold_review_overdue");
+}
+
+/// A `review_date` hold lifts itself when its own review date arrives.
+#[tokio::test]
+async fn a_review_date_hold_lifts_at_its_review_date() {
+    const EPIC_KEY: &str = "ASMA-9441";
+    const TASK_KEY: &str = "ASMA-9442";
+    let fixture = kickoff_world("review-date", EPIC_KEY, TASK_KEY).await;
+    let (world, project) = (&fixture.world, fixture.project.as_str());
+
+    let mut body = epic_body(
+        1,
+        "Review date hold",
+        &fixture.category,
+        serde_json::json!([{"title": "First"}]),
+    );
+    body["initial_hold"] = serde_json::json!({
+        "held_by": fixture.account_id,
+        "reason_code": "waiting_on_capacity",
+        "reason": "Resume at the review",
+        "lift_condition": "review_date",
+        "review_by": "2020-01-01T00:00:00Z"
+    });
+    let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(world, "admin")
+        .with_key("review-date-apply")
+        .send(world)
+        .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+
+    assert!(
+        live_epic_grants(world, project, &epic).await.is_empty(),
+        "the epic starts held"
+    );
+    assert_eq!(
+        world.daemon.sweep_holds().await.expect("the sweep runs"),
+        0,
+        "a satisfied hold lifts instead of raising overdue attention"
+    );
+    assert_eq!(
+        live_epic_grants(world, project, &epic).await.len(),
+        1,
+        "the review date arrived, so the hold armed its replacement"
+    );
+}
+
+/// Parking by revocation is a typed hold, or it is refused.
+///
+/// ASMA-7984 was parked by revoking its authorization, which bypassed every
+/// field REQ-008 requires: no owner, no reason code, no lift condition and no
+/// review date. A revocation is a hold, so a bare one is now refused before any
+/// write, and the same call carrying the four fields records them in the same
+/// store transaction as the revocation.
+#[tokio::test]
+async fn a_revocation_without_typed_hold_terms_is_refused_and_writes_nothing() {
     const EPIC_KEY: &str = "ASMA-9411";
     const TASK_KEY: &str = "ASMA-9412";
     let fixture = kickoff_world("legacy", EPIC_KEY, TASK_KEY).await;
@@ -6136,7 +6429,7 @@ async fn a_hold_that_recorded_no_terms_is_manual_and_survives_the_lift_boundary(
 
     let mut body = epic_body(
         1,
-        "Legacy hold",
+        "Typed hold",
         &fixture.category,
         serde_json::json!([{"title": "First"}]),
     );
@@ -6144,19 +6437,13 @@ async fn a_hold_that_recorded_no_terms_is_manual_and_survives_the_lift_boundary(
         "connector": "connector.jira",
         "external_issue_key": TASK_KEY,
     }]);
-    // No `initial_hold`: this epic is never handed terms, which is the whole
-    // point. The hold arrives the pre-v99 way, below.
     let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
         .signed_as(world, "admin")
-        .with_key("legacy-apply")
+        .with_key("typed-hold-apply")
         .send(world)
         .await;
     assert_eq!(applied.status, 200, "{}", applied.body);
     let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
-    let task = applied.json()["tasks"][0]["task_id"]
-        .as_str()
-        .expect("id")
-        .to_owned();
 
     let armed = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
@@ -6171,7 +6458,7 @@ async fn a_hold_that_recorded_no_terms_is_manual_and_survives_the_lift_boundary(
         }),
     )
     .signed_as(world, "admin")
-    .with_key("legacy-arm")
+    .with_key("typed-hold-arm")
     .send(world)
     .await;
     assert_eq!(armed.status, 200, "{}", armed.body);
@@ -6180,106 +6467,79 @@ async fn a_hold_that_recorded_no_terms_is_manual_and_survives_the_lift_boundary(
         .expect("an authorization id")
         .to_owned();
 
-    let epic_revision = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
-        .signed_as(world, "observer")
-        .send(world)
-        .await
-        .json()["revision"]
-        .as_u64()
-        .expect("an epic revision");
-    let disarmed = Call::post(
+    // The pre-REQ-008 shape: a revocation with prose and nothing else.
+    let bare = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/execution:disarm"),
         &serde_json::json!({
             "authorization_id": authorization,
-            "expected_revision": epic_revision,
             "revoked_by": fixture.account_id,
             "reason": "Kickoff hold until Jira binding and worktrees are confirmed"
         }),
     )
     .signed_as(world, "admin")
-    .with_key("legacy-disarm")
+    .with_key("typed-hold-bare")
     .send(world)
     .await;
-    assert_eq!(disarmed.status, 200, "{}", disarmed.body);
-
-    // A revoked covering authorization with no row in the condition ledger:
-    // the pre-v99 hold, reachable only this way now that applying one always
-    // records its terms.
-    assert!(
-        world
-            .daemon
-            .state()
-            .with_store(|store| {
-                store.get_hold_lift_condition(
-                    fixture.project_id,
-                    kontor_core::id::ExecutionAuthorizationId::parse(&authorization)
-                        .expect("an authorization id"),
-                )
-            })
-            .map(|condition| condition == kontor_core::spec::HoldLiftCondition::Manual)
-            .expect("the absent condition reads"),
-        "a hold with no recorded row means manual, which is what it meant before the row existed"
-    );
-    let held = epic_authorizations(world, project, &epic).await;
     assert_eq!(
-        held.len(),
+        bare.status, 400,
+        "a revoke-as-park without hold terms is refused: {}",
+        bare.body
+    );
+    assert_eq!(bare.json()["code"], "invalid_request");
+    assert_eq!(
+        live_epic_grants(world, project, &epic).await.len(),
         1,
-        "exactly one covering authorization: {held:?}"
-    );
-    assert_eq!(
-        held[0]["lift_condition"], "manual",
-        "the readback states manual rather than inventing terms nobody recorded"
-    );
-    assert!(
-        live_epic_grants(world, project, &epic).await.is_empty(),
-        "the epic is held"
+        "and the refusal wrote nothing: the grant is still live"
     );
 
-    // The graph becomes everything `kickoff_ready` asks for. A hold that had
-    // recorded those terms would lift here; this one recorded none.
-    let materialization = serde_json::json!({
-        "epic": {"mode": "link", "issue_key": EPIC_KEY},
-        "tasks": {(task.clone()): {"mode": "link", "issue_key": TASK_KEY}}
-    });
-    let jira_preview = Call::post(
-        format!("/v1/projects/{project}/epics/{epic}/jira:preview"),
-        &materialization,
-    )
-    .signed_as(world, "admin")
-    .send(world)
-    .await;
-    assert_eq!(jira_preview.status, 200, "{}", jira_preview.body);
-    let epic_revision = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
-        .signed_as(world, "observer")
-        .send(world)
-        .await
-        .json()["revision"]
-        .as_u64()
-        .expect("an epic revision");
-    let materialized = Call::post(
-        format!("/v1/projects/{project}/epics/{epic}/jira:apply"),
+    let too_far = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:disarm"),
         &serde_json::json!({
-            "materialization": materialization,
-            "preview_hash": jira_preview.json()["preview_hash"],
-            "expected_revision": epic_revision
+            "authorization_id": authorization,
+            "revoked_by": fixture.account_id,
+            "reason_code": "waiting_on_dependency",
+            "reason": "Kickoff hold until Jira binding and worktrees are confirmed",
+            "lift_condition": "manual",
+            "review_by": "2099-01-01T00:00:00Z"
         }),
     )
     .signed_as(world, "admin")
-    .with_key("legacy-materialize")
+    .with_key("typed-hold-too-far")
     .send(world)
     .await;
-    assert_eq!(materialized.status, 200, "{}", materialized.body);
-    assert_eq!(materialized.json()["activated"], true);
-
-    assert!(
-        live_epic_grants(world, project, &epic).await.is_empty(),
-        "a hold that was never given terms must not acquire them: {}",
-        materialized.body
+    assert_eq!(
+        too_far.status, 400,
+        "a review date past the 30-day bound is refused: {}",
+        too_far.body
     );
     assert_eq!(
-        epic_authorizations(world, project, &epic).await,
-        held,
-        "and nothing about it moved"
+        live_epic_grants(world, project, &epic).await.len(),
+        1,
+        "and that refusal wrote nothing either"
+    );
+
+    let typed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:disarm"),
+        &serde_json::json!({
+            "authorization_id": authorization,
+            "revoked_by": fixture.account_id,
+            "reason_code": "waiting_on_dependency",
+            "reason": "Kickoff hold until Jira binding and worktrees are confirmed",
+            "lift_condition": "manual",
+            "review_by": "2026-11-01T00:00:00Z"
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("typed-hold")
+    .send(world)
+    .await;
+    assert_eq!(typed.status, 200, "{}", typed.body);
+    assert_eq!(typed.json()["lift_condition"], "manual");
+    assert_eq!(typed.json()["hold"]["reason_code"], "waiting_on_dependency");
+    assert_eq!(typed.json()["hold"]["review_by"], "2026-11-01T00:00:00Z");
+    assert!(
+        live_epic_grants(world, project, &epic).await.is_empty(),
+        "the typed hold is the only authorization left covering the epic"
     );
 }
 
@@ -6296,7 +6556,7 @@ async fn a_hold_that_recorded_no_terms_is_manual_and_survives_the_lift_boundary(
 /// intent that conflicted with *everything* would pass the interesting half of
 /// this test.
 #[tokio::test]
-async fn one_apply_key_cannot_carry_two_different_hold_conditions() {
+async fn a_hold_requires_its_terms_and_one_apply_key_cannot_carry_two_conditions() {
     let world = World::open_empty().await;
     world.daemon.reconcile().await;
     let created = ensure_project(&world, "hold-terms", "Kontor", "/tmp/kontor-hold-terms").await;
@@ -6306,48 +6566,6 @@ async fn one_apply_key_cannot_carry_two_different_hold_conditions() {
         .to_owned();
     let revision = created.json()["revision"].as_u64().expect("revision");
     let category = first_category(&world).await;
-    let body = epic_body(
-        revision,
-        "Epic with paper leadership",
-        &category,
-        serde_json::json!([{"title": "Only task"}]),
-    );
-
-    let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
-        .signed_as(&world, "admin")
-        .with_key("ecp-epic-1")
-        .send(&world)
-        .await;
-    assert_eq!(applied.status, 200, "{}", applied.body);
-
-    let plane = &applied.json()["control_plane"];
-    assert_eq!(
-        plane["materialized"], false,
-        "epic-apply binds no native workspace, and must not claim it did"
-    );
-    assert_eq!(
-        plane["completes_with"], "kontor_topology_materialize on scope epic_control",
-        "an unbound control plane names the node call, not the seat call"
-    );
-    assert_eq!(
-        plane["staffed_seats"], 0,
-        "no seat holds a native session at creation"
-    );
-    assert!(
-        plane["declared_seats"].as_u64().expect("a count") > 0,
-        "the roster does declare leadership — that is the whole asymmetry"
-    );
-
-    // And the report survives a replay, because it describes the epic rather
-    // than the call: a served receipt that answered `materialized: true` would
-    // be worse than no report at all.
-    let again = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
-        .signed_as(&world, "admin")
-        .with_key("ecp-epic-1")
-        .send(&world)
-        .await;
-    assert_eq!(again.status, 200, "{}", again.body);
-    assert_eq!(again.json()["control_plane"], *plane);
 
     let account = Call::post(
         format!("/v1/projects/{project}/provider-account-profiles:ensure"),
@@ -6368,27 +6586,135 @@ async fn one_apply_key_cannot_carry_two_different_hold_conditions() {
         .expect("an account id")
         .to_owned();
 
-    let body_with = |condition: Option<&str>| {
+    let hold_body = |condition: &str, review_by: &str, reason_code: &str| {
         let mut body = epic_body(
             revision,
             "Hold terms",
             &category,
             serde_json::json!([{"title": "First"}]),
         );
-        let mut hold = serde_json::json!({
+        body["initial_hold"] = serde_json::json!({
             "held_by": account_id,
+            "reason_code": reason_code,
             "reason": "Kickoff hold until Jira binding and worktrees are confirmed",
+            "lift_condition": condition,
+            "review_by": review_by,
         });
-        if let Some(condition) = condition {
-            hold["lift_condition"] = serde_json::json!(condition);
-        }
-        body["initial_hold"] = hold;
         body
     };
 
+    // The lift condition is required, not a default. A hold that names no end
+    // is the indefinite hold REQ-008 exists to remove.
+    let mut missing_condition = hold_body(
+        "kickoff_ready",
+        "2026-11-01T00:00:00Z",
+        "waiting_on_dependency",
+    );
+    missing_condition["initial_hold"]
+        .as_object_mut()
+        .expect("a hold object")
+        .remove("lift_condition");
+    let refused = Call::post(
+        format!("/v1/projects/{project}/epics:preview"),
+        &missing_condition,
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(
+        refused.status, 400,
+        "a hold without a lift condition is refused: {}",
+        refused.body
+    );
+    assert_eq!(refused.json()["code"], "invalid_request");
+
+    // The review date is required too, and it is bounded.
+    let mut missing_review = hold_body(
+        "kickoff_ready",
+        "2026-11-01T00:00:00Z",
+        "waiting_on_dependency",
+    );
+    missing_review["initial_hold"]
+        .as_object_mut()
+        .expect("a hold object")
+        .remove("review_by");
+    let refused = Call::post(
+        format!("/v1/projects/{project}/epics:preview"),
+        &missing_review,
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(
+        refused.status, 400,
+        "a hold without a review date is refused: {}",
+        refused.body
+    );
+    assert_eq!(refused.json()["code"], "invalid_request");
+
+    let too_far = Call::post(
+        format!("/v1/projects/{project}/epics:preview"),
+        &hold_body(
+            "kickoff_ready",
+            "2099-01-01T00:00:00Z",
+            "waiting_on_dependency",
+        ),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(
+        too_far.status, 400,
+        "a review date more than 30 days ahead is refused: {}",
+        too_far.body
+    );
+    assert_eq!(too_far.json()["code"], "invalid_request");
+
+    // `dependency_done` is only evaluable with the one task it waits on.
+    let no_dependency = Call::post(
+        format!("/v1/projects/{project}/epics:preview"),
+        &hold_body(
+            "dependency_done",
+            "2026-11-01T00:00:00Z",
+            "waiting_on_dependency",
+        ),
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(
+        no_dependency.status, 400,
+        "a dependency condition without a dependency is refused: {}",
+        no_dependency.body
+    );
+
+    let mut unknown_dependency = hold_body(
+        "dependency_done",
+        "2026-11-01T00:00:00Z",
+        "waiting_on_dependency",
+    );
+    unknown_dependency["initial_hold"]["dependency_task_id"] =
+        serde_json::json!(TaskId::generate().to_string());
+    let unknown = Call::post(
+        format!("/v1/projects/{project}/epics:preview"),
+        &unknown_dependency,
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(
+        unknown.status, 404,
+        "a dependency naming no task in this project is refused: {}",
+        unknown.body
+    );
+
     let applied = Call::post(
         format!("/v1/projects/{project}/epics:apply"),
-        &body_with(Some("kickoff_ready")),
+        &hold_body(
+            "kickoff_ready",
+            "2026-11-01T00:00:00Z",
+            "waiting_on_dependency",
+        ),
     )
     .signed_as(&world, "admin")
     .with_key("terms-apply")
@@ -6396,11 +6722,23 @@ async fn one_apply_key_cannot_carry_two_different_hold_conditions() {
     .await;
     assert_eq!(applied.status, 200, "{}", applied.body);
     let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+    assert_eq!(
+        applied.json()["initial_hold"]["hold"]["reason_code"],
+        "waiting_on_dependency"
+    );
+    assert_eq!(
+        applied.json()["initial_hold"]["hold"]["review_by"],
+        "2026-11-01T00:00:00Z"
+    );
 
     // The identical call is still a replay.
     let replayed = Call::post(
         format!("/v1/projects/{project}/epics:apply"),
-        &body_with(Some("kickoff_ready")),
+        &hold_body(
+            "kickoff_ready",
+            "2026-11-01T00:00:00Z",
+            "waiting_on_dependency",
+        ),
     )
     .signed_as(&world, "admin")
     .with_key("terms-apply")
@@ -6412,7 +6750,7 @@ async fn one_apply_key_cannot_carry_two_different_hold_conditions() {
     // The same key with different terms is a different command.
     let changed = Call::post(
         format!("/v1/projects/{project}/epics:apply"),
-        &body_with(Some("manual")),
+        &hold_body("manual", "2026-11-01T00:00:00Z", "waiting_on_decision"),
     )
     .signed_as(&world, "admin")
     .with_key("terms-apply")
@@ -6420,10 +6758,6 @@ async fn one_apply_key_cannot_carry_two_different_hold_conditions() {
     .await;
     assert_eq!(changed.status, 409, "{}", changed.body);
     assert_eq!(changed.json()["code"], "idempotency_conflict");
-    assert_eq!(
-        changed.json()["rule"],
-        "the idempotency key was already used for a different operation"
-    );
 
     // And the refused call changed nothing: the hold still states the terms it
     // was applied with.
@@ -6434,75 +6768,8 @@ async fn one_apply_key_cannot_carry_two_different_hold_conditions() {
         "exactly one covering authorization: {held:?}"
     );
     assert_eq!(held[0]["lift_condition"], "kickoff_ready");
-
-    // A caller that names no condition keeps the pre-field intent bytes, so its
-    // own apply stays replayable. This is the compatibility half of "widened
-    // only when named": every hold applied before the field existed named
-    // nothing, and every one of those receipts has to keep replaying.
-    //
-    // In its own project, because two epics in one project contend for the
-    // short codes and backlog code this fixture hands out, and that refusal
-    // would say nothing about hold terms.
-    let silent_project = ensure_project(
-        &world,
-        "hold-terms-silent",
-        "Kontor",
-        "/tmp/kontor-hold-terms-silent",
-    )
-    .await;
-    let silent_id = silent_project.json()["project_id"]
-        .as_str()
-        .expect("id")
-        .to_owned();
-    let silent_account = Call::post(
-        format!("/v1/projects/{silent_id}/provider-account-profiles:ensure"),
-        &serde_json::json!({
-            "label": "Kickoff holder",
-            "harness": "fake.runtime",
-            "credential_alias": "kickoff-holder",
-            "enabled": true
-        }),
-    )
-    .signed_as(&world, "admin")
-    .with_key("silent-account")
-    .send(&world)
-    .await;
-    assert_eq!(silent_account.status, 200, "{}", silent_account.body);
-    let mut silent = epic_body(
-        silent_project.json()["revision"]
-            .as_u64()
-            .expect("revision"),
-        "Hold terms unspoken",
-        &category,
-        serde_json::json!([{"title": "First"}]),
-    );
-    silent["initial_hold"] = serde_json::json!({
-        "held_by": silent_account.json()["account_profile_id"],
-        "reason": "Kickoff hold until Jira binding and worktrees are confirmed",
-    });
-    let first = Call::post(format!("/v1/projects/{silent_id}/epics:apply"), &silent)
-        .signed_as(&world, "admin")
-        .with_key("terms-apply-omitted")
-        .send(&world)
-        .await;
-    assert_eq!(first.status, 200, "{}", first.body);
-    let silent_epic = first.json()["epic_id"].as_str().expect("id").to_owned();
-    let again = Call::post(format!("/v1/projects/{silent_id}/epics:apply"), &silent)
-        .signed_as(&world, "admin")
-        .with_key("terms-apply-omitted")
-        .send(&world)
-        .await;
-    assert_eq!(
-        again.status, 200,
-        "an apply that named no condition must stay replayable: {}",
-        again.body
-    );
-    assert_eq!(again.json()["epic_id"], silent_epic);
-    assert_eq!(
-        epic_authorizations(&world, &silent_id, &silent_epic).await[0]["lift_condition"],
-        "manual",
-        "an unstated condition resolves to manual in the readback, without having been in the intent"
-    );
+    assert_eq!(held[0]["hold"]["reason_code"], "waiting_on_dependency");
+    assert_eq!(held[0]["hold"]["review_by"], "2026-11-01T00:00:00Z");
 }
 
 /// Legacy imports may add one explicit short-code mapping without changing the
@@ -8096,7 +8363,10 @@ async fn arming_disarming_and_planning_are_scoped_authority_decisions() {
         &serde_json::json!({
             "authorization_id": authorization,
             "revoked_by": account_id,
-            "reason": "Stand the epic down"
+            "reason_code": "waiting_on_decision",
+            "reason": "Stand the epic down",
+            "lift_condition": "manual",
+            "review_by": "2026-11-01T00:00:00Z"
         }),
     )
     .signed_as(&world, "admin")
@@ -8255,7 +8525,10 @@ async fn an_epic_can_be_created_with_a_replay_safe_covering_hold() {
     );
     body["initial_hold"] = serde_json::json!({
         "held_by": account_id,
-        "reason": "Kickoff hold until handoff"
+        "reason_code": "waiting_on_dependency",
+        "reason": "Kickoff hold until handoff",
+        "lift_condition": "manual",
+        "review_by": "2026-11-01T00:00:00Z"
     });
 
     let preview = Call::post(format!("/v1/projects/{project}/epics:preview"), &body)
@@ -8766,7 +9039,10 @@ fn well_formed_body(uri: &str) -> serde_json::Value {
         serde_json::json!({
             "authorization_id": kontor_core::id::ExecutionAuthorizationId::generate().to_string(),
             "revoked_by": kontor_core::id::AccountProfileId::generate().to_string(),
-            "reason": "x"
+            "reason_code": "waiting_on_decision",
+            "reason": "x",
+            "lift_condition": "manual",
+            "review_by": "2026-11-01T00:00:00Z"
         })
     } else if uri.ends_with("scheduler:start") {
         serde_json::json!({"plan_hash": "0".repeat(64)})
@@ -10530,7 +10806,10 @@ async fn disarming_records_its_own_command_kind_and_checks_the_key_before_answer
         serde_json::json!({
             "authorization_id": authorization,
             "revoked_by": account_id,
-            "reason": reason
+            "reason_code": "waiting_on_decision",
+            "reason": reason,
+            "lift_condition": "manual",
+            "review_by": "2026-11-01T00:00:00Z"
         })
     };
 

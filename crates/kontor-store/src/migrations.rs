@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 135;
+pub const SCHEMA_VERSION: i64 = 136;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -465,6 +465,11 @@ const MIGRATIONS: &[&str] = &[
     // fallback and owner a seat records when Kontor cannot perform the
     // operation (ASMA-8514).
     include_str!("../migrations/0135_operational_gaps.sql"),
+    // Schema v136. Every hold records an owner, a reason code, a lift condition
+    // and a review date; `dependency_done` and `review_date` can lift a hold
+    // themselves; and an overdue review raises one typed attention record
+    // (ASMA-8517 / REQ-008).
+    include_str!("../migrations/0136_hold_terms_and_attention.sql"),
 ];
 
 const _: () = assert!(
@@ -1063,7 +1068,10 @@ mod release_integration_tests {
 
         let store = crate::SqliteStore::open(&path).expect("additive upgrade");
         assert_eq!(store.realm_metadata().realm_id, realm.realm_id);
-        assert_eq!(store.schema_version().expect("upgraded version"), 135);
+        assert_eq!(
+            store.schema_version().expect("upgraded version"),
+            SCHEMA_VERSION
+        );
         drop(store);
         let connection = Connection::open(&path).expect("upgraded readback");
         let fingerprint: String = connection.query_row(
@@ -1352,7 +1360,10 @@ mod release_integration_tests {
         drop(connection);
 
         let store = crate::SqliteStore::open(&path).expect("released 124 upgrades");
-        assert_eq!(store.schema_version().expect("upgraded version"), 135);
+        assert_eq!(
+            store.schema_version().expect("upgraded version"),
+            SCHEMA_VERSION
+        );
         assert_eq!(store.realm_metadata().realm_id, realm.realm_id);
         let binding = store
             .memory_binding(ProjectId::parse(PROJECT).expect("project id"), RUN)
@@ -1367,7 +1378,7 @@ mod release_integration_tests {
         let connection = Connection::open(&path).expect("upgraded readback");
         assert_eq!(
             read_user_version(&connection).expect("upgraded version"),
-            135
+            SCHEMA_VERSION
         );
         let fingerprint: String = connection
             .query_row(

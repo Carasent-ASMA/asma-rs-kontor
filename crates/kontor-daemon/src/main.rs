@@ -350,6 +350,7 @@ async fn serve(state_root: PathBuf, port: u16, origins: Vec<String>) -> std::pro
     let _completion_scanner = daemon.spawn_completion_scanner(COMPLETION_SCAN_INTERVAL);
     let _admission_reconciler = daemon.spawn_admission_reconciler(COMPLETION_SCAN_INTERVAL);
     let _consultation_releaser = daemon.spawn_consultation_releaser();
+    let _hold_review_scanner = daemon.spawn_hold_review_scanner(COMPLETION_SCAN_INTERVAL);
 
     let bind: SocketAddr = daemon.config().bind;
     let listener = match tokio::net::TcpListener::bind(bind).await {
