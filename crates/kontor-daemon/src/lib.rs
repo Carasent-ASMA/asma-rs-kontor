@@ -1482,6 +1482,11 @@ impl Daemon {
         let realm_id = self.realm_id();
         self.state.barrier().settle(BarrierState::Pending);
         self.state.signals().stop();
+        // Break the services ↔ state cycle before either half can be dropped.
+        // The state holds the services and the services hold the state, so
+        // without this the SQLite connection survives the daemon and a cleanly
+        // stopped Realm is left with committed WAL frames restore refuses.
+        self.applications.detach();
         info!(realm_id = %realm_id, "realm released");
         // `self` is consumed, so the lock is dropped here and the state root is
         // free for the next daemon.

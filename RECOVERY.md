@@ -82,7 +82,11 @@ out to have been the wrong call still has something to go back to. A
 **non-empty** `-wal` beside the snapshot or the destination is refused before
 anything changes, because it may hold committed transactions; empty `-wal`/`-shm`
 files are removed so SQLite cannot recover a stranger's WAL into the restored
-file. A daemon that stopped cleanly leaves no WAL frames behind.
+file. A daemon that stopped cleanly releases the store connection and leaves no
+WAL frames behind. If restore reports a non-empty destination WAL anyway, the
+process is not fully stopped (or crashed mid-release): stop the daemon that owns
+the state root, wait for it to exit, and retry. A non-empty snapshot WAL means
+something opened the snapshot for writing; take a fresh snapshot instead.
 
 A restored realm has no idea what its runtimes did while the snapshot was on the
 shelf. The next start therefore keeps the **scheduling barrier shut** until
@@ -378,7 +382,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -v
 | `export schema version N is not one this build reads` | the document is outside this build's supported generation range (currently 2–17) | export again from a compatible source or upgrade the reader |
 | `database schema version N is newer than this binary understands` | a newer build already migrated this database | run the newer build, or roll back as in [Upgrade and binary rollback](#upgrade-and-binary-rollback) |
 | `the database does not carry the schema version this build writes` | the snapshot source, the snapshot being restored or the restore destination is at another build's generation | run the command with the build whose generation it carries; for a rollback, move the newer destination aside first |
-| `public key authority ledger could not be inspected without changing files` | a restore found a non-empty `-wal` beside the snapshot or the destination | beside the destination: let the daemon start and stop cleanly first, or restore into a fresh state root; beside a snapshot: something opened it for writing, so use another verified snapshot |
+| `the destination has a nonempty write-ahead log` | the daemon has not fully released the database, or it crashed mid-release | stop the daemon that owns the state root, wait for the process to exit, then retry; a clean stop leaves no WAL frames |
+| `the snapshot has a nonempty write-ahead log` | something opened the snapshot for writing | take a fresh snapshot from the realm; do not open snapshots with a writable connection |
+| `public key authority ledger could not be inspected without changing files` | the ledger could not be read with an immutable, read-only connection | stop every process that has the file open and retry; never make the file writable to get past the check |
 | `public attestation ledger continuity is unsupported` | the attestation-key or prepared-token ledger holds rows | neither export nor restore carries that ledger at this revision; keep the database and its snapshots as they are |
 | category `jira_credential` | the root is relative or uninitialized, the alias is not in `jira.json`, or the document is invalid | fix the named input; nothing was read from stdin or written when the preflight refused |
 | scheduling stays shut after a restore | reconciliation has not completed | check the runtime fleet; a census that did not finish proves nothing, so the barrier stays shut on purpose |

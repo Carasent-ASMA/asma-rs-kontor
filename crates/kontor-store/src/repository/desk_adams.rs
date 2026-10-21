@@ -9,8 +9,11 @@
 use kontor_core::id::{
     ContentHash, DeskKey, ExternalName, MiniProjectId, ProjectId, TeamDefinitionId, TopologyNodeId,
 };
-use kontor_core::repository::{RepositoryError, RepositoryResult, StoredDeskAdamSubject};
+use kontor_core::repository::{
+    NewSessionTopologyNode, RepositoryError, RepositoryResult, StoredDeskAdamSubject,
+};
 use kontor_core::spec::TeamDefinitionSnapshot;
+use kontor_core::state::SessionTopologyNode;
 use rusqlite::{OptionalExtension, params};
 
 use super::{SqliteStore, backend, read_timestamp, read_version, text, version_column};
@@ -45,50 +48,27 @@ impl SqliteStore {
         subject: &StoredDeskAdamSubject,
     ) -> RepositoryResult<()> {
         let transaction = self.begin()?;
-        transaction
-            .execute(
-                "INSERT INTO desk_adam_subjects
-                     (project_id, topology_node_id, desk_key, subject_kind, mini_project_id,
-                      topic, origin_topology_node_id, team_definition_id,
-                      team_definition_version, team_definition_hash, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                params![
-                    subject.project_id.to_string(),
-                    subject.topology_node_id.to_string(),
-                    subject.desk_key.as_str(),
-                    if subject.mini_project_id.is_some() {
-                        "epic"
-                    } else {
-                        "ad_hoc"
-                    },
-                    subject.mini_project_id.map(|id| id.to_string()),
-                    subject.topic.as_str(),
-                    subject.origin_topology_node_id.map(|id| id.to_string()),
-                    subject.team_definition.definition_id.to_string(),
-                    version_column(subject.team_definition.version),
-                    subject.team_definition.canonical_hash.as_str(),
-                    text(subject.created_at),
-                ],
-            )
-            .map_err(|error| match error {
-                // Two opens of one subject racing, or a second subject for an
-                // epic, topic or origin that already has one. The row is first,
-                // so the loser has written nothing else and reads the winner. A
-                // binding whose ad-hoc origin is not fenced yet lands here too,
-                // and its reread finds no winner.
-                rusqlite::Error::SqliteFailure(failure, _)
-                    if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
-                {
-                    RepositoryError::Conflict {
-                        subject: "desk Adam subject",
-                        rule: "one node, epic, ad-hoc topic or binding names one subject, \
-                               and a binding follows the ad-hoc fence",
-                    }
-                }
-                other => backend(other),
-            })?;
+        create_desk_adam_subject_in(&transaction, subject)?;
         transaction.commit().map_err(backend)?;
         Ok(())
+    }
+
+    /// Record a fresh desk Adam subject and its subject node as one atomic write.
+    ///
+    /// # Errors
+    /// Returns the subject's conflicts and the node's validation errors. A
+    /// refused node rolls the subject row back with it, so a retry starts from
+    /// absence instead of adopting a subject no node ever reached.
+    pub fn create_desk_adam_subject_with_node(
+        &self,
+        subject: &StoredDeskAdamSubject,
+        node: &NewSessionTopologyNode,
+    ) -> RepositoryResult<SessionTopologyNode> {
+        let transaction = self.begin()?;
+        create_desk_adam_subject_in(&transaction, subject)?;
+        let created = super::create_topology_node_in(&transaction, node)?;
+        transaction.commit().map_err(backend)?;
+        Ok(created)
     }
 
     /// One subject, by its node.
@@ -212,6 +192,55 @@ impl SqliteStore {
             .map(|row| decode(project_id, row))
             .transpose()
     }
+}
+
+fn create_desk_adam_subject_in(
+    transaction: &rusqlite::Transaction<'_>,
+    subject: &StoredDeskAdamSubject,
+) -> RepositoryResult<()> {
+    transaction
+        .execute(
+            "INSERT INTO desk_adam_subjects
+                 (project_id, topology_node_id, desk_key, subject_kind, mini_project_id,
+                  topic, origin_topology_node_id, team_definition_id,
+                  team_definition_version, team_definition_hash, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                subject.project_id.to_string(),
+                subject.topology_node_id.to_string(),
+                subject.desk_key.as_str(),
+                if subject.mini_project_id.is_some() {
+                    "epic"
+                } else {
+                    "ad_hoc"
+                },
+                subject.mini_project_id.map(|id| id.to_string()),
+                subject.topic.as_str(),
+                subject.origin_topology_node_id.map(|id| id.to_string()),
+                subject.team_definition.definition_id.to_string(),
+                version_column(subject.team_definition.version),
+                subject.team_definition.canonical_hash.as_str(),
+                text(subject.created_at),
+            ],
+        )
+        .map_err(|error| match error {
+            // Two opens of one subject racing, or a second subject for an
+            // epic, topic or origin that already has one. The row is first,
+            // so the loser has written nothing else and reads the winner. A
+            // binding whose ad-hoc origin is not fenced yet lands here too,
+            // and its reread finds no winner.
+            rusqlite::Error::SqliteFailure(failure, _)
+                if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                RepositoryError::Conflict {
+                    subject: "desk Adam subject",
+                    rule: "one node, epic, ad-hoc topic or binding names one subject, \
+                           and a binding follows the ad-hoc fence",
+                }
+            }
+            other => backend(other),
+        })?;
+    Ok(())
 }
 
 fn read_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SubjectRow> {

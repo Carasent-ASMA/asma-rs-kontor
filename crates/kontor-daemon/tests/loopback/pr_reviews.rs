@@ -1006,6 +1006,48 @@ async fn closing_one_review_keeps_the_desk_its_durable_seat_and_the_other_review
     );
 }
 
+/// A retirement whose acknowledgement is lost has already taken effect, and
+/// any session fenced before it is gone too. The refusal must name a partial
+/// close and the convergent retry, never "nothing was changed".
+#[tokio::test]
+async fn a_close_that_lost_a_retirement_acknowledgement_reports_a_partial_close() {
+    let realm = review_realm("prr-partial-close", Some(PR_REVIEW)).await;
+    let first = opened(
+        &realm,
+        &open_body(&realm.epic_key, MODULE_REPOSITORY, 101, Some(routes())),
+        "prr-partial-close-open",
+    )
+    .await;
+    let lost = seat_id(&first["room"]["seats"][0]["seat_binding_id"]);
+    realm.world.fake.lose_next_hosted_retire_ack(lost);
+
+    let refused = close(&realm, MODULE_REPOSITORY, 101, "prr-partial-close-close").await;
+    assert_eq!(refused.status, 503, "{}", refused.body);
+    assert_eq!(
+        refused.json()["code"],
+        "delivery_unconfirmed",
+        "{}",
+        refused.body
+    );
+    let refusal = refused.json();
+    let action = refusal["action"].as_str().expect("an action");
+    assert!(
+        action.contains("retry this same close"),
+        "the partial close names its convergent retry: {}",
+        refused.body
+    );
+
+    let retried = close(&realm, MODULE_REPOSITORY, 101, "prr-partial-close-close").await;
+    assert_eq!(retried.status, 200, "{}", retried.body);
+    assert_eq!(retried.json()["review"]["open"], false);
+    for seat in review_seats(&first) {
+        assert!(
+            !seat_row(&realm, seat_id(&seat["seat_binding_id"])).is_non_terminal(),
+            "every seat is released after the convergent retry"
+        );
+    }
+}
+
 #[tokio::test]
 async fn an_open_is_refused_whole_before_any_effect() {
     let realm = review_realm("prr-refusals", Some(PR_REVIEW)).await;
