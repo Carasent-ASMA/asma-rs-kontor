@@ -49,6 +49,154 @@ fn at(text: &str) -> Timestamp {
     parse_utc_timestamp(text).expect("a canonical UTC timestamp")
 }
 
+/// Build a database whose schema is exactly the ordered migration prefix
+/// through `version`.
+///
+/// The fixture reads the same immutable scripts the store applies and runs
+/// them in order, with reference enforcement lifted for the table rebuilds
+/// exactly as the bootstrapper does. `0001` deliberately does not install the
+/// Realm row — the bootstrapper writes it — so the fixture writes the same row
+/// here. Nothing is dropped or hand-edited: the result is the shape a real
+/// database of that generation had.
+fn historical_database(path: &Path, version: i64) -> RealmId {
+    assert!(
+        matches!(version, 128 | 129),
+        "this fixture reconstructs only the two historical prefixes under test"
+    );
+    let connection = rusqlite::Connection::open(path).expect("the historical fixture opens");
+    connection
+        .pragma_update(None, "foreign_keys", false)
+        .expect("reference enforcement is lifted for the prefix");
+    let migrations = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    let mut scripts: Vec<(i64, PathBuf)> = std::fs::read_dir(&migrations)
+        .expect("the migration directory reads")
+        .map(|entry| entry.expect("a migration entry").path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "sql"))
+        .map(|path| {
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("a migration filename");
+            let number = name
+                .split('_')
+                .next()
+                .and_then(|number| number.parse::<i64>().ok())
+                .expect("a numeric migration prefix");
+            (number, path)
+        })
+        .collect();
+    scripts.sort_by_key(|(number, _)| *number);
+    let mut applied = 0;
+    for (number, path) in scripts {
+        if number > version {
+            break;
+        }
+        applied += 1;
+        assert_eq!(
+            number, applied,
+            "the historical migration prefix must be contiguous"
+        );
+        let script = std::fs::read_to_string(&path).expect("a migration script reads");
+        connection
+            .execute_batch(&script)
+            .expect("the historical migration applies");
+    }
+    assert_eq!(
+        applied, version,
+        "the prefix ends at the requested generation"
+    );
+    let realm = RealmId::generate();
+    connection
+        .execute(
+            "INSERT INTO realm_metadata
+                 (singleton, realm_id, schema_version, created_at, display_label)
+             VALUES (1, ?1, 1, ?2, NULL)",
+            rusqlite::params![realm.to_string(), at("2026-10-03T18:00:00Z").to_string()],
+        )
+        .expect("the fixture Realm row is written");
+    let stored: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("the historical version reads");
+    assert_eq!(stored, version);
+    connection
+        .pragma_update(None, "foreign_keys", true)
+        .expect("reference enforcement is restored");
+    realm
+}
+
+fn table_exists(connection: &rusqlite::Connection, table: &str) -> bool {
+    connection
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [table],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("the schema reads")
+        == 1
+}
+
+fn column_exists(connection: &rusqlite::Connection, table: &str, column: &str) -> bool {
+    connection
+        .query_row(
+            &format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name = ?1"),
+            [column],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("the table shape reads")
+        == 1
+}
+
+/// Prove the fixture is the generation it claims, not a newer schema with a
+/// lowered `user_version`.
+fn assert_historical_shape(path: &Path, version: i64) {
+    let connection = rusqlite::Connection::open(path).expect("the historical fixture reads");
+    let stored: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("the version reads");
+    assert_eq!(stored, version);
+    assert!(
+        table_exists(&connection, "execution_hold_conditions"),
+        "v101 hold conditions exist at both generations"
+    );
+    assert!(
+        !column_exists(&connection, "execution_hold_conditions", "review_by"),
+        "the v136 rebuild must not be present before the upgrade"
+    );
+    assert!(
+        !table_exists(&connection, "execution_hold_attention"),
+        "v136 attention records must not exist before the upgrade"
+    );
+    assert!(
+        !table_exists(&connection, "operational_gaps"),
+        "v135 gaps must not exist before the upgrade"
+    );
+    assert_eq!(
+        table_exists(&connection, "attestation_authority_keys"),
+        version >= 129,
+        "v129 key authority exists only from 129"
+    );
+    assert!(
+        !table_exists(&connection, "prepared_attestation_tokens"),
+        "v130 prepared tokens must not exist at either generation"
+    );
+}
+
+fn assert_v136_shape(path: &Path) {
+    let connection = rusqlite::Connection::open(path).expect("the upgraded fixture reads");
+    let stored: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("the upgraded version reads");
+    assert_eq!(stored, SCHEMA_VERSION);
+    assert!(
+        table_exists(&connection, "execution_hold_attention"),
+        "the additive open must run v136"
+    );
+    assert!(
+        column_exists(&connection, "execution_hold_conditions", "review_by"),
+        "the additive open must install the v136 hold terms"
+    );
+}
+
 fn register_public_ledger_key(store: &SqliteStore) -> AttestationAuthorityScope {
     let project = ProjectId::generate();
     store
@@ -169,12 +317,8 @@ fn a_nonempty_public_authority_snapshot_is_refused_before_destination_creation()
 fn historical_pre129_files_retain_schema_refusal_and_additive_open_behavior() {
     let home = TempDir::new().expect("home");
     let database = home.path().join("kontor.db");
-    let store = SqliteStore::open(&database).expect("store");
-    let realm = store.realm_id();
-    drop(store);
-    let connection = rusqlite::Connection::open(&database).expect("fixture connection");
-    connection.execute_batch("DROP TABLE pr_review_subjects; DROP TRIGGER desk_adam_subjects_host_one_session; DROP TRIGGER desk_adam_subjects_bound_ad_hoc_seats_no_one; DROP TRIGGER desk_adam_subjects_bound_ad_hoc_hosts_no_one; DROP TABLE desk_adam_subjects; DROP TABLE durable_seat_declarations; DROP TABLE desks; DROP TABLE prepared_attestation_tokens; DROP TABLE attestation_token_heads; DROP TABLE attestation_authority_keys; DROP TABLE attestation_authority_heads; DROP TABLE operational_gaps; PRAGMA user_version=128;").expect("exact pre129 fixture");
-    drop(connection);
+    let realm = historical_database(&database, 128);
+    assert_historical_shape(&database, 128);
     let manifest = SnapshotManifest::describe(&database, realm, 128, at("2026-10-03T18:00:00Z"))
         .expect("legacy fixture manifest");
     std::fs::write(
@@ -190,13 +334,10 @@ fn historical_pre129_files_retain_schema_refusal_and_additive_open_behavior() {
         Err(BackupError::Verification { .. })
     ));
     assert!(!destination.exists());
-    assert_eq!(
-        SqliteStore::open(&database)
-            .expect("additive open")
-            .schema_version()
-            .expect("version"),
-        SCHEMA_VERSION
-    );
+    let upgraded = SqliteStore::open(&database).expect("additive open");
+    assert_eq!(upgraded.schema_version().expect("version"), SCHEMA_VERSION);
+    drop(upgraded);
+    assert_v136_shape(&database);
 }
 
 #[test]
@@ -474,12 +615,8 @@ fn corrupted128_missing_token_tables_refuse_source_and_target_without_mutation()
 fn empty_historical129_token_absence_preserves_schema_refusal_and_additive_open() {
     let home = TempDir::new().expect("home");
     let database = home.path().join("kontor.db");
-    let store = SqliteStore::open(&database).expect("store");
-    let realm = store.realm_id();
-    drop(store);
-    let connection = rusqlite::Connection::open(&database).expect("fixture");
-    connection.execute_batch("DROP TABLE pr_review_subjects; DROP TRIGGER desk_adam_subjects_host_one_session; DROP TRIGGER desk_adam_subjects_bound_ad_hoc_seats_no_one; DROP TRIGGER desk_adam_subjects_bound_ad_hoc_hosts_no_one; DROP TABLE desk_adam_subjects; DROP TABLE durable_seat_declarations; DROP TABLE desks; DROP TABLE prepared_attestation_tokens; DROP TABLE attestation_token_heads; DROP TABLE operational_gaps; PRAGMA user_version=129;").expect("historical fixture");
-    drop(connection);
+    let realm = historical_database(&database, 129);
+    assert_historical_shape(&database, 129);
     let manifest = SnapshotManifest::describe(&database, realm, 129, at("2026-10-03T20:00:00Z"))
         .expect("manifest");
     std::fs::write(
@@ -493,13 +630,10 @@ fn empty_historical129_token_absence_preserves_schema_refusal_and_additive_open(
         Err(BackupError::Verification { .. })
     ));
     assert!(!destination.exists());
-    assert_eq!(
-        SqliteStore::open(&database)
-            .expect("additive open")
-            .schema_version()
-            .expect("version"),
-        SCHEMA_VERSION
-    );
+    let upgraded = SqliteStore::open(&database).expect("additive open");
+    assert_eq!(upgraded.schema_version().expect("version"), SCHEMA_VERSION);
+    drop(upgraded);
+    assert_v136_shape(&database);
 }
 
 fn name(text: &str) -> ExternalName {
