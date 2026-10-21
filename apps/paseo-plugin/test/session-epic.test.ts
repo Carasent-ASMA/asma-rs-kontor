@@ -88,6 +88,30 @@ describe("session epic resolution", () => {
     expect(epicDetail(sessionEpic(stale, {}))).toBe(`ASMA-8190, from the jira.epic label and the Jira capture of ${OBSERVED} for ASMA-8190 and the Jira capture of ${OBSERVED} for ASMA-8203`);
   });
 
+  it("files an epic under itself and keeps a project's sessionless workspaces apart, saying why", () => {
+    const roots = jiraCapture([read("jira", capture(OBSERVED, { "ASMA-8101": ["ASMA-8107"], "ASMA-7869": ["ASMA-8015"], "ASMA-8108": ["ASMA-8343"] }))]);
+    const at = (id: string, project: string, labels: Record<string, string>): DirectoryEntry =>
+      ({ ...sessionEntry(id, { projectKey: `prj_${project}`, projectName: `ESW • ${project}`, workspaceId: `wks_${id}`, workspaceName: `TSW • ${id}`, labels }), jira: roots });
+    // Epic as root: the epic's own key, by label or as the named issue; a child task by its parent.
+    const root = at("root", "8101", { "jira.epic": "ASMA-8101", "jira.issue": "ASMA-8101" });
+    expect(sessionEpic(root, {})).toEqual({ epic: "ASMA-8101", note: `from the jira.epic label and the Jira capture of ${OBSERVED} for ASMA-8101` });
+    expect(sessionEpic(at("child", "8101", { "asma.task": "ASMA-8107" }), {}).epic).toBe("ASMA-8101");
+    expect(sessionEpic(at("op", "7869", { "jira.issue": "ASMA-7869" }), {}).epic).toBe("ASMA-7869");
+    expect(sessionEpic(at("cli", "8108", { "asma.task": "ASMA-8343" }), {}).epic).toBe("ASMA-8108");
+    const bare = at("bare", "8108", {});
+    const tree = buildOrganizationTree({ entries: [root, at("op", "7869", { "jira.epic": "ASMA-7869" }), bare],
+      workspaces: [{ id: "wks_done-a", name: "TSW • done a", projectKey: "prj_8101", projectName: "ESW • 8101" }, { id: "wks_done-b", name: "TSW • done b", projectKey: "prj_8101", projectName: "ESW • 8101" }] });
+    expect(epicGroups(tree).map((group) => [group.label, group.epic, members(group), group.detail])).toEqual([
+      ["ASMA-7869 · ESW • 7869", "ASMA-7869", ["op"], null],
+      ["ASMA-8101 · ESW • 8101", "ASMA-8101", ["root"], null],
+      // Workspaces alone cannot say why, so the group does; sessions say it in their details.
+      ["Epic unknown · ESW • 8101", null, [], "2 workspaces without sessions"],
+      ["Epic unknown · ESW • 8108", null, ["bare"], null],
+    ]);
+    const workspaces = (group: OrganizationGroup): string[] => [...(group.kind === "workspace" ? [group.label] : []), ...group.groups.flatMap(workspaces)];
+    expect(workspaces(epicGroups(tree)[2]!)).toEqual(["TSW • done a", "TSW • done b"]);
+  });
+
   it("attaches one capture per update without changing an unchanged entry's identity", () => {
     expect(jiraCapture([])).toBe(jiraCapture([read("jira", null)]));
     const entries = [sessionEntry("a"), sessionEntry("b")];

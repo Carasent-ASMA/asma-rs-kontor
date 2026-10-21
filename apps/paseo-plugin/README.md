@@ -364,7 +364,9 @@ projection's epic for each key those labels or its `jira.issue`, `task` or
 `asma.task` label name. Every named epic must agree. When they disagree, or
 nothing names one, the epic is unknown and shows as Epic unknown, never as "no
 epic": no source here shows that a task has no parent. Session details name the
-sources and the capture's observation time, or why the epic is unknown. A capture
+sources and the capture's observation time, or why the epic is unknown. A
+workspace carries no labels, so a project's unmapped workspaces without sessions form an
+Epic unknown group that says so beside the project's known epics. A capture
 cannot see a later move in Jira, so a label and a capture that agree can both be
 stale. Other label keys, project names, titles and sibling labels never assign
 an epic. The tree, results, Overview counts, the context picker and project
