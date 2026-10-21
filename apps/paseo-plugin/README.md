@@ -513,6 +513,65 @@ known-child count establishes complete Jira inventory, current completion,
 readiness, delivery or epic acceptance. The source's total captured epic count
 is provenance, not a completeness promise. Conflicting observations stay Unknown.
 
+### Responsibility projection (My work)
+
+Sessions opens in **My work**: the sessions where the chosen person is the
+epic assignee, the exact task assignee, or a declared workstream responsible
+or participant, each shown with its reason. **All work** is always one press
+away, and an explicit person in Filters replaces My work. A person scope hides
+groups with none of its sessions. **Working as** is a choice from the
+projection's roster, held in this app session per host and tracker realm. It
+is not sign-in, and nothing infers it from the host's Jira credential, the
+session creator, cwd, titles, model or names. A change of Working as ends any
+**Show in tree**. **Clear filters** returns to All work and keeps the sort and
+grouping; **Reset view** returns to My work, Current order and the default
+grouping.
+
+The facts come from one operator-owned file,
+`$PASEO_HOME/plugin-config/kontor/responsibility.json`
+(`kontor/responsibility@1`, 2 MiB cap), read by the `responsibility.read`
+RPC. It is separate from `consumption/data@2` and from the source catalog.
+A missing, unreadable, invalid or expired file, an unset Working as and a
+person outside the roster all leave My work **not evaluated**, with the reason
+and a way to All work. They never mean "no work". A session whose relation was
+not read (an epic or task outside the selection, an assignee field not read,
+epic sources that disagree, or an undeclared workstream) is **Unknown
+responsibility** and is never counted as someone else's.
+
+Collect it read-only from explicitly selected epics with asma-cli's Jira
+credential helper (importable, or under `$ASMA_ROOT`). Credentials never
+enter arguments, the output or logs, and a redirect to another origin is
+refused before it is followed:
+
+```bash
+python3 apps/paseo-plugin/scripts/collect-responsibility.py ASMA-100 ASMA-200 \
+  --workstreams /srv/operator/workstreams.json > /srv/exports/responsibility.json
+```
+
+The script reads each epic, its children and their sub-tasks (assignee, issue
+type, parent and `ws:` labels). An absent assignee stays absent (not read) and
+a null one is unassigned. The output expires after `--ttl-hours` (default 24).
+Workstream responsibility exists only in the optional operator declaration;
+every account in it is confirmed with a Jira user read:
+
+```json
+{"realm":"tracker.example","workstreams":[{"key":"alpha","responsible":["account-b"],"participants":[]}]}
+```
+
+Each declared workstream names at least one account, as lists of account ID
+strings. Repeated members, empty rosters and an empty declaration are refused.
+Undecided workstreams are left out, so they stay unknown. Without a
+declaration, every workstream relation is unknown, and My work matches only
+epic and task assignees. `--self-check` runs the offline check on synthetic
+data.
+
+**Sort** in Filters keeps **Current order** by default (state order, the saved
+arrangement and Role order). **Last changed at**, **Created at** and **Title**
+order the sessions within each group and in results; groups keep their order.
+Missing or invalid times sort last, and ties break on session ID. An explicit
+sort ignores the saved session order without rewriting it, and Arrange stays
+off until Current order is chosen again.
+
 ### Offline qualification without installation
 
 `scripts/host-qualification.mjs` calls the installed host compiler and settings

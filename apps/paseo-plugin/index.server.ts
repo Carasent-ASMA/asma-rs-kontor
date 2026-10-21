@@ -8,6 +8,7 @@ import { createTeamsSourceAdapter } from "./server/teams-source-adapter";
 import { readTeamsSource } from "./shared/teams-source-snapshot";
 import { sourceCatalog, contributeReadSources } from "./server/read-sources";
 import { contributeSessionLifecycle } from "./server/session-lifecycle";
+import { contributeResponsibility } from "./server/responsibility";
 
 export default function plugin(server: PluginServerContext): () => void {
   contributeSessionLifecycle(server);
@@ -19,6 +20,7 @@ export default function plugin(server: PluginServerContext): () => void {
     return createTeamsSourceAdapter(catalog, bindings.formats).read(input);
   });
   const stopSources = contributeReadSources(server, settings, sourceCatalog);
+  contributeResponsibility(server);
   // The operator's floor.json is read once per worker start; off registers none of the three hooks.
   const floor = readFloor();
   reportFloor(floor);

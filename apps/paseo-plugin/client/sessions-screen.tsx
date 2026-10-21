@@ -51,16 +51,25 @@ import {
 import {
   isResultMode,
   clearSessionFilterPatch,
+  resetSessionViewPatch,
   sessionFilterCount,
   patchLocalExpansion,
   patchSessionView,
   readLocalExpansion,
   readSessionView,
+  readWorkingAs,
   sessionViewTransition,
+  workScopeOf,
   writeScrollOffset,
+  writeWorkingAs,
   type SessionGrouping,
   type SessionViewState,
+  type WorkScope,
 } from "./session-view-store";
+import { defaultSortDirection, explicitLeafOrder, sessionComparator, SESSION_SORTS, sortDirectionLabel, sortLabel, type SessionSort, type SortDirection } from "./session-sort";
+import { indexResponsibility, MATCH_REASONS, responsibilityExpired, rosterChoices, sessionResponsibility, type MatchReason, type SessionResponsibility } from "./responsibility";
+import { WorkstreamSelector } from "./workstream-selector";
+import type { ResponsibilityRead } from "../shared/responsibility";
 import { inWorkspace, labelledRole, matchesResultSearch, sessionAncestors, sessionProvenance, taskSessions, TASK_JIRA_LABELS, TASK_TICKET_LABEL, type SessionProvenance } from "./session-results";
 import {
   accumulateScrollDelta,
@@ -85,6 +94,7 @@ import { AnchoredMenu, MenuItem } from "./anchored-menu";
 import { Action, COARSE_POINTER, Disclosure } from "./page-controls";
 import { SessionsLegend } from "./sessions-legend";
 import { nativeFreshnessLabel } from "./native-freshness";
+import { readTime } from "./page-data";
 import { sessionTimeLines, useClock, useUpdatedTime, type RowTime, type TimeFreshness } from "./session-time";
 import { sessionUsageLabel } from "./session-usage";
 import { planFallbackNote, planWorkstreamOptions, workstreamOptionLabel } from "./plan-workstreams";
@@ -267,9 +277,12 @@ export function activeFilterParts(input: {
   readonly streams: readonly string[] | null;
   readonly includeArchived: boolean;
   readonly task?: string | null;
+  /** The responsibility scope's name, absent for All work. */
+  readonly work?: string | null;
 }): string[] {
   const query = input.query.trim();
   return [
+    input.work ?? null,
     input.task ? `Task ${input.task}` : null,
     query ? `“${query}”` : null,
     input.status !== "all" ? statusFilterLabel(input.status) : null,
@@ -277,6 +290,13 @@ export function activeFilterParts(input: {
     input.streams !== null ? `${input.streams.length} workstream${input.streams.length === 1 ? "" : "s"}` : null,
     input.includeArchived ? "Archived included" : null,
   ].filter((part): part is string => part !== null);
+}
+
+/** A session's relation to the scope's person, as Details states it; unknown is never "someone else". */
+export function responsibilityLine(result: SessionResponsibility): string {
+  if (result.status === "other") return "Not this person's: every relation was read and none names them.";
+  if (result.status === "unknown") return `Not evaluated: ${result.unknown.join("; ")}.`;
+  return `${result.reasons.map((reason) => MATCH_REASONS[reason]).join(", ")}${result.unknown.length ? `. Other responsibility unknown: ${result.unknown.join("; ")}` : ""}.`;
 }
 
 /**
@@ -1301,6 +1321,16 @@ function ToggleRow({
   );
 }
 
+/** A link-styled recovery action with a 44pt touch row, for the work line and the empty list. */
+function TextAction({ testID, label, accessibilityLabel, colors, compact, onPress }: {
+  testID: string; label: string; accessibilityLabel?: string; colors: ThemeColors; compact: boolean; onPress: () => void;
+}) {
+  return <Pressable testID={testID} accessibilityRole="button" accessibilityLabel={accessibilityLabel ?? label} onPress={onPress}
+    style={{ minHeight: compact || COARSE_POINTER ? FILTERS_TOUCH_TARGET : 28, minWidth: FILTERS_TOUCH_TARGET, justifyContent: "center", paddingHorizontal: 6 }}>
+    <Text style={{ color: colors.accent, fontSize: compact ? 13 : 12, fontWeight: "600" }}>{label}</Text>
+  </Pressable>;
+}
+
 function Banner({
   message,
   actionLabel,
@@ -1375,10 +1405,12 @@ type SessionsScreenProps = PluginScreenProps & {
   workstreamSources?: readonly ReadSourceSummary[];
   workstreamReads?: Readonly<Record<string, SourceRead>>;
   workstreamNote?: string | null;
+  /** The host's responsibility projection read; absent or not ready leaves My work unevaluated. */
+  responsibility?: ResponsibilityRead | null;
   planSources?: Readonly<Record<string, readonly string[]>>;
   onEpicTab?: (tab: "Plan" | "Board" | "Graph", epicKey: string, sourceId: string | null) => void;
 };
-export function SessionsScreen({ host, layout, navigation, theme, directory, organization, projectId = null, onIncludeArchived, workspaces, projects, workspaceNote, epicKey = null, viewScope = host.id, scopeLabel = null, onClearScope, planSources, onEpicTab, planMappings, workstreamRegistry, workstreamSources = [], workstreamReads = {}, workstreamNote }: SessionsScreenProps) {
+export function SessionsScreen({ host, layout, navigation, theme, directory, organization, projectId = null, onIncludeArchived, workspaces, projects, workspaceNote, epicKey = null, viewScope = host.id, scopeLabel = null, onClearScope, planSources, onEpicTab, planMappings, workstreamRegistry, workstreamSources = [], workstreamReads = {}, workstreamNote, responsibility = null }: SessionsScreenProps) {
   const colors = theme.colors;
   const compact = layout.compact;
   const [mobileFilterScope, setMobileFilterScope] = useState<string | null>(null);
@@ -1433,11 +1465,14 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [, setExpansionRevision] = useState(0);
   const [orderSelection, setOrderSelection] = useState<string | null>(null);
-  const [optionMenu, setOptionMenu] = useState<"grouping" | "scope" | null>(null);
+  const [optionMenu, setOptionMenu] = useState<"grouping" | "scope" | "sort" | "person" | "workingAs" | null>(null);
   const [rootSize, setRootSize] = useState({ width: 0, height: 0 });
   const rootRef = useRef<View | null>(null);
   const groupingRef = useRef<View | null>(null);
   const scopeRef = useRef<View | null>(null);
+  const sortRef = useRef<View | null>(null);
+  const personRef = useRef<View | null>(null);
+  const workingAsRef = useRef<View | null>(null);
   const editsDisabled = !hostOnline || organization?.state.status !== "ready" || organization.state.saving;
   useEffect(() => { onIncludeArchived?.(view.includeArchived); }, [view.includeArchived, onIncludeArchived]);
   const savePreference = (patch: Partial<OrganizationSettings>) => {
@@ -1947,25 +1982,80 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const scopeChoices = [...SCOPE_CHOICES.slice(0, -1), ...deskScopes, SCOPE_CHOICES[SCOPE_CHOICES.length - 1]!];
   const scopeChoiceLabel = shortcut === null ? null : scopeChoices.find(({ id }) => id === shortcut)?.label ?? (shortcut?.startsWith("desk-project:") ? "Native desk project" : shortcut);
   const projectRoots = useMemo(() => new Map((projects ?? []).flatMap((project) => project.root ? [[project.id, project.root] as const] : [])), [projects]);
-  const tree = useMemo(() => relateSplitProjects(buildOrganizationTree({ entries: scoped, ...preferences, displayMappings: mappings, grouping, workspaces: scopedWorkspaces, projects: scopedProjects }), projectRoots), [scoped, preferences, mappings, grouping, scopedWorkspaces, scopedProjects, projectRoots]);
+  const sort: SessionSort = view.sort ?? "current";
+  const sortDirection: SortDirection = view.sortDirection ?? defaultSortDirection(sort);
+  // An explicit sort orders sessions within each group and the flat results; it never moves a group.
+  const leafOrder = useMemo(() => explicitLeafOrder(scoped, sort, sortDirection), [scoped, sort, sortDirection]);
+  const tree = useMemo(() => relateSplitProjects(buildOrganizationTree({ entries: scoped, ...preferences, displayMappings: mappings, grouping, workspaces: scopedWorkspaces, projects: scopedProjects, leafOrder }), projectRoots), [scoped, preferences, mappings, grouping, scopedWorkspaces, scopedProjects, projectRoots, leafOrder]);
   const tokens = useMemo(() => view.query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean), [view.query]);
   const task = view.task ?? null;
   const resultMode = isResultMode(view);
+  // Responsibility: an explicit Working-as profile or person scope, read against the host's projection.
+  const work: WorkScope = workScopeOf(view);
+  // ponytail: expiry is checked on each render, which live native updates drive; subscribe to the minute clock if an idle screen must flip on time.
+  const clock = { now: Date.now() };
+  const projection = responsibility?.status === "ready" ? responsibility.projection : null;
+  const responsibilityIndex = useMemo(() => projection ? indexResponsibility(projection) : null, [projection]);
+  const roster = useMemo(() => responsibilityIndex ? rosterChoices(responsibilityIndex) : [], [responsibilityIndex]);
+  const realm = projection?.realm ?? null;
+  const workingAs = readWorkingAs(host.id, realm);
+  const workingAsLabel = roster.find(({ accountId }) => accountId === workingAs)?.label ?? null;
+  const subject = work === "all" ? null : work.startsWith("person:") ? work.slice("person:".length) : workingAs;
+  const subjectLabel = roster.find(({ accountId }) => accountId === subject)?.label ?? null;
+  const workState = work === "all" ? "all" as const
+    : responsibilityIndex === null ? "unavailable" as const
+      : responsibilityExpired(responsibilityIndex, clock.now) ? "expired" as const
+        : subject === null ? "no-profile" as const
+          : !responsibilityIndex.people.has(subject) ? "unknown-person" as const : "ready" as const;
+  const workPart = work === "all" ? null : work === "mine" ? "My work" : work === "unknown" ? "Unknown responsibility" : subjectLabel ?? "Person unavailable";
+  const responsibilityById = useMemo(() => workState === "ready" ? new Map(scoped.map((entry) => [entry.id, sessionResponsibility(entry, responsibilityIndex!, subject!)])) : null,
+    [workState, scoped, responsibilityIndex, subject]);
+  const inWork = useCallback((entry: DirectoryEntry) => work === "all"
+    || responsibilityById?.get(entry.id)?.status === (work === "unknown" ? "unknown" : "match"), [work, responsibilityById]);
   const eligible = useCallback((entry: DirectoryEntry) => matchesShortcut(entry, shortcut, mappings)
-    && (streams === null || streams.includes(workstreamKey(organizationScope(entry, mappings).workstream))), [shortcut, streams, mappings]);
-  // Search and state never narrow the tree; with no workstream choice, empty workspaces stay visible, a desk context's own included.
+    && (streams === null || streams.includes(workstreamKey(organizationScope(entry, mappings).workstream))) && inWork(entry), [shortcut, streams, mappings, inWork]);
+  // Search and state never narrow the tree; with no workstream choice and All work, empty workspaces stay visible, a desk context's own included.
+  // A person scope keeps only groups holding its sessions.
   const filtered = useMemo(() => filterOrganizationTree(tree, eligible,
-    (group) => streams === null && scopeKeepsGroup(group, shortcut, mappings), eligible), [tree, eligible, shortcut, streams, mappings]);
+    (group) => streams === null && work === "all" && scopeKeepsGroup(group, shortcut, mappings), eligible), [tree, eligible, shortcut, streams, work, mappings]);
   const linked = useMemo(() => task ? new Set(taskSessions(scoped, task).map(({ entry }) => entry.id)) : null, [scoped, task]);
   // Matches before the state filter, so each state chip counts what choosing it would show.
   const candidates = useMemo(() => scoped.filter((entry) => eligible(entry) && (linked === null || linked.has(entry.id)) && matchesResultSearch(entry, tokens, mappings)),
     [scoped, eligible, linked, tokens, mappings]);
-  const results = useMemo(() => resultMode ? candidates.filter((entry) => matchesStatus(entry, view.status, favorites)) : [], [resultMode, candidates, view.status, favorites]);
+  const results = useMemo(() => {
+    if (!resultMode) return [];
+    const matching = candidates.filter((entry) => matchesStatus(entry, view.status, favorites));
+    const compare = sessionComparator(sort, sortDirection);
+    return compare ? matching.sort(compare) : matching;
+  }, [resultMode, candidates, view.status, favorites, sort, sortDirection]);
+  // Each scope's own count beside the inventory count of every association; it never replaces it.
+  const workCounts = useMemo(() => {
+    if (work === "all" || responsibilityById === null) return null;
+    const counts = new Map<string, number>();
+    for (const entry of scoped) if (inWork(entry)) {
+      const key = workstreamKey(organizationScope(entry, mappings).workstream);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return counts;
+  }, [work, responsibilityById, scoped, inWork, mappings]);
   const statusCounts = useMemo(() => Object.fromEntries([...QUICK_STATUS_FILTERS, ...MORE_STATUS_FILTERS].map((status) => [status, candidates.filter((entry) => matchesStatus(entry, status, favorites)).length])) as Record<StatusFilter, number>,
     [candidates, favorites]);
   const shortcutCounts = useMemo(() => SESSION_SHORTCUTS.map(({ id }) => scoped.filter((entry) => matchesShortcut(entry, id, mappings)).length), [scoped, mappings]);
   const workstreamOptions = useMemo(() => planWorkstreamOptions(workstreamSources, workstreamReads, workstreamRegistry, scoped, mappings, scopedWorkspaces), [workstreamSources, workstreamReads, workstreamRegistry, scoped, mappings, scopedWorkspaces]);
-  const streamChoices = workstreamOptions.map((option) => [option.key, option.label] as const);
+  // Responsibility facts over this context's inventory, before the other filters.
+  const workTally = useMemo(() => {
+    if (responsibilityById === null) return null;
+    const reasons = new Map<MatchReason, number>();
+    let matched = 0;
+    let unknown = 0;
+    for (const result of responsibilityById.values()) {
+      if (result.status === "match") {
+        matched += 1;
+        for (const reason of result.reasons) reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
+      } else if (result.status === "unknown") unknown += 1;
+    }
+    return { matched, unknown, reasons };
+  }, [responsibilityById]);
   const localExpansion = readLocalExpansion(host.id);
   const expanded = useMemo(() => ({ ...preferences.expandedGroups, ...localExpansion }), [preferences.expandedGroups, localExpansion]);
   const peek = resultMode ? view.peek ?? null : null;
@@ -1995,7 +2085,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const shown = useMemo(() => resultMode ? results : visibleSessions(filtered), [resultMode, results, filtered]);
   const workspaceCount = resultMode ? new Set(shown.map((entry) => entry.workspaceId ?? entry.workspaceName ?? entry.cwd)).size : organizationWorkspaceCount(filtered);
   // The full count and read statement; Filters shows it, the visible count line only when it adds something.
-  const sessionCount = `${shown.length === scoped.length ? `${scoped.length}` : `${shown.length} of ${scoped.length}`} session${scoped.length === 1 ? "" : "s"}`;
+  const workBlocked = work !== "all" && workState !== "ready";
+  const sessionCount = workBlocked ? `${workPart} not evaluated · ${scoped.length} session${scoped.length === 1 ? "" : "s"} in All work`
+    : `${shown.length === scoped.length ? `${scoped.length}` : `${shown.length} of ${scoped.length}`} session${scoped.length === 1 ? "" : "s"}`;
   const inventoryRead = state.lastUpdatedAt === null
     ? "not read yet"
     : state.inventoryComplete
@@ -2019,12 +2111,32 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     updateView({ grouping: next, scrollOffset: 0 });
     if (next !== "placement") savePreference({ grouping: next });
   };
-  const toggleStream = (key: string) => {
-    const all = streamChoices.map(([choice]) => choice);
-    const current = streams ?? all;
-    const next = current.includes(key) ? current.filter((choice) => choice !== key) : [...current, key];
+  const chooseStreams = (next: readonly string[] | null) => {
     pinFilterInteraction();
-    updateView({ streams: all.every((choice) => next.includes(choice)) ? null : next, scrollOffset: 0 });
+    updateView({ streams: next, scrollOffset: 0 });
+  };
+  const chooseWork = (next: WorkScope) => {
+    pinFilterInteraction();
+    setDetailsId(null);
+    updateView({ work: next, scrollOffset: 0 });
+  };
+  const chooseSort = (next: SessionSort) => {
+    pinFilterInteraction();
+    updateView({ sort: next, sortDirection: next === "current" ? undefined : defaultSortDirection(next), scrollOffset: 0 });
+  };
+  // The profile is per host and tracker realm; the store ends the peeks it affects, this view's included.
+  const chooseWorkingAs = (accountId: string | null) => {
+    if (realm === null) return;
+    pinFilterInteraction();
+    writeWorkingAs(host.id, realm, accountId);
+    setDetailsId(null);
+    updateView({ scrollOffset: 0 });
+  };
+  const handleResetView = () => {
+    pinFilterInteraction();
+    setOrderSelection(null);
+    setDetailsId(null);
+    updateView(resetSessionViewPatch(readSessionView(viewScope)));
   };
   const moveRow = (row: OrganizationRow, distance: number) => {
     const parent = row.kind === "group" ? row.group.parentKey ?? "root" : row.parentKey;
@@ -2039,19 +2151,27 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     if (row && row.kind !== "result") moveRow(row, distance);
   };
 
-  const narrowed = resultMode || shortcut !== null || streams !== null;
-  const arrangeEnabled = arranging && !narrowed && !editsDisabled;
+  const narrowed = resultMode || shortcut !== null || streams !== null || work !== "all";
+  // Saved order is a Current-order arrangement; an explicit sort ignores it, so it cannot be arranged.
+  const arrangeEnabled = arranging && !narrowed && !editsDisabled && sort === "current";
+  const sortPart = sort === "current" ? null : `${sortLabel(sort)}, ${sortDirectionLabel(sort, sortDirection).toLocaleLowerCase()}`;
   const optionParts = [
     grouping !== "hierarchy" ? GROUPINGS.find((choice) => choice.id === grouping)?.label : null,
+    sortPart,
     streams !== null ? `${streams.length} workstream${streams.length === 1 ? "" : "s"}` : null,
     shortcut === "Desks" ? "Durable desks only" : null,
     view.status === "closed" ? "Closed sessions" : view.status === "initializing" ? "Starting sessions" : null,
     view.includeArchived ? "Including archived" : null,
   ].filter((part): part is string => !!part);
+  // One explanation of the inventory counts, under About these counts in the association selector.
+  const aboutCounts = `${!workstreamRegistry?.revision && workstreamSources.length === 0 ? "Choices come from session metadata and display mappings, with desk and Other work fallbacks. Names may be unregistered. The full workstream registry and plan declarations are not loaded here; this list may be incomplete. " : ""}${workstreamRegistry?.revision ? `${Object.keys(workstreamRegistry.workstreams).length} registered workstreams · ${workstreamOptions.filter((option) => option.plans > 0).length} declared plan keys here · ${Object.keys(workstreamRegistry.desks).length} registered desk categories. Registered keys are global. ` : workstreamSources.length ? "The workstream registry is not loaded, so no choice says whether it is registered. " : ""}Counts follow each session's workstream association, which these choices filter by, in this project/epic context before search, state and workstream filters. The tree keeps every session of a native desk project under that desk, so a choice names the desk where it counts sessions shown there. Workspaces count where a counted session runs or a workspace mapping points; the tree also lists empty native workspaces until workstream choices narrow it. Zero sessions means none linked in this inventory: a plan links a session only through the session's known epic or an explicit plan link. Plan-only choices are included.${workstreamNote ? ` ${workstreamNote}` : ""} A person scope adds its own count to each choice and never changes these.`;
+  const responsibilitySource = responsibility === null ? "Responsibility projection not read yet; My work is not evaluated."
+    : responsibility.status !== "ready" || !projection ? `${responsibility.diagnostics.join(" ") || "Responsibility projection unavailable."} My work is not evaluated.`
+      : `Responsibility from ${projection.realm}, observed ${readTime(projection.generatedAt, clock.now)}, ${responsibilityExpired(responsibilityIndex!, clock.now) ? "expired" : "expires"} ${readTime(projection.expiresAt, clock.now)}${projection.provenance.complete ? "" : ", partial"} · ${projection.people.length} people · ${projection.issues.length} issues · workstream responsibility ${projection.provenance.workstreams ? "declared" : "not declared, so workstream relations are unknown"}. Working as is this app session's choice for this host and tracker, not sign-in or access control; choices are remembered during this app session.`;
   const activeCount = sessionFilterCount(view);
   const clearable = activeCount > 0;
   const taskKeys = task ? [task.jira ? `${TASK_JIRA_LABELS.join(" or ")} equal to ${task.jira}` : null, task.kontorId ? `${TASK_TICKET_LABEL} equal to ${task.kontorId}` : null].filter(Boolean).join(", or ") : "";
-  const summaryParts = activeFilterParts({ query: view.query, status: view.status, shortcut: shortcut?.startsWith("desk-project:") ? scopeChoiceLabel : shortcut, streams, includeArchived: view.includeArchived, task: task?.label });
+  const summaryParts = activeFilterParts({ query: view.query, status: view.status, shortcut: shortcut?.startsWith("desk-project:") ? scopeChoiceLabel : shortcut, streams, includeArchived: view.includeArchived, task: task?.label, work: workPart });
   // The compact slim badge also counts the state and desk chips its closed toolbar hides; search has its own button.
   const slimActiveCount = activeCount;
   // While the compact toolbar is open, a short list still has room for the small drag that closes it.
@@ -2354,14 +2474,25 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           }}
           {...(compact ? {} : { contentContainerStyle: { padding: 10, gap: 10 } })}
         >
+          <View testID="sessions-work-options" style={{ gap: 6 }}>
+            <OptionLine label="Work" colors={colors}>
+              <FilterChip testID="sessions-work-mine" label="My work" compact={compact} active={work === "mine"} colors={colors} {...focusProps} onPress={() => chooseWork("mine")} />
+              <FilterChip testID="sessions-work-all" label="All work" compact={compact} active={work === "all"} colors={colors} {...focusProps} onPress={() => chooseWork("all")} />
+              <FilterChip testID="sessions-work-unknown" label="Unknown responsibility" compact={compact} active={work === "unknown"} colors={colors} {...focusProps} onPress={() => chooseWork("unknown")} />
+            </OptionLine>
+            <OptionSelect testID="sessions-person" label="Person" value={work.startsWith("person:") ? subjectLabel ?? "Person unavailable" : "Choose a person…"} expanded={optionMenu === "person"} anchor={personRef} compact={compact} colors={colors} {...focusProps} disabled={focusProps.disabled || roster.length === 0} onPress={() => setOptionMenu(optionMenu === "person" ? null : "person")} />
+            <OptionSelect testID="sessions-working-as" label="Working as" value={workingAsLabel ?? (workingAs ? "Not in this projection" : "Not configured")} expanded={optionMenu === "workingAs"} anchor={workingAsRef} compact={compact} colors={colors} {...focusProps} disabled={focusProps.disabled || roster.length === 0} onPress={() => setOptionMenu(optionMenu === "workingAs" ? null : "workingAs")} />
+            <Text testID="sessions-responsibility-source" style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 16 }}>{responsibilitySource}</Text>
+          </View>
+          <OptionSelect testID="sessions-sort" label="Sort by" value={sortLabel(sort)} expanded={optionMenu === "sort"} anchor={sortRef} compact={compact} colors={colors} {...focusProps} onPress={() => setOptionMenu(optionMenu === "sort" ? null : "sort")} />
+          {sort !== "current" ? <OptionLine label="Direction" colors={colors}>
+            {(sort === "title" ? ["asc", "desc"] as const : ["desc", "asc"] as const).map((direction) => <FilterChip key={direction} testID={`sessions-sort-${direction}`} label={sortDirectionLabel(sort, direction)} compact={compact} active={sortDirection === direction} colors={colors} {...focusProps} onPress={() => { pinFilterInteraction(); updateView({ sortDirection: direction, scrollOffset: 0 }); }} />)}
+          </OptionLine> : null}
+          <Text testID="sessions-sort-help" style={{ color: colors.foregroundMuted, fontSize: 11, lineHeight: 16 }}>{sort === "current" ? "Current order keeps state order, your saved arrangement and Role order." : "Sorted within each group and in results; groups keep their order. Missing times sort last. Choose Current order to arrange."}</Text>
           <OptionSelect testID="sessions-grouping" label="Group by" value={GROUPINGS.find(({ id }) => id === grouping)?.label ?? grouping} expanded={optionMenu === "grouping"} anchor={groupingRef} compact={compact} colors={colors} {...focusProps} onPress={() => setOptionMenu(optionMenu === "grouping" ? null : "grouping")} />
-          <OptionLine label={streams === null ? `Workstream associations · all ${streamChoices.length} available` : `Workstream associations · ${streams.length} selected of ${streamChoices.length} available`} colors={colors}>
-            {workstreamOptions.map((option) => <FilterChip key={option.key} testID={`workstream-option-${option.key}`} checkbox label={workstreamRegistry || workstreamSources.length ? workstreamOptionLabel(option, !!workstreamRegistry?.revision) : option.label} compact={compact} active={streams === null || streams.includes(option.key)} colors={colors} {...focusProps} onPress={() => toggleStream(option.key)} />)}
-            <FilterChip label="None" compact={compact} active={streams?.length === 0} colors={colors} {...focusProps} onPress={() => { pinFilterInteraction(); updateView({ streams: [], scrollOffset: 0 }); }} />
-            {streams !== null ? <FilterChip label="All" compact={compact} active={false} colors={colors} {...focusProps} onPress={() => { pinFilterInteraction(); updateView({ streams: null, scrollOffset: 0 }); }} /> : null}
-            {streamChoices.length === 0 ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>No workstream associations available in this context.</Text> : null}
-          </OptionLine>
-          <Text testID="sessions-workstream-availability" style={{ color: colors.foregroundMuted, fontSize: 11 }}>{!workstreamRegistry?.revision && workstreamSources.length === 0 ? "Choices come from session metadata and display mappings, with desk and Other work fallbacks. Names may be unregistered. The full workstream registry and plan declarations are not loaded here; this list may be incomplete. " : ""}{workstreamRegistry?.revision ? `${Object.keys(workstreamRegistry.workstreams).length} registered workstreams · ${workstreamOptions.filter((option) => option.plans > 0).length} declared plan keys here · ${Object.keys(workstreamRegistry.desks).length} registered desk categories. Registered keys are global. ` : workstreamSources.length ? "The workstream registry is not loaded, so no choice says whether it is registered. " : ""}Counts follow each session's workstream association, which these choices filter by, in this project/epic context before search, state and workstream filters. The tree keeps every session of a native desk project under that desk, so a choice names the desk where it counts sessions shown there. Workspaces count where a counted session runs or a workspace mapping points; the tree also lists empty native workspaces until workstream choices narrow it. Zero sessions means none linked in this inventory: a plan links a session only through the session's known epic or an explicit plan link. Plan-only choices are included.{workstreamNote ? ` ${workstreamNote}` : ""}</Text>
+          <WorkstreamSelector options={workstreamOptions} selected={streams} open={view.associationsOpen ?? false} registryLoaded={!!workstreamRegistry?.revision} about={aboutCounts}
+            scopeCounts={workCounts ?? undefined} scopeLabel={work === "mine" ? "in My work" : work === "unknown" ? "unknown" : `for ${subjectLabel ?? "this person"}`}
+            colors={colors} compact={compact} disabled={focusProps.disabled} onOpen={(associationsOpen) => updateView({ associationsOpen })} onChange={chooseStreams} />
           <OptionSelect testID="sessions-scope" label="Workspace scope" value={scopeChoiceLabel ?? SCOPE_CHOICES[0]!.label} expanded={optionMenu === "scope"} anchor={scopeRef} compact={compact} colors={colors} {...focusProps} onPress={() => setOptionMenu(optionMenu === "scope" ? null : "scope")} />
           <OptionLine label="Epic lifecycle" colors={colors}>
             <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>Not captured in session data; no lifecycle is inferred from idle or closed sessions.</Text>
@@ -2379,13 +2510,14 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             onPress={() => updateFilter({ includeArchived: !view.includeArchived })}
           />
           <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
-            <FilterChip testID="sessions-arrange" label={arranging ? "Done arranging" : "Arrange"} compact={compact} active={arranging} colors={colors} {...focusProps} disabled={(!compact && toolbarCollapsed) || (!arranging && (narrowed || editsDisabled))} onPress={() => { pinFilterInteraction(); setOrderSelection(null); updateView({ arranging: !arranging }); }} />
+            <FilterChip testID="sessions-arrange" label={arranging ? "Done arranging" : "Arrange"} compact={compact} active={arranging} colors={colors} {...focusProps} disabled={(!compact && toolbarCollapsed) || (!arranging && (narrowed || editsDisabled || sort !== "current"))} onPress={() => { pinFilterInteraction(); setOrderSelection(null); updateView({ arranging: !arranging }); }} />
+            <FilterChip testID="sessions-reset-view" label="Reset view" compact={compact} active={false} colors={colors} {...focusProps} onPress={handleResetView} />
             <View style={{ flex: 1 }} />
             <FilterChip testID="sessions-expand-all" label="Expand all" compact={compact} active={false} colors={colors} {...focusProps} disabled={(!compact && toolbarCollapsed) || resultMode} onPress={() => setAllGroups(true)} />
             <FilterChip testID="sessions-collapse-all" label="Collapse all" compact={compact} active={false} colors={colors} {...focusProps} disabled={(!compact && toolbarCollapsed) || resultMode} onPress={() => setAllGroups(false)} />
           </View>
           {arranging ? <View testID="sessions-arrange-help" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
-            <Text style={{ flexBasis: "100%", color: colors.foregroundMuted, fontSize: 11 }}>{narrowed ? "Clear search and filters to arrange." : editsDisabled ? "Saved order is unavailable while organization settings are unavailable or saving." : "Select a handle, then Move up or Move down, or drag it among its siblings. Desks stay above epic work."}</Text>
+            <Text style={{ flexBasis: "100%", color: colors.foregroundMuted, fontSize: 11 }}>{narrowed ? "Clear search and filters to arrange." : sort !== "current" ? "Choose Current order to arrange." : editsDisabled ? "Saved order is unavailable while organization settings are unavailable or saving." : "Select a handle, then Move up or Move down, or drag it among its siblings. Desks stay above epic work."}</Text>
             <Action small={!compact} colors={colors} label="↑ Move up" accessibilityLabel="Move selected row up" disabled={!arrangeEnabled || orderSelection === null} onPress={() => moveSelection(-1)} />
             <Action small={!compact} colors={colors} label="↓ Move down" accessibilityLabel="Move selected row down" disabled={!arrangeEnabled || orderSelection === null} onPress={() => moveSelection(1)} />
           </View> : null}
@@ -2397,7 +2529,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   );
 
   // Group by and Workspace scope open as menus over the screen; a choice returns focus to its select.
-  const optionAnchor = optionMenu === "grouping" ? groupingRef : scopeRef;
+  const optionAnchor = { grouping: groupingRef, scope: scopeRef, sort: sortRef, person: personRef, workingAs: workingAsRef, none: scopeRef }[optionMenu ?? "none"];
   const chooseOption = (choose: () => void) => {
     setOptionMenu(null);
     choose();
@@ -2405,12 +2537,19 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   };
   const optionMenuLayer = optionMenu === null ? null : (
     <AnchoredMenu testID={`sessions-${optionMenu}-menu`} anchor={optionAnchor} root={rootRef} rootSize={rootSize} colors={colors}
-      label={optionMenu === "grouping" ? "Group sessions by" : "Session workspace scope"} onClose={() => setOptionMenu(null)}
+      label={{ grouping: "Group sessions by", scope: "Session workspace scope", sort: "Sort sessions by", person: "Show work for", workingAs: "Working as" }[optionMenu]} onClose={() => setOptionMenu(null)}
       placement={compact ? { align: "stretch", width: 0, maxHeight: Math.min(rootSize.height * 0.6, 360) } : { align: "start", width: 240 }}>
       {/* The frame is clamped to the screen, so a short screen scrolls the choices instead of cutting off the last ones. */}
       <ScrollView testID={`sessions-${optionMenu}-choices`} keyboardShouldPersistTaps="handled" style={{ flexGrow: 0, flexShrink: 1 }}>
         {optionMenu === "grouping"
           ? GROUPINGS.map(({ id, label }) => <MenuItem key={id} label={label} tall={compact} selected={grouping === id} colors={colors} onPress={() => chooseOption(() => chooseGrouping(id))} />)
+          : optionMenu === "sort"
+          ? SESSION_SORTS.map(({ id, label }) => <MenuItem key={id} label={label} tall={compact} selected={sort === id} colors={colors} onPress={() => chooseOption(() => chooseSort(id))} />)
+          : optionMenu === "person"
+          ? roster.map(({ accountId, label }) => <MenuItem key={accountId} label={label} tall={compact} selected={work === `person:${accountId}`} colors={colors} onPress={() => chooseOption(() => chooseWork(`person:${accountId}`))} />)
+          : optionMenu === "workingAs"
+          ? [<MenuItem key="none" label="Not configured" tall={compact} selected={workingAs === null} colors={colors} onPress={() => chooseOption(() => chooseWorkingAs(null))} />,
+            ...roster.map(({ accountId, label }) => <MenuItem key={accountId} label={label} tall={compact} selected={workingAs === accountId} colors={colors} onPress={() => chooseOption(() => chooseWorkingAs(accountId))} />)]
           : scopeChoices.map(({ id, label }) => <MenuItem key={id ?? "all"} label={label} detail={id?.startsWith("desk-project:") ? deskScopes.find((choice) => choice.id === id)?.projectId : undefined} tall={compact} selected={shortcut === id} colors={colors} onPress={() => chooseOption(() => { pinFilterInteraction(); updateView({ shortcut: id, scrollOffset: 0 }); })} />)}
       </ScrollView>
     </AnchoredMenu>
@@ -2456,6 +2595,10 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
           <SessionTimeLines entry={detailsEntry} freshness={{ live: timesLive, readAt: state.lastUpdatedAt }} colors={colors} />
         </SessionDetailSection>
         <SessionDetailSection title="Role and placement" values={sessionDetailLines(detailsEntry, mappings, planFallbackNote(workstreamSources, workstreamReads, declaredScope(detailsEntry, mappings).epic, detailsEntry.projectKey, preferences.planAssociations[detailsEntry.id]))} colors={colors} />
+        {responsibilityById?.has(detailsEntry.id) ? <SessionDetailSection title="Responsibility" colors={colors} values={[
+          { label: work === "mine" ? `My work, working as ${subjectLabel}` : work === "unknown" ? `Unknown responsibility for ${subjectLabel}` : `Work for ${subjectLabel}`, value: responsibilityLine(responsibilityById.get(detailsEntry.id)!) },
+          { label: "Source", value: `${projection!.realm} responsibility projection, observed ${projection!.generatedAt}` },
+        ]} /> : null}
         <SessionMetadataGuide key={detailsEntry.id} entry={detailsEntry} colors={colors} />
       </ScrollView>
     </AnchoredMenu>
@@ -2469,7 +2612,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     <View style={{ flex: 1, minWidth: 0 }}>
     <MobileQuickToolbar key={viewScope} colors={colors} width={Math.max(0, rootSize.width - 24 - 88)}
     query={view.query} status={view.status} counts={statusCounts} activeCount={slimActiveCount}
-    summary={[scopeLabel, ...summaryParts, grouping !== "hierarchy" ? `Group: ${GROUPINGS.find((choice) => choice.id === grouping)?.label}` : null].filter(Boolean).join(" · ")}
+    summary={[scopeLabel, ...summaryParts, grouping !== "hierarchy" ? `Group: ${GROUPINGS.find((choice) => choice.id === grouping)?.label}` : null, sortPart].filter(Boolean).join(" · ")}
     searchInputRef={searchInputRef} filtersTriggerRef={filtersTriggerRef} chooserRef={quickChooserRef} chooserOpen={quickChooserScope === viewScope} helpDismissRef={quickHelpDismissRef}
     onQuery={(query) => updateFilter({ query })} onStatus={(status) => updateFilter({ status })} onFilters={handleRevealFilters}
     onClear={handleClearFilters}
@@ -2587,7 +2730,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
 
   if (mobileFiltersOpen) return (
     <View ref={rootRef} onLayout={handleRootLayout} style={{ flex: 1, minHeight: 0, backgroundColor: colors.surface0 }}>
-      <MobileFiltersPage colors={colors} onBack={closeMobileFilters} menuOpen={optionMenu !== null}>
+      <MobileFiltersPage colors={colors} onBack={closeMobileFilters} menuOpen={optionMenu !== null || (view.associationsOpen ?? false)}>
         {compactNotices}
         <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 18 }}>Changes apply immediately. Back keeps your choices.</Text>
         {fullToolbar}
@@ -2624,8 +2767,13 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   }
 
   const extraData = { colors, arrangeEnabled, orderSelection, editsDisabled, favorites, peek, showBanner, timesLive };
-  const emptyMessage = task && candidates.length === 0
+  const onlyWork = work !== "all" && activeCount === 1;
+  const emptyMessage = workBlocked
+    ? `No sessions shown: ${workPart} is not evaluated.`
+    : task && candidates.length === 0
     ? `No session in this view is linked to ${task.label}.`
+    : onlyWork
+    ? `No sessions in ${workPart} in this view.`
     : clearable
       ? "No sessions match the current search and filters."
       : state.status === "error"
@@ -2664,7 +2812,26 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   ) : null;
   // A peek pins its way back above the list, so scrolling to the session never hides it.
   const listLine = peek ? null : resultMode ? resultLine : countLine;
-  const listHeader = listLine;
+  const plural = (count: number) => `${count} session${count === 1 ? "" : "s"}`;
+  const reasonText = workTally ? [...workTally.reasons].map(([reason, count]) => `${count} ${MATCH_REASONS[reason].toLocaleLowerCase()}`).join(", ") : "";
+  // Always reachable outside Filters: the scope, why it shows what it shows, and the way to All work.
+  const workMessage = work === "all" ? "All work"
+    : workState === "unavailable" ? `${workPart} cannot be evaluated on this host: ${responsibility === null ? "the responsibility projection is not read yet." : responsibility.diagnostics.join(" ") || "the responsibility projection is unavailable."}`
+    : workState === "expired" ? `${workPart} is not evaluated: the responsibility projection expired ${readTime(projection!.expiresAt, clock.now)}.`
+    : workState === "no-profile" ? `${workPart} needs Working as: choose who you are working as in Filters. It is not sign-in.`
+    : workState === "unknown-person" ? `${workPart} is not evaluated: that person is not in the current responsibility projection.`
+    : work === "unknown" ? `Unknown responsibility for ${subjectLabel}: ${plural(workTally!.unknown)} here cannot be evaluated.`
+    : `${work === "mine" ? `My work, working as ${subjectLabel}` : `Work for ${subjectLabel}`}: ${plural(workTally!.matched)} here${reasonText ? ` (${reasonText})` : ""} · ${workTally!.unknown} not evaluated.`;
+  const workLine = (
+    <View testID="sessions-work" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 4, paddingHorizontal: 4, paddingBottom: 6 }}>
+      <Text testID="sessions-work-message" accessibilityLiveRegion="polite" style={{ flexShrink: 1, color: workBlocked ? colors.statusWarning : colors.foregroundMuted, fontSize: 11 }}>{workMessage}</Text>
+      {work === "all" ? <TextAction testID="sessions-work-show-mine" label="My work" accessibilityLabel="Show My work" colors={colors} compact={compact} onPress={() => chooseWork("mine")} />
+        : <TextAction testID="sessions-work-show-all" label="Show All work" colors={colors} compact={compact} onPress={() => chooseWork("all")} />}
+      {workState === "no-profile" ? <TextAction testID="sessions-work-choose" label="Choose Working as" colors={colors} compact={compact} onPress={handleRevealFilters} /> : null}
+      {workState === "ready" && work !== "unknown" && workTally!.unknown > 0 ? <TextAction testID="sessions-work-show-unknown" label="Show not evaluated" accessibilityLabel="Show sessions whose responsibility is unknown" colors={colors} compact={compact} onPress={() => chooseWork("unknown")} /> : null}
+    </View>
+  );
+  const listHeader = peek ? null : <>{workLine}{listLine}</>;
 
   return (
     <View
@@ -2756,7 +2923,9 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 8, padding: 20 }}
           >
             <Text style={{ color: colors.foreground, fontSize: 14, textAlign: "center" }}>{emptyMessage}</Text>
-            {clearable ? (
+            {workBlocked || onlyWork ? (
+              <TextAction testID="sessions-empty-all-work" label="Show All work" colors={colors} compact={compact} onPress={() => chooseWork("all")} />
+            ) : clearable ? (
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Clear filters"

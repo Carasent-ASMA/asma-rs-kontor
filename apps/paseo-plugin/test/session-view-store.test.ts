@@ -8,6 +8,9 @@ import {
   sessionViewTransition,
   clearSessionFilterPatch,
   sessionFilterCount,
+  resetSessionViewPatch,
+  readWorkingAs,
+  writeWorkingAs,
 } from "../client/session-view-store";
 import { DEFAULT_SESSION_FILTERS } from "../client/session-view";
 
@@ -57,7 +60,8 @@ describe("host-scoped session view state", () => {
 
 describe("filtered results and the tree position", () => {
   beforeEach(() => {
-    clearSessionViews();
+    // These cases start from the unscoped inventory; the My work default is covered below.
+    clearSessionViews({ work: "all" });
   });
 
   const task = { jira: "ASMA-7", kontorId: null, label: "ASMA-7" };
@@ -116,5 +120,77 @@ describe("filtered results and the tree position", () => {
     expect(sessionViewTransition(current, { scrollOffset: 300 })).toEqual({ scrollOffset: 300 });
     expect(sessionViewTransition(current, { query: "qa swe" })).toEqual({ query: "qa swe", peek: null });
     expect(sessionViewTransition(current, { task })).toEqual({ task, peek: null });
+  });
+});
+
+describe("work scope, order and reset", () => {
+  beforeEach(() => {
+    clearSessionViews();
+  });
+
+  it("starts in My work and Current order, counting My work as one active filter", () => {
+    const view = readSessionView("host-a");
+    expect(view.work).toBeUndefined();
+    expect(view.sort).toBeUndefined();
+    expect(sessionFilterCount(view)).toBe(1);
+    expect(sessionFilterCount({ ...view, work: "all", sort: "title" })).toBe(0);
+  });
+
+  it("clears to All work and keeps sort and grouping", () => {
+    const view = { ...readSessionView("host-a"), query: "qa", sort: "created" as const, sortDirection: "asc" as const, grouping: "role" as const };
+    const cleared = { ...view, ...sessionViewTransition(view, clearSessionFilterPatch(view)) };
+    expect(cleared).toMatchObject({ work: "all", query: "", sort: "created", sortDirection: "asc", grouping: "role" });
+    expect(sessionFilterCount(cleared)).toBe(0);
+  });
+
+  it("resets to what a new app session shows without touching other views", () => {
+    patchSessionView("host-b", { work: "all", sort: "title" });
+    const view = { ...readSessionView("host-a"), work: "person:account-b" as const, sort: "updated" as const, sortDirection: "asc" as const,
+      grouping: "flat" as const, streams: ["kontor"], arranging: true, peek: { sessionId: "s", resultsOffset: 4 } };
+    const reset = { ...view, ...sessionViewTransition(view, resetSessionViewPatch(view)) };
+    expect(reset).toMatchObject({ work: "mine", sort: undefined, sortDirection: undefined, grouping: undefined, streams: null, arranging: false, peek: null });
+    expect(readSessionView("host-b")).toMatchObject({ work: "all", sort: "title" });
+  });
+
+  it("ends a peek when the work scope or the order changes", () => {
+    patchSessionView("host-a", { query: "qa", treeOffset: 0, peek: { sessionId: "s", resultsOffset: 40 } });
+    const current = readSessionView("host-a");
+    expect(sessionViewTransition(current, { work: "all" })).toEqual({ work: "all", peek: null });
+    expect(sessionViewTransition(current, { sort: "title" })).toEqual({ sort: "title", peek: null });
+    expect(sessionViewTransition(current, { sortDirection: "asc" })).toEqual({ sortDirection: "asc", peek: null });
+  });
+
+  it("keeps Working as per host and tracker realm, and a change ends this host's My work peek", () => {
+    patchSessionView("host-a", { query: "qa", peek: { sessionId: "s", resultsOffset: 40 } });
+    writeWorkingAs("host-a", "tracker.example", "account-a");
+    expect(readWorkingAs("host-a", "tracker.example")).toBe("account-a");
+    expect(readWorkingAs("host-a", "other.example")).toBeNull();
+    expect(readWorkingAs("host-b", "tracker.example")).toBeNull();
+    expect(readWorkingAs("host-a", null)).toBeNull();
+    expect(readSessionView("host-a").peek).toBeNull();
+    writeWorkingAs("host-a", "tracker.example", null);
+    expect(readWorkingAs("host-a", "tracker.example")).toBeNull();
+    writeWorkingAs("host-a", "tracker.example", "account-a");
+    clearSessionViews();
+    expect(readWorkingAs("host-a", "tracker.example")).toBeNull();
+  });
+
+  it("ends only the peeks the changed profile affects: this host, in My work or Unknown responsibility", () => {
+    const scope = (host: string, epic: string) => JSON.stringify([host, "sessions", null, epic]);
+    const peek = (resultsOffset: number) => ({ query: "qa", peek: { sessionId: `s-${resultsOffset}`, resultsOffset } });
+    patchSessionView(scope("host-a", "ASMA-1"), { ...peek(1), work: "mine" });
+    patchSessionView(scope("host-a", "ASMA-2"), { ...peek(2), work: "unknown" });
+    patchSessionView(scope("host-a", "ASMA-3"), { ...peek(3), work: "all" });
+    patchSessionView(scope("host-a", "ASMA-4"), { ...peek(4), work: "person:account-b" });
+    patchSessionView(scope("host-b", "ASMA-1"), { ...peek(700), work: "mine" });
+    patchSessionView("host-b", { ...peek(5), work: "mine" });
+    writeWorkingAs("host-a", "tracker.example", "account-a");
+    const peeks = () => [scope("host-a", "ASMA-1"), scope("host-a", "ASMA-2"), scope("host-a", "ASMA-3"), scope("host-a", "ASMA-4"), scope("host-b", "ASMA-1"), "host-b"]
+      .map((key) => readSessionView(key).peek?.resultsOffset ?? null);
+    expect(peeks()).toEqual([null, null, 3, 4, 700, 5]);
+    // Choosing the same person again changes nothing.
+    patchSessionView(scope("host-a", "ASMA-1"), peek(1));
+    writeWorkingAs("host-a", "tracker.example", "account-a");
+    expect(readSessionView(scope("host-a", "ASMA-1")).peek?.resultsOffset).toBe(1);
   });
 });

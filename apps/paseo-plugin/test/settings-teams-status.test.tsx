@@ -13,6 +13,7 @@ vi.mock('react', async (original) => ({ ...await original<typeof import('react')
 vi.mock('react-native', () => ({ ScrollView: 'ScrollView', SafeAreaView: 'SafeAreaView', KeyboardAvoidingView: 'KeyboardAvoidingView', View: 'View', Text: 'Text', Pressable: 'Pressable' }));
 vi.mock('@getpaseo/plugin/client', () => ({ useHosts: () => [{ serverId: 'qa-settings-host', status: 'online' }] }));
 vi.mock('@getpaseo/plugin/client/react-native', () => ({ TextInput: 'TextInput', ScrollView: 'ScrollView', FlatList: 'FlatList', Icon: 'Icon', Modal: Object.assign(() => null, { Content: () => null }), useToast: () => ({ error() {} }) }));
+vi.mock('../client/use-responsibility', () => ({ useResponsibility: () => null }));
 vi.mock('../client/use-read-sources', () => ({ useReadSources: () => ({ sources: model.sources, reads: model.reads, teamsSnapshots: model.snapshots, teamsErrors: model.errors, teamsBindingDiagnostics: [], error: model.sourceError, available: model.available, loading: false, refresh: async () => {} }) }));
 vi.mock('../client/use-session-directory', () => ({ useSessionDirectory: () => ({ state: { entries: [], status: 'ready', live: false, lastUpdatedAt: 1, error: null, staleReason: null, pages: 1, includeArchived: false } }) }));
 vi.mock('../client/use-workspace-directory', () => ({ useWorkspaceDirectory: () => ({ entries: [], error: null, readAt: null }) }));

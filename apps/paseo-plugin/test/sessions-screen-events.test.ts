@@ -294,10 +294,28 @@ import {
   clearSessionViews,
   patchSessionView,
   readSessionView,
+  workScopeOf,
 } from "../client/session-view-store";
+import { responsibilitySchema, type ResponsibilityRead } from "../shared/responsibility";
 import { TOOLBAR_LAYOUT_GAP } from "../client/toolbar-visibility";
 import { DEFAULT_ORGANIZATION_SETTINGS } from "../shared/organization";
 import { sessionEntry } from "./session-fixtures";
+import { toggleSelection, WorkstreamSelector } from "../client/workstream-selector";
+import { workstreamOptionLabel } from "../client/plan-workstreams";
+
+/** The association selector as the screen configures it; its own rendering is covered in workstream-selector.test.ts. */
+function selector(): Parameters<typeof WorkstreamSelector>[0] {
+  return walk(harness.current()).find((node) => (node as { type?: unknown }).type === WorkstreamSelector)!.props as unknown as Parameters<typeof WorkstreamSelector>[0];
+}
+function toggleChoice(key: string) {
+  const props = selector();
+  props.onChange(toggleSelection(props.selected, props.options.map((option) => option.key), key)); harness.flush();
+}
+/** The facts the selector's Details for a choice show. */
+function choiceFacts(key: string): string {
+  const props = selector();
+  return workstreamOptionLabel(props.options.find((option) => option.key === key)!, props.registryLoaded);
+}
 
 const colors = {
   accent: "#0055ff",
@@ -479,7 +497,7 @@ describe("SessionsScreen toolbar events", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
-    clearSessionViews();
+    clearSessionViews({ work: "all" });
     harness.reset();
     directory.inputs = [];
     directory.getClient.mockReset();
@@ -906,23 +924,20 @@ describe("SessionsScreen toolbar events", () => {
     directory.state = { ...(directory.state as object), entries: [] };
     renderScreen(undefined, compact);
     if (compact) openMobileFilters();
-    expect(textOf(findByTestID(harness.current(), "sessions-workstream-availability"))).toContain("this list may be incomplete");
-    const optionText = () => textOf(findByTestID(harness.current(), "sessions-options"));
-    expect(optionText()).toContain("No workstream associations available in this context.");
-    const choices = () => walk(harness.current()).filter((node) => node.props.checkbox === true);
+    expect(selector().about).toContain("this list may be incomplete");
+    const choices = () => selector().options.map((option) => option.label);
     expect(choices()).toHaveLength(0);
 
     directory.state = { ...(directory.state as object), entries: [sessionEntry("missing", {})] };
     harness.flush();
-    expect(choices().map((node) => node.props.label)).toEqual(["Other work"]);
-    expect(optionText()).not.toContain("No workstream associations available");
-    (choices()[0]!.props.onPress as () => void)(); harness.flush();
+    expect(choices()).toEqual(["Other work"]);
+    toggleChoice("other work");
     expect(readSessionView("host-a").streams).toEqual([]);
 
     directory.state = { ...(directory.state as object), entries: [sessionEntry("missing", {}), sessionEntry("unknown", { labels: { workstream: "unregistered-key" } })] };
     harness.flush();
-    expect(choices().map((node) => node.props.label).sort()).toEqual(["Other work", "unregistered-key"]);
-    expect(textOf(findByTestID(harness.current(), "sessions-workstream-availability"))).toContain("Names may be unregistered");
+    expect(choices().sort()).toEqual(["Other work", "unregistered-key"]);
+    expect(selector().about).toContain("Names may be unregistered");
     expect(readSessionView("host-a").streams).toEqual([]);
   });
 
@@ -1919,7 +1934,7 @@ describe("SessionsScreen mobile filter page", () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
     accessibility.screenReader = false;
-    clearSessionViews();
+    clearSessionViews({ work: "all" });
     harness.reset();
     directory.inputs = [];
     directory.state = {
@@ -1952,8 +1967,8 @@ describe("SessionsScreen mobile filter page", () => {
     const host = (element: ElementLike & { readonly type?: unknown }) => (element.type as (props: unknown) => ElementLike)(element.props).props;
     const tree = harness.current();
     expect([host(findByTestID(tree, "sessions-filter-idle"))["aria-pressed"], host(findByTestID(tree, "sessions-filter-all"))["aria-pressed"]]).toEqual([true, false]);
-    const streams = walk(tree).filter((element) => element.props.checkbox === true).map((element) => [element.props.label, host(element)["aria-checked"], host(element)["aria-pressed"]]);
-    expect(streams).toEqual([["Adapter", true, undefined], ["Board", false, undefined]]);
+    // Checkbox ARIA inside the association selector is covered in workstream-selector.test.ts.
+    expect([selector().options.map((option) => option.label), selector().selected]).toEqual([["Adapter", "Board"], ["adapter"]]);
     expect(host(findByTestID(tree, "sessions-advanced-archived"))["aria-checked"]).toBe(false);
     expect(host(walk(tree).find((element) => (element as { type?: unknown }).type === FiltersButton)!)["aria-expanded"]).toBe(true);
 
@@ -2020,7 +2035,8 @@ describe("SessionsScreen mobile filter page", () => {
     // The full toolbar stays above the list, outside its scroll content.
     const root = harness.current() as ElementLike;
     expect((root.props.children as unknown[]).some((child) => (child as ElementLike | null)?.props?.testID === "sessions-full-toolbar-slot")).toBe(true);
-    expect(findByTestID(root, "sessions-list").props.ListHeaderComponent).toBeNull();
+    // The list header holds only the work line, never the toolbar.
+    expect(testIDs(findByTestID(root, "sessions-list").props.ListHeaderComponent)).not.toContain("sessions-full-toolbar");
     // Wide session rows keep their status in a compact trailing marker.
     const leaf = renderSessionLeaf();
     expect(testIDs(leaf)).not.toContain("sessions-row-meta");
@@ -2187,22 +2203,20 @@ describe("SessionsScreen mobile filter page", () => {
     directory.state = { ...(directory.state as object), entries: [] };
     renderScreen(undefined, compact);
     if (compact) openMobileFilters();
-    expect(textOf(findByTestID(harness.current(), "sessions-workstream-availability"))).toContain("this list may be incomplete");
-    expect(textOf(harness.current())).toContain("No workstream associations available in this context.");
-    const choices = () => walk(harness.current()).filter((node) => node.props.checkbox === true);
+    expect(selector().about).toContain("this list may be incomplete");
+    const choices = () => selector().options.map((option) => option.label);
     expect(choices()).toHaveLength(0);
 
     directory.state = { ...(directory.state as object), entries: [sessionEntry("missing", {})] };
     harness.flush();
-    expect(choices().map((node) => node.props.label)).toEqual(["Other work"]);
-    expect(textOf(harness.current())).not.toContain("No workstream associations available");
-    (choices()[0]!.props.onPress as () => void)(); harness.flush();
+    expect(choices()).toEqual(["Other work"]);
+    toggleChoice("other work");
     expect(readSessionView("host-a").streams).toEqual([]);
 
     directory.state = { ...(directory.state as object), entries: [sessionEntry("missing", {}), sessionEntry("unknown", { labels: { workstream: "unregistered-key" } })] };
     harness.flush();
-    expect(choices().map((node) => node.props.label).sort()).toEqual(["Other work", "unregistered-key"]);
-    expect(textOf(findByTestID(harness.current(), "sessions-workstream-availability"))).toContain("Names may be unregistered");
+    expect(choices().sort()).toEqual(["Other work", "unregistered-key"]);
+    expect(selector().about).toContain("Names may be unregistered");
     expect(readSessionView("host-a").streams).toEqual([]);
   });
 
@@ -2355,7 +2369,7 @@ function closeMobileFilters() {
 
 
 describe("plan-derived visible workstream choices on the current mobile/lifecycle screen", () => {
-  beforeEach(() => { vi.useFakeTimers(); clearSessionViews(); harness.reset(); });
+  beforeEach(() => { vi.useFakeTimers(); clearSessionViews({ work: "all" }); harness.reset(); });
   afterEach(() => { harness.unmount(); vi.useRealTimers(); });
   it.each([true, false])("renders zero-session registered choices from operator configuration (compact=%s)", async (compact) => {
     const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
@@ -2373,9 +2387,8 @@ describe("plan-derived visible workstream choices on the current mobile/lifecycl
       patchSessionView("host-a", { query: "", advancedOpen: true, ...toolbarOpenPatch(true) });
       renderScreen(undefined, compact, compact ? "ios" : "web", { workstreamSources: [], workstreamReads: {}, workstreamRegistry: registry });
       if (compact) openMobileFilters();
-      for (const key of ["access", "reporting"]) expect(findByTestID(harness.current(), `workstream-option-${key}`).props.label).toContain("0 sessions");
-      const options = walk(harness.current()).filter(node => String(node.props.testID).startsWith("workstream-option-")).map(node => node.props.testID);
-      expect(options).toEqual(["workstream-option-access", "workstream-option-reporting"]);
+      for (const key of ["access", "reporting"]) expect(choiceFacts(key)).toContain("0 sessions");
+      expect(selector().options.map((option) => option.key)).toEqual(["access", "reporting"]);
       expect(Object.keys(registry.desks)).toHaveLength(2);
     } finally { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); }
   });
@@ -2388,12 +2401,12 @@ describe("plan-derived visible workstream choices on the current mobile/lifecycl
     const mappings = planWorkstreamMappings([source], { plan: read }, entries, [], {}, {});
     renderScreen(undefined, compact, compact ? "ios" : "web", { workstreamSources: [source], workstreamReads: { plan: read }, workstreamRegistry: registry, planMappings: mappings });
     if (compact) openMobileFilters();
-    expect(findByTestID(harness.current(), "workstream-option-adopus-graphql").props.label).toContain("1 session · 1 workspace · 1 plan · registered");
-    expect(findByTestID(harness.current(), "workstream-option-access").props.label).toContain("0 sessions");
+    expect(choiceFacts("adopus-graphql")).toContain("1 session · 1 workspace · 1 plan · registered");
+    expect(choiceFacts("access")).toContain("0 sessions");
     if (compact) closeMobileFilters();
     expect(sessionRowIds()).toEqual([]);
     if (compact) openMobileFilters();
-    (findByTestID(harness.current(), "workstream-option-adopus-graphql").props.onPress as () => void)(); harness.flush();
+    toggleChoice("adopus-graphql");
     if (compact) closeMobileFilters();
     expandAll(); expect(sessionRowIds()).toEqual(["linked"]);
     if (compact) openMobileFilters();
@@ -2413,7 +2426,7 @@ describe("plan-derived visible workstream choices on the current mobile/lifecycl
       workstreamSources: [source], workstreamReads: { plan: read }, workstreamRegistry: registry,
     });
     if (compact) openMobileFilters();
-    expect(findByTestID(harness.current(), "workstream-option-adopus-graphql").props.label).toContain("0 sessions · 1 workspace · 1 plan · registered");
+    expect(choiceFacts("adopus-graphql")).toContain("0 sessions · 1 workspace · 1 plan · registered");
   });
   it.each([true, false])("names desk-held, plan-only and unlinked choices, an unloaded registry once, and the outside-desks shortcut (compact=%s)", async (compact) => {
     const { source, read } = await import("./plan-workstream-fixtures");
@@ -2427,17 +2440,16 @@ describe("plan-derived visible workstream choices on the current mobile/lifecycl
     patchSessionView("host-a", { query: "", advancedOpen: true, ...toolbarOpenPatch(true) });
     renderScreen(undefined, compact, compact ? "ios" : "web", { workstreamSources: [plan], workstreamReads: { beta: planRead }, planMappings: {} });
     if (compact) openMobileFilters();
-    const chip = (key: string) => findByTestID(harness.current(), `workstream-option-${key}`).props;
-    expect(chip("alpha").label).toBe("alpha · 2 sessions (1 shown under DESK • ADAM) · 2 workspaces · 0 plans");
-    expect(chip("adam").label).toBe("adam · desk category · 1 session · 1 workspace · 0 plans · desk shows 1 more session filed under other workstreams");
-    expect(chip("beta").label).toBe("beta · plan only · 0 sessions · 0 workspaces · 1 plan");
-    expect(chip("other work").label).toBe("Other work · no workstream link · 1 session · 1 workspace · 0 plans");
-    // The visible text is the checkbox's name; nothing waits behind hover.
-    expect(chip("alpha")).toMatchObject({ checkbox: true, active: true });
-    const footer = textOf(findByTestID(harness.current(), "sessions-workstream-availability"));
+    expect(choiceFacts("alpha")).toBe("alpha · 2 sessions (1 shown under DESK • ADAM) · 2 workspaces · 0 plans");
+    expect(choiceFacts("adam")).toBe("adam · desk category · 1 session · 1 workspace · 0 plans · desk shows 1 more session filed under other workstreams");
+    expect(choiceFacts("beta")).toBe("beta · plan only · 0 sessions · 0 workspaces · 1 plan");
+    expect(choiceFacts("other work")).toBe("Other work · no workstream link · 1 session · 1 workspace · 0 plans");
+    // All is selected; Details show every fact without hover.
+    expect(selector().selected).toBeNull();
+    const footer = selector().about;
     expect(footer).toContain("The workstream registry is not loaded, so no choice says whether it is registered.");
     expect(footer).toContain("a choice names the desk where it counts sessions shown there");
-    (chip("alpha").onPress as () => void)(); harness.flush();
+    toggleChoice("alpha");
     expect(readSessionView("host-a").streams).toEqual(["adam", "beta", "other work"]);
     if (compact) closeMobileFilters();
     if (!compact) {
@@ -2448,8 +2460,8 @@ describe("plan-derived visible workstream choices on the current mobile/lifecycl
     directory.state = { ...emptyDirectoryState(), entries, status: "ready", live: false, inventoryComplete: false, lastUpdatedAt: 0 };
     renderScreen(undefined, compact, compact ? "ios" : "web", { workstreamSources: [plan], workstreamReads: { beta: planRead }, planMappings: {} });
     if (compact) openMobileFilters();
-    expect(chip("alpha").label).toBe("alpha · 2 sessions (1 shown under DESK • ADAM) · 2 workspaces · 0 plans");
-    expect(chip("other work").label).toBe("Other work · no workstream link · 1 session · 1 workspace · 0 plans");
+    expect(choiceFacts("alpha")).toBe("alpha · 2 sessions (1 shown under DESK • ADAM) · 2 workspaces · 0 plans");
+    expect(choiceFacts("other work")).toBe("Other work · no workstream link · 1 session · 1 workspace · 0 plans");
     expect(textOf(findByTestID(harness.current(), "sessions-options-count"))).toContain("partial inventory read");
     if (compact) closeMobileFilters();
     const { planFallbackNote } = await import("../client/plan-workstreams");
@@ -2499,7 +2511,7 @@ describe("plan-derived visible workstream choices on the current mobile/lifecycl
     expect(epicRows()).toEqual([["ASMA-8101 · ESW • ASMA-8101", 1], ["Epic unknown · ESW • ASMA-7869", 1], ["Epic unknown · ESW • ASMA-8101", 0], ["Epic unknown · ESW • ASMA-8108", 1]]);
     expect(listRows().flatMap((row) => row.kind === "session" && row.entry.projectKey === "prj_8101" ? [row.entry.id] : [])).toEqual(["labelled-8101"]);
     if (compact) openMobileFilters();
-    expect(findByTestID(harness.current(), "workstream-option-other work").props.label).toBe("Other work · no workstream link · 3 sessions · 3 workspaces · 0 plans");
+    expect(choiceFacts("other work")).toBe("Other work · no workstream link · 3 sessions · 3 workspaces · 0 plans");
     if (compact) closeMobileFilters();
     // The screen passes each session's own known epic to the note, so a recognized epic is named, not reported unknown.
     expect(placement("labelled-8101")).toEqual(["Epic: ASMA-8101, from the jira.epic label", `Linking: No configured plan declares ASMA-8101. ${linking}`]);
@@ -2544,5 +2556,127 @@ describe("plan-derived visible workstream choices on the current mobile/lifecycl
       ["Epic unknown · asma-rs-kontor (asma-8574)", 1, "1 session with no known epic"],
     ]);
     expect(listRows().flatMap((row) => row.kind === "session" ? [row.entry.id] : []).sort()).toEqual(entries.map((entry) => entry.id).sort());
+  });
+});
+
+describe("My work, explicit order and Reset view on the Sessions screen", () => {
+  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(Date.parse("2026-10-21T13:00:00Z")); clearSessionViews(); harness.reset(); });
+  afterEach(() => { harness.unmount(); vi.useRealTimers(); });
+
+  /** Synthetic realm and people only. */
+  const projection = responsibilitySchema.parse({
+    schema: "kontor/responsibility@1", realm: "tracker.example", generatedAt: "2026-10-21T12:00:00Z", expiresAt: "2026-10-22T12:00:00Z",
+    provenance: { collector: "collect-responsibility@1", selection: ["ASMA-100", "ASMA-300"], complete: true, workstreams: null },
+    people: [{ accountId: "account-a", displayName: "Alex Example", active: true, accountType: "atlassian" }, { accountId: "account-b", displayName: "Blair Example", active: true, accountType: "atlassian" }],
+    issues: [{ key: "ASMA-100", type: "Epic", level: 1, parent: null, assignee: "account-a", workstreams: [] },
+      { key: "ASMA-101", type: "Story", level: 0, parent: "ASMA-100", assignee: "account-b" },
+      { key: "ASMA-300", type: "Epic", level: 1, parent: null, assignee: null, workstreams: [] }],
+    workstreams: [],
+  });
+  const ready = (expiresAt = projection.expiresAt): ResponsibilityRead => ({ status: "ready", projection: { ...projection, expiresAt }, revision: "r1", readAt: "2026-10-21T12:59:00Z", diagnostics: [] });
+  const entries = [
+    sessionEntry("alpha-old", { title: "SWE • b alpha", labels: { epic: "ASMA-100" }, updatedAt: "2026-10-19T10:00:00Z", workspaceId: "w1", workspaceName: "one" }),
+    sessionEntry("alpha-task", { title: "QA • c task", labels: { epic: "ASMA-100", "asma.task": "ASMA-101" }, updatedAt: "2026-10-21T10:00:00Z", workspaceId: "w1", workspaceName: "one" }),
+    sessionEntry("other", { title: "SWE • a other", labels: { epic: "ASMA-300" }, updatedAt: "2026-10-20T10:00:00Z", workspaceId: "w2", workspaceName: "two" }),
+    sessionEntry("unread", { title: "AUD • d unread", labels: { epic: "ASMA-999" }, updatedAt: "2026-10-18T10:00:00Z", workspaceId: "w3", workspaceName: "three" }),
+  ];
+  function render(responsibility: ResponsibilityRead | null) {
+    harness.render(() => SessionsScreen({ host: { id: "host-a", label: "Host" }, layout: { compact: false, platform: "web" }, theme: { colors } as PluginTheme, params: {}, responsibility,
+      directory: { state: { ...emptyDirectoryState(), status: "ready" as const, pages: 1, lastUpdatedAt: 0, inventoryComplete: true, entries }, refresh: vi.fn() },
+    } as Parameters<typeof SessionsScreen>[0]));
+  }
+  const press = (testID: string) => { (findByTestID(harness.current(), testID).props.onPress as () => void)(); harness.flush(); };
+  const message = () => textOf(findByTestID(harness.current(), "sessions-work-message"));
+  const empty = () => findByTestID(harness.current(), "sessions-list").props.ListEmptyComponent as ElementLike;
+  function openFilters() {
+    if (walk(harness.current()).some((element) => element.props.testID === "sessions-options")) return;
+    const toggle = walk(findByTestID(harness.current(), "sessions-full-toolbar")).find((element) => element.props.expanded === false && "activeCount" in element.props)!;
+    (toggle.props.onPress as () => void)(); harness.flush();
+  }
+  function choose(menu: "sort" | "person" | "workingAs", label: string) {
+    openFilters(); press(menu === "workingAs" ? "sessions-working-as" : `sessions-${menu}`);
+    const item = walk(findByTestID(harness.current(), `sessions-${menu}-choices`)).find((element) => element.type === MenuItem && element.props.label === label)!;
+    (item.props.onPress as () => void)(); harness.flush();
+  }
+
+  it("starts in My work and says why it shows nothing until a projection and Working as are present", () => {
+    patchSessionView("host-a", { grouping: "flat" });
+    render(null);
+    expect(message()).toBe("My work cannot be evaluated on this host: the responsibility projection is not read yet.");
+    expect(sessionRowIds()).toEqual([]);
+    expect(textOf(empty())).toContain("No sessions shown: My work is not evaluated.");
+    render({ status: "unavailable", projection: null, revision: null, readAt: "2026-10-21T12:59:00Z", diagnostics: ["No responsibility projection is installed on this host."] });
+    expect(message()).toBe("My work cannot be evaluated on this host: No responsibility projection is installed on this host.");
+    render(ready("2026-10-21T12:30:00Z"));
+    expect(message()).toMatch(/^My work is not evaluated: the responsibility projection expired /);
+    render(ready());
+    expect(message()).toBe("My work needs Working as: choose who you are working as in Filters. It is not sign-in.");
+    expect(findByTestID(harness.current(), "sessions-work-choose")).toBeDefined();
+    expect(walk(empty()).some((element) => element.props.testID === "sessions-empty-all-work")).toBe(true);
+    press("sessions-work-show-all");
+    expect(sessionRowIds().sort()).toEqual(["alpha-old", "alpha-task", "other", "unread"]);
+    expect(message()).toBe("All work");
+  });
+
+  it("shows the Working-as person's sessions with their reasons, and what could not be evaluated", () => {
+    patchSessionView("host-a", { grouping: "flat" });
+    render(ready());
+    choose("workingAs", "Alex Example");
+    expect(sessionRowIds().sort()).toEqual(["alpha-old", "alpha-task"]);
+    expect(message()).toBe("My work, working as Alex Example: 2 sessions here (2 epic assignee) · 1 not evaluated.");
+    press("sessions-work-show-unknown");
+    expect(sessionRowIds()).toEqual(["unread"]);
+    // An explicit person replaces My work; the task assignee matches only the task's session.
+    choose("person", "Blair Example");
+    expect(sessionRowIds()).toEqual(["alpha-task"]);
+    expect(message()).toBe("Work for Blair Example: 1 session here (1 task assignee) · 1 not evaluated.");
+  });
+
+  it("prunes groups with nothing in a person scope", () => {
+    render(ready());
+    press("sessions-work-show-all");
+    const all = groupRows().map((row) => row.group.label);
+    choose("person", "Blair Example");
+    const scoped = groupRows();
+    expect(scoped.length).toBeLessThan(all.length);
+    expect(scoped.every((row) => row.group.aggregate.total > 0)).toBe(true);
+  });
+
+  it("ends a peek when Working as changes", () => {
+    render(ready());
+    patchSessionView("host-a", { work: "mine", query: "alpha", peek: { sessionId: "alpha-old", resultsOffset: 0 } });
+    harness.flush();
+    expect(readSessionView("host-a").peek).not.toBeNull();
+    choose("workingAs", "Blair Example");
+    expect(readSessionView("host-a").peek).toBeNull();
+  });
+
+  it("sorts the list and the results, and disables Arrange until Current order", () => {
+    patchSessionView("host-a", { grouping: "flat", work: "all" });
+    render(ready());
+    choose("sort", "Last changed at");
+    expect(sessionRowIds()).toEqual(["alpha-task", "other", "alpha-old", "unread"]);
+    press("sessions-sort-asc");
+    expect(sessionRowIds()).toEqual(["unread", "alpha-old", "other", "alpha-task"]);
+    expect(findByTestID(harness.current(), "sessions-arrange").props.disabled).toBe(true);
+    expect(textOf(findByTestID(harness.current(), "sessions-sort-help"))).toContain("Choose Current order to arrange.");
+    choose("sort", "Title");
+    const search = (query: string) => { (sessionSearch().props.onChangeText as (query: string) => void)(query); harness.flush(); };
+    search("•");
+    expect(listRows().map((row) => row.kind)).toEqual(["result", "result", "result", "result"]);
+    expect(sessionRowIds()).toEqual(["unread", "alpha-task", "other", "alpha-old"]);
+    choose("sort", "Current order");
+    expect(textOf(findByTestID(harness.current(), "sessions-sort-help"))).toBe("Current order keeps state order, your saved arrangement and Role order.");
+  });
+
+  it("clears filters to All work keeping order and grouping; Reset view returns to My work, Current order and default grouping", () => {
+    patchSessionView("host-a", { grouping: "flat", work: "person:account-b", sort: "title", sortDirection: "desc" });
+    render(ready());
+    (walk(harness.current()).find((node) => node.type === ClearFiltersButton)!.props.onPress as () => void)(); harness.flush();
+    expect(readSessionView("host-a")).toMatchObject({ work: "all", sort: "title", sortDirection: "desc", grouping: "flat" });
+    openFilters(); press("sessions-reset-view");
+    const view = readSessionView("host-a");
+    expect(workScopeOf(view)).toBe("mine");
+    expect([view.sort, view.sortDirection, view.grouping]).toEqual([undefined, undefined, undefined]);
   });
 });

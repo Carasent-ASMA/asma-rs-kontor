@@ -114,6 +114,8 @@ export type OrganizationInput = {
   readonly expandedGroups?: Readonly<Record<string, boolean>>;
   readonly workspaces?: readonly OrganizationWorkspace[];
   readonly projects?: readonly OrganizationProject[];
+  /** An explicit sort's position per session ID; it replaces saved and default session order, never group order. */
+  readonly leafOrder?: ReadonlyMap<string, number>;
 };
 export type OrganizationWorkspace = { readonly id: string; readonly name: string; readonly projectKey?: string | null; readonly projectName?: string | null };
 export type OrganizationProject = { readonly id: string; readonly name: string };
@@ -947,6 +949,7 @@ function buildRoleView(input: {
   readonly entries: readonly DirectoryEntry[];
   readonly siblingOrder: OrganizationInput["siblingOrder"];
   readonly displayMappings: OrganizationInput["displayMappings"];
+  readonly leafOrder?: ReadonlyMap<string, number>;
 }): OrganizationGroup[] {
   const roles = new Map<string | null, DirectoryEntry[]>();
   for (const entry of input.entries) {
@@ -959,7 +962,7 @@ function buildRoleView(input: {
     const scope = organizationScope(entry, input.displayMappings);
     return [entry.id, { state: STATE_PRIORITY.indexOf(sessionState(entry)), place: [scope.workstream, scope.epic, workspaceOf(entry).label] }];
   }));
-  const steady = new Map([...input.entries].sort((left, right) => {
+  const steady = input.leafOrder ?? new Map([...input.entries].sort((left, right) => {
     const leftKey = keys.get(left.id)!;
     const rightKey = keys.get(right.id)!;
     return leftKey.state - rightKey.state
@@ -1070,8 +1073,14 @@ function buildFlatRoot(input: {
   ];
 }
 
-export function buildOrganizationTree(input: OrganizationInput): OrganizationGroup[] {
-  const nativeOrder = new Map(input.entries.map((entry, index) => [entry.id, index]));
+export function buildOrganizationTree(organization: OrganizationInput): OrganizationGroup[] {
+  const leafOrder = organization.leafOrder;
+  // An explicit sort ignores saved session positions without rewriting them; saved group order still applies.
+  const input = leafOrder && organization.siblingOrder
+    ? { ...organization, siblingOrder: Object.fromEntries(Object.entries(organization.siblingOrder)
+      .map(([parent, keys]) => [parent, keys.filter((key) => !key.startsWith(sessionKey("")))])) }
+    : organization;
+  const nativeOrder = leafOrder ?? new Map(input.entries.map((entry, index) => [entry.id, index]));
   if (input.grouping === "flat") {
     return buildFlatRoot({
       entries: input.entries,
@@ -1084,6 +1093,7 @@ export function buildOrganizationTree(input: OrganizationInput): OrganizationGro
       entries: input.entries,
       siblingOrder: input.siblingOrder,
       displayMappings: input.displayMappings,
+      leafOrder,
     });
   }
   if (input.grouping === "placement") {

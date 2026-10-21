@@ -12,6 +12,7 @@ import { useKeyboardSettings } from "./use-keyboard-settings";
 import { useBackShortcut } from "./keyboard-shortcuts";
 import { KeyboardSettingsCard } from "./keyboard-settings-card";
 import { useReadSources } from "./use-read-sources";
+import { useResponsibility } from "./use-responsibility";
 import { projectEpicKeys, sourceEpic, sourceInProject } from "./source-scope";
 import { useSessionDirectory } from "./use-session-directory";
 import type { DirectoryEntry } from "./session-directory";
@@ -65,6 +66,7 @@ function HostScreen(props: PluginScreenProps) {
   const [, setTeamsViewRevision] = useState(0);
   const native = useSessionDirectory({ hostId: host.id, hostStatus, includeArchived });
   const sourceState = useReadSources(host.id, hostStatus);
+  const responsibility = useResponsibility(host.id, hostStatus);
   // Every page reads one epic per session: the Jira capture rides on the entries, never written to native.
   // Reads refresh every 30 s with a new read time; rebuild only when a ready capture's content changes, so rows keep their identity.
   const captureRevisions = Object.values(sourceState.reads).flatMap((read) => read.source.kind === "jira" && read.status === "ready" ? [`${read.source.id}@${read.revision}`] : []).sort().join(" ");
@@ -235,7 +237,7 @@ function HostScreen(props: PluginScreenProps) {
   let page;
   if (route.tab === "Sessions") page = <SessionsScreen key={sessionScopeKey(host.id, route)} viewScope={sessionScopeKey(host.id, route)} {...props} theme={{ ...props.theme, colors }} directory={directory} organization={presentation} projectId={route.projectId} epicKey={route.epicKey} onIncludeArchived={setIncludeArchived}
     scopeLabel={route.epicKey ?? (route.projectId === null ? null : projectName ?? "Project unavailable")} onClearScope={() => visit({ ...NO_SCOPE })}
-    planMappings={planMappings} workstreamRegistry={sourceState.registry} workstreamSources={sourcesInContext} workstreamReads={sourceState.reads}
+    planMappings={planMappings} workstreamRegistry={sourceState.registry} workstreamSources={sourcesInContext} workstreamReads={sourceState.reads} responsibility={responsibility}
     workstreamNote={sourceState.error ?? (sourceState.registry?.diagnostics.join(" ") || null)}
     planSources={planSources} onEpicTab={(tab, epicKey, sourceId) => visitContext({ tab, epicKey, sourceId, sourceRevision: sourceId ? sourceState.reads[sourceId]?.revision ?? null : null, originAgentId: null })}
     projects={projects.map(([id, name]) => ({ id, name, root: projectRoots.get(id) }))}
