@@ -14,7 +14,7 @@ import { DEFAULT_TEAMS_VIEW, type TeamsView } from "../client/teams-source-page"
 // The disclosure state lives in the saved Teams view; configured sources start open here.
 const view = () => model.view as TeamsView;
 const bindingsOpen = () => view().sources.authoring?.bindings ?? false;
-const catalog = sourceCatalog(JSON.stringify([{ id: "authoring", title: "Authoring", kind: "teams", path: fileURLToPath(new URL("./fixtures/teams-source/authoring-fleet.yml", import.meta.url)), expectedSha256: "5e49c621a5ed28a181f7e5f7c5c7c67f7bdc09c8d1258e94d48c60988fa5cff4" }]));
+const catalog = sourceCatalog(JSON.stringify([{ id: "authoring", title: "Authoring", kind: "teams", path: fileURLToPath(new URL("./fixtures/teams-source/authoring-fleet.yml", import.meta.url)), expectedSha256: "8c09c977cf1db9e6df78d5fe6bb91312460f550afe3ca06116217070d3995aec" }]));
 let snapshot: TeamsSourceSnapshot;
 type Props = Parameters<typeof ReadOnlyPage>[0];
 type Element = ReactElement<Record<string, unknown>>;

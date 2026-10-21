@@ -10,13 +10,14 @@ import { decodeTeamsConfigYaml } from "../server/teams-source-yaml";
 import { composeTeamsSourceView, readTeamsSource, teamsSourceSnapshotSchema,
   type ObservedTeamsSession, type TeamsSourceFormat, type TeamsSourceSnapshot } from "../shared/teams-source-snapshot";
 
-// Byte-for-byte copies read from the actual authorized files on 2026-10-19,
-// pinned to LSA-SOURCE-02 (not hand-authored records or a runtime-policy fixture).
+// Copies of the authorized files, with the owner identity replaced by a
+// synthetic label, pinned to LSA-SOURCE-02 (not hand-authored records or a
+// runtime-policy fixture).
 const sources = [
   { id: "authoring", filename: "authoring-fleet.yml", format: "fleet-authoring",
-    hash: "5e49c621a5ed28a181f7e5f7c5c7c67f7bdc09c8d1258e94d48c60988fa5cff4" },
+    hash: "8c09c977cf1db9e6df78d5fe6bb91312460f550afe3ca06116217070d3995aec" },
   { id: "operator", filename: "operator-fleet.yml", format: "fleet-operator",
-    hash: "d0fd421cab74df1346a6fb3c96ae2d85814af7f6336c40fdcd4c95906dab2101" },
+    hash: "5349f628b9de00e9f62ef9d69b4e8977d3c6a28c582f3b5497ed961c77060487" },
   { id: "roster", filename: "core-team.yml", format: "core-roster",
     hash: "329f5fb70d34cb51409f32588533c1b200bd5bb434341a35d9d66fa142fd6cfc" },
   { id: "templates", filename: "mvp-team-pack.json", format: "team-templates",

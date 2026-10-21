@@ -35,7 +35,18 @@
   `evidence/ASMA-8454-qualify-durable-desks.py`; its runbook and report
   references were updated.
 - **Tests.** Owner names, the owner email, home paths and account display
-  labels in the changed test fixtures are synthetic.
+  labels in the changed test fixtures are synthetic. The two Teams source
+  fixtures keep their `38`/`36` binding counts; their hash pins now cover the
+  scrubbed bytes.
+
+## Post-merge integration
+
+Merged `origin/master` at `f1223221` (`535d1be5` #413, `f1223221` #418) with
+no rebase or force. The merge had no textual conflicts. The merged ASMA-8550
+Teams source tests pin the exact fixture bytes, so their expected SHA-256 for
+`authoring-fleet.yml` and `operator-fleet.yml` was updated to the scrubbed
+bytes; the fleet and runtime behaviour, the alias-exemption constant and the
+51-file fence are unchanged.
 
 ## Provenance and migration
 
@@ -73,6 +84,7 @@ python3 scripts/kontor_project.py --config-dir <config folder> project --format 
 python3 scripts/public_tree.py .
 python3 -m unittest discover -s scripts/tests
 python3 -m unittest discover -s .github/scripts/tests
+pnpm --filter @carasent/kontor-paseo-plugin test
 pnpm --filter kontor-console typecheck
 pnpm --filter kontor-console test
 pnpm --filter kontor-console build
@@ -82,6 +94,8 @@ cargo test -p kontor-fleet --lib --locked
 cargo test -p kontor-accounts --locked
 cargo test -p kontor-core --locked
 cargo test -p kontor-store --test durable_seat_declarations --locked
+cargo test -p kontor-runtime-paseo --locked
+cargo test -p kontor-daemon --lib --locked
 cargo test -p kontor-daemon --test loopback_api durable_seats:: --locked
 cargo test -p kontor-daemon --test loopback_api desk_adams:: --locked
 cargo test -p kontor-daemon --test loopback_api pr_reviews:: --locked
@@ -89,7 +103,8 @@ cargo test -p kontor-daemon --test loopback_api pr_reviews:: --locked
 
 The whole-tree public check reports no home path or run receipt and no account
 alias outside the 51 exempt files. The console reports 306 passing tests and a
-successful production build.
+successful production build; the Paseo plugin reports 1,133 passing tests after
+the merge.
 
 `python3 scripts/verify-tree.py --mode inplace` was started, but it did not
 finish inside the 40-minute session limit. Three `kontor-daemon` loopback tests
@@ -99,5 +114,7 @@ failed independently of this change: two report
 `startup_composes_the_configured_runtime_summarizer`) and one exceeded its
 resident-controller wait
 (`resident_failed_epic_apply_emits_no_immediate_replay_wake`). All three fail
-identically at base commit `3bcbfe95` in a detached worktree, so they are
-inherited baseline failures, not WP-12 regressions.
+identically at the new base `f1223221` in a detached worktree, and on the
+merged tree, so they remain inherited baseline failures, not WP-12
+regressions. The full gate was not rerun after the merge; targeted coverage is
+the command list above.
