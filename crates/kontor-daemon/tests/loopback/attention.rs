@@ -133,7 +133,7 @@ async fn a_task_entering_needs_human_emits_exactly_one_content_safe_alert() {
         "the required mention is added by the destination adapter"
     );
     assert!(
-        body.contains("needs_human"),
+        body.contains("needs\\\\_human"),
         "the payload names the settled state"
     );
     assert!(
@@ -201,7 +201,7 @@ async fn every_configured_destination_receives_the_alert_once() {
             "destination {name} receives exactly one copy"
         );
         let body = String::from_utf8(requests[0].body.clone()).expect("a JSON body");
-        assert!(body.contains("task_needs_human"), "{name}: {body}");
+        assert!(body.contains("task\\\\_needs\\\\_human"), "{name}: {body}");
     }
 }
 
@@ -311,7 +311,7 @@ async fn a_hold_passing_its_review_date_emits_exactly_one_alert() {
     let requests = wait_for_requests(&server, 1).await;
     assert_eq!(requests.len(), 1, "one expiry is one alert");
     let rendered = String::from_utf8(requests[0].body.clone()).expect("a JSON body");
-    assert!(rendered.contains("hold_review_overdue"));
+    assert!(rendered.contains("hold\\\\_review\\\\_overdue"));
     assert!(rendered.contains("<at>operator@example.com</at>"));
 
     assert_eq!(
@@ -527,8 +527,8 @@ async fn a_waiting_seat_emits_once_and_re_observation_is_suppressed() {
         .map(|request| String::from_utf8(request.body.clone()).expect("a JSON body"))
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(rendered.contains("waiting_seat_waiting_input"));
-    assert!(rendered.contains("waiting_seat_stalled"));
+    assert!(rendered.contains("waiting\\\\_seat\\\\_waiting\\\\_input"));
+    assert!(rendered.contains("waiting\\\\_seat\\\\_stalled"));
 
     assert_eq!(
         world
@@ -581,7 +581,10 @@ async fn a_pending_permission_emits_once_and_unchanged_evidence_is_suppressed() 
     let requests = wait_for_requests(&server, 1).await;
     assert_eq!(requests.len(), 1);
     let body = String::from_utf8(requests[0].body.clone()).expect("a JSON body");
-    assert!(body.contains("waiting_seat_pending_permission"), "{body}");
+    assert!(
+        body.contains("waiting\\\\_seat\\\\_pending\\\\_permission"),
+        "{body}"
+    );
 
     assert_eq!(
         world
@@ -664,7 +667,7 @@ async fn an_abandon_receipt_emits_once_and_an_exact_replay_emits_none() {
     let requests = wait_for_requests(&server, 1).await;
     assert_eq!(requests.len(), 1, "one abandon is one alert");
     let body = String::from_utf8(requests[0].body.clone()).expect("a JSON body");
-    assert!(body.contains("command_confirmed"), "{body}");
+    assert!(body.contains("command\\\\_confirmed"), "{body}");
     assert!(
         body.contains(&world.task.to_string()),
         "the command alert names its task: {body}"
@@ -784,7 +787,7 @@ async fn a_second_rejection_parks_the_task_and_emits_exactly_one_alert() {
     let requests = wait_for_requests(&server, 1).await;
     assert_eq!(requests.len(), 1, "the park is exactly one alert");
     let body = String::from_utf8(requests[0].body.clone()).expect("a JSON body");
-    assert!(body.contains("task_parked"), "{body}");
+    assert!(body.contains("task\\\\_parked"), "{body}");
     let task = world
         .daemon
         .state()

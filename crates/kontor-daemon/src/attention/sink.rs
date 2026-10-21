@@ -250,8 +250,8 @@ pub fn teams_document(payload: &AttentionPayload, mention: &str) -> serde_json::
                 "version": "1.4",
                 "body": [
                     {"type": "TextBlock", "text": mention_text, "wrap": true},
-                    {"type": "TextBlock", "text": escape_markdown_text(&payload.title), "weight": "Bolder", "wrap": true},
-                    {"type": "TextBlock", "text": escape_markdown_text(&payload.body), "wrap": true},
+                    {"type": "TextBlock", "text": escape_markdown(&payload.title), "weight": "Bolder", "wrap": true},
+                    {"type": "TextBlock", "text": escape_markdown(&payload.body), "wrap": true},
                     {"type": "FactSet", "facts": facts}
                 ],
                 "actions": [{
@@ -279,18 +279,9 @@ fn fact(name: &str, value: &str) -> serde_json::Value {
 ///
 /// The payload already refuses active Markdown punctuation, but a destination
 /// must not depend on that contract holding for a future caller. Escaping here
-/// means `[x](url)` and `**bold**` render as literal text even if they arrive.
+/// means `[x](url)`, `**bold**`, `${x}` and `_emphasis_` render as literal text
+/// even if they arrive, in title/body and in facts alike.
 fn escape_markdown(value: &str) -> String {
-    escape_with(value, false)
-}
-
-/// Title and body may also contain emphasis underscores; facts are identifiers
-/// such as `needs_human`, whose underscores must stay readable.
-fn escape_markdown_text(value: &str) -> String {
-    escape_with(value, true)
-}
-
-fn escape_with(value: &str, underscore: bool) -> String {
     let mut escaped = String::with_capacity(value.len());
     for character in value.chars() {
         if matches!(
@@ -309,15 +300,14 @@ fn escape_with(value: &str, underscore: bool) -> String {
                 | '$'
                 | '{'
                 | '}'
-        ) || (underscore && character == '_')
-        {
+                | '_'
+        ) {
             escaped.push('\\');
         }
         escaped.push(character);
     }
     escaped
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,6 +338,7 @@ mod tests {
         assert!(rendered.contains("\\\\[click\\\\]"), "{rendered}");
         assert!(rendered.contains("\\\\*\\\\*bold\\\\*\\\\*"), "{rendered}");
         assert!(rendered.contains("\\\\_emphasis\\\\_"), "{rendered}");
+        assert!(rendered.contains("needs\\\\_human"), "{rendered}");
         assert!(rendered.contains("\\\\$\\\\{secret\\\\}"), "{rendered}");
     }
 
