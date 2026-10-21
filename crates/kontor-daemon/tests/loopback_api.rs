@@ -29,6 +29,9 @@
 //! * a secret, a runtime endpoint or a transcript reaching the database, the
 //!   contract document, a response or a stored event row.
 
+#[path = "support/config.rs"]
+mod config_support;
+
 // This binary uses part of the shared harness; the rest is not dead code.
 #[allow(dead_code)]
 mod harness;
@@ -3940,17 +3943,18 @@ fn fleet_settings() -> serde_json::Value {
 #[tokio::test]
 async fn the_shipped_startup_path_composes_the_configured_fleet() {
     let directory = tempfile::TempDir::new().expect("a temporary directory");
-    std::fs::write(
-        kontor_daemon::runtimes::path_in(directory.path()),
-        serde_json::to_vec_pretty(&fleet_settings()).expect("a fleet document"),
-    )
-    .expect("the fleet description is written");
+    let folder = config_support::write_config_folder(directory.path());
+    config_support::write_runtime_planes(&folder, &fleet_settings());
 
     // `start_configured` is the path `main.rs` takes. An empty registry here is
     // the defect: every session route would answer as unconfigured no matter what
     // the operator wrote.
-    let daemon = Daemon::start_configured(DaemonConfig::at(directory.path()).with_port(0))
-        .expect("the configured realm starts");
+    let daemon = Daemon::start_configured(
+        DaemonConfig::at(directory.path())
+            .with_config_dir(&folder)
+            .with_port(0),
+    )
+    .expect("the configured realm starts");
     let families: Vec<String> = daemon
         .state()
         .runtimes()
@@ -3986,8 +3990,13 @@ async fn the_shipped_startup_path_composes_the_configured_fleet() {
 #[tokio::test]
 async fn a_realm_with_no_fleet_still_starts_and_says_so() {
     let directory = tempfile::TempDir::new().expect("a temporary directory");
-    let daemon = Daemon::start_configured(DaemonConfig::at(directory.path()).with_port(0))
-        .expect("a realm with no runtimes still starts");
+    let folder = config_support::write_config_folder(directory.path());
+    let daemon = Daemon::start_configured(
+        DaemonConfig::at(directory.path())
+            .with_config_dir(&folder)
+            .with_port(0),
+    )
+    .expect("a realm with no runtimes still starts");
     assert!(
         daemon.state().runtimes().families().next().is_none(),
         "an absent fleet description is a realm with no runtimes, not a failure"
@@ -4001,14 +4010,15 @@ async fn a_misconfigured_fleet_refuses_the_start() {
     let directory = tempfile::TempDir::new().expect("a temporary directory");
     let mut broken = fleet_settings();
     broken["runtimes"][0]["canonical_worktree_cwd"] = serde_json::json!("relative/not-a-root");
-    std::fs::write(
-        kontor_daemon::runtimes::path_in(directory.path()),
-        serde_json::to_vec_pretty(&broken).expect("a fleet document"),
-    )
-    .expect("the fleet description is written");
+    let folder = config_support::write_config_folder(directory.path());
+    config_support::write_runtime_planes(&folder, &broken);
 
-    let refused = Daemon::start_configured(DaemonConfig::at(directory.path()).with_port(0))
-        .expect_err("a runtime that cannot be composed is not served around");
+    let refused = Daemon::start_configured(
+        DaemonConfig::at(directory.path())
+            .with_config_dir(&folder)
+            .with_port(0),
+    )
+    .expect_err("a runtime that cannot be composed is not served around");
     let rendered = refused.to_string();
     assert!(
         rendered.contains("canonical_worktree_cwd"),
@@ -4044,17 +4054,18 @@ async fn an_ao_family_refuses_the_start_and_composes_no_substitute() {
             "endpoint": "http://127.0.0.1:1/",
             "timeout_seconds": 10
         }));
-    std::fs::write(
-        kontor_daemon::runtimes::path_in(directory.path()),
-        serde_json::to_vec_pretty(&withdrawn).expect("a fleet document"),
-    )
-    .expect("the fleet description is written");
+    let folder = config_support::write_config_folder(directory.path());
+    config_support::write_runtime_planes(&folder, &withdrawn);
 
-    let refused = Daemon::start_configured(DaemonConfig::at(directory.path()).with_port(0))
-        .expect_err("this build does not run AO");
+    let refused = Daemon::start_configured(
+        DaemonConfig::at(directory.path())
+            .with_config_dir(&folder)
+            .with_port(0),
+    )
+    .expect_err("this build does not run AO");
     let rendered = refused.to_string();
     assert!(
-        rendered.contains("ao"),
+        rendered.contains("host.yml"),
         "the refusal names the family, so an operator knows to stop asking: {rendered}"
     );
     assert!(

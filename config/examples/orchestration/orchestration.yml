@@ -3,9 +3,9 @@
 # the folder root, never from the consumer's current directory.
 #
 # `schema_version`, `fleet` and `core_team` are the existing bundle selector.
-# The `project:` block is the parameter block the workflow pack renders from;
-# WP-08 extends the bundle reader to read it. Until then this file is a schema
-# fixture, not a live bundle: the current reader accepts only the selector.
+# The `project:` block is read by selected-folder daemon startup and the
+# workflow pack. Bundle publication still uses its pinned selector contract;
+# selecting this folder alone never activates the policy.
 schema_version: 1
 fleet: orchestration/fleet.yml
 core_team: orchestration/teams/core-team.yml

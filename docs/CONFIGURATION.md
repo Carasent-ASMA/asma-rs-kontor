@@ -42,6 +42,50 @@ Kontor YAML; a harness-owned file is a generated projection instead.
 - The same selected YAML source serves Paseo-direct and `kontord`-governed work.
   Setting up the direct option does not require `kontord`.
 
+### Daemon startup
+
+```sh
+kontor-daemon --state-root <realm-state-root> --config-dir <config-folder>
+```
+
+Serving requires an explicit selection. The daemon reports the canonical
+absolute folder and project key; relative references in the entry file resolve
+from that folder, including when its name contains spaces. Startup validates
+YAML sources and refuses legacy editable sources in the state root with a
+migration instruction before claiming the realm. It never chooses a legacy
+source as a fallback. Recovery operations on snapshots and exports still work
+without authoring configuration. `install-jira-credential` uses the selected
+folder and keeps the credential address scoped to the state root and realm.
+
+The first loader slice reads these bootstrap sources:
+
+| Selected-folder source | Contents |
+| --- | --- |
+| `host.yml` → `runtime.planes` | Existing runtime settings document (`schema_version: 4` or `5`, `runtimes` list), nested under a schema-1 host document |
+| `tracker/connectors.yml` | Schema-1 connector bindings (`projects` list); separate from `project.tracker.spec`, the tracker specification entry |
+| `forge/github-app.yml` | Schema-1 GitHub App settings, with the private key kept outside the repository |
+| `orchestration/memory.yml` | Optional memory transport settings |
+| `orchestration/succession.yml` | Schema-1 succession runtime selection |
+| `paseo-supervision.yml`, `attention.yml`, `quota-signals.yml` | Optional validated watchdog, attention and refusal-classification settings |
+
+An omitted runtime planes document composes an empty registry. This nesting
+preserves the existing runtime field contract during migration; logical account
+slots and route binding remain separate host settings. The runtime fields below
+are the legacy document reference, not a second editable JSON source.
+
+Fleet authoring comes from the entry's `fleet` reference. Published history,
+activation records, credentials and the database stay under the state root.
+Existing activations and run pins remain authoritative: editing the selected
+fleet file or publishing a candidate does not activate it. Embedded callers
+that explicitly supply a runtime registry retain their existing composition
+seam; the executable uses selected-folder startup.
+
+Project identity is available from the resolved entry at startup. Publication
+mapping, per-realm tracker/team installation and the backup-and-equivalence
+migration command are subsequent slices of the config-folder migration; this
+loader does not claim those migrations are complete. Do not upgrade an existing
+realm until its migration procedure is available and qualified on a copy.
+
 ### Layout and references
 
 ```text
@@ -58,16 +102,15 @@ Kontor YAML; a harness-owned file is a generated projection instead.
   packs/*.yml                       team and profile overlay, committee presets and role prompts
   forge/github-app.example.yml      committed GitHub App placeholder
   quota-signals.yml                 optional vendor refusal wording
-  paseo-supervision.yml             sample for <state-root>/supervision.yml, not a project key
+  paseo-supervision.yml             optional daemon watchdog policy, not a project key
   host.example.yml                  committed host schema example
   host.yml                          this machine only; git-ignored
 ```
 
 `project.supervision` follows plan §1.1 and names
 `orchestration/tpm-supervision.yml`, the autonomous TPM cadence profile. The
-Paseo watchdog policy is a different file: the daemon reads
-`<state-root>/supervision.yml`; `paseo-supervision.yml` here is only the sample
-copied to that state-root path. It is not a key in `project:`.
+Paseo watchdog policy is a different file: configured daemon startup reads
+`paseo-supervision.yml` from the selected folder. It is not a key in `project:`.
 
 A path is not one class. The schema distinguishes these, and each class has
 its own base and validation:

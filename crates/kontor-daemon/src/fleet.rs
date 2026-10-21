@@ -343,6 +343,7 @@ struct StatusFile<'a> {
 #[derive(Debug)]
 pub struct FleetSource {
     state_root: PathBuf,
+    authoring: PathBuf,
     cache: Mutex<Cache>,
 }
 
@@ -351,7 +352,16 @@ impl FleetSource {
     pub fn at(state_root: &Path) -> Self {
         Self {
             state_root: state_root.to_path_buf(),
+            authoring: state_root.join(FLEET_FILE),
             cache: Mutex::new(Cache::default()),
+        }
+    }
+
+    /// Read authoring from the selected folder; keep activation and pins in the realm.
+    pub fn from_config_folder(state_root: &Path, authoring: &Path) -> Self {
+        Self {
+            authoring: authoring.to_path_buf(),
+            ..Self::at(state_root)
         }
     }
 
@@ -892,7 +902,7 @@ impl FleetSource {
 
     /// The unmigrated selection: stamp-tracked `fleet.yml` with last-valid.
     fn legacy(&self, cache: &mut Cache) -> Option<Arc<FleetSnapshot>> {
-        let path = self.state_root.join(FLEET_FILE);
+        let path = self.authoring.clone();
         let metadata = match std::fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -1918,7 +1928,7 @@ bindings:
         let checkout = tempfile::tempdir().expect("temporary authoring checkout");
         let authoring = checkout.path().join("fleet.yml");
         std::fs::write(&authoring, codex_first()).expect("author");
-        let source = FleetSource::at(root.path());
+        let source = FleetSource::from_config_folder(root.path(), &authoring);
         let activated = activate(
             &source,
             &std::fs::read_to_string(&authoring).expect("read authoring"),
@@ -1937,6 +1947,15 @@ bindings:
             assert_eq!(first_provider(&active), "codex-work");
             assert_eq!(source.current().expect("activated").hash(), &activated);
         }
+
+        let restarted = FleetSource::from_config_folder(root.path(), &authoring);
+        assert_eq!(
+            restarted
+                .current()
+                .expect("activation survives restart")
+                .hash(),
+            &activated
+        );
 
         // Only activation moves the next placement.
         source
