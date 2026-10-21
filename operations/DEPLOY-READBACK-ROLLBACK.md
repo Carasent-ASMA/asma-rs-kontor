@@ -131,7 +131,7 @@ python3 operations/scripts/kontor-ops.py verify-build \
 ### Operational notes from the 2026-10-21 live run
 
 - `replace` performs the gated stop itself. A `bootout` before it makes the
-  script exit 1 (`EXIT_FAILED`, the job check fails); `launchctl bootout` of an
+  script exit 1 (`EXIT_FAILED`, its `launchctl bootout` fails); `launchctl bootout` of an
   already-unloaded label exits 3. Call `replace` with the job loaded and let it
   stop the daemon.
 - The Jira credential installer takes the state-root lock, so it cannot run
