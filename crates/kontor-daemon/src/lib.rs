@@ -899,6 +899,51 @@ impl Daemon {
         })
     }
 
+    /// Evaluate every recorded hold once: lift what its terms satisfy, then
+    /// raise one typed attention for each hold past its review date.
+    ///
+    /// Exposed as a method so a test or an operator recovery can run the exact
+    /// sweep the resident scanner runs, without waiting for its cadence.
+    ///
+    /// # Errors
+    /// A store failure or a refusal carrying the typed API code that caused it.
+    pub async fn sweep_holds(&self) -> Result<u32, kontor_api::error::ApiError> {
+        self.applications.sweep_holds().await
+    }
+
+    /// Run the bounded hold sweep until this Realm stops.
+    ///
+    /// The cadence matches the other supervisory scans. A hold that passes its
+    /// review date is therefore noticed within one interval even when no other
+    /// command touches its epic.
+    #[must_use]
+    pub fn spawn_hold_review_scanner(&self, period: Duration) -> tokio::task::JoinHandle<()> {
+        let state = self.state.clone();
+        let applications = Arc::clone(&self.applications);
+        tokio::spawn(async move {
+            let mut stopping = state.signals().stops();
+            if *stopping.borrow_and_update() {
+                return;
+            }
+            let mut ticker = tokio::time::interval(period);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = stopping.changed() => return,
+                    _ = ticker.tick() => {}
+                }
+                match applications.sweep_holds().await {
+                    Ok(raised) if raised > 0 => info!(raised, "hold review attention raised"),
+                    Ok(_) => {}
+                    Err(error) => warn!(
+                        detail = %error.code.as_str(),
+                        "a hold review sweep could not complete"
+                    ),
+                }
+            }
+        })
+    }
+
     /// Start automatic quota-blocked seat succession when schema v2 enables it.
     ///
     /// Absence and legacy schema v1 both return `None`: upgrading the daemon
