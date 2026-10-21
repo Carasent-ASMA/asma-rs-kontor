@@ -94,8 +94,9 @@ impl Services {
     /// Ensure one epic's leadership subject below its desk's workspace, and
     /// return the subject node.
     ///
-    /// The row comes first and carries the node id, as a desk's does, so a
-    /// retry that lost its answer reconciles the same subject. The short name
+    /// A fresh subject row and its node are one atomic write: a refused node
+    /// leaves no subject behind for a later ensure to adopt, while a retry that
+    /// lost its answer still reconciles the same planned ids. The short name
     /// its seats render is frozen here from the epic's name; nothing later
     /// re-reads it, so no rename can retitle a running Adam.
     pub(super) fn ensure_epic_subject(
@@ -110,20 +111,42 @@ impl Services {
             None => {
                 let epic = self.epic_row(project_id, epic_id)?;
                 let topic = self.desk_adam_topic(&epic.name)?;
-                self.ensure_desk(project_id, &led.leadership.desk_key)?;
-                self.record_subject(
-                    StoredDeskAdamSubject {
-                        project_id,
-                        topology_node_id: TopologyNodeId::generate(),
-                        desk_key: led.leadership.desk_key.clone(),
-                        mini_project_id: Some(epic_id),
-                        topic,
-                        origin_topology_node_id: None,
-                        team_definition: led.definition.clone(),
-                        created_at: kontor_api::now(),
-                    },
-                    || self.epic_subject(project_id, epic_id),
-                )?
+                let workspace = self.ensure_desk(project_id, &led.leadership.desk_key)?;
+                let now = kontor_api::now();
+                let planned = StoredDeskAdamSubject {
+                    project_id,
+                    topology_node_id: TopologyNodeId::generate(),
+                    desk_key: led.leadership.desk_key.clone(),
+                    mini_project_id: Some(epic_id),
+                    topic,
+                    origin_topology_node_id: None,
+                    team_definition: led.definition.clone(),
+                    created_at: now,
+                };
+                let planned_node = NewSessionTopologyNode {
+                    id: planned.topology_node_id,
+                    project_id,
+                    mini_project_id: Some(epic_id),
+                    topology: topology.clone(),
+                    kind: led.leadership.epic_kind.clone(),
+                    parent_id: Some(workspace.id),
+                    task_id: None,
+                    created_at: now,
+                };
+                match self.state()?.with_store(|store| {
+                    store.create_desk_adam_subject_with_node(&planned, &planned_node)
+                }) {
+                    Ok(_) => planned,
+                    Err(RepositoryError::Conflict { .. }) => {
+                        self.epic_subject(project_id, epic_id)?.ok_or_else(|| {
+                            self.deny(
+                                ApiErrorCode::PlacementBlocked,
+                                "a desk Adam subject conflicts with another subject's epic, topic or binding",
+                            )
+                        })?
+                    }
+                    Err(error) => return Err(self.refuse(&error)),
+                }
             }
         };
         if subject.desk_key != led.leadership.desk_key {
