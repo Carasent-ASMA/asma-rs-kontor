@@ -218,11 +218,31 @@ def _parse_scalar(value: str) -> object:
     value = value.strip()
     if not value:
         return ""
-    if value[0] in "'\"":
+    if value[0] == "'":
+        parts: list[str] = []
+        index = 1
+        while index < len(value):
+            if value[index] != "'":
+                parts.append(value[index])
+                index += 1
+                continue
+            if index + 1 < len(value) and value[index + 1] == "'":
+                parts.append("'")
+                index += 2
+                continue
+            remainder = value[index + 1 :]
+            if remainder.strip() and not (
+                remainder[0].isspace()
+                and remainder.lstrip().startswith("#")
+            ):
+                raise YamlError(
+                    f"unexpected content after quoted scalar: {value}"
+                )
+            return "".join(parts)
+        raise YamlError(f"unclosed quoted scalar: {value}")
+    if value[0] == '"':
         if len(value) < 2 or value[-1] != value[0]:
             raise YamlError(f"unclosed quoted scalar: {value}")
-        if value[0] == "'":
-            return value[1:-1].replace("''", "'")
         try:
             return json.loads(value)
         except json.JSONDecodeError as exc:

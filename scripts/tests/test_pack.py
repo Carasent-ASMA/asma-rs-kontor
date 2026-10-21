@@ -74,6 +74,18 @@ class YamlReaderTests(unittest.TestCase):
             with self.assertRaises(pack.YamlError):
                 pack.load_yaml_text("owner: Platform: Owner\n")
 
+    def test_content_after_a_closing_quote_is_refused_in_the_fallback(
+        self,
+    ) -> None:
+        with mock.patch.object(pack, "_pyyaml", None):
+            with self.assertRaises(pack.YamlError):
+                pack.load_yaml_text("owner: 'Platform' 'Owner'\n")
+
+    def test_a_doubled_single_quote_is_read_in_the_fallback(self) -> None:
+        with mock.patch.object(pack, "_pyyaml", None):
+            data = pack.load_yaml_text("owner: 'It''s fine'\n")
+        self.assertEqual(data["owner"], "It's fine")
+
 
 class PackCase(unittest.TestCase):
     """Shared disposable config and project helpers."""
