@@ -4752,7 +4752,7 @@ closed_enum! {
         WaitingOnDecision => "waiting_on_decision",
         /// Waiting on an external party.
         WaitingOnExternalParty => "waiting_on_external_party",
-        /// Deliberately set aside by Igor.
+        /// Deliberately set aside by the operator.
         Deprioritised => "deprioritised",
     }
 }

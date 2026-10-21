@@ -37,6 +37,7 @@ export function run(overrides: Partial<Run> = {}): Run {
   return {
     agent_run_id: RUN,
     project_id: PROJECT,
+    task_id: TASK,
     team_run_id: '01920000-0000-7000-8000-000000000040',
     role: 'r-7f2',
     applied: {},

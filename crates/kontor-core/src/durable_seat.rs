@@ -803,7 +803,7 @@ mod tests {
                 ExternalName::parse(".github/skills/asma-pr-review/SKILL.md").expect("procedure"),
             ),
             recovery_owner: DurableSeatRecoveryOwner::PaseoDirect,
-            decided_by: ExternalName::parse("Igor").expect("decider"),
+            decided_by: ExternalName::parse("Test Owner").expect("decider"),
             decided_on: civil::date(2026, 10, 8),
             seat_binding_id: None,
             declared_at: "2026-10-11T10:00:00Z".parse().expect("instant"),

@@ -843,7 +843,7 @@ fn a_published_policy_carries_no_credential_path_or_email() {
     assert!(FleetSnapshot::parse_policy(&yaml("codex", "", "gpt-5.6-sol")).is_ok());
     for (account, prefix, model) in [
         ("codex-sk-abcdefghijklmnopqrstuvwxyz0123", "", "gpt-5.6-sol"),
-        ("codex-igor@carasent.com", "", "gpt-5.6-sol"),
+        ("codex-operator@example.invalid", "", "gpt-5.6-sol"),
         (
             "codex",
             ", model_prefix: \"/Users/operator/provider-homes/\"",

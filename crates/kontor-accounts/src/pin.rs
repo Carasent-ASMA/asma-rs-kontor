@@ -198,7 +198,7 @@ mod tests {
             id: AccountProfileId::generate(),
             project_id: ProjectId::parse("01890000-0000-7000-8000-00000000f001")
                 .expect("a valid project id"),
-            label: ExternalName::parse("Igor · Local Paseo").expect("a valid label"),
+            label: ExternalName::parse("Operator · Local Paseo").expect("a valid label"),
             external_account_id: None,
             harness: RuntimeKindKey::parse("paseo.agent").expect("a valid runtime kind"),
             credential_ref: CredentialReference {

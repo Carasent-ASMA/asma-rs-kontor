@@ -198,8 +198,8 @@ describe("native PlanGraph events (mocked host primitives, not device qualificat
     expect(details).toContain("Direct dependents: TASK-004");
     expect(details).toContain("Confirmed Jira: ASMA-8373");
     expect(details).toContain("Sourced state: not supplied by this export");
-    expect(details).toContain("Owner: Igor");
-    expect(details).toContain("Lift condition: Igor approves");
+    expect(details).toContain("Owner: Test Owner");
+    expect(details).toContain("Lift condition: Test Owner approves");
     expect(details).toContain("Plan source:");
   });
 

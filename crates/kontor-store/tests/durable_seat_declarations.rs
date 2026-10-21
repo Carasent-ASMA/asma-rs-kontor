@@ -111,7 +111,7 @@ impl Fixture {
             model_rung: None,
             procedure: Some(name(procedure)),
             recovery_owner: DurableSeatRecoveryOwner::PaseoDirect,
-            decided_by: name("Igor"),
+            decided_by: name("Test Owner"),
             decided_on: civil::date(2026, 10, 8),
             seat_binding_id: None,
             declared_at: at("2026-10-11T09:30:00Z"),
@@ -270,7 +270,7 @@ fn a_declaration_is_immutable_permanent_and_owned_exactly_once() {
                       model_rung, procedure, recovery_owner, decided_by, decided_on,
                       seat_binding_id, declared_at)
                  VALUES ('{}', 'pr-review', '{key}', 'LSA • {key}', 'LSA', '{key}',
-                         {rung}, NULL, '{owner}', 'Igor', '2026-10-08', {binding},
+                         {rung}, NULL, '{owner}', 'Test Owner', '2026-10-08', {binding},
                          '2026-10-11T09:30:00Z')",
                 f.project_id
             ),

@@ -30,7 +30,7 @@ let snapshots: TeamsSourceSnapshot[]; let fleet: TeamsFleetData; let templates: 
 const colors = {} as Parameters<typeof FleetRoleCards>[0]["colors"];
 beforeAll(async () => {
   const catalog = sourceCatalog(JSON.stringify([
-    { id: "authoring", title: "Authoring", kind: "teams", path: fileURLToPath(new URL("./fixtures/teams-source/authoring-fleet.yml", import.meta.url)), expectedSha256: "5e49c621a5ed28a181f7e5f7c5c7c67f7bdc09c8d1258e94d48c60988fa5cff4" },
+    { id: "authoring", title: "Authoring", kind: "teams", path: fileURLToPath(new URL("./fixtures/teams-source/authoring-fleet.yml", import.meta.url)), expectedSha256: "8c09c977cf1db9e6df78d5fe6bb91312460f550afe3ca06116217070d3995aec" },
     { id: "templates", title: "Templates", kind: "teams", path: fileURLToPath(new URL("./fixtures/teams-source/mvp-team-pack.json", import.meta.url)), expectedSha256: "2a5a0aed9c23450f984fd3d1f92c5824f4640a71b2bc9697349b0632fed8b3cc" },
   ]));
   const adapter = createTeamsSourceAdapter(catalog, { authoring: "fleet-authoring", templates: "team-templates" });

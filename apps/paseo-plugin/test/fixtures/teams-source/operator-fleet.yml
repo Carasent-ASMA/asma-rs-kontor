@@ -9,13 +9,13 @@
 schema_version: 1
 
 # Domain keys group routing budgets; they do not prove independent infrastructure or capacity.
-# OpenRouter (Igor, 2026-10-07): only free models are used, as the last fallback step when
+# OpenRouter (Test Owner, 2026-10-07): only free models are used, as the last fallback step when
 # paid rungs are exhausted. Free models change often; the PR desk watchdog and its drift
 # check compare this list with OpenRouter's live model list. Paid OpenRouter models: none;
-# a paid model needs its own domain with a distinct model_prefix and Igor's explicit decision.
+# a paid model needs its own domain with a distinct model_prefix and Test Owner's explicit decision.
 domains:
   openrouter-free: { provider: opencode, accounts: [opencode], model_prefix: "openrouter/" } # free models only (ids end in :free)
-  claude:     { provider: claude,   accounts: [claude-b, claude-a] }   # exact aliases only; never the bare `claude` login. Work first (Igor, 2026-09-25)
+  claude:     { provider: claude,   accounts: [claude-b, claude-a] }   # exact aliases only; never the bare `claude` login. Work first (Test Owner, 2026-09-25)
   codex:      { provider: codex,    accounts: [codex-b, codex-a] }
   cursor:     { provider: cursor,   accounts: [cursor] }
   deepseek:   { provider: opencode, accounts: [opencode], model_prefix: "deepseek/" }
@@ -24,11 +24,11 @@ domains:
 
 # For providers that do not work at all. Quota exhaustion needs no entry.
 unavailable:
-  domains: []                     # deepseek removed: Igor 2026-10-06 (ASMA-8371 DEC-014); OpenRouter is available (Igor 2026-10-07)
-  accounts: []                    # claude-b back 2026-09-25 (Igor checked; operator quota record rev 273)
+  domains: []                     # deepseek removed: Test Owner 2026-10-06 (ASMA-8371 DEC-014); OpenRouter is available (Test Owner 2026-10-07)
+  accounts: []                    # claude-b back 2026-09-25 (Test Owner checked; operator quota record rev 273)
 
 models:
-  # Free OpenRouter fallbacks (Igor 2026-10-07); adding and removing: _docs/ai-orchestration/operations/2026-10-07-02-50-runbook-openrouter-free-models.md
+  # Free OpenRouter fallbacks (Test Owner 2026-10-07); adding and removing: _docs/ai-orchestration/operations/2026-10-07-02-50-runbook-openrouter-free-models.md
   inkling-free:            { domain: openrouter-free, id: openrouter/thinkingmachines/inkling:free,              vendor: thinkingmachines, efforts: [low, medium, high, max], vision: false, calibrated: false }
   nemotron-free:           { domain: openrouter-free, id: openrouter/nvidia/nemotron-3-ultra-550b-a55b:free,     vendor: nvidia,           efforts: [medium, high],          vision: false, calibrated: false }
   laguna-free:             { domain: openrouter-free, id: openrouter/poolside/laguna-s-2.1:free,                 vendor: poolside,         efforts: [low, medium, high],     vision: false, calibrated: false }
@@ -36,11 +36,11 @@ models:
   nemotron-lightning-free: { domain: openrouter-free, id: openrouter/nvidia/nemotron-3.5-lightning:free,          vendor: nvidia,           efforts: [low, medium, high],     vision: false, calibrated: false }
   opus-5.5:       { domain: claude,     id: claude-opus-5-5, vendor: anthropic, efforts: [low, medium, high, xhigh, max, ultracode],        vision: true,  calibrated: false }
   opus-5:         { domain: claude,     id: claude-opus-5,   vendor: anthropic, efforts: ["off", low, medium, high, xhigh, max, ultracode], vision: true,  calibrated: true }
-  opus-4.8:       { domain: claude,     id: claude-opus-4-8, vendor: anthropic, efforts: ["off", low, medium, high, xhigh, max, ultracode], vision: true,  calibrated: true }    # DEC-016: approved by Igor, no calibration ticket
+  opus-4.8:       { domain: claude,     id: claude-opus-4-8, vendor: anthropic, efforts: ["off", low, medium, high, xhigh, max, ultracode], vision: true,  calibrated: true }    # DEC-016: approved by Test Owner, no calibration ticket
   # Approval: "under my authority aprove i am confident that sol 6.1 is best model of it higher tier class right now"
-  # Igor 2026-10-02T19:15:10Z: "vision is true it has vision"; "also do push  comit merge activate if needed". Screenshot NOTPERFORMED; source flags do not qualify other native routes.
+  # Test Owner 2026-10-02T19:15:10Z: "vision is true it has vision"; "also do push  comit merge activate if needed". Screenshot NOTPERFORMED; source flags do not qualify other native routes.
   # Exact Personal/xhigh/full-access+Plan local PASS: /tmp/asma-8280-calibration-personal-xhigh-20261002-144ea9f5-mpcj5mm_/RESULT.json (manifest 2b6b77cc6c21d2e21e73836641d8873236e3e9dc0802a4c853fa119f1229302d); no other route or screenshot test proof implied.
-  sol:            { domain: codex,      id: gpt-6.1-sol,     vendor: openai,    efforts: [low, medium, high, xhigh, max, ultra],            vision: true,  calibrated: true } # Igor judging approval 2026-10-02T19:10:00Z and vision operatorattestation 19:15:10Z (runbook 3.3/DEC-015).
+  sol:            { domain: codex,      id: gpt-6.1-sol,     vendor: openai,    efforts: [low, medium, high, xhigh, max, ultra],            vision: true,  calibrated: true } # Test Owner judging approval 2026-10-02T19:10:00Z and vision operatorattestation 19:15:10Z (runbook 3.3/DEC-015).
   grok-4.7:       { domain: cursor,     id: grok-4.7,        vendor: xai,       efforts: [low, medium, high, xhigh],                        vision: true,  calibrated: false }
   grok-4.6:       { domain: cursor,     id: grok-4.6,        vendor: xai,       efforts: [low, medium, high, xhigh],                        vision: true,  calibrated: true }
   grok-4.5:       { domain: cursor,     id: grok-4.5,        vendor: xai,       efforts: [low, medium, high],                               vision: true,  calibrated: false }
@@ -48,22 +48,22 @@ models:
   cursor-auto:    { domain: cursor,     id: auto-smart,      vendor: unknown,                                                               vision: false, calibrated: false }   # listed for bridge moves only; V-25 keeps it out of independent seats
   # ASMA-8373 2026-10-06: the OpenRouter route left the Paseo catalog; same model now via Z.AI. Calibration was recorded on the old route.
   glm-5.3-flash:  { domain: zai,        id: zai-coding-plan/glm-5.3-flash, vendor: zhipu, efforts: [low, high, max],                       vision: true,  calibrated: true }
-  # Igor 2026-10-18: Z.AI Coding Plan (flat monthly). GLM-5.3 takes LSA, committee and advisor seats; Flash takes the work seats.
+  # Test Owner 2026-10-18: Z.AI Coding Plan (flat monthly). GLM-5.3 takes LSA, committee and advisor seats; Flash takes the work seats.
   # Vision checked live 2026-10-18 (three-stripe image, opencode run): GLM-5.3 replied it has no image input; Flash named all three.
-  glm-5.3:        { domain: zai,        id: zai-coding-plan/glm-5.3,       vendor: zhipu, efforts: [low, high, max],                       vision: false, calibrated: true }    # calibrated: approved by Igor 2026-10-18, no calibration run (as DEC-016)
+  glm-5.3:        { domain: zai,        id: zai-coding-plan/glm-5.3,       vendor: zhipu, efforts: [low, high, max],                       vision: false, calibrated: true }    # calibrated: approved by Test Owner 2026-10-18, no calibration run (as DEC-016)
   # ASMA-8373 2026-10-06: new-seat models, ids and efforts as listed by the live Paseo catalog; no calibration claimed.
   luna-6:         { domain: codex,      id: gpt-6-luna,        vendor: openai,    efforts: [low, medium, high, xhigh, max],                   vision: false, calibrated: false }
   sonnet-5.5:     { domain: claude,     id: claude-sonnet-5-5, vendor: anthropic, efforts: [low, medium, high, xhigh, max, ultracode],        vision: false, calibrated: false }
-  fable-5.1:      { domain: claude,     id: claude-fable-5-1,  vendor: anthropic, efforts: [low, medium, high, xhigh, max, ultracode],        vision: false, calibrated: false } # Rare use only: hard-decision chain (Igor 2026-10-06).
+  fable-5.1:      { domain: claude,     id: claude-fable-5-1,  vendor: anthropic, efforts: [low, medium, high, xhigh, max, ultracode],        vision: false, calibrated: false } # Rare use only: hard-decision chain (Test Owner 2026-10-06).
   deepseek-flash: { domain: deepseek,   id: deepseek/deepseek-flash,       vendor: deepseek, efforts: [low, high, max],                     vision: false, calibrated: false }   # Historical DEC-017 research pending; not an admission gate under 2026-10-04 policy
 
 # A chain is a list of steps; each step is one domain; entries are `model@effort`.
-# Igor 2026-10-11 (ASMA-8460): Codex/Claude selections use xhigh; DeepSeek/GLM use max.
+# Test Owner 2026-10-11 (ASMA-8460): Codex/Claude selections use xhigh; DeepSeek/GLM use max.
 # Supported-effort catalogs above describe capabilities, not selected policy.
 chains:
-  # ASMA-8373 (Igor 2026-10-06, ASMA-8371 DEC-001/DEC-005): Adam is the coordinator; LSA is a premium advisor.
+  # ASMA-8373 (Test Owner 2026-10-06, ASMA-8371 DEC-001/DEC-005): Adam is the coordinator; LSA is a premium advisor.
   # Rungs 3-4 may work but never give a pass, merge or release verdict (original rung-2 cutoff remains).
-  # DeepSeek V4 Pro stays excluded (Igor's 2026-08 decision, enforced by ModelRung::validate); Flash@max is the DeepSeek rung.
+  # DeepSeek V4 Pro stays excluded (Test Owner's 2026-08 decision, enforced by ModelRung::validate); Flash@max is the DeepSeek rung.
   premium:            # brainstorm Adam (leadership lsa slot) and the LSA advisor
     - [sol@xhigh]
     - [opus-5.5@xhigh]
@@ -84,7 +84,7 @@ chains:
     - [deepseek-flash@max]
     - *free-fallback
   # PR review desk (ASMA-8371). Reviewers skip the PR author's vendor; A, B and JUDGE resolve vendors jointly.
-  # Igor 2026-10-18: PRs are many, so REV A, REV B and JUDGE start on DeepSeek Flash and GLM-5.3-Flash;
+  # Test Owner 2026-10-18: PRs are many, so REV A, REV B and JUDGE start on DeepSeek Flash and GLM-5.3-Flash;
   # Sol and Opus are fallbacks, and lead only REV SEC and REV DB, which join risky PRs alone.
   desk-review-a:
     - [deepseek-flash@max]
@@ -137,7 +137,7 @@ chains:
     - [sol@xhigh]
     - [deepseek-flash@max]
     - *free-fallback
-  # Independent Review JUDGE: GLM-5.3 first (Igor 2026-10-18); only rungs 1-2 may give a verdict. Each rung's vendor
+  # Independent Review JUDGE: GLM-5.3 first (Test Owner 2026-10-18); only rungs 1-2 may give a verdict. Each rung's vendor
   # differs from reviewer-a's and reviewer-b's on the same rung, so Sol, not the capped Claude seat, backs GLM.
   review-judge:
     - [glm-5.3@max]

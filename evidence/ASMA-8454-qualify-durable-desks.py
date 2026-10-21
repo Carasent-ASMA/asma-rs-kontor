@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Record ASMA-8454 checks; seed exactly one mutant and always restore it.
 
+Moved out of `scripts/` by ASMA-8574: this is a dated one-off qualification
+runner, not a maintained repository tool. It still runs from the repository
+root against the current checkout.
+
 Runs only local test fixtures. It never starts a live daemon, calls Jira,
 selects a live pin, or publishes a release. Logs contain test output only.
 """
@@ -16,7 +20,11 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = next(
+    parent
+    for parent in Path(__file__).resolve().parents
+    if (parent / "Cargo.toml").is_file()
+)
 OUTPUT = ROOT / ".qualification"
 CARGO = ["cargo", "test", "--offline", "--locked"]
 LOOPBACK = CARGO + ["-p", "kontor-daemon", "--test", "loopback_api"]

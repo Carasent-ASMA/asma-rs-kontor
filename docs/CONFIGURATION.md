@@ -1765,13 +1765,24 @@ Make the check required on the default branch through a repository ruleset
 the same name posted by anyone else does not satisfy it. On GitHub Team plans a
 branch-name ruleset is not evaluated; this check is the forge-side identity gate.
 
-The repository also ships the dependency-free
-`asma/publication-branch-title` Actions check. Require it on the default branch
-as the forge-local grammar boundary: it rejects a PR unless the base is
-`master`, the branch is canonical, and branch and title carry the same Jira
-key. A `dependabot/` branch opened by `dependabot[bot]` is exempt from the
-branch and title rules (code `bot_branch_exempt`); the base and head checks
-still apply. The GitHub App check remains the stronger semantic boundary
+The repository also ships the dependency-free publication branch/title Actions
+check. Require the check name selected by the projection's `project.check_runs`
+(the entry ending in `publication-branch-title`; the committed projection
+currently selects `asma/publication-branch-title`) on the default branch as the
+forge-local grammar boundary: it rejects a PR unless the base is the project's
+configured default branch, the branch is canonical, and branch and title carry
+the same Jira key. The project key, base branch and check name come from the
+selected YAML config folder; the trusted-base workflow reads a committed
+projection or the repository variables generated from that folder, and opens a
+Checks API run named by that selected value. The selected check name is used
+before the other variables are validated, so a partial variable set completes
+that name as failure; if no check name is resolvable, the committed projection's
+name is failed. Require both the configured API check and the static
+`Publication branch and title identity` job check, so an unresolvable name
+cannot leave an earlier required API check green.
+A `dependabot/` branch opened by `dependabot[bot]` is exempt from the branch
+and title rules (code `bot_branch_exempt`); the base and head checks still
+apply. The GitHub App check remains the stronger semantic boundary
 because it also proves that key against Kontor's confirmed Jira binding.
 
 ## Other deployment data

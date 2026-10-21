@@ -1,0 +1,12 @@
+schema_version: 1
+generated:
+  source: "tests/fixtures/config/asma-orchestration.yml"
+  source_revision: "sha256:82465f12cd6b472928ea48498720994e236603cfc9c3dd30cb41c77a0a9d1fbb"
+  source_sha256: "82465f12cd6b472928ea48498720994e236603cfc9c3dd30cb41c77a0a9d1fbb"
+project:
+  key: "ASMA"
+  forge:
+    base_branch: "master"
+  check_runs:
+    - "asma/publication-branch-title"
+    - "asma/publication-identity"

@@ -159,12 +159,15 @@ executes nothing from the pull-request head. It judges only the branch shape,
 the title's leading key (or `Release v<version>` for a release branch) and the
 `master` base. One exception: a `dependabot/` branch opened by `dependabot[bot]`
 is accepted as `bot_branch_exempt`, and the base and head-sha checks still run.
-Unlike the generic grammar above, its checker
-(`.github/scripts/publication_branch_title.py`) fixes the project key to
-`ASMA`, so `<type>/ASMA-<number>-<slug>` is the only keyed form it accepts
-(`branch_project_mismatch` otherwise). It does not contact Jira and is not
-binding proof. Both checks report check runs; whether a repository ruleset
-requires either is GitHub configuration, not recorded in this repository.
+The checker (`.github/scripts/publication_branch_title.py`) reads the project
+key, base branch and check name from the selected YAML config folder; the
+trusted-base workflow reads the same values from a committed projection or the
+repository variables generated from that folder. The branch vocabulary comes
+from `kontor-core`, so `<type>/<PROJECT>-<number>-<slug>` is the only keyed
+form it accepts (`branch_project_mismatch` for another project's key). It does
+not contact Jira and is not binding proof. Both checks report check runs;
+whether a repository ruleset requires either is GitHub configuration, not
+recorded in this repository.
 
 ## Legacy-import code correction
 

@@ -349,7 +349,7 @@ interface” development shortcut.
 | `apps/console`, `apps/desktop` | Responsive console and Tauri shell |
 | `apps/paseo-plugin` | Paseo host plugin: observer-authority `kontor-observer` MCP server, session and creation hooks, and workspace placement guard |
 | `tests/contract`, `tests/e2e` | Cross-adapter contracts and full-system proof |
-| `scripts/` | `test-lanes.py` and its `test-timings.json`, `verify-tree.py`, and the durable desk qualification runner |
+| `scripts/` | `test-lanes.py` and its `test-timings.json`, `verify-tree.py`, and the pack and project-config helpers |
 
 ## Development and contribution
 
@@ -361,7 +361,7 @@ security findings follow [Security](SECURITY.md), and participation follows the
 [Code of Conduct](CODE_OF_CONDUCT.md).
 
 Kontor deliberately does not run build or test CI in GitHub Actions. Its one
-workflow, `asma/publication-branch-title`, checks only a pull request's base,
+workflow, the configured publication check, checks only a pull request's base,
 branch name and title key and builds nothing. A
 `dependabot/` branch opened by `dependabot[bot]` is accepted as
 `bot_branch_exempt`; the base and head-sha checks still run.
@@ -391,13 +391,15 @@ proves that a committed or staged export passes those gates without hidden
 working-tree state, and that the committed `Cargo.lock` satisfies every manifest
 under `--locked`. It runs every gate above except `verify:api`.
 
-For the inner loop, `python3 scripts/test-lanes.py --lane fast` runs formatting
-plus clippy and tests for the quick packages a change affects, and the console
-checks it touches; it exits `3`, naming the lane still required, when the
-change reaches a slow package or a workspace build or tooling file.
-`--lane heavy` runs the slow packages' tests and the console typecheck and
-tests, and writes a compact JSON receipt under `target/test-lanes/`;
-`--lane full` runs `verify-tree.py --mode inplace`.
+For the inner loop, set `KONTOR_CONFIG_FILE=.github/kontor-project.yml` and run
+`python3 scripts/test-lanes.py --lane fast`; it runs formatting plus clippy and
+tests for the quick packages a change affects, and the console checks it
+touches. It exits `3`, naming the lane still required, when the change reaches
+a slow package or a workspace build or tooling file. `--lane heavy` runs the
+slow packages' tests and the console typecheck and tests, and writes a compact
+JSON receipt under `target/test-lanes/`; it needs the same selection.
+`--lane full` runs `verify-tree.py --mode inplace` and needs no project
+selection.
 `scripts/test-timings.json` decides which packages are slow. Lanes shorten
 development; they do not replace the gate set before merge.
 

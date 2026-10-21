@@ -151,8 +151,8 @@ describe("A-owned Teams source integration", () => {
     expect(visible(page({ sources: [], snapshots: {} }))).toContain("ID missing from the configured catalog");
   });
   it.each([["authoring", 38], ["operator", 36]] as const)("preserves actual hashed 38/36 binding counts with a bounded expandable role view (%s)", (sourceId, expectedCount) => {
-    expect(snapshots.authoring!.sha256).toBe("5e49c621a5ed28a181f7e5f7c5c7c67f7bdc09c8d1258e94d48c60988fa5cff4");
-    expect(snapshots.operator!.sha256).toBe("d0fd421cab74df1346a6fb3c96ae2d85814af7f6336c40fdcd4c95906dab2101");
+    expect(snapshots.authoring!.sha256).toBe("8c09c977cf1db9e6df78d5fe6bb91312460f550afe3ca06116217070d3995aec");
+    expect(snapshots.operator!.sha256).toBe("5349f628b9de00e9f62ef9d69b4e8977d3c6a28c582f3b5497ed961c77060487");
     expect(visible(page())).not.toContain("Configured bindings");
     view = { ...DEFAULT_TEAMS_VIEW, configured: true };
     const collapsed = visible(page());
