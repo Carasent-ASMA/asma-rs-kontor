@@ -5714,9 +5714,26 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             request.requested_at,
         )?;
         let drivable = !state.readback_only;
-        Ok(observation
+        let pending = state.permissions.pending_for(request.binding.binding_id());
+        let mut observation = observation
             .with_refusal((!process_missing).then_some(refusal).flatten())
-            .with_drivability(drivable))
+            .with_drivability(drivable);
+        if !pending.is_empty() {
+            let mut evidence = observation.evidence.deserialize::<serde_json::Value>()?;
+            if let Some(object) = evidence.as_object_mut() {
+                object.insert(
+                    "read".to_owned(),
+                    serde_json::json!({
+                        "pending_permissions": pending
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                    }),
+                );
+            }
+            observation.evidence = CanonicalDocument::from_value(&evidence)?;
+        }
+        Ok(observation)
     }
 
     async fn adopt(&self, request: &AdoptRequest) -> RuntimeResult<LaunchOutcome> {

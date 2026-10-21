@@ -1138,6 +1138,11 @@ pub struct Services {
     planning_pair_recovery_hold: std::sync::Mutex<Option<PlanningPairReceiptHold>>,
     /// Optional explicitly composed semantic transport. No credential lookup.
     memory_cognee: OnceLock<kontor_memory_cognee::Client>,
+    /// The attention channel, once startup has composed one from `attention.yml`.
+    ///
+    /// Held here so the hold sweep and the waiting-seat observer reach the one
+    /// channel the daemon installed. Absence means this Realm emits nothing.
+    attention: std::sync::Mutex<Option<Arc<crate::attention::AttentionChannel>>>,
     /// The governed summarizer transport succession handoffs dispatch through.
     ///
     /// The exact route is still decided by the declared-chain headroom walk;
@@ -1225,6 +1230,7 @@ impl Services {
             planning_pair_receipt_hold: std::sync::Mutex::new(None),
             planning_pair_recovery_hold: std::sync::Mutex::new(None),
             memory_cognee: OnceLock::new(),
+            attention: std::sync::Mutex::new(None),
             succession_summarizer,
         }))
     }
@@ -1257,6 +1263,20 @@ impl Services {
     /// synthetic credentials; normal startup never reaches a credential store.
     pub fn attach_memory_cognee(&self, client: kontor_memory_cognee::Client) {
         let _ = self.memory_cognee.set(client);
+    }
+
+    /// Attach the one channel startup composed from `attention.yml`.
+    pub(crate) fn attach_attention(&self, channel: Arc<crate::attention::AttentionChannel>) {
+        if let Ok(mut slot) = self.attention.lock() {
+            *slot = Some(channel);
+        }
+    }
+
+    fn attention(&self) -> Option<Arc<crate::attention::AttentionChannel>> {
+        self.attention
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().map(Arc::clone))
     }
 
     fn memory_recall_intent(
@@ -8497,6 +8517,9 @@ impl Services {
                     review_by = %review_by,
                     "a hold passed its review date"
                 );
+                if let Some(channel) = self.attention() {
+                    channel.notify_hold(&hold, now);
+                }
             }
         }
         Ok(raised)

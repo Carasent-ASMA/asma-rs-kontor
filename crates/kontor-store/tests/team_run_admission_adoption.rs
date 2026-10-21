@@ -696,6 +696,13 @@ fn local_adoption_refusal_rolls_back_receipt_result_and_confirmation_then_same_k
     let mut adoption = claim(&fixture);
     adoption.receipt_id = CommandReceiptId::generate();
     let command = local_adoption_command(&harness, &adoption, "atomic-adoption");
+    let observed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = std::sync::Arc::clone(&observed);
+    harness
+        .store
+        .set_attention_observer(Some(std::sync::Arc::new(move |_signal| {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        })));
     let db = harness.raw();
     db.execute_batch("CREATE TRIGGER refuse_test_adoption BEFORE INSERT ON team_run_admission_adoptions BEGIN SELECT RAISE(ABORT, 'test storage refusal'); END;").unwrap();
     harness
@@ -749,6 +756,11 @@ fn local_adoption_refusal_rolls_back_receipt_result_and_confirmation_then_same_k
     assert_eq!(replay.0, saved);
     assert_eq!(replay.1, receipt);
     assert_eq!(replay.2, kontor_store::Applied::Unchanged);
+    assert_eq!(
+        observed.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "admission adoption is an ordinary local confirmation and raises no attention"
+    );
 }
 
 #[test]
