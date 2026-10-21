@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Daily copy-truncate rotation of the live daemon's standard-output log. The
+  daemon is not signalled and keeps the same file open.
+
+  @HOME@ is replaced by operations/scripts/install-launchd-agents.sh, which also
+  installs kontor-log-rotate.sh beside the other local exec helpers.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.asma.kontor.logrotate</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>@HOME@/.local/libexec/kontor/kontor-log-rotate.sh</string>
+    <string>@HOME@/.local/state/kontor/asma/kontor-daemon.stdout.log</string>
+    <string>7</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>4</integer>
+    <key>Minute</key>
+    <integer>30</integer>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>@HOME@/.local/state/kontor/asma/logrotate-agent.log</string>
+  <key>StandardErrorPath</key>
+  <string>@HOME@/.local/state/kontor/asma/logrotate-agent.err.log</string>
+</dict>
+</plist>
