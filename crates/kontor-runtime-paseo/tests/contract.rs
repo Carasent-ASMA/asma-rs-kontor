@@ -95,6 +95,9 @@ use kontor_runtime_paseo::wire::{MAX_FRAME_BYTES, label};
 #[path = "contract/hosted_directory.rs"]
 mod hosted_directory;
 
+#[path = "contract/paseo_0_11_2.rs"]
+mod paseo_0_11_2;
+
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------

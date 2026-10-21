@@ -1,0 +1,13 @@
+{
+  "requestId": "req-fixture",
+  "snapshot": {
+    "kind": "agent",
+    "idempotencyKey": "__IDEMPOTENCY_KEY__",
+    "revision": 2,
+    "phase": "completed",
+    "workspaceId": "wks_task11",
+    "agentId": "agt_implement",
+    "outcomeUnknown": false
+  },
+  "error": null
+}
