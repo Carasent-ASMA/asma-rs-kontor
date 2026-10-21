@@ -101,7 +101,14 @@ Before a production deploy:
    snapshot is the rollback source; a second one is the belt to that pair of
    braces).
 2. Run the readback set (section 4) against the **current** build and keep it.
-   It is the pre-deploy baseline the rollback is compared with.
+   It is the pre-deploy baseline the rollback is compared with. If that build
+   predates build-commit sidecars — the N-08 CLI whose installed hash differs
+   from its deployment record is the current example — run the baseline with
+   `--require-build-commit` **omitted**, pass only hashes that match the
+   installed binaries, and record the missing provenance in the receipt. The
+   `--require-build-commit` form in section 4 is for a deployed build that has
+   sidecars; using it on the pre-sidecar baseline refuses at the binary check,
+   after health, realm and CLI have already answered.
 3. Copy the installed sidecars into `$RECEIPT_DIR/baseline-sidecars/`, or
    record the previous build receipt's commit beside the installed binaries. The
    rollback restores them with the old binaries.
@@ -124,7 +131,10 @@ python3 operations/scripts/kontor-ops.py verify-build \
 ## 4. Readback set
 
 Run all five checks after every deploy. The tool performs the HTTP, CLI and MCP
-calls and fails on the first disagreement.
+calls and fails on the first disagreement. The command below is the post-deploy
+form and requires a sidecar beside each binary. A pre-deploy baseline on a build
+without sidecars omits `--require-build-commit` and any `--expected-sha256`
+value that does not match the installed binary (see section 3, step 2).
 
 ```sh
 python3 operations/scripts/kontor-ops.py readback \
@@ -169,6 +179,16 @@ anything. Anything written after that snapshot is not in it.
 
 ```sh
 python3 scripts/kontor-deploy.py --label "$LABEL" --domain "gui/$(id -u)" bootout
+```
+
+For the production rollback, add the declaration; `bootout` needs only the
+label and domain. Without `--production-deploy` the KR-05 guard refuses the
+production label with exit 3 before it calls `launchctl`:
+
+```sh
+python3 scripts/kontor-deploy.py \
+  --label com.asma.kontor.daemon --domain "gui/$(id -u)" \
+  --production-deploy "$JIRA_KEY" bootout
 ```
 
 2. Move the migrated database aside. Keep it: the previous build refuses to
@@ -225,8 +245,18 @@ python3 scripts/kontor-deploy.py --label "$LABEL" --domain "gui/$(id -u)" \
   --plist "$PLIST" bootstrap
 ```
 
+The production form carries the declaration and the canonical production plist:
+
+```sh
+python3 scripts/kontor-deploy.py \
+  --label com.asma.kontor.daemon --domain "gui/$(id -u)" \
+  --plist "$HOME/Library/LaunchAgents/com.asma.kontor.daemon.plist" \
+  --production-deploy "$JIRA_KEY" bootstrap
+```
+
 6. Read back with the **previous** schema generation and compare with the
-   pre-deploy baseline:
+   pre-deploy baseline. The `--require-build-commit` flag assumes step 3
+   restored the baseline sidecars; omit it when step 3 recorded the N-08 gap:
 
 ```sh
 python3 operations/scripts/kontor-ops.py readback \
