@@ -292,7 +292,7 @@ impl ConfigFolder {
                 Ok(_) => {
                     return Err(refusal(
                         path,
-                        "legacy config source conflicts with selected folder; migrate with backup and equivalence check",
+                        "legacy config source conflicts with selected folder; migrate authoring inputs explicitly or use an empty state root",
                     ));
                 }
             }

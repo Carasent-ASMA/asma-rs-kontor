@@ -687,6 +687,9 @@ impl Daemon {
 
         let memory_config = match selected {
             Some(folder) => folder.parse_optional("orchestration/memory.yml", |text| {
+                if text.len() > kontor_memory_cognee::MAX_CONFIG_BYTES {
+                    return Err(());
+                }
                 let document: kontor_memory_cognee::Config =
                     serde_yaml_ng::from_str(text).map_err(|_| ())?;
                 document.validate().map_err(|_| ())?;

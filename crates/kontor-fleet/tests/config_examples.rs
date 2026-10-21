@@ -2339,7 +2339,7 @@ fn supervision_names_the_tpm_profile_not_the_paseo_watchdog() {
     );
     assert!(
         root.join("paseo-supervision.yml").is_file(),
-        "the Paseo watchdog sample remains available for the state root"
+        "the selected folder contains the Paseo watchdog policy"
     );
 
     let schema = read("config/examples/orchestration/orchestration.schema.yml");
@@ -2353,13 +2353,15 @@ fn supervision_names_the_tpm_profile_not_the_paseo_watchdog() {
     assert!(
         contract["paseo_watchdog"]
             .as_str()
-            .is_some_and(|text| text.contains("<state-root>/supervision.yml")),
-        "the schema names the Paseo watchdog state-root path"
+            .is_some_and(|text| text.contains("paseo-supervision.yml in the selected folder")),
+        "the schema names the selected-folder Paseo watchdog path"
     );
 
     let docs = text("docs/CONFIGURATION.md");
     assert!(docs.contains("project.supervision"));
-    assert!(docs.contains("<state-root>/supervision.yml"));
+    assert!(docs.contains(
+        "configured daemon startup reads\n`paseo-supervision.yml` from the selected folder"
+    ));
 }
 
 #[test]
