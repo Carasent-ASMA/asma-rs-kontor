@@ -39,7 +39,8 @@ launched.
 | --- | --- | --- | --- | --- |
 | `LSA` | `leadership/<core-team-revision>/lsa` | `LSA` | `LSA` | registered: ECP `ROLE_CODE` |
 | `TPM` | `leadership/<core-team-revision>/tpm` | `TPM` | `TPM` | registered: ECP `ROLE_CODE` |
-| `TPM` (Adam persona) | `team/<desk-team-id>/adam` | `TPM` | `ADAM` | desk persona |
+| `TPM` (epic Adam) | `team/<desk-team-id>/adam` | `TPM` | `TPM • <epic key> • <topic>` | desk persona |
+| `TPM` (PR Adam) | `team/<desk-team-id>/adam` | `TPM` | `TPM • <tracker key> • <repository>#<number>` | desk persona |
 | `SA` (scope) | `team/<team-definition-id>/scope` | `architect` | `SA` | registered: TSW `scope`, `ROLE_CODE` |
 | `SWE` (implement) | `team/<team-definition-id>/implement` | `builder` | `SWE` | registered: TSW `implement`, `ROLE_CODE` |
 | `QA` (verify) | `team/<team-definition-id>/verify` | `tester` | `QA` | registered: TSW `verify`, `ROLE_CODE` |
@@ -84,11 +85,13 @@ and the BA/TW cards are pending, not launchable; do not write RESEARCHER A,
 RESEARCHER B, SYNTHESIZER or FINAL REVIEWER as native labels.
 
 The advisor rows follow the ASW slots, not the generic binding, because an
-advisor slot can be an architect or an auditor. A fleet slot absent from the
-selected fleet cannot be resolved; the seat is blocked and the role is not
-silently rerouted. The fleet's `fallback` and `open` bindings are route
-fallbacks, not seats, and have no card. A project that uses a different team
-definition keeps the role code and changes the slot id, not the card.
+advisor slot can be an architect or an auditor. `ADAM` is the desk workspace,
+not a seat label; the two desk-persona rows carry the exact epic and pull
+request Adam seat names. A fleet slot absent from the selected fleet cannot be
+resolved; the seat is blocked and the role is not silently rerouted. The
+fleet's `fallback` and `open` bindings are route fallbacks, not seats, and have
+no card. A project that uses a different team definition keeps the role code
+and changes the slot id, not the card.
 
 ## LSA — Lead Software Architect
 
@@ -134,9 +137,10 @@ definition keeps the role code and changes the slot id, not the card.
 
 - **Role code:** `TPM` (the persona fills the TPM slot).
 - **Seed role:** `TPM`
-- **Seat labels:** `ADAM`.
-- **Placement:** the desk persona; `TPM` when the same persona fills the epic
-  TPM seat.
+- **Seat labels:** `TPM • <epic key> • <topic>` (epic Adam) and
+  `TPM • <tracker key> • <repository>#<number>` (PR Adam).
+- **Placement:** the desk persona; `ADAM` is the desk workspace, never a seat
+  label.
 - **Purpose:** Be the single human-facing coordinator for one epic or one pull
   request. On new work Adam holds delivery admission; on existing work the TPM
   seat performs the same coordination.

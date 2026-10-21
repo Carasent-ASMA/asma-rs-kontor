@@ -100,6 +100,10 @@ FLEET = REPO_ROOT / "config" / "examples" / "orchestration" / "fleet.yml"
 
 NON_SEAT_FLEET_SLOTS = ("fallback", "open")
 INVENTED_RESEARCH_LABELS = ("RESEARCHER A", "RESEARCHER B", "SYNTHESIZER", "FINAL REVIEWER")
+DESK_PERSONA_LABELS = {
+    "TPM • <epic key> • <topic>",
+    "TPM • <tracker key> • <repository>#<number>",
+}
 
 SEAT_CARD_FIELDS = (
     "Purpose",
@@ -475,7 +479,7 @@ def naming_label_errors(
             if desk_labels.get(label) != role:
                 errors.append(f"{row['seed']} label {label} is not a desk seat")
         elif placement == "desk persona":
-            if label != "ADAM":
+            if label not in DESK_PERSONA_LABELS:
                 errors.append(f"{row['seed']} desk persona label is {label}")
         elif is_alternative(row):
             if label != role:
@@ -803,6 +807,28 @@ class SeatCardTests(unittest.TestCase):
                 self.assertEqual(rows[0]["label"], "—")
         self.assertIn("BA", self.records)
         self.assertIn("TW", self.records)
+
+    def test_the_two_adam_personas_use_their_exact_seat_names(self) -> None:
+        personas = [row for row in self.rows if row["placement"] == "desk persona"]
+        self.assertEqual(len(personas), 2)
+        self.assertEqual({row["label"] for row in personas}, DESK_PERSONA_LABELS)
+        adam = self.records["Adam"]
+        self.assertEqual(adam["labels"], DESK_PERSONA_LABELS)
+        self.assertNotIn("ADAM", adam["labels"])
+
+    def test_adam_as_a_desk_persona_label_is_rejected(self) -> None:
+        rows = [dict(row) for row in self.rows]
+        persona = next(row for row in rows if row["placement"] == "desk persona")
+        persona["label"] = "ADAM"
+        self.assertTrue(
+            naming_label_errors(
+                rows,
+                self.templates,
+                self.display_names,
+                self.desk_labels,
+            )
+        )
+        self.assertTrue(crosswalk_label_errors(rows, self.records))
 
     def test_no_invented_research_label_is_presented_as_native(self) -> None:
         invented = set(INVENTED_RESEARCH_LABELS)
