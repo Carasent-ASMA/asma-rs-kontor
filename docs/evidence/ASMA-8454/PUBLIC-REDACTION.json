@@ -724,8 +724,8 @@
       "private_references_redacted": 0
     },
     "mcp-repair/discovery/wal-original-manifest.json": {
-      "bytes": 6879,
-      "derivative_sha256": "476890335f854518e66e7f8592d577d3ee6ee2117f1be6461dfe283de5ee6a49",
+      "bytes": 7552,
+      "derivative_sha256": "aaed08d45945a1a08709e1f1439e7387ec68293df6f4c87502f3a33631fb642f",
       "original_sha256": "ee0dcbce25bae4850dc8430d78eaf632df61fccd7e982c88def0c835cef95469",
       "private_references_redacted": 0
     },
