@@ -720,7 +720,15 @@ impl Daemon {
         // observer only after this composition, and the observer itself performs
         // no egress — it formats a payload and spawns a detached one-shot.
         let attention = match selected {
-            Some(folder) => folder.parse_optional("attention.yml", attention::config::parse)?,
+            Some(folder) => match folder.optional::<serde_yaml_ng::Value>("attention.yml")? {
+                Some(_) => {
+                    let overrides = attention::config::read_env(&config.state_root)?;
+                    folder.parse_optional("attention.yml", |document| {
+                        attention::config::parse_with(document, &overrides)
+                    })?
+                }
+                None => None,
+            },
             None => attention::config::read(&config.state_root)?,
         }
         .map(|policy| {
@@ -1737,6 +1745,159 @@ mod tests {
 
     use super::*;
 
+    mod support {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/support/config.rs"
+        ));
+    }
+
+    const ATTENTION_POLICY: &str = "schema_version: 1\nsinks:\n  - channel: teams_workflow\n    url: https://yaml.example/workflow\n    timeout_seconds: 1\n    max_attempts: 1\nmention:\n  target: yaml@example.com\nemit:\n  kinds: []\n";
+
+    #[tokio::test]
+    async fn configured_attention_applies_state_root_overrides_before_validation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let folder = support::write_config_folder(directory.path());
+        // Neither a sibling nor a selected-folder .env is a secret input.
+        for path in [directory.path().join(".env"), folder.join(".env")] {
+            std::fs::write(path, "must never be parsed\n").unwrap();
+        }
+        let both = "KONTOR_ATTENTION_TEAMS_URL=https://env.example/workflow\nKONTOR_ATTENTION_MENTIONS=env@example.com, second@example.com, ENV@example.com, ,\n";
+        let cases = [
+            (
+                None,
+                "https://yaml.example/workflow",
+                vec!["yaml@example.com"],
+                false,
+            ),
+            (
+                Some("KONTOR_ATTENTION_TEAMS_URL=https://env.example/workflow\n"),
+                "https://env.example/workflow",
+                vec!["yaml@example.com"],
+                false,
+            ),
+            (
+                Some("KONTOR_ATTENTION_MENTIONS=env@example.com,second@example.com\n"),
+                "https://yaml.example/workflow",
+                vec!["env@example.com", "second@example.com"],
+                false,
+            ),
+            (
+                Some(both),
+                "https://env.example/workflow",
+                vec!["env@example.com", "second@example.com"],
+                false,
+            ),
+            (
+                Some(both),
+                "https://env.example/workflow",
+                vec!["env@example.com", "second@example.com"],
+                true,
+            ),
+        ];
+        for (index, (secret_input, url, mentions, omit_fields)) in cases.into_iter().enumerate() {
+            let document = if omit_fields {
+                ATTENTION_POLICY
+                    .replace("    url: https://yaml.example/workflow\n", "")
+                    .replace("mention:\n  target: yaml@example.com\n", "")
+            } else {
+                ATTENTION_POLICY.to_owned()
+            };
+            std::fs::write(folder.join("attention.yml"), document).unwrap();
+            let state = directory.path().join(format!("realm {index}"));
+            std::fs::create_dir(&state).unwrap();
+            if let Some(secret_input) = secret_input {
+                let path = state.join(".env");
+                std::fs::write(&path, secret_input).unwrap();
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            }
+            let daemon = Daemon::start_configured(
+                DaemonConfig::at(&state)
+                    .with_config_dir(&folder)
+                    .with_port(0),
+            )
+            .unwrap();
+            let policy = daemon.attention.as_ref().unwrap().policy();
+            assert_eq!(policy.destinations[0].url, url);
+            assert_eq!(policy.mention.targets, mentions);
+            daemon.shutdown();
+        }
+    }
+
+    #[tokio::test]
+    async fn configured_attention_refuses_unsafe_or_invalid_secret_overrides() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let folder = support::write_config_folder(directory.path());
+        std::fs::write(folder.join("attention.yml"), ATTENTION_POLICY).unwrap();
+        for (index, (mode, document, rule)) in [
+            (
+                0o644,
+                "KONTOR_ATTENTION_MENTIONS=synthetic-secret-marker\n",
+                ".env must be readable only by its owner",
+            ),
+            (
+                0o600,
+                "KONTOR_ATTENTION_MENTION=synthetic-secret-marker\n",
+                ".env names an unknown or misspelled",
+            ),
+            (
+                0o600,
+                "KONTOR_ATTENTION_TEAMS_URL=synthetic-secret-marker\n",
+                "attention.yml",
+            ),
+            (
+                0o600,
+                "KONTOR_ATTENTION_MENTIONS=<synthetic-secret-marker>\n",
+                "attention.yml",
+            ),
+            (0o600, "KONTOR_ATTENTION_TEAMS_URL=\n", "attention.yml"),
+            (0o600, "KONTOR_ATTENTION_MENTIONS=\n", "attention.yml"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let state = directory.path().join(format!("realm {index}"));
+            std::fs::create_dir(&state).unwrap();
+            let path = state.join(".env");
+            std::fs::write(&path, document).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+            let error = Daemon::start_configured(
+                DaemonConfig::at(&state)
+                    .with_config_dir(&folder)
+                    .with_port(0),
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains(rule), "{error}");
+            assert!(!format!("{error:?}").contains("synthetic-secret-marker"));
+        }
+    }
+
+    #[tokio::test]
+    async fn configured_attention_without_a_policy_neither_reads_env_nor_arms_a_channel() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let folder = support::write_config_folder(directory.path());
+        std::fs::remove_file(folder.join("attention.yml")).unwrap();
+        let state = directory.path().join("realm");
+        std::fs::create_dir(&state).unwrap();
+        let path = state.join(".env");
+        std::fs::write(&path, "must never be parsed\n").unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let daemon = Daemon::start_configured(
+            DaemonConfig::at(&state)
+                .with_config_dir(&folder)
+                .with_port(0),
+        )
+        .unwrap();
+        assert!(daemon.attention.is_none());
+        daemon.shutdown();
+    }
+
     #[derive(Debug)]
     struct NoopSuccessionCoordinator;
 
@@ -1813,12 +1974,6 @@ mod tests {
     /// refuses the start instead of silently degrading every handoff.
     #[test]
     fn configured_startup_reads_the_summarizer_selection_from_the_selected_folder() {
-        mod support {
-            include!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/support/config.rs"
-            ));
-        }
         let directory = tempfile::TempDir::new().expect("a temporary directory");
         let folder = support::write_config_folder(directory.path());
         support::write_runtime_planes(
