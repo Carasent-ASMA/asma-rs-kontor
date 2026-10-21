@@ -513,30 +513,47 @@ known-child count establishes complete Jira inventory, current completion,
 readiness, delivery or epic acceptance. The source's total captured epic count
 is provenance, not a completeness promise. Conflicting observations stay Unknown.
 
-### Responsibility projection (My work)
+### My work and assignment (responsibility projection)
 
-Sessions opens in **My work**: the sessions where the chosen person is the
-epic assignee, the exact task assignee, or a declared workstream responsible
-or participant, each shown with its reason. **All work** is always one press
-away, and an explicit person in Filters replaces My work. A person scope hides
-groups with none of its sessions. **Working as** is a choice from the
-projection's roster, held in this app session per host and tracker realm. It
-is not sign-in, and nothing infers it from the host's Jira credential, the
-session creator, cwd, titles, model or names. A change of Working as ends any
-**Show in tree**. **Clear filters** returns to All work and keeps the sort and
-grouping; **Reset view** returns to My work, Current order and the default
-grouping.
+Sessions opens in **My work**: every native session on the selected host,
+whatever its Jira assignee, epic, task or workstream, narrowed only by the
+usual search, state, archive and scope filters. It needs no person and no
+projection. My work lists only groups and association choices that hold
+sessions here; **All work** shows the same sessions and adds empty workspaces
+and plan-only choices.
+
+**Assignment** is a separate filter, **Any assignment** by default.
+**Assigned to me** keeps the sessions where the **Working as** person is the
+epic assignee, the exact task assignee, or a declared workstream responsible or
+participant, each shown with its reason; **Assigned to** names one person;
+**Unknown assignment** keeps the sessions whose relation could not be read. An
+assignment filter hides groups with none of its sessions.
+
+**Working as** is chosen once from the projection's roster per host and
+tracker realm and remembered on this device: in the app's user defaults on
+iOS, in the app's local storage on web and desktop. Where the device offers
+the plugin no store (Android), or the store fails, the choice lasts the app
+session and Filters says so. It holds only the tracker account ID. It is a
+viewing choice, not sign-in, and nothing infers it from the host's Jira
+credential, the session creator, cwd, titles, model or names. Choosing it
+never turns on a filter. While the projection is loading or unavailable it is
+kept, never shown as unset; **Forget on this device** removes it. A change of
+Working as ends an Assigned to me or Unknown assignment **Show in tree**.
+**Clear filters** returns to All work and Any assignment and keeps Working as,
+the sort and grouping; **Reset view** returns to My work, Any assignment,
+Current order and the default grouping, keeping Working as.
 
 The facts come from one operator-owned file,
 `$PASEO_HOME/plugin-config/kontor/responsibility.json`
 (`kontor/responsibility@1`, 2 MiB cap), read by the `responsibility.read`
 RPC. It is separate from `consumption/data@2` and from the source catalog.
 A missing, unreadable, invalid or expired file, an unset Working as and a
-person outside the roster all leave My work **not evaluated**, with the reason
-and a way to All work. They never mean "no work". A session whose relation was
-not read (an epic or task outside the selection, an assignee field not read,
-epic sources that disagree, or an undeclared workstream) is **Unknown
-responsibility** and is never counted as someone else's.
+person outside the roster leave an assignment filter **not evaluated**, with
+the reason and a way back to Any assignment; My work is unaffected. They never
+mean "no work". A session whose relation was not read (an epic or task outside
+the selection, an assignee field not read, epic sources that disagree, or an
+undeclared workstream) has **unknown assignment** and is never counted as
+someone else's.
 
 Collect it read-only from explicitly selected epics with asma-cli's Jira
 credential helper (importable, or under `$ASMA_ROOT`). Credentials never
@@ -561,8 +578,8 @@ every account in it is confirmed with a Jira user read:
 Each declared workstream names at least one account, as lists of account ID
 strings. Repeated members, empty rosters and an empty declaration are refused.
 Undecided workstreams are left out, so they stay unknown. Without a
-declaration, every workstream relation is unknown, and My work matches only
-epic and task assignees. `--self-check` runs the offline check on synthetic
+declaration, every workstream relation is unknown, and Assigned to me matches
+only epic and task assignees. `--self-check` runs the offline check on synthetic
 data.
 
 **Sort** in Filters keeps **Current order** by default (state order, the saved

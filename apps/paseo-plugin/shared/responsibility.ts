@@ -2,7 +2,9 @@ import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 
 const time = z.string().refine((value) => Number.isFinite(Date.parse(value)), "Invalid time");
-const accountId = z.string().regex(/^[A-Za-z0-9:_-]{1,128}$/);
+/** A tracker account ID as the projection and a remembered Working as carry it. */
+export const ACCOUNT_ID = /^[A-Za-z0-9:_-]{1,128}$/;
+const accountId = z.string().regex(ACCOUNT_ID);
 const issueKey = z.string().regex(/^[A-Z][A-Z0-9_]*-[1-9]\d*$/);
 const workstreamKey = z.string().trim().min(1).max(128);
 

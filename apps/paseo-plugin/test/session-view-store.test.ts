@@ -11,7 +11,10 @@ import {
   resetSessionViewPatch,
   readWorkingAs,
   writeWorkingAs,
+  configureWorkingAsStorage,
+  readRememberedWorkingAs,
 } from "../client/session-view-store";
+import type { ProfileStorage } from "../client/viewer-profile";
 import { DEFAULT_SESSION_FILTERS } from "../client/session-view";
 
 describe("host-scoped session view state", () => {
@@ -136,19 +139,28 @@ describe("work scope, order and reset", () => {
     expect(sessionFilterCount({ ...view, work: "all", sort: "title" })).toBe(0);
   });
 
-  it("clears to All work and keeps sort and grouping", () => {
-    const view = { ...readSessionView("host-a"), query: "qa", sort: "created" as const, sortDirection: "asc" as const, grouping: "role" as const };
+  it("counts an assignment filter as its own choice", () => {
+    expect(sessionFilterCount({ ...readSessionView("host-a"), work: "all", assignment: "me" })).toBe(1);
+    expect(sessionFilterCount({ ...readSessionView("host-a"), assignment: "person:account-b" })).toBe(2);
+  });
+
+  it("clears to All work and Any assignment and keeps sort, grouping and Working as", () => {
+    writeWorkingAs("host-a", "tracker.example", "account-a");
+    const view = { ...readSessionView("host-a"), query: "qa", assignment: "me" as const, sort: "created" as const, sortDirection: "asc" as const, grouping: "role" as const };
     const cleared = { ...view, ...sessionViewTransition(view, clearSessionFilterPatch(view)) };
-    expect(cleared).toMatchObject({ work: "all", query: "", sort: "created", sortDirection: "asc", grouping: "role" });
+    expect(cleared).toMatchObject({ work: "all", assignment: "any", query: "", sort: "created", sortDirection: "asc", grouping: "role" });
     expect(sessionFilterCount(cleared)).toBe(0);
+    expect(readWorkingAs("host-a", "tracker.example")).toBe("account-a");
   });
 
   it("resets to what a new app session shows without touching other views", () => {
     patchSessionView("host-b", { work: "all", sort: "title" });
-    const view = { ...readSessionView("host-a"), work: "person:account-b" as const, sort: "updated" as const, sortDirection: "asc" as const,
+    writeWorkingAs("host-a", "tracker.example", "account-a");
+    const view = { ...readSessionView("host-a"), work: "all" as const, assignment: "person:account-b" as const, sort: "updated" as const, sortDirection: "asc" as const,
       grouping: "flat" as const, streams: ["kontor"], arranging: true, peek: { sessionId: "s", resultsOffset: 4 } };
     const reset = { ...view, ...sessionViewTransition(view, resetSessionViewPatch(view)) };
-    expect(reset).toMatchObject({ work: "mine", sort: undefined, sortDirection: undefined, grouping: undefined, streams: null, arranging: false, peek: null });
+    expect(reset).toMatchObject({ work: "mine", assignment: "any", sort: undefined, sortDirection: undefined, grouping: undefined, streams: null, arranging: false, peek: null });
+    expect(readWorkingAs("host-a", "tracker.example")).toBe("account-a");
     expect(readSessionView("host-b")).toMatchObject({ work: "all", sort: "title" });
   });
 
@@ -160,8 +172,8 @@ describe("work scope, order and reset", () => {
     expect(sessionViewTransition(current, { sortDirection: "asc" })).toEqual({ sortDirection: "asc", peek: null });
   });
 
-  it("keeps Working as per host and tracker realm, and a change ends this host's My work peek", () => {
-    patchSessionView("host-a", { query: "qa", peek: { sessionId: "s", resultsOffset: 40 } });
+  it("keeps Working as per host and tracker realm, and a change ends this host's Assigned to me peek", () => {
+    patchSessionView("host-a", { query: "qa", assignment: "me", peek: { sessionId: "s", resultsOffset: 40 } });
     writeWorkingAs("host-a", "tracker.example", "account-a");
     expect(readWorkingAs("host-a", "tracker.example")).toBe("account-a");
     expect(readWorkingAs("host-a", "other.example")).toBeNull();
@@ -175,22 +187,54 @@ describe("work scope, order and reset", () => {
     expect(readWorkingAs("host-a", "tracker.example")).toBeNull();
   });
 
-  it("ends only the peeks the changed profile affects: this host, in My work or Unknown responsibility", () => {
+  it("ends only the peeks the changed profile affects: this host, filtered to Assigned to me or Unknown assignment", () => {
     const scope = (host: string, epic: string) => JSON.stringify([host, "sessions", null, epic]);
     const peek = (resultsOffset: number) => ({ query: "qa", peek: { sessionId: `s-${resultsOffset}`, resultsOffset } });
-    patchSessionView(scope("host-a", "ASMA-1"), { ...peek(1), work: "mine" });
-    patchSessionView(scope("host-a", "ASMA-2"), { ...peek(2), work: "unknown" });
+    patchSessionView(scope("host-a", "ASMA-1"), { ...peek(1), assignment: "me" });
+    patchSessionView(scope("host-a", "ASMA-2"), { ...peek(2), assignment: "unknown" });
     patchSessionView(scope("host-a", "ASMA-3"), { ...peek(3), work: "all" });
-    patchSessionView(scope("host-a", "ASMA-4"), { ...peek(4), work: "person:account-b" });
-    patchSessionView(scope("host-b", "ASMA-1"), { ...peek(700), work: "mine" });
-    patchSessionView("host-b", { ...peek(5), work: "mine" });
+    patchSessionView(scope("host-a", "ASMA-4"), { ...peek(4), assignment: "person:account-b" });
+    patchSessionView(scope("host-b", "ASMA-1"), { ...peek(700), assignment: "me" });
+    patchSessionView("host-b", { ...peek(5), assignment: "me" });
+    patchSessionView(scope("host-a", "ASMA-5"), { ...peek(6), work: "mine" });
     writeWorkingAs("host-a", "tracker.example", "account-a");
-    const peeks = () => [scope("host-a", "ASMA-1"), scope("host-a", "ASMA-2"), scope("host-a", "ASMA-3"), scope("host-a", "ASMA-4"), scope("host-b", "ASMA-1"), "host-b"]
+    const peeks = () => [scope("host-a", "ASMA-1"), scope("host-a", "ASMA-2"), scope("host-a", "ASMA-3"), scope("host-a", "ASMA-4"), scope("host-b", "ASMA-1"), "host-b", scope("host-a", "ASMA-5")]
       .map((key) => readSessionView(key).peek?.resultsOffset ?? null);
-    expect(peeks()).toEqual([null, null, 3, 4, 700, 5]);
+    // My work never depends on Working as, so its peek stays.
+    expect(peeks()).toEqual([null, null, 3, 4, 700, 5, 6]);
     // Choosing the same person again changes nothing.
     patchSessionView(scope("host-a", "ASMA-1"), peek(1));
     writeWorkingAs("host-a", "tracker.example", "account-a");
     expect(readSessionView(scope("host-a", "ASMA-1")).peek?.resultsOffset).toBe(1);
+  });
+
+  it("reads Working as from the configured store once, writes it through, and forgets only on request", () => {
+    const stored = new Map<string, unknown>();
+    const reads: string[] = [];
+    const storage: ProfileStorage = { read: (key) => { reads.push(key); return stored.get(key) ?? null; }, write: (key, value) => { if (value === null) stored.delete(key); else stored.set(key, value); } };
+    configureWorkingAsStorage(storage);
+    expect(readRememberedWorkingAs("host-a", "tracker.example")).toEqual({ accountId: null, persistence: "device" });
+    writeWorkingAs("host-a", "tracker.example", "account-a");
+    writeWorkingAs("host-a", "other.example", "account-b");
+    expect([...stored.values()]).toEqual(["account-a", "account-b"]);
+    readWorkingAs("host-a", "tracker.example");
+    expect(reads).toHaveLength(2);
+    writeWorkingAs("host-a", "tracker.example", null);
+    expect([...stored.values()]).toEqual(["account-b"]);
+    expect(readRememberedWorkingAs("host-a", "tracker.example")).toEqual({ accountId: null, persistence: "device" });
+    configureWorkingAsStorage(null);
+  });
+
+  it("keeps a choice for this app session when the store fails, and retries the same choice", () => {
+    let failing = true;
+    const stored = new Map<string, string | null>();
+    configureWorkingAsStorage({ read: () => null, write: (key, value) => { if (failing) throw new Error("quota"); stored.set(key, value); } });
+    writeWorkingAs("host-a", "tracker.example", "account-a");
+    expect(readRememberedWorkingAs("host-a", "tracker.example")).toEqual({ accountId: "account-a", persistence: "failed" });
+    failing = false;
+    writeWorkingAs("host-a", "tracker.example", "account-a");
+    expect(readRememberedWorkingAs("host-a", "tracker.example")).toEqual({ accountId: "account-a", persistence: "device" });
+    expect(stored.size).toBe(1);
+    configureWorkingAsStorage(null);
   });
 });

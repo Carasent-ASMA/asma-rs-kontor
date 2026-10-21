@@ -38,7 +38,7 @@ export function indexResponsibility(projection: Responsibility): ResponsibilityI
   };
 }
 
-/** Producer-declared expiry; an expired projection evaluates nobody, so it never narrows or broadens My work. */
+/** Producer-declared expiry; an expired projection evaluates nobody, so an assignment filter never narrows or broadens on it. */
 export function responsibilityExpired(index: ResponsibilityIndex, now: number): boolean {
   return now >= Date.parse(index.projection.expiresAt);
 }
