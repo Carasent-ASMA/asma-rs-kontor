@@ -78,6 +78,7 @@ config folder, which may live outside the repository.
   .github/skills/<skill>/         canonical rendered skills, plus .pack resources
   .agents/skills/<skill>/         byte-for-byte mirror for Codex and OpenCode
   .claude/skills/<skill>          symlinks into .github/skills for Claude Code
+  .local/                         local setup records and harness logs; git-ignored
   docs/                           the documentation root for this example
     index.md                      the router: one row per document
     WORKFLOW.md
@@ -405,11 +406,14 @@ role, keep the premium "hard decision" chain off the default route, and keep
 vendor independence for reviewers. Accounts, costs, provider aliases and
 credential values are class X; they never enter this public repository.
 
-The fleet and host are activated policy, not hot-editable text: preview,
-publish and activate; an active run keeps its resolved-route snapshot. A host
-route change never requires a fleet edit. `project.runtime.matrix` is the
-allowlist of provider/harness pairs; a route outside it is refused before
-placement.
+The fleet is activated policy: preview, publish and activate; an active run
+keeps its resolved-route snapshot. `host.yml` is bootstrap input, never
+preview/publish/activated policy: it is read before the daemon starts, a change
+requires a restart for new placements, and it never enters the activation
+path. A host route change never requires a fleet edit. `project.runtime.matrix`
+is the allowlist of provider/harness pairs; a route outside it is refused
+before placement. See [`CONFIGURATION.md` §Bootstrap and activated
+settings](CONFIGURATION.md#bootstrap-and-activated-settings).
 
 ## 7. Parameters, selection and migration (§8.7)
 
@@ -455,27 +459,35 @@ The rules are:
 
 ### 7.2 Record the resolved path
 
-`render` and `check` print the resolved folder. Capture it in the project's
-setup record, with the pack revision and the entry-file hash:
+`render` and `check` print the resolved folder. The exact absolute path is host
+data. Keep it in a local, untracked record outside every documentation root;
+the routed setup record carries only the portable selection and a reference to
+that local record.
 
-```text
-Resolved config folder: <absolute path printed by pack.py>
-Pack revision:         <git rev-parse of the pack checkout>
-Entry file:            orchestration/orchestration.yml
-Entry file SHA-256:    <shasum -a 256 of the entry file>
+```sh
+LOCAL_RECORD="$PROJECT/.local/setup/config-folder"
+mkdir -p "$(dirname "$LOCAL_RECORD")"
+printf '%s\n' "$CONFIG" > "$LOCAL_RECORD"
+grep -qxF '.local/' "$PROJECT/.gitignore" 2>/dev/null \
+  || printf '.local/\n' >> "$PROJECT/.gitignore"
 ```
 
-The setup record is a dated document under the project's `operations/` root,
-routed from the project router. The check prints the resolved path in its final
-line, for example:
+The check prints the resolved path in its final line, for example:
 
 ```text
 pack check passed: <project> (config <absolute folder>)
 ```
 
-Record that exact folder. The absolute path is host data; record it there and
-in the service environment, never in a skill, template or submitted command. A
-minimum record is:
+Write that exact folder to `$LOCAL_RECORD` and to the service environment, never
+to a routed document, a skill, a template or a submitted command. The public
+lint refuses a home path in a routed document; `.local/` is outside the
+documentation roots and git-ignored. A minimum local record and routed record
+are:
+
+```text
+# .local/setup/config-folder (git-ignored; never routed)
+<absolute path printed by pack.py>
+```
 
 ```markdown
 ---
@@ -488,9 +500,9 @@ workflow: kontor
 
 > **Date:** <date and time> <time zone>
 > **Category:** record
-> **Scope:** This project's pack pin and selected config folder.
-> **Summary:** The pack revision, the selection mechanism and the resolved
-> absolute config folder used by every consumer.
+> **Scope:** This project's pack pin and config-folder selection.
+> **Summary:** The pack revision, the portable selection and the location of
+> the local absolute-path record.
 
 ## Pack source
 
@@ -504,12 +516,15 @@ workflow: kontor
 
 | Fact | Value |
 | --- | --- |
-| Selection | `--config-dir` on setup; `KONTOR_CONFIG_DIR` for later commands |
-| Input | <input path> |
-| Resolved absolute path | <absolute path> |
+| Selection | `--config-dir config` on setup; `KONTOR_CONFIG_DIR` for later commands |
+| Input | `config` (relative to the project checkout) |
+| Exact path location | Local, untracked: `.local/setup/config-folder` (outside the documentation roots) |
 | Entry file | `orchestration/orchestration.yml` |
 | Entry file SHA-256 | <sha256> |
 ```
+
+The routed record never contains the absolute path. `pack.py check` scans the
+routed tree, so a host path there would fail the `home_path` lint.
 
 
 ### 7.3 Fill the `project:` block
@@ -710,10 +725,10 @@ python3 -B "$PACK/scripts/pack.py" --config-dir "$CONFIG" validate \
 
 Each `PASS` line proves the plan's key pattern, epic binding and task bindings
 resolved from the same `project:` block. `pack.py check` prints the resolved
-folder in its final line, so the record and the check name the same path. The
-flag, the environment variable and an invocation from another working
-directory must print the same absolute folder; the proof in the pull request
-shows all three.
+folder in its final line, so the local record and the check name the same path.
+The flag, the environment variable and an invocation from another working
+directory **with the absolute path** must print the same absolute folder; the
+proof in the pull request shows all three.
 
 What this does **not** prove is the daemon reader. `kontord` does not yet read
 the selected folder in this pack revision; that is WP-08's config-folder
@@ -774,7 +789,7 @@ still be completed honestly.
 | G-02 | workaround | `pack.py install-adapters` refuses a project root after `render` because `render` already owns `.agents/skills` as the byte mirror | Pack maintainers (WP-05 follow-up) | §3 creates the `.claude` links directly for the project root; `install-adapters` remains the command for separate module/worktree roots. |
 | G-03 | workaround | The neutral `holiday_countries: [NO]` is YAML 1.1 `false`, so an entry file renders the holiday value as `false` | WP-02 follow-up (neutral example) | Quote country codes as `['NO']`; §7.3 records the rule. |
 | G-04 | non-blocking | The pack ships the documentation router but no task/path procedure-router template | Pack maintainers (WP-04 follow-up) | The tested router is `docs/index.md`; a project adds `.github/agent-policy-routing.md` only when it needs one. |
-| G-05 | scope note | `pack.py check` validates the project block, paths, skills, links, routers, holds and graphs; it does not validate fleet-route semantics, tracker field maps or `host.yml` routes | WP-08 activation path | Those are validated when the governed option is installed at L3; the direct option reads them at use time. |
+| G-05 | scope note | `pack.py check` validates the project block, paths, skills, links, routers, holds and graphs; it does not validate fleet-route semantics, tracker field maps or `host.yml` routes | WP-08 (activation) and WP-10 (direct desk/CLI readers) | The governed activation path validates its files at L3; the direct readers are WP-10's migration. Neither is a `pack.py check` rule. |
 
 A gap is not closed by silence. Add each new gap to the project's gap ledger
 with a type, owner, evidence and closure condition.
@@ -783,8 +798,11 @@ with a type, owner, evidence and closure condition.
 
 The setup is complete when all of these are true:
 
-- [ ] The selected config folder is absolute, recorded in the setup record, and
-      the same path is printed by the flag and environment invocations.
+- [ ] The selected config folder is absolute, recorded in the local untracked
+      record (`.local/setup/config-folder`), and the same path is printed by
+      the flag and environment invocations.
+- [ ] `.local/` is git-ignored, and the routed setup record contains no
+      absolute path.
 - [ ] `pack.py check` passes and prints the resolved folder.
 - [ ] `AGENTS.md` is at most 8 KiB with no `{{ ... }}`; `CLAUDE.md` is exactly
       `@AGENTS.md`.
@@ -793,11 +811,64 @@ The setup is complete when all of these are true:
 - [ ] `docs/index.md` routes every document once, and each plan validates.
 - [ ] `config/host.yml` exists for this machine and is ignored by version
       control.
-- [ ] Claude Code reports the project skills in its debug log and answers from
-      the router.
-- [ ] Codex's prompt input lists the project `AGENTS.md` and the `.agents`
-      skills, and a run answers from the router.
-- [ ] OpenCode lists the project skills and a run answers from the router.
+- [ ] Claude Code, Codex and OpenCode pass the repeatable checks in §15: the
+      entry row, the project skill catalog and the router row.
 - [ ] The first Paseo-direct epic has a plan, tracker bindings, an independent
       review and a named evidence rung.
 - [ ] The gap ledger has no silent item; G-01 remains the L3 stop.
+
+## 15. Harness checks (repeatable)
+
+Run these from the project checkout after §9. Keep every log under
+`.local/setup/`; the logs contain host paths and are git-ignored. The expected
+skill count is the number of rendered skills (19 in the neutral example):
+
+```sh
+SKILLS=$(find .github/skills -mindepth 1 -maxdepth 1 -type d ! -name .pack | wc -l)
+```
+
+### Claude Code
+
+```sh
+mkdir -p .local/setup
+claude -p --allowedTools Read --output-format text \
+  --debug-file .local/setup/claude-debug.log "Reply with OK."
+grep -E "Loaded [0-9]+ unique skills" .local/setup/claude-debug.log
+claude -p --allowedTools Read --output-format text \
+  "Reply with exactly two lines and nothing else. Line 1: the 'Project' row of the 'Project facts' table in your project instructions. Line 2: the markdown table row in docs/index.md that starts with '| [Workflow]'."
+```
+
+Expected: the debug line reports `project: $SKILLS` (for example `project: 19`),
+and the answer is the Project row and the exact Workflow router row.
+
+### Codex
+
+```sh
+codex debug prompt-input "Report the first documentation router row." \
+  > .local/setup/codex-prompt-input.json
+rg -o 'r[0-9]+` = `[^`]*\.agents/skills`|\| Project \| [^|]*\|' \
+  .local/setup/codex-prompt-input.json \
+  | rg -F -e "$PROJECT/" -e '| Project |'
+codex exec --sandbox read-only -C "$PROJECT" \
+  "Reply with exactly two lines and nothing else. Line 1: the 'Project' row of the 'Project facts' table in your project instructions. Line 2: use your shell tool to find the line starting with '| [Workflow]' in docs/index.md and reply with that line."
+```
+
+Expected: the prompt-input output names the project `.agents/skills` root and
+the Project row, and the run prints both rows.
+
+### OpenCode
+
+```sh
+opencode debug skill > .local/setup/opencode-skills.json
+rg -F "$PROJECT/" .local/setup/opencode-skills.json | wc -l
+opencode run --pure -m <provider/model> \
+  "Reply with exactly two lines and nothing else. Line 1: the 'Project' row of the 'Project facts' table in your project instructions. Line 2: use your file-read tool to read docs/index.md and reply with the table row that starts with '| [Workflow]'. Copy the row exactly; do not paraphrase."
+```
+
+Expected: the count is `$SKILLS`, and the run prints both rows. Choose a
+configured model from `opencode models`; the model id is host data, not a
+project value.
+
+A paraphrase is not a pass. The router row must match `docs/index.md`, and the
+skill count must match the rendered tree. Keep the harness logs local; do not
+commit them.
