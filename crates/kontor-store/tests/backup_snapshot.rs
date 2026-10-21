@@ -335,10 +335,15 @@ fn assert_missing_or_zero_main_with_committed_wal_is_preserved(missing_main: boo
     );
     let names = listing(&directory);
 
-    assert!(matches!(
-        restore_snapshot(&snapshot.snapshot, &destination, at("2026-10-03T19:01:00Z")),
-        Err(BackupError::Verification { .. })
-    ));
+    let refused = restore_snapshot(&snapshot.snapshot, &destination, at("2026-10-03T19:01:00Z"))
+        .expect_err("a nonempty WAL is refused");
+    assert!(matches!(refused, BackupError::Verification { .. }));
+    assert!(
+        refused.to_string().contains("-wal")
+            && refused.to_string().contains("stop")
+            && refused.to_string().contains("retry"),
+        "the refusal tells the operator to stop the owner and retry: {refused}"
+    );
     assert_eq!(std::fs::read(&destination).ok(), main_before);
     assert_eq!(std::fs::read(&destination_wal).expect("preserved WAL"), wal);
     assert_eq!(std::fs::read(&destination_shm).expect("preserved SHM"), shm);
@@ -1489,4 +1494,77 @@ fn memory_ledger_and_import_evidence_restore_while_fts_is_rebuilt() {
             .expect("receipt count");
         assert_eq!(count, 1, "the native receipt survives");
     }
+}
+
+#[test]
+fn a_restore_that_cannot_rebuild_memory_search_publishes_nothing() {
+    let home = TempDir::new().expect("a temporary directory");
+    let source = home.path().join("source.db");
+    let store = seeded(&source, 2);
+    let realm = store.realm_id();
+    let snapshot = create_snapshot(
+        &source,
+        &home.path().join("backups"),
+        at("2026-08-10T10:00:00Z"),
+    )
+    .expect("the snapshot is taken");
+    drop(store);
+
+    // The destination is the same Realm and has moved on, so a published
+    // snapshot is visibly different from what must remain after a refusal.
+    let destination_root = home.path().join("realm");
+    std::fs::create_dir_all(&destination_root).expect("the destination root");
+    let destination = destination_root.join("kontor.db");
+    std::fs::copy(&source, &destination).expect("the destination is a same-realm database");
+    let moved_on = SqliteStore::open(&destination).expect("the destination opens");
+    moved_on
+        .create_project(&NewProject {
+            id: ProjectId::generate(),
+            name: name("Written after the snapshot"),
+            root_path: name("/tmp/kontor-after-snapshot"),
+            created_at: at("2026-08-10T11:00:00Z"),
+        })
+        .expect("the destination moves on");
+    drop(moved_on);
+    assert_eq!(projects_in(&destination), 3);
+
+    // Make the snapshot unusable as a restore source for the reason under test:
+    // it is whole, same-realm and same-schema, but the disposable projection
+    // this build searches cannot be rebuilt from it. The manifest is rewritten
+    // so the refusal is the rebuild and not a digest mismatch.
+    rusqlite::Connection::open(&snapshot.snapshot)
+        .expect("the snapshot opens")
+        .execute("DROP TABLE memory_fts", [])
+        .expect("the projection is removed from the snapshot");
+    let described = SnapshotManifest::describe(
+        &snapshot.snapshot,
+        realm,
+        SCHEMA_VERSION,
+        at("2026-08-10T10:00:00Z"),
+    )
+    .expect("the altered snapshot is described");
+    std::fs::write(
+        SnapshotManifest::path_for(&snapshot.snapshot),
+        described.to_bytes().expect("the manifest renders"),
+    )
+    .expect("the altered manifest is written");
+
+    let refused = restore_snapshot(&snapshot.snapshot, &destination, at("2026-08-10T12:00:00Z"))
+        .expect_err("a restore that cannot rebuild search is refused");
+    assert!(
+        matches!(refused, BackupError::Verification { .. }),
+        "the refusal is a verification failure: {refused:?}"
+    );
+    assert_eq!(
+        projects_in(&destination),
+        3,
+        "the destination is never replaced by a database whose search index was not rebuilt"
+    );
+    assert!(
+        !listing(&destination_root)
+            .iter()
+            .any(|entry| entry.ends_with(".partial")),
+        "a refused rebuild leaves no partial beside the destination: {:?}",
+        listing(&destination_root)
+    );
 }
