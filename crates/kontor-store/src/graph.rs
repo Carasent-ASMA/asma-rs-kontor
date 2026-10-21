@@ -2269,6 +2269,12 @@ impl SqliteStore {
     /// # Errors
     /// Backend failures and any stored value outside a closed vocabulary.
     pub fn list_holds(&self) -> RepositoryResult<Vec<StoredHold>> {
+        self.list_holds_at(Timestamp::now())
+    }
+
+    /// [`Self::list_holds`] at an explicit instant, so the exact boundary of a
+    /// grant window can be tested without racing the wall clock.
+    fn list_holds_at(&self, now: Timestamp) -> RepositoryResult<Vec<StoredHold>> {
         let mut statement = self
             .connection
             .prepare(
@@ -2286,7 +2292,7 @@ impl SqliteStore {
                               AND live.scope_mini_project_id = a.scope_mini_project_id
                               AND lr.authorization_id IS NULL
                               AND live.allowed_start <= ?1
-                              AND ?1 < live.allowed_end
+                              AND ?1 <= live.allowed_end
                         ) AS live_grant,
                         att.attention_code, att.owner, att.review_by, att.raised_at
                  FROM execution_hold_conditions c
@@ -2304,7 +2310,7 @@ impl SqliteStore {
                  ORDER BY c.project_id, c.authorization_id",
             )
             .map_err(backend)?;
-        let now = text(Timestamp::now());
+        let now = text(now);
         let mut rows = statement.query(params![now]).map_err(backend)?;
         let mut holds = Vec::new();
         while let Some(row) = rows.next().map_err(backend)? {
@@ -5888,4 +5894,80 @@ fn turn_from_row(row: &rusqlite::Row<'_>) -> RepositoryResult<SettledTurn> {
             }
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A grant whose window closes at the instant under test still arms.
+    ///
+    /// `TimeRange::contains` is inclusive, so the overdue sweep must ask whether
+    /// the grant is live *at* `allowed_end`, not only before it. The hold's
+    /// review date is already past, so a false `live_grant` would raise
+    /// `hold_review_overdue` on the next sweep.
+    #[test]
+    fn a_grant_at_its_exact_allowed_end_is_live_and_raises_no_attention() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let path = directory.path().join("kontor.sqlite3");
+        let store = crate::SqliteStore::open(&path).expect("the schema opens");
+        store
+            .connection
+            .pragma_update(None, "foreign_keys", false)
+            .expect("foreign keys can be disabled for the fixture");
+
+        let project = "0193f000-0000-7000-8000-000000000001";
+        let epic = "0193f000-0000-7000-8000-0000000000e1";
+        let account = "0193f000-0000-7000-8000-000000000002";
+        let authorization = "0193f000-0000-7000-8000-0000000000a1";
+        let authorization_receipt = "0193f000-0000-7000-8000-0000000000c1";
+        let covering_grant = "0193f000-0000-7000-8000-0000000000a2";
+        let covering_receipt = "0193f000-0000-7000-8000-0000000000c3";
+        let revocation_receipt = "0193f000-0000-7000-8000-0000000000c2";
+        let allowed_end = "2026-10-21T00:00:00Z"
+            .parse::<Timestamp>()
+            .expect("a canonical instant");
+
+        store
+            .connection
+            .execute_batch(&format!(
+                "INSERT INTO execution_authorizations
+                     (id, project_id, scope_kind, scope_mini_project_id, selected_tasks,
+                      allowed_start, allowed_end, max_concurrency, max_tokens, max_commands,
+                      max_duration_seconds, max_cost_minor_units, cost_currency, created_by,
+                      capability_receipt_id, created_at)
+                 VALUES ('{authorization}', '{project}', 'mini_project', '{epic}', '[]',
+                         '2026-10-20T00:00:00Z', '2026-10-21T00:00:00Z', 1, 1, 1, 1, 1,
+                         'USD', '{account}', '{authorization_receipt}',
+                         '2026-10-20T00:00:00Z'),
+                        ('{covering_grant}', '{project}', 'mini_project', '{epic}', '[]',
+                         '2026-10-20T00:00:00Z', '2026-10-21T00:00:00Z', 1, 1, 1, 1, 1,
+                         'USD', '{account}', '{covering_receipt}',
+                         '2026-10-20T00:00:00Z');
+                 INSERT INTO execution_authorization_revocations
+                     (project_id, authorization_id, revoked_at, revoked_by,
+                      revocation_receipt_id, reason)
+                 VALUES ('{project}', '{authorization}', '2026-10-20T01:00:00Z',
+                         '{account}', '{revocation_receipt}', 'operator decision');
+                 INSERT INTO execution_hold_conditions
+                     (project_id, authorization_id, condition, reason_code, review_by,
+                      dependency_task_id, recorded_at)
+                 VALUES ('{project}', '{authorization}', 'manual', 'waiting_on_decision',
+                         '2026-10-20T12:00:00Z', NULL, '2026-10-20T01:00:00Z');"
+            ))
+            .expect("the overdue hold and its covering grant are seeded");
+
+        let holds = store
+            .list_holds_at(allowed_end)
+            .expect("the holds read at the window boundary");
+        assert_eq!(holds.len(), 1, "one recorded hold");
+        assert!(
+            holds[0].live_grant,
+            "the grant arms at its exact allowed_end, so the sweep must not alert"
+        );
+        assert!(
+            holds[0].attention.is_none(),
+            "no overdue attention is raised while the covering grant is live"
+        );
+    }
 }
