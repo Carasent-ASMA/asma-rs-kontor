@@ -267,6 +267,8 @@ const EXPECTED_TABLES: &[&str] = &[
     "desk_adam_subjects",
     // Schema v134 (ASMA-8453): PR review subjects.
     "pr_review_subjects",
+    // Schema v135 (ASMA-8514): the typed operational-gap ledger.
+    "operational_gaps",
 ];
 
 /// The frozen v1 script, so the upgrade test can build a genuine v1 file.
@@ -809,8 +811,8 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // that declare and reconcile them (ASMA-8451). v133 adds desk Adam
     // subjects and one live session per subject (ASMA-8452). v134 adds PR
     // review subjects and the receipt kinds that open and close a review
-    // (ASMA-8453).
-    assert_eq!(SCHEMA_VERSION, 134);
+    // (ASMA-8453). v135 adds the typed operational-gap ledger (ASMA-8514).
+    assert_eq!(SCHEMA_VERSION, 135);
 }
 
 #[test]
