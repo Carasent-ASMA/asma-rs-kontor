@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const hooks = vi.hoisted(() => ({ values: [] as unknown[], cursor: 0, effects: [] as (() => void | (() => void))[] }));
 vi.mock("react", async (original) => ({
-  ...await original<typeof import("react")>(),
+  ...await original<typeof import("react")>(), useContext: () => null,
   useState: <T,>(initial: T) => {
     const index = hooks.cursor++; if (!(index in hooks.values)) hooks.values[index] = initial;
     return [hooks.values[index] as T, (value: T) => { hooks.values[index] = value; }];

@@ -131,7 +131,7 @@ export function OrganizationSettingsPage({ state, colors, entries, workspaces, s
         })}
       </View>)}
       <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
-        <Action colors={colors} label="Refresh source reads" onPress={refresh} />
+        <Action colors={colors} label="Refresh source reads" icon="RefreshCw" iconOnly onPress={refresh} />
         {onOpenTeams ? <Action colors={colors} label="Browse configured teams & templates" onPress={onOpenTeams} /> : null}
       </View>
     </Card>

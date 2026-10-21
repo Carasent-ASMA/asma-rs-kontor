@@ -11,7 +11,7 @@ import { createTeamsSourceAdapter } from '../server/teams-source-adapter';
 import { teamsSourceBindings } from '../shared/teams-source-bindings';
 import type { TeamsSourceSnapshot } from '../shared/teams-source-snapshot';
 const hooks = vi.hoisted(() => ({ active: '', states: new Map<string, unknown>() }));
-vi.mock('react', async (original) => ({ ...await original<typeof import('react')>(),
+vi.mock('react', async (original) => ({ ...await original<typeof import('react')>(), useContext: () => null,
   useRef: (current: unknown) => ({ current }), useMemo: (factory: () => unknown) => factory(),
   useState: (initial: unknown) => {
     const key = hooks.active;

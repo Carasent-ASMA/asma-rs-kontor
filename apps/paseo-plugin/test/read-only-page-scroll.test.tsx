@@ -2,7 +2,7 @@ import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { fileURLToPath, URL } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 const model = vi.hoisted(() => ({ view: null as unknown }));
-vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useMemo: (factory: () => unknown) => factory(), useRef: (current: unknown) => ({ current }), useState: (initial: unknown) => [initial, vi.fn()] }));
+vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useContext: () => null, useMemo: (factory: () => unknown) => factory(), useRef: (current: unknown) => ({ current }), useState: (initial: unknown) => [initial, vi.fn()] }));
 vi.mock("react-native", () => ({ ScrollView: "ScrollView", Pressable: "Pressable", Text: "Text", View: "View" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput", Icon: "Icon" }));
 import { ReadOnlyPage } from "../client/read-only-pages";

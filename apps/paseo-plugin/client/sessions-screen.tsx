@@ -79,7 +79,8 @@ import { DEFAULT_ORGANIZATION_SETTINGS, type OrganizationSettings } from "../sha
 import type { useOrganizationSettings } from "./use-organization-settings";
 import { allGroupKeys, buildOrganizationTree, declaredScope, defaultGroupExpanded, deriveDeskScopes, filterOrganizationTree, flattenOrganizationTree, inEpicScope, matchesScope, nativeDesk, NO_LINKED_EPIC, NO_ROLE_KEY, organizationScope, organizationGroupRank, organizationWorkspaceCount, OTHER_WORKSTREAM, ROLE_ROOT_KEY, scopeKeepsGroup, sessionRole, sessionState, STATE_LABELS, titleRoleCode, UNASSIGNED_EPIC, visibleSessions, workstreamRank, type OrganizationGroup, type OrganizationRow, type OrganizationWorkspace, type OrganizationProject, type RoleSource } from "./session-organization";
 import { rowKey, siblingKeys, reorderSavedSiblingOrder } from "./organization-order";
-import { OrganizationRowView, StateBadge, stateColor as sessionStateColor } from "./organization-row";
+import { OrganizationRowView, stateColor as sessionStateColor } from "./organization-row";
+import { SessionStateMarker, SessionStatusIcon } from "./session-state-marker";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
 import { Action, COARSE_POINTER, Disclosure } from "./page-controls";
 import { SessionsLegend } from "./sessions-legend";
@@ -88,7 +89,9 @@ import { sessionTimeLines, useClock, useUpdatedTime, type RowTime, type TimeFres
 import { sessionUsageLabel } from "./session-usage";
 import { planWorkstreamOptions } from "./plan-workstreams";
 import type { ReadSourceSummary, SourceRead, WorkstreamRegistry } from "../shared/read-sources";
-import { SessionUsage, SessionUsageLines } from "./session-usage-view";
+import { useControlHelp } from "./control-help";
+import { SessionUsage, SessionUsageLines, SessionMetadataGuide } from "./session-usage-view";
+import { SessionDetailSection } from "./session-detail-section";
 import { MobileFiltersPage, focusControl } from "./mobile-filters";
 import { MobileQuickToolbar } from "./mobile-quick-toolbar";
 import { MobileQuickChooser } from "./mobile-quick-chooser";
@@ -129,9 +132,6 @@ const GROUPINGS: readonly { readonly id: SessionGrouping; readonly label: string
   { id: "role", label: "Role" },
   { id: "flat", label: "Flat" },
 ];
-const STATUS_DOTS: Partial<Record<StatusFilter, Parameters<typeof sessionStateColor>[0]>> = {
-  running: "running", idle: "idle", error: "failed", needs_input: "needs_input", attention: "attention", initializing: "initializing", closed: "closed",
-};
 
 export function matchesShortcut(
   entry: DirectoryEntry,
@@ -343,12 +343,13 @@ export const SessionRow = memo(function SessionRow({
   highlighted = false,
   live = false,
 }: SessionRowProps) {
+  const state = sessionState(entry);
+  const stateHint = useControlHelp(STATE_LABELS[state]);
   const time = useUpdatedTime(entry.updatedAt, live);
   const age = time ? rowAge(time, compact, colors) : null;
   const attention = attentionLabel(entry);
   const archived = archivedLabel(entry);
   const history = earlierErrorLabel(entry);
-  const state = sessionState(entry);
   const context = entry.workspaceName ?? entry.projectName ?? entry.cwd;
   const project =
     entry.projectName && entry.projectName !== entry.workspaceName
@@ -384,11 +385,13 @@ export const SessionRow = memo(function SessionRow({
 
   return (
     <Pressable
+      ref={stateHint.bindings.ref} onFocus={stateHint.bindings.onFocus} onBlur={stateHint.bindings.onBlur}
+      onHoverIn={stateHint.bindings.onHoverIn} onHoverOut={stateHint.bindings.onHoverOut}
       testID={`sessions-row-${entry.id}`}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
       accessibilityHint="Opens the existing Paseo session"
-      onPress={() => onPress(entry)}
+      onPress={() => { stateHint.dismiss(); onPress(entry); }}
       style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => ({
         minHeight: compact || COARSE_POINTER ? 44 : 40,
         paddingLeft: 8,
@@ -418,7 +421,7 @@ export const SessionRow = memo(function SessionRow({
           </View>
           <SessionUsage entry={entry} colors={colors} />
           </View>
-          <StateBadge state={state} colors={colors} compact={false} />
+          <SessionStateMarker state={state} colors={colors} />
         </>
       ) : compact ? (
         <>
@@ -438,7 +441,7 @@ export const SessionRow = memo(function SessionRow({
           {age}
           <SessionUsage entry={entry} colors={colors} />
           </View>
-          <StateBadge state={state} colors={colors} compact={false} />
+          <SessionStateMarker state={state} colors={colors} />
         </>
       ) : (
         <>
@@ -459,8 +462,8 @@ export const SessionRow = memo(function SessionRow({
             ) : null}
           </View>
           <View style={{ maxWidth: 340, minWidth: 0, flexShrink: 1 }}><SessionUsage entry={entry} colors={colors} /></View>
-          <View style={{ width: 95, gap: 2 }}>
-            <StateBadge state={state} colors={colors} compact={false} />
+          <View style={{ alignItems: "flex-end", gap: 2 }}>
+            <SessionStateMarker state={state} colors={colors} />
             {runtime ? (
               <Text style={{ color: colors.foregroundMuted, fontSize: 9 }}>
                 {runtimeLabel}
@@ -558,10 +561,11 @@ export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<t
 export function SessionDetailsButton({ title, expanded, compact, colors, onPress, ref }: {
   readonly title: string; readonly expanded: boolean; readonly compact: boolean; readonly colors: ThemeColors; readonly onPress: () => void; readonly ref?: Ref<View>;
 }) {
+  const help = useControlHelp("Show model, reported usage, timing and placement.", ref);
   const size = compact || COARSE_POINTER ? 44 : 30;
   return (
-    <Pressable ref={ref} testID="sessions-row-details" accessibilityRole="button" accessibilityLabel={`Details: ${title}`} accessibilityHint="Shows exact times with their time zone, model, token report, role and placement details"
-      accessibilityState={{ expanded }} aria-expanded={expanded} onPress={onPress}
+    <Pressable {...help.bindings} testID="sessions-row-details" accessibilityRole="button" accessibilityLabel={`Details: ${title}`} accessibilityHint="Shows session facts and optional explanations"
+      accessibilityState={{ expanded }} aria-expanded={expanded} onPress={() => { help.dismiss(); onPress(); }}
       style={({ pressed, hovered, focused }: { pressed: boolean; hovered?: boolean; focused?: boolean }) => ({ width: size, height: size, borderRadius: 6, alignItems: "center", justifyContent: "center", backgroundColor: pressed || hovered || focused ? colors.surface2 : undefined })}>
       <Icon name="Info" size={compact ? 16 : 14} color={colors.foregroundMuted} />
     </Pressable>
@@ -576,7 +580,8 @@ export function SessionTimeLines({ entry, freshness, colors }: { readonly entry:
       {sessionTimeLines(entry, clock, freshness).map(({ label, value }) => (
         <View key={label} style={{ paddingHorizontal: 6, paddingVertical: 4 }}>
           <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>{label}</Text>
-          <Text selectable style={{ color: colors.foreground, fontSize: 13, lineHeight: 18 }}>{value}</Text>
+          <Text selectable style={{ color: colors.foreground, fontSize: 13, lineHeight: 18 }}>{value.split("\n")[0]}</Text>
+          {value.includes("\n") ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17, marginTop: 3 }}>{value.slice(value.indexOf("\n") + 1)}</Text> : null}
         </View>
       ))}
     </View>
@@ -620,15 +625,19 @@ type SessionResultRowProps = {
 const SessionResultRow = memo(function SessionResultRow({ entry, provenance, colors, compact, onPress, onShowInTree, treeButtonRef, live, details, lifecycleAction }: SessionResultRowProps) {
   const cues = resultCues(entry);
   const coarse = compact || COARSE_POINTER;
+  const state = sessionState(entry);
+  const stateHint = useControlHelp(STATE_LABELS[state]);
   const time = useUpdatedTime(entry.updatedAt, live);
   return (
     <View testID={`sessions-result-${entry.id}`} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
       <Pressable
+        ref={stateHint.bindings.ref} onFocus={stateHint.bindings.onFocus} onBlur={stateHint.bindings.onBlur}
+        onHoverIn={stateHint.bindings.onHoverIn} onHoverOut={stateHint.bindings.onHoverOut}
         testID={`sessions-row-${entry.id}`}
         accessibilityRole="button"
         accessibilityLabel={[resultAccessibilityLabel(entry, provenance), time?.spoken].filter(Boolean).join(". ")}
         accessibilityHint="Opens the existing Paseo session"
-        onPress={() => onPress(entry)}
+        onPress={() => { stateHint.dismiss(); onPress(entry); }}
         style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => ({
           flex: 1,
           minWidth: 0,
@@ -647,7 +656,7 @@ const SessionResultRow = memo(function SessionResultRow({ entry, provenance, col
           </Text>
           {time ? rowAge(time, compact, colors) : null}
           {compact ? null : <View style={{ maxWidth: 340, minWidth: 0, flexShrink: 1 }}><SessionUsage entry={entry} colors={colors} /></View>}
-          <StateBadge state={sessionState(entry)} colors={colors} compact={false} />
+          <SessionStateMarker state={state} colors={colors} />
         </View>
         <Text testID="sessions-result-place" numberOfLines={compact ? 2 : 1} style={{ color: colors.foregroundMuted, fontSize: compact ? 12 : 11, lineHeight: compact ? 16 : 15 }}>
           {provenance.parts.join(" › ")}
@@ -1073,7 +1082,7 @@ export function FilterChip({
   colors,
   compact = false,
   count,
-  dot,
+  status,
   checkbox = false,
   disabled = false,
   onBlur,
@@ -1087,7 +1096,8 @@ export function FilterChip({
   compact?: boolean;
   /** Matching sessions under the other active filters. */
   count?: number;
-  dot?: string;
+  /** Same shape as session rows; the existing label supplies its meaning. */
+  status?: StatusFilter;
   /** Multi-select choice rather than one of a set. */
   checkbox?: boolean;
   disabled?: boolean;
@@ -1122,7 +1132,7 @@ export function FilterChip({
         opacity: disabled ? 0.5 : 1,
       }}
     >
-      {dot ? <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: dot }} /> : null}
+      {status ? <SessionStatusIcon status={status} colors={colors} /> : null}
       <Text style={{ flexShrink: checkbox ? 1 : undefined, color: colors.foreground, fontSize: compact ? 12 : 11, fontWeight: active ? "600" : "400" }}>
         {label}
       </Text>
@@ -2053,6 +2063,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   // One session's details at a time. The anchor reads the row's current button, so focus
   // returns to it even if the list drew the row again while the details were open.
   const [detailsId, setDetailsId] = useState<string | null>(null);
+  const detailsHelp = useControlHelp("");
   const detailsIdRef = useRef(detailsId);
   detailsIdRef.current = detailsId;
   // The grouping and list mode the details opened in; another one draws the row elsewhere, or not at all.
@@ -2284,7 +2295,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             testID={`sessions-filter-${status}`}
             label={statusFilterLabel(status)}
             count={statusCounts[status]}
-            dot={STATUS_DOTS[status] ? sessionStateColor(STATUS_DOTS[status], colors) : undefined}
+            status={status}
             compact={compact}
             active={view.status === status}
             colors={colors}
@@ -2332,7 +2343,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>Not captured in session data; no lifecycle is inferred from idle or closed sessions.</Text>
           </OptionLine>
           <OptionLine label="More states" colors={colors}>
-            {MORE_STATUS_FILTERS.map((status) => <FilterChip key={status} testID={`sessions-filter-${status}`} label={statusFilterLabel(status)} count={statusCounts[status]} dot={sessionStateColor(STATUS_DOTS[status] ?? null, colors)} compact={compact} active={view.status === status} colors={colors} {...focusProps} onPress={() => updateFilter({ status })} />)}
+            {MORE_STATUS_FILTERS.map((status) => <FilterChip key={status} testID={`sessions-filter-${status}`} label={statusFilterLabel(status)} count={statusCounts[status]} status={status} compact={compact} active={view.status === status} colors={colors} {...focusProps} onPress={() => updateFilter({ status })} />)}
           </OptionLine>
           <ToggleRow
             testID="sessions-advanced-archived"
@@ -2390,6 +2401,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     const target = detailsReturn();
     setDetailsId(null);
     target?.focus?.();
+    // Restoring focus must not cover the next touch target with help.
+    detailsHelp.dismiss();
   };
   // Details whose session has left, or whose grouping or list mode has changed, close. Focus they held,
   // which the page has now dropped, goes where Close would send it; focus elsewhere stays put.
@@ -2399,6 +2412,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     const target = document && (document.activeElement == null || document.activeElement === document.body) ? detailsReturn() : null;
     setDetailsId(null);
     target?.focus?.();
+    if (target) detailsHelp.dismiss();
   }, [detailsId, detailsEntry === null]);
   // Over the list on a compact screen, so a short one still shows the title, Close and a scrolling chain.
   const detailsLayer = detailsEntry === null ? null : (
@@ -2407,20 +2421,18 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       placement={compact ? { align: "stretch", width: 0, cover: true } : { align: "end", width: 360, maxHeight: 440 }}
       header={<View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8, paddingLeft: 6, paddingBottom: 4 }}>
         <Text testID="sessions-details-title" selectable style={{ flex: 1, minWidth: 0, paddingTop: 6, color: colors.foreground, fontSize: 13, fontWeight: "600" }}>{detailsEntry.title}</Text>
-        <Action ref={detailsCloseRef} small={!compact} colors={colors} label="Close" accessibilityLabel={`Close details: ${detailsEntry.title}`} onPress={closeDetails} />
+        <Action ref={detailsCloseRef} small={!compact} colors={colors} label="Close" icon="X" iconOnly help="Close details" accessibilityLabel={`Close details: ${detailsEntry.title}`} onPress={closeDetails} />
       </View>}>
       {/* On web the lines are a named stop of their own, so a keyboard can scroll a chain longer than the screen. */}
-      <ScrollView testID="sessions-details-lines" {...(pageDocument() ? { tabIndex: 0, role: "region", accessibilityLabel: "Times, role, placement, model and token report" } as const : {})}
+      <ScrollView testID="sessions-details-lines" {...(pageDocument() ? { tabIndex: 0, role: "region", accessibilityLabel: "Model, reported usage, timing and placement" } as const : {})}
         onFocus={() => setDetailsLinesFocused(true)} onBlur={() => setDetailsLinesFocused(false)}
         style={{ flexGrow: 0, flexShrink: 1, borderRadius: 6, ...(detailsLinesFocused ? { outlineColor: colors.accent, outlineStyle: "solid", outlineWidth: 2 } as const : null) }}>
-        <SessionTimeLines entry={detailsEntry} freshness={{ live: timesLive, readAt: state.lastUpdatedAt }} colors={colors} />
-        {sessionDetailLines(detailsEntry, mappings).map(({ label, value }) => (
-          <View key={label} style={{ paddingHorizontal: 6, paddingVertical: 4 }}>
-            <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>{label}</Text>
-            <Text selectable style={{ color: colors.foreground, fontSize: 13, lineHeight: 18 }}>{value}</Text>
-          </View>
-        ))}
         <SessionUsageLines entry={detailsEntry} colors={colors} stale={showBanner} />
+        <SessionDetailSection title="Timing" colors={colors}>
+          <SessionTimeLines entry={detailsEntry} freshness={{ live: timesLive, readAt: state.lastUpdatedAt }} colors={colors} />
+        </SessionDetailSection>
+        <SessionDetailSection title="Role and placement" values={sessionDetailLines(detailsEntry, mappings)} colors={colors} />
+        <SessionMetadataGuide key={detailsEntry.id} entry={detailsEntry} colors={colors} />
       </ScrollView>
     </AnchoredMenu>
   );
