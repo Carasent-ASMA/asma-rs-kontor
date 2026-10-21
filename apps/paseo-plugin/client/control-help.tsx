@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode, type Ref, type RefObject } from "react";
-import { BackHandler, ScrollView, Text, View } from "react-native";
+import { BackHandler, Platform, ScrollView, Text, View } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { anchoredPanelOpen, menuFrame, type MenuFrame } from "./anchored-menu";
 
@@ -50,8 +50,8 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
     };
   }, [helpId]);
   useEffect(() => {
-    const document = (globalThis as { document?: EventTarget }).document;
-    const window = (globalThis as { window?: EventTarget }).window;
+    const document = Platform.OS === "web" ? (globalThis as { document?: EventTarget }).document : undefined;
+    const window = Platform.OS === "web" ? (globalThis as { window?: EventTarget }).window : undefined;
     const key = (event: KeyEvent) => {
       if (event.key !== "Escape" || !current.current) return;
       controller.dismiss();

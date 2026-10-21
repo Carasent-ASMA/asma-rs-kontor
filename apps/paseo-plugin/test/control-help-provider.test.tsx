@@ -2,7 +2,7 @@
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { View } from "react-native";
-const hooks = vi.hoisted(() => ({ slots: [] as unknown[], cursor: 0, effects: [] as (() => void | (() => void))[], panelOpen: false, controller: null as unknown }));
+const hooks = vi.hoisted(() => ({ slots: [] as unknown[], cursor: 0, effects: [] as (() => void | (() => void))[], panelOpen: false, controller: null as unknown, platform: "web", backAdded: 0, backRemoved: 0 }));
 vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(),
   useContext: () => hooks.controller, useId: () => "test-help",
   useRef: (current: unknown) => { const i = hooks.cursor++; return hooks.slots[i] ??= { current }; },
@@ -11,7 +11,7 @@ vi.mock("react", async (original) => ({ ...await original<typeof import("react")
   useEffect: (effect: () => void | (() => void)) => { const i = hooks.cursor++; if (!(i in hooks.slots)) { hooks.slots[i] = true; hooks.effects.push(effect); } },
 }));
 vi.mock("../client/anchored-menu", async (original) => ({ ...await original<typeof import("../client/anchored-menu")>(), anchoredPanelOpen: () => hooks.panelOpen }));
-vi.mock("react-native", () => ({ Pressable: "Pressable", View: "View", Text: "Text", ScrollView: "ScrollView", BackHandler: { addEventListener: () => ({ remove() {} }) } }));
+vi.mock("react-native", () => ({ Platform: { get OS() { return hooks.platform; } }, Pressable: "Pressable", View: "View", Text: "Text", ScrollView: "ScrollView", BackHandler: { addEventListener: () => { hooks.backAdded++; return { remove() { hooks.backRemoved++; } }; } } }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
 import { ControlHelpProvider, useControlHelp } from "../client/control-help";
 type Element = ReactElement<Record<string, unknown>>;
@@ -26,6 +26,7 @@ let cleanup: (() => void)[] = [];
 let handlers: Map<string, (event: never) => void>;
 beforeEach(() => {
   vi.useFakeTimers(); hooks.slots = []; hooks.cursor = 0; hooks.effects = []; hooks.controller = null; hooks.panelOpen = false;
+  hooks.platform = "web"; hooks.backAdded = 0; hooks.backRemoved = 0;
   handlers = new Map();
   const target = { addEventListener: (type: string, fn: (event: never) => void) => handlers.set(type, fn), removeEventListener: (type: string) => handlers.delete(type) };
   vi.stubGlobal("document", target); vi.stubGlobal("window", target);
@@ -44,6 +45,19 @@ function mount(width = 390, height = 320) {
   return { control, render, tooltip: () => all(tree).find(e => e.props.role === "tooltip"), root };
 }
 describe("hover and focus help", () => {
+  it.each(["ios", "android"])("mounts and cleans up on %s when native window aliases the global without DOM listeners", (platform) => {
+    hooks.platform = platform;
+    vi.stubGlobal("document", undefined);
+    vi.stubGlobal("window", globalThis);
+    expect(Reflect.get(globalThis, "window")).toBe(globalThis);
+    expect("addEventListener" in globalThis).toBe(false);
+    const screen = mount();
+    expect(hooks.backAdded).toBe(1);
+    screen.control.bindings.onFocus(); screen.render(); expect(screen.tooltip()).toBeDefined();
+    screen.control.dismiss(); screen.render(); expect(screen.tooltip()).toBeUndefined();
+    cleanup.forEach(fn => fn()); cleanup = [];
+    expect(hooks.backRemoved).toBe(1);
+  });
   it("appears on focus, stays while the pointer moves away, and Escape dismisses without moving focus", () => {
     const screen = mount(); screen.control.bindings.onFocus(); screen.render(); expect(screen.tooltip()).toBeDefined();
     expect(screen.control.bindings["aria-describedby"]).toBe(screen.tooltip()!.props.nativeID);
