@@ -807,7 +807,35 @@ impl Services {
         project_id: ProjectId,
         node: &SessionTopologyNode,
         predecessor: &StoredHostedTopologySeat,
+        reasons: (&'static str, &'static str),
+    ) -> Result<(), ApiError> {
+        self.fence_node_session_with(project_id, node, predecessor, reasons, false)
+            .await
+    }
+
+    /// Fence one PR review's session for a close.
+    ///
+    /// A retirement whose transport failed after the write may already have
+    /// taken the session, so it is reported as unconfirmed rather than as a
+    /// channel refusal that says nothing changed.
+    pub(super) async fn fence_pr_review_node_session(
+        &self,
+        project_id: ProjectId,
+        node: &SessionTopologyNode,
+        predecessor: &StoredHostedTopologySeat,
+        reasons: (&'static str, &'static str),
+    ) -> Result<(), ApiError> {
+        self.fence_node_session_with(project_id, node, predecessor, reasons, true)
+            .await
+    }
+
+    async fn fence_node_session_with(
+        &self,
+        project_id: ProjectId,
+        node: &SessionTopologyNode,
+        predecessor: &StoredHostedTopologySeat,
         (retired_reason, absent_reason): (&'static str, &'static str),
+        unconfirmed_transport: bool,
     ) -> Result<(), ApiError> {
         let _native_activity = self.native_activity()?;
         let state = self.state()?;
@@ -858,7 +886,7 @@ impl Services {
             // cannot prove the session survived, so saying "the runtime could
             // not be reached; nothing was changed" would be false and would
             // invite a caller to act as though the seat were still live.
-            Err(error) if matches!(error, RuntimeError::Transport { .. }) => {
+            Err(RuntimeError::Transport { .. }) if unconfirmed_transport => {
                 return Err(ApiError::new(
                     state.realm_id(),
                     ApiErrorCode::DeliveryUnconfirmed,

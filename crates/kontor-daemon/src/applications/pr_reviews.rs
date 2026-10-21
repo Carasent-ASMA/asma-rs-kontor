@@ -1136,7 +1136,7 @@ impl Services {
             }
             for (node, hosted) in &live {
                 match self
-                    .fence_node_session(
+                    .fence_pr_review_node_session(
                         project_id,
                         node,
                         hosted,
@@ -1149,7 +1149,12 @@ impl Services {
                 {
                     Ok(()) => partial = true,
                     Err(error) => {
-                        return Err(if partial { partial_close(error) } else { error });
+                        let unconfirmed = error.code == ApiErrorCode::DeliveryUnconfirmed;
+                        return Err(if partial || unconfirmed {
+                            partial_close(error)
+                        } else {
+                            error
+                        });
                     }
                 }
             }
