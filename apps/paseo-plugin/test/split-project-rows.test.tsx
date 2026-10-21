@@ -148,20 +148,20 @@ describe("sibling rows that different native projects label alike", () => {
 
   const pair = (left: string, right: string) => labels(related({ entries: [at("l", "left", {}, "repo"), at("r", "right", {}, "repo")] }, new Map([["prj_left", left], ["prj_right", right]])).tree)[0]![1];
   it.each([
-    ["macOS", "/Users/alice/work/repo", "/Users/bob/work/repo"],
-    ["Linux", "/home/alice/work/repo", "/home/bob/work/repo"],
-    ["Windows", "C:\\Users\\alice\\work\\repo", "C:\\Users\\bob\\work\\repo"],
-    ["older Windows", "C:\\Documents and Settings\\alice\\work\\repo", "C:\\Documents and Settings\\bob\\work\\repo"],
-    ["a home beside a folder outside any home", "/opt/work/repo", "/Users/bob/work/repo"],
+    ["macOS", "/Users/someone/work/repo", "/Users/operator/work/repo"],
+    ["Linux", "/home/someone/work/repo", "/home/operator/work/repo"],
+    ["Windows", "C:\\Users\\someone\\work\\repo", "C:\\Users\\operator\\work\\repo"],
+    ["older Windows", "C:\\Documents and Settings\\someone\\work\\repo", "C:\\Documents and Settings\\operator\\work\\repo"],
+    ["a home beside a folder outside any home", "/opt/work/repo", "/Users/operator/work/repo"],
     ["the root user's home", "/root/work/repo", "/srv/work/repo"],
-    ["two homes", "/Users/alice", "/Users/bob"],
+    ["two homes", "/Users/someone", "/Users/operator"],
   ])("never names a project by a home folder or one above it, but by its position (%s)", (_, left, right) => {
     expect(pair(left, right)).toEqual(["Epic unknown · repo (1 of 2)", "Epic unknown · repo (2 of 2)"]);
   });
   it.each([
-    ["macOS", "/Users/alice/asma-1/repo", "/Users/alice/asma-2/repo"],
-    ["Linux", "/home/alice/src/asma-1/repo", "/home/alice/src/asma-2/repo"],
-    ["Windows", "C:\\Users\\alice\\asma-1\\repo", "C:\\Users\\alice\\asma-2\\repo"],
+    ["macOS", "/Users/someone/asma-1/repo", "/Users/someone/asma-2/repo"],
+    ["Linux", "/home/someone/src/asma-1/repo", "/home/someone/src/asma-2/repo"],
+    ["Windows", "C:\\Users\\someone\\asma-1\\repo", "C:\\Users\\someone\\asma-2\\repo"],
     ["outside any home", "/srv/asma-1/repo", "/srv/asma-2/repo"],
   ])("names a project by the first folder below the home folder (%s)", (_, left, right) => {
     expect(pair(left, right)).toEqual(["Epic unknown · repo (asma-1)", "Epic unknown · repo (asma-2)"]);
