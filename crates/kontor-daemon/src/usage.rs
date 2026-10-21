@@ -55,6 +55,7 @@ use kontor_core::repository::{
     NewProviderUsageObservation, ProjectRepository, ProviderUsageObservation, RepositoryError,
 };
 use kontor_core::spec::ProviderQuotaSource;
+use kontor_runtime_paseo::client::{PaseoRpc, PaseoTransport};
 use secrecy::{ExposeSecret, SecretString};
 use tracing::{debug, info, warn};
 
@@ -347,6 +348,8 @@ pub struct UsagePoller {
     homes: ProviderHomes,
     client: reqwest::Client,
     exact_reporter: Option<Arc<dyn ExactProviderUsageReporter>>,
+    /// The Paseo of the plane that opted into the ZeroSub pool, if one did.
+    zerosub: Option<Arc<dyn PaseoTransport>>,
     backoffs: Arc<backoff::ProbeBackoffs>,
 }
 
@@ -399,6 +402,12 @@ impl UsagePoller {
                 .build()
                 .unwrap_or_default(),
             exact_reporter: None,
+            // A runtimes file that does not read is the daemon's own startup
+            // refusal to make; here it only means no pool is opted in.
+            zerosub: crate::runtimes::read(state_root)
+                .ok()
+                .and_then(|settings| crate::runtimes::zerosub_transport(&settings))
+                .map(|paseo| Arc::new(paseo) as Arc<dyn PaseoTransport>),
             backoffs: Arc::new(backoff::ProbeBackoffs::load(state_root)),
         }
     }
@@ -530,6 +539,14 @@ impl UsagePoller {
         if let Some(reporter) = self.exact_reporter.as_ref() {
             return reporter.probe(profile, provider).await;
         }
+        // The plain `claude` spelling selects no login of its own; on an
+        // opted-in host it is the ZeroSub pool, and only ZeroSub can say
+        // whether the pool has room (ASMA-8433).
+        if provider == ProviderApi::Claude.provider()
+            && let Some(paseo) = self.zerosub.as_deref()
+        {
+            return zerosub_pool_reading(paseo).await;
+        }
         if profile.credential_ref.kind != CredentialReferenceKind::ConfigHome {
             return Err(ProviderUsageProbeFailure::Unsupported);
         }
@@ -562,6 +579,97 @@ impl UsagePoller {
             .map_err(|_| ProviderUsageProbeFailure::Unreachable)?;
         decode_usage_response(api, response, strict).await
     }
+}
+
+/// ZeroSub's `zerosub.state` answer, reduced to what admission reads.
+///
+/// Labels, emails, organizations and usage figures are deliberately not
+/// fields: serde drops them, so nothing naming a person is ever held.
+#[derive(Debug, serde::Deserialize)]
+struct ZeroSubAnswer {
+    output: ZeroSubState,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ZeroSubState {
+    accounts: Vec<ZeroSubAccount>,
+    /// Paseo provider id → the family ZeroSub routes it through.
+    providers: BTreeMap<String, String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ZeroSubAccount {
+    family: String,
+    status: String,
+    limited_until: Option<String>,
+}
+
+/// Ask ZeroSub, through the opted-in plane's Paseo, for the pool's state.
+async fn zerosub_pool_reading(
+    paseo: &dyn PaseoTransport,
+) -> Result<UsageReading, ProviderUsageProbeFailure> {
+    let request = PaseoRpc::zerosub_state(format!("kontor-zerosub-{}", uuid::Uuid::now_v7()));
+    let frame = paseo
+        .request(&request)
+        .await
+        .map_err(|_| ProviderUsageProbeFailure::Unreachable)?;
+    // A refusal here is ZeroSub absent, disabled or of another shape: no
+    // reading, so the pool simply earns no admission evidence.
+    let answer: ZeroSubAnswer = frame
+        .resolve(&request, "ZeroSubState")
+        .map_err(|_| ProviderUsageProbeFailure::Unsupported)?;
+    zerosub_reading(&answer.output)
+}
+
+/// What the pool can take (ASMA-8433, DEC-2/DEC-5 of the ZeroSub record).
+///
+/// The pool counts only while ZeroSub routes plain `claude` itself — a
+/// provider entry with its own login is left alone by ZeroSub, and a pool
+/// reading there would attest an account nobody chose. Then any ready Claude
+/// account means room; otherwise the pool is back when its *earliest*
+/// limited account resets, because ZeroSub moves to whichever returns first.
+/// Signed out, disabled or still checking with no reset to name is no
+/// reading at all, and stale evidence stops admitting on its own.
+fn zerosub_reading(state: &ZeroSubState) -> Result<UsageReading, ProviderUsageProbeFailure> {
+    let claude = ProviderApi::Claude.provider();
+    if state.providers.get(claude).map(String::as_str) != Some(claude) {
+        return Err(ProviderUsageProbeFailure::Unsupported);
+    }
+    let accounts = state
+        .accounts
+        .iter()
+        .filter(|account| account.family == claude);
+    let reading = |limit_reached, windows| UsageReading {
+        provider: claude.to_owned(),
+        limit_reached,
+        windows,
+        credits_exhausted: false,
+    };
+    if accounts.clone().any(|account| account.status == "ready") {
+        return Ok(reading(false, Vec::new()));
+    }
+    accounts
+        .filter(|account| account.status == "limited")
+        .filter_map(|account| {
+            account
+                .limited_until
+                .as_deref()?
+                .parse::<jiff::Timestamp>()
+                .ok()
+        })
+        .min()
+        .map(|resets_at| {
+            reading(
+                true,
+                vec![kontor_core::quota::QuotaWindow {
+                    kind: kontor_core::quota::QuotaWindowKind::Session,
+                    resets_at,
+                    used_percent: 100,
+                }],
+            )
+        })
+        .ok_or(ProviderUsageProbeFailure::Unauthorized)
 }
 
 async fn decode_usage_response(
@@ -604,7 +712,7 @@ async fn decode_usage_response(
 /// compare-and-swap are each logged and stepped over, because the alternative is
 /// one unreachable account stopping the Realm from observing the others.
 pub async fn poll_once(poller: &UsagePoller, state: &ApiState) -> usize {
-    if poller.homes().is_empty() && poller.exact_reporter.is_none() {
+    if poller.homes().is_empty() && poller.exact_reporter.is_none() && poller.zerosub.is_none() {
         return 0;
     }
     let projects = match state.with_store(kontor_store::SqliteStore::list_projects) {
@@ -840,7 +948,7 @@ fn unchanged(row: &kontor_core::repository::ProviderQuotaState, evidence: &Conte
 /// has just come up is exactly when its quota rows are most likely to be stale,
 /// because anything that happened while it was down happened unobserved.
 pub async fn poll_until_stopped(poller: UsagePoller, state: ApiState) {
-    if poller.homes().is_empty() {
+    if poller.homes().is_empty() && poller.zerosub.is_none() {
         debug!("no credential homes are registered; the usage poller will not run");
         return;
     }
@@ -887,6 +995,65 @@ mod tests {
         ProjectRepository,
     };
     use kontor_core::spec::ProviderQuotaKind;
+
+    /// ASMA-8433: one `zerosub.state` answer, shaped as ZeroSub 1.2.1 sends it
+    /// over Paseo 0.11.1, read for the pool route `claude`.
+    #[test]
+    fn the_zerosub_pool_reads_ready_limited_and_unrouted() {
+        let answer = |providers: serde_json::Value, claude: [(&str, Option<&str>); 2]| {
+            let account = |family: &str, (status, until): (&str, Option<&str>)| {
+                serde_json::json!({
+                    "id": "a", "family": family, "label": "Work", "kind": "subscription",
+                    "email": "person@example.com", "plan": "team", "organization": "Org",
+                    "status": status, "isDefault": false, "limitedUntil": until,
+                    "usage": null, "agentCount": 0, "home": "/h",
+                })
+            };
+            let state = serde_json::json!({ "requestId": "r", "output": {
+                "accounts": [
+                    account("codex", ("ready", None)),
+                    account("claude", claude[0]),
+                    account("claude", claude[1]),
+                ],
+                "agents": [], "logins": [], "providers": providers,
+                "canReopen": true, "showComposerPill": true, "warnings": [],
+            }});
+            let answer: ZeroSubAnswer = serde_json::from_value(state).expect("the 1.2.1 shape");
+            zerosub_reading(&answer.output)
+        };
+        let routed = serde_json::json!({ "claude": "claude", "codex": "codex" });
+        let soon = "2026-10-14T03:33:31.000Z";
+        let later = "2026-10-15T00:00:00Z";
+
+        let ready = answer(routed.clone(), [("limited", Some(later)), ("ready", None)])
+            .expect("one ready account is room");
+        assert_eq!(observe(&ready).kind, ProviderQuotaKind::Available);
+        assert_eq!(ready.provider, "claude");
+
+        let limited = answer(
+            routed.clone(),
+            [("limited", Some(later)), ("limited", Some(soon))],
+        )
+        .expect("all limited is a reset to wait for");
+        let observed = observe(&limited);
+        assert_eq!(observed.kind, ProviderQuotaKind::Exhausted);
+        assert_eq!(
+            observed.resets_at,
+            Some(soon.parse().unwrap()),
+            "the earliest reset"
+        );
+
+        assert_eq!(
+            answer(routed, [("signed_out", None), ("disabled", None)]).unwrap_err(),
+            ProviderUsageProbeFailure::Unauthorized
+        );
+        // ZeroSub leaves a `claude` entry with its own login alone.
+        let own_login = serde_json::json!({ "codex": "codex" });
+        assert_eq!(
+            answer(own_login, [("ready", None), ("ready", None)]).unwrap_err(),
+            ProviderUsageProbeFailure::Unsupported
+        );
+    }
 
     fn probe_profile(state: &ApiState, provider: &str) -> AccountProfile {
         let project_id = ProjectId::generate();

@@ -217,6 +217,16 @@ impl From<SeatAutonomy> for PermissionPosture {
     }
 }
 
+/// The Paseo plugin that chooses the account behind the plain `claude`
+/// provider. Closed, so a misspelling refuses the document rather than
+/// silently leaving the host un-opted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaudeAccountManager {
+    /// The ZeroSub plugin, 1.2 or later.
+    Zerosub,
+}
+
 /// One Paseo execution plane.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PaseoSetting {
@@ -283,6 +293,16 @@ pub struct PaseoSetting {
     /// make.
     #[serde(default)]
     pub provider_selects_account: bool,
+    /// Who picks the Claude account behind the plain `claude` provider on this
+    /// plane's host (ASMA-8433).
+    ///
+    /// `zerosub` opts the host into the ZeroSub account pool: the usage poller
+    /// asks ZeroSub, through this plane's Paseo, whether the pool can take a
+    /// seat, and that answer is the only evidence a plain-`claude` route is
+    /// admitted on. Absent — every document written before this field — the
+    /// plain provider gets no such evidence and placement is unchanged.
+    #[serde(default)]
+    pub claude_account_manager: Option<ClaudeAccountManager>,
     /// Temporary explicit model routes keyed by unavailable provider.
     #[serde(default)]
     pub provider_fallbacks: BTreeMap<String, kontor_core::spec::ModelRung>,
@@ -476,6 +496,30 @@ pub fn seat_mcp(state_root: &Path) -> Option<SeatMcp> {
     })
 }
 
+/// The Paseo connection of the plane that opted its host into the ZeroSub
+/// pool (ASMA-8433), on a client id of its own so the adapter's resumable
+/// session is never shared.
+///
+/// ponytail: the first opted-in plane only — one pool host per realm; give the
+/// pool profile a host key when a second host needs its own pool.
+#[must_use]
+pub fn zerosub_transport(settings: &RuntimeSettings) -> Option<PaseoLiveTransport> {
+    settings.runtimes.iter().find_map(|setting| {
+        let RuntimeSetting::Paseo(paseo) = setting;
+        if paseo.claude_account_manager != Some(ClaudeAccountManager::Zerosub) {
+            return None;
+        }
+        PaseoLiveTransport::new(
+            &paseo.executable,
+            SecretString::from(paseo.host_target.clone()),
+            &paseo.endpoint,
+            &format!("{}-zerosub", paseo.client_id),
+            paseo.timeout_seconds,
+        )
+        .ok()
+    })
+}
+
 /// Build one Paseo execution plane.
 fn compose_paseo(
     setting: &PaseoSetting,
@@ -647,6 +691,7 @@ mod tests {
             max_concurrent_sessions: 2,
             unavailable_providers: BTreeSet::new(),
             provider_selects_account: false,
+            claude_account_manager: None,
             provider_fallbacks: BTreeMap::new(),
             executable: "paseo".to_owned(),
             host_target: "https://user:hunter2@paseo.example".to_owned(),
@@ -899,6 +944,7 @@ mod tests {
             max_concurrent_sessions: 2,
             unavailable_providers: BTreeSet::new(),
             provider_selects_account: false,
+            claude_account_manager: None,
             provider_fallbacks: BTreeMap::new(),
             executable: "paseo".to_owned(),
             host_target: "https://user:hunter2@paseo.example".to_owned(),
@@ -1031,6 +1077,35 @@ mod tests {
             setting.permission_posture,
             Some(PermissionPosture::Autonomous)
         );
+    }
+
+    /// ASMA-8433: only a plane that names `zerosub` yields a pool connection;
+    /// an absent field is today's plane and a misspelling refuses the file.
+    #[test]
+    fn only_an_opted_in_plane_yields_the_zerosub_connection() {
+        let settings = |manager: Option<ClaudeAccountManager>| RuntimeSettings {
+            schema_version: RUNTIMES_SCHEMA,
+            runtimes: vec![RuntimeSetting::Paseo(PaseoSetting {
+                claude_account_manager: manager,
+                ..match paseo("paseo.agent") {
+                    RuntimeSetting::Paseo(setting) => setting,
+                }
+            })],
+        };
+        assert!(zerosub_transport(&settings(None)).is_none());
+        assert!(zerosub_transport(&settings(Some(ClaudeAccountManager::Zerosub))).is_some());
+
+        let directory = tempfile::TempDir::new().expect("a temporary directory");
+        let document = |manager: &str| {
+            let mut document = serde_json::to_value(settings(None)).expect("serializable");
+            document["runtimes"][0]["claude_account_manager"] = serde_json::json!(manager);
+            document.to_string()
+        };
+        std::fs::write(path_in(directory.path()), document("zerosub")).expect("written");
+        let read_back = read(directory.path()).expect("an additive v5 field");
+        assert!(zerosub_transport(&read_back).is_some());
+        std::fs::write(path_in(directory.path()), document("zero-sub")).expect("written");
+        assert!(matches!(read(directory.path()), Err(FleetError::Malformed)));
     }
 
     /// The operator vocabulary and the domain enum say the same three things.

@@ -16981,6 +16981,10 @@ fn account_for_explicit_provider_alias(
 /// rung walk whose candidates are `claude-work` and `claude-personal`; this
 /// expansion preserves the declared model/effort while making those governed
 /// choices explicit and deterministic. Already-qualified routes remain exact.
+///
+/// An enabled account selected by the generic spelling itself — the ZeroSub
+/// pool on an opted-in host (ASMA-8433) — keeps that route first, ahead of the
+/// aliases, which stay its fallbacks. No such account, no change.
 fn consultation_account_rungs(
     rungs: &[ModelRung],
     accounts: &[kontor_scheduler::headroom::EligibleAccount],
@@ -16993,6 +16997,9 @@ fn consultation_account_rungs(
             qualified.push(rung.clone());
             continue;
         }
+        let pooled = accounts
+            .iter()
+            .any(|account| account.selectable_providers.contains(provider));
         let mut ordered_accounts: Vec<_> = accounts.iter().collect();
         ordered_accounts.sort_by_key(|account| account.account_profile_id);
         let mut seen = BTreeSet::new();
@@ -17002,14 +17009,13 @@ fn consultation_account_rungs(
             .filter(|alias| *alias != provider && provider_family(alias) == family)
             .filter(|alias| seen.insert((*alias).to_owned()))
             .collect();
-        if aliases.is_empty() {
+        if pooled || aliases.is_empty() {
             qualified.push(rung.clone());
-        } else {
-            for alias in aliases {
-                let mut route = rung.clone();
-                route.provider = ProviderRef(alias.to_owned());
-                qualified.push(route);
-            }
+        }
+        for alias in aliases {
+            let mut route = rung.clone();
+            route.provider = ProviderRef(alias.to_owned());
+            qualified.push(route);
         }
     }
     qualified
@@ -48833,6 +48839,51 @@ mod tests {
         assert_eq!(
             consultation_account_rungs(std::slice::from_ref(&explicit), &accounts),
             [explicit]
+        );
+    }
+
+    /// ASMA-8433: an account selected by the plain `claude` spelling — the
+    /// ZeroSub pool — is tried first and the aliases stay its fallbacks; the
+    /// generic route is checked unambiguous with the pool among the accounts.
+    #[test]
+    fn a_pool_selected_by_the_generic_spelling_comes_before_the_aliases() {
+        let account = |id: &str, provider: &str| EligibleAccount {
+            account_profile_id: AccountProfileId::parse(id).expect("an account id"),
+            selectable_providers: BTreeSet::from([provider.to_owned()]),
+        };
+        let accounts = [
+            account("0193f000-0000-7000-8000-000000000001", "claude-work"),
+            account("0193f000-0000-7000-8000-000000000002", "claude-personal"),
+            account("0193f000-0000-7000-8000-000000000003", "claude"),
+        ];
+        let generic = ModelRung {
+            provider: ProviderRef("claude".to_owned()),
+            model: ModelRef("claude-opus-5".to_owned()),
+            effort: Some(EffortLevel::Xhigh),
+        };
+        let expanded = consultation_account_rungs(std::slice::from_ref(&generic), &accounts);
+        let providers: Vec<&str> = expanded
+            .iter()
+            .map(|route| route.provider.0.as_str())
+            .collect();
+        assert_eq!(providers, ["claude", "claude-work", "claude-personal"]);
+        assert!(ensure_unambiguous_generic_consultation_routes(&expanded, &accounts).is_ok());
+
+        // Codex has no pool: its generic route still expands to aliases only.
+        let codex = ModelRung {
+            provider: ProviderRef("codex".to_owned()),
+            model: ModelRef("gpt-5.6-sol".to_owned()),
+            effort: None,
+        };
+        let codex_accounts = [account(
+            "0193f000-0000-7000-8000-000000000004",
+            "codex-work",
+        )];
+        assert_eq!(
+            consultation_account_rungs(std::slice::from_ref(&codex), &codex_accounts)[0]
+                .provider
+                .0,
+            "codex-work"
         );
     }
 

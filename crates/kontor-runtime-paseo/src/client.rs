@@ -959,6 +959,19 @@ impl PaseoRpc {
         )
     }
 
+    /// `plugin.rpc.invoke.request` for ZeroSub's `zerosub.state` read
+    /// (Paseo 0.11, ZeroSub 1.2): its Claude/Codex accounts and which
+    /// provider ids it routes. Read-only, so no other plugin method is exposed.
+    #[must_use]
+    pub fn zerosub_state(request_id: String) -> Self {
+        Self::read(
+            "plugin.rpc.invoke.request",
+            "plugin.rpc.invoke.response",
+            request_id,
+            serde_json::json!({ "pluginId": "zerosub", "method": "zerosub.state", "input": {} }),
+        )
+    }
+
     /// `project.list.request`.
     #[must_use]
     pub fn project_list(request_id: String) -> Self {
@@ -3335,6 +3348,20 @@ mod tests {
         assert_eq!(envelope["message"]["agentId"], "agt_1");
         assert_eq!(request.response_type, "fetch_agent_response");
         assert_eq!(request.route(), "rpc fetch_agent_request");
+    }
+
+    /// ASMA-8433: the shape the Paseo 0.11.1 app sends (`invokePluginRpc`).
+    #[test]
+    fn the_zerosub_state_read_is_one_plugin_rpc() {
+        let request = PaseoRpc::zerosub_state("req-1".to_owned());
+        let message = &request.envelope()["message"];
+        assert_eq!(message["type"], "plugin.rpc.invoke.request");
+        assert_eq!(message["requestId"], "req-1");
+        assert_eq!(message["pluginId"], "zerosub");
+        assert_eq!(message["method"], "zerosub.state");
+        assert_eq!(message["input"], serde_json::json!({}));
+        assert_eq!(request.response_type, "plugin.rpc.invoke.response");
+        assert!(!request.mutates);
     }
 
     #[test]
