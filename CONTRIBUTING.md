@@ -230,6 +230,11 @@ The retired escape hatch `ASMA_ALLOW_AGENT_PUSH` is now
 
 ## Pull requests
 
+For an outside contribution without a tracker key, a maintainer creates or
+links the task and supplies its confirmed key in the contribution's issue or
+pull-request thread. Use that key in the branch and title below. The public
+shape check validates the spelling; the maintainer confirms the task binding.
+
 The pull-request title leads with the branch's key and one space
 (`<KEY>-<number> <summary>`); a `releases/v<X>.<Y>.<Z>` branch takes exactly
 `Release v<X>.<Y>.<Z>`, and the base is the configured
