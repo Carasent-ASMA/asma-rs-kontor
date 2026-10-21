@@ -101,6 +101,21 @@ it("discovers graphless declarations and deduplicates worktree copies while reta
   expect((await discoverPlanCatalog([root, copy], [], exporter)).catalog).toHaveLength(1);
   await writeFile(join(copy, "plans/plain.md"), "---\nworkstream: access\nepic: ASMA-9\n---\n# Different revision");
   expect((await discoverPlanCatalog([root, copy], [], exporter)).catalog).toHaveLength(2);
-  const pinned = { ...first.catalog[0]!, expectedSha256: first.coverage[0]!.revision!, revisionKind: "approved revision" as const };
+  const retained = join(root, "retained.md");
+  await writeFile(retained, await readFile(join(root, "plans/plain.md")));
+  const pinned = { ...first.catalog[0]!, path: retained, expectedSha256: first.coverage[0]!.revision!, revisionKind: "approved revision" as const };
   expect((await discoverPlanCatalog([root], [pinned], exporter)).catalog).toEqual([pinned]);
+});
+
+it("appends new plans while retaining existing source IDs, order, explicit mappings and historical pins", async () => {
+  const root = await checkout({ "plans/current.md": "---\nworkstream: reporting\n---\n# Current", "plans/new.md": "# Unknown workstream and epic" });
+  const discovered = await discoverPlanSources(root, exporter);
+  const current = { ...discovered.catalog[0]!, id: "retained-id", projectId: "explicit-project", workstream: "operator-mapping" };
+  const historical = { ...current, id: "historical", path: "/retained/historical.md", expectedSha256: "a".repeat(64), revisionKind: "saved draft" as const };
+  const report = await discoverPlanCatalog([root], [historical, current], exporter);
+  expect(report.catalog.map(source => source.id)).toEqual(["historical", "retained-id", discovered.catalog[1]!.id]);
+  expect(report.catalog[0]).toEqual(historical);
+  expect(report.catalog[1]).toMatchObject({ id: current.id, projectId: "explicit-project", workstream: "operator-mapping" });
+  expect(report.catalog[2]).toMatchObject({ workstream: null, epic: null, projectId: null });
+  expect(report.diagnostics.join()).toContain("retained explicit catalog workstream");
 });

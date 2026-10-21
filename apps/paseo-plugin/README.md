@@ -328,6 +328,22 @@ association and appears in Source details. The registry is read separately from
 `config/orchestration/workstreams.json` in `KONTOR_PLUGIN_ASMA_WORKSPACE` on each
 catalog refresh. Missing registry configuration is reported; no roster is hard-coded.
 
+The operator can configure registry resolution without changing the daemon environment:
+`$PASEO_HOME/plugin-config/kontor/registry.json` (default
+`~/.paseo/plugin-config/kontor/registry.json`) accepts exactly
+`{"workspaceRoot":"/absolute/asma-workspace"}`. Like the catalog and `floor.json`,
+this is a host-local operator file, read only by the plugin. Organization settings
+and RPC inputs cannot supply the path. The plugin reads the file and registry
+again on each source-list refresh; no worker or daemon restart is needed.
+
+An explicit server-side reader argument takes precedence, followed by a nonblank
+`KONTOR_PLUGIN_ASMA_WORKSPACE`, then the local file. A present invalid override
+reports an unavailable registry and does not fall back. The root must be absolute;
+the reader never infers it from cwd or native project names. Invalid/missing files
+and unsupported registry schemas retain diagnostics and empty registration data.
+Registered workstream keys and desk categories remain separate. This file configures
+only registry resolution; it does not change canonical-export execution context.
+
 Discovery deduplicates copies by repository common directory, relative plan path
 and content revision. Divergent revisions remain separate source choices. Existing
 entries, IDs, pins, project bindings and explicit catalog mappings are preserved;
@@ -341,6 +357,25 @@ and observed native session classifications as distinct facts. Counts precede
 search/state/workstream filters; zero sessions means none linked in the current
 inventory. Registered desk categories are separate from workstreams. Native desk,
 workspace and project identities remain native, including unlabelled sessions.
+
+Each workstream choice names its kind first: **desk category**, **plan only** (a plan
+declares it; no session or workspace is linked) or, for Other work, **no workstream
+link**. Session, workspace and plan counts follow, then **registered** or
+**unregistered** only while the registry is loaded; otherwise the footer says once
+that it is not. Counts follow the association the choice filters by, and the tree
+keeps every session of a native desk project under that desk. So a choice counting
+such sessions says "N shown under DESK • …", and a desk choice says how many more
+sessions its desk holds for other workstreams. Workspace counts cover workspaces
+with a counted session or a workspace mapping; the tree also lists empty native
+workspaces until workstream choices narrow it, and a desk choice says how many of
+its desk's native workspaces are empty. The shortcut for everything outside
+desks is **Outside desks** (saved views keep the `Other work` scope ID); the **Other
+work** group and choice hold only sessions with no workstream association. Details
+of such a session add a **Linking** line: why no plan links it (no known ASMA epic, no
+configured plan for its epic, plans bound to other projects, plans that do not agree
+on one ready workstream, or explicit plan links that do not resolve), and that
+Settings › Presentation and associations can map it or link a plan. No project or
+session name links a session.
 
 Display precedence is: saved session mapping, saved workspace mapping, desk label,
 workstream label, native desk classification, then an unambiguous declared-plan
@@ -841,6 +876,9 @@ pnpm --filter @carasent/kontor-paseo-plugin test
 apps/paseo-plugin/scripts/closure-suite.sh
 ```
 
+`test/plan-workstreams.test.ts` reconciles every workstream choice with the tree:
+desk-held sessions are named, each session counts once, and choosing a choice shows
+exactly its count. It also pins choice wording and the unlinked-session plan notes.
 `test/session-directory.test.ts` covers a 505-session three-page walk, repeated
 and missing cursors, native upserts/removals, attention, archival scope,
 recognized epic/workstream label search, disconnect staleness, reconnect
