@@ -128,6 +128,7 @@ export function OrganizationRowView({ row, colors, compact, children, details, l
   const roleView = group.kind === "role" && group.parentKey === ROLE_ROOT_KEY;
   const name = roleView && group.shortCode === null ? label : `${KIND_NAMES[group.kind]} ${label}`;
   const summary = `${roleView && stale ? "Last known: " : ""}${aggregateSummary(group.aggregate)}`;
+  const title = <Text numberOfLines={1} style={{ flexShrink: 1, color: colors.foreground, fontSize: top ? 13 : 12.5, fontWeight: "600", fontFamily: group.kind === "workspace-kind" || (group.kind === "role" && group.shortCode !== null) ? "monospace" : undefined }}>{label}</Text>;
   return <View style={{ paddingLeft: indent, borderTopWidth: top ? 1 : 0, borderColor: colors.border }}>
     <Guides depth={row.depth} compact={compact} colors={colors} />
     <View style={{ flexDirection: "row", alignItems: "center" }}>
@@ -138,7 +139,11 @@ export function OrganizationRowView({ row, colors, compact, children, details, l
         style={({ pressed, hovered, focused }: { pressed: boolean; hovered?: boolean; focused?: boolean }) => ({ flex: 1, minWidth: 0, minHeight: height, flexDirection: "row", alignItems: "center", gap: compact ? 5 : 8, paddingHorizontal: 8, borderRadius: 6, backgroundColor: pressed || hovered || focused ? colors.surface2 : undefined })}>
         <Text style={{ width: 10, color: colors.foregroundMuted, fontSize: 13 }}>{row.expanded ? "⌄" : "›"}</Text>
         {icon ? <Icon name={icon} size={compact ? 14 : 16} color={colors.foregroundMuted} /> : null}
-        <Text numberOfLines={1} style={{ flexShrink: 1, color: colors.foreground, fontSize: top ? 13 : 12.5, fontWeight: "600", fontFamily: group.kind === "workspace-kind" || (group.kind === "role" && group.shortCode !== null) ? "monospace" : undefined }}>{label}</Text>
+        {compact && group.detail ? <View style={{ flexShrink: 1, minWidth: 0, paddingVertical: 4 }}>
+          {title}
+          {/* A phone has no room beside the label, so the detail takes up to two lines under it. */}
+          <Text numberOfLines={2} style={{ color: colors.foregroundMuted, fontSize: 11 }}>{group.detail}</Text>
+        </View> : title}
         {group.detail && !compact ? <Text numberOfLines={1} style={{ flexShrink: 2, color: colors.foregroundMuted, fontSize: 11 }}>{group.detail}</Text> : null}
         <View style={{ flex: 1 }} />
         {roleView ? <StateCounts aggregate={group.aggregate} colors={colors} compact={compact} stale={stale} /> : <StateBadge state={state} colors={colors} compact={compact} />}

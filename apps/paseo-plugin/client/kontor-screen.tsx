@@ -110,6 +110,7 @@ function HostScreen(props: PluginScreenProps) {
     for (const workspace of workspaces.entries) if (!names.has(workspace.projectId)) names.set(workspace.projectId, workspace.projectCustomName ?? workspace.projectDisplayName);
     return [...names];
   }, [directory.state.entries, workspaces.entries, workspaces.projects]);
+  const projectRoots = useMemo(() => new Map([...workspaces.entries.map((workspace) => [workspace.projectId, workspace.projectRootPath] as const), ...(workspaces.projects ?? []).map((project) => [project.projectId, project.projectRootPath] as const)]), [workspaces.entries, workspaces.projects]);
   const selectedPlan = route.sourceId ? sourceState.sources.find((source) => source.id === route.sourceId && source.kind === "plan") : undefined;
   const scopedEpic = selectedPlan ? sourceEpic(selectedPlan, sourceState.reads[selectedPlan.id]) : route.epicKey;
   const entries = useMemo(() => directory.state.entries.filter((entry) => (route.projectId === null || entry.projectKey === route.projectId)
@@ -237,7 +238,7 @@ function HostScreen(props: PluginScreenProps) {
     planMappings={planMappings} workstreamRegistry={sourceState.registry} workstreamSources={sourcesInContext} workstreamReads={sourceState.reads}
     workstreamNote={sourceState.error ?? (sourceState.registry?.diagnostics.join(" ") || null)}
     planSources={planSources} onEpicTab={(tab, epicKey, sourceId) => visitContext({ tab, epicKey, sourceId, sourceRevision: sourceId ? sourceState.reads[sourceId]?.revision ?? null : null, originAgentId: null })}
-    projects={projects.map(([id, name]) => ({ id, name }))}
+    projects={projects.map(([id, name]) => ({ id, name, root: projectRoots.get(id) }))}
     workspaces={workspaces.entries.filter((workspace) => (route.projectId === null || workspace.projectId === route.projectId) && (route.epicKey === null || saved.displayMappings[`workspace:${workspace.id}`]?.epic?.trim().toLocaleLowerCase() === route.epicKey.trim().toLocaleLowerCase())).map((workspace) => ({ id: workspace.id, name: workspace.title ?? workspace.name, projectKey: workspace.projectId, projectName: workspace.projectCustomName ?? workspace.projectDisplayName }))}
     workspaceNote={[workspaces.error ?? (workspaces.readAt ? `Empty workspaces from the workspace list read ${new Date(workspaces.readAt).toLocaleTimeString()}` : "Reading the workspace list…"), workspaces.projectError ?? (workspaces.projectsReadAt ? `Projects read ${new Date(workspaces.projectsReadAt).toLocaleTimeString()}` : "Reading the project list…")].join(" · ")} />;
   else if (route.tab === "Settings") page = <OrganizationSettingsPage colors={colors} state={presentation.state} entries={directory.state.entries} workspaces={workspaces.entries.map((workspace) => ({ id: workspace.id, name: workspace.title ?? workspace.name }))} sources={sourceState.sources} reads={sourceState.reads} teamsSnapshots={sourceState.teamsSnapshots} teamsErrors={sourceState.teamsErrors} sourcesAvailable={sourceState.available} sourceError={sourceState.error} refresh={() => { void sourceState.refresh(); }}

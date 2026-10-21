@@ -88,6 +88,7 @@ import { nativeFreshnessLabel } from "./native-freshness";
 import { sessionTimeLines, useClock, useUpdatedTime, type RowTime, type TimeFreshness } from "./session-time";
 import { sessionUsageLabel } from "./session-usage";
 import { planFallbackNote, planWorkstreamOptions, workstreamOptionLabel } from "./plan-workstreams";
+import { relateSplitProjects } from "./split-project-rows";
 import type { ReadSourceSummary, SourceRead, WorkstreamRegistry } from "../shared/read-sources";
 import { useControlHelp } from "./control-help";
 import { SessionUsage, SessionUsageLines, SessionMetadataGuide } from "./session-usage-view";
@@ -1353,7 +1354,8 @@ type SessionsScreenProps = PluginScreenProps & {
   projectId?: string | null;
   onIncludeArchived?: (include: boolean) => void;
   workspaces?: readonly OrganizationWorkspace[];
-  projects?: readonly OrganizationProject[];
+  /** `root` is the native project's root folder; only one folder of it names same-named projects apart. */
+  projects?: readonly (OrganizationProject & { readonly root?: string })[];
   workspaceNote?: string;
   epicKey?: string | null;
   viewScope?: string;
@@ -1929,7 +1931,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   // Retain legacy shortcuts; native ID choices distinguish same-named desks and survive renames.
   const scopeChoices = [...SCOPE_CHOICES.slice(0, -1), ...deskScopes, SCOPE_CHOICES[SCOPE_CHOICES.length - 1]!];
   const scopeChoiceLabel = shortcut === null ? null : scopeChoices.find(({ id }) => id === shortcut)?.label ?? (shortcut?.startsWith("desk-project:") ? "Native desk project" : shortcut);
-  const tree = useMemo(() => buildOrganizationTree({ entries: scoped, ...preferences, displayMappings: mappings, grouping, workspaces: scopedWorkspaces, projects: scopedProjects }), [scoped, preferences, mappings, grouping, scopedWorkspaces, scopedProjects]);
+  const projectRoots = useMemo(() => new Map((projects ?? []).flatMap((project) => project.root ? [[project.id, project.root] as const] : [])), [projects]);
+  const tree = useMemo(() => relateSplitProjects(buildOrganizationTree({ entries: scoped, ...preferences, displayMappings: mappings, grouping, workspaces: scopedWorkspaces, projects: scopedProjects }), projectRoots), [scoped, preferences, mappings, grouping, scopedWorkspaces, scopedProjects, projectRoots]);
   const tokens = useMemo(() => view.query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean), [view.query]);
   const task = view.task ?? null;
   const resultMode = isResultMode(view);

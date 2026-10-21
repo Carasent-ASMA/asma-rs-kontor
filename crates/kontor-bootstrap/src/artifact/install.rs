@@ -238,6 +238,14 @@ struct InstallLock {
     _file: std::fs::File,
 }
 
+impl Drop for InstallLock {
+    fn drop(&mut self) {
+        // A forked child can briefly retain the open-file description even
+        // with CLOEXEC. Release this transaction's lock before closing our fd.
+        let _ = FileExt::unlock(&self._file);
+    }
+}
+
 /// One install root this process may transact on.
 #[derive(Debug, Clone)]
 pub struct Installer {
@@ -1461,4 +1469,30 @@ pub(crate) fn nonce() -> String {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_nanos());
     format!("{}-{nanos}", std::process::id())
+}
+
+#[cfg(all(test, unix))]
+mod lock_release_tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_descriptor_does_not_extend_transaction_lock() {
+        let holder = tempfile::tempdir().expect("disposable root");
+        let installer = Installer::at(holder.path()).expect("installer");
+        let root = installer.open_or_create_root().expect("root");
+        let guard = installer.lock(&root).expect("first lock");
+        // fork and dup share the same open-file description on Unix.
+        let inherited = guard._file.try_clone().expect("duplicate descriptor");
+        assert!(matches!(installer.lock(&root), Err(InstallError::Locked)));
+
+        drop(guard);
+        let successor = installer
+            .lock(&root)
+            .expect("completed transaction releases its lock while a duplicate survives");
+        drop(inherited);
+        assert!(matches!(installer.lock(&root), Err(InstallError::Locked)));
+
+        drop(successor);
+        assert!(installer.lock(&root).is_ok());
+    }
 }
