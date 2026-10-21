@@ -127,9 +127,45 @@ project, epic, exact source identity and revision. Organization placement uses
 explicit display mapping, then desk, then workstream. Back retains the previous query, position and session
 filters; the native **← Kontor** control returns to the last host-local view.
 
-Sessions supports Hierarchy, Role and Flat views. In Hierarchy, repeated
-workspace-kind and session-role prefixes before the first `•` become groups within
-their original parent. Unclassified sessions and empty native workspaces remain visible.
+Sessions supports **Desks & workstreams**, **Desks & workspaces**, Role and Flat
+views. Native durable desks use the host's project ID, then its actual workspace
+IDs, then their sessions in both tree views. Every desk session stays in its
+native workspace, including sessions with different or conflicting epic, desk or
+workstream declarations. Those declarations remain searchable/filterable
+associations in Details; they never become workspace-like parents within a desk.
+Optional role subgroups below a workspace are a presentation view. Empty native
+workspaces remain visible, and a desk with none says **No native workspaces in
+this desk**. Desk counts describe actual workspaces and sessions. Same-named
+projects and workspaces remain separate by native ID.
+
+Outside native desks, the workstream/epic tree and repeated workspace-kind/role
+prefix groups keep their existing behavior. Explicit epic contexts and workstream
+association filters explore declared associations without changing native placement.
+
+The workstream association choices list only values resolved from sessions in the
+current scope: session mapping, workspace mapping, `desk` label, `workstream`
+label, native DESK project fallback, then Other work, in that order. These choices
+are neither a native project inventory nor a complete registry of workstreams.
+Native projects/workspaces have their own context scope and native IDs. Sessions
+of non-desk projects without declarations remain under Other work and their
+labelled epic, or No linked epic; no workstream is inferred from their titles.
+
+The authoritative workstream registry and its separate desk categories are not
+loaded by this selector. Neither are plan frontmatter declarations or verified
+epic-to-workstream links. Available choices can include unregistered names;
+missing choices do not mean that a registered workstream has no work. Missing
+plan headers remain unassigned, and catalog metadata alone does not propagate
+plan declarations into session filters. Native desk Details explicitly says
+that registry membership and epic/plan links are not checked. Native project
+counts, registered workstream counts and these metadata choices describe
+different things; they must not be presented as one complete inventory.
+
+Native desk keys are `project:<native-id>/workspace:id%3A<native-id>` in both tree
+views, reusing the former Desks & workspaces keys. Saved expansion/order under
+those keys still applies across renames. Former hierarchy keys rooted in
+`workstream:<desk>` or containing an epic match no native desk row; their branches
+start in the default order/disclosure once. Those entries remain in settings for
+other views and history. No settings, favorites or mappings are wiped or migrated.
 
 Role shows one header per role across the visible scope, including roles with a
 single session, and **No role** last; each session appears under exactly one.
@@ -150,7 +186,7 @@ Headers start closed. Saved disclosure and Expand all still apply.
 A Role row shows a short place. The **Details** button beside it shows the
 whole of it:
 - the role and where it came from, and every other role declaration;
-- the full desk, or workstream, epic and workspace chain;
+- the native desk/project and workspace IDs with separate epic/workstream associations, or the non-desk workstream, epic and workspace chain;
 - absent values by name, such as "No linked epic" or "No workspace · <cwd>".
   A value is absent only when no display mapping or label supplies it, so a
   label that says "Other work" is shown as declared.

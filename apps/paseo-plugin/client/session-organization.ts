@@ -89,8 +89,10 @@ export type OrganizationGroup = {
   readonly unit: "sessions" | "workspaces";
   readonly unitTotal: number;
   readonly unitVisible: number;
-  /** A workstream that holds desk work or an empty desk workspace; false on every other group. */
+  /** A native desk project or a workstream containing declared desk work. */
   readonly desk: boolean;
+  /** Native identity for a durable desk project; associations never parent its workspaces. */
+  readonly project?: OrganizationProject;
   /** Native metadata for an empty workspace, retained through display placement. */
   readonly workspace?: OrganizationWorkspace;
 };
@@ -108,6 +110,7 @@ export type OrganizationInput = {
   readonly displayMappings?: Readonly<Record<string, OrganizationDisplayMapping>>;
   readonly expandedGroups?: Readonly<Record<string, boolean>>;
   readonly workspaces?: readonly OrganizationWorkspace[];
+  readonly projects?: readonly OrganizationProject[];
 };
 export type OrganizationWorkspace = { readonly id: string; readonly name: string; readonly projectKey?: string | null; readonly projectName?: string | null };
 export type OrganizationProject = { readonly id: string; readonly name: string };
@@ -149,10 +152,11 @@ export type OrganizationRow =
       readonly parentKey: string;
     }
   | {
-      /** An expanded workspace with no non-archived sessions says so instead of opening onto nothing. */
+      /** Expanded empty workspaces and zero-workspace native desks say so explicitly. */
       readonly kind: "empty";
       readonly depth: number;
       readonly parentKey: string;
+      readonly entity?: "project";
     };
 
 const SEPARATOR = "\u2022";
@@ -413,6 +417,7 @@ function group(input: {
   readonly epic?: string | null;
   readonly desk?: boolean;
   readonly workspace?: OrganizationWorkspace;
+  readonly project?: OrganizationProject;
 }): OrganizationGroup {
   const entries = [
     ...input.groups.flatMap((child) => child.entries),
@@ -746,13 +751,37 @@ function buildEpicGroup(input: {
   });
 }
 
+/** Native desk projects keep one real workspace branch regardless of their sessions' associations. */
+function buildNativeDesks(input: OrganizationInput, nativeOrder: ReadonlyMap<string, number>): OrganizationGroup[] {
+  const scopes = deriveDeskScopes(input.entries, input.workspaces, input.projects);
+  return scopes.map(({ projectId, label }) => {
+    const entries = input.entries.filter((entry) => entry.projectKey === projectId);
+    const occupied = new Set(entries.map((entry) => entry.workspaceId));
+    const empty = (input.workspaces ?? []).filter((workspace) => workspace.projectKey === projectId && !occupied.has(workspace.id));
+    const key = `project:${segment(projectId)}`;
+    const children = buildWorkspaceGroups({ entries, parentKey: key, depth: 1,
+      siblingOrder: input.siblingOrder, nativeOrder, emptyWorkspaces: empty });
+    const workspaces = children.length;
+    return group({ key, kind: "project", label, shortCode: null, parentKey: null, depth: 0,
+      sessions: [], groups: children, desk: true, project: { id: projectId, name: label },
+      detail: `${workspaces} workspace${workspaces === 1 ? "" : "s"}` });
+  });
+}
+
+export function organizationGroupRank(value: OrganizationGroup): number {
+  return value.desk ? 0 : workstreamRank(value.label);
+}
+
 function buildHierarchy(input: {
   readonly entries: readonly DirectoryEntry[];
+  readonly projects?: readonly OrganizationProject[];
   readonly siblingOrder: OrganizationInput["siblingOrder"];
   readonly displayMappings: OrganizationInput["displayMappings"];
   readonly nativeOrder: ReadonlyMap<string, number>;
   readonly workspaces?: readonly OrganizationWorkspace[];
 }): OrganizationGroup[] {
+  const nativeDesks = buildNativeDesks(input, input.nativeOrder);
+  const nativeIds = new Set(nativeDesks.map((desk) => desk.project!.id));
   const workstreams = new Map<
     string,
     {
@@ -766,6 +795,7 @@ function buildHierarchy(input: {
     }
   >();
   for (const entry of input.entries) {
+    if (entry.projectKey && nativeIds.has(entry.projectKey)) continue;
     const scope = organizationScope(entry, input.displayMappings);
     const workstreamKey = normalizedPrefix(scope.workstream);
     let workstream = workstreams.get(workstreamKey);
@@ -791,6 +821,7 @@ function buildHierarchy(input: {
   const groups: OrganizationGroup[] = [];
   const occupied = new Set(input.entries.map((entry) => entry.workspaceId));
   for (const workspace of input.workspaces ?? []) {
+    if (workspace.projectKey && nativeIds.has(workspace.projectKey)) continue;
     if (occupied.has(workspace.id)) continue;
     const mapping = input.displayMappings?.[workspaceMappingKey(workspace.id)];
     const desk = mapping?.workstream ? null : nativeDesk(workspace.projectName);
@@ -849,8 +880,7 @@ function buildHierarchy(input: {
       }),
     );
   }
-  return sortGroups(groups, "root", input.siblingOrder, (value) =>
-    workstreamRank(value.label),
+  return sortGroups([...nativeDesks, ...groups], "root", input.siblingOrder, organizationGroupRank,
   );
 }
 
@@ -918,10 +948,13 @@ function countWorkspaces(groups: readonly OrganizationGroup[]): number {
 /** Native project → workspace kind → workspace → role, as Paseo places the sessions. */
 function buildPlacement(input: {
   readonly entries: readonly DirectoryEntry[];
+  readonly projects?: readonly OrganizationProject[];
   readonly siblingOrder: OrganizationInput["siblingOrder"];
   readonly nativeOrder: ReadonlyMap<string, number>;
   readonly workspaces?: readonly OrganizationWorkspace[];
 }): OrganizationGroup[] {
+  const nativeDesks = buildNativeDesks(input, input.nativeOrder);
+  const nativeIds = new Set(nativeDesks.map((desk) => desk.project!.id));
   const projects = new Map<string, { label: string; entries: DirectoryEntry[]; empty: OrganizationWorkspace[] }>();
   const project = (key: string, label: string) => {
     let current = projects.get(key);
@@ -932,10 +965,12 @@ function buildPlacement(input: {
     return current;
   };
   for (const entry of input.entries) {
+    if (entry.projectKey && nativeIds.has(entry.projectKey)) continue;
     project(entry.projectKey ?? `unknown:${entry.workspaceId ?? entry.cwd ?? entry.id}`, entry.projectName ?? "Project unknown").entries.push(entry);
   }
   const occupied = new Set(input.entries.map((entry) => entry.workspaceId));
   for (const workspace of input.workspaces ?? []) {
+    if (workspace.projectKey && nativeIds.has(workspace.projectKey)) continue;
     if (!occupied.has(workspace.id)) project(workspace.projectKey ?? `unknown:${workspace.id}`, workspace.projectName ?? "Project unknown").empty.push(workspace);
   }
   const groups = [...projects].map(([key, value]) => {
@@ -961,8 +996,7 @@ function buildPlacement(input: {
       detail: `${workspaces} workspace${workspaces === 1 ? "" : "s"}`,
     });
   });
-  return sortGroups(groups, "root", input.siblingOrder, (value) =>
-    value.label.toLocaleUpperCase().startsWith("DESK") ? 0 : 1,
+  return sortGroups([...nativeDesks, ...groups], "root", input.siblingOrder, (value) => value.desk ? 0 : 1,
   );
 }
 
@@ -1013,6 +1047,7 @@ export function buildOrganizationTree(input: OrganizationInput): OrganizationGro
       siblingOrder: input.siblingOrder,
       nativeOrder,
       workspaces: input.workspaces,
+      projects: input.projects,
     });
   }
   return buildHierarchy({
@@ -1021,6 +1056,7 @@ export function buildOrganizationTree(input: OrganizationInput): OrganizationGro
     displayMappings: input.displayMappings,
     nativeOrder,
     workspaces: input.workspaces,
+    projects: input.projects,
   });
 }
 
@@ -1038,7 +1074,7 @@ function filterGroup(
     .filter((child): child is NonNullable<typeof child> => child !== null);
   const groups = children.map((child) => child.group);
   const visible = [...children.flatMap((child) => child.visible), ...sessions];
-  if (visible.length === 0 && groups.length === 0 && !(current.kind === "workspace" && current.totalCount === 0 && matched)) {
+  if (visible.length === 0 && groups.length === 0 && !((current.kind === "workspace" || current.project !== undefined) && current.totalCount === 0 && matched)) {
     return null;
   }
   return {
@@ -1089,6 +1125,21 @@ export function visibleSessions(groups: readonly OrganizationGroup[]): Directory
   return groups.flatMap((group) => [...visibleSessions(group.groups), ...group.sessions]);
 }
 
+/** Workspace IDs count once across splits; native desks also count their empty workspaces. */
+export function organizationWorkspaceCount(groups: readonly OrganizationGroup[]): number {
+  const keys = new Set<string>();
+  const visit = (groups: readonly OrganizationGroup[], nativeDesk = false) => {
+    for (const group of groups) {
+      const native = nativeDesk || group.project !== undefined;
+      if (native && group.workspace) keys.add(`id:${group.workspace.id}`);
+      for (const entry of group.sessions) keys.add(workspaceOf(entry).key);
+      visit(group.groups, native);
+    }
+  };
+  visit(groups);
+  return keys.size;
+}
+
 export function allGroupKeys(groups: readonly OrganizationGroup[]): string[] {
   return groups.flatMap((group) => [group.key, ...allGroupKeys(group.groups)]);
 }
@@ -1126,8 +1177,8 @@ export function flattenOrganizationTree(
         parentKey: current.key,
       });
     }
-    if (current.kind === "workspace" && current.groups.length === 0 && current.sessions.length === 0) {
-      rows.push({ kind: "empty", depth: current.depth + 1, parentKey: current.key });
+    if ((current.kind === "workspace" || current.project !== undefined) && current.groups.length === 0 && current.sessions.length === 0) {
+      rows.push({ kind: "empty", depth: current.depth + 1, parentKey: current.key, ...(current.project ? { entity: "project" as const } : {}) });
     }
   }
   for (const group of groups) {
@@ -1181,9 +1232,9 @@ function matchesDeskScope(scope: string | null, projectId: string | null | undef
     case null:
       return true;
     case "PR Review":
-      return stream === "pr review" || stream === "pr-review" || desk === "pr-review";
+      return desk !== null ? desk === "pr-review" : stream === "pr review" || stream === "pr-review";
     case "Adam":
-      return stream === "adam" || desk === "adam";
+      return desk !== null ? desk === "adam" : stream === "adam";
     case "Desks":
       return desk !== null || deskWork;
     case "Other work":
@@ -1195,7 +1246,10 @@ function matchesDeskScope(scope: string | null, projectId: string | null | undef
 
 /** Keep empty workspaces by native membership as well as display placement, without admitting siblings. */
 export function scopeKeepsGroup(group: OrganizationGroup, scope: string | null, mappings?: OrganizationInput["displayMappings"]): boolean {
-  if (scope === null) return group.kind === "workspace";
+  if (scope === null) return group.kind === "workspace" || group.project !== undefined;
+  if (group.project && group.totalCount === 0 && group.groups.length === 0) {
+    return matchesDeskScope(scope, group.project.id, group.project.name, nativeDesk(group.project.name) ?? OTHER_WORKSTREAM, true);
+  }
   if (!["PR Review", "Adam", "Desks"].includes(scope) && !scope.startsWith(DESK_PROJECT_SCOPE)) return false;
   if (group.kind !== "workspace" || group.totalCount !== 0 || !group.workspace) return false;
   const workspace = group.workspace;

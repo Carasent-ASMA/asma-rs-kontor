@@ -5,6 +5,7 @@ import type {
   NativeSyntheticEvent,
 } from "react-native";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { NATIVE_DESK_PROJECTS, NATIVE_DESK_WORKSPACES, nativeDeskSessions } from "./fixtures/native-desks";
 
 type HookSlot = {
   initialized?: boolean;
@@ -353,7 +354,7 @@ function scrollEvent(
   } as NativeSyntheticEvent<NativeScrollEvent>;
 }
 
-function renderScreen(organization?: Parameters<typeof SessionsScreen>[0]["organization"], compact = false, platform: "ios" | "web" = compact ? "ios" : "web", native?: Pick<Parameters<typeof SessionsScreen>[0], "projects" | "workspaces">) {
+function renderScreen(organization?: Parameters<typeof SessionsScreen>[0]["organization"], compact = false, platform: "ios" | "web" = compact ? "ios" : "web", native?: Pick<Parameters<typeof SessionsScreen>[0], "projects" | "workspaces" | "projectId" | "epicKey">) {
   const navigation = {
     openAgent: () => undefined,
     openBrowser: () => undefined,
@@ -814,6 +815,70 @@ describe("SessionsScreen toolbar events", () => {
     expect(walk(harness.current()).find((element) => element.type === MenuItem && element.props.label === "DESK • DOCS")!.props.selected).toBe(true);
   });
 
+  it.each([true, false])("keeps scoped native desk search, Details and Show in tree on one workspace (compact %s)", (compact) => {
+    directory.state = { ...(directory.state as object), entries: nativeDeskSessions() };
+    patchSessionView("host-a", { query: "asma-99102 desk-epic-b", grouping: "hierarchy", shortcut: "desk-project:prj_desk", status: "all", scrollOffset: 390, toolbarOpen: true });
+    const { scrollToOffset } = renderScreen(undefined, compact, compact ? "ios" : "web", { projects: NATIVE_DESK_PROJECTS, workspaces: NATIVE_DESK_WORKSPACES, projectId: "prj_desk" });
+    vi.advanceTimersByTime(0);
+    expect(sessionRowIds()).toEqual(["desk-epic-b"]);
+    const result = listRows()[0]!;
+    const draw = findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike;
+    const row = draw({ item: result });
+    expect(row.props.provenance).toMatchObject({ parts: ["DESK • ADAM", "ADAM"], nativeDesk: { id: "prj_desk", workspaceId: "w_adam" } });
+    expect((row.props.lifecycleAction as ElementLike).props.session).toMatchObject({ id: "desk-epic-b", workspaceId: "w_adam" });
+    ((row.props.details as ElementLike).props.onPress as () => void)(); harness.flush();
+    const details = findByTestID(harness.current(), "sessions-details");
+    expect(JSON.stringify(details.props.children)).toContain("w_adam");
+    expect(JSON.stringify(details.props.children)).toContain("Workstream association");
+    (row.props.onShowInTree as (entry: unknown) => void)((result as Extract<ListRow, { kind: "result" }>).entry); harness.flush();
+    expect(groupRows().filter((row) => row.group.kind === "project").map((row) => row.group.key)).toEqual(["project:prj_desk"]);
+    expect(groupRows().some((row) => row.group.kind === "epic")).toBe(false);
+    expect(groupRows().find((row) => row.group.key === "project:prj_desk/workspace:id%3Aw_adam")?.expanded).toBe(true);
+    expect(sessionRowIds()).toContain("desk-epic-b");
+    const nativeRow = listRows().find((item) => item.kind === "session" && item.entry.id === "desk-epic-b")!;
+    expect((draw({ item: nativeRow }).props.lifecycleAction as ElementLike).props.session).toMatchObject({ id: "desk-epic-b", workspaceId: "w_adam" });
+    const back = walk(findByTestID(harness.current(), "sessions-peek")).find((element) => element.props.label === "Back to 1 result")!;
+    (back.props.onPress as () => void)(); harness.flush(); vi.advanceTimersByTime(0);
+    expect(sessionRowIds()).toEqual(["desk-epic-b"]);
+    expect(readSessionView("host-a")).toMatchObject({ query: "asma-99102 desk-epic-b", shortcut: "desk-project:prj_desk", grouping: "hierarchy", peek: null });
+    expect(scrollToOffset).toHaveBeenCalled();
+  });
+
+  it.each([true, false])("explains incomplete workstream availability with zero, one and unregistered associations (compact=%s)", (compact) => {
+    patchSessionView("host-a", { advancedOpen: true });
+    directory.state = { ...(directory.state as object), entries: [] };
+    renderScreen(undefined, compact);
+    if (compact) openMobileFilters();
+    expect(textOf(findByTestID(harness.current(), "sessions-workstream-availability"))).toContain("this list may be incomplete");
+    const optionText = () => textOf(findByTestID(harness.current(), "sessions-options"));
+    expect(optionText()).toContain("No workstream associations available in this context.");
+    const choices = () => walk(harness.current()).filter((node) => node.props.checkbox === true);
+    expect(choices()).toHaveLength(0);
+
+    directory.state = { ...(directory.state as object), entries: [sessionEntry("missing", {})] };
+    harness.flush();
+    expect(choices().map((node) => node.props.label)).toEqual(["Other work"]);
+    expect(optionText()).not.toContain("No workstream associations available");
+    (choices()[0]!.props.onPress as () => void)(); harness.flush();
+    expect(readSessionView("host-a").streams).toEqual([]);
+
+    directory.state = { ...(directory.state as object), entries: [sessionEntry("missing", {}), sessionEntry("unknown", { labels: { workstream: "unregistered-key" } })] };
+    harness.flush();
+    expect(choices().map((node) => node.props.label).sort()).toEqual(["Other work", "unregistered-key"]);
+    expect(textOf(findByTestID(harness.current(), "sessions-workstream-availability"))).toContain("Names may be unregistered");
+    expect(readSessionView("host-a").streams).toEqual([]);
+  });
+
+  it("does not insert unrelated empty native desks into a project or epic context", () => {
+    directory.state = { ...(directory.state as object), entries: nativeDeskSessions() };
+    patchSessionView("host-a", { query: "", grouping: "hierarchy", shortcut: null, status: "all" });
+    renderScreen(undefined, true, "ios", { projects: NATIVE_DESK_PROJECTS, workspaces: NATIVE_DESK_WORKSPACES, projectId: "prj_control" });
+    expect(groupRows().some((row) => row.group.project)).toBe(false);
+    harness.unmount(); harness.reset();
+    renderScreen(undefined, true, "ios", { projects: NATIVE_DESK_PROJECTS, workspaces: NATIVE_DESK_WORKSPACES, epicKey: "ASMA-99102" });
+    expect(groupRows().filter((row) => row.group.project).map((row) => row.group.project!.id)).toEqual(["prj_desk"]);
+  });
+
   it("retains Favorites and desk shortcuts across a screen remount", () => {
     const organization = {
       state: { status: "ready", values: { ...DEFAULT_ORGANIZATION_SETTINGS, favorites: ["session-a"] }, revision: "revision-a", saving: false, saveError: null, save: async () => true, reload: async () => {}, reset: async () => true },
@@ -1262,7 +1327,7 @@ describe("SessionsScreen toolbar events", () => {
     screen.open("desk");
     expect(screen.dialog()!.props.placement).toEqual({ align: "end", width: 360, maxHeight: 440 });
     (walk(harness.current()).find((element) => element.props.testID === "sessions-grouping")!.props.onPress as () => void)(); harness.flush();
-    (walk(harness.current()).find((element) => element.type === MenuItem && element.props.label === "Workstreams")!.props.onPress as () => void)(); harness.flush();
+    (walk(harness.current()).find((element) => element.type === MenuItem && element.props.label === "Desks & workstreams")!.props.onPress as () => void)(); harness.flush();
     expect(screen.dialog()).toBeUndefined();
     expandAll();
     const sessions = listRows().filter((row) => row.kind === "session");
@@ -1279,12 +1344,18 @@ describe("SessionsScreen toolbar events", () => {
     expect(screen.dialog()).toBeDefined();
   });
 
-  it("names the native desk workstream in Details when a desk member also has an epic", () => {
-    const session = sessionEntry("desk-with-epic", { projectName: "DESK • ADAM", labels: { epic: "ASMA-99101" } });
-    const stream = (mappings: Parameters<typeof sessionDetailLines>[1]) => sessionDetailLines(session, mappings).find((line) => line.label === "Workstream")!.value;
-    expect(stream({})).toBe("adam (native desk project)");
-    expect(stream({ "session:desk-with-epic": { workstream: "declared" } })).toBe("declared");
-    expect(sessionDetailLines({ ...session, labels: { ...session.labels, workstream: "labelled" } }, {}).find((line) => line.label === "Workstream")!.value).toBe("labelled");
+  it("reports native parentage and independent declared associations in desk Details", () => {
+    const session = sessionEntry("desk-with-epic", { projectKey: "prj_desk", workspaceId: "wks_desk", projectName: "DESK • ADAM", labels: { epic: "ASMA-99101" } });
+    const lines = (mappings: Parameters<typeof sessionDetailLines>[1]) => Object.fromEntries(sessionDetailLines(session, mappings).map(({ label, value }) => [label, value]));
+    expect(lines({})).toMatchObject({ "Native desk": "DESK • ADAM", "Native project ID": "prj_desk", "Native workspace ID": "wks_desk", "Workstream association": "Not declared", "Epic association": "ASMA-99101" });
+    expect(lines({ "session:desk-with-epic": { workstream: "declared" } })["Workstream association"]).toBe("declared");
+    expect(sessionDetailLines({ ...session, labels: { ...session.labels, workstream: "labelled" } }, {}).find((line) => line.label === "Workstream association")!.value).toBe("labelled");
+    expect(lines({})).not.toHaveProperty("Workstream");
+    expect(lines({})["Association verification"]).toBe("Workstream registry membership and epic/plan links are not checked here.");
+    expect(lines({ "session:desk-with-epic": { workstream: "unregistered-association", epic: "ASMA-99999" } })).toMatchObject({
+      "Native project ID": "prj_desk", "Native workspace ID": "wks_desk", "Workstream association": "unregistered-association",
+      "Epic association": "ASMA-99999", "Association verification": lines({})["Association verification"],
+    });
   });
 
   it("names a declared Other work workstream or Unassigned epic as declared, and only a missing one as absent", () => {
@@ -1453,7 +1524,7 @@ describe("SessionsScreen toolbar events", () => {
         (walk(harness.current()).find((element) => element.type === MenuItem && element.props.label === label)!.props.onPress as () => void)(); harness.flush();
         closeMobileFilters();
       };
-      choose("Workstreams");
+      choose("Desks & workstreams");
       choose("Role");
       expect(screen.dialog()).toBeUndefined();
     } finally {
@@ -1915,8 +1986,8 @@ describe("SessionsScreen mobile filter page", () => {
     expect([select("sessions-scope").value, select("sessions-scope").expanded, menus()]).toEqual(["Adam desk", false, []]);
 
     (select("sessions-grouping").onPress as () => void)(); harness.flush();
-    expect(items().map((item) => [item.props.label, item.props.selected])).toEqual([["Workstreams", true], ["Desks & workspaces", false], ["Role", false], ["Flat", false]]);
-    expect(choices("grouping")).toEqual(["Workstreams", "Desks & workspaces", "Role", "Flat"]);
+    expect(items().map((item) => [item.props.label, item.props.selected])).toEqual([["Desks & workstreams", true], ["Desks & workspaces", false], ["Role", false], ["Flat", false]]);
+    expect(choices("grouping")).toEqual(["Desks & workstreams", "Desks & workspaces", "Role", "Flat"]);
     choose("Role");
     expect([select("sessions-grouping").value, menus(), groupingFocus.mock.calls.length]).toEqual(["Role", [], 1]);
     expect(save).toHaveBeenCalledWith({ grouping: "role" });

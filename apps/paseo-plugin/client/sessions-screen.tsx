@@ -77,7 +77,7 @@ import {
 import { useSessionDirectory } from "./use-session-directory";
 import { DEFAULT_ORGANIZATION_SETTINGS, type OrganizationSettings } from "../shared/organization";
 import type { useOrganizationSettings } from "./use-organization-settings";
-import { allGroupKeys, buildOrganizationTree, declaredScope, defaultGroupExpanded, deriveDeskScopes, filterOrganizationTree, flattenOrganizationTree, inEpicScope, matchesScope, nativeDesk, NO_LINKED_EPIC, NO_ROLE_KEY, organizationScope, OTHER_WORKSTREAM, ROLE_ROOT_KEY, scopeKeepsGroup, sessionRole, sessionState, STATE_LABELS, titleRoleCode, UNASSIGNED_EPIC, visibleSessions, workstreamRank, type OrganizationGroup, type OrganizationRow, type OrganizationWorkspace, type OrganizationProject, type RoleSource } from "./session-organization";
+import { allGroupKeys, buildOrganizationTree, declaredScope, defaultGroupExpanded, deriveDeskScopes, filterOrganizationTree, flattenOrganizationTree, inEpicScope, matchesScope, nativeDesk, NO_LINKED_EPIC, NO_ROLE_KEY, organizationScope, organizationGroupRank, organizationWorkspaceCount, OTHER_WORKSTREAM, ROLE_ROOT_KEY, scopeKeepsGroup, sessionRole, sessionState, STATE_LABELS, titleRoleCode, UNASSIGNED_EPIC, visibleSessions, workstreamRank, type OrganizationGroup, type OrganizationRow, type OrganizationWorkspace, type OrganizationProject, type RoleSource } from "./session-organization";
 import { rowKey, siblingKeys, reorderSavedSiblingOrder } from "./organization-order";
 import { OrganizationRowView, StateBadge, stateColor as sessionStateColor, WORKSPACE_KINDS } from "./organization-row";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
@@ -121,7 +121,7 @@ const SCOPE_CHOICES: readonly { readonly id: string | null; readonly label: stri
   { id: "Other work", label: "Other workspaces" },
 ];
 const GROUPINGS: readonly { readonly id: SessionGrouping; readonly label: string }[] = [
-  { id: "hierarchy", label: "Workstreams" },
+  { id: "hierarchy", label: "Desks & workstreams" },
   { id: "placement", label: "Desks & workspaces" },
   { id: "role", label: "Role" },
   { id: "flat", label: "Flat" },
@@ -532,6 +532,17 @@ export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<t
     { label: "Role", value: role.code === null ? "No role: no kontor.role or role label, and no role prefix in the title" : `${role.code}, from the ${ROLE_SOURCE_NAMES[role.source!]}` },
     { label: "Other role declarations", value: role.conflicts.length ? role.conflicts.map(({ source, code }) => `${ROLE_SOURCE_NAMES[source]} says ${code}`).join("; ") : "None" },
   ];
+  if (provenance.nativeDesk) {
+    const declared = declaredScope(entry, mappings);
+    return [...lines,
+      { label: "Native desk", value: provenance.nativeDesk.name },
+      { label: "Native project ID", value: provenance.nativeDesk.id },
+      { label: "Workspace", value: provenance.workspace },
+      { label: "Native workspace ID", value: provenance.nativeDesk.workspaceId ?? "Unavailable" },
+      { label: "Workstream association", value: declared.workstream ?? "Not declared" },
+      { label: "Epic association", value: declared.epic ?? NO_LINKED_EPIC },
+      { label: "Association verification", value: "Workstream registry membership and epic/plan links are not checked here." }];
+  }
   if (provenance.desk) return [...lines, { label: "Desk", value: provenance.parts[0]! }, { label: "Workspace", value: provenance.workspace }];
   const declared = declaredScope(entry, mappings);
   return [...lines,
@@ -1884,12 +1895,15 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     () => state.entries.filter((entry) => (projectId === null || entry.projectKey === projectId) && (epicKey === null || inEpicScope(entry, mappings, epicKey))),
     [state.entries, projectId, epicKey, mappings],
   );
-  const deskScopes = useMemo(() => deriveDeskScopes(scoped, workspaces,
-    projects?.filter((project) => projectId === null || project.id === projectId)), [scoped, workspaces, projects, projectId]);
+  const scopedWorkspaces = useMemo(() => workspaces?.filter((workspace) => (projectId === null || workspace.projectKey === projectId)
+    && (epicKey === null || mappings[`workspace:${workspace.id}`]?.epic?.trim().toLocaleLowerCase() === epicKey.trim().toLocaleLowerCase())), [workspaces, projectId, epicKey, mappings]);
+  const scopedProjects = useMemo(() => projects?.filter((project) => (projectId === null || project.id === projectId)
+    && (epicKey === null || scoped.some((entry) => entry.projectKey === project.id))), [projects, projectId, epicKey, scoped]);
+  const deskScopes = useMemo(() => deriveDeskScopes(scoped, scopedWorkspaces, scopedProjects), [scoped, scopedWorkspaces, scopedProjects]);
   // Retain legacy shortcuts; native ID choices distinguish same-named desks and survive renames.
   const scopeChoices = [...SCOPE_CHOICES.slice(0, -1), ...deskScopes, SCOPE_CHOICES[SCOPE_CHOICES.length - 1]!];
   const scopeChoiceLabel = shortcut === null ? null : scopeChoices.find(({ id }) => id === shortcut)?.label ?? (shortcut?.startsWith("desk-project:") ? "Native desk project" : shortcut);
-  const tree = useMemo(() => buildOrganizationTree({ entries: scoped, ...preferences, grouping, workspaces }), [scoped, preferences, grouping, workspaces]);
+  const tree = useMemo(() => buildOrganizationTree({ entries: scoped, ...preferences, grouping, workspaces: scopedWorkspaces, projects: scopedProjects }), [scoped, preferences, grouping, scopedWorkspaces, scopedProjects]);
   const tokens = useMemo(() => view.query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean), [view.query]);
   const task = view.task ?? null;
   const resultMode = isResultMode(view);
@@ -1938,7 +1952,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     }
   }, [compact, rowSignature]);
   const shown = useMemo(() => resultMode ? results : visibleSessions(filtered), [resultMode, results, filtered]);
-  const workspaceCount = new Set(shown.map((entry) => entry.workspaceId ?? entry.workspaceName ?? entry.cwd)).size;
+  const workspaceCount = resultMode ? new Set(shown.map((entry) => entry.workspaceId ?? entry.workspaceName ?? entry.cwd)).size : organizationWorkspaceCount(filtered);
   // The full count and read statement; Filters shows it, the visible count line only when it adds something.
   const sessionCount = `${shown.length === scoped.length ? `${scoped.length}` : `${shown.length} of ${scoped.length}`} session${scoped.length === 1 ? "" : "s"}`;
   const inventoryRead = state.lastUpdatedAt === null
@@ -1974,7 +1988,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const moveRow = (row: OrganizationRow, distance: number) => {
     const parent = row.kind === "group" ? row.group.parentKey ?? "root" : row.parentKey;
     const peers = siblingKeys(tree, parent).filter((key) => (row.kind === "session") === key.startsWith("session:"));
-    const movable = parent === "root" && row.kind === "group" ? peers.filter((key) => workstreamRank(tree.find((group) => group.key === key)?.label ?? "") === workstreamRank(row.group.label))
+    const movable = parent === "root" && row.kind === "group" ? peers.filter((key) => organizationGroupRank(tree.find((group) => group.key === key) ?? row.group) === organizationGroupRank(row.group))
       // No role stays last.
       : parent === ROLE_ROOT_KEY && row.kind === "group" ? peers.filter((key) => (key === NO_ROLE_KEY) === (row.group.key === NO_ROLE_KEY)) : peers;
     savePreference({ siblingOrder: { ...preferences.siblingOrder, [parent]: reorderSavedSiblingOrder(preferences.siblingOrder[parent] ?? [], siblingKeys(tree, parent), movable, rowKey(row), distance) } });
