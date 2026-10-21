@@ -49,6 +49,12 @@ describe("shared native freshness truth", () => {
   ] as const)("distinguishes SDK $hostStatus and inventory $status/$live as $label", ({ label, ...input }) => {
     expect(nativeFreshnessLabel(input)).toBe(label);
   });
+  it("retains the selected host attribution with a stale inventory on an online host", () => {
+    const pill = NativeFreshnessPill({ hostStatus: "online", hostLabel: "Chosen host", colors: {} as Parameters<typeof NativeFreshnessPill>[0]["colors"], state: { status: "ready", live: false, entries: [], lastUpdatedAt: 1, error: null, staleReason: null, pages: 1, includeArchived: false } });
+    expect(pill.props.accessibilityLabel).toContain("Native sessions from Chosen host: Stale");
+    expect(pill.props.accessibilityLabel).toContain("Source freshness is reported separately");
+    expect(pill.props.children.props.children).toEqual(["Native · ", "Stale"]);
+  });
   it("labels Live as native sessions only and keeps source freshness separate", () => {
     const pill = NativeFreshnessPill({ hostStatus: "online", colors: {} as Parameters<typeof NativeFreshnessPill>[0]["colors"], state: { status: "ready", live: true, entries: [], lastUpdatedAt: 1, error: null, staleReason: null, pages: 1, includeArchived: false } });
     expect(pill.props.accessibilityLabel).toContain("Native sessions: Live");

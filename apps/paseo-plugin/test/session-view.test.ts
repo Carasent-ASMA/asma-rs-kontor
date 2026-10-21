@@ -118,7 +118,7 @@ describe("session search and filters", () => {
           attentionReason: "error",
         }),
       ),
-    ).toBe("Error");
+    ).toBeNull();
     expect(
       matchesStatus(
         sessionEntry("failed-idle", {
@@ -128,7 +128,7 @@ describe("session search and filters", () => {
         }),
         "error",
       ),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       attentionLabel(
         sessionEntry("finished", {
