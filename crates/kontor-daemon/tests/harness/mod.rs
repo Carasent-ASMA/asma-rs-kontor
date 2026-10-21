@@ -286,21 +286,21 @@ impl World {
         Self::compose_with(every_capability(), true, false, false, DEFAULT_CAPACITY).await
     }
 
-    /// Start an empty Realm with the shipped runtime-refusal quota signals.
+    /// Start an empty Realm with the test-owned runtime-refusal quota signals.
     ///
-    /// The shipped example names neutral account aliases, while the compiled
-    /// route catalog the test packs route through still names the Codex logins
-    /// `codex-work` and `codex-personal` (an open ASMA-8511 gap). Only the two
-    /// Codex `provider:` lines are mapped back; every marker, reset prefix and
-    /// zone stays the shipped bytes.
+    /// The fixture names neutral account aliases, while the compiled route
+    /// catalog the test packs route through names the Codex logins `codex-work`
+    /// and `codex-personal`. Only the two Codex `provider:` lines are mapped
+    /// back; every marker, reset prefix and zone stays the fixture bytes.
     pub(crate) async fn open_empty_with_quota_signals() -> Self {
-        let mut document = include_str!("../../../../config/examples/quota-signals.yml").to_owned();
+        let mut document =
+            include_str!("../../../../tests/fixtures/config/quota-signals.yml").to_owned();
         for (shipped, catalogued) in [("codex-b", "codex-work"), ("codex-a", "codex-personal")] {
             let line = format!("    provider: {shipped}\n");
             assert_eq!(
                 document.matches(&line).count(),
                 1,
-                "the shipped example declares {shipped} once"
+                "the fixture declares {shipped} once"
             );
             document = document.replace(&line, &format!("    provider: {catalogued}\n"));
         }
@@ -392,7 +392,7 @@ impl World {
             DEFAULT_CAPACITY,
             WorldComposition {
                 quota_signals: Some(
-                    include_str!("../../../../config/examples/quota-signals.yml").to_owned(),
+                    include_str!("../../../../tests/fixtures/config/quota-signals.yml").to_owned(),
                 ),
                 succession_summarizer: Some(summarizer),
                 ..WorldComposition::default()
@@ -417,7 +417,7 @@ impl World {
             DEFAULT_CAPACITY,
             WorldComposition {
                 quota_signals: Some(
-                    include_str!("../../../../config/examples/quota-signals.yml").to_owned(),
+                    include_str!("../../../../tests/fixtures/config/quota-signals.yml").to_owned(),
                 ),
                 runtime_summarizer: Some(summary.to_owned()),
                 ..WorldComposition::default()

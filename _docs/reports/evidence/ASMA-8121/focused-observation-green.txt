@@ -1,5 +1,5 @@
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.18s
-     Running tests/backup_export.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/backup_export-86507a0c15daf53a)
+     Running tests/backup_export.rs ([parent-tools])
 
 running 1 test
 test runtime_and_census_payloads_still_refuse_session_content ... ok

@@ -1037,6 +1037,7 @@ pub static SERVE_PROFILES: &[ServeProfile] = &[
             "kontor_context_resolve",
             "kontor_open_questions_list",
             "kontor_open_question_record",
+            "kontor_operational_gap_record",
         ],
     },
     ServeProfile {
@@ -1074,6 +1075,7 @@ pub static SERVE_PROFILES: &[ServeProfile] = &[
             "kontor_completion_remediate",
             "kontor_open_questions_list",
             "kontor_open_question_record",
+            "kontor_operational_gap_record",
             "kontor_committee_permissions_inspect",
             "kontor_committee_permission_respond",
         ],
@@ -1158,6 +1160,80 @@ pub static REGISTRY: &[ToolSpec] = &[
             ),
         ],
         about: "Raise, correct, disposition or reopen one question with an atomic idempotent receipt.",
+    },
+    ToolSpec {
+        name: "kontor_operational_gap_record",
+        tier: CallerTier::Operator,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/tasks/{task_id}/operational-gaps:record",
+        },
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "task_id",
+                Place::Path,
+                ArgType::TaskSelector,
+                "The task the gap evidence attaches to, by UUID or exact confirmed Jira key.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "gap_id",
+                Place::Body,
+                ArgType::Text,
+                "Stable gap UUID; reuse it on retries.",
+            ),
+            req(
+                "failure_class",
+                Place::Body,
+                ArgType::OpenKey,
+                "The operating class, such as capability_missing or runtime_unavailable.",
+            ),
+            req(
+                "intended_operation",
+                Place::Body,
+                ArgType::Text,
+                "The Kontor operation the seat intended to perform.",
+            ),
+            req(
+                "checkpoint",
+                Place::Body,
+                ArgType::Text,
+                "The checkpoint the seat resumed from after containing the gap.",
+            ),
+            req(
+                "fallback_action",
+                Place::Body,
+                ArgType::Text,
+                "The bounded fallback action actually taken.",
+            ),
+            req("owner", Place::Body, ArgType::Text, "Who owns the repair."),
+            opt(
+                "agent_run_id",
+                Place::Body,
+                ArgType::AgentRunId,
+                "The exact run the gap was observed around, when there was one.",
+            ),
+            opt(
+                "seat_binding_id",
+                Place::Body,
+                ArgType::SeatBindingId,
+                "The exact persistent seat the gap was observed around, when there was one.",
+            ),
+            opt(
+                "evidence",
+                Place::Body,
+                ArgType::Text,
+                "Digest of the evidence document this record cites, when one exists.",
+            ),
+        ],
+        about: "Record one typed operational gap against a task under an idempotent receipt.",
     },
     ToolSpec {
         name: "kontor_desk_seats_list",
@@ -1442,6 +1518,17 @@ pub static REGISTRY: &[ToolSpec] = &[
             "The run to read.",
         )],
         about: "One agent run's snapshot, at one control-plane position.",
+    },
+    ToolSpec {
+        name: "kontor_runtime_bindings_list",
+        tier: CallerTier::Observer,
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/runtime-bindings",
+        },
+        kind: OpKind::Read,
+        args: &[],
+        about: "Every persisted native binding, with the task and epic it served and whether this process still holds its session.",
     },
     ToolSpec {
         name: "kontor_task_get",
@@ -9651,8 +9738,8 @@ mod tests {
         // a tool to a seat's surface stays a decision rather than a side effect.
         assert_eq!(
             worker.tools.len(),
-            25,
-            "worker includes artifact recovery, question reporting and readback"
+            26,
+            "worker includes artifact recovery, question and gap reporting, and readback"
         );
         assert!(worker.allows("kontor_turn_observe"));
         assert!(worker.allows("kontor_memory_search"));
@@ -9854,6 +9941,7 @@ mod tests {
                 "kontor_completion_remediate",
                 "kontor_open_questions_list",
                 "kontor_open_question_record",
+                "kontor_operational_gap_record",
                 "kontor_committee_permissions_inspect",
                 "kontor_committee_permission_respond",
             ]

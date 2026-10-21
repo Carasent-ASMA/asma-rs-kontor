@@ -15,7 +15,7 @@ Load for review of ASMA-8156, the ASMA-8157 example contract, or the ASMA-8158/8
 
 ## Authority and source
 
-The execution contract is `/private/tmp/ASMA-8155-full-lsa-readiness-original-20261002.txt`, SHA-256 `7ee35150e2e90cdc4fab83bac999ecd2cef6286d236df128b0ad5b8c211d828b`. Sections 2–4 and 7 govern this source-only/fake candidate. The canonical plan is `asma-modules/_docs/ai-orchestration/plans/2026-09-12-10-10-plan-kontor-experience-memory.md`; its Goal and requirements were not changed.
+The execution contract is `/private/tmp/ASMA-8155-full-lsa-readiness-original-20261002.txt`, SHA-256 `7ee35150e2e90cdc4fab83bac999ecd2cef6286d236df128b0ad5b8c211d828b`. Sections 2–4 and 7 govern this source-only/fake candidate. The canonical plan is `[parent-plan]`; its Goal and requirements were not changed.
 
 Branch: `feat/ASMA-8156-typed-experience-contract-and-recall-core`. Base: `8acdbd17e83d9d7ec545221c4b957e0325916997`, schema 119. The frozen commit and Git tree are reported with the writer's final handoff; source-manifest.json pins every changed source, fixture and generated artifact independently of this report. No root/catalog or other owner's source was changed.
 

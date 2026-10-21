@@ -1,6 +1,6 @@
    Compiling kontor-store v0.2.1 (/private/tmp/asma-8098-mutations-7ffd650d/source/crates/kontor-store)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 11.31s
-     Running tests/team_definition_migration_completeness.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/team_definition_migration_completeness-f7b8bbf4d0c6389a)
+     Running tests/team_definition_migration_completeness.rs ([parent-tools])
 
 running 1 test
 test confirmation_re_proves_parity_against_the_live_census ... ok

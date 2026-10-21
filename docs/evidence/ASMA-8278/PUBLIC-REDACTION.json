@@ -1,0 +1,181 @@
+{
+  "consumer_classification": {
+    "classification": "LSA-WP01-CUSTODY-CONSUMERS-003",
+    "historical_inventory_mismatches": {
+      "note": "The five restored logs retain the pre-existing 0fbe9253 artifact-inventory pins. Those pins already differed from the public baseline bytes before WP-01; they are historical mismatches, not derivative pins, and are not re-attested.",
+      "pins": {
+        "prepared-diagnostic-source/original/01-focused.log.json": {
+          "actual_bytes": 601,
+          "actual_sha256": "3c0e00d3a6df740baf7de34af5760d294139a026a0f09f0dda5302b9f8aaa386",
+          "manifest_bytes": 613,
+          "manifest_sha256": "59da171357b0b9240cb3020938d99ac6a2694fcac1b93401145ad434fcb4e312"
+        },
+        "prepared-diagnostic-source/original/02-runtime-regression.log.json": {
+          "actual_bytes": 527,
+          "actual_sha256": "71e9eb4c73109cc1df65bf56665baace79ef9e607ea271760442adc8802f8904",
+          "manifest_bytes": 539,
+          "manifest_sha256": "a5972ec349088b5aa83f747192907ac560a48beecaaa167493900129891ca2bd"
+        },
+        "prepared-diagnostic-source/original/03-clippy.log.json": {
+          "actual_bytes": 574,
+          "actual_sha256": "f8227a60b27a54451116f08a515d26f15481c5cf795891c61c5a8e54e0002195",
+          "manifest_bytes": 586,
+          "manifest_sha256": "72e2afa83ad7d0cbc7100f449f7f3baa835a7cad24e335d7a5c08a2efb19a9e5"
+        },
+        "prepared-diagnostic-source/original/04-fmt.log.json": {
+          "actual_bytes": 477,
+          "actual_sha256": "bf0b9d50c95c914892fbc87ed49bc8059194ee32f28ecfe95d6ec1e759bed3ec",
+          "manifest_bytes": 489,
+          "manifest_sha256": "c8b9ba264213cd62f01fd6156975e99e400201515c06bd9158931168ee11a052"
+        },
+        "prepared-diagnostic-source/original/07-diff-check.log.json": {
+          "actual_bytes": 460,
+          "actual_sha256": "9b7bee7000a53a82707e351e0ab449cd7722d73c06740f69b0522a1fae30ef64",
+          "manifest_bytes": 472,
+          "manifest_sha256": "4fe3bfcba3ccd1e88239ef7fe5eedd7bf1b1f4c1a64c649b38acbe72c8c1ec68"
+        }
+      }
+    },
+    "note": "The five log JSONs carried only a neutral custody pointer and were restored to their exact 0fbe9253 baseline bytes; they are exact historical baseline carriers, not derivatives, and are not added to files. The retained files are public derivatives and are now bound in files; their original bytes and certified hashes remain TPM-owned. Historical baseline pins, including the mutation-report.json 390d9449/10163 mismatch, are preserved.",
+    "restored_to_baseline": [
+      "prepared-diagnostic-source/original/01-focused.log.json",
+      "prepared-diagnostic-source/original/02-runtime-regression.log.json",
+      "prepared-diagnostic-source/original/03-clippy.log.json",
+      "prepared-diagnostic-source/original/04-fmt.log.json",
+      "prepared-diagnostic-source/original/07-diff-check.log.json"
+    ],
+    "retained_derivatives": [
+      "attestation-verifier-source/MANIFEST.json",
+      "prepared-diagnostic-source/ROOT-PROVENANCE.json",
+      "prepared-diagnostic-source/original/01-source-hashes.json",
+      "prepared-diagnostic-source/original/final-owned-hashes.json",
+      "prepared-diagnostic-source/original/manifest.json",
+      "prepared-diagnostic-source/original/mutation-baseline-hashes.json",
+      "prepared-diagnostic-source/original/mutation-report.json",
+      "prepared-diagnostic-source/original/temporal-provenance.json"
+    ]
+  },
+  "consumers": [
+    "PUBLIC-REDACTION.md",
+    "attestation-verifier-source/MANIFEST.json",
+    "prepared-diagnostic-source/ROOT-PROVENANCE.json",
+    "prepared-diagnostic-source/original/01-focused.log.json",
+    "prepared-diagnostic-source/original/01-source-hashes.json",
+    "prepared-diagnostic-source/original/02-runtime-regression.log.json",
+    "prepared-diagnostic-source/original/03-clippy.log.json",
+    "prepared-diagnostic-source/original/04-fmt.log.json",
+    "prepared-diagnostic-source/original/07-diff-check.log.json",
+    "prepared-diagnostic-source/original/final-owned-hashes.json",
+    "prepared-diagnostic-source/original/manifest.json",
+    "prepared-diagnostic-source/original/mutation-baseline-hashes.json",
+    "prepared-diagnostic-source/original/mutation-report.json",
+    "prepared-diagnostic-source/original/temporal-provenance.json",
+    "prepared-diagnostic-source/original/final-owned-hashes.tsv",
+    "prepared-diagnostic-source/original/logs/08-size-check.log"
+  ],
+  "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+  "files": {
+    "attestation-verifier-source/MANIFEST.json": {
+      "bytes": 5877,
+      "derivative_sha256": "335865e36b0fb5328e60aea40274c9a18f126ca4a2a4532f41ad07eefbf451ea",
+      "original_sha256": "265a07947d00259ff5ad34a7c0843633b25f37ba513859d9fa52e4085ef1d7c3",
+      "private_references_redacted": 0
+    },
+    "attestation-verifier-source/README.md": {
+      "bytes": 2494,
+      "derivative_sha256": "8e2837b3f29c136750eeac49798bf85fa113cb181478e2a260c3257341979aef",
+      "original_sha256": "19fb9896a679840d8d65b5d18dfe9e4b97fb5595148670aa61ec94fba58cb660",
+      "private_references_redacted": 0
+    },
+    "attestation-verifier-source/review-attestation-source.md": {
+      "bytes": 6150,
+      "derivative_sha256": "edf7e667b3fa364dfe21cebf1aa7cf657d6222537c7d80fe64e91fd88a0becc5",
+      "original_sha256": "fe3d2dccb05d1f29798afa04a4104ec9a75c225a5464be64d59b5e0fdbf15e02",
+      "private_references_redacted": 1
+    },
+    "attestation-verifier-source/review-frozen-source.md": {
+      "bytes": 6987,
+      "derivative_sha256": "fd1d1f0dcf9f808d351aa543c8d534c598a4ab38f26d4fb162568dc92f5dc972",
+      "original_sha256": "6f1980a0de9fbc834678d1892f778b49a584ab684433316534e6475739ce1e6e",
+      "private_references_redacted": 3
+    },
+    "prepared-diagnostic-source/ROOT-PROVENANCE.json": {
+      "bytes": 2489,
+      "derivative_sha256": "bfa49ff61e103f41287c824a11b850a2f8250f2629f209527009a2bd09dcfd38",
+      "original_sha256": "1dec02c615355a12882d980c55fcabf9ae77d954680d0b3449a7e2296524ea23",
+      "private_references_redacted": 0
+    },
+    "prepared-diagnostic-source/candidate-files/crates/kontor-runtime/src/planning_pair/attestation.rs": {
+      "bytes": 14890,
+      "derivative_sha256": "a6e46758a48ae9d48cb2e719541fc055288126621370820a58418f7d0e9f8779",
+      "original_sha256": "4902114724206f4581ca055b47a1e7c18444c449b7ae61094df46d8380e57260",
+      "private_references_redacted": 2
+    },
+    "prepared-diagnostic-source/candidate-files/crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic.rs": {
+      "bytes": 8250,
+      "derivative_sha256": "48a5baf647c4e0d10f45d5a0fb176ce389a14a09d342e22b77800ec9096a986f",
+      "original_sha256": "8d4b5040642c68b58986fb8d3d8614584e48bb70ff5ac3ba7728b9679efd1a2d",
+      "private_references_redacted": 4
+    },
+    "prepared-diagnostic-source/original/01-source-hashes.json": {
+      "bytes": 1143,
+      "derivative_sha256": "fbb7a795d03d0b998d90e04b805118b8aa360d3c49bd37075709b25ce97bfc5a",
+      "original_sha256": "1b8efa05a846409cea23819b580e78e58d066ea78159e2f3609cb43dda150890",
+      "private_references_redacted": 0
+    },
+    "prepared-diagnostic-source/original/final-owned-hashes.json": {
+      "bytes": 974,
+      "derivative_sha256": "dfa037a4ad4a8f3d5779d10e0ef2a229505aa7c4ef1ce5eba200c5af3b230231",
+      "original_sha256": "233be73aec2b5385f5ad17fd3e7c2077aed4823fb4ee339c370019442a02d908",
+      "private_references_redacted": 0
+    },
+    "prepared-diagnostic-source/original/graph-verify-trace.json": {
+      "bytes": 1270,
+      "derivative_sha256": "12981f6d93d8f9d8aa47c0d652e286d87025b1b8c01e508f1ce09bb79dde736c",
+      "original_sha256": "e7ecb4476da6b822bf9027c782afbde38c87813392c4aa376df8505b8cffa69a",
+      "private_references_redacted": 7
+    },
+    "prepared-diagnostic-source/original/manifest.json": {
+      "bytes": 20299,
+      "derivative_sha256": "399f55135016738a73c2aab4d70f3857fe11db7704a0afef3dfe541ac868f66d",
+      "original_sha256": "363d5a1c45170c8fcbc9f5887a9c9e1922dd3ae9b0451f1cda25c7ac3b9699d2",
+      "private_references_redacted": 0
+    },
+    "prepared-diagnostic-source/original/mutation-baseline-hashes.json": {
+      "bytes": 974,
+      "derivative_sha256": "dfa037a4ad4a8f3d5779d10e0ef2a229505aa7c4ef1ce5eba200c5af3b230231",
+      "original_sha256": "233be73aec2b5385f5ad17fd3e7c2077aed4823fb4ee339c370019442a02d908",
+      "private_references_redacted": 0
+    },
+    "prepared-diagnostic-source/original/mutation-report.json": {
+      "bytes": 10632,
+      "derivative_sha256": "3e5bdaeaee9880fbccd7a0aa7a1d9ab5a2a971f20030851b52d2da16c1a2b405",
+      "original_sha256": "5eb3b69cd254c821bbcc3f0a9f5a098d5686993a5e191c6b49fc531f39022bcc",
+      "private_references_redacted": 0
+    },
+    "prepared-diagnostic-source/original/temporal-provenance.json": {
+      "bytes": 2203,
+      "derivative_sha256": "e1e195a0839569b6cc27954883c63400a296cd29ce3131d679c26a16f733c325",
+      "original_sha256": "cbf1fbdcad0cd3f76fa29b867b93a9770cb918e0f646109cad4f95ea6d77575f",
+      "private_references_redacted": 0
+    },
+    "prepared-token-metadata-source/candidate-files/crates/kontor-store/tests/schema_v1.rs": {
+      "bytes": 280687,
+      "derivative_sha256": "87ed9943e5d500a74558d707e96a10f4e9de2520479750968b45b114b64b69bd",
+      "original_sha256": "4678b0929e8d2ea12340aa1329d7e5c0b3f3f35eab0145ed7c8c3f6321168cc3",
+      "private_references_redacted": 1
+    }
+  },
+  "model": "The public copy is a redacted derivative. Original bytes and SHA-256 are retained in the access-controlled evidence store; the TPM owns the exact-path disposition ledger.",
+  "original_archive": "access-controlled evidence store outside the public repo; TPM-owned disposition ledger",
+  "placeholders": {
+    "[operator]": "operator-identifying path segment",
+    "[parent-plan]": "private parent plan path",
+    "[parent-project]": "private parent project slug",
+    "[parent-repository]": "private parent repository",
+    "[parent-tools]": "private parent tools path",
+    "[parent-workspace]": "private parent workspace path",
+    "[task-workspace]": "private task workspace path"
+  },
+  "scope": "docs/evidence/ASMA-8278"
+}

@@ -3,7 +3,8 @@
 - Task: ASMA-8282 / TASK-004
 - Workspace: TSW `wks_8062e92dee85f5b3`
 - Branch: `feat/ASMA-8282-qualify-shared-advisor-and-committee-protocols`, local, not pushed, no pull request
-- Orchestration: paseo-direct (plan `2026-09-27-20-14-plan-shared-orchestration-workflow.md`). No Kontor step, receipt or obligation is proposed here.
+- Orchestration: paseo-direct (private shared-orchestration workflow plan,
+  ASMA-8282 revision `2026-09-27-20-14`). No Kontor step, receipt or obligation is proposed here.
 - Slice one (2026-09-29): the domain and the shared reader. It was fast-forwarded from `173d399bfd44ec598332b4fe1cdf882af024fe5c` to the published `739debaacfb0ace894b36114aaa1eef6835cdfc1` (`origin/feat/ASMA-8278-shared-orchestration-workflow`) before any feature edit, and committed as `d876055ba73f6d56577a60782888cfe4a0209df8` (tree `0b5b2cce8fbb9bdfaf70daf4e6265f48ef6139c3`).
 - Slice two (2026-09-30): the direct CLI `planning_pair@1` mode, committed as `d9dce9c8ecb8f529de4e3967e87ab25f78af112a` (tree `5deed40edebddcce49d6496f61b8cb3a744f92ed`). It is built on the accepted `d876055b` (tree `0b5b2cce`) and was dispatched by TPM generation 2 `7fc26706-dce2-4a02-be87-e0f933b25fd4` (predecessor `3c52abda-4fd0-4af6-b086-476bc51eb305`, archived). Every ancestor, `d876055b` included, is unchanged.
 - Slice three (2026-10-02): immutable profile identity, the run's durable record and MUT-003, with the reserved governed decisions reported rather than adopted. It is built on the accepted `d9dce9c8` (tree `5deed40e`), was dispatched by TPM successor `47cb9a74-a798-4f40-9b54-2a818afe0a42`, and was committed as `3b05abce237593b88d4bb83fc41440967479dd8e` (tree `7c92ee34dd825b1feaa7f46583174eb0ea2258d6`). Verify passed and audit 6f failed it: a sealed finding was readable through the public `PlanningPairRun::record()`.
@@ -1349,7 +1350,7 @@ verify and audit passed, in the unchanged 8282 TSW `wks_8062e92dee85f5b3` and se
 **Ownership readback before any write.**
 - Branch `feat/ASMA-8282-qualify-shared-advisor-and-committee-protocols` is at the exact head with no tracked change.
 - `.agents/`, `.asma/`, `.cursor/`, `AGENTS.md`, `CLAUDE.md` and `docs/evidence/KON-MVP-18/run-4d1b209d3fa9ea8e/` are untracked, others' or historical, and untouched (aggregate `4ff4c1bc…9e87`).
-- CLI owner 462 owns the root CLI (C-P). Nothing here writes its checkout or `_tools/asma-cli`.
+- CLI owner 462 owns the root CLI (C-P). Nothing here writes its checkout or the ASMA CLI repository.
 - No native session, workspace, seat, placement, credential, provider, network or daemon effect was performed or needed. Every observation is the fake runtime's or a recorded Paseo fixture's.
 - Capacity was not read: this slice runs no probe.
 
@@ -1994,7 +1995,7 @@ not current:
   - **Unchanged:** the Committee recover route, which still cannot reach a member.
   - **Failure mode:** a lost or unqualified member fails closed.
 - **Caller serve profile.** An opt-in `planning_pair_caller` source profile now serves exactly the four caller tools when it is selected by name. No hosted seat is composed with it: no explicit optional selection seam exists, and none is inferred. The `leadership` profile is unchanged, so a hosted LSA still has no caller tools unless a client holding its scoped credential serves this profile.
-- **Direct-mode consumer.** The asma-cli consumer (`_tools/asma-cli`, another checkout) is not written.
+- **Direct-mode consumer.** The asma-cli consumer (another checkout) is not written.
 - **Shared invocation.**
   - **B1a:** moved the pure caller eligibility and member context. Accepted at `8cd2305f`.
   - **B1b:** moved the recovery plan and outcome and the five intent fingerprints. Accepted at the corrected `8c706eec` (tree `c96abf24`), after b887's verify and 6f's audit both passed there, as TPM relays.
@@ -2017,7 +2018,7 @@ _Historical: kept as written at `832e60cc`. The current list is under slice four
 - **D-1, D-2 and D-3** were disposed by the LSA on 2026-10-02 (see the note under "Reserved decisions") for bounded implementation. The additive persistence, registered-operation and source-authentication slice follows only after verify and audit pass on this repair. The ASMA-8113 owner's compatibility review fences acceptance of the changed identity vocabulary. Live placement, release and qualification stay fenced under D-3.
 - **Persistence and identity.** The durable record, its explicit input-sourced seam (`PlanningPairRecord::admitted` plus each transition's own input and returned address) and its fail-closed restore exist, but no store keeps them: there are no tables or migration. The run id type and the semantic identity (dedupe) hash wait on D-1. ASMA-8113 stays open and is consumed, not reopened.
 - **Governed mode.** There are no daemon operations for a planning pair and no API route, MCP-routed tool, OpenAPI or console types, ASW/CSW placement, seat bindings or scoped credentials (D-2, D-3).
-- **TPM-owned placement.** Only the direct CLI places a pair. No TPM operation, receipt or procedure wraps it, and the asma-cli consumer (`_tools/asma-cli`, another checkout) is not written.
+- **TPM-owned placement.** Only the direct CLI places a pair. No TPM operation, receipt or procedure wraps it, and the asma-cli consumer (another checkout) is not written.
 - **Runtime.** There is no per-member `FleetLaunchProvenance` mapping, native launch or readback of the frozen members. Read-only authority is unrepresentable in the document, the run and the record, but is not yet read back from a launched harness. No real provider or Paseo launch was performed, and no daemon or CLI build was deployed.
 - **Publication and qualification.** The document now has an immutable identity, but no registered publication (D-2), catalog, preset, ASW/CSW naming or Team Definition slot. The protocol is not yet qualified in either mode.
 - **MUT-003** was executed by this seat: 7 of 7 killed at `3b05abce`, and sites a–c killed again on the remediation source. Its acceptance is the TPM-routed verify and audit of the committed head.

@@ -1,7 +1,7 @@
-   Compiling kontor-store v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-store)
-   Compiling kontor-api v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-api)
-   Compiling kontor-memory-cognee v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-memory-cognee)
-   Compiling kontor-daemon v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-daemon)
+   Compiling kontor-store v0.2.1 ([qualification-workspace]/crates/kontor-store)
+   Compiling kontor-api v0.2.1 ([qualification-workspace]/crates/kontor-api)
+   Compiling kontor-memory-cognee v0.2.1 ([qualification-workspace]/crates/kontor-memory-cognee)
+   Compiling kontor-daemon v0.2.1 ([qualification-workspace]/crates/kontor-daemon)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 51.64s
      Running tests/loopback_api.rs (target/debug/deps/loopback_api-6520399e83adc025)
 

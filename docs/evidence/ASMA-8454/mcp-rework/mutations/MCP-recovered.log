@@ -1,4 +1,4 @@
-   Compiling kontor-runtime-paseo v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-runtime-paseo)
+   Compiling kontor-runtime-paseo v0.2.1 ([qualification-workspace]/crates/kontor-runtime-paseo)
 warning: unused variable: `pre_thread_reload`
     --> crates/kontor-runtime-paseo/src/adapter.rs:6176:13
      |

@@ -696,7 +696,7 @@ accepted dispositions are:
 
 Do not invent `asma fleet probe`, a new command group, a generic `kontor raw`
 forwarder or fallback to the old implementation. Centralize subprocess setup
-in one narrow `_tools/asma-cli` helper with fixed argv builders, a bounded
+in one narrow ASMA CLI helper with fixed argv builders, a bounded
 timeout, inherited stdout, captured/diagnostic stderr and environment
 allowlisting. The helper does not parse a successful Kontor document to make a
 second decision; the exit class is the decision boundary.
@@ -873,7 +873,7 @@ implementation, QA and release evidence; the OP-08 plan contract; the
 integrated source registry and completion implementation; and current official
 MCP client configuration contracts. The architect session timeline itself
 returned the already-recorded `timeline_refetch_required` failure documented in
-`_docs/ai-orchestration/reports/2026-08-19-10-40-report-kontor-op07-timeline-refetch-gap.md`.
+the parent-workspace OP-07 timeline-refetch gap report.
 No direct Paseo fallback, replacement seat or duplicate operational-gap report
 was used. Durable Kontor task/dependency reads and repository evidence remained
 available and were used instead.

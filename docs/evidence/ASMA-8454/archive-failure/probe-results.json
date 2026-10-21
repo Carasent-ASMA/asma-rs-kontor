@@ -2,7 +2,7 @@
   {
     "name": "base-probe",
     "source_commit": "e376f4059e47de8fb40956d4dbfbf6920dabc4ec",
-    "cwd": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/reproduction/base-probe",
+    "cwd": "[qualification-workspace]/.qualification/reproduction/base-probe",
     "command": [
       "cargo",
       "test",
@@ -17,7 +17,7 @@
       "--nocapture",
       "--test-threads=1"
     ],
-    "target_dir": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/reproduction/target-base",
+    "target_dir": "[qualification-workspace]/.qualification/reproduction/target-base",
     "started_at": "2026-10-11T15:18:37.955560+00:00",
     "exit_code": 0,
     "log": ".qualification/reproduction/base-probe.log",
@@ -28,7 +28,7 @@
   {
     "name": "current-probe",
     "source_commit": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
-    "cwd": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/reproduction/current-probe",
+    "cwd": "[qualification-workspace]/.qualification/reproduction/current-probe",
     "command": [
       "cargo",
       "test",
@@ -43,7 +43,7 @@
       "--nocapture",
       "--test-threads=1"
     ],
-    "target_dir": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target",
+    "target_dir": "[qualification-workspace]/target",
     "started_at": "2026-10-11T15:18:37.955804+00:00",
     "exit_code": 0,
     "log": ".qualification/reproduction/current-probe.log",

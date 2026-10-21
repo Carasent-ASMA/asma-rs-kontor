@@ -1,6 +1,6 @@
 {
   "source_commit": "bdd4838ee08c4a387ebea7b473b522a733df39d4",
-  "scratch_tree": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/reproduction/current-probe",
+  "scratch_tree": "[qualification-workspace]/.qualification/reproduction/current-probe",
   "archive_sha256": "552180876f9af4de10de5c5b4304ca4cc02d901096415b1a427f3448c0384b07",
   "diagnostic_file": "crates/kontor-daemon/tests/loopback/message_delivery_proofs.rs",
   "original_file_sha256": "8b9d509966cc4b194633402c92b472f0d31f59eddcd9f9761d4b021588f58095",

@@ -153,7 +153,7 @@ class AccountAliasTests(unittest.TestCase):
             "docs/evidence/ASMA-1/report.md",
             "docs/CONFIGURATION.md",
             "_docs/plans/plan.md",
-            "config/examples/fleet.yml",
+            "config/examples/orchestration/fleet.yml",
             "README.md",
             "tests/contract/fixture.json",
         ]

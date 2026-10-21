@@ -14,7 +14,7 @@
 -- SQLite cannot widen the v101 CHECK for the two new conditions, so the table is
 -- rebuilt in the same shape v134 uses for its receipt rebuild. The old table is
 -- dropped only after every row has been copied into the successor.
-CREATE TABLE execution_hold_conditions_v135 (
+CREATE TABLE execution_hold_conditions_v136 (
     project_id       TEXT NOT NULL REFERENCES projects (id) ON DELETE RESTRICT,
     authorization_id TEXT NOT NULL,
     condition        TEXT NOT NULL
@@ -52,7 +52,7 @@ CREATE TABLE execution_hold_conditions_v135 (
 -- is the boundary REQ-008 names, and a hold that was already standing when the
 -- release landed gets its first review from that instant rather than an
 -- invented past date.
-INSERT INTO execution_hold_conditions_v135
+INSERT INTO execution_hold_conditions_v136
     (project_id, authorization_id, condition, reason_code, review_by,
      dependency_task_id, recorded_at)
 SELECT project_id,
@@ -68,7 +68,7 @@ FROM execution_hold_conditions;
 -- read path treated the missing row as `manual`. Those are exactly the
 -- indefinite holds REQ-008 names, so they get a typed row and the same review
 -- date rather than staying invisible to the sweep.
-INSERT INTO execution_hold_conditions_v135
+INSERT INTO execution_hold_conditions_v136
     (project_id, authorization_id, condition, reason_code, review_by,
      dependency_task_id, recorded_at)
 SELECT r.project_id,
@@ -88,7 +88,7 @@ WHERE NOT EXISTS (
 
 PRAGMA legacy_alter_table = ON;
 DROP TABLE execution_hold_conditions;
-ALTER TABLE execution_hold_conditions_v135 RENAME TO execution_hold_conditions;
+ALTER TABLE execution_hold_conditions_v136 RENAME TO execution_hold_conditions;
 PRAGMA legacy_alter_table = OFF;
 
 -- Append-only, exactly as in v101. A condition that could be edited after the
@@ -142,4 +142,4 @@ CREATE TRIGGER execution_hold_attention_no_delete
 BEFORE DELETE ON execution_hold_attention
 BEGIN SELECT RAISE(ABORT, 'a hold attention record is evidence, and evidence is not withdrawn'); END;
 
-PRAGMA user_version = 135;
+PRAGMA user_version = 136;

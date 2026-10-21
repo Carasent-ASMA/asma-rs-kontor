@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 135;
+pub const SCHEMA_VERSION: i64 = 136;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -460,11 +460,16 @@ const MIGRATIONS: &[&str] = &[
     // and review room serve, and the receipt kinds that open and close a
     // review (ASMA-8453).
     include_str!("../migrations/0134_pr_review_subjects.sql"),
-    // Schema v135. Every hold records an owner, a reason code, a lift condition
+    // Schema v135. The typed operational-gap ledger: the intended operation,
+    // failure class, exact task/epic/run/seat identities, checkpoint, bounded
+    // fallback and owner a seat records when Kontor cannot perform the
+    // operation (ASMA-8514).
+    include_str!("../migrations/0135_operational_gaps.sql"),
+    // Schema v136. Every hold records an owner, a reason code, a lift condition
     // and a review date; `dependency_done` and `review_date` can lift a hold
     // themselves; and an overdue review raises one typed attention record
     // (ASMA-8517 / REQ-008).
-    include_str!("../migrations/0135_hold_terms_and_attention.sql"),
+    include_str!("../migrations/0136_hold_terms_and_attention.sql"),
 ];
 
 const _: () = assert!(

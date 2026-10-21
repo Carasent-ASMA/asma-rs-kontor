@@ -268,6 +268,8 @@ const EXPECTED_TABLES: &[&str] = &[
     "desk_adam_subjects",
     // Schema v134 (ASMA-8453): PR review subjects.
     "pr_review_subjects",
+    // Schema v135 (ASMA-8514): the typed operational-gap ledger.
+    "operational_gaps",
 ];
 
 /// The frozen v1 script, so the upgrade test can build a genuine v1 file.
@@ -810,8 +812,10 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // that declare and reconcile them (ASMA-8451). v133 adds desk Adam
     // subjects and one live session per subject (ASMA-8452). v134 adds PR
     // review subjects and the receipt kinds that open and close a review
-    // (ASMA-8453).
-    assert_eq!(SCHEMA_VERSION, 135);
+    // (ASMA-8453). v135 adds the typed operational-gap ledger (ASMA-8514).
+    // v136 makes every hold state its terms and gives an overdue review one
+    // typed attention record (ASMA-8517 / REQ-008).
+    assert_eq!(SCHEMA_VERSION, 136);
 }
 
 #[test]
@@ -3218,7 +3222,7 @@ fn v99_records_a_hold_lift_condition_that_can_neither_be_edited_nor_withdrawn() 
     assert_eq!(stored, "kickoff_ready");
 }
 
-/// v135 backfills every existing hold and gives overdue review its own evidence.
+/// v136 backfills every existing hold and gives overdue review its own evidence.
 ///
 /// The migration runs as part of the KR-14 deploy, so a hold that already stood
 /// gets its first review fourteen days from that boundary. The two shapes are
@@ -3226,7 +3230,7 @@ fn v99_records_a_hold_lift_condition_that_can_neither_be_edited_nor_withdrawn() 
 /// gains a review date, and a pre-v101 revocation with no row at all becomes an
 /// explicit `manual` hold instead of staying invisible to the sweep.
 #[test]
-fn v135_gives_every_existing_hold_a_review_date_and_typed_attention() {
+fn v136_gives_every_existing_hold_a_review_date_and_typed_attention() {
     use kontor_core::id::{SignedDuration, Timestamp};
 
     let directory = temp();
@@ -3237,7 +3241,7 @@ fn v135_gives_every_existing_hold_a_review_date_and_typed_attention() {
         .expect("foreign keys can be disabled");
 
     let migrations = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations");
-    let mut through_v134: Vec<std::path::PathBuf> = std::fs::read_dir(&migrations)
+    let mut through_v135: Vec<std::path::PathBuf> = std::fs::read_dir(&migrations)
         .expect("the migration directory reads")
         .map(|entry| entry.expect("a migration entry").path())
         .filter(|path| {
@@ -3245,16 +3249,16 @@ fn v135_gives_every_existing_hold_a_review_date_and_typed_attention() {
                 && path
                     .file_name()
                     .and_then(|name| name.to_str())
-                    .is_some_and(|name| name < "0135_")
+                    .is_some_and(|name| name < "0136_")
         })
         .collect();
-    through_v134.sort();
-    assert_eq!(through_v134.len(), 134);
+    through_v135.sort();
+    assert_eq!(through_v135.len(), 135);
 
     connection
         .execute_batch("BEGIN IMMEDIATE")
         .expect("the migration transaction opens");
-    for migration in through_v134 {
+    for migration in through_v135 {
         let sql = std::fs::read_to_string(&migration).expect("a migration reads");
         connection
             .execute_batch(&sql)
@@ -3263,7 +3267,7 @@ fn v135_gives_every_existing_hold_a_review_date_and_typed_attention() {
     let version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("the version is readable");
-    assert_eq!(version, 134);
+    assert_eq!(version, 135);
 
     // Two revocations: one recorded by v101 with a condition row, and one that
     // predates the table entirely.
@@ -3291,17 +3295,17 @@ fn v135_gives_every_existing_hold_a_review_date_and_typed_attention() {
         .execute_batch("COMMIT")
         .expect("the migration transaction commits");
 
-    let migration = std::fs::read_to_string(migrations.join("0135_hold_terms_and_attention.sql"))
-        .expect("v135 reads");
+    let migration = std::fs::read_to_string(migrations.join("0136_hold_terms_and_attention.sql"))
+        .expect("v136 reads");
     connection
         .execute_batch("BEGIN IMMEDIATE")
-        .expect("the v135 transaction opens");
+        .expect("the v136 transaction opens");
     connection
         .execute_batch(&migration)
-        .expect("v135 applies over the legacy holds");
+        .expect("v136 applies over the legacy holds");
     connection
         .execute_batch("COMMIT")
-        .expect("the v135 transaction commits");
+        .expect("the v136 transaction commits");
 
     let mut statement = connection
         .prepare(
@@ -3338,7 +3342,7 @@ fn v135_gives_every_existing_hold_a_review_date_and_typed_attention() {
             |row| row.get(0),
         )
         .expect("the anti-join reads");
-    assert_eq!(unheld, 0, "no revocation survives v135 without hold terms");
+    assert_eq!(unheld, 0, "no revocation survives v136 without hold terms");
     assert_eq!(rows[0].1, "manual");
     assert_eq!(rows[1].1, "kickoff_ready");
     for row in &rows {
@@ -7074,7 +7078,7 @@ fn v123_upgrade_preserves_generic_ledger_and_enforces_immutable_memory_receipts(
     // now has the exact v119 table set and ledger, and opens through the real chain.
     let database = directory.path().join("kontor.db");
     let connection = Connection::open(&database).unwrap();
-    connection.execute_batch("DROP TABLE memory_projection_rebuild_results; DROP TABLE memory_projection_rebuild_keys; DROP TABLE memory_recall_keys; DROP TABLE memory_recall_metadata; DROP TABLE memory_experience_proposals; DROP TABLE memory_projection_active; DROP TABLE memory_projection_snapshots; DROP TABLE memory_experience_eligibility; DROP TABLE imported_record_evidence; DROP TABLE core_team_route_successions; PRAGMA user_version=119;").unwrap();
+    connection.execute_batch("DROP TABLE memory_projection_rebuild_results; DROP TABLE memory_projection_rebuild_keys; DROP TABLE memory_recall_keys; DROP TABLE memory_recall_metadata; DROP TABLE memory_experience_proposals; DROP TABLE memory_projection_active; DROP TABLE memory_projection_snapshots; DROP TABLE memory_experience_eligibility; DROP TABLE imported_record_evidence; DROP TABLE core_team_route_successions; DROP TABLE operational_gaps; PRAGMA user_version=119;").unwrap();
     // The ASMA-8278 feature generations are additive too: a fixture that replays
     // the chain from 119 must not leave their tables behind either.
     connection.execute_batch("DROP TABLE planning_pair_contributions; DROP TABLE planning_pair_record_revisions; DROP TABLE planning_pair_placements; DROP TABLE planning_pair_member_natives; DROP TABLE attestation_authority_keys; DROP TABLE attestation_authority_heads; DROP TABLE prepared_attestation_tokens; DROP TABLE attestation_token_heads; DROP TABLE pr_review_subjects; DROP TABLE execution_hold_attention; DROP TRIGGER desk_adam_subjects_host_one_session; DROP TRIGGER desk_adam_subjects_bound_ad_hoc_seats_no_one; DROP TRIGGER desk_adam_subjects_bound_ad_hoc_hosts_no_one; DROP TABLE desk_adam_subjects; DROP TABLE durable_seat_declarations; DROP TABLE desks;").unwrap();

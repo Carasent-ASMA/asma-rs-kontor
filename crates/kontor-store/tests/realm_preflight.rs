@@ -37,9 +37,9 @@ fn realm_preflight_refuses_absent_empty_or_unsupported_databases_without_repair(
 //
 // ASMA-8187 takes this binary from schema 119 to 122. The operator preflight
 // that installs a credential into a *stopped* Realm opens read-only and refuses
-// anything it cannot vouch for, so the question these tests settle is what the joined current
-// binary does when it meets a Realm that stopped at 119: it must refuse, and it
-// must not migrate on the way.
+// anything it cannot vouch for, so the question these tests settle is what the
+// joined current binary does when it meets a Realm that stopped at 119: it must
+// refuse, and it must not migrate on the way.
 // ---------------------------------------------------------------------------
 
 /// The joined schema is the one the preflight accepts.

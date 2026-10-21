@@ -1,6 +1,6 @@
-   Compiling kontor-store v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-store)
-   Compiling kontor-api v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-api)
-   Compiling kontor-daemon v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-daemon)
+   Compiling kontor-store v0.2.1 ([task-workspace])
+   Compiling kontor-api v0.2.1 ([task-workspace])
+   Compiling kontor-daemon v0.2.1 ([task-workspace])
 warning: unused variable: `reloaded`
      --> crates/kontor-daemon/src/applications.rs:25123:21
       |

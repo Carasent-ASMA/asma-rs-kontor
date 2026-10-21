@@ -1,0 +1,115 @@
+# Neutral fleet policy example. Copy it into a selected config folder and
+# replace the placeholder accounts, model ids and seat ids with the project's
+# own values. It is schema_version 2, the successor that adds leadership
+# bindings; schema_version 1 documents remain readable by the live fleet file.
+#
+# Accounts are aliases only. Never put a credential, a provider home or an
+# email address in this file: a published policy refuses all three, and the
+# account mapping belongs in host.example.yml (host.yml is not committed).
+schema_version: 2
+
+# A domain is one failure domain: accounts that go down together.
+domains:
+  claude:
+    provider: claude
+    accounts: [claude-primary, claude-secondary]
+  codex:
+    provider: codex
+    accounts: [codex-primary]
+  cursor:
+    provider: cursor
+    accounts: [cursor]
+  opencode:
+    provider: opencode
+    accounts: [opencode]
+    model_prefix: "example/"
+
+# For providers that do not work at all. Quota exhaustion needs no entry.
+unavailable:
+  domains: []
+  accounts: []
+
+models:
+  opus-example:
+    domain: claude
+    id: claude-opus-example
+    vendor: anthropic
+    efforts: [low, medium, high, xhigh, max]
+    vision: true
+    calibrated: true
+  sol-example:
+    domain: codex
+    id: gpt-example
+    vendor: openai
+    efforts: [low, medium, high, xhigh, max]
+    vision: true
+    calibrated: true
+  grok-example:
+    domain: cursor
+    id: grok-example
+    vendor: xai
+    efforts: [low, high, xhigh]
+    vision: true
+    calibrated: true
+  open-example:
+    domain: opencode
+    id: example/model
+    vendor: example
+    efforts: [low, high, max]
+    vision: false
+    calibrated: false
+
+# A chain is an ordered list of steps. Every model on every account of one
+# domain is tried before placement descends to the next step.
+chains:
+  claude-first:
+    - [opus-example@xhigh]
+    - [sol-example@xhigh]
+    - [grok-example@high]
+  codex-first:
+    - [sol-example@xhigh]
+    - [opus-example@xhigh]
+    - [grok-example@high]
+  independent-review:
+    - [sol-example@xhigh]
+    - [opus-example@xhigh]
+    - [grok-example@high]
+    - [open-example@max]
+  # A fallback chain: if the lightweight route cannot serve the pinned effort,
+  # placement descends to the next policy step rather than substituting a route.
+  open-fallback:
+    - [open-example@low]
+    - [sol-example@xhigh]
+  open-route:
+    - [open-example@max]
+
+# Bindings name chains. Replace the team, committee, advisor and leadership
+# ids with the ids the project publishes; leadership keys name a pinned Core
+# Team revision hash, not a role code.
+bindings:
+  team/01936f5a-0000-7000-8000-000000000001/scope: codex-first
+  team/01936f5a-0000-7000-8000-000000000001/implement: claude-first
+  team/01936f5a-0000-7000-8000-000000000001/verify: independent-review
+  team/01936f5a-0000-7000-8000-000000000001/audit: codex-first
+  team/01936f5a-0000-7000-8000-000000000001/fallback: open-fallback
+  team/01936f5a-0000-7000-8000-000000000001/open: open-route
+  committee/01991c00-0000-7000-8000-000000000001/reviewer-a: independent-review
+  committee/01991c00-0000-7000-8000-000000000001/reviewer-b: claude-first
+  committee/01991c00-0000-7000-8000-000000000001/judge: codex-first
+  advisor/01a02d00-0000-7000-8000-00000000ad01: codex-first
+  leadership/0000000000000000000000000000000000000000000000000000000000000000/lsa: codex-first
+  leadership/0000000000000000000000000000000000000000000000000000000000000000/tpm: claude-first
+
+rules:
+  # Verdict seats skip models not marked calibrated: true.
+  calibration_required:
+    - team/01936f5a-0000-7000-8000-000000000001/verify
+    - team/01936f5a-0000-7000-8000-000000000001/audit
+    - committee/01991c00-0000-7000-8000-000000000001/reviewer-a
+    - committee/01991c00-0000-7000-8000-000000000001/reviewer-b
+    - committee/01991c00-0000-7000-8000-000000000001/judge
+  vision_required: []
+  # A reviewer's routes must avoid the vendor its partner ran on.
+  independent_of:
+    team/01936f5a-0000-7000-8000-000000000001/verify: team/01936f5a-0000-7000-8000-000000000001/implement
+    team/01936f5a-0000-7000-8000-000000000001/audit: team/01936f5a-0000-7000-8000-000000000001/implement

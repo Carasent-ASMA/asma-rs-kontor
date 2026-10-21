@@ -9,8 +9,8 @@
 //! contract growing.
 //!
 //! On top of it sits a **snapshot canary**: at this base the contract has exactly
-//! 229 mapped operations and exactly two allowlisted ones. The canary is not a
-//! claim that 229 is forever — it is what makes a later change to the daemon's
+//! 231 mapped operations and exactly two allowlisted ones. The canary is not a
+//! claim that 231 is forever — it is what makes a later change to the daemon's
 //! surface *fail here* rather than pass silently, so somebody has to decide
 //! whether the new operation gets a tool or a recorded deferral.
 //!
@@ -544,12 +544,12 @@ fn the_permission_decisions_match_the_runtimes_own_spelling() {
 
 #[test]
 fn the_snapshot_canary_holds_at_this_base() {
-    // Not "229 forever": this is what makes a later contract change fail here, so a
+    // Not "231 forever": this is what makes a later contract change fail here, so a
     // new operation gets a deliberate tool or a recorded deferral instead of
     // slipping past unreviewed.
     assert_eq!(
         http().count(),
-        229,
+        231,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     // ASMA-8280 B-1: the registry's local operations — in-process handlers
@@ -565,7 +565,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // context is actually charged for — and it has to move deliberately too.
     assert_eq!(
         http().count() - CLI_ONLY.len(),
-        228,
+        230,
         "the advertised tool count changed; a tool held off the listing is a budget decision"
     );
     assert_eq!(
@@ -577,7 +577,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // route serves the document itself and is not self-documented.
     assert_eq!(
         documented().len(),
-        230,
+        232,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -609,9 +609,11 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
     let expected: BTreeMap<&str, CallerTier> = BTreeMap::from([
         ("kontor_realm_get", CallerTier::Observer),
         ("kontor_run_get", CallerTier::Observer),
+        ("kontor_runtime_bindings_list", CallerTier::Observer),
         ("kontor_task_get", CallerTier::Observer),
         ("kontor_open_questions_list", CallerTier::Observer),
         ("kontor_open_question_record", CallerTier::Operator),
+        ("kontor_operational_gap_record", CallerTier::Operator),
         // Durable desk seats (ASMA-8451): declaring a seat and reconciling a
         // desk's seats are operator work, as every other desk write is.
         ("kontor_desk_seats_list", CallerTier::Observer),

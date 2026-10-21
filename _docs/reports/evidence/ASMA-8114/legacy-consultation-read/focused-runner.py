@@ -1,6 +1,6 @@
 import datetime, hashlib, json, os, pathlib, subprocess, sys
 
-root = pathlib.Path(os.environ['HOME']) / 'carasent/asma-modules/.worktrees/asma-8113/asma-rs-kontor'
+root = pathlib.Path(os.environ['HOME']) / '[task-workspace]'
 folder = pathlib.Path('/private/tmp/ASMA-8114-legacy-read-qualification-20260926')
 label, *selectors = sys.argv[1:]
 assert selectors and '/' not in label

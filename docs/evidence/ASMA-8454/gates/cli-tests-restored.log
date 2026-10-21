@@ -1,8 +1,8 @@
-   Compiling kontor-store v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-store)
-   Compiling kontor-cli v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-cli)
-   Compiling kontor-memory-cognee v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-memory-cognee)
-   Compiling kontor-api v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-api)
-   Compiling kontor-daemon v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-daemon)
+   Compiling kontor-store v0.2.1 ([qualification-workspace]/crates/kontor-store)
+   Compiling kontor-cli v0.2.1 ([qualification-workspace]/crates/kontor-cli)
+   Compiling kontor-memory-cognee v0.2.1 ([qualification-workspace]/crates/kontor-memory-cognee)
+   Compiling kontor-api v0.2.1 ([qualification-workspace]/crates/kontor-api)
+   Compiling kontor-daemon v0.2.1 ([qualification-workspace]/crates/kontor-daemon)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 32.97s
      Running unittests src/main.rs (target/debug/deps/kontor-b93b2c9532b1c750)
 

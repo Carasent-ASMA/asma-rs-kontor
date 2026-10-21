@@ -1,0 +1,21 @@
+{
+  "consumers": [
+    "PUBLIC-REDACTION.md"
+  ],
+  "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+  "files": {
+    "high-scope-record.json": {
+      "bytes": 15974,
+      "derivative_sha256": "0c6eaf5b28a122b73c73403c65a2ada23eb0f5cd21c19ae96b5c4728b7479bdd",
+      "original_sha256": "6a434b7b0f9579f10fb08cdda87f928908491efd2f8dbbf36ab3b634de9bc78a",
+      "private_references_redacted": 0
+    }
+  },
+  "model": "The public copy is a redacted derivative. Original bytes and SHA-256 are retained in the access-controlled evidence store; the TPM owns the exact-path disposition ledger.",
+  "original_archive": "access-controlled evidence store outside the public repo; TPM-owned disposition ledger",
+  "placeholders": {
+    "[parent-plan]": "private parent plan path",
+    "[parent-report]": "private parent report path"
+  },
+  "scope": "docs/evidence/KBI-8050"
+}

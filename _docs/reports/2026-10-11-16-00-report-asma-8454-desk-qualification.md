@@ -15,7 +15,7 @@ Load when reviewing the ASMA-8454 candidate, reproducing its evidence or routing
 
 ## Candidate and authority
 
-The qualification checkout is `$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor`, branch `feat/ASMA-8454-qualify-and-release-durable-desk-capability-safely`. Its merged implementation base is `e376f4059e47de8fb40956d4dbfbf6920dabc4ec`; all four delivered tasks are present there. Source candidate: `bdd4838ee08c4a387ebea7b473b522a733df39d4` (tree `81db7c6d9d8561618909c57ae2044e724985df30`). Its non-Markdown verification inputs are frozen in the evidence manifest. The evidence/report carrier preserves those bytes. Its exact final commit and a further complete archive-gate receipt are recorded in the PR/handoff after the carrier is committed; the coordinator reviews that exact revision. The committed logs in this bundle identify their actual tested source commits and are never relabelled as carrier runs.
+The qualification checkout is `[task-workspace]`, branch `feat/ASMA-8454-qualify-and-release-durable-desk-capability-safely`. Its merged implementation base is `e376f4059e47de8fb40956d4dbfbf6920dabc4ec`; all four delivered tasks are present there. Source candidate: `bdd4838ee08c4a387ebea7b473b522a733df39d4` (tree `81db7c6d9d8561618909c57ae2044e724985df30`). Its non-Markdown verification inputs are frozen in the evidence manifest. The evidence/report carrier preserves those bytes. Its exact final commit and a further complete archive-gate receipt are recorded in the PR/handoff after the carrier is committed; the coordinator reviews that exact revision. The committed logs in this bundle identify their actual tested source commits and are never relabelled as carrier runs.
 
 The approved plan TASK-005, REQ-009/010, CON-002/007/008, §6/TEST-007 and RISK-004 govern this work. Exact plan/advisor/skill/alignment hashes are in [authority provenance](../../docs/evidence/ASMA-8454/authority-provenance.json). Igor's 2026-10-10 batch permission covers build/merge/release; the coordinator owns Independent Review and the gateway. This report supplies no verdict or release authorization of its own. No Jira, plan, real durable seat, live epic, watchdog, fleet policy or existing production pin was written.
 
@@ -41,7 +41,7 @@ Rollback explicitly selects desk-less v1, then re-drives both existing desk keys
 
 ## Exact declaration comparison
 
-The Q-002 source is `$HOME/.paseo/worktrees/0vl4ss0m/asma-8419-pr-draft-status-checker/config/orchestration/pr-desk.yml`, SHA-256 `2297aba99eb830c35d9a5f386635162a008056dcdcd1bc1d3c019db33ea9cb05`, an **uncommitted dated decision**, branch `feat/ASMA-8419-pr-draft-status-checker`, coordinator-reported HEAD `c4f9957c`, owner Igor / 2026-10-08. It has no commit or PR and is absent from master. The coordinator's 2026-10-11T13:16Z disposition accepts these exact bytes as the comparison source.
+The Q-002 source is the coordinator's private local declaration file (path withheld), SHA-256 `2297aba99eb830c35d9a5f386635162a008056dcdcd1bc1d3c019db33ea9cb05`, an **uncommitted dated decision**, branch `feat/ASMA-8419-pr-draft-status-checker`, coordinator-reported HEAD `c4f9957c`, owner Igor / 2026-10-08. It has no commit or PR and is absent from master. The coordinator's 2026-10-11T13:16Z disposition accepts these exact bytes as the comparison source.
 
 The read-only comparator verifies both titles (`LSA • PR DRAFTS STATUS CHECKER`, `LSA • GENERAL`), role, skill, owner and date against supported fixture readback. Both remain `paseo_direct`, `unchecked`, with no native, seat binding or model route. `premium` remains the source chain declaration and is not resolved, adopted or launched. A future hash/commit/PR needs Igor's explicit newer decision; this qualification does not chase it. See [declaration comparison](../../docs/evidence/ASMA-8454/asma-8419-comparison.json).
 
@@ -119,7 +119,7 @@ The recorder uses pinned/offline Cargo where applicable, `RUSTC_WRAPPER=''`, wor
 
 ```sh
 python3 scripts/qualify-durable-desks.py baseline
-python3 scripts/qualify-durable-desks.py declarations --declaration-source $HOME/.paseo/worktrees/0vl4ss0m/asma-8419-pr-draft-status-checker/config/orchestration/pr-desk.yml
+python3 scripts/qualify-durable-desks.py declarations --declaration-source "$DECLARATION_SOURCE"
 python3 scripts/qualify-durable-desks.py mutations
 cargo test --offline --locked -p kontor-cli
 cargo test --offline --locked -p kontor-store
@@ -129,6 +129,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 python3 scripts/verify-tree.py --mode archive
 pnpm --filter kontor-console verify:api
 ```
+
+`DECLARATION_SOURCE` is the operator-supplied private declaration path; the path is
+deliberately not recorded.
 
 The archive gate also runs workspace tests, Cargo audit/deny, frozen pnpm install, typecheck, frontend tests and production dependency audit against the committed candidate. Store and daemon bridge/ensure/materialize/replay coverage must pass. Environmental blocks require exact evidence and coordinator disposition.
 

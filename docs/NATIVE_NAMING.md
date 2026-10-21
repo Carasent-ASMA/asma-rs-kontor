@@ -1,8 +1,8 @@
 # Native naming
 
-> Status: approved and implemented contract. The 2026-09-02 KBI migration is verified live; other epics retain historical pins until their own explicit upgrade. See the [governing migration receipt](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/architecture/2026-09-01-03-39-architecture-kontor-configuration-driven-native-naming.md#8-implementation-and-live-migration-receipt): deployed `1a4320f7`, migration `01a062dd-b092-7593-b64e-c385d2eb7c07`, nine preserved native identities.
+> Status: approved and implemented contract. The 2026-09-02 KBI migration is verified live; other epics retain historical pins until their own explicit upgrade. The governing migration receipt records deployed `1a4320f7`, migration `01a062dd-b092-7593-b64e-c385d2eb7c07`, and nine preserved native identities.
 >
-> Source verified at `0971674d` (2026-10-11): branch grammar, publication attestation, confirmed Jira-key tokens, consultation naming and the four durable-desk sections. Each later section names the PR and merge commit it describes. Merged is not deployed or selected: a realm uses a desk-capable or Jira-key Team Definition only after its own recorded selection.
+> Merged is not deployed or selected: a realm uses a desk-capable or Jira-key Team Definition only after its own recorded selection. Each later section names the change it describes.
 
 Kontor must render native hierarchy and names deterministically from one
 immutable, versioned Team Definition JSON revision pinned by the run. The Team
@@ -69,7 +69,7 @@ Git branch and was later published as such — `cat-11`, `kon-op-22`,
 `consultation-<uuid>` — with no tracker identity. Kontor now shares one grammar
 with the ASMA CLI (`asma git checkout -b --from <KEY>`), implemented in
 `kontor-core` `branch.rs` and mirrored byte-for-byte by
-`_tools/asma-cli/src/asma_cli/publication_policy.py`:
+the ASMA CLI's publication-policy implementation:
 
 ```text
 <type>/<PROJECT>-<number>-<slug>      ordinary work, e.g. feat/ASMA-8101-publication-identity

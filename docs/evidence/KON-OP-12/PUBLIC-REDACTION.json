@@ -1,0 +1,27 @@
+{
+  "consumers": [
+    "PUBLIC-REDACTION.md"
+  ],
+  "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+  "files": {
+    "REVIEW-NOTES.md": {
+      "bytes": 9558,
+      "derivative_sha256": "e358347389c5a008fac27864565d1a4c0b74e8c2d13dd4b87daa1fa8031dd04a",
+      "original_sha256": "52353e55e922d3d45d0e6d4c25cdc07feeac3f6c0d15bb3d05de94aafe35f2d0",
+      "private_references_redacted": 1
+    },
+    "architecture-handoff.json": {
+      "bytes": 9160,
+      "derivative_sha256": "4d92a8ab875d40d15cc927ad929eaed0131e1c11eb38a5be3764e6b723b33ab3",
+      "original_sha256": "e3cb242c2633daec437085f3646e32f86c0c97a88d35d3e66d4f46145523cb99",
+      "private_references_redacted": 0
+    }
+  },
+  "model": "The public copy is a redacted derivative. Original bytes and SHA-256 are retained in the access-controlled evidence store; the TPM owns the exact-path disposition ledger.",
+  "original_archive": "access-controlled evidence store outside the public repo; TPM-owned disposition ledger",
+  "placeholders": {
+    "[parent-plan]": "private parent plan path",
+    "[parent-report]": "private parent report path"
+  },
+  "scope": "docs/evidence/KON-OP-12"
+}

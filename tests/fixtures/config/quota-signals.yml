@@ -1,0 +1,56 @@
+schema_version: 1
+
+signals:
+  - id: claude-individual-spend-limit-b
+    version: 1
+    provider: claude-b
+    basis: plan_allowance
+    markers:
+      - individual spend limit
+      - claude.ai/settings/usage?from=cc_cli_limit_message
+      - your session limit resets
+    reset_prefix: 'your session limit resets '
+    reset_zone: Europe/Chisinau
+
+  - id: claude-individual-spend-limit-a
+    version: 1
+    provider: claude-a
+    basis: plan_allowance
+    markers:
+      - individual spend limit
+      - claude.ai/settings/usage?from=cc_cli_limit_message
+      - your session limit resets
+    reset_prefix: 'your session limit resets '
+    reset_zone: Europe/Chisinau
+
+  - id: codex-usage-limit-b
+    version: 1
+    provider: codex-b
+    basis: plan_allowance
+    markers:
+      - '[system error]'
+      - usage limit
+      - chatgpt.com/codex/settings/usage
+      - try again at
+    reset_prefix: 'try again at '
+    reset_zone: Europe/Oslo
+
+  - id: codex-usage-limit-a
+    version: 1
+    provider: codex-a
+    basis: plan_allowance
+    markers:
+      - '[system error]'
+      - usage limit
+      - chatgpt.com/codex/settings/usage
+      - try again at
+    reset_prefix: 'try again at '
+    reset_zone: Europe/Oslo
+
+  - id: opencode-insufficient-credits
+    version: 1
+    provider: opencode
+    basis: credit_balance
+    markers:
+      - insufficient
+      - credits

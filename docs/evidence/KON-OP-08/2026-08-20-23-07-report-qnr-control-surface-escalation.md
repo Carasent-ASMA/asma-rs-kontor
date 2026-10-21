@@ -299,6 +299,6 @@ returned `success: true`, `status: running`, with completion notification
 registered. No agent, workspace, session, binding or run was created.
 
 The durable fallback record is
-`_docs/ai-orchestration/reports/2026-08-20-23-13-report-kontor-operational-gap-qnr-escalation-route.md`.
+the parent-workspace QNR escalation-route operational-gap report.
 The repair remains pending until the preserved builder returns implementation
 and live verification evidence.

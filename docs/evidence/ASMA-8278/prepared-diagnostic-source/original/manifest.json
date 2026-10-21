@@ -385,8 +385,8 @@
     },
     {
       "path": "01-source-hashes.json",
-      "bytes": 433,
-      "sha256": "1b8efa05a846409cea23819b580e78e58d066ea78159e2f3609cb43dda150890"
+      "bytes": 1143,
+      "sha256": "fbb7a795d03d0b998d90e04b805118b8aa360d3c49bd37075709b25ce97bfc5a"
     },
     {
       "path": "02-runtime-regression.log.json",
@@ -435,8 +435,8 @@
     },
     {
       "path": "final-owned-hashes.json",
-      "bytes": 433,
-      "sha256": "233be73aec2b5385f5ad17fd3e7c2077aed4823fb4ee339c370019442a02d908"
+      "bytes": 974,
+      "sha256": "dfa037a4ad4a8f3d5779d10e0ef2a229505aa7c4ef1ce5eba200c5af3b230231"
     },
     {
       "path": "final-owned-hashes.tsv",
@@ -455,8 +455,8 @@
     },
     {
       "path": "mutation-baseline-hashes.json",
-      "bytes": 433,
-      "sha256": "233be73aec2b5385f5ad17fd3e7c2077aed4823fb4ee339c370019442a02d908"
+      "bytes": 974,
+      "sha256": "dfa037a4ad4a8f3d5779d10e0ef2a229505aa7c4ef1ce5eba200c5af3b230231"
     },
     {
       "path": "mutation-definitions.json",
@@ -465,8 +465,8 @@
     },
     {
       "path": "mutation-report.json",
-      "bytes": 10163,
-      "sha256": "390d9449072939c106b228e85bf13cdccf2953ed83b864a64dfe5467289b6d7a"
+      "bytes": 10632,
+      "sha256": "3e5bdaeaee9880fbccd7a0aa7a1d9ab5a2a971f20030851b52d2da16c1a2b405"
     },
     {
       "path": "prepare_mutations.py",
@@ -495,8 +495,8 @@
     },
     {
       "path": "temporal-provenance.json",
-      "bytes": 1662,
-      "sha256": "cbf1fbdcad0cd3f76fa29b867b93a9770cb918e0f646109cad4f95ea6d77575f"
+      "bytes": 2203,
+      "sha256": "e1e195a0839569b6cc27954883c63400a296cd29ce3131d679c26a16f733c325"
     },
     {
       "path": "logs/01-focused.log",
@@ -573,5 +573,15 @@
     "compiler targets",
     "full source fixture copy, whose owned3 bytes are independently pinned",
     "manifest self-hash emitted separately"
-  ]
+  ],
+  "public_derivative": {
+    "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+    "ledger": "../../PUBLIC-REDACTION.json",
+    "note": "The artifact inventory hashes for graph-verify-trace.json and the two candidate source files describe the originals; the public copies are redacted derivatives."
+  },
+  "derivatives": {
+    "crates/kontor-runtime/src/planning_pair/attestation.rs": "a6e46758a48ae9d48cb2e719541fc055288126621370820a58418f7d0e9f8779",
+    "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic.rs": "48a5baf647c4e0d10f45d5a0fb176ce389a14a09d342e22b77800ec9096a986f",
+    "graph-verify-trace.json": "12981f6d93d8f9d8aa47c0d652e286d87025b1b8c01e508f1ce09bb79dde736c"
+  }
 }

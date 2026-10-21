@@ -1,13 +1,13 @@
 [
   {
-    "repository": "$HOME/carasent/asma-modules/.worktrees/kontor-compat-docs",
+    "repository": "[compat-docs-workspace]",
     "changed_documents": 5,
     "local_links_checked": 19,
     "resolution": "catalog-relative layout mapped to isolated code and docs checkouts",
     "missing": []
   },
   {
-    "repository": "$HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor",
+    "repository": "[compat-workspace]",
     "changed_documents": 5,
     "local_links_checked": 63,
     "resolution": "catalog-relative layout mapped to isolated code and docs checkouts",

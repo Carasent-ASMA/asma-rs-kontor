@@ -1072,7 +1072,7 @@ mod tests {
     use kontor_fleet_activation::rule::*;
     use std::os::unix::fs::PermissionsExt;
 
-    const EXAMPLE: &str = include_str!("../../../config/examples/fleet.yml");
+    const EXAMPLE: &str = include_str!("../../../tests/fixtures/config/fleet.yml");
 
     fn write_fleet(root: &Path, contents: &str) -> PathBuf {
         let path = root.join(FLEET_FILE);
@@ -1109,8 +1109,8 @@ mod tests {
     }
 
     #[test]
-    fn the_shipped_example_parses() {
-        let snapshot = FleetSnapshot::parse(EXAMPLE).expect("the shipped example is valid");
+    fn the_test_fixture_parses() {
+        let snapshot = FleetSnapshot::parse(EXAMPLE).expect("the fleet fixture is valid");
         assert_eq!(snapshot.raw(), EXAMPLE);
         assert!(!snapshot.hash().as_str().is_empty());
     }

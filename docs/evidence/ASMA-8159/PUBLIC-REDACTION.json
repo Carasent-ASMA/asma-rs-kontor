@@ -1,0 +1,63 @@
+{
+  "consumers": [
+    "PUBLIC-REDACTION.md"
+  ],
+  "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+  "files": {
+    "2026-10-03-01-11-plan-corpus-census-and-rehearsal.md": {
+      "bytes": 9266,
+      "derivative_sha256": "a36497438981b7b59ecf470feb1a81384b18455bcc295048985b46fc3a6cbcff",
+      "original_sha256": "e53163b11db53cf38b6af080b1796103967ee30db92c37ecba250c9f9b61ccb0",
+      "private_references_redacted": 1
+    },
+    "2026-10-03-01-11-report-frozen-docs-join.md": {
+      "bytes": 6597,
+      "derivative_sha256": "667b7a92deabe460ca17b4574a23a44a4bca4741ef9def96b7139dcbe6e05ce0",
+      "original_sha256": "f39bbb049ab315aa41b82fbb158abf30981e50cfae590ae64fedb494ca081fd7",
+      "private_references_redacted": 3
+    },
+    "2026-10-03-09-41-report-production-prep-boundary-stop.md": {
+      "bytes": 14487,
+      "derivative_sha256": "d6007e64de044181f16e89eb374e91a45a3536d5cd6e5550f9344e619571febb",
+      "original_sha256": "ffb577b173e277a254c422f4c112cb3824a95ad56348a5a40ab6b648c7035276",
+      "private_references_redacted": 1
+    },
+    "production-prep/2026-10-03-10-55-report-composed-production-prep.md": {
+      "bytes": 27686,
+      "derivative_sha256": "ca67f02d0be3f24314dcb61c50098c41239929c49a1710345c9ce253c99ea72d",
+      "original_sha256": "7cb9d3131bcbbb46be84cb121a57dd6991f2df28a2456a4fcac155c04d6e840d",
+      "private_references_redacted": 1
+    },
+    "production-prep/inspect-integration.py": {
+      "bytes": 2452,
+      "derivative_sha256": "985b1b49f603b5030f947a2333c2443ac695303d3ad64876fc2c6994d0c67f5a",
+      "original_sha256": "2340369bc0e0a3206372c28e3468021f1648644b07bfd4cad254bab8917987ac",
+      "private_references_redacted": 1
+    },
+    "slot5-additive-join-conflict-2026-10-04.json": {
+      "bytes": 78605,
+      "derivative_sha256": "21de5613b4eb1ba909aa5867792099f819037671de64da4a66dd8d71930b663e",
+      "original_sha256": "8b53ff45e5f5d78caef0983b892da0f6c3879face57731f3b3d8df904248c92d",
+      "private_references_redacted": 2
+    },
+    "verify-boundary-stop.py": {
+      "bytes": 5871,
+      "derivative_sha256": "0826281b4d259799f5c724d6c70b8d7c290493674eddcdaedfee296ecd6b3209",
+      "original_sha256": "5718de41e97feb44ab75e01bde09f9338adb75f3a3877365e40c48a59f3eafde",
+      "private_references_redacted": 1
+    }
+  },
+  "model": "The public copy is a redacted derivative. Original bytes and SHA-256 are retained in the access-controlled evidence store; the TPM owns the exact-path disposition ledger.",
+  "original_archive": "access-controlled evidence store outside the public repo; TPM-owned disposition ledger",
+  "placeholders": {
+    "[operator]": "operator-identifying path segment",
+    "[parent-plan]": "private parent plan path",
+    "[parent-project]": "private parent project slug",
+    "[parent-repository]": "private parent repository",
+    "[parent-tools]": "private parent tools path",
+    "[parent-workspace merge-head path]": "private parent git-internal merge-head path",
+    "[parent-workspace]": "private parent workspace path",
+    "[task-workspace]": "private task workspace path"
+  },
+  "scope": "docs/evidence/ASMA-8159"
+}

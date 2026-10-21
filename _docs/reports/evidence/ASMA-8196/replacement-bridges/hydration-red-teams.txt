@@ -1,9 +1,9 @@
-   Compiling kontor-core v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-core)
-   Compiling kontor-runtime v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-runtime)
-   Compiling kontor-context v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-context)
-   Compiling kontor-teams v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-teams)
+   Compiling kontor-core v0.2.1 ([task-workspace])
+   Compiling kontor-runtime v0.2.1 ([task-workspace])
+   Compiling kontor-context v0.2.1 ([task-workspace])
+   Compiling kontor-teams v0.2.1 ([task-workspace])
     Finished `test` profile [unoptimized + debuginfo] target(s) in 11.81s
-     Running tests/team_contract.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/team_contract-9e0ebfdb674ea778)
+     Running tests/team_contract.rs ([parent-tools])
 
 running 2 tests
 test hydration_preserves_transitive_abandoned_bridges_without_spending_depth ... FAILED

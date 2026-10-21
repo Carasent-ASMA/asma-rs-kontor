@@ -10206,6 +10206,82 @@
         }
       }
     },
+    "/v1/projects/{project_id}/tasks/{task_id}/operational-gaps:record": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Record one typed operational gap against a task.",
+        "description": "Operator work, and idempotent under the caller's key.",
+        "operationId": "record_operational_gap",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "description": "The task, by UUID or confirmed Jira key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordOperationalGapRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationalGapDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/tasks/{task_id}/profile-selection": {
       "post": {
         "tags": [
@@ -12962,6 +13038,33 @@
         }
       }
     },
+    "/v1/runtime-bindings": {
+      "get": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Every persisted native binding in this Realm, with the work it served and\nwhether this process can still address it.",
+        "operationId": "binding_census",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnapshotDto_BindingCensusDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/runtime-capabilities": {
       "get": {
         "tags": [
@@ -15313,6 +15416,103 @@
           "open",
           "failed"
         ]
+      },
+      "BindingCensusDto": {
+        "type": "object",
+        "description": "Every persisted native binding in one Realm, at one control-plane position.",
+        "required": [
+          "bindings"
+        ],
+        "properties": {
+          "bindings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BindingCensusItemDto"
+            },
+            "description": "The bindings, oldest first."
+          }
+        }
+      },
+      "BindingCensusItemDto": {
+        "type": "object",
+        "description": "One binding in the census, with the work it served and its current state.",
+        "required": [
+          "binding_id",
+          "project_id",
+          "agent_run_id",
+          "task_id",
+          "runtime_kind",
+          "host",
+          "generation",
+          "native_id",
+          "bound_at",
+          "run_lifecycle",
+          "state"
+        ],
+        "properties": {
+          "agent_run_id": {
+            "type": "string",
+            "description": "The agent run the binding serves."
+          },
+          "binding_id": {
+            "type": "string",
+            "description": "The Kontor binding."
+          },
+          "bound_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was bound."
+          },
+          "epic_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The epic that task belongs to, when it belongs to one."
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The runtime generation the session belongs to.",
+            "minimum": 0
+          },
+          "host": {
+            "type": "string",
+            "description": "The host label the runtime reports for itself."
+          },
+          "native_id": {
+            "type": "string",
+            "description": "The runtime's own session id. Correlation evidence."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The project the binding belongs to."
+          },
+          "run_closed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the run closed, for a retired binding."
+          },
+          "run_lifecycle": {
+            "type": "string",
+            "description": "The run's lifecycle."
+          },
+          "runtime_kind": {
+            "type": "string",
+            "description": "The runtime family. Never an endpoint."
+          },
+          "state": {
+            "$ref": "#/components/schemas/NativeBindingStateDto",
+            "description": "Whether the binding is attached, detached or retired."
+          },
+          "task_id": {
+            "type": "string",
+            "description": "The task the run's team run serves."
+          }
+        }
       },
       "BindingDto": {
         "type": "object",
@@ -23326,6 +23526,15 @@
           }
         }
       },
+      "NativeBindingStateDto": {
+        "type": "string",
+        "description": "The state one persisted native binding is in, as a census reader needs it.",
+        "enum": [
+          "attached",
+          "detached",
+          "retired"
+        ]
+      },
       "NativeContainerParentDto": {
         "type": "object",
         "description": "Complete native parent identity reported for a child container.",
@@ -23745,6 +23954,103 @@
           }
         },
         "additionalProperties": false
+      },
+      "OperationalGapDto": {
+        "type": "object",
+        "description": "One durable operational-gap record, as it was written.",
+        "required": [
+          "realm_id",
+          "gap_id",
+          "project_id",
+          "task_id",
+          "failure_class",
+          "intended_operation",
+          "checkpoint",
+          "fallback_action",
+          "owner",
+          "status",
+          "recorded_at",
+          "replayed"
+        ],
+        "properties": {
+          "agent_run_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The exact run the gap was observed around."
+          },
+          "checkpoint": {
+            "type": "string",
+            "description": "The checkpoint the seat resumed from."
+          },
+          "epic_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The epic the owning task belonged to."
+          },
+          "evidence": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cited evidence digest, when one was recorded."
+          },
+          "failure_class": {
+            "type": "string",
+            "description": "The operating class of the failure."
+          },
+          "fallback_action": {
+            "type": "string",
+            "description": "The bounded fallback action."
+          },
+          "gap_id": {
+            "type": "string",
+            "description": "The gap identity."
+          },
+          "intended_operation": {
+            "type": "string",
+            "description": "The intended Kontor operation."
+          },
+          "owner": {
+            "type": "string",
+            "description": "The repair owner."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The owning project."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm the record belongs to."
+          },
+          "recorded_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was written."
+          },
+          "replayed": {
+            "type": "boolean",
+            "description": "Whether this call returned a record an earlier call under the same key\nalready wrote."
+          },
+          "seat_binding_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The exact seat the gap was observed around."
+          },
+          "status": {
+            "type": "string",
+            "description": "The state the record was written in."
+          },
+          "task_id": {
+            "type": "string",
+            "description": "The owning task."
+          }
+        }
       },
       "OutcomeKind": {
         "type": "string",
@@ -27319,6 +27625,66 @@
           }
         }
       },
+      "RecordOperationalGapRequest": {
+        "type": "object",
+        "description": "One typed gap record a seat asks Kontor to keep.",
+        "required": [
+          "gap_id",
+          "failure_class",
+          "intended_operation",
+          "checkpoint",
+          "fallback_action",
+          "owner"
+        ],
+        "properties": {
+          "agent_run_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The exact agent run the gap was observed around, when there was one."
+          },
+          "checkpoint": {
+            "type": "string",
+            "description": "The checkpoint the seat resumed from after containing the gap."
+          },
+          "evidence": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Digest of the evidence document this record cites, when one exists."
+          },
+          "failure_class": {
+            "type": "string",
+            "description": "The operating class of the failure, as an open key such as\n`capability_missing`."
+          },
+          "fallback_action": {
+            "type": "string",
+            "description": "The bounded fallback action actually taken."
+          },
+          "gap_id": {
+            "type": "string",
+            "description": "The stable gap identity the caller reuses on every retry."
+          },
+          "intended_operation": {
+            "type": "string",
+            "description": "The Kontor operation the seat intended to perform."
+          },
+          "owner": {
+            "type": "string",
+            "description": "Who owns the repair."
+          },
+          "seat_binding_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The exact persistent seat the gap was observed around, when there was\none."
+          }
+        },
+        "additionalProperties": false
+      },
       "RecordPlanningPairContributionRequest": {
         "type": "object",
         "description": "One member's finding or clarification answer.",
@@ -28479,6 +28845,7 @@
           "agent_run_id",
           "project_id",
           "team_run_id",
+          "task_id",
           "role",
           "projection",
           "revision",
@@ -28537,6 +28904,13 @@
             "format": "date-time",
             "description": "When it was created."
           },
+          "epic_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The epic that task belongs to, when it belongs to one."
+          },
           "gaps": {
             "type": "array",
             "items": {
@@ -28568,6 +28942,10 @@
           "role": {
             "type": "string",
             "description": "The role slot it fills."
+          },
+          "task_id": {
+            "type": "string",
+            "description": "The task the team run serves."
           },
           "team_run_id": {
             "type": "string",
@@ -29767,6 +30145,42 @@
           }
         }
       },
+      "SnapshotDto_BindingCensusDto": {
+        "type": "object",
+        "description": "A point-in-time value and the position it is consistent with.\n\nIt is the wire spelling of `kontor-core`'s own `SnapshotEnvelope`: a\nsubscriber resumes strictly after `snapshot_cursor`, in the same Realm.",
+        "required": [
+          "realm_id",
+          "snapshot_cursor",
+          "value"
+        ],
+        "properties": {
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm this snapshot came from."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The position it is consistent with."
+          },
+          "value": {
+            "type": "object",
+            "description": "Every persisted native binding in one Realm, at one control-plane position.",
+            "required": [
+              "bindings"
+            ],
+            "properties": {
+              "bindings": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/BindingCensusItemDto"
+                },
+                "description": "The bindings, oldest first."
+              }
+            }
+          }
+        }
+      },
       "SnapshotDto_RunDto": {
         "type": "object",
         "description": "A point-in-time value and the position it is consistent with.\n\nIt is the wire spelling of `kontor-core`'s own `SnapshotEnvelope`: a\nsubscriber resumes strictly after `snapshot_cursor`, in the same Realm.",
@@ -29792,6 +30206,7 @@
               "agent_run_id",
               "project_id",
               "team_run_id",
+              "task_id",
               "role",
               "projection",
               "revision",
@@ -29850,6 +30265,13 @@
                 "format": "date-time",
                 "description": "When it was created."
               },
+              "epic_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The epic that task belongs to, when it belongs to one."
+              },
               "gaps": {
                 "type": "array",
                 "items": {
@@ -29881,6 +30303,10 @@
               "role": {
                 "type": "string",
                 "description": "The role slot it fills."
+              },
+              "task_id": {
+                "type": "string",
+                "description": "The task the team run serves."
               },
               "team_run_id": {
                 "type": "string",

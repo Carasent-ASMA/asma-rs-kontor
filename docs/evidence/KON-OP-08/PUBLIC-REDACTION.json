@@ -1,0 +1,39 @@
+{
+  "consumers": [
+    "QA-REPORT-2026-08-22.md",
+    "PUBLIC-REDACTION.md"
+  ],
+  "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+  "files": {
+    "2026-08-19-11-39-architecture-kontor-operational-control-surfaces.md": {
+      "bytes": 44931,
+      "derivative_sha256": "5390b3f9c098b662199ca7ca223bf0bb9e880f3c92731fbea9be93a78fc42e0b",
+      "original_sha256": "878b9d33b78dedd00978e3166fa522911480f9d009a2185ddba87b016695aa60",
+      "private_references_redacted": 1
+    },
+    "2026-08-20-23-07-report-qnr-control-surface-escalation.md": {
+      "bytes": 14172,
+      "derivative_sha256": "b9969e87b80e3713e07dc42f51ba895f3ad7d20db5df64f51c830a0682b7fbb9",
+      "original_sha256": "ae273ef09741f39e7b374193baa9ee72f7555a277bfbb33d7d0deb536fcb638e",
+      "private_references_redacted": 1
+    },
+    "QA-REPORT-2026-08-22.md": {
+      "bytes": 5520,
+      "derivative_sha256": "1919daf44e4cd35ada05d7a09420fe2ad2a451405d9d1a5f2dcced78f7d843f6",
+      "original_sha256": "cd314c4c0543deb571dec2e142b95f901bb7afd7a99111dc93fbc15afcbf32b1",
+      "private_references_redacted": 1
+    }
+  },
+  "model": "The public copy is a redacted derivative. Original bytes and SHA-256 are retained in the access-controlled evidence store; the TPM owns the exact-path disposition ledger.",
+  "original_archive": "access-controlled evidence store outside the public repo; TPM-owned disposition ledger",
+  "placeholders": {
+    "[archived-private-evidence]": "private parent-repository evidence URL",
+    "[compat-docs-workspace]": "private compatibility docs worktree path",
+    "[compat-workspace]": "private compatibility worktree path",
+    "[kon-op-08-workspace]": "private KON-OP-08 worktree path",
+    "[parent-repository]": "private parent-repository slug",
+    "[parent-workspace]": "private parent workspace path",
+    "[qualification-workspace]": "private qualification worktree path"
+  },
+  "scope": "docs/evidence/KON-OP-08"
+}

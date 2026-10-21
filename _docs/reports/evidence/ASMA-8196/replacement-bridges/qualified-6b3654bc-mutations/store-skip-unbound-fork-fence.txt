@@ -1,7 +1,7 @@
 QUALIFIED_SOURCE=6b3654bca823ac85ed7cc0bb1d6965bc730c4743
    Compiling kontor-store v0.2.1 (/private/tmp/ASMA-8196-hydration-mutations-6b3654bc/source/crates/kontor-store)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 16.33s
-     Running tests/team_definition_migration_completeness.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/team_definition_migration_completeness-f7b8bbf4d0c6389a)
+     Running tests/team_definition_migration_completeness.rs ([parent-tools])
 
 running 1 test
 test a_fork_with_an_unbound_current_leaf_also_refuses_the_migration_census ... FAILED
