@@ -232,7 +232,14 @@ async fn live_an_unknown_agent_is_refused_rather_than_answered_empty() {
         answer.agent.is_none(),
         "the daemon holds no such agent, and said so"
     );
-    assert!(answer.error.is_some(), "and named the refusal");
+    // 0.11.4 and later answer the unknown id with a bare `agent: null`; older
+    // daemons also named the refusal in `error`. The adapter refuses a null
+    // agent as a stale binding either way, and the contract suite pins that
+    // mapping; the live check only requires that the daemon never answers with
+    // an agent object it does not hold.
+    if let Some(error) = &answer.error {
+        assert!(!error.is_empty(), "a named refusal is not empty");
+    }
 }
 
 /// OP-02 checkpoint 4: adoption, child placement and archive against the real
