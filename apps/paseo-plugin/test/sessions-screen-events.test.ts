@@ -1343,8 +1343,8 @@ describe("SessionsScreen toolbar events", () => {
     const expected: Record<string, string[]> = {
       conflict: ["Role: QA, from the role label", "Other role declarations: title says AUD", "Workstream: Review", "Epic: Unknown, no epic or task label", "Workspace: Workspace"],
       desk: ["Role: SWE, from the title", "Other role declarations: None", "Desk: Adam desk", "Workspace: Workspace"],
-      cwd: ["Role: SWE, from the title", "Other role declarations: None", "Workstream: Other work: no workstream or desk label and no display mapping", "Epic: Unknown, no epic or task label", "Workspace: No workspace · /tmp/scratch"],
-      nowhere: ["Role: No role: no kontor.role or role label, and no role prefix in the title", "Other role declarations: None", "Workstream: Other work: no workstream or desk label and no display mapping", "Epic: Unknown, no epic or task label", "Workspace: No workspace"],
+      cwd: ["Role: SWE, from the title", "Other role declarations: None", "Workstream: Other work: no workstream or desk label and no display mapping", "Epic: Unknown, no epic or task label", "Linking: Settings, under Presentation and associations, can map this session or link it to a plan. Project and session names never link it.", "Workspace: No workspace · /tmp/scratch"],
+      nowhere: ["Role: No role: no kontor.role or role label, and no role prefix in the title", "Other role declarations: None", "Workstream: Other work: no workstream or desk label and no display mapping", "Epic: Unknown, no epic or task label", "Linking: Settings, under Presentation and associations, can map this session or link it to a plan. Project and session names never link it.", "Workspace: No workspace"],
     };
     for (const [id, lines] of Object.entries(expected)) {
       (screen.dialog()!.props.onClose as () => void)(); harness.flush();
@@ -2085,9 +2085,9 @@ describe("SessionsScreen mobile filter page", () => {
       expect(children[0]!.props.style).toEqual({ flexGrow: 0, flexShrink: 1 });
       return walk(children[0]).filter((element) => "tall" in element.props).map((element) => element.props.label);
     };
-    expect(choices("scope")).toEqual(["All Paseo workspaces", "Durable desks", "PR Review desk", "Adam desk", "Other workspaces"]);
+    expect(choices("scope")).toEqual(["All Paseo workspaces", "Durable desks", "PR Review desk", "Adam desk", "Outside desks"]);
     // Durable desks lives only here; the four others repeat the desk shortcuts.
-    expect(items().map((item) => [item.props.label, item.props.selected])).toEqual([["All Paseo workspaces", true], ["Durable desks", false], ["PR Review desk", false], ["Adam desk", false], ["Other workspaces", false]]);
+    expect(items().map((item) => [item.props.label, item.props.selected])).toEqual([["All Paseo workspaces", true], ["Durable desks", false], ["PR Review desk", false], ["Adam desk", false], ["Outside desks", false]]);
     choose("Durable desks");
     expect([select("sessions-scope").value, select("sessions-scope").expanded, ariaExpanded("sessions-scope"), menus(), scopeFocus.mock.calls.length]).toEqual(["Durable desks", false, false, [], 1]);
     expect(readSessionView("host-a").shortcut).toBe("Desks");
@@ -2326,6 +2326,28 @@ function closeMobileFilters() {
 describe("plan-derived visible workstream choices on the current mobile/lifecycle screen", () => {
   beforeEach(() => { vi.useFakeTimers(); clearSessionViews(); harness.reset(); });
   afterEach(() => { harness.unmount(); vi.useRealTimers(); });
+  it.each([true, false])("renders zero-session registered choices from operator configuration (compact=%s)", async (compact) => {
+    const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
+    const { join } = await import("node:path"); const { tmpdir } = await import("node:os");
+    const { readWorkstreamRegistry } = await import("../server/read-sources");
+    const root = await mkdtemp(join(tmpdir(), "kontor-registry-options-"));
+    try {
+      await mkdir(join(root, "plugin-config/kontor"), { recursive: true });
+      await mkdir(join(root, "config/orchestration"), { recursive: true });
+      await writeFile(join(root, "plugin-config/kontor/registry.json"), JSON.stringify({ workspaceRoot: root }));
+      await writeFile(join(root, "config/orchestration/workstreams.json"), JSON.stringify({ schema_version: 1, workstreams: { access: { name: "Access" }, reporting: { name: "Reporting" } }, desks: { "pr-review-desk": { name: "Review" }, "adam-adhoc": { name: "Adam" } } }));
+      vi.stubEnv("PASEO_HOME", root); vi.stubEnv("KONTOR_PLUGIN_ASMA_WORKSPACE", "");
+      const registry = await readWorkstreamRegistry();
+      directory.state = { ...emptyDirectoryState(), entries: [], status: "ready", live: true, inventoryComplete: true };
+      patchSessionView("host-a", { query: "", advancedOpen: true, ...toolbarOpenPatch(true) });
+      renderScreen(undefined, compact, compact ? "ios" : "web", { workstreamSources: [], workstreamReads: {}, workstreamRegistry: registry });
+      if (compact) openMobileFilters();
+      for (const key of ["access", "reporting"]) expect(findByTestID(harness.current(), `workstream-option-${key}`).props.label).toContain("0 sessions");
+      const options = walk(harness.current()).filter(node => String(node.props.testID).startsWith("workstream-option-")).map(node => node.props.testID);
+      expect(options).toEqual(["workstream-option-access", "workstream-option-reporting"]);
+      expect(Object.keys(registry.desks)).toHaveLength(2);
+    } finally { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); }
+  });
   it.each([true, false])("renders graphless and registry-only choices, filters rows, and clears streams (compact=%s)", async (compact) => {
     const { source, read, registry } = await import("./plan-workstream-fixtures");
     const entries = [sessionEntry("linked", { labels: { epic: "ASMA-7575" } })];
@@ -2335,7 +2357,7 @@ describe("plan-derived visible workstream choices on the current mobile/lifecycl
     const mappings = planWorkstreamMappings([source], { plan: read }, entries, [], {}, {});
     renderScreen(undefined, compact, compact ? "ios" : "web", { workstreamSources: [source], workstreamReads: { plan: read }, workstreamRegistry: registry, planMappings: mappings });
     if (compact) openMobileFilters();
-    expect(findByTestID(harness.current(), "workstream-option-adopus-graphql").props.label).toContain("1 sessions");
+    expect(findByTestID(harness.current(), "workstream-option-adopus-graphql").props.label).toContain("1 session · 1 workspace · 1 plan · registered");
     expect(findByTestID(harness.current(), "workstream-option-access").props.label).toContain("0 sessions");
     if (compact) closeMobileFilters();
     expect(sessionRowIds()).toEqual([]);
@@ -2360,6 +2382,117 @@ describe("plan-derived visible workstream choices on the current mobile/lifecycl
       workstreamSources: [source], workstreamReads: { plan: read }, workstreamRegistry: registry,
     });
     if (compact) openMobileFilters();
-    expect(findByTestID(harness.current(), "workstream-option-adopus-graphql").props.label).toContain("0 sessions · 1 workspaces · 1 plans");
+    expect(findByTestID(harness.current(), "workstream-option-adopus-graphql").props.label).toContain("0 sessions · 1 workspace · 1 plan · registered");
+  });
+  it.each([true, false])("names desk-held, plan-only and unlinked choices, an unloaded registry once, and the outside-desks shortcut (compact=%s)", async (compact) => {
+    const { source, read } = await import("./plan-workstream-fixtures");
+    const plan = { ...source, id: "beta", path: "/docs/beta.md", epic: "ASMA-2" };
+    const planRead = { ...read, source: plan, planMetadata: { workstream: "beta", epic: "ASMA-2", diagnostics: [] } };
+    const desk = { projectKey: "prj_desk", projectName: "DESK • ADAM", workspaceId: "wks_desk" };
+    const entries = [sessionEntry("desk-own", desk), sessionEntry("desk-filed", { ...desk, labels: { workstream: "alpha" } }),
+      sessionEntry("esw-filed", { projectKey: "prj_esw", projectName: "ESW • ASMA-1", workspaceId: "wks_esw", labels: { workstream: "alpha" } }),
+      sessionEntry("esw-bare", { projectKey: "prj_plan", projectName: "ESW • ASMA-2", workspaceId: "wks_plan" })];
+    directory.state = { ...emptyDirectoryState(), entries, status: "ready", live: true, inventoryComplete: true };
+    patchSessionView("host-a", { query: "", advancedOpen: true, ...toolbarOpenPatch(true) });
+    renderScreen(undefined, compact, compact ? "ios" : "web", { workstreamSources: [plan], workstreamReads: { beta: planRead }, planMappings: {} });
+    if (compact) openMobileFilters();
+    const chip = (key: string) => findByTestID(harness.current(), `workstream-option-${key}`).props;
+    expect(chip("alpha").label).toBe("alpha · 2 sessions (1 shown under DESK • ADAM) · 2 workspaces · 0 plans");
+    expect(chip("adam").label).toBe("adam · desk category · 1 session · 1 workspace · 0 plans · desk shows 1 more session filed under other workstreams");
+    expect(chip("beta").label).toBe("beta · plan only · 0 sessions · 0 workspaces · 1 plan");
+    expect(chip("other work").label).toBe("Other work · no workstream link · 1 session · 1 workspace · 0 plans");
+    // The visible text is the checkbox's name; nothing waits behind hover.
+    expect(chip("alpha")).toMatchObject({ checkbox: true, active: true });
+    const footer = textOf(findByTestID(harness.current(), "sessions-workstream-availability"));
+    expect(footer).toContain("The workstream registry is not loaded, so no choice says whether it is registered.");
+    expect(footer).toContain("a choice names the desk where it counts sessions shown there");
+    (chip("alpha").onPress as () => void)(); harness.flush();
+    expect(readSessionView("host-a").streams).toEqual(["adam", "beta", "other work"]);
+    if (compact) closeMobileFilters();
+    if (!compact) {
+      const shortcut = findByTestID(harness.current(), "sessions-shortcut-3").props;
+      expect([shortcut.label, shortcut.count]).toEqual(["Outside desks", 2]);
+    }
+    // A partial read keeps the same association counts, and Filters says beside them that the read is partial.
+    directory.state = { ...emptyDirectoryState(), entries, status: "ready", live: false, inventoryComplete: false, lastUpdatedAt: 0 };
+    renderScreen(undefined, compact, compact ? "ios" : "web", { workstreamSources: [plan], workstreamReads: { beta: planRead }, planMappings: {} });
+    if (compact) openMobileFilters();
+    expect(chip("alpha").label).toBe("alpha · 2 sessions (1 shown under DESK • ADAM) · 2 workspaces · 0 plans");
+    expect(chip("other work").label).toBe("Other work · no workstream link · 1 session · 1 workspace · 0 plans");
+    expect(textOf(findByTestID(harness.current(), "sessions-options-count"))).toContain("partial inventory read");
+    if (compact) closeMobileFilters();
+    const { planFallbackNote } = await import("../client/plan-workstreams");
+    const note = planFallbackNote([plan], { beta: planRead }, null, "prj_plan");
+    expect(sessionDetailLines(entries[3]!, {}, note).find((line) => line.label === "Linking")!.value).toBe("No known ASMA epic, so no plan applies. Settings, under Presentation and associations, can map this session or link it to a plan. Project and session names never link it.");
+    // Epic sources that disagree leave no known epic, and the note agrees with the Epic line rather than claiming no label.
+    const { declaredScope } = await import("../client/session-organization");
+    const disputed = sessionEntry("disputed", { projectKey: "prj_plan", projectName: "ESW • ASMA-2", workspaceId: "wks_plan", labels: { epic: "ASMA-2", "jira.epic": "ASMA-3" } });
+    const disputedLines = sessionDetailLines(disputed, {}, planFallbackNote([plan], { beta: planRead }, declaredScope(disputed, {}).epic, "prj_plan"));
+    expect(disputedLines.find((line) => line.label === "Epic")!.value).toBe("Unknown, sources disagree: the epic label says ASMA-2; the jira.epic label says ASMA-3");
+    expect(disputedLines.find((line) => line.label === "Linking")!.value).toMatch(/^No known ASMA epic, so no plan applies\. Settings/);
+    expect(sessionDetailLines(entries[1]!, {}, note).some((line) => line.label === "Linking")).toBe(false);
+  });
+  // The reported "Epic unknown · ESW • ASMA-7869/8101/8108" rows beside a recognized "ASMA-8101 · ESW • ASMA-8101" row, as the
+  // 2026-10-21 reads shape them, with neutral native IDs. A session's own labels, or the Jira capture for its task, settle its
+  // epic; an unlabelled session or an unmapped empty workspace stays unknown; no project name settles an epic.
+  const esw = (key: string) => ({ projectKey: `prj_${key}`, projectName: `ESW • ASMA-${key}` });
+  const linking = "Settings, under Presentation and associations, can map this session or link it to a plan. Project and session names never link it.";
+  type Plan = typeof import("./plan-workstream-fixtures");
+  function renderEsw(compact: boolean, plan: Plan, entries: readonly ReturnType<typeof sessionEntry>[], emptyWorkspaces: readonly { id: string; name: string }[] = []) {
+    directory.state = { ...emptyDirectoryState(), entries, status: "ready", live: true, inventoryComplete: true };
+    patchSessionView("host-a", { query: "", grouping: "hierarchy", status: "all", ...toolbarOpenPatch(true) });
+    renderScreen(undefined, compact, compact ? "ios" : "web", { workstreamSources: [plan.source], workstreamReads: { plan: plan.read }, planMappings: {},
+      workspaces: [...entries.map((entry) => ({ id: entry.workspaceId!, name: entry.workspaceName!, projectKey: entry.projectKey, projectName: entry.projectName })),
+        ...emptyWorkspaces.map((workspace) => ({ ...workspace, ...esw("8101") }))] });
+    expandAll();
+  }
+  const epicRows = () => listRows().flatMap((row) => row.kind === "group" && row.group.kind === "epic" ? [[row.group.label, row.group.totalCount] as const] : []).sort();
+  /** A session's Epic and Linking lines from its own Details; Close and focus return stay with the R5 Details tests above. */
+  function placement(id: string) {
+    const row = listRows().find((candidate) => candidate.kind === "session" && candidate.entry.id === id);
+    (((findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: row }).props.details as ElementLike).props.onPress as () => void)();
+    harness.flush();
+    const dialog = walk(harness.current()).find((element) => element.props.testID === "sessions-details")!;
+    const content = (findByTestID(dialog.props.children, "sessions-details-lines").props.children as unknown[]).flat() as (ElementLike & { readonly type: unknown })[];
+    const values = content.find((line) => line.type === SessionDetailSection && line.props.title === "Role and placement")!.props.values as { label: string; value: string }[];
+    return values.filter(({ label }) => label === "Epic" || label === "Linking").map(({ label, value }) => `${label}: ${value}`);
+  }
+
+  it.each([true, false])("keeps an empty-workspace unknown row apart from unknown sessions and the recognized epic, and says why in Details (compact=%s)", async (compact) => {
+    const entries = [sessionEntry("labelled-8101", { ...esw("8101"), workspaceId: "wks_8101", labels: { "jira.epic": "ASMA-8101" } }),
+      sessionEntry("bare-7869", { ...esw("7869"), workspaceId: "wks_7869" }), sessionEntry("bare-8108", { ...esw("8108"), workspaceId: "wks_8108" })];
+    renderEsw(compact, await import("./plan-workstream-fixtures"), entries,
+      [{ id: "wks_8101_empty_a", name: "ASMA-8107 • Merged producer provenance" }, { id: "wks_8101_empty_b", name: "TSW • ASMA-8107 • Lifecycle merged provenance" }]);
+    // ESW • ASMA-8101's unknown row holds only its two empty workspaces, so no session or Details sits behind it.
+    expect(epicRows()).toEqual([["ASMA-8101 · ESW • ASMA-8101", 1], ["Epic unknown · ESW • ASMA-7869", 1], ["Epic unknown · ESW • ASMA-8101", 0], ["Epic unknown · ESW • ASMA-8108", 1]]);
+    expect(listRows().flatMap((row) => row.kind === "session" && row.entry.projectKey === "prj_8101" ? [row.entry.id] : [])).toEqual(["labelled-8101"]);
+    if (compact) openMobileFilters();
+    expect(findByTestID(harness.current(), "workstream-option-other work").props.label).toBe("Other work · no workstream link · 3 sessions · 3 workspaces · 0 plans");
+    if (compact) closeMobileFilters();
+    // The screen passes each session's own known epic to the note, so a recognized epic is named, not reported unknown.
+    expect(placement("labelled-8101")).toEqual(["Epic: ASMA-8101, from the jira.epic label", `Linking: No configured plan declares ASMA-8101. ${linking}`]);
+    for (const id of ["bare-7869", "bare-8108"]) expect(placement(id)).toEqual(["Epic: Unknown, no epic or task label", `Linking: No known ASMA epic, so no plan applies. ${linking}`]);
+  });
+
+  it.each([true, false])("names the epic a task-only or dual-epic session settles on, and shows a task-only epic as unknown without a Jira capture (compact=%s)", async (compact) => {
+    const plan = await import("./plan-workstream-fixtures");
+    const { jiraCapture } = await import("../client/page-data");
+    const generated = "2026-10-20T16:03:00+00:00";
+    const issue = (key: string) => ({ key, status: "In Progress", cat: "indeterminate" as const });
+    const captured = jiraCapture([{ ...plan.read, source: { ...plan.source, id: "jira", kind: "jira" }, jiraHistory: { schema: "consumption/data@2", generated,
+      provenance: { path: "/configured/capture.json", sha256: "b".repeat(64), capturedEpics: 1 }, selection: ["ASMA-8108"], epics: [{ ...issue("ASMA-8108"), children: [issue("ASMA-8343")] }] } }]);
+    // Only the capture names task ASMA-8343's parent. jira.parent is not an epic label, so the jira.epic label alone settles the second.
+    const shapes = [sessionEntry("task-8343", { ...esw("8108"), workspaceId: "wks_8343", labels: { "asma.task": "ASMA-8343" } }),
+      sessionEntry("dual-8001", { ...esw("7869"), workspaceId: "wks_8001", labels: { "jira.epic": "ASMA-8001", "jira.parent": "ASMA-7869" } })];
+    const dual = ["Epic: ASMA-8001, from the jira.epic label", `Linking: No configured plan declares ASMA-8001. ${linking}`];
+    renderEsw(compact, plan, shapes.map((entry) => ({ ...entry, jira: captured })));
+    expect(epicRows()).toEqual([["ASMA-8001 · ESW • ASMA-7869", 1], ["ASMA-8108 · ESW • ASMA-8108", 1]]);
+    expect(placement("task-8343")).toEqual([`Epic: ASMA-8108, from the Jira capture of ${generated} for ASMA-8343`, `Linking: No configured plan declares ASMA-8108. ${linking}`]);
+    expect(placement("dual-8001")).toEqual(dual);
+    // With no Jira capture read, the same task-only session is unknown and says why; the labelled one is unchanged.
+    renderEsw(compact, plan, shapes.map((entry) => ({ ...entry, jira: jiraCapture([]) })));
+    expect(epicRows()).toEqual([["ASMA-8001 · ESW • ASMA-7869", 1], ["Epic unknown · ESW • ASMA-8108", 1]]);
+    expect(placement("task-8343")).toEqual(["Epic: Unknown, no Jira capture read for ASMA-8343", `Linking: No known ASMA epic, so no plan applies. ${linking}`]);
+    expect(placement("dual-8001")).toEqual(dual);
   });
 });

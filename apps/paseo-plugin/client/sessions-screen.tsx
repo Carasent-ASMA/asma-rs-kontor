@@ -87,7 +87,7 @@ import { SessionsLegend } from "./sessions-legend";
 import { nativeFreshnessLabel } from "./native-freshness";
 import { sessionTimeLines, useClock, useUpdatedTime, type RowTime, type TimeFreshness } from "./session-time";
 import { sessionUsageLabel } from "./session-usage";
-import { planWorkstreamOptions } from "./plan-workstreams";
+import { planFallbackNote, planWorkstreamOptions, workstreamOptionLabel } from "./plan-workstreams";
 import type { ReadSourceSummary, SourceRead, WorkstreamRegistry } from "../shared/read-sources";
 import { useControlHelp } from "./control-help";
 import { SessionUsage, SessionUsageLines, SessionMetadataGuide } from "./session-usage-view";
@@ -111,12 +111,15 @@ export function indicatorColor(entry: DirectoryEntry, colors: ThemeColors): stri
   return sessionStateColor(sessionState(entry), colors);
 }
 
-/** Desk shortcuts; Other work is every session outside a desk workstream. */
+/**
+ * Desk shortcuts. Outside desks is every session no desk holds; its ID stays "Other work" for saved
+ * views, while the Other work group and choice hold only sessions with no workstream association.
+ */
 export const SESSION_SHORTCUTS: readonly { readonly id: string | null; readonly label: string }[] = [
   { id: null, label: "All sessions" },
   { id: "PR Review", label: "PR Review" },
   { id: "Adam", label: "Adam desk" },
-  { id: "Other work", label: "Other work" },
+  { id: "Other work", label: "Outside desks" },
 ];
 /** Workspace scope, a menu in Filters & view; the shortcuts above repeat all but Durable desks. */
 const SCOPE_CHOICES: readonly { readonly id: string | null; readonly label: string }[] = [
@@ -124,7 +127,7 @@ const SCOPE_CHOICES: readonly { readonly id: string | null; readonly label: stri
   { id: "Desks", label: "Durable desks" },
   { id: "PR Review", label: "PR Review desk" },
   { id: "Adam", label: "Adam desk" },
-  { id: "Other work", label: "Other workspaces" },
+  { id: "Other work", label: "Outside desks" },
 ];
 const GROUPINGS: readonly { readonly id: SessionGrouping; readonly label: string }[] = [
   { id: "hierarchy", label: "Desks & workstreams" },
@@ -529,9 +532,10 @@ const pageDocument = () => (globalThis as { document?: { activeElement?: unknown
 /**
  * Everything a Role row shortens, for its details: the role and where it came from, every other
  * declaration, and the whole desk or workstream, epic and workspace chain, with absent values named.
- * A workstream may come from a native desk project when no display mapping or label names it.
+ * A workstream may come from a native desk project when no display mapping or label names it. A session
+ * nothing links also says why no plan links it and where an explicit link is made; no name is read.
  */
-export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<typeof organizationScope>[1]): { label: string; value: string }[] {
+export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<typeof organizationScope>[1], planNote: string | null = null): { label: string; value: string }[] {
   const role = sessionRole(entry);
   const provenance = sessionProvenance(entry, mappings);
   const lines = [
@@ -551,9 +555,11 @@ export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<t
   }
   if (provenance.desk) return [...lines, { label: "Desk", value: provenance.parts[0]! }, { label: "Workspace", value: provenance.workspace }];
   const declared = declaredScope(entry, mappings);
+  const unlinked = declared.workstream === null && nativeDesk(entry.projectName) === null;
   return [...lines,
     { label: "Workstream", value: declared.workstream ?? (nativeDesk(entry.projectName) !== null ? `${organizationScope(entry, mappings).workstream} (native desk project)` : `${OTHER_WORKSTREAM}: no workstream or desk label and no display mapping`) },
     { label: "Epic", value: epicDetail(sessionEpic(entry, mappings)) },
+    ...(unlinked ? [{ label: "Linking", value: `${planNote ? `${planNote} ` : ""}Settings, under Presentation and associations, can map this session or link it to a plan. Project and session names never link it.` }] : []),
     { label: "Workspace", value: provenance.workspace }];
 }
 
@@ -2332,12 +2338,12 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         >
           <OptionSelect testID="sessions-grouping" label="Group by" value={GROUPINGS.find(({ id }) => id === grouping)?.label ?? grouping} expanded={optionMenu === "grouping"} anchor={groupingRef} compact={compact} colors={colors} {...focusProps} onPress={() => setOptionMenu(optionMenu === "grouping" ? null : "grouping")} />
           <OptionLine label={streams === null ? `Workstream associations · all ${streamChoices.length} available` : `Workstream associations · ${streams.length} selected of ${streamChoices.length} available`} colors={colors}>
-            {workstreamOptions.map(({key, label, sessions, plans, workspaces, registered, desk}) => <FilterChip key={key} testID={`workstream-option-${key}`} checkbox label={workstreamRegistry || workstreamSources.length ? `${label} · ${sessions} sessions · ${workspaces} workspaces · ${plans} plans · ${desk ? "desk category" : registered ? "registered" : workstreamRegistry?.revision ? "unregistered" : "registration unavailable"}` : label} compact={compact} active={streams === null || streams.includes(key)} colors={colors} {...focusProps} onPress={() => toggleStream(key)} />)}
+            {workstreamOptions.map((option) => <FilterChip key={option.key} testID={`workstream-option-${option.key}`} checkbox label={workstreamRegistry || workstreamSources.length ? workstreamOptionLabel(option, !!workstreamRegistry?.revision) : option.label} compact={compact} active={streams === null || streams.includes(option.key)} colors={colors} {...focusProps} onPress={() => toggleStream(option.key)} />)}
             <FilterChip label="None" compact={compact} active={streams?.length === 0} colors={colors} {...focusProps} onPress={() => { pinFilterInteraction(); updateView({ streams: [], scrollOffset: 0 }); }} />
             {streams !== null ? <FilterChip label="All" compact={compact} active={false} colors={colors} {...focusProps} onPress={() => { pinFilterInteraction(); updateView({ streams: null, scrollOffset: 0 }); }} /> : null}
             {streamChoices.length === 0 ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>No workstream associations available in this context.</Text> : null}
           </OptionLine>
-          <Text testID="sessions-workstream-availability" style={{ color: colors.foregroundMuted, fontSize: 11 }}>{!workstreamRegistry?.revision && workstreamSources.length === 0 ? "Choices come from session metadata and display mappings, with desk and Other work fallbacks. Names may be unregistered. The full workstream registry and plan declarations are not loaded here; this list may be incomplete. " : ""}{workstreamRegistry?.revision ? `${Object.keys(workstreamRegistry.workstreams).length} registered workstreams · ${workstreamOptions.filter((option) => option.plans > 0).length} declared plan keys here · ${Object.keys(workstreamRegistry.desks).length} registered desk categories. ` : ""}Registered keys are global. Plan and session counts use this project/epic context, before search, state and workstream filters. Zero sessions means none linked in this inventory. Plans without workspaces are included. Native desks stay separate.{workstreamNote ? ` ${workstreamNote}` : ""}</Text>
+          <Text testID="sessions-workstream-availability" style={{ color: colors.foregroundMuted, fontSize: 11 }}>{!workstreamRegistry?.revision && workstreamSources.length === 0 ? "Choices come from session metadata and display mappings, with desk and Other work fallbacks. Names may be unregistered. The full workstream registry and plan declarations are not loaded here; this list may be incomplete. " : ""}{workstreamRegistry?.revision ? `${Object.keys(workstreamRegistry.workstreams).length} registered workstreams · ${workstreamOptions.filter((option) => option.plans > 0).length} declared plan keys here · ${Object.keys(workstreamRegistry.desks).length} registered desk categories. Registered keys are global. ` : workstreamSources.length ? "The workstream registry is not loaded, so no choice says whether it is registered. " : ""}Counts follow each session's workstream association, which these choices filter by, in this project/epic context before search, state and workstream filters. The tree keeps every session of a native desk project under that desk, so a choice names the desk where it counts sessions shown there. Workspaces count where a counted session runs or a workspace mapping points; the tree also lists empty native workspaces until workstream choices narrow it. Zero sessions means none linked in this inventory: a plan links a session only through the session's known epic or an explicit plan link. Plan-only choices are included.{workstreamNote ? ` ${workstreamNote}` : ""}</Text>
           <OptionSelect testID="sessions-scope" label="Workspace scope" value={scopeChoiceLabel ?? SCOPE_CHOICES[0]!.label} expanded={optionMenu === "scope"} anchor={scopeRef} compact={compact} colors={colors} {...focusProps} onPress={() => setOptionMenu(optionMenu === "scope" ? null : "scope")} />
           <OptionLine label="Epic lifecycle" colors={colors}>
             <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>Not captured in session data; no lifecycle is inferred from idle or closed sessions.</Text>
@@ -2431,7 +2437,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         <SessionDetailSection title="Timing" colors={colors}>
           <SessionTimeLines entry={detailsEntry} freshness={{ live: timesLive, readAt: state.lastUpdatedAt }} colors={colors} />
         </SessionDetailSection>
-        <SessionDetailSection title="Role and placement" values={sessionDetailLines(detailsEntry, mappings)} colors={colors} />
+        <SessionDetailSection title="Role and placement" values={sessionDetailLines(detailsEntry, mappings, planFallbackNote(workstreamSources, workstreamReads, declaredScope(detailsEntry, mappings).epic, detailsEntry.projectKey, preferences.planAssociations[detailsEntry.id]))} colors={colors} />
         <SessionMetadataGuide key={detailsEntry.id} entry={detailsEntry} colors={colors} />
       </ScrollView>
     </AnchoredMenu>
