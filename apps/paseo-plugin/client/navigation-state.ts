@@ -6,7 +6,7 @@ export const DESTINATIONS = ["Sessions", "Overview", "Plan", "Board", "Graph", "
 export type Destination = (typeof DESTINATIONS)[number];
 export type KontorRoute = { tab: Destination; projectId: string | null; epicKey: string | null; sourceId: string | null; originAgentId: string | null; sourceRevision: string | null };
 export const INITIAL_ROUTE: KontorRoute = { tab: "Sessions", projectId: null, epicKey: null, sourceId: null, originAgentId: null, sourceRevision: null };
-/** Context a tab family last showed: Overview keeps its own portfolio selection, work pages share one, Sessions opens unscoped. */
+/** Native project and epic/plan selection, independent of the destination view. */
 export type ContextScope = Pick<KontorRoute, "projectId" | "epicKey" | "sourceId" | "sourceRevision" | "originAgentId">;
 export const NO_SCOPE: ContextScope = { projectId: null, epicKey: null, sourceId: null, sourceRevision: null, originAgentId: null };
 type HistoryEntry = { route: KontorRoute; query: string; offset: number; sessions: SessionViewState; overview: ContextScope; work: ContextScope; views: Record<string, unknown> };
@@ -28,11 +28,9 @@ function remember(state: HostNavigation): void {
     if (scope.projectId !== null || scope.epicKey !== null || scope.sourceId !== null) state.work = scope;
   } else if (state.route.tab !== "Sessions") state.work = scope;
 }
-/** The scope a tab press restores for its family. */
-export function tabScope(hostId: string, tab: Destination): ContextScope {
-  const state = hostNavigation(hostId);
-  if (tab === "Sessions") return { ...NO_SCOPE };
-  return { ...(tab === "Overview" ? state.overview : state.work) };
+/** Changing views retains the current selection; All projects explicitly clears it. */
+export function tabScope(hostId: string, _tab: Destination): ContextScope {
+  return scopeOf(hostNavigation(hostId).route);
 }
 export function navigate(hostId: string, patch: Partial<KontorRoute>): KontorRoute {
   const state = hostNavigation(hostId);
