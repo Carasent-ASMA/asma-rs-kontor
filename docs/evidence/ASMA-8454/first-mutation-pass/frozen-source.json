@@ -888,5 +888,10 @@
     "tests/fixtures/pilot/slot-role-fence-pack.json": "f92866d764959f39b518113963984d2220045de7a2bbb417000e4edd3142a714"
   },
   "scope": "All tracked non-Markdown inputs outside evidence and documentation routers; adapters excluded by Git membership",
-  "uncommitted_tracked_diff": ""
+  "uncommitted_tracked_diff": "",
+  "public_derivative": {
+    "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+    "ledger": "../PUBLIC-REDACTION.json",
+    "note": "This public copy is a redacted derivative. The root ledger records original and derivative digests."
+  }
 }

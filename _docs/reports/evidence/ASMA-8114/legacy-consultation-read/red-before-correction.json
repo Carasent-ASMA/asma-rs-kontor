@@ -12,7 +12,7 @@
     "--nocapture",
     "--test-threads=1"
   ],
-  "cwd": "$HOME/carasent/asma-modules/.worktrees/asma-8113/asma-rs-kontor",
+  "cwd": "[task-workspace]",
   "startedAt": "2026-09-26T16:16:07.451236+00:00",
   "finishedAt": "2026-09-26T16:17:20.002102+00:00",
   "exitCode": 101,

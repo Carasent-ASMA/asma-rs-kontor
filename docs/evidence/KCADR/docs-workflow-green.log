@@ -1,4 +1,4 @@
-   Compiling kontor-jira v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-jira)
+   Compiling kontor-jira v0.2.1 ([compat-workspace]/crates/kontor-jira)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 2.70s
      Running unittests src/lib.rs (target/debug/deps/kontor_jira-d60c7e0db74c2bb7)
 

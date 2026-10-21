@@ -6,7 +6,7 @@ Reviewed at pushed head `4a0ef58ac6e4055106e263b3f6de5e4d736c931f` on PR
 [#87](https://github.com/Carasent-ASMA/asma-rs-kontor/pull/87).
 
 Judged against OP-REQ-032 / KON-OP-10 in
-`_docs/ai-orchestration/plans/2026-08-14-23-21-plan-kontor-operational-mvp.md`,
+the parent-workspace Kontor operational MVP plan,
 and against the recovery architect's pinned "smallest isolated admission
 narrative" scope.
 

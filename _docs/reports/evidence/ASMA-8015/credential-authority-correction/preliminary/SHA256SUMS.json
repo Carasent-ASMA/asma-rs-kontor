@@ -16,5 +16,13 @@
     "runner.py": "d8b2c916f2932bbdcb22ed754579ef8c621c44ccf9b88848b2ebd371f0741c98",
     "strict-clippy-corrected.txt.json": "9c6d289a84f11b75908b642de7d01e171a73b075e82987fd301ef5570a843cc5",
     "strict-clippy.txt.json": "fce73c1b666e881a7f09249c918985be20513c37ee7210b795daecc80c227030"
+  },
+  "public_derivative": {
+    "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+    "ledger": "../../PUBLIC-REDACTION.json",
+    "note": "files maps original SHA-256; derivatives maps the public derivative SHA-256 for redacted files."
+  },
+  "derivatives": {
+    "runner.py": "194b0e01102f287c9524528c6fb4549f48b5f4bf35bbbb28a30cb02e5e4a2455"
   }
 }

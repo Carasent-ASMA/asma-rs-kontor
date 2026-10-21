@@ -34,5 +34,13 @@
     "mutations-3a35b7c6/source-entries-before.json": "25b835795381bc9680a98f79f397c35ad08b0f1040667f978de1ee16bfd7b1db",
     "operator-contracts.txt.json": "c66f089a751aab7878fd980211021ca8ae0d0a46c77858544957ef651e8648cb",
     "strict-clippy.txt.json": "129ed4a52d51e6eb6706538104a11978837486025c16ceb7a8108b0cb4bd8386"
+  },
+  "public_derivative": {
+    "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+    "ledger": "../PUBLIC-REDACTION.json",
+    "note": "files maps original SHA-256; derivatives maps the public derivative SHA-256 for redacted files."
+  },
+  "derivatives": {
+    "mutations-3a35b7c6/runner.py": "59927cfd56a0190e99f8cd1dbcd719a7055386a55dfcaf66f2e5a3f869e3cb35"
   }
 }

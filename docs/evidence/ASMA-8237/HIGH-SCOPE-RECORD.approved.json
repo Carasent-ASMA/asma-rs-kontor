@@ -41,7 +41,7 @@
         "asma-8237-catalog-review-approval-20260919@01a0b78b-1da0-7171-84f2-5a9bf1d77f4a"
       ],
       "assertion": "jq exact ordered-chain check exited 0",
-      "config_path": "_docs/ai-orchestration/config/watchdogs/watchdog-1f9cedad.json",
+      "config_path": "[parent-workspace watchdog configuration path]",
       "fallback_order": [
         "codex/gpt-5.6-luna@xhigh",
         "opencode/openrouter/z-ai/glm-5.3-flash@high",
@@ -137,7 +137,7 @@
     "task_id": "01a0b77d-110f-7401-ab3d-ca36da7ab5f7",
     "task_revision": 2,
     "workspace_id": "wks_f4bc61a339794e3a",
-    "worktree": "$HOME/carasent/asma-modules/.worktrees/asma-8237/asma-rs-kontor"
+    "worktree": "[task-workspace]"
   },
   "title": "ASMA-8237 high-scope — qualify the delivered model catalog and stopped watchdog-chain policy",
   "type": "high_scope_record"

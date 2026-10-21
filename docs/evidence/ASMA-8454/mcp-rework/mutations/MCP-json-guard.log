@@ -1,4 +1,4 @@
-   Compiling kontor-runtime-paseo v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-runtime-paseo)
+   Compiling kontor-runtime-paseo v0.2.1 ([qualification-workspace]/crates/kontor-runtime-paseo)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 3.98s
      Running unittests src/lib.rs (.qualification/target-carrier-archive/debug/deps/kontor_runtime_paseo-9a7a79f0433c9b08)
 

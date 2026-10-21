@@ -19,5 +19,14 @@
     "Existing owner comparison and Unsupported guards unchanged; future authentic owner-transaction composition remains unresolved.",
     "No epic acceptance or closure claim; root sole publisher and independent-review dispatcher."
   ],
-  "recorded_utc": "2026-10-03T23:28:27.308919+00:00"
+  "recorded_utc": "2026-10-03T23:28:27.308919+00:00",
+  "public_derivative": {
+    "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+    "ledger": "../PUBLIC-REDACTION.json",
+    "note": "Candidate-owned hashes describe the originals; the public candidate files are redacted derivatives."
+  },
+  "derivatives": {
+    "crates/kontor-runtime/src/planning_pair/attestation.rs": "a6e46758a48ae9d48cb2e719541fc055288126621370820a58418f7d0e9f8779",
+    "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic.rs": "48a5baf647c4e0d10f45d5a0fb176ce389a14a09d342e22b77800ec9096a986f"
+  }
 }

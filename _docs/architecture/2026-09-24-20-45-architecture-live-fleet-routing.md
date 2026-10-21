@@ -3,7 +3,8 @@
 > **Date:** 2026-09-24 20:45
 > **Status:** 🟢 Approved. Implemented in PR #271 (`7ffd650d`, 2026-09-25). PR #292 (`4097afb8`, ASMA-8280, merged 2026-10-04) adds an activated fleet policy above this file; see [Implementation notes](#implementation-notes-2026-10-17).
 > **Category:** architecture
-> **Scope:** `asma-rs-kontor` model routing for delivery, Committee and Advisor seats; the live Kontor state root `<state-root>/fleet.yml`; the asma-modules plan `2026-09-24-07-30-plan-kontor-live-fleet-configuration.md`
+> **Scope:** `asma-rs-kontor` model routing for delivery, Committee and Advisor seats; the live Kontor state root `<state-root>/fleet.yml`; the historical private parent plan for ASMA-8255 (revision
+> `2026-09-24-07-30`)
 > **Summary:** Every seat placement resolves its model route from one owner-only `fleet.yml` in the live state root, read at placement time, instead of from the route frozen into a published template revision. Editing that file changes the next placement with no rebuild, restart or template republish; an invalid edit keeps the last valid version. This supersedes template-snapshot immutability **for routing only**.
 
 ---
@@ -208,8 +209,8 @@ Operator detail is in [`docs/CONFIGURATION.md`](../../docs/CONFIGURATION.md).
   file, its schema, the three rules, readback and the removal order.
 - [`config/examples/fleet.yml`](../../config/examples/fleet.yml) — the shipped
   example, also the first live file.
-- [Plan: Kontor Live Fleet Configuration Implementation Plan](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/plans/2026-09-24-07-30-plan-kontor-live-fleet-configuration.md) —
-  the binding implementation plan and its decisions DEC-001…DEC-017.
+- Plan: Kontor Live Fleet Configuration Implementation Plan (historical
+  planning record) — the binding implementation decisions DEC-001…DEC-017.
 - [`docs/QUOTA-FALLBACK-PLAN.md`](../../docs/QUOTA-FALLBACK-PLAN.md) — how quota evidence
   and takeover interact with a declared chain.
 - [PR #267](https://github.com/Carasent-ASMA/asma-rs-kontor/pull/267) — the

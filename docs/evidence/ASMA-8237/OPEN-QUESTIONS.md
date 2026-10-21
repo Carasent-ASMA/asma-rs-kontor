@@ -6,7 +6,7 @@ TeamRun: `01a0bfd6-cb03-7160-a381-3d561b48e2bd` / TSW `wks_f4bc61a339794e3a`
 Governing record: `high-scope-record-asma-8237-20260920` rev 1,
 revision_id `01a0bfde-c2fe-7051-a52b-8b6d5a080a40`,
 approval receipt `01a0bfde-d8c0-70d1-b2f3-078d038ddfec`.
-Worktree: `asma-modules/.worktrees/asma-8237/asma-rs-kontor`, HEAD
+Worktree: `[task-workspace]`, HEAD
 `9f61c74ad4c0ca859e4e4f665cb9a72c37a30fd2`.
 
 No gate is passed by this document. It records one resolved acceptance-evidence

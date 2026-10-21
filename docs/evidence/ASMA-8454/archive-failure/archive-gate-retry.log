@@ -1,4 +1,4 @@
-archive HEAD extracted to $HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree
+archive HEAD extracted to [qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree
 Cargo.lock satisfies every manifest under --locked
 note: Updating cc v1.4.6 -> v1.4.7 (refresh the lock in its own change)
 note: Updating find-msvc-tools v0.1.12 -> v0.1.13 (refresh the lock in its own change)
@@ -6,45 +6,45 @@ note: Updating jiff-tzdb v0.1.8 -> v0.1.9 (refresh the lock in its own change)
 note: Updating libc v0.2.189 -> v0.2.190 (refresh the lock in its own change)
 $ cargo fmt --all -- --check
 $ cargo clippy --workspace --all-targets -- -D warnings
-    Checking kontor-core v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-core)
-   Compiling kontor-desktop v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/apps/desktop/src-tauri)
-    Checking kontor-runtime v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-runtime)
-    Checking kontor-policy v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-policy)
-    Checking kontor-context v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-context)
-    Checking kontor-mcp v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-mcp)
-    Checking kontor-fleet v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-fleet)
-    Checking kontor-intake v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-intake)
-    Checking kontor-tests-e2e v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/tests/e2e)
-    Checking kontor-fleet-activation v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-fleet-activation)
-    Checking kontor-cli v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-cli)
-    Checking kontor-scheduler v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-scheduler)
-    Checking kontor-teams v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-teams)
-    Checking kontor-runtime-paseo v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-runtime-paseo)
-    Checking kontor-tests-contract v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/tests/contract)
-    Checking kontor-runtime-ao v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-runtime-ao)
-    Checking kontor-profiles v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-profiles)
-    Checking kontor-calendar v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-calendar)
-    Checking kontor-accounts v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-accounts)
-    Checking kontor-store v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-store)
-    Checking kontor-jira v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-jira)
-    Checking kontor-runtime-codex v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-runtime-codex)
-    Checking kontor-api v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-api)
-    Checking kontor-memory-cognee v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-memory-cognee)
-    Checking kontor-daemon v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-daemon)
+    Checking kontor-core v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-core)
+   Compiling kontor-desktop v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/apps/desktop/src-tauri)
+    Checking kontor-runtime v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-runtime)
+    Checking kontor-policy v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-policy)
+    Checking kontor-context v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-context)
+    Checking kontor-mcp v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-mcp)
+    Checking kontor-fleet v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-fleet)
+    Checking kontor-intake v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-intake)
+    Checking kontor-tests-e2e v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/tests/e2e)
+    Checking kontor-fleet-activation v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-fleet-activation)
+    Checking kontor-cli v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-cli)
+    Checking kontor-scheduler v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-scheduler)
+    Checking kontor-teams v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-teams)
+    Checking kontor-runtime-paseo v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-runtime-paseo)
+    Checking kontor-tests-contract v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/tests/contract)
+    Checking kontor-runtime-ao v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-runtime-ao)
+    Checking kontor-profiles v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-profiles)
+    Checking kontor-calendar v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-calendar)
+    Checking kontor-accounts v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-accounts)
+    Checking kontor-store v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-store)
+    Checking kontor-jira v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-jira)
+    Checking kontor-runtime-codex v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-runtime-codex)
+    Checking kontor-api v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-api)
+    Checking kontor-memory-cognee v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-memory-cognee)
+    Checking kontor-daemon v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-daemon)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 55.04s
 $ cargo test --workspace --locked
-   Compiling kontor-desktop v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/apps/desktop/src-tauri)
-   Compiling kontor-tests-e2e v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/tests/e2e)
-   Compiling kontor-runtime-ao v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-runtime-ao)
-   Compiling kontor-cli v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-cli)
-   Compiling kontor-daemon v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-daemon)
-   Compiling kontor-memory-cognee v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-memory-cognee)
-   Compiling kontor-api v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-api)
-   Compiling kontor-fleet v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-fleet)
-   Compiling kontor-accounts v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-accounts)
-   Compiling kontor-store v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-store)
+   Compiling kontor-desktop v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/apps/desktop/src-tauri)
+   Compiling kontor-tests-e2e v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/tests/e2e)
+   Compiling kontor-runtime-ao v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-runtime-ao)
+   Compiling kontor-cli v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-cli)
+   Compiling kontor-daemon v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-daemon)
+   Compiling kontor-memory-cognee v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-memory-cognee)
+   Compiling kontor-api v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-api)
+   Compiling kontor-fleet v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-fleet)
+   Compiling kontor-accounts v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-accounts)
+   Compiling kontor-store v0.2.1 ([qualification-workspace]/.qualification/tmp/kontor-verify-e_jf8knt/tree/crates/kontor-store)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 27.20s
-     Running unittests src/lib.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/kontor_accounts-e3fdaa3da9b6b718)
+     Running unittests src/lib.rs ([qualification-workspace]/target/debug/deps/kontor_accounts-e3fdaa3da9b6b718)
 
 running 78 tests
 test admission::tests::a_fresh_position_starts_at_the_configured_width_with_no_trend ... ok
@@ -128,7 +128,7 @@ test usage::tests::two_identical_readings_digest_identically_and_a_changed_one_d
 
 test result: ok. 78 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
 
-     Running tests/account_security.rs ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/target/debug/deps/account_security-a14261bbdc1d0304)
+     Running tests/account_security.rs ([qualification-workspace]/target/debug/deps/account_security-a14261bbdc1d0304)
 
 running 22 tests
 test a_failover_intent_records_only_ids_and_a_closed_reason_code ... FAILED

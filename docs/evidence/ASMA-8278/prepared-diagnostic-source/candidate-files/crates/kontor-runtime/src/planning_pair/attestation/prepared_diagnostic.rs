@@ -7,7 +7,7 @@
 //! is never reinterpreted as a current owner observation.
 //!
 //! Contract: attestation spec §9.8, refusal order and diagnostic-only boundary.
-//! @see asma-modules/_docs/ai-orchestration/specs/spec-orchestration-seat-attestation.md:437
+//! @see The parent-workspace seat-attestation specification (line 437).
 
 use kontor_core::id::ContentHash;
 use kontor_core::repository::attestation_authority::{
@@ -68,7 +68,7 @@ pub enum PreparedDiagnosticRefusal {
 ///
 /// # Errors
 /// Returns the first fieldless refusal in attestation spec §9.8 order.
-/// @see asma-modules/_docs/ai-orchestration/specs/spec-orchestration-seat-attestation.md:451
+/// @see The parent-workspace seat-attestation specification (line 451).
 pub fn diagnose_prepared_attestation(
     payload: &[u8],
     signature: &[u8],

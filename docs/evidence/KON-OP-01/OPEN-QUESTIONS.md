@@ -113,7 +113,7 @@ to change.
 
 **CLOSED by observation.** Two of the four questions raised in the first OP-01
 run (OQ-OP-01-1 and OQ-OP-01-4) existed only because
-`_docs/ai-orchestration/plans/2026-08-14-23-21-plan-kontor-operational-mvp.md`
+the parent-workspace Kontor operational MVP plan
 inside this worktree predated amendments already made in the main checkout. The
 worktree copy prohibited seeding `independent_review@1`; the main copy requires
 it. The worktree copy had no OP-REQ-038; the main copy defines it, along with
@@ -139,7 +139,7 @@ The builder brief instructs that unresolved ambiguities be recorded "per
 OP-REQ-038 (durable open question; you may raise; LSA closes architectural, TPM
 closes process)". The plan's requirement list ends at **OP-REQ-037**; there is no
 OP-REQ-038 in
-`_docs/ai-orchestration/plans/2026-08-14-23-21-plan-kontor-operational-mvp.md`.
+the parent-workspace Kontor operational MVP plan.
 
 **Followed:** the procedure the brief describes, which is coherent on its own
 terms — this document is the durable record, raised and not self-closed, with

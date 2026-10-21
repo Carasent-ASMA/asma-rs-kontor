@@ -3,7 +3,7 @@
 import hashlib,json,subprocess,re
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[4]
-SUPER=Path.home()/"carasent/asma-modules"
+SUPER=Path.home()/"[parent-workspace]"
 DOCS=Path.home()/".paseo/worktrees/0vl4ss0m/docs-asma-8157-experience-memory-skill-and-runbook"
 PIN="7d19280857ae3c60a870e017da3f733f9ff2625b"
 rows=[]

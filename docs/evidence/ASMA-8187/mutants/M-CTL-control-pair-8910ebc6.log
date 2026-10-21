@@ -25,7 +25,7 @@ warning: method `epic_control_seat_binding` is never used
      = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
 
 warning: `kontor-daemon` (lib) generated 1 warning
-   Compiling kontor-daemon v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-daemon)
+   Compiling kontor-daemon v0.2.1 ([task-workspace])
     Finished `test` profile [unoptimized + debuginfo] target(s) in 1.00s
      Running unittests src/main.rs (target/debug/deps/kontor_daemon-a20f67ba496d7207)
 

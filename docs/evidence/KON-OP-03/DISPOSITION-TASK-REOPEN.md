@@ -1,7 +1,7 @@
 # KON-OP-03 — the bounded task reopen
 
 Answers the operational gap the ASMA-7869 LSA recorded in
-`_docs/ai-orchestration/reports/2026-08-17-13-47-report-kontor-reopen-task-terminal-gap.md`:
+the parent-workspace Kontor reopen-task terminal-gap report:
 `reopen_task` was advertised, mapped to `ready`, given a resume receipt — and
 refused with `409 revision_conflict`, "the aggregate is terminal and immutable".
 

@@ -971,7 +971,7 @@ $ cargo test --workspace --locked
    Compiling kontor-tests-e2e v0.2.1 (/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/kontor-verify-9fh85tq5/tree/tests/e2e)
    Compiling kontor-cli v0.2.1 (/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/kontor-verify-9fh85tq5/tree/crates/kontor-cli)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 4m 55s
-     Running unittests src/lib.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/kontor_accounts-c47a92ca3e90e37c)
+     Running unittests src/lib.rs ([compat-workspace]/target/qualification/debug/deps/kontor_accounts-c47a92ca3e90e37c)
 
 running 74 tests
 test admission::tests::a_fresh_position_starts_at_the_configured_width_with_no_trend ... ok
@@ -1051,7 +1051,7 @@ test signals::tests::every_active_alias_classifies_its_own_vendor_wording ... ok
 
 test result: ok. 74 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running tests/account_security.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/account_security-4c150af9314b1fbf)
+     Running tests/account_security.rs ([compat-workspace]/target/qualification/debug/deps/account_security-4c150af9314b1fbf)
 
 running 22 tests
 test an_unapproved_config_home_is_not_silently_defaulted ... ok
@@ -1079,7 +1079,7 @@ test invalid_failover_has_no_partial_run_or_receipt ... ok
 
 test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 50.92s
 
-     Running tests/quota_classification.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/quota_classification-d818f1675d028ecc)
+     Running tests/quota_classification.rs ([compat-workspace]/target/qualification/debug/deps/quota_classification-d818f1675d028ecc)
 
 running 21 tests
 test a_signal_with_no_markers_never_matches ... ok
@@ -1106,7 +1106,7 @@ test multiple_agreeing_or_uncomparable_annotations_still_resolve ... ok
 
 test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running unittests src/lib.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/kontor_api-1ebeb94ae7d0c683)
+     Running unittests src/lib.rs ([compat-workspace]/target/qualification/debug/deps/kontor_api-1ebeb94ae7d0c683)
 
 running 23 tests
 test auth::tests::tiers_are_ordered_by_policy_and_not_by_declaration ... ok
@@ -1135,7 +1135,7 @@ test dto::compact_surface_tests::a_receipt_projection_leaks_nothing_a_runtime_ho
 
 test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/error_envelope.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/error_envelope-8781992528d18386)
+     Running tests/error_envelope.rs ([compat-workspace]/target/qualification/debug/deps/error_envelope-8781992528d18386)
 
 running 5 tests
 test every_code_tells_an_operator_something_to_try ... ok
@@ -1146,7 +1146,7 @@ test the_stable_codes_are_unchanged_by_the_richer_envelope ... ok
 
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/openapi_contract.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/openapi_contract-e49f2ea254cb2050)
+     Running tests/openapi_contract.rs ([compat-workspace]/target/qualification/debug/deps/openapi_contract-e49f2ea254cb2050)
 
 running 3 tests
 test the_committed_session_vocabulary_is_the_one_this_crate_subscribes_to ... ok
@@ -1155,13 +1155,13 @@ test the_committed_contract_document_is_the_one_this_crate_serves ... ok
 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
 
-     Running unittests src/lib.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/kontor_calendar-e0d5e698621a35d7)
+     Running unittests src/lib.rs ([compat-workspace]/target/qualification/debug/deps/kontor_calendar-e0d5e698621a35d7)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/imports.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/imports-d5cd15b1fc4412a9)
+     Running tests/imports.rs ([compat-workspace]/target/qualification/debug/deps/imports-d5cd15b1fc4412a9)
 
 running 19 tests
 test an_unbounded_or_inverted_request_is_refused_before_a_document_is_read ... ok
@@ -1186,7 +1186,7 @@ test each_uk_division_closes_its_own_dates ... ok
 
 test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running tests/resolution.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/resolution-5fc86814334b901a)
+     Running tests/resolution.rs ([compat-workspace]/target/qualification/debug/deps/resolution-5fc86814334b901a)
 
 running 28 tests
 test a_dst_gap_opening_resolves_forward_past_the_hour_that_never_happens ... ok
@@ -1220,7 +1220,7 @@ test the_resolution_agrees_with_the_domain_reducer_everywhere ... ok
 
 test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running unittests src/main.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/kontor-8886cbb88e8400cd)
+     Running unittests src/main.rs ([compat-workspace]/target/qualification/debug/deps/kontor-8886cbb88e8400cd)
 
 running 19 tests
 test commands::tests::every_tool_has_exactly_one_subcommand_and_no_command_is_invented ... ok
@@ -1245,27 +1245,27 @@ test commands::tests::the_tree_is_valid_and_every_flag_matches_its_declared_argu
 
 test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
 
-     Running tests/memory_parity.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/memory_parity-870745a02d2340cc)
+     Running tests/memory_parity.rs ([compat-workspace]/target/qualification/debug/deps/memory_parity-870745a02d2340cc)
 
 running 1 test
 test native_memory_http_and_cli_share_realm_revision_and_cursor ... ok
 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.93s
 
-     Running tests/version.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/version-5c02b1a6f1b69a74)
+     Running tests/version.rs ([compat-workspace]/target/qualification/debug/deps/version-5c02b1a6f1b69a74)
 
 running 1 test
 test version_is_one_line_and_exits_immediately ... ok
 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running unittests src/lib.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/kontor_context-db52e66086165961)
+     Running unittests src/lib.rs ([compat-workspace]/target/qualification/debug/deps/kontor_context-db52e66086165961)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/handoff.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/handoff-52f1885d4a55d225)
+     Running tests/handoff.rs ([compat-workspace]/target/qualification/debug/deps/handoff-52f1885d4a55d225)
 
 running 10 tests
 test a_capsule_claiming_same_engine_continuation_is_rejected ... ok
@@ -1281,7 +1281,7 @@ test unknown_fields_in_a_portable_capsule_are_rejected_on_import ... ok
 
 test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running tests/redaction.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/redaction-b3b23249c5591476)
+     Running tests/redaction.rs ([compat-workspace]/target/qualification/debug/deps/redaction-b3b23249c5591476)
 
 running 8 tests
 test source_metadata_cannot_become_a_secret_side_channel ... ok
@@ -1295,7 +1295,7 @@ test secret_canaries_never_reach_error_debug_or_serialized_output ... ok
 
 test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/resolution.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/resolution-666c6e520be046ca)
+     Running tests/resolution.rs ([compat-workspace]/target/qualification/debug/deps/resolution-666c6e520be046ca)
 
 running 15 tests
 test malformed_source_key_and_non_object_content_are_rejected ... ok
@@ -1316,7 +1316,7 @@ test source_permutations_preserve_resolution_and_hash ... ok
 
 test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.66s
 
-     Running unittests src/lib.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/kontor_core-28c70a2c92c5e1e6)
+     Running unittests src/lib.rs ([compat-workspace]/target/qualification/debug/deps/kontor_core-28c70a2c92c5e1e6)
 
 running 17 tests
 test authority::tests::native_origins_start_writable_and_refuse_cutover ... ok
@@ -1339,7 +1339,7 @@ test quota::tests::two_exhausted_windows_block_until_the_later_reset ... ok
 
 test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/backlog_identity.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/backlog_identity-c20377c19179991d)
+     Running tests/backlog_identity.rs ([compat-workspace]/target/qualification/debug/deps/backlog_identity-c20377c19179991d)
 
 running 7 tests
 test manual_epic_codes_are_canonical_namespaces_not_issue_numbers ... ok
@@ -1352,7 +1352,7 @@ test exhausted_title_characters_use_the_smallest_free_numeric_ordinal ... ok
 
 test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/consultation_specs.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/consultation_specs-bedc71d6f99ef615)
+     Running tests/consultation_specs.rs ([compat-workspace]/target/qualification/debug/deps/consultation_specs-bedc71d6f99ef615)
 
 running 23 tests
 test a_missing_finding_blocks_settlement_rather_than_passing ... ok
@@ -1381,7 +1381,7 @@ test canonical_hash_is_stable_across_equal_revisions ... ok
 
 test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/domain_state.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/domain_state-5d6fdfb9e8a0ff34)
+     Running tests/domain_state.rs ([compat-workspace]/target/qualification/debug/deps/domain_state-5d6fdfb9e8a0ff34)
 
 running 36 tests
 test a_queued_run_is_accepted_but_not_dispatched ... ok
@@ -1423,7 +1423,7 @@ test the_team_child_digest_is_order_independent_and_matches_an_independent_hash 
 
 test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running tests/native_naming.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/native_naming-8aba6dc12ea0f7c6)
+     Running tests/native_naming.rs ([compat-workspace]/target/qualification/debug/deps/native_naming-8aba6dc12ea0f7c6)
 
 running 6 tests
 test ai_short_names_are_trimmed_two_keyword_values_and_preserve_unicode_bytes ... ok
@@ -1435,7 +1435,7 @@ test the_v1_matrix_renders_exact_bullet_separated_bytes ... ok
 
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/open_question.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/open_question-452e1b7d38d98020)
+     Running tests/open_question.rs ([compat-workspace]/target/qualification/debug/deps/open_question-452e1b7d38d98020)
 
 running 27 tests
 test a_question_is_project_shared_by_the_tier_default ... ok
@@ -1468,7 +1468,7 @@ test the_configured_closer_split_governs_disposition ... ok
 
 test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/quota_headroom.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/quota_headroom-5dc6458b5864f2b8)
+     Running tests/quota_headroom.rs ([compat-workspace]/target/qualification/debug/deps/quota_headroom-5dc6458b5864f2b8)
 
 running 9 tests
 test credit_clears_only_above_its_floor_and_only_in_one_currency ... ok
@@ -1483,7 +1483,7 @@ test adding_a_window_never_relieves_a_blocked_set ... ok
 
 test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
 
-     Running tests/spec_validation.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/spec_validation-a2268cd94c4c088d)
+     Running tests/spec_validation.rs ([compat-workspace]/target/qualification/debug/deps/spec_validation-a2268cd94c4c088d)
 
 running 59 tests
 test a_declared_ceiling_clamps_the_trigger_and_records_why ... ok
@@ -1548,7 +1548,7 @@ test arbitrary_linear_profiles_validate ... ok
 
 test result: ok. 59 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
 
-     Running tests/succession.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/succession-e6a8f4b1be1ad046)
+     Running tests/succession.rs ([compat-workspace]/target/qualification/debug/deps/succession-e6a8f4b1be1ad046)
 
 running 4 tests
 test the_succession_state_machine_is_forward_only ... ok
@@ -1558,7 +1558,7 @@ test a_degraded_handoff_is_durable_evidence_not_a_release_refusal ... ok
 
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/team_definition_naming.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/team_definition_naming-6473d129dee15470)
+     Running tests/team_definition_naming.rs ([compat-workspace]/target/qualification/debug/deps/team_definition_naming-6473d129dee15470)
 
 running 9 tests
 test a_missing_topic_or_local_seat_value_fails_closed ... ok
@@ -1573,7 +1573,7 @@ test the_snapshot_binds_the_exact_definition_bytes ... ok
 
 test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/team_definition_render_contract.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/team_definition_render_contract-fabde947d7f13b8c)
+     Running tests/team_definition_render_contract.rs ([compat-workspace]/target/qualification/debug/deps/team_definition_render_contract-fabde947d7f13b8c)
 
 running 7 tests
 test a_topic_containing_the_separator_is_refused_as_ambiguous ... ok
@@ -1586,7 +1586,7 @@ test role_coded_and_display_named_seat_policies_are_mutually_exclusive ... ok
 
 test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/ticket_policy.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/ticket_policy-3c7d5a3e7318f7a2)
+     Running tests/ticket_policy.rs ([compat-workspace]/target/qualification/debug/deps/ticket_policy-3c7d5a3e7318f7a2)
 
 running 35 tests
 test a_required_field_may_not_be_omitted ... ok
@@ -1627,7 +1627,7 @@ test preserve_never_clears_a_terminal_assignee ... ok
 
 test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests src/lib.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/kontor_daemon-8aada7a65280e5f6)
+     Running unittests src/lib.rs ([compat-workspace]/target/qualification/debug/deps/kontor_daemon-8aada7a65280e5f6)
 
 running 70 tests
 test applications::tests::clean_re_review_refuses_contradictory_remediation_shapes ... ok
@@ -1703,7 +1703,7 @@ test tests::succession_supervision_is_v2_only_and_stops_with_the_realm ... ok
 
 test result: ok. 70 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.69s
 
-     Running unittests src/main.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/kontor_daemon-8bd368d87bad65a9)
+     Running unittests src/main.rs ([compat-workspace]/target/qualification/debug/deps/kontor_daemon-8bd368d87bad65a9)
 
 running 2 tests
 test tests::failed_reconciliation_leaves_the_server_running ... ok
@@ -1711,7 +1711,7 @@ test tests::the_server_is_polled_while_startup_reconciliation_is_pending ... ok
 
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/account_pinning.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/account_pinning-163c22225cf5f1a3)
+     Running tests/account_pinning.rs ([compat-workspace]/target/qualification/debug/deps/account_pinning-163c22225cf5f1a3)
 
 running 5 tests
 test an_unknown_run_is_not_created_by_pinning_it ... ok
@@ -1722,7 +1722,7 @@ test a_legacy_unpinned_run_is_left_exactly_as_it_is ... ok
 
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 17.43s
 
-     Running tests/loopback_api.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/loopback_api-aae2980012ed7e28)
+     Running tests/loopback_api.rs ([compat-workspace]/target/qualification/debug/deps/loopback_api-aae2980012ed7e28)
 
 running 263 tests
 test a_binding_whose_session_is_gone_is_not_restored ... ok
@@ -1993,7 +1993,7 @@ test withdrawal_refuses_any_task_that_has_ever_had_a_team_run ... ok
 
 test result: ok. 262 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 771.13s
 
-     Running tests/mcp_journey.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/mcp_journey-490dca7a0903ae4f)
+     Running tests/mcp_journey.rs ([compat-workspace]/target/qualification/debug/deps/mcp_journey-490dca7a0903ae4f)
 
 running 2 tests
 test an_observer_seat_reads_the_realm_and_cannot_change_it ... ok
@@ -2001,7 +2001,7 @@ test an_empty_realm_is_bootstrapped_through_mcp_tools_alone ... ok
 
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.21s
 
-     Running tests/quota_observation.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/quota_observation-6a9971dc04c70318)
+     Running tests/quota_observation.rs ([compat-workspace]/target/qualification/debug/deps/quota_observation-6a9971dc04c70318)
 
 running 21 tests
 test a_reset_that_is_not_in_the_future_records_a_blocking_unknown_instead ... ok
@@ -2028,7 +2028,7 @@ test the_same_limit_observed_three_times_refreshes_one_row ... ok
 
 test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 56.28s
 
-     Running tests/recovery_security.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/recovery_security-0db25b9c30dfdbb2)
+     Running tests/recovery_security.rs ([compat-workspace]/target/qualification/debug/deps/recovery_security-0db25b9c30dfdbb2)
 
 running 6 tests
 test a_failed_recovery_command_says_what_failed_without_saying_where_it_looked ... ok
@@ -2040,7 +2040,7 @@ test a_restored_realm_starts_with_scheduling_shut_until_it_reconciles ... ok
 
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.89s
 
-     Running tests/succession_handoff.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/succession_handoff-cef9575e428aaf49)
+     Running tests/succession_handoff.rs ([compat-workspace]/target/qualification/debug/deps/succession_handoff-cef9575e428aaf49)
 
 running 3 tests
 test unavailable_production_transport_never_invents_a_summarizer_session ... ok
@@ -2049,25 +2049,25 @@ test unavailable_timeline_or_route_and_rejected_summary_are_explicitly_degraded 
 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests src/lib.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/kontor_desktop_lib-8b8048836ef398a4)
+     Running unittests src/lib.rs ([compat-workspace]/target/qualification/debug/deps/kontor_desktop_lib-8b8048836ef398a4)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests src/main.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/kontor_desktop-cb3022699d80e04b)
+     Running unittests src/main.rs ([compat-workspace]/target/qualification/debug/deps/kontor_desktop-cb3022699d80e04b)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests src/lib.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/kontor_intake-432a217c7dfd1789)
+     Running unittests src/lib.rs ([compat-workspace]/target/qualification/debug/deps/kontor_intake-432a217c7dfd1789)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/auto_arm.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/auto_arm-aad047c5f5a5fcd1)
+     Running tests/auto_arm.rs ([compat-workspace]/target/qualification/debug/deps/auto_arm-aad047c5f5a5fcd1)
 
 running 9 tests
 test an_expired_window_arms_nothing ... ok
@@ -2082,7 +2082,7 @@ test the_narrowest_of_the_three_concurrency_bounds_wins ... ok
 
 test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/envelope.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/envelope-d6dfa4b52469125f)
+     Running tests/envelope.rs ([compat-workspace]/target/qualification/debug/deps/envelope-d6dfa4b52469125f)
 
 running 6 tests
 test attribute_names_and_counts_are_bounded ... ok
@@ -2094,13 +2094,13 @@ test five_source_kinds_produce_one_shape ... ok
 
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/fixture.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/fixture-24fad50aeca60b45)
+     Running tests/fixture.rs ([compat-workspace]/target/qualification/debug/deps/fixture-24fad50aeca60b45)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/matching.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/matching-b7991440f650f7ba)
+     Running tests/matching.rs ([compat-workspace]/target/qualification/debug/deps/matching-b7991440f650f7ba)
 
 running 8 tests
 test the_pinned_event_schema_revision_is_part_of_the_match ... ok
@@ -2114,7 +2114,7 @@ test the_dedup_key_is_a_function_of_the_named_pointers_only ... ok
 
 test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
 
-     Running tests/no_source_branching.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/no_source_branching-c5d0e773ba3b69ee)
+     Running tests/no_source_branching.rs ([compat-workspace]/target/qualification/debug/deps/no_source_branching-c5d0e773ba3b69ee)
 
 running 3 tests
 test deciding_compares_against_no_string_literal ... ok
@@ -2123,14 +2123,14 @@ test nothing_here_reaches_a_database_or_a_runtime ... ok
 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests src/lib.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/kontor_jira-df2d88a4e8c32296)
+     Running unittests src/lib.rs ([compat-workspace]/target/qualification/debug/deps/kontor_jira-df2d88a4e8c32296)
 
 running 1 test
 test connector::tests::jira_validation_failure_names_only_safe_field_ids ... ok
 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/native_connector.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/native_connector-15b860616a3c12bd)
+     Running tests/native_connector.rs ([compat-workspace]/target/qualification/debug/deps/native_connector-15b860616a3c12bd)
 
 running 13 tests
 test an_installed_v1_epic_workflow_remains_selectable_and_hash_stable ... ok
@@ -2149,7 +2149,7 @@ test native_requests_time_out_without_holding_the_daemon_open ... ok
 
 test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 30.01s
 
-     Running unittests src/lib.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/kontor_mcp-917914b1a8104d94)
+     Running unittests src/lib.rs ([compat-workspace]/target/qualification/debug/deps/kontor_mcp-917914b1a8104d94)
 
 running 56 tests
 test capability::tests::the_admitted_token_reports_the_configured_tier_and_not_the_required_one ... ok
@@ -2211,7 +2211,7 @@ test server::tests::every_declared_schema_is_closed ... ok
 
 test result: ok. 56 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests src/main.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/kontor_mcp-16d15499e1d7e069)
+     Running unittests src/main.rs ([compat-workspace]/target/qualification/debug/deps/kontor_mcp-16d15499e1d7e069)
 
 running 2 tests
 test tests::a_declared_profile_resolves ... ok
@@ -2219,7 +2219,7 @@ test tests::an_unknown_profile_is_refused_and_the_valid_names_are_listed ... ok
 
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/seats.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/seats-85bc0b8697fd0206)
+     Running tests/seats.rs ([compat-workspace]/target/qualification/debug/deps/seats-85bc0b8697fd0206)
 
 running 5 tests
 test the_seat_flags_are_the_ones_the_binary_declares ... ok
@@ -2230,13 +2230,13 @@ test no_seat_carries_a_secret_or_a_non_loopback_address ... ok
 
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests src/lib.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/kontor_policy-34c5ffe5bb01f159)
+     Running unittests src/lib.rs ([compat-workspace]/target/qualification/debug/deps/kontor_policy-34c5ffe5bb01f159)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/completion_policy.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/completion_policy-15e9a3d995944d64)
+     Running tests/completion_policy.rs ([compat-workspace]/target/qualification/debug/deps/completion_policy-15e9a3d995944d64)
 
 running 3 tests
 test done_requires_every_closeout_receipt_and_a_version_inventory ... ok
@@ -2245,7 +2245,7 @@ test needs_human_cannot_be_constructed_or_restored_without_a_tried_path ... ok
 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/guardrail_rules.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/guardrail_rules-961d9183f82d39e4)
+     Running tests/guardrail_rules.rs ([compat-workspace]/target/qualification/debug/deps/guardrail_rules-961d9183f82d39e4)
 
 running 22 tests
 test a_slash_run_blocks_on_a_dotted_holdout_of_the_same_module ... ok
@@ -2273,7 +2273,7 @@ test every_rule_is_deterministic_for_identical_canonical_inputs ... ok
 
 test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
 
-     Running tests/recovery_machine.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/recovery_machine-013189db5ff5d0ec)
+     Running tests/recovery_machine.rs ([compat-workspace]/target/qualification/debug/deps/recovery_machine-013189db5ff5d0ec)
 
 running 15 tests
 test a_follow_up_never_resumes_the_parked_run_in_place ... ok
@@ -2294,13 +2294,13 @@ test the_deliberation_path_reports_what_the_episode_actually_spent ... ok
 
 test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests src/lib.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/kontor_profiles-a0aabd01417952a6)
+     Running unittests src/lib.rs ([compat-workspace]/target/qualification/debug/deps/kontor_profiles-a0aabd01417952a6)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/consultation_presets.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/consultation_presets-97779fd8b2f01db1)
+     Running tests/consultation_presets.rs ([compat-workspace]/target/qualification/debug/deps/consultation_presets-97779fd8b2f01db1)
 
 running 6 tests
 test exactly_one_production_preset_is_shipped ... ok
@@ -2312,7 +2312,7 @@ test every_claude_consultation_slot_tries_work_then_personal ... ok
 
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/operational_domain.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/operational_domain-0676024b3cec72a7)
+     Running tests/operational_domain.rs ([compat-workspace]/target/qualification/debug/deps/operational_domain-0676024b3cec72a7)
 
 running 13 tests
 test both_open_question_closers_are_declared_codes_of_the_pinned_catalog ... ok
@@ -2331,7 +2331,7 @@ test operational_v4_renders_only_area_and_confirmed_jira_derived_item_code ... o
 
 test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
 
-     Running tests/profile_contract.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/profile_contract-48710be79615a163)
+     Running tests/profile_contract.rs ([compat-workspace]/target/qualification/debug/deps/profile_contract-48710be79615a163)
 
 running 23 tests
 test a_persona_revision_publishes_n_plus_one_and_leaves_n_untouched ... ok
@@ -2360,7 +2360,7 @@ test no_shipped_source_file_compares_an_identifier_to_a_seed_name ... ok
 
 test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
 
-     Running unittests src/lib.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/kontor_runtime-18e5cfd49dc4a233)
+     Running unittests src/lib.rs ([compat-workspace]/target/qualification/debug/deps/kontor_runtime-18e5cfd49dc4a233)
 
 running 55 tests
 test capability::tests::trust_rank_is_policy_not_declaration_order ... ok
@@ -2421,7 +2421,7 @@ test workspace::tests::a_workspace_root_is_absolute_and_normalized ... ok
 
 test result: ok. 55 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/binding_timeline.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/binding_timeline-1afe38e88e969be9)
+     Running tests/binding_timeline.rs ([compat-workspace]/target/qualification/debug/deps/binding_timeline-1afe38e88e969be9)
 
 running 5 tests
 test projection_collapses_exact_replays_without_changing_coverage ... ok
@@ -2432,7 +2432,7 @@ test projection_returns_only_messages_in_position_order_and_covers_the_source_ra
 
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/retitle_container.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/retitle_container-2a91e25365f43585)
+     Running tests/retitle_container.rs ([compat-workspace]/target/qualification/debug/deps/retitle_container-2a91e25365f43585)
 
 running 8 tests
 test retitling_is_a_change_and_is_declared_as_one ... ok
@@ -2446,7 +2446,7 @@ test a_preview_refuses_what_an_apply_would_refuse ... ok
 
 test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests src/lib.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/kontor_runtime_ao-2bb1b6ac6890cecd)
+     Running unittests src/lib.rs ([compat-workspace]/target/qualification/debug/deps/kontor_runtime_ao-2bb1b6ac6890cecd)
 
 running 15 tests
 test client::tests::a_post_is_the_only_verb_that_changes_the_runtime ... ok
@@ -2467,7 +2467,7 @@ test client::tests::an_endpoint_must_be_an_absolute_http_base ... ok
 
 test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/contract.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/contract-6dc2c6330f523303)
+     Running tests/contract.rs ([compat-workspace]/target/qualification/debug/deps/contract-6dc2c6330f523303)
 
 running 60 tests
 test a_blocked_session_never_accepts_an_automated_message ... ok
@@ -2533,7 +2533,7 @@ test no_uncertain_observation_can_close_a_run ... ok
 
 test result: ok. 60 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running tests/live.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/live-1b47d029bae648a6)
+     Running tests/live.rs ([compat-workspace]/target/qualification/debug/deps/live-1b47d029bae648a6)
 
 running 4 tests
 test live_smoke_launches_two_clients_concurrently ... ignored, requires a disposable AO daemon; see the module docs
@@ -2543,7 +2543,7 @@ test a_sequential_driver_is_rejected_by_the_same_check ... ok
 
 test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.08s
 
-     Running unittests src/lib.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/kontor_runtime_codex-29b185cd3e709eb9)
+     Running unittests src/lib.rs ([compat-workspace]/target/qualification/debug/deps/kontor_runtime_codex-29b185cd3e709eb9)
 
 running 28 tests
 test client::tests::a_flag_shaped_prompt_cannot_become_another_option ... ok
@@ -2577,7 +2577,7 @@ test usage::tests::a_relative_home_and_a_malformed_credential_file_are_both_refu
 
 test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/contract.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/contract-0dcdf446e20a0cf5)
+     Running tests/contract.rs ([compat-workspace]/target/qualification/debug/deps/contract-0dcdf446e20a0cf5)
 
 running 22 tests
 test a_production_adapter_advertises_context_policy_but_not_compact ... ok
@@ -2605,14 +2605,14 @@ test no_process_ending_becomes_terminal_evidence ... ok
 
 test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running tests/live.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/live-69fa2b9d00bb170d)
+     Running tests/live.rs ([compat-workspace]/target/qualification/debug/deps/live-69fa2b9d00bb170d)
 
 running 1 test
 test two_pinned_accounts_run_concurrently_and_neither_ending_closes_a_run ... ignored, requires two authenticated Codex accounts and a disposable worktree
 
 test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/usage_probe.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/usage_probe-1ede9e5de9427de4)
+     Running tests/usage_probe.rs ([compat-workspace]/target/qualification/debug/deps/usage_probe-1ede9e5de9427de4)
 
 running 5 tests
 test the_default_endpoint_is_the_vendors_own ... ok
@@ -2623,7 +2623,7 @@ test two_homes_are_probed_as_two_accounts ... ok
 
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running unittests src/lib.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/kontor_runtime_paseo-c69354757076e8db)
+     Running unittests src/lib.rs ([compat-workspace]/target/qualification/debug/deps/kontor_runtime_paseo-c69354757076e8db)
 
 running 107 tests
 test adapter::refusal_probe_tests::a_newer_tool_result_means_the_provider_item_is_not_terminal ... ok
@@ -2736,7 +2736,7 @@ test seat_mcp::tests::composing_twice_appends_each_exclude_line_once ... ok
 
 test result: ok. 107 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
 
-     Running tests/contract.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/contract-10a5dfe2173ac2e9)
+     Running tests/contract.rs ([compat-workspace]/target/qualification/debug/deps/contract-10a5dfe2173ac2e9)
 
 running 186 tests
 test a_child_without_its_parent_binding_never_falls_back_to_a_new_project ... ok
@@ -2928,7 +2928,7 @@ test preparation_refuses_a_catalog_module_worktree_on_an_unrelated_branch ... ok
 
 test result: ok. 186 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.79s
 
-     Running tests/live.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/live-385a0c88c9d76dfd)
+     Running tests/live.rs ([compat-workspace]/target/qualification/debug/deps/live-385a0c88c9d76dfd)
 
 running 6 tests
 test live_a_correlated_session_read_round_trips ... ignored, requires a live Paseo daemon; see the module docs
@@ -2940,7 +2940,7 @@ test live_the_status_readback_agrees_with_the_pushed_identity ... ignored, requi
 
 test result: ok. 0 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running unittests src/lib.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/kontor_scheduler-05a8c189316cf746)
+     Running unittests src/lib.rs ([compat-workspace]/target/qualification/debug/deps/kontor_scheduler-05a8c189316cf746)
 
 running 26 tests
 test headroom::tests::a_short_horizon_outlasting_the_escalation_horizon_is_refused ... ok
@@ -2972,7 +2972,7 @@ test headroom::tests::resolution_can_never_name_a_running_seat_let_alone_pre_emp
 
 test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/completion.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/completion-205fcb86986759ad)
+     Running tests/completion.rs ([compat-workspace]/target/qualification/debug/deps/completion-205fcb86986759ad)
 
 running 14 tests
 test operational_default_compiles_the_bounded_conditional_dag ... ok
@@ -2992,7 +2992,7 @@ test fail_remediate_pass_survives_restart_at_every_stage_and_closes_only_with_ev
 
 test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running tests/no_seed_branching.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/no_seed_branching-2efe9216ae0b07a2)
+     Running tests/no_seed_branching.rs ([compat-workspace]/target/qualification/debug/deps/no_seed_branching-2efe9216ae0b07a2)
 
 running 6 tests
 test the_scheduler_compiles_in_no_ceiling_of_its_own ... ok
@@ -3004,7 +3004,7 @@ test the_scheduler_reads_no_source_envelope ... ok
 
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running tests/ready_batch.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/ready_batch-480ef323baf5d131)
+     Running tests/ready_batch.rs ([compat-workspace]/target/qualification/debug/deps/ready_batch-480ef323baf5d131)
 
 running 40 tests
 test a_candidate_whose_slots_are_unregistered_is_refused_before_the_runtime_is_judged ... ok
@@ -3050,7 +3050,7 @@ test every_decision_shape_canonicalizes_for_storage ... ok
 
 test result: ok. 40 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running unittests src/lib.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/kontor_store-094f3099a16ab681)
+     Running unittests src/lib.rs ([compat-workspace]/target/qualification/debug/deps/kontor_store-094f3099a16ab681)
 
 running 14 tests
 test backup::restore::tests::a_taken_superseded_name_is_refused_and_nothing_moves ... ok
@@ -3070,7 +3070,7 @@ test query::tests::a_fresh_realm_has_no_projects_and_no_calendar_assignment ... 
 
 test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 27.63s
 
-     Running tests/advisor_multi_seat_advice.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/advisor_multi_seat_advice-5ede355d9c1adc54)
+     Running tests/advisor_multi_seat_advice.rs ([compat-workspace]/target/qualification/debug/deps/advisor_multi_seat_advice-5ede355d9c1adc54)
 
 running 2 tests
 test two_advisor_seats_each_record_their_own_advice_without_settling_the_run ... ok
@@ -3078,7 +3078,7 @@ test advice_is_idempotent_per_exact_seat_and_immutable_per_seat ... ok
 
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.32s
 
-     Running tests/backlog_identity.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/backlog_identity-2ac59b943e6e3734)
+     Running tests/backlog_identity.rs ([compat-workspace]/target/qualification/debug/deps/backlog_identity-2ac59b943e6e3734)
 
 running 7 tests
 test migration_preserves_valid_legacy_codes_and_quarantines_duplicates_and_invalid_values ... ok
@@ -3091,7 +3091,7 @@ test a_quarantined_legacy_value_does_not_block_a_new_active_assignment ... ok
 
 test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 19.33s
 
-     Running tests/backup_export.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/backup_export-20a5cd45995c4ac6)
+     Running tests/backup_export.rs ([compat-workspace]/target/qualification/debug/deps/backup_export-20a5cd45995c4ac6)
 
 running 18 tests
 test a_generation_three_export_from_a_quota_capable_database_is_refused_as_incomplete ... ok
@@ -3116,7 +3116,7 @@ test profile_selection_import_rejects_every_incomplete_or_swapped_frozen_binding
 
 test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 106.25s
 
-     Running tests/backup_snapshot.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/backup_snapshot-d9294b5084b3b3c2)
+     Running tests/backup_snapshot.rs ([compat-workspace]/target/qualification/debug/deps/backup_snapshot-d9294b5084b3b3c2)
 
 running 11 tests
 test a_published_snapshot_is_never_overwritten ... ok
@@ -3133,7 +3133,7 @@ test a_damaged_database_is_never_copied_and_replaces_nothing ... ok
 
 test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 42.15s
 
-     Running tests/calendar_imports.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/calendar_imports-1a67f21cf1c44889)
+     Running tests/calendar_imports.rs ([compat-workspace]/target/qualification/debug/deps/calendar_imports-1a67f21cf1c44889)
 
 running 10 tests
 test an_import_whose_exceptions_belong_elsewhere_is_refused_before_any_write ... ok
@@ -3149,7 +3149,7 @@ test a_second_import_must_supersede_the_one_already_applied ... ok
 
 test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 28.58s
 
-     Running tests/child_calendar_windows.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/child_calendar_windows-6fa403c133765ced)
+     Running tests/child_calendar_windows.rs ([compat-workspace]/target/qualification/debug/deps/child_calendar_windows-6fa403c133765ced)
 
 running 2 tests
 test a_persisted_task_widening_is_refused_without_a_scoped_override ... ok
@@ -3157,7 +3157,7 @@ test a_persisted_task_narrowing_changes_production_calendar_admission ... ok
 
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.06s
 
-     Running tests/command_recovery.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/command_recovery-05c992bd14c829ff)
+     Running tests/command_recovery.rs ([compat-workspace]/target/qualification/debug/deps/command_recovery-05c992bd14c829ff)
 
 running 20 tests
 test confirmed_receipt_is_restart_terminal ... ok
@@ -3185,7 +3185,7 @@ test every_command_crash_point_recovers_without_second_native_launch ... ok
 
 test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 78.70s
 
-     Running tests/consultation_profiles.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/consultation_profiles-e0bab0b79dbec9ec)
+     Running tests/consultation_profiles.rs ([compat-workspace]/target/qualification/debug/deps/consultation_profiles-e0bab0b79dbec9ec)
 
 running 9 tests
 test republishing_a_version_is_refused ... ok
@@ -3200,7 +3200,7 @@ test a_first_revision_that_skips_version_one_is_refused ... ok
 
 test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 30.84s
 
-     Running tests/crash_reopen.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/crash_reopen-235f1e35f9b39a81)
+     Running tests/crash_reopen.rs ([compat-workspace]/target/qualification/debug/deps/crash_reopen-235f1e35f9b39a81)
 
 running 5 tests
 test crash_child_worker ... ok
@@ -3215,7 +3215,7 @@ test two_connections_may_share_one_file ... ok
 
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.13s
 
-     Running tests/epic_jira_reconciliation.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/epic_jira_reconciliation-3593a1b1d5146300)
+     Running tests/epic_jira_reconciliation.rs ([compat-workspace]/target/qualification/debug/deps/epic_jira_reconciliation-3593a1b1d5146300)
 
 running 4 tests
 test epic_transition_key_cannot_authorize_different_intent ... ok
@@ -3225,7 +3225,7 @@ test epic_conflict_schema_refuses_unknown_kinds_bad_timestamps_and_second_resolu
 
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.50s
 
-     Running tests/event_replay.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/event_replay-ce6c673e1e621abd)
+     Running tests/event_replay.rs ([compat-workspace]/target/qualification/debug/deps/event_replay-ce6c673e1e621abd)
 
 running 47 tests
 test a_failure_after_the_record_but_before_the_row_leaves_neither ... ok
@@ -3279,7 +3279,7 @@ test a_rehashed_document_cannot_forge_the_quota_chain ... ok
 
 test result: ok. 47 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 166.88s
 
-     Running tests/intake_lineage.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/intake_lineage-724bcacbfe1fab86)
+     Running tests/intake_lineage.rs ([compat-workspace]/target/qualification/debug/deps/intake_lineage-724bcacbfe1fab86)
 
 running 14 tests
 test an_approval_receipt_must_authorize_this_intake_decision ... ok
@@ -3299,7 +3299,7 @@ test the_store_refuses_every_auto_arm_the_policy_refuses ... ok
 
 test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 35.68s
 
-     Running tests/jira_link_ledger.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/jira_link_ledger-a052d27a045c9fc2)
+     Running tests/jira_link_ledger.rs ([compat-workspace]/target/qualification/debug/deps/jira_link_ledger-a052d27a045c9fc2)
 
 running 5 tests
 test jira_task_and_issue_identity_are_both_exclusive ... ok
@@ -3310,7 +3310,7 @@ test v81_fails_closed_for_each_irreconcilable_historical_identity ... ok
 
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 16.44s
 
-     Running tests/jira_materialization.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/jira_materialization-6d41ce4e39d29685)
+     Running tests/jira_materialization.rs ([compat-workspace]/target/qualification/debug/deps/jira_materialization-6d41ce4e39d29685)
 
 running 10 tests
 test v73_migrates_an_empty_confirmed_link_batch_without_losing_incident_evidence ... ok
@@ -3326,7 +3326,7 @@ test recovery_adopts_exact_non_overlapping_legacy_batch_fragments_without_rewrit
 
 test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 27.44s
 
-     Running tests/legacy_naming_recovery.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/legacy_naming_recovery-9e035230dd1b9275)
+     Running tests/legacy_naming_recovery.rs ([compat-workspace]/target/qualification/debug/deps/legacy_naming_recovery-9e035230dd1b9275)
 
 running 2 tests
 test a_legacy_epic_code_correction_is_atomic_append_only_and_replay_safe ... ok
@@ -3334,7 +3334,7 @@ test a_stale_container_recovery_cas_preserves_logical_identity_and_history ... o
 
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.84s
 
-     Running tests/native_capacity.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/native_capacity-3c1b2ec509d4eed3)
+     Running tests/native_capacity.rs ([compat-workspace]/target/qualification/debug/deps/native_capacity-3c1b2ec509d4eed3)
 
 running 16 tests
 test a_lapsed_override_is_still_a_record_that_someone_made_it ... ok
@@ -3356,7 +3356,7 @@ test the_same_collector_reading_cannot_be_recorded_twice ... ok
 
 test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 45.81s
 
-     Running tests/open_questions.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/open_questions-6fa4b0bb5f310266)
+     Running tests/open_questions.rs ([compat-workspace]/target/qualification/debug/deps/open_questions-6fa4b0bb5f310266)
 
 running 12 tests
 test every_round_disposition_and_firing_survives_a_restart ... ok
@@ -3374,7 +3374,7 @@ test an_import_records_every_ledger_row_as_lineage ... ok
 
 test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 31.27s
 
-     Running tests/operational_liveness.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/operational_liveness-def6c266b5677a25)
+     Running tests/operational_liveness.rs ([compat-workspace]/target/qualification/debug/deps/operational_liveness-def6c266b5677a25)
 
 running 11 tests
 test a_confirmation_and_a_self_report_are_not_activity ... ok
@@ -3391,7 +3391,7 @@ test the_attach_deadline_is_the_one_fixed_at_creation ... ok
 
 test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 25.08s
 
-     Running tests/operational_promotion.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/operational_promotion-2774dd9302974331)
+     Running tests/operational_promotion.rs ([compat-workspace]/target/qualification/debug/deps/operational_promotion-2774dd9302974331)
 
 running 3 tests
 test a_second_command_for_one_session_is_a_conflict_rather_than_a_backend_error ... ok
@@ -3400,7 +3400,7 @@ test authorizing_a_promotion_records_the_epic_and_its_roster_together ... ok
 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.85s
 
-     Running tests/operational_topology.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/operational_topology-4cb8efd05c1086a3)
+     Running tests/operational_topology.rs ([compat-workspace]/target/qualification/debug/deps/operational_topology-4cb8efd05c1086a3)
 
 running 7 tests
 test an_unattributed_override_is_refused_by_the_schema ... ok
@@ -3413,7 +3413,7 @@ test repinning_an_epic_migrates_compatible_nodes_without_changing_their_identiti
 
 test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 19.90s
 
-     Running tests/policy_evidence.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/policy_evidence-c325c1260e42c480)
+     Running tests/policy_evidence.rs ([compat-workspace]/target/qualification/debug/deps/policy_evidence-c325c1260e42c480)
 
 running 22 tests
 test a_step_appended_without_its_advance_does_not_close_the_episode_either ... ok
@@ -3441,7 +3441,7 @@ test two_rejections_by_one_principal_park_the_task_even_across_relaunches ... ok
 
 test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 59.08s
 
-     Running tests/reconciliation.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/reconciliation-8182689784264dd8)
+     Running tests/reconciliation.rs ([compat-workspace]/target/qualification/debug/deps/reconciliation-8182689784264dd8)
 
 running 16 tests
 test a_census_admits_only_the_scope_it_censuses ... ok
@@ -3463,7 +3463,7 @@ test the_scripted_census_sequence_reaches_its_recorded_conclusions ... ok
 
 test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 49.92s
 
-     Running tests/repository_roundtrip.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/repository_roundtrip-395d61f11842db4f)
+     Running tests/repository_roundtrip.rs ([compat-workspace]/target/qualification/debug/deps/repository_roundtrip-395d61f11842db4f)
 
 running 75 tests
 test a_compaction_receipt_is_idempotent_by_id_and_conflicts_on_different_content ... ok
@@ -3544,7 +3544,7 @@ test two_epics_reuse_the_same_exact_derived_completion_profile ... ok
 
 test result: ok. 75 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 195.69s
 
-     Running tests/scheduler_admission.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/scheduler_admission-469aa3ce40b07a88)
+     Running tests/scheduler_admission.rs ([compat-workspace]/target/qualification/debug/deps/scheduler_admission-469aa3ce40b07a88)
 
 running 31 tests
 test a_ceiling_is_recounted_from_the_rows_rather_than_trusted ... ok
@@ -3581,7 +3581,7 @@ test two_schedulers_never_admit_the_same_module_twice_even_across_projects ... o
 
 test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 85.21s
 
-     Running tests/schema_v1.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/schema_v1-97e438b4651db592)
+     Running tests/schema_v1.rs ([compat-workspace]/target/qualification/debug/deps/schema_v1-97e438b4651db592)
 
 running 57 tests
 test a_failing_migration_leaves_version_zero_and_no_partial_schema ... ok
@@ -3644,7 +3644,7 @@ test v68_materialization_reroute_lineage_is_immutable_and_has_distinct_receipt_a
 
 test result: ok. 57 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 129.53s
 
-     Running tests/succession_attempts.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/succession_attempts-cdb357acc39799e8)
+     Running tests/succession_attempts.rs ([compat-workspace]/target/qualification/debug/deps/succession_attempts-cdb357acc39799e8)
 
 running 8 tests
 test handoff_retirement_successor_readback_and_receipt_advance_once ... ok
@@ -3658,7 +3658,7 @@ test succession_attempts_round_trip_only_as_non_executable_lineage ... ok
 
 test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 24.47s
 
-     Running tests/team_definition_backup_contract.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/team_definition_backup_contract-f39b3cd19e1c1f3b)
+     Running tests/team_definition_backup_contract.rs ([compat-workspace]/target/qualification/debug/deps/team_definition_backup_contract-f39b3cd19e1c1f3b)
 
 running 2 tests
 test typed_export_carries_every_team_definition_surface ... ok
@@ -3666,7 +3666,7 @@ test a_verified_snapshot_restore_preserves_the_team_definition_surfaces ... ok
 
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.40s
 
-     Running tests/team_definition_migration_completeness.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/team_definition_migration_completeness-d3e4eddca8cd487a)
+     Running tests/team_definition_migration_completeness.rs ([compat-workspace]/target/qualification/debug/deps/team_definition_migration_completeness-d3e4eddca8cd487a)
 
 running 13 tests
 test a_target_definition_that_does_not_declare_a_live_node_kind_is_refused ... ok
@@ -3685,7 +3685,7 @@ test confirmation_re_proves_parity_against_the_live_census ... ok
 
 test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 42.39s
 
-     Running tests/team_definition_persistence.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/team_definition_persistence-01b6381870f6b4e5)
+     Running tests/team_definition_persistence.rs ([compat-workspace]/target/qualification/debug/deps/team_definition_persistence-01b6381870f6b4e5)
 
 running 28 tests
 test a_seat_target_and_its_container_do_not_share_a_key ... ok
@@ -3719,13 +3719,13 @@ test the_project_default_is_re_selectable_and_refuses_a_hash_that_was_never_publ
 
 test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 75.16s
 
-     Running unittests src/lib.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/kontor_teams-fea174ccdb4bedbe)
+     Running unittests src/lib.rs ([compat-workspace]/target/qualification/debug/deps/kontor_teams-fea174ccdb4bedbe)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/operational_workflow.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/operational_workflow-e649639fb54b14e0)
+     Running tests/operational_workflow.rs ([compat-workspace]/target/qualification/debug/deps/operational_workflow-e649639fb54b14e0)
 
 running 3 tests
 test core_team_forces_distinct_control_roles_and_derives_quick_and_initial_seats ... ok
@@ -3734,7 +3734,7 @@ test qsw_to_esw_promotion_is_idempotent_and_hands_off_to_the_lsa ... ok
 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running tests/team_contract.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/team_contract-fac701c43fcd07d6)
+     Running tests/team_contract.rs ([compat-workspace]/target/qualification/debug/deps/team_contract-fac701c43fcd07d6)
 
 running 45 tests
 test a_duplicate_slot_id_is_refused_by_the_rule_that_names_it ... ok
@@ -3785,13 +3785,13 @@ test structurally_invalid_templates_are_refused ... ok
 
 test result: ok. 45 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
 
-     Running unittests src/lib.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/kontor_tests_contract-5f1795363d40a08f)
+     Running unittests src/lib.rs ([compat-workspace]/target/qualification/debug/deps/kontor_tests_contract-5f1795363d40a08f)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running guardrails.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/guardrails-240d314240fd929e)
+     Running guardrails.rs ([compat-workspace]/target/qualification/debug/deps/guardrails-240d314240fd929e)
 
 running 5 tests
 test a_wrong_or_ambiguous_worktree_parks_with_no_runtime_effect ... ok
@@ -3802,7 +3802,7 @@ test a_destructive_action_without_its_approval_has_no_runtime_effect ... ok
 
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 16.13s
 
-     Running mcp_cardinality.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/mcp_cardinality-e2e190caae894ff7)
+     Running mcp_cardinality.rs ([compat-workspace]/target/qualification/debug/deps/mcp_cardinality-e2e190caae894ff7)
 
 running 11 tests
 test an_operator_may_not_waive_a_gate_but_may_record_an_ordinary_verdict ... ok
@@ -3819,7 +3819,7 @@ test every_tool_makes_exactly_one_authenticated_request_with_its_declared_shape 
 
 test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
 
-     Running mcp_mutants.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/mcp_mutants-c55093f5d11cffab)
+     Running mcp_mutants.rs ([compat-workspace]/target/qualification/debug/deps/mcp_mutants-c55093f5d11cffab)
 
 running 11 tests
 test a_non_loopback_endpoint_is_refused_before_a_client_exists ... ok
@@ -3836,7 +3836,7 @@ test kontor_mcp_has_no_dependency_path_to_a_forbidden_crate ... ok
 
 test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.37s
 
-     Running mcp_parity.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/mcp_parity-5245fc0d3e15e2ab)
+     Running mcp_parity.rs ([compat-workspace]/target/qualification/debug/deps/mcp_parity-5245fc0d3e15e2ab)
 
 running 12 tests
 test the_local_documents_and_default_port_match_the_daemons ... ok
@@ -3854,7 +3854,7 @@ test every_declared_nested_object_matches_the_contracts_own_dto ... ok
 
 test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
 
-     Running profiles_teams.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/profiles_teams-0f1ed08e7dcef088)
+     Running profiles_teams.rs ([compat-workspace]/target/qualification/debug/deps/profiles_teams-0f1ed08e7dcef088)
 
 running 11 tests
 test a_second_session_for_one_seat_is_refused_before_the_runtime_is_called ... ok
@@ -3871,7 +3871,7 @@ test two_declared_slots_of_one_role_run_concurrently_in_one_workspace ... ok
 
 test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 30.11s
 
-     Running runtime_adapter.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/runtime_adapter-7327104edaef602d)
+     Running runtime_adapter.rs ([compat-workspace]/target/qualification/debug/deps/runtime_adapter-7327104edaef602d)
 
 running 52 tests
 test a_best_effort_policy_launches_and_stays_visibly_not_enforced ... ok
@@ -3929,7 +3929,7 @@ test unknown_compaction_telemetry_is_absent_and_never_zero ... ok
 
 test result: ok. 52 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running scheduling.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/scheduling-b3ed249385ba229e)
+     Running scheduling.rs ([compat-workspace]/target/qualification/debug/deps/scheduling-b3ed249385ba229e)
 
 running 2 tests
 test the_scheduler_admits_a_bundled_profile_and_its_lease_stops_the_next_contender ... ok
@@ -3937,20 +3937,20 @@ test a_lost_launch_and_a_restart_still_leave_exactly_one_durable_admission ... o
 
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.24s
 
-     Running unittests src/lib.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/kontor_tests_e2e-028b1bd4cccb257e)
+     Running unittests src/lib.rs ([compat-workspace]/target/qualification/debug/deps/kontor_tests_e2e-028b1bd4cccb257e)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running pilot.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/pilot-d279b2b14d50d517)
+     Running pilot.rs ([compat-workspace]/target/qualification/debug/deps/pilot-d279b2b14d50d517)
 
 running 1 test
 test pilot ... ok
 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 17.20s
 
-     Running pilot_live.rs ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/target/qualification/debug/deps/pilot_live-7da45cdb04a6234e)
+     Running pilot_live.rs ([compat-workspace]/target/qualification/debug/deps/pilot_live-7da45cdb04a6234e)
 
 running 1 test
 test pilot_live ... ok

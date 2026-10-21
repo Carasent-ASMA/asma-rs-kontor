@@ -15,7 +15,7 @@ Method: `git show` only at module `c708701b6b8f80ef4db57b0b0410976dfd4dc482` (pr
 - **A-02 · Info · Token-level revocation/replay absent.** `token_id` is parsed and exposed (`:118-119`, `:204-206`) but `verify` has no revoked-token/replay input (`:270-275`). Spec assigns this to the owner (`spec §4 :91-95`; module docs `:5-8`; `§8 :147-150`). Disposition: intended owner gate — explicitly unsupported, not a defect.
 - **A-03 · Info · Evidence provenance label.** `SOURCE-VALIDATION.json:3` / `MANIFEST.json:2` say `source_head: dfeaa8a…`, but all five recorded sha256 values match the `c708701b` delta (e.g., Cargo.lock `b62db275…` at `c708701b` vs `cdedd842…` at `dfeaa8a`). Content is pinned correctly; only the head label names the base. Disposition: evidence hygiene note for root's record; no source impact.
 - **A-04 · Info · Full-suite counts not independently reproducible.** 122/20/2 counts are declared (`SOURCE-VALIDATION.json:13-18`) but the corresponding log is not in the bundle; only focused mutation/baseline logs exist. Disposition: not a blocker; noted as an evidence limit.
-- **A-05 · Info · Doc path.** `attestation.rs:15` cites `asma-modules/_docs/...`; repo path is `_docs/...`. Nit only.
+- **A-05 · Info · Doc path.** `attestation.rs:15` cites `[parent-plan]`; repo path is `_docs/...`. Nit only.
 
 **Correctness/security checks that hold**
 - **Public-only**: production code uses only `UnparsedPublicKey`/`RSA_PKCS1_2048_8192_SHA256` (`:306`); `RsaKeyPair::generate`/`sign` appear only in tests (`tests.rs:9-11,70-83`). Fixed algorithm, no `alg` field, no token key/URL discovery; exact-bytes signing over `asma-seat-attestation-v1\0` + raw payload (`:303-308`).

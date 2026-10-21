@@ -36,10 +36,10 @@
    Compiling tokio v1.53.1
    Compiling uuid v1.24.0
    Compiling jiff v0.2.35
-   Compiling kontor-core v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-core)
-   Compiling kontor-runtime v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-runtime)
-   Compiling kontor-context v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-context)
-   Compiling kontor-teams v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-teams)
+   Compiling kontor-core v0.2.1 ([task-workspace])
+   Compiling kontor-runtime v0.2.1 ([task-workspace])
+   Compiling kontor-context v0.2.1 ([task-workspace])
+   Compiling kontor-teams v0.2.1 ([task-workspace])
     Finished `test` profile [unoptimized + debuginfo] target(s) in 17.92s
      Running unittests src/lib.rs (target/debug/deps/kontor_teams-fe8d90a9bc84f54d)
 

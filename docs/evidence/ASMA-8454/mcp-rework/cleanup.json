@@ -1,6 +1,6 @@
 {
   "owner": "Codex / SWE ASMA-8454",
-  "scope": "$HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/.qualification/mcp-rework/tmp",
+  "scope": "[qualification-workspace]/.qualification/mcp-rework/tmp",
   "top_level_entries_before": 25,
   "recursive_entries_before": 159,
   "regular_file_bytes_before": 76309133,

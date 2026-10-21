@@ -13,8 +13,7 @@ and an `agent_runs` rung column remain open. Independent audit, deployment and
 live-runtime receipts for succession are not recorded here.
 Date: 2026-08-21, extended 2026-08-22, candidate status 2026-09-04, status refreshed 2026-10-11 (`0971674d`)
 
-Ticket: **KON-OP-13 / ASMA-7882** owns this. The fleet-mechanics plan
-(`_docs/ai-orchestration/plans/2026-08-05-02-37-plan-agent-fleet-mechanics-layer.md`)
+Ticket: **KON-OP-13 / ASMA-7882** owns this. The historical fleet-mechanics plan
 was amended on 2026-08-16 to hand Kontor "reserve policy, headroom thresholds,
 failover order, `blocked_until` state and the decision of which
 account/provider/rung runs next" under that ticket. This document is the
