@@ -5,11 +5,15 @@ Run from the repository root:
     python3 -m unittest discover -s scripts/tests -v
 
 The tests prove the text contracts a renderer, a reviewer and the public-tree
-check depend on: the expected skills exist once, every placeholder resolves from
-the project: block, no private project value leaks outside a marked example,
-every relative link and anchor resolves, and each repeated rule has one owner
-that the other skills link to. They also prove every inventory row assigned to
-WP-03 is recorded with a disposition.
+check depend on: the expected skills exist once, every placeholder resolves
+against the full nested project: path in the neutral and ASMA fixtures, no
+private project value leaks outside a marked example, every relative and
+same-file link resolves, and each repeated rule has one owner that the other
+skills link to. They also prove every inventory row assigned to WP-03 is
+recorded with a disposition.
+
+These tests live in the scripts lane until WP-05 supplies `scripts/pack.py` and
+the workflow-only lane; WP-05 owns moving or wiring them there.
 """
 
 from __future__ import annotations
@@ -21,10 +25,13 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SKILLS = REPO_ROOT / "workflow" / "skills"
 ORCHESTRATION = REPO_ROOT / "config" / "examples" / "orchestration" / "orchestration.yml"
-SCHEMA = REPO_ROOT / "config" / "examples" / "orchestration" / "orchestration.schema.yml"
+ASMA_FIXTURE = REPO_ROOT / "tests" / "fixtures" / "config" / "asma-orchestration.yml"
+PLAN_TEMPLATE = REPO_ROOT / "workflow" / "templates" / "plan.md"
 
 LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 PLACEHOLDER_RE = re.compile(r"\{\{\s*project\.([A-Za-z0-9_.]+)\s*\}\}")
+ALL_PLACEHOLDER_RE = re.compile(r"\{\{(.*?)\}\}", re.DOTALL)
+VALID_PLACEHOLDER_RE = re.compile(r"^\s*project\.[A-Za-z0-9_.]+\s*$")
 EXAMPLE_OPEN = "<!-- example: project-specific -->"
 EXAMPLE_CLOSE = "<!-- /example: project-specific -->"
 
@@ -60,6 +67,10 @@ NEVER_PUBLIC = (
     "codex" + "-work",
     "codex" + "-personal",
 )
+
+EXPECTED_INVENTORY_ROWS = {
+    f"WP03-INV-{number:02d}" for number in range(1, 9)
+}
 
 
 def read(path: Path) -> str:
@@ -105,7 +116,7 @@ def link_targets(text: str) -> list[str]:
     return [
         target
         for target in LINK_RE.findall(text)
-        if not target.startswith(("http://", "https://", "mailto:", "#"))
+        if not target.startswith(("http://", "https://", "mailto:"))
         and "{{" not in target
     ]
 
@@ -127,8 +138,138 @@ def anchors(text: str) -> set[str]:
 
 
 def resolve_link(source: Path, target: str) -> tuple[Path, str]:
+    if target.startswith("#"):
+        return source.resolve(), target[1:]
     file_part, _, fragment = target.partition("#")
     return (source.parent / file_part).resolve(), fragment
+
+
+class YamlSubsetError(ValueError):
+    """The file is outside the small YAML subset these fixtures use."""
+
+
+def _strip_yaml_comment(line: str) -> str:
+    in_single = in_double = False
+    for index, character in enumerate(line):
+        if character == "'" and not in_double:
+            in_single = not in_single
+        elif character == '"' and not in_single:
+            in_double = not in_double
+        elif character == "#" and not in_single and not in_double:
+            if index == 0 or line[index - 1].isspace():
+                return line[:index]
+    return line
+
+
+def _parse_scalar(value: str) -> object:
+    value = value.strip()
+    if len(value) >= 2 and value[0] in "'\"" and value[-1] == value[0]:
+        return value[1:-1]
+    if value in ("null", "~"):
+        return None
+    if value in ("true", "false"):
+        return value == "true"
+    try:
+        return int(value)
+    except ValueError:
+        return value
+
+
+def _tokenize_yaml(text: str) -> list[tuple[int, str]]:
+    tokens: list[tuple[int, str]] = []
+    for raw in text.splitlines():
+        line = _strip_yaml_comment(raw).rstrip()
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if "\t" in line[:indent]:
+            raise YamlSubsetError("tab indentation is not supported")
+        tokens.append((indent, line.strip()))
+    return tokens
+
+
+def _parse_block(
+    tokens: list[tuple[int, str]], index: int, indent: int
+) -> tuple[object, int]:
+    if index >= len(tokens) or tokens[index][0] != indent:
+        raise YamlSubsetError("unexpected indentation")
+    if tokens[index][1].startswith("- "):
+        items: list[object] = []
+        while (
+            index < len(tokens)
+            and tokens[index][0] == indent
+            and tokens[index][1].startswith("- ")
+        ):
+            content = tokens[index][1][2:].strip()
+            index += 1
+            if not content:
+                if index < len(tokens) and tokens[index][0] > indent:
+                    value, index = _parse_block(tokens, index, tokens[index][0])
+                    items.append(value)
+                else:
+                    items.append(None)
+            else:
+                items.append(_parse_scalar(content))
+        return items, index
+
+    mapping: dict[str, object] = {}
+    while index < len(tokens) and tokens[index][0] == indent:
+        content = tokens[index][1]
+        if content.startswith("- "):
+            break
+        if ":" not in content:
+            raise YamlSubsetError(f"expected a mapping entry: {content}")
+        key, _, rest = content.partition(":")
+        key = key.strip()
+        rest = rest.strip()
+        index += 1
+        if rest:
+            mapping[key] = _parse_scalar(rest)
+        elif index < len(tokens) and tokens[index][0] > indent:
+            value, index = _parse_block(tokens, index, tokens[index][0])
+            mapping[key] = value
+        else:
+            mapping[key] = None
+    return mapping, index
+
+
+def load_yaml_subset(path: Path) -> dict[str, object]:
+    tokens = _tokenize_yaml(read(path))
+    if not tokens:
+        raise YamlSubsetError(f"{path} is empty")
+    value, index = _parse_block(tokens, 0, tokens[0][0])
+    if index != len(tokens):
+        raise YamlSubsetError(f"{path} has trailing content at line {index}")
+    if not isinstance(value, dict):
+        raise YamlSubsetError(f"{path} is not a mapping")
+    return value
+
+
+def resolve_path(data: dict[str, object], dotted: str) -> object:
+    current: object = data
+    for part in dotted.split("."):
+        if not isinstance(current, dict) or part not in current:
+            raise KeyError(dotted)
+        current = current[part]
+    return current
+
+
+def placeholder_errors(text: str) -> list[str]:
+    errors = []
+    for match in ALL_PLACEHOLDER_RE.finditer(text):
+        if not VALID_PLACEHOLDER_RE.match(match.group(1)):
+            errors.append(match.group(0))
+    return errors
+
+
+def used_placeholders() -> set[str]:
+    used = set()
+    for path in SKILLS.rglob("*.md"):
+        if path.name == "README.md":
+            continue
+        for match in PLACEHOLDER_RE.finditer(read(path)):
+            used.add(f"project.{match.group(1)}")
+    return used
 
 
 class PackLayoutTests(unittest.TestCase):
@@ -156,9 +297,12 @@ class PackLayoutTests(unittest.TestCase):
 class PlaceholderTests(unittest.TestCase):
     def test_placeholders_are_well_formed(self) -> None:
         for path in SKILLS.rglob("*.md"):
+            if path.name == "README.md":
+                continue
             text = read(path)
             with self.subTest(path=str(path.relative_to(SKILLS))):
                 self.assertEqual(text.count("{{"), text.count("}}"))
+                self.assertEqual(placeholder_errors(text), [], path)
                 for match in PLACEHOLDER_RE.finditer(text):
                     self.assertTrue(match.group(1), f"empty placeholder in {path}")
 
@@ -168,30 +312,56 @@ class PlaceholderTests(unittest.TestCase):
             match.group(1)
             for match in re.finditer(r"`(project\.[A-Za-z0-9_.]+)`", readme)
         }
-        used = set()
-        for path in SKILLS.rglob("*.md"):
-            if path.name == "README.md":
-                continue
-            for match in PLACEHOLDER_RE.finditer(read(path)):
-                used.add(f"project.{match.group(1)}")
+        used = used_placeholders()
         self.assertTrue(used.issubset(documented), used - documented)
         self.assertGreater(len(used), 0)
 
-    def test_every_placeholder_key_exists_in_the_neutral_config(self) -> None:
-        example = read(ORCHESTRATION)
-        schema = read(SCHEMA)
-        for path in sorted(
-            {
-                match.group(1)
-                for file in SKILLS.rglob("*.md")
-                for match in PLACEHOLDER_RE.finditer(read(file))
-            }
-        ):
-            segments = path.split(".")
-            leaf = segments[-1]
-            with self.subTest(path=path):
-                self.assertIn(f"{leaf}:", example + schema)
-                self.assertIn(f"{segments[0]}:", example)
+    def test_every_placeholder_resolves_in_both_fixtures(self) -> None:
+        used = sorted(used_placeholders())
+        for fixture in (ORCHESTRATION, ASMA_FIXTURE):
+            data = load_yaml_subset(fixture)
+            for placeholder in used:
+                with self.subTest(fixture=fixture.name, placeholder=placeholder):
+                    resolve_path(data, placeholder)
+
+    def test_an_unknown_placeholder_key_is_refused(self) -> None:
+        data = load_yaml_subset(ORCHESTRATION)
+        with self.assertRaises(KeyError):
+            resolve_path(data, "project.tracker.architecture")
+
+    def test_a_malformed_placeholder_is_refused(self) -> None:
+        errors = placeholder_errors("{{ banana command }}")
+        self.assertEqual(errors, ["{{ banana command }}"])
+
+    def test_capacity_semantics_match_the_placement_rule(self) -> None:
+        cases = (
+            (ORCHESTRATION, 1, 2, 1),
+            (ASMA_FIXTURE, 2, 7, 4),
+        )
+        for fixture, delivery_seats, ceiling, start_admission in cases:
+            capacity = resolve_path(load_yaml_subset(fixture), "project.capacity")
+            with self.subTest(fixture=fixture.name):
+                self.assertEqual(capacity["max_delivery_seats"], delivery_seats)
+                self.assertEqual(capacity["max_parallel_tasks"], ceiling)
+                self.assertEqual(capacity["start_admission"], start_admission)
+                self.assertLessEqual(
+                    capacity["start_admission"], capacity["max_parallel_tasks"]
+                )
+        asma_capacity = resolve_path(
+            load_yaml_subset(ASMA_FIXTURE), "project.capacity"
+        )
+        self.assertEqual(asma_capacity["max_parallel_tasks"], 7)
+        self.assertEqual(asma_capacity["start_admission"], 4)
+
+
+class TemplateContractTests(unittest.TestCase):
+    def test_the_plan_template_matches_the_plan_graph_contract(self) -> None:
+        text = read(PLAN_TEMPLATE)
+        self.assertIn("### 2.5 Dependency Graph and Waves", text)
+        self.assertEqual(text.count("```plan-graph"), 1)
+        self.assertIn('"external_fences": []', text)
+        self.assertIn("<!-- plan-graph:derived:start -->", text)
+        self.assertIn("<!-- plan-graph:derived:end -->", text)
 
 
 class NeutralityTests(unittest.TestCase):
@@ -199,8 +369,16 @@ class NeutralityTests(unittest.TestCase):
         for path in SKILLS.rglob("*.md"):
             text = read(path)
             with self.subTest(path=str(path.relative_to(SKILLS))):
-                opens = len(re.findall(rf"^{re.escape(EXAMPLE_OPEN)}$", text, re.MULTILINE))
-                closes = len(re.findall(rf"^{re.escape(EXAMPLE_CLOSE)}$", text, re.MULTILINE))
+                opens = len(
+                    re.findall(
+                        rf"^{re.escape(EXAMPLE_OPEN)}$", text, re.MULTILINE
+                    )
+                )
+                closes = len(
+                    re.findall(
+                        rf"^{re.escape(EXAMPLE_CLOSE)}$", text, re.MULTILINE
+                    )
+                )
                 self.assertEqual(opens, closes)
 
     def test_no_private_value_leaks_outside_a_marked_example(self) -> None:
@@ -220,7 +398,7 @@ class NeutralityTests(unittest.TestCase):
 
 
 class LinkTests(unittest.TestCase):
-    def test_every_relative_link_and_anchor_resolves(self) -> None:
+    def test_every_link_and_anchor_resolves(self) -> None:
         for path in SKILLS.rglob("*.md"):
             text = read(path)
             for target in link_targets(text):
@@ -233,6 +411,12 @@ class LinkTests(unittest.TestCase):
                             anchors(read(resolved)),
                             f"{path}: missing anchor {target}",
                         )
+
+    def test_a_same_file_anchor_is_checked(self) -> None:
+        path = SKILLS / "epic-orchestration" / "SKILL.md"
+        resolved, fragment = resolve_link(path, "#entry-gate")
+        self.assertEqual(resolved, path.resolve())
+        self.assertIn(fragment, anchors(read(path)))
 
 
 class RuleOwnershipTests(unittest.TestCase):
@@ -276,7 +460,11 @@ class RuleOwnershipTests(unittest.TestCase):
             ]
             self.assertGreater(len(linked_from), 0, row[0])
             for name in linked_from:
-                skill = SKILLS / name / "SKILL.md"
+                skill = (
+                    SKILLS / name
+                    if "/" in name
+                    else SKILLS / name / "SKILL.md"
+                )
                 with self.subTest(rule=row[0], skill=name):
                     self.assertTrue(skill.is_file(), name)
                     targets = {
@@ -302,6 +490,16 @@ class RuleOwnershipTests(unittest.TestCase):
         self.assertIn("seat-takeover owns resuming", text)
 
 
+def inventory_errors(rows: dict[str, list[str]]) -> list[str]:
+    errors = []
+    if set(rows) != EXPECTED_INVENTORY_ROWS:
+        errors.append("inventory row set is incomplete or unknown")
+    for row_id, row in rows.items():
+        if len(row) != 3 or not row[2]:
+            errors.append(f"{row_id} has no disposition")
+    return errors
+
+
 class InventoryRowTests(unittest.TestCase):
     def setUp(self) -> None:
         self.readme = read(SKILLS / "README.md")
@@ -310,16 +508,18 @@ class InventoryRowTests(unittest.TestCase):
         self.rows = {row[0]: row for row in table[1:]}
 
     def test_every_wp03_inventory_row_is_recorded(self) -> None:
-        self.assertEqual(
-            set(self.rows),
-            {f"WP03-INV-{number:02d}" for number in range(1, 9)},
-        )
+        self.assertEqual(set(self.rows), EXPECTED_INVENTORY_ROWS)
 
     def test_every_inventory_row_has_a_disposition(self) -> None:
-        for row_id, row in self.rows.items():
-            with self.subTest(row=row_id):
-                self.assertEqual(len(row), 3)
-                self.assertTrue(row[2], row_id)
+        self.assertEqual(inventory_errors(self.rows), [])
+
+    def test_inventory_validation_refuses_missing_or_incomplete_rows(self) -> None:
+        missing = dict(self.rows)
+        missing.pop("WP03-INV-01")
+        self.assertTrue(inventory_errors(missing))
+        incomplete = {row_id: list(row) for row_id, row in self.rows.items()}
+        incomplete["WP03-INV-02"][2] = ""
+        self.assertTrue(inventory_errors(incomplete))
 
     def test_every_inventory_source_is_in_the_pack(self) -> None:
         for row_id, row in self.rows.items():
