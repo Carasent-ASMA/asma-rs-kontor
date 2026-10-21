@@ -3218,6 +3218,11 @@ pub struct RunInspection {
     pub project_id: ProjectId,
     /// The run, with its binding, projection and revision.
     pub run: AgentRun,
+    /// The task the run serves. A run is always inside a team run, and a team
+    /// run always serves a task, so this is never absent.
+    pub task_id: TaskId,
+    /// The epic the serving task belongs to, when it belongs to one.
+    pub epic_id: Option<MiniProjectId>,
     /// The team run's pinned template revision, when the team is readable.
     pub team_template: Option<(TeamTemplateId, SpecVersion)>,
     /// Every recorded discontinuity for this run, oldest first.
@@ -3226,6 +3231,31 @@ pub struct RunInspection {
     pub context_policy: Option<crate::spec::ContextPolicySnapshot>,
     /// The most recent recorded attempt to compact this seat.
     pub latest_compaction: Option<crate::compaction::CompactionReceipt>,
+}
+
+/// One persisted native binding in a Realm-wide census.
+///
+/// The binding is durable control-plane evidence; the run lifecycle, task and
+/// epic are the scope it belongs to. Whether this *process* still holds the
+/// frozen session snapshot is deliberately not here: that is a fact about the
+/// running daemon, and the API answers it from the session registry rather than
+/// persisting a second, drifting copy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeBindingCensusEntry {
+    /// The project the binding belongs to.
+    pub project_id: ProjectId,
+    /// The agent run the binding serves.
+    pub agent_run_id: AgentRunId,
+    /// The binding as it was persisted.
+    pub binding: RuntimeBinding,
+    /// The run's lifecycle.
+    pub run_lifecycle: RunLifecycle,
+    /// When the run closed, for a retired binding.
+    pub run_closed_at: Option<Timestamp>,
+    /// The task the run's team run serves.
+    pub task_id: TaskId,
+    /// The epic that task belongs to, when it belongs to one.
+    pub epic_id: Option<MiniProjectId>,
 }
 
 /// Everything a cross-boundary reader is told about one task.
@@ -6161,6 +6191,20 @@ pub trait RealmRepository {
         project_id: ProjectId,
         task_id: TaskId,
     ) -> RepositoryResult<SnapshotEnvelope<Option<TaskInspection>>>;
+
+    /// Take a Realm-qualified census of every persisted native binding.
+    ///
+    /// The rows and the cursor are read in one transaction, so a reader can
+    /// treat the answer as one consistent moment rather than as a series of
+    /// reads another writer could interleave. Closed runs are included: a
+    /// retired binding is still evidence, and omitting it would make the census
+    /// silently narrower than the table it claims to describe.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    fn snapshot_binding_census(
+        &self,
+    ) -> RepositoryResult<SnapshotEnvelope<Vec<RuntimeBindingCensusEntry>>>;
 
     /// The revision one command target currently stands at, or `None` when the
     /// target does not exist in this project.

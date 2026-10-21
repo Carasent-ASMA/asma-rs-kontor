@@ -29,19 +29,20 @@ use kontor_core::id::{
     CommandReceiptId, CommitteeRunId, ContentHash, CredentialAlias, CurrencyCode,
     DescriptionPublicationId, EventCursor, ExternalId, ExternalName, GateKey,
     GuardrailEvaluationId, HolidaySourceId, IdempotencyKey, IntakeReceiptId, MiniProjectId,
-    ModuleKey, Money, OpenQuestionId, PersonaScenarioId, PhaseKey, PlanningPairRunId, ProjectId,
-    ProviderUsageObservationId, QuickSessionId, QuotaObservationProvenanceId, RealmId,
-    RoleCatalogId, RoleCode, RoleKey, RoleSlotId, RuntimeBindingId, RuntimeKindKey,
-    ScheduleOverrideId, SeatBindingId, SignedDuration, SpecVersion, StatusConflictId,
-    SuccessionAttemptId, TaskId, TaskWorkflowId, TeamDefinitionId, TeamDefinitionMigrationId,
-    TeamRunId, TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey, TopologyNodeId,
-    TopologySpecId, TriggerKey, WorkCalendarId, WorkProfileKey, format_utc_timestamp,
-    parse_utc_timestamp,
+    ModuleKey, Money, OpenQuestionId, OperationalGapId, PersonaScenarioId, PhaseKey,
+    PlanningPairRunId, ProjectId, ProviderUsageObservationId, QuickSessionId,
+    QuotaObservationProvenanceId, RealmId, RoleCatalogId, RoleCode, RoleKey, RoleSlotId,
+    RuntimeBindingId, RuntimeKindKey, ScheduleOverrideId, SeatBindingId, SignedDuration,
+    SpecVersion, StatusConflictId, SuccessionAttemptId, TaskId, TaskWorkflowId, TeamDefinitionId,
+    TeamDefinitionMigrationId, TeamRunId, TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey,
+    TopologyNodeId, TopologySpecId, TriggerKey, WorkCalendarId, WorkProfileKey,
+    format_utc_timestamp, parse_utc_timestamp,
 };
 use kontor_core::open_question::{
     AmbiguityRound, Disposition, DispositionKind, DispositionOutcome, OpenQuestion,
     OpenQuestionAttachment, OpenQuestionSummary, QuestionScope, TriggerFiring,
 };
+use kontor_core::operational_gap::OperationalGap;
 use kontor_core::planning_pair::{PlanningPairRound, PlanningPairSlot, PlanningPairState};
 use kontor_core::quota::{CreditBalance, QuotaWindow, QuotaWindowKind};
 use kontor_core::realm::{EventEnvelope, RealmCursor, ReceiptEnvelope, SnapshotEnvelope};
@@ -69,16 +70,17 @@ use kontor_core::repository::{
     PlanningPairMemberReadback, Project, ProjectRepository, ProjectTopologyDefault,
     ProviderQuotaState, ProviderUsageObservation, QuotaObservationProvenance, RealmEventPage,
     RealmRepository, ReceiptAdvance, ReevaluationOutcome, RepositoryError, RepositoryResult,
-    RunClosure, RunInspection, RunRepository, RuntimeBinding, RuntimeEvent,
-    SeatLivenessObservation, SessionVerdictEvidence, SourceDisposition, SourceEventIngest,
-    SpecRepository, StoredAdvisorAdvice, StoredCapacityConfiguration, StoredCommitteeFinding,
-    StoredCompletionProfile, StoredCompletionWake, StoredCompletionWakeDelivery,
-    StoredConsultationMaterializationReroute, StoredConsultationProfileRevision,
-    StoredConsultationRecoveryAttempt, StoredConsultationRun, StoredConsultationSeat,
-    StoredCoreTeamRevision, StoredCoreTeamRouteSuccession, StoredEpicCompletion, StoredEpicRoster,
-    StoredHostedSeatLaunchIntent, StoredHostedTopologySeat, StoredLegacyEpicBacklogCodeCorrection,
-    StoredPlanningPairContribution, StoredPlanningPairKnownNative, StoredPlanningPairPlacement,
-    StoredPlanningPairRecord, StoredPromotion, StoredQuickSession, StoredRemediationProposal,
+    RunClosure, RunInspection, RunRepository, RuntimeBinding, RuntimeBindingCensusEntry,
+    RuntimeEvent, SeatLivenessObservation, SessionVerdictEvidence, SourceDisposition,
+    SourceEventIngest, SpecRepository, StoredAdvisorAdvice, StoredCapacityConfiguration,
+    StoredCommitteeFinding, StoredCompletionProfile, StoredCompletionWake,
+    StoredCompletionWakeDelivery, StoredConsultationMaterializationReroute,
+    StoredConsultationProfileRevision, StoredConsultationRecoveryAttempt, StoredConsultationRun,
+    StoredConsultationSeat, StoredCoreTeamRevision, StoredCoreTeamRouteSuccession,
+    StoredEpicCompletion, StoredEpicRoster, StoredHostedSeatLaunchIntent, StoredHostedTopologySeat,
+    StoredLegacyEpicBacklogCodeCorrection, StoredPlanningPairContribution,
+    StoredPlanningPairKnownNative, StoredPlanningPairPlacement, StoredPlanningPairRecord,
+    StoredPromotion, StoredQuickSession, StoredRemediationProposal,
     StoredRetiredEvaluatorAttestation, StoredTeamRunAdmissionAdoption,
     StoredTopologyContainerRecovery, SuccessionRepository, Task, TaskInspection,
     TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink,
@@ -22313,6 +22315,28 @@ impl RealmRepository for SqliteStore {
         let Some(run) = read_agent_run(&transaction, project_id, agent_run_id)? else {
             return Ok(SnapshotEnvelope::new(realm, newest, None));
         };
+        // The task and epic are read in the same transaction as the run, so the
+        // scope a caller uses for the follow-up `task-get` and `epic-get` reads
+        // cannot move between this answer and those calls.
+        let scope: Option<(String, Option<String>)> = transaction
+            .query_row(
+                "SELECT team.task_id, task.mini_project_id
+                 FROM team_runs AS team
+                 JOIN tasks AS task
+                   ON task.project_id = team.project_id AND task.id = team.task_id
+                 WHERE team.project_id = ?1 AND team.id = ?2",
+                params![project_id.to_string(), run.team_run_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((task_id, epic_id)) = scope else {
+            return Err(RepositoryError::NotFound {
+                subject: "agent run task",
+            });
+        };
+        let task_id = TaskId::parse(&task_id)?;
+        let epic_id = epic_id.as_deref().map(MiniProjectId::parse).transpose()?;
         let team_template: Option<(String, String)> = transaction
             .query_row(
                 "SELECT snapshot, snapshot_hash FROM team_runs WHERE project_id = ?1 AND id = ?2",
@@ -22336,6 +22360,8 @@ impl RealmRepository for SqliteStore {
             Some(RunInspection {
                 project_id,
                 run,
+                task_id,
+                epic_id,
                 team_template,
                 gaps,
                 context_policy,
@@ -22410,6 +22436,78 @@ impl RealmRepository for SqliteStore {
         ))
     }
 
+    fn snapshot_binding_census(
+        &self,
+    ) -> RepositoryResult<SnapshotEnvelope<Vec<RuntimeBindingCensusEntry>>> {
+        let transaction = self.begin()?;
+        let (_, newest) = control_window(&transaction)?;
+        let rows = {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT binding.project_id, binding.agent_run_id, binding.id,
+                            binding.runtime_kind, binding.host, binding.generation,
+                            binding.native_id, binding.bound_at,
+                            run.lifecycle, run.closed_at, team.task_id, task.mini_project_id
+                     FROM runtime_bindings AS binding
+                     JOIN agent_runs AS run
+                       ON run.project_id = binding.project_id AND run.id = binding.agent_run_id
+                     JOIN team_runs AS team
+                       ON team.project_id = run.project_id AND team.id = run.team_run_id
+                     JOIN tasks AS task
+                       ON task.project_id = team.project_id AND task.id = team.task_id
+                     ORDER BY binding.bound_at, binding.id",
+                )
+                .map_err(backend)?;
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, String>(8)?,
+                        row.get::<_, Option<String>>(9)?,
+                        row.get::<_, String>(10)?,
+                        row.get::<_, Option<String>>(11)?,
+                    ))
+                })
+                .map_err(backend)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(backend)?
+        };
+        let mut bindings = Vec::with_capacity(rows.len());
+        for row in rows {
+            let agent_run_id = AgentRunId::parse(&row.1)?;
+            bindings.push(RuntimeBindingCensusEntry {
+                project_id: ProjectId::parse(&row.0)?,
+                agent_run_id,
+                binding: RuntimeBinding {
+                    id: RuntimeBindingId::parse(&row.2)?,
+                    agent_run_id,
+                    identity: NativeRuntimeIdentity {
+                        runtime_kind: RuntimeKindKey::parse(&row.3)?,
+                        host: ExternalName::parse(&row.4)?,
+                        generation: u64::try_from(row.5).map_err(|_| RepositoryError::Backend {
+                            detail: "stored runtime generation is negative".to_owned(),
+                        })?,
+                        native_id: ExternalId::parse(&row.6)?,
+                    },
+                    bound_at: read_timestamp(&row.7)?,
+                },
+                run_lifecycle: RunLifecycle::parse(&row.8)?,
+                run_closed_at: row.9.as_deref().map(read_timestamp).transpose()?,
+                task_id: TaskId::parse(&row.10)?,
+                epic_id: row.11.as_deref().map(MiniProjectId::parse).transpose()?,
+            });
+        }
+        transaction.commit().map_err(backend)?;
+        Ok(SnapshotEnvelope::new(self.realm_id(), newest, bindings))
+    }
+
     fn snapshot_target_revision(
         &self,
         project_id: ProjectId,
@@ -22466,6 +22564,248 @@ impl RealmRepository for SqliteStore {
         let (_, newest) = control_window(&transaction)?;
         let revision = found.map(revision_of).transpose()?;
         Ok(SnapshotEnvelope::new(self.realm_id(), newest, revision))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The operational-gap ledger
+// ---------------------------------------------------------------------------
+
+/// The gap columns, in one place so every read decodes the same shape.
+const OPERATIONAL_GAP_COLUMNS: &str = "gap_id, project_id, mini_project_id, task_id, \
+     agent_run_id, seat_binding_id, failure_class, intended_operation, checkpoint, \
+     fallback_action, owner, evidence_hash, status, recorded_at";
+
+/// Read one operational gap from a row that selected [`OPERATIONAL_GAP_COLUMNS`].
+fn read_operational_gap(row: &Row<'_>) -> RepositoryResult<OperationalGap> {
+    let project_id = ProjectId::parse(&row.get::<_, String>(1).map_err(backend)?)?;
+    let mini_project_id = row
+        .get::<_, Option<String>>(2)
+        .map_err(backend)?
+        .as_deref()
+        .map(MiniProjectId::parse)
+        .transpose()?;
+    let task_id = TaskId::parse(&row.get::<_, String>(3).map_err(backend)?)?;
+    let agent_run_id = row
+        .get::<_, Option<String>>(4)
+        .map_err(backend)?
+        .as_deref()
+        .map(AgentRunId::parse)
+        .transpose()?;
+    let seat_binding_id = row
+        .get::<_, Option<String>>(5)
+        .map_err(backend)?
+        .as_deref()
+        .map(SeatBindingId::parse)
+        .transpose()?;
+    let failure_class =
+        kontor_core::id::GapFailureClass::parse(&row.get::<_, String>(6).map_err(backend)?)?;
+    let intended_operation = BoundedText::parse(&row.get::<_, String>(7).map_err(backend)?)?;
+    let checkpoint = BoundedText::parse(&row.get::<_, String>(8).map_err(backend)?)?;
+    let fallback_action = BoundedText::parse(&row.get::<_, String>(9).map_err(backend)?)?;
+    let owner = BoundedText::parse(&row.get::<_, String>(10).map_err(backend)?)?;
+    let evidence = row
+        .get::<_, Option<String>>(11)
+        .map_err(backend)?
+        .as_deref()
+        .map(ContentHash::parse)
+        .transpose()?;
+    let status = kontor_core::operational_gap::OperationalGapStatus::parse(
+        &row.get::<_, String>(12).map_err(backend)?,
+    )?;
+    let recorded_at = read_timestamp(&row.get::<_, String>(13).map_err(backend)?)?;
+    Ok(OperationalGap {
+        gap_id: OperationalGapId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
+        project_id,
+        mini_project_id,
+        task_id,
+        agent_run_id,
+        seat_binding_id,
+        failure_class,
+        intended_operation,
+        checkpoint,
+        fallback_action,
+        owner,
+        evidence,
+        status,
+        recorded_at,
+    })
+}
+
+/// Whether two records describe the same observation.
+///
+/// `recorded_at` is deliberately excluded: a retry legitimately happens later
+/// than the request it repeats, and the first write's instant is the one the
+/// ledger keeps. Every other field is the request's identity.
+fn same_operational_gap(left: &OperationalGap, right: &OperationalGap) -> bool {
+    left.gap_id == right.gap_id
+        && left.project_id == right.project_id
+        && left.mini_project_id == right.mini_project_id
+        && left.task_id == right.task_id
+        && left.agent_run_id == right.agent_run_id
+        && left.seat_binding_id == right.seat_binding_id
+        && left.failure_class == right.failure_class
+        && left.intended_operation == right.intended_operation
+        && left.checkpoint == right.checkpoint
+        && left.fallback_action == right.fallback_action
+        && left.owner == right.owner
+        && left.evidence == right.evidence
+        && left.status == right.status
+}
+
+impl SqliteStore {
+    /// Record one typed operational gap, idempotently.
+    ///
+    /// The task, epic, run and seat are re-checked inside the same transaction
+    /// as the insert, so a gap cannot cite a subject that the transaction can
+    /// see is in another project, another task or no row at all. A replay under
+    /// the same key returns the original record; the same key naming different
+    /// evidence is a conflict rather than a silent second record.
+    ///
+    /// # Errors
+    /// Refuses an unknown task, a run that does not serve the named task, an
+    /// unknown seat, a mismatched epic and a reused key with different content.
+    pub fn record_operational_gap(
+        &self,
+        key: &IdempotencyKey,
+        gap: &OperationalGap,
+    ) -> RepositoryResult<(OperationalGap, bool)> {
+        let transaction = self.begin()?;
+        if let Some(row) = transaction
+            .query_row(
+                &format!(
+                    "SELECT {OPERATIONAL_GAP_COLUMNS} FROM operational_gaps
+                     WHERE idempotency_key = ?1"
+                ),
+                params![key.as_str()],
+                |row| Ok(read_operational_gap(row)),
+            )
+            .optional()
+            .map_err(backend)?
+        {
+            let existing = row?;
+            if !same_operational_gap(&existing, gap) {
+                return Err(conflict(
+                    "operational gap",
+                    "an idempotency key cannot name another gap record",
+                ));
+            }
+            transaction.commit().map_err(backend)?;
+            return Ok((existing, true));
+        }
+        let task_epic: Option<Option<String>> = transaction
+            .query_row(
+                "SELECT mini_project_id FROM tasks WHERE project_id = ?1 AND id = ?2",
+                params![gap.project_id.to_string(), gap.task_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some(task_epic) = task_epic else {
+            return Err(RepositoryError::NotFound { subject: "task" });
+        };
+        let task_epic = task_epic.as_deref().map(MiniProjectId::parse).transpose()?;
+        if task_epic != gap.mini_project_id {
+            return Err(conflict(
+                "operational gap",
+                "the epic is the one the named task belonged to when it was read",
+            ));
+        }
+        if let Some(agent_run_id) = gap.agent_run_id {
+            let serves_task: bool = transaction
+                .query_row(
+                    "SELECT EXISTS(
+                         SELECT 1
+                         FROM agent_runs AS run
+                         JOIN team_runs AS team
+                           ON team.project_id = run.project_id AND team.id = run.team_run_id
+                         WHERE run.project_id = ?1 AND run.id = ?2 AND team.task_id = ?3
+                     )",
+                    params![
+                        gap.project_id.to_string(),
+                        agent_run_id.to_string(),
+                        gap.task_id.to_string()
+                    ],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?;
+            if !serves_task {
+                return Err(RepositoryError::NotFound {
+                    subject: "agent run serving this task",
+                });
+            }
+        }
+        if let Some(seat_binding_id) = gap.seat_binding_id {
+            let known: bool = transaction
+                .query_row(
+                    "SELECT EXISTS(
+                         SELECT 1 FROM seat_bindings WHERE project_id = ?1 AND id = ?2
+                     )",
+                    params![gap.project_id.to_string(), seat_binding_id.to_string()],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?;
+            if !known {
+                return Err(RepositoryError::NotFound {
+                    subject: "seat binding",
+                });
+            }
+        }
+        transaction
+            .execute(
+                "INSERT INTO operational_gaps
+                     (idempotency_key, gap_id, project_id, mini_project_id, task_id,
+                      agent_run_id, seat_binding_id, failure_class, intended_operation,
+                      checkpoint, fallback_action, owner, evidence_hash, status, recorded_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                params![
+                    key.as_str(),
+                    gap.gap_id.to_string(),
+                    gap.project_id.to_string(),
+                    gap.mini_project_id.map(|id| id.to_string()),
+                    gap.task_id.to_string(),
+                    gap.agent_run_id.map(|id| id.to_string()),
+                    gap.seat_binding_id.map(|id| id.to_string()),
+                    gap.failure_class.as_str(),
+                    gap.intended_operation.as_str(),
+                    gap.checkpoint.as_str(),
+                    gap.fallback_action.as_str(),
+                    gap.owner.as_str(),
+                    gap.evidence.as_ref().map(ContentHash::as_str),
+                    gap.status.as_str(),
+                    text(gap.recorded_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok((gap.clone(), false))
+    }
+
+    /// Every operational gap recorded against one task, oldest first.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn operational_gaps_for_task(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> RepositoryResult<Vec<OperationalGap>> {
+        let mut statement = self
+            .connection
+            .prepare(&format!(
+                "SELECT {OPERATIONAL_GAP_COLUMNS} FROM operational_gaps
+                 WHERE project_id = ?1 AND task_id = ?2
+                 ORDER BY recorded_at, gap_id"
+            ))
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![project_id.to_string(), task_id.to_string()])
+            .map_err(backend)?;
+        let mut gaps = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            gaps.push(read_operational_gap(row)?);
+        }
+        Ok(gaps)
     }
 }
 

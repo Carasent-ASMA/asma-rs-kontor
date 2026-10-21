@@ -648,7 +648,11 @@ export interface paths {
          *     Kontor's row without cancelling it would leave an agent running that nothing
          *     is steering. `runtime:settle` is the path for those.
          *
-         *     Idempotent: a run that is already closed reports its stored closure.
+         *     Idempotent: a run that is already closed reports its stored closure. An
+         *     already-closed TeamRun envelope is answered from that closure even while a
+         *     Team Definition migration is in flight. An envelope that is still open and
+         *     stranded needs settlement, and is refused with `409 placement_blocked` until
+         *     that migration settles.
          */
         post: operations["abandon_run"];
         delete?: never;
@@ -677,7 +681,10 @@ export interface paths {
          *     is the one thing a control plane must never let happen quietly.
          *
          *     Idempotent: a run that is already closed reports its stored closure and no
-         *     second observation is taken.
+         *     second observation is taken. An already-closed TeamRun envelope is answered
+         *     from that closure even while a Team Definition migration is in flight. An
+         *     envelope that is still open and stranded needs settlement, and is refused
+         *     with `409 placement_blocked` until that migration settles.
          */
         post: operations["settle_runtime"];
         delete?: never;
@@ -3063,6 +3070,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/tasks/{task_id}/operational-gaps:record": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record one typed operational gap against a task.
+         * @description Operator work, and idempotent under the caller's key.
+         */
+        post: operations["record_operational_gap"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/tasks/{task_id}/profile-selection": {
         parameters: {
             query?: never;
@@ -3824,6 +3851,26 @@ export interface paths {
         };
         /** One agent run, its projection, its pinned revisions and its recorded gaps. */
         get: operations["run_snapshot"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runtime-bindings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every persisted native binding in this Realm, with the work it served and
+         *     whether this process can still address it.
+         */
+        get: operations["binding_census"];
         put?: never;
         post?: never;
         delete?: never;
@@ -4911,6 +4958,49 @@ export interface components {
          * @enum {string}
          */
         BarrierState: "pending" | "open" | "failed";
+        /** @description Every persisted native binding in one Realm, at one control-plane position. */
+        BindingCensusDto: {
+            /** @description The bindings, oldest first. */
+            bindings: components["schemas"]["BindingCensusItemDto"][];
+        };
+        /** @description One binding in the census, with the work it served and its current state. */
+        BindingCensusItemDto: {
+            /** @description The agent run the binding serves. */
+            agent_run_id: string;
+            /** @description The Kontor binding. */
+            binding_id: string;
+            /**
+             * Format: date-time
+             * @description When it was bound.
+             */
+            bound_at: string;
+            /** @description The epic that task belongs to, when it belongs to one. */
+            epic_id?: string | null;
+            /**
+             * Format: int64
+             * @description The runtime generation the session belongs to.
+             */
+            generation: number;
+            /** @description The host label the runtime reports for itself. */
+            host: string;
+            /** @description The runtime's own session id. Correlation evidence. */
+            native_id: string;
+            /** @description The project the binding belongs to. */
+            project_id: string;
+            /**
+             * Format: date-time
+             * @description When the run closed, for a retired binding.
+             */
+            run_closed_at?: string | null;
+            /** @description The run's lifecycle. */
+            run_lifecycle: string;
+            /** @description The runtime family. Never an endpoint. */
+            runtime_kind: string;
+            /** @description Whether the binding is attached, detached or retired. */
+            state: components["schemas"]["NativeBindingStateDto"];
+            /** @description The task the run's team run serves. */
+            task_id: string;
+        };
         /** @description The native session one run is bound to, as evidence and never as identity. */
         BindingDto: {
             /**
@@ -8588,6 +8678,11 @@ export interface components {
              */
             snapshot_cursor: number;
         };
+        /**
+         * @description The state one persisted native binding is in, as a census reader needs it.
+         * @enum {string}
+         */
+        NativeBindingStateDto: "attached" | "detached" | "retired";
         /** @description Complete native parent identity reported for a child container. */
         NativeContainerParentDto: {
             /**
@@ -8812,6 +8907,47 @@ export interface components {
             } | null;
             /** @description The pull request. */
             pull_request: components["schemas"]["PullRequestRequest"];
+        };
+        /** @description One durable operational-gap record, as it was written. */
+        OperationalGapDto: {
+            /** @description The exact run the gap was observed around. */
+            agent_run_id?: string | null;
+            /** @description The checkpoint the seat resumed from. */
+            checkpoint: string;
+            /** @description The epic the owning task belonged to. */
+            epic_id?: string | null;
+            /** @description The cited evidence digest, when one was recorded. */
+            evidence?: string | null;
+            /** @description The operating class of the failure. */
+            failure_class: string;
+            /** @description The bounded fallback action. */
+            fallback_action: string;
+            /** @description The gap identity. */
+            gap_id: string;
+            /** @description The intended Kontor operation. */
+            intended_operation: string;
+            /** @description The repair owner. */
+            owner: string;
+            /** @description The owning project. */
+            project_id: string;
+            /** @description The Realm the record belongs to. */
+            realm_id: string;
+            /**
+             * Format: date-time
+             * @description When it was written.
+             */
+            recorded_at: string;
+            /**
+             * @description Whether this call returned a record an earlier call under the same key
+             *     already wrote.
+             */
+            replayed: boolean;
+            /** @description The exact seat the gap was observed around. */
+            seat_binding_id?: string | null;
+            /** @description The state the record was written in. */
+            status: string;
+            /** @description The owning task. */
+            task_id: string;
         };
         /** @enum {string} */
         OutcomeKind: "success" | "failure" | "mixed";
@@ -10327,6 +10463,33 @@ export interface components {
             /** @description The verdict. `waived` is an admin decision; the rest are operator work. */
             verdict: string;
         };
+        /** @description One typed gap record a seat asks Kontor to keep. */
+        RecordOperationalGapRequest: {
+            /** @description The exact agent run the gap was observed around, when there was one. */
+            agent_run_id?: string | null;
+            /** @description The checkpoint the seat resumed from after containing the gap. */
+            checkpoint: string;
+            /** @description Digest of the evidence document this record cites, when one exists. */
+            evidence?: string | null;
+            /**
+             * @description The operating class of the failure, as an open key such as
+             *     `capability_missing`.
+             */
+            failure_class: string;
+            /** @description The bounded fallback action actually taken. */
+            fallback_action: string;
+            /** @description The stable gap identity the caller reuses on every retry. */
+            gap_id: string;
+            /** @description The Kontor operation the seat intended to perform. */
+            intended_operation: string;
+            /** @description Who owns the repair. */
+            owner: string;
+            /**
+             * @description The exact persistent seat the gap was observed around, when there was
+             *     one.
+             */
+            seat_binding_id?: string | null;
+        };
         /** @description One member's finding or clarification answer. */
         RecordPlanningPairContributionRequest: {
             /** @description The advice, verbatim. */
@@ -10958,6 +11121,8 @@ export interface components {
              * @description When it was created.
              */
             created_at: string;
+            /** @description The epic that task belongs to, when it belongs to one. */
+            epic_id?: string | null;
             /** @description Every recorded discontinuity, oldest first. */
             gaps: components["schemas"]["GapDto"][];
             /** @description The run it succeeds, for recovery and resume. */
@@ -10973,6 +11138,8 @@ export interface components {
             revision: number;
             /** @description The role slot it fills. */
             role: string;
+            /** @description The task the team run serves. */
+            task_id: string;
             /** @description The team run it serves. */
             team_run_id: string;
         };
@@ -11524,6 +11691,26 @@ export interface components {
          *     It is the wire spelling of `kontor-core`'s own `SnapshotEnvelope`: a
          *     subscriber resumes strictly after `snapshot_cursor`, in the same Realm.
          */
+        SnapshotDto_BindingCensusDto: {
+            /** @description The Realm this snapshot came from. */
+            realm_id: string;
+            /**
+             * Format: int64
+             * @description The position it is consistent with.
+             */
+            snapshot_cursor: number;
+            /** @description Every persisted native binding in one Realm, at one control-plane position. */
+            value: {
+                /** @description The bindings, oldest first. */
+                bindings: components["schemas"]["BindingCensusItemDto"][];
+            };
+        };
+        /**
+         * @description A point-in-time value and the position it is consistent with.
+         *
+         *     It is the wire spelling of `kontor-core`'s own `SnapshotEnvelope`: a
+         *     subscriber resumes strictly after `snapshot_cursor`, in the same Realm.
+         */
         SnapshotDto_RunDto: {
             /** @description The Realm this snapshot came from. */
             realm_id: string;
@@ -11552,6 +11739,8 @@ export interface components {
                  * @description When it was created.
                  */
                 created_at: string;
+                /** @description The epic that task belongs to, when it belongs to one. */
+                epic_id?: string | null;
                 /** @description Every recorded discontinuity, oldest first. */
                 gaps: components["schemas"]["GapDto"][];
                 /** @description The run it succeeds, for recovery and resume. */
@@ -11567,6 +11756,8 @@ export interface components {
                 revision: number;
                 /** @description The role slot it fills. */
                 role: string;
+                /** @description The task the team run serves. */
+                task_id: string;
                 /** @description The team run it serves. */
                 team_run_id: string;
             };
@@ -21438,6 +21629,67 @@ export interface operations {
             };
         };
     };
+    record_operational_gap: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The task, by UUID or confirmed Jira key */
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordOperationalGapRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationalGapDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     select_profile: {
         parameters: {
             query?: never;
@@ -23728,6 +23980,37 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    binding_census: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SnapshotDto_BindingCensusDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
