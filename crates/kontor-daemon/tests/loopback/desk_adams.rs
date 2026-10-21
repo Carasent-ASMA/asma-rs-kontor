@@ -1514,9 +1514,14 @@ async fn an_ad_hoc_desk_adam_opens_its_subject_and_lsa_with_a_frozen_topic() {
 #[tokio::test]
 async fn a_refused_subject_node_leaves_no_orphan_subject() {
     let realm = desk_led_realm("desk-subject-atomic").await;
-    let connection =
-        rusqlite::Connection::open(realm.world.directory.path().join(kontor_daemon::DATABASE_FILE))
-            .expect("the realm database opens");
+    let connection = rusqlite::Connection::open(
+        realm
+            .world
+            .directory
+            .path()
+            .join(kontor_daemon::DATABASE_FILE),
+    )
+    .expect("the realm database opens");
     connection
         .execute_batch(
             "CREATE TRIGGER refuse_subject_node BEFORE INSERT ON topology_nodes
