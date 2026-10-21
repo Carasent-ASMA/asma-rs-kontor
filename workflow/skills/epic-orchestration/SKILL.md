@@ -98,9 +98,11 @@ may give the operator combined LSA/TPM/lead responsibility.
 Applies to new work.
 
 - Seats heal and finish their own work; no one babysits them.
-- Only a real human decision that seats, advisors and committees cannot
-  resolve goes to `{{ project.decision_authorities.platform }}`. No status
-  questions, no "what next" questions, no heartbeat-like pings.
+- Architecture and decision-record questions go to
+  `{{ project.decision_authorities.architecture }}` within its scope. Only a
+  real decision that authority cannot resolve goes to
+  `{{ project.decision_authorities.platform }}`. No status questions, no
+  "what next" questions, no heartbeat-like pings.
 - When a real decision is missing: notify `{{ project.decision_authorities.platform }}`,
   start advisor children the decision owner can talk to, and stop only the
   blocked ticket and the tickets that depend on it. All other work keeps moving.
@@ -196,11 +198,14 @@ This heading stays as a stable inbound anchor.
 
 Before dispatching work:
 
-1. Read the project entry file and the selected TPM cadence profile
-   (`{{ project.supervision }}` in the selected config folder); for Paseo-direct
-   placement, the [native placement reference](references/paseo-direct-native-placement.md).
-   The Paseo watchdog/recovery policy is the separate
-   `<state-root>/supervision.yml`, not `project.supervision`.
+1. Read the project entry file, the Paseo watchdog/recovery policy at
+   `<state-root>/supervision.yml` (sample
+   [`config/examples/paseo-supervision.yml`](../../../config/examples/paseo-supervision.yml)),
+   and the TPM cadence profile (`{{ project.supervision }}` in the selected
+   config folder); for Paseo-direct placement, the
+   [native placement reference](references/paseo-direct-native-placement.md).
+   The two supervision files stay distinct; `project.supervision` is not the
+   Paseo watchdog policy.
 2. For memory context, cite the existing frozen binding or use bounded eligible
    recall after verifying its reviewed registry and deployed capability. Keep
    its ids/hashes and actual retrieval mode; unavailable recall never permits a

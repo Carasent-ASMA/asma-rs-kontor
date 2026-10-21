@@ -48,7 +48,7 @@ restate its body. The ownership table is also checked by
 | Delivery milestones | [`create-implementation-plan/references/delivery-milestones-and-adoption.md`](create-implementation-plan/references/delivery-milestones-and-adoption.md) | epic-orchestration, long-task-commit-checkpoints |
 | Behaviour scenarios | [`create-implementation-plan/references/behaviour-scenarios-opt-in-trial.md`](create-implementation-plan/references/behaviour-scenarios-opt-in-trial.md) | epic-orchestration, mini-project-kickoff, tracker-linked-creation |
 | Triage tiers | [`ticket-triage-tiers/SKILL.md#tiers`](ticket-triage-tiers/SKILL.md#tiers) | mini-project-kickoff, agent-dispatch |
-| Branch and commit grammar | [`long-task-commit-checkpoints/SKILL.md#the-mandated-lifecycle`](long-task-commit-checkpoints/SKILL.md#the-mandated-lifecycle) | epic-orchestration, create-implementation-plan |
+| Branch and PR-title grammar | [`long-task-commit-checkpoints/SKILL.md#the-mandated-lifecycle`](long-task-commit-checkpoints/SKILL.md#the-mandated-lifecycle) | epic-orchestration, create-implementation-plan |
 
 The seat lifecycle is split by transition, not repeated: `agent-dispatch` owns
 starting a seat, `seat-handoff` owns a phase transition or rework, and
@@ -80,7 +80,7 @@ must apply the same rule.
 | `project.key`, `project.name`, `project.owner` | Public project identity and the responsible operator. |
 | `project.decision_authorities.platform`, `project.decision_authorities.architecture`, `project.decision_authorities.decision_records_root` | Escalation and decision-record authority, never a named person in the skill. |
 | `project.tracker.kind`, `project.tracker.project_key`, `project.tracker.site`, `project.tracker.key_pattern`, `project.tracker.credential_alias`, `project.tracker.spec` | Tracker scope, identity and the pinned field/workflow catalog. |
-| `project.branch.pattern`, `project.branch.commit_pattern`, `project.branch.types` | Branch and commit grammar. |
+| `project.branch.pattern`, `project.branch.commit_pattern`, `project.branch.types` | Branch grammar and the PR-title/squash-subject grammar; checkpoint subjects follow the project CLI's own validated convention. |
 | `project.forge.kind`, `project.forge.organization`, `project.forge.repositories`, `project.forge.base_branch` | Repository, organization and default branch. |
 | `project.runtime.matrix` | Allowed provider/harness pairs. |
 | `project.cli.command`, `project.cli.verbs` | The project CLI used for checkout, commits, publication and task commands. |
@@ -104,7 +104,7 @@ copy named below, not carried as a stale fact.
 | WP03-INV-03 | `agent-dispatch` | Host asset paths, account/keychain items and the real worktree example are removed; host values belong in `host.yml`, and examples use synthetic paths. |
 | WP03-INV-04 | `mini-project-kickoff`, `tracker-linked-creation` | Tracker scope is `{{ project.tracker.project_key }}`; issue types, status names and transition ids are read live from the pinned tracker catalog, never copied into the skill. |
 | WP03-INV-05 | `paseo-direct-native-placement` | Capacity 7/4 becomes `{{ project.capacity.max_parallel_tasks }}` (ceiling) and `{{ project.capacity.start_admission }}` (initial admission). `{{ project.capacity.max_delivery_seats }}` is a separate owner-set per-team-run value, not team-run admission. |
-| WP03-INV-06 | `long-task-commit-checkpoints`, `create-implementation-plan` | Base-branch references that named `master` now resolve from `{{ project.forge.base_branch }}`; branch and commit grammar resolve from `{{ project.branch.pattern }}` and `{{ project.branch.commit_pattern }}`. |
+| WP03-INV-06 | `long-task-commit-checkpoints`, `create-implementation-plan` | Base-branch references that named `master` now resolve from `{{ project.forge.base_branch }}`; branch grammar resolves from `{{ project.branch.pattern }}`, and `{{ project.branch.commit_pattern }}` governs the PR title/squash subject. Checkpoint commit subjects follow the project CLI's own validated convention, read live from the CLI, not `commit_pattern`. |
 | WP03-INV-07 | `seat-takeover` recovery reference | Installed-runtime version claims are removed; the operator rechecks the resolved runtime's supported operations at use time. |
 | WP03-INV-08 | `epic-orchestration` | Stale status, count and clock facts are removed or linked to their live owner; the skill carries no dated project state. |
 

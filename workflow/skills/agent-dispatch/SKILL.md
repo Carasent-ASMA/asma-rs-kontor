@@ -15,7 +15,7 @@ Contract: [the workflow guide](../../../docs/WORKFLOW.md#3-kickoff-to-closeout).
 
 ## When to use
 
-**Use for:** "start a job", "start QA for `EXM-...`", "delegate SWE on ...", "run
+**Use for:** "start a job", "start QA for `<tracker-key>`", "delegate SWE on ...", "run
 Independent Review on ...", "ask the advisor about ...", or an authorized
 TPM/Adam dispatch after readiness checks.
 
@@ -71,8 +71,8 @@ The first line of every first message, handoff, takeover brief or prompt is
 the receiving session's exact name, alone on the line. An unregistered session
 uses its exact Paseo session title in capitals. On a Kontor-governed epic, use
 the exact registered role code or Team Definition slot label. On Paseo-direct
-work, use the provisional seat title from the
-[placement reference](../epic-orchestration/references/paseo-direct-native-placement.md#paseo-direct-epic-placement-the-default-surface).
+work, use the
+[provisional seat naming rule](../epic-orchestration/references/paseo-direct-native-placement.md#provisional-seat-naming).
 
 <a id="seat-start-and-communication"></a>
 

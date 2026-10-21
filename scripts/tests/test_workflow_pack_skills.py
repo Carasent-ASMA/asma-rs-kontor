@@ -27,6 +27,9 @@ SKILLS = REPO_ROOT / "workflow" / "skills"
 ORCHESTRATION = REPO_ROOT / "config" / "examples" / "orchestration" / "orchestration.yml"
 ASMA_FIXTURE = REPO_ROOT / "tests" / "fixtures" / "config" / "asma-orchestration.yml"
 PLAN_TEMPLATE = REPO_ROOT / "workflow" / "templates" / "plan.md"
+PLACEMENT = SKILLS / "epic-orchestration" / "references" / "paseo-direct-native-placement.md"
+EPIC = SKILLS / "epic-orchestration" / "SKILL.md"
+LONG_TASK = SKILLS / "long-task-commit-checkpoints" / "SKILL.md"
 
 LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 PLACEHOLDER_RE = re.compile(r"\{\{\s*project\.([A-Za-z0-9_.]+)\s*\}\}")
@@ -272,6 +275,26 @@ def used_placeholders() -> set[str]:
     return used
 
 
+def capacity_section(text: str) -> str:
+    match = re.search(r"^## Capacity\s*$(.*?)(?=^## |\Z)", text, re.M | re.S)
+    if match is None:
+        return ""
+    return " ".join(match.group(1).split())
+
+
+def capacity_placement_errors(section: str) -> list[str]:
+    errors = []
+    if "hard ceiling of `{{ project.capacity.max_parallel_tasks }}`" not in section:
+        errors.append("the ceiling does not use max_parallel_tasks")
+    if "Start admission at `{{ project.capacity.start_admission }}`" not in section:
+        errors.append("start admission does not use start_admission")
+    if "hard ceiling of `{{ project.capacity.max_delivery_seats }}`" in section:
+        errors.append("the ceiling incorrectly uses max_delivery_seats")
+    if "Start admission at `{{ project.capacity.max_parallel_tasks }}`" in section:
+        errors.append("start admission incorrectly uses max_parallel_tasks")
+    return errors
+
+
 class PackLayoutTests(unittest.TestCase):
     def test_each_listed_skill_exists_once(self) -> None:
         found = {path.parent.name for path in SKILLS.glob("*/SKILL.md")}
@@ -352,6 +375,21 @@ class PlaceholderTests(unittest.TestCase):
         )
         self.assertEqual(asma_capacity["max_parallel_tasks"], 7)
         self.assertEqual(asma_capacity["start_admission"], 4)
+
+        section = capacity_section(read(PLACEMENT))
+        self.assertNotEqual(section, "")
+        self.assertEqual(capacity_placement_errors(section), [])
+        rejected = (
+            "## Capacity\n\n"
+            "- One Paseo mini-project has a hard ceiling of\n"
+            "  `{{ project.capacity.max_delivery_seats }}` concurrent team runs.\n"
+            "- Start admission at `{{ project.capacity.max_parallel_tasks }}`."
+        )
+        self.assertTrue(capacity_placement_errors(rejected))
+        swapped = section.replace("max_parallel_tasks", "__TMP__")
+        swapped = swapped.replace("start_admission", "max_parallel_tasks")
+        swapped = swapped.replace("__TMP__", "start_admission")
+        self.assertTrue(capacity_placement_errors(swapped))
 
 
 class TemplateContractTests(unittest.TestCase):
@@ -500,6 +538,19 @@ def inventory_errors(rows: dict[str, list[str]]) -> list[str]:
     return errors
 
 
+def disposition_parameter_errors(
+    rows: dict[str, list[str]], pack_text: str
+) -> list[str]:
+    errors = []
+    for row_id, row in rows.items():
+        for parameter in re.findall(
+            r"(?:`|\{\{\s*)(project\.[A-Za-z0-9_.]+)", row[2]
+        ):
+            if parameter not in pack_text:
+                errors.append(f"{row_id} claims unused {parameter}")
+    return errors
+
+
 class InventoryRowTests(unittest.TestCase):
     def setUp(self) -> None:
         self.readme = read(SKILLS / "README.md")
@@ -528,6 +579,36 @@ class InventoryRowTests(unittest.TestCase):
                     matches = list(SKILLS.rglob(f"{name}/SKILL.md"))
                     matches += list(SKILLS.rglob(f"{name}.md"))
                     self.assertTrue(matches, f"{name} is not in the pack")
+
+    def test_inventory_claims_hold_in_the_pack(self) -> None:
+        pack_text = "\n".join(
+            read(path) for path in SKILLS.rglob("*.md") if path.name != "README.md"
+        )
+        self.assertEqual(disposition_parameter_errors(self.rows, pack_text), [])
+
+        placement = read(PLACEMENT)
+        self.assertIn("<state-root>/supervision.yml", placement)
+        self.assertIn("{{ project.supervision }}", placement)
+        self.assertIn("<state-root>/supervision.yml", read(EPIC))
+        self.assertIn("{{ project.supervision }}", read(EPIC))
+
+        long_task = read(LONG_TASK)
+        self.assertIn("PR-title/squash-subject grammar", long_task)
+        self.assertIn("validated checkpoint convention", long_task)
+        self.assertNotIn(
+            "message matching `{{ project.branch.commit_pattern }}`", long_task
+        )
+
+    def test_inventory_validation_refuses_a_claim_the_pack_does_not_use(self) -> None:
+        pack_text = "\n".join(
+            read(path) for path in SKILLS.rglob("*.md") if path.name != "README.md"
+        )
+        mutated = {row_id: list(row) for row_id, row in self.rows.items()}
+        mutated["WP03-INV-01"][2] = "Claim `project.tracker.architecture`."
+        self.assertEqual(
+            disposition_parameter_errors(mutated, pack_text),
+            ["WP03-INV-01 claims unused project.tracker.architecture"],
+        )
 
 
 if __name__ == "__main__":

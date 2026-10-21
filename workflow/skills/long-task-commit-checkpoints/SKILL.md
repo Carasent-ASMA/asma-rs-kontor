@@ -11,9 +11,11 @@ reader understands **from the commits alone**.
 
 **Hard rule: use the project CLI for checkout, commit, branch, push and PR;
 plain `git` only to stage and read.** Use the project CLI's git operations
-(`{{ project.cli.command }} git ...`). The CLI enforces the project's commit
-grammar (`{{ project.branch.commit_pattern }}`) and wires branch/PR mechanics —
-so it writes a compliant commit message for you, and your job is deciding
+(`{{ project.cli.command }} git ...`). The CLI enforces the branch grammar and
+wires branch/PR mechanics; it validates checkpoint commit subjects against its
+own convention (read that convention live from the CLI), while
+`{{ project.branch.commit_pattern }}` is the PR-title/squash-subject grammar. So
+the CLI writes a compliant checkpoint message for you, and your job is deciding
 **when** to commit and **what** goes in.
 
 ---
@@ -61,9 +63,10 @@ applicable below):
 - Where a `kontord` realm is configured, commit/push and create-PR operations
   also ask `kontord` to **attest** the publication (branch key = confirmed
   epic/task tracker key, base `{{ project.forge.base_branch }}`, title leading
-  with a key from the epic graph). For a Kontor-governed epic (automatic inside
-  a `kontord`-launched seat) a refusal or an unreachable daemon stops the push,
-  and the recorded bypass flag is the only exception; on the default
+  with a key from the epic graph). The PR title/squash subject follows
+  `{{ project.branch.commit_pattern }}`. For a Kontor-governed epic (automatic
+  inside a `kontord`-launched seat) a refusal or an unreachable daemon stops
+  the push, and the recorded bypass flag is the only exception; on the default
   Paseo-direct surface the attestation is advisory and only warns.
 - Land a PR with the project CLI's merge-pr operation (squash only, bound to the
   attested head commit). Do not use the forge CLI directly.
@@ -113,15 +116,15 @@ The CLI mechanics stay here:
 
 Do the work in phases (see checkpoint discipline below). At each checkpoint,
 stage the coherent subset and commit through the CLI. Let the CLI generate a
-message matching `{{ project.branch.commit_pattern }}`:
+checkpoint message in its own validated convention:
 
 ```sh
 {{ project.cli.command }} git commit --auto
 ```
 
-- `--auto` generates a message matching `{{ project.branch.commit_pattern }}`
-  through the project backend and validates it — you don't hand-craft the shape.
-  Use `-m "..."` only if you must (still validated).
+- `--auto` generates a checkpoint message through the project backend and
+  validates it against the CLI's own convention — you don't hand-craft the
+  shape. Use `-m "..."` only if you must (still validated).
 - **Mind what lands in the commit — this is the part you control.** By default
   the commit operation commits **staged changes only.** So stage the coherent
   subset first (`git add -p` / `git add <paths>`), then commit. See the
@@ -193,7 +196,7 @@ skill.**
 
 ### The one test that decides everything
 
-> **Can I describe the staged change with a single honest subject line that matches `{{ project.branch.commit_pattern }}`, and does the tree still make sense after it?**
+> **Can I describe the staged change with a single honest subject line that follows the project CLI's validated checkpoint convention, and does the tree still make sense after it?**
 
 - Combines independently reviewable concerns with no coherent purpose → split. A conjunction alone is not evidence that a change is mixed.
 - A **fragment** that can't stand on its own (half a rename, a function no one calls yet, code that doesn't build) → **too small / premature** → keep working, don't commit yet.
@@ -278,7 +281,7 @@ The commands for each step, and a worked multi-phase example, are in the
 ## Quick checklist per commit
 
 - [ ] Working on a `checkout -b --from <ISSUE-KEY>` branch (not `{{ project.forge.base_branch }}`)
-- [ ] One coherent reviewable concern — one honest subject that matches `{{ project.branch.commit_pattern }}`
+- [ ] One coherent reviewable concern — one honest subject that follows the project CLI's validated checkpoint convention
 - [ ] Tree is coherent and **builds** at this commit
 - [ ] Prep (rename/move/format/deps) separated from behavior
 - [ ] Staged the coherent subset (`git add -p` / paths) before committing
