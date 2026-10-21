@@ -1353,6 +1353,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   const lifecycle = useSessionLifecycle(host.id, refresh);
   const [lifecycleOpen, setLifecycleOpen] = useState(false);
   const lifecycleAnchor = useRef<View | null>(null);
+  const recoveryButton = useRef<View | null>(null);
   const slimRecoveryButton = useRef<View | null>(null);
   const archiveButtons = useRef(new Map<string, View>());
   useEffect(() => { setLifecycleOpen(false); }, [host.id]);
@@ -2179,6 +2180,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       {notices}
     </View>
   ) : null;
+  const toolbar = toolbarLayout({ collapsed: toolbarCollapsed, compact });
   const fullToolbar = (
     <View
       testID="sessions-full-toolbar"
@@ -2187,6 +2189,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     >
       {compact ? null : notices}
       <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
+        {!toolbar.showSlimRow ? <Action ref={recoveryButton} small colors={colors} label="Recover" accessibilityLabel="Recover sessions" disabled={!hostOnline || lifecycle.running || lifecycle.busy || state.status !== "ready"}
+          onPress={() => { lifecycle.clear(); lifecycleAnchor.current = recoveryButton.current; setLifecycleOpen(true); }} /> : null}
         {view.status === "attention" ? <>
           <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{availability.checking ? "Checking exact session IDs…" : "Attention excludes confirmed missing IDs. Unknown availability stays visible."}</Text>
           <Action small={!compact} colors={colors} label="Check availability" onPress={availability.refresh} />
@@ -2426,10 +2430,6 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     if (width !== rootSize.width || height !== rootSize.height) setRootSize({ width, height });
   };
 
-  const toolbar = toolbarLayout({
-    collapsed: toolbarCollapsed,
-    compact,
-  });
   const slimSlot = (
     <View
       testID="sessions-slim-toolbar-slot"
@@ -2459,8 +2459,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       }
     >
       <SlimToolbar
-        action={<Action ref={slimRecoveryButton} small colors={colors} label="Recover" accessibilityLabel="Recover sessions" disabled={!toolbar.showSlimRow || !hostOnline || lifecycle.running || lifecycle.busy || state.status !== "ready"}
-          onPress={() => { lifecycle.clear(); lifecycleAnchor.current = slimRecoveryButton.current; setLifecycleOpen(true); }} />}
+        action={toolbar.showSlimRow ? <Action ref={slimRecoveryButton} small colors={colors} label="Recover" accessibilityLabel="Recover sessions" disabled={!hostOnline || lifecycle.running || lifecycle.busy || state.status !== "ready"}
+          onPress={() => { lifecycle.clear(); lifecycleAnchor.current = slimRecoveryButton.current; setLifecycleOpen(true); }} /> : undefined}
         hostLabel={host.label}
         activeCount={slimActiveCount}
         colors={colors}
@@ -2718,7 +2718,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       {optionMenuLayer}
       {detailsLayer}
       {lifecycleOpen ? <SessionLifecycleDialog lifecycle={lifecycle} scopeIds={shown.map((entry) => entry.id)} root={rootRef} anchor={lifecycleAnchor} rootSize={rootSize} colors={colors} compact={compact}
-        onClose={() => { setLifecycleOpen(false); const target = lifecycleAnchor.current; const kept = target === slimRecoveryButton.current || [...archiveButtons.current.values()].includes(target!); if (target && kept) (target as View & { focus?: () => void }).focus?.(); else { lifecycleAnchor.current = rootRef.current; (listRef.current as NativeFlatList<ListRow> & { focus?: () => void } | null)?.focus?.(); } }} /> : null}
+        onClose={() => { setLifecycleOpen(false); const target = lifecycleAnchor.current; const kept = target === recoveryButton.current || target === slimRecoveryButton.current || [...archiveButtons.current.values()].includes(target!); if (target && kept) (target as View & { focus?: () => void }).focus?.(); else { lifecycleAnchor.current = rootRef.current; (listRef.current as NativeFlatList<ListRow> & { focus?: () => void } | null)?.focus?.(); } }} /> : null}
     </View>
   );
 }

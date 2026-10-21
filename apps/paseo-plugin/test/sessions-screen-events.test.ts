@@ -423,6 +423,16 @@ function fullToolbarShown(): boolean {
 }
 
 describe("SessionsScreen toolbar events", () => {
+  it.each([true, false])("keeps exactly one enabled recovery entry on compact=%s", (compact) => {
+    renderScreen(undefined, compact);
+    const slim = walk(harness.current()).find((element) => element.type === SlimToolbar)!;
+    const inSlim = slim.props.action as ElementLike | undefined;
+    const inFull = walk(findByTestID(harness.current(), "sessions-full-toolbar")).filter((element) => element.props.accessibilityLabel === "Recover sessions");
+    expect(inFull.length + (inSlim ? 1 : 0)).toBe(1);
+    expect((inSlim ?? inFull[0]!)?.props.disabled).toBe(false);
+    expect(inFull.length).toBe(compact ? 0 : 1);
+    expect(inSlim !== undefined).toBe(compact);
+  });
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
