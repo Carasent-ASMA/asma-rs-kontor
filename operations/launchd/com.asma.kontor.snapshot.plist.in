@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Daily verified snapshot of the live realm. `snapshot` is an online operation:
+  it uses VACUUM INTO on its own connection and does not stop the daemon.
+
+  Retention is the store's own: it keeps the newest seven verified snapshots
+  per realm, after a new snapshot has been published.
+
+  @HOME@ is replaced by operations/scripts/install-launchd-agents.sh.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.asma.kontor.snapshot</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>@HOME@/.local/bin/kontor-daemon</string>
+    <string>--state-root</string>
+    <string>@HOME@/.local/state/kontor/asma</string>
+    <string>snapshot</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>4</integer>
+    <key>Minute</key>
+    <integer>15</integer>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>@HOME@/.local/state/kontor/asma/snapshot-agent.log</string>
+  <key>StandardErrorPath</key>
+  <string>@HOME@/.local/state/kontor/asma/snapshot-agent.err.log</string>
+</dict>
+</plist>
