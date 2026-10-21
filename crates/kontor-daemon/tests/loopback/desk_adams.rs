@@ -1509,6 +1509,48 @@ async fn an_ad_hoc_desk_adam_opens_its_subject_and_lsa_with_a_frozen_topic() {
     );
 }
 
+/// A subject row and its leadership node are one placement. If the node write
+/// is refused, the epic must not be left with a subject no node ever adopted.
+#[tokio::test]
+async fn a_refused_subject_node_leaves_no_orphan_subject() {
+    let realm = desk_led_realm("desk-subject-atomic").await;
+    let connection =
+        rusqlite::Connection::open(realm.world.directory.path().join(kontor_daemon::DATABASE_FILE))
+            .expect("the realm database opens");
+    connection
+        .execute_batch(
+            "CREATE TRIGGER refuse_subject_node BEFORE INSERT ON topology_nodes
+             WHEN NEW.kind = 'ADE'
+             BEGIN SELECT RAISE(ABORT, 'injected subject node failure'); END;",
+        )
+        .expect("the subject node refusal is installed");
+
+    let refused = apply_epic(
+        &realm,
+        "Partial subject epic",
+        "desk-subject-atomic-apply",
+        None,
+    )
+    .await;
+    assert!(!refused.status.is_success(), "{}", refused.body);
+
+    let subjects = realm
+        .world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.list_desk_adam_subjects(
+                realm.project_id,
+                &kontor_core::id::DeskKey::parse("adam").expect("the desk key"),
+            )
+        })
+        .expect("the subjects read");
+    assert!(
+        subjects.is_empty(),
+        "the refused node left a subject behind: {subjects:?}"
+    );
+}
+
 #[tokio::test]
 async fn an_epic_binds_its_ad_hoc_origin_after_fencing_it_and_launches_a_fresh_lsa_with_the_capsule()
  {
