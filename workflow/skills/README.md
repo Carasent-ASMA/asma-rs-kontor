@@ -1,8 +1,9 @@
 # Workflow skills
 
-These skills are the coordination and planning part of the Kontor workflow
-pack. They are generic: every value that changes by project, user or machine is
-a parameter or a live read, not text in the skill.
+These skills are the workflow pack: coordination and planning, review and
+committees, memory, and documentation. They are generic: every value that
+changes by project, user or machine is a parameter or a live read, not text in
+the skill.
 
 This directory is the only editable copy of these skills. A consuming project
 renders its own copy from a pinned pack revision; a rendered copy is never
@@ -49,6 +50,16 @@ restate its body. The ownership table is also checked by
 | Behaviour scenarios | [`create-implementation-plan/references/behaviour-scenarios-opt-in-trial.md`](create-implementation-plan/references/behaviour-scenarios-opt-in-trial.md) | epic-orchestration, mini-project-kickoff, tracker-linked-creation |
 | Triage tiers | [`ticket-triage-tiers/SKILL.md#tiers`](ticket-triage-tiers/SKILL.md#tiers) | mini-project-kickoff, agent-dispatch |
 | Branch and PR-title grammar | [`long-task-commit-checkpoints/SKILL.md#the-mandated-lifecycle`](long-task-commit-checkpoints/SKILL.md#the-mandated-lifecycle) | epic-orchestration, create-implementation-plan |
+| Communication contract | [`kontor-communication/SKILL.md`](kontor-communication/SKILL.md) | epic-orchestration, agent-dispatch, tracker-linked-creation, pr-review |
+| Committee independence and a fresh judge | [`committee-protocol/SKILL.md`](committee-protocol/SKILL.md) | epic-orchestration, agent-dispatch, pr-review |
+| Three homes for information | [`document-organization/SKILL.md`](document-organization/SKILL.md) | epic-orchestration, agent-dispatch, pr-review, docs-navigation, decision-records |
+| Decision-record process | [`decision-records/SKILL.md`](decision-records/SKILL.md) | document-organization, docs-navigation |
+| Mutation validation | [`mutation-testing/SKILL.md`](mutation-testing/SKILL.md) | create-implementation-plan |
+| Experience memory | [`experience-memory/SKILL.md`](experience-memory/SKILL.md) | epic-orchestration, mini-project-kickoff/references/kontor-governed.md |
+| Seat cards and role crosswalk | [`seat-cards/SKILL.md`](seat-cards/SKILL.md) | agent-dispatch, pr-review, committee-protocol |
+| Review checklist and Done means | [`pr-review/references/review-checklist.md`](pr-review/references/review-checklist.md) | pr-review, pr-review/references/desk-messages.md |
+| PR review labels and finding format | [`pr-review/references/comment-format.md`](pr-review/references/comment-format.md) | kontor-communication |
+| No package or hook installs | [`seat-cards/SKILL.md#common-tool-boundary`](seat-cards/SKILL.md#common-tool-boundary) | pr-review, pr-review/references/desk-messages.md |
 
 The seat lifecycle is split by transition, not repeated: `agent-dispatch` owns
 starting a seat, `seat-handoff` owns a phase transition or rework, and
@@ -68,6 +79,16 @@ other two.
 | [`create-implementation-plan`](create-implementation-plan/SKILL.md) | Write a durable, executable plan with an explicit ambiguity rule. |
 | [`tracker-linked-creation`](tracker-linked-creation/SKILL.md) | Create, link or reconcile a tracker epic and its tasks under the content contracts. |
 | [`long-task-commit-checkpoints`](long-task-commit-checkpoints/SKILL.md) | Branch, checkpoint, publish and land a long or multi-phase job. |
+| [`kontor-communication`](kontor-communication/SKILL.md) | Write comments, notices, reviews, fix requests, status messages and handoffs. |
+| [`pr-review`](pr-review/SKILL.md) | Review, re-review, fix and merge a pull request through the PR review desk. |
+| [`committee-protocol`](committee-protocol/SKILL.md) | Run a formal committee with read-only seats, contrasting reviewers and a fresh judge. |
+| [`seat-cards`](seat-cards/SKILL.md) | Brief a role from its card and map role code, fleet slot, seed role and seat label. |
+| [`experience-memory`](experience-memory/SKILL.md) | Propose and verify an evidence-backed experience from settled work. |
+| [`document-organization`](document-organization/SKILL.md) | Choose a documentation root, filename, metadata and router updates. |
+| [`docs-navigation`](docs-navigation/SKILL.md) | Find and assess existing documentation through its routers and registers. |
+| [`decision-records`](decision-records/SKILL.md) | Author, govern and retire decision records. |
+| [`mutation-testing`](mutation-testing/SKILL.md) | Check whether tests detect seeded defects. |
+| [`ubiquitous-language`](ubiquitous-language/SKILL.md) | Extract and maintain a domain glossary. |
 
 ## Project parameters used here
 
@@ -85,6 +106,7 @@ must apply the same rule.
 | `project.runtime.matrix` | Allowed provider/harness pairs. |
 | `project.cli.command`, `project.cli.verbs` | The project CLI used for checkout, commits, publication and task commands. |
 | `project.team_pack`, `project.fleet`, `project.supervision` | Team overlay, fleet policy and the autonomous TPM cadence profile. |
+| `project.pr_desk.command`, `project.pr_desk.settings`, `project.pr_desk.history_root` | PR desk invocation, pinned policy file and data-root-relative history root. |
 | `project.merge_authority.role`, `project.merge_authority.policy` | Who may merge and under which policy. |
 | `project.documentation_roots`, `project.gap_ledger`, `project.glossary`, `project.attention_channel` | Documentation and gap routing. |
 | `project.worktree_layout`, `project.check_runs` | Checkout isolation and required checks. |
@@ -94,8 +116,8 @@ must apply the same rule.
 
 ## Inventory rows fixed here
 
-The source inventory assigns these rows to WP-03. Each row is fixed in the pack
-copy named below, not carried as a stale fact.
+The source inventory assigns these rows to WP-03 and WP-04. Each row is fixed
+in the pack copy named below, not carried as a stale fact.
 
 | Row | Source skill | Disposition |
 | --- | --- | --- |
@@ -107,6 +129,23 @@ copy named below, not carried as a stale fact.
 | WP03-INV-06 | `long-task-commit-checkpoints`, `create-implementation-plan` | Base-branch references that named `master` now resolve from `{{ project.forge.base_branch }}`; branch grammar resolves from `{{ project.branch.pattern }}`, and `{{ project.branch.commit_pattern }}` governs the PR title/squash subject. Checkpoint commit subjects follow the project CLI's own validated convention, read live from the CLI, not `commit_pattern`. |
 | WP03-INV-07 | `seat-takeover` recovery reference | Installed-runtime version claims are removed; the operator rechecks the resolved runtime's supported operations at use time. |
 | WP03-INV-08 | `epic-orchestration` | Stale status, count and clock facts are removed or linked to their live owner; the skill carries no dated project state. |
+
+The source inventory assigns these rows to WP-04. The WP-03 rows above stay
+unchanged.
+
+| WP-04 row | Source skill | Disposition |
+| --- | --- | --- |
+| WP04-INV-01 | `decision-records`, `epic-orchestration`, `orchestration-surface-transition`, `pr-review` | Named decision authorities, personal escalation wording and personal merge wording are replaced by `{{ project.decision_authorities.architecture }}`, `{{ project.merge_authority.role }}` and `{{ project.owner }}`. The pack names no person. |
+| WP04-INV-02 | `pr-review`, `seat-cards` | Fixed: the learning log resolves through exactly one root (`PR_DESK_DIR`, then absolute `host.paths.pr_desk`, then `<host.paths.data_root>/<project.pr_desk.history_root>`) and is `<resolved root>/learning.log`. The absolute home path and second candidate are gone. |
+| WP04-INV-03 | `pr-review`, `tracker-linked-creation`, `mini-project-kickoff` | Tracker scope is `{{ project.tracker.project_key }}`; issue types, status names and transition ids are read live from the pinned tracker catalog. The PR review skill names no project key. |
+| WP04-INV-04 | `pr-review`, `epic-orchestration` | Fixed: capacity stays owned by the placement rule (`{{ project.capacity.max_parallel_tasks }}`, `{{ project.capacity.start_admission }}`); the PR desk command, pinned policy and both round limits resolve from `project.pr_desk.command` and `project.pr_desk.settings` (`orchestration/pr-desk.yml`). The skill copies no limit. |
+| WP04-INV-05 | `pr-review`, `long-task-commit-checkpoints`, `create-implementation-plan` | Base-branch references resolve from `{{ project.forge.base_branch }}`; branch grammar resolves from `{{ project.branch.pattern }}`. The PR review skill names no default branch. |
+| WP04-INV-06 | `pr-review` | Organization scope is `{{ project.forge.organization }}`; the runtime port is a fact read from the runtime, not a copied project value. |
+| WP04-INV-07 | `experience-memory`, `pr-review` | The review checklist owns 11 checks including Done means; the judge card, the comment format and the memory skill refer to check (11) instead of keeping a second count or a dated time. |
+
+WP04-INV-02 and WP04-INV-04 are fixed by the merged `project.pr_desk` block:
+the command, pinned settings and history root are read from the project, and
+the host keeps only the optional `host.paths.pr_desk` override.
 
 ## Neutrality
 

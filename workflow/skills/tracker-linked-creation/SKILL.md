@@ -5,7 +5,8 @@ description: "Create, link or reconcile tracker epics and issues under the appli
 
 # Tracker-linked creation
 
-For comments and status messages, follow the project's communication contract.
+For comments and status messages, follow the project's
+[communication contract](../kontor-communication/SKILL.md).
 It governs wording, not write authority; the content contracts below still
 govern issue descriptions.
 

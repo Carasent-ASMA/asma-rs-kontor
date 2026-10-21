@@ -14,8 +14,11 @@ Paseo is the execution runtime on both surfaces and the only control surface on
 Paseo-direct. The tracker is reached through `kontord` on a Kontor-governed
 epic and directly otherwise.
 
-Every component follows the project's communication contract for human-facing
-comments, reviews, status messages and handoffs, on both surfaces.
+Every component follows the project's
+[communication contract](../kontor-communication/SKILL.md) for human-facing
+comments, reviews, status messages and handoffs, on both surfaces. Decisions,
+facts and history follow the
+[three homes for information](../document-organization/SKILL.md#three-homes-for-information).
 
 <a id="orchestration-surface-read-first"></a>
 Resolve the surface first with the
@@ -42,7 +45,8 @@ the TPM seat on existing work):
 5. Integrates child branches into the plan-selected epic or milestone branch
    through verified project-CLI git operations under the
    [mandated lifecycle](../long-task-commit-checkpoints/SKILL.md#the-mandated-lifecycle).
-6. Runs the Independent Review committee for the final gate.
+6. Runs the [Independent Review committee](../committee-protocol/SKILL.md)
+   for the final gate.
 7. Records acceptance evidence and moves the tracker through the current
    supported writer. When an activated PR desk is qualified and assigned the
    ticket-state writer role, the coordinator supplies acceptance evidence and
@@ -204,10 +208,12 @@ Before dispatching work:
    [native placement reference](references/paseo-direct-native-placement.md).
    The two supervision files stay distinct; `project.supervision` is not the
    Paseo watchdog policy.
-2. For memory context, cite the existing frozen binding or use bounded eligible
-   recall after verifying its reviewed registry and deployed capability. Keep
-   its ids/hashes and actual retrieval mode; unavailable recall never permits a
-   whole-corpus list fallback. This is not a mandatory `kontord` read on Paseo-direct.
+2. For memory context, follow the project's
+   [experience-memory procedure](../experience-memory/SKILL.md): cite the
+   existing frozen binding or use bounded eligible recall after verifying its
+   reviewed registry and deployed capability. Keep its ids/hashes and actual
+   retrieval mode; unavailable recall never permits a whole-corpus list
+   fallback. This is not a mandatory `kontord` read on Paseo-direct.
 3. Reconcile the plan, tracker bindings and source-control evidence. Child
    repositories are separate clones, so a root `git status` shows nothing about
    them: use the project CLI's status operation or `git status --short` inside
@@ -241,8 +247,9 @@ mutation evidence where applicable, committed source-control evidence in the
 correct repo, settled runs and a converged tracker plan. "All children closed"
 is not proof that the goal was achieved.
 
-Record the memory disposition through the project's experience-memory procedure,
-when one is installed. A reusable lesson gets evidence, a typed preview and a
+Record the memory disposition through the project's
+[experience-memory procedure](../experience-memory/SKILL.md), when one is
+installed. A reusable lesson gets evidence, a typed preview and a
 proposal, which is not approval; record approval, projection and canary only
 when performed, and keep pending or degraded results explicit. Otherwise record
 "no durable lesson" with its reason. Progress, speculation, handoffs, open
