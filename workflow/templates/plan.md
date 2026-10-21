@@ -56,7 +56,7 @@ The selected config folder is explicit:
 - A missing selection, missing folder, missing referenced file or invalid YAML
   is refused by name.
 
-## 2. Implementation steps
+## 2. Implementation Steps
 
 | Task | Tracker key | Description | Closure condition | Completed | Date |
 | --- | --- | --- | --- | --- | --- |
@@ -67,6 +67,8 @@ The selected config folder is explicit:
 
 The graph is the only editable dependency source. The `jira` field is the
 plan-graph v1 field name; it holds the confirmed tracker key for any tracker.
+After filling the template, run the project's canonical plan sync and validate
+before review; do not hand-edit the derived block.
 
 ```plan-graph
 {
@@ -83,8 +85,17 @@ plan-graph v1 field name; it holds the confirmed tracker key for any tracker.
 <!-- plan-graph:derived:start -->
 
 ```text
-wave 0   TASK-001
-wave 1   TASK-002
+wave 0   TASK-001   (1 nodes)
+wave 1   TASK-002   (1 nodes)
+
+Dependencies (prerequisite -> dependent):
+  TASK-001 -> TASK-002
+
+{{ document.epic }}
+  TASK-001 · {{ task.key }} · Phase 1 · wave 0 · {{ task.title }}
+  TASK-002 · {{ task.key }} · Phase 1 · wave 1 · {{ task.title }}
+
+Structural waves only; external fences, gates and capacity still govern admission.
 ```
 
 <!-- plan-graph:derived:end -->

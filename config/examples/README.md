@@ -42,10 +42,12 @@ may sit anywhere on the machine and have any name.
 ```
 
 `project.supervision` follows plan §1.1 and names
-`orchestration/tpm-supervision.yml`, the autonomous TPM cadence profile. The
-Paseo watchdog policy is a different file: the daemon reads
+`orchestration/tpm-supervision.yml`, the `autonomous_tpm_v1` cadence profile.
+The Paseo watchdog policy is a different file: the daemon reads
 `<state-root>/supervision.yml`; `paseo-supervision.yml` here is only the sample
-copied to that state-root path. It is not a key in `project:`.
+copied to that state-root path. It is not a key in `project:`. The neutral TPM
+file carries the full consumer shape; the schema test requires every top-level
+and nested key so a new project cannot copy an incomplete profile.
 
 Paths are classified, not resolved uniformly:
 

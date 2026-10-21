@@ -1946,6 +1946,124 @@ fn supervision_names_the_tpm_profile_not_the_paseo_watchdog() {
 }
 
 #[test]
+fn the_neutral_tpm_supervision_profile_has_the_consumer_shape() {
+    let profile = read("config/examples/orchestration/tpm-supervision.yml");
+    assert_eq!(profile["schema_version"].as_i64(), Some(1));
+    assert_eq!(
+        profile["profile_id"].as_str(),
+        Some("autonomous_tpm_v1"),
+        "the consumer requires the autonomous TPM profile id"
+    );
+    for key in [
+        "cadence",
+        "turn",
+        "continuity",
+        "wake",
+        "recovery",
+        "lifecycle",
+        "surfaces",
+    ] {
+        assert!(
+            profile.get(key).and_then(Value::as_mapping).is_some(),
+            "tpm-supervision.yml.{key} is a mapping"
+        );
+    }
+    for key in [
+        "heartbeat_cron",
+        "timezone",
+        "liveness_cron",
+        "stale_after_minutes",
+        "lifetime_hours",
+        "renew_before_hours",
+    ] {
+        assert!(
+            profile["cadence"].get(key).is_some(),
+            "tpm-supervision.yml.cadence.{key} is required"
+        );
+    }
+    for key in [
+        "context_max_tokens",
+        "checkpoint_max_tokens",
+        "recent_event_limit",
+        "actionable_item_limit",
+        "budget_minutes",
+        "checkpoint_reserve_minutes",
+    ] {
+        assert!(
+            profile["turn"].get(key).is_some(),
+            "tpm-supervision.yml.turn.{key} is required"
+        );
+    }
+    for key in [
+        "same_tpm_native",
+        "context_refresh",
+        "transcript_authoritative",
+        "checkpoint_required_before_turn_end",
+        "checkpoint_backend",
+        "optional_memory",
+    ] {
+        assert!(
+            profile["continuity"].get(key).is_some(),
+            "tpm-supervision.yml.continuity.{key} is required"
+        );
+    }
+    for key in ["paseo-direct", "kontor-governed"] {
+        assert!(
+            profile["continuity"]["checkpoint_backend"]
+                .get(key)
+                .is_some(),
+            "tpm-supervision.yml.continuity.checkpoint_backend.{key} is required"
+        );
+    }
+    for key in [
+        "primary",
+        "safety",
+        "overlap",
+        "unchanged",
+        "zero_inference_when_unchanged",
+    ] {
+        assert!(
+            profile["wake"].get(key).is_some(),
+            "tpm-supervision.yml.wake.{key} is required"
+        );
+    }
+    for key in [
+        "preferred",
+        "replacement",
+        "retry_limit_per_unchanged_blocker",
+        "blocker_requires",
+    ] {
+        assert!(
+            profile["recovery"].get(key).is_some(),
+            "tpm-supervision.yml.recovery.{key} is required"
+        );
+    }
+    for key in ["complete", "paused", "blocked", "ownership_transfer"] {
+        assert!(
+            profile["lifecycle"].get(key).is_some(),
+            "tpm-supervision.yml.lifecycle.{key} is required"
+        );
+    }
+    for key in ["authority", "scheduling", "kontor_required", "guarantees"] {
+        assert!(
+            profile["surfaces"]["paseo-direct"].get(key).is_some(),
+            "tpm-supervision.yml.surfaces.paseo-direct.{key} is required"
+        );
+    }
+    for key in [
+        "authority",
+        "scheduling",
+        "guarantees",
+        "duplicate_admission_writer",
+    ] {
+        assert!(
+            profile["surfaces"]["kontor-governed"].get(key).is_some(),
+            "tpm-supervision.yml.surfaces.kontor-governed.{key} is required"
+        );
+    }
+}
+
+#[test]
 fn the_asma_fixture_uses_the_declared_folder_layout() {
     let document = read("tests/fixtures/config/asma-orchestration.yml");
     assert_eq!(document["fleet"].as_str(), Some("orchestration/fleet.yml"));

@@ -318,7 +318,7 @@ and ASMA's concrete values are the test case in
 | `cli` | mapping | `command` and `verbs` for text and checks that must not hard-code one tool; `host.project_cli.<command>` binds the executable. |
 | `team_pack` | path | Folder-relative team/profile overlay. |
 | `fleet` | path | Folder-relative fleet policy; must agree with the bundle selector. |
-| `supervision` | path | Folder-relative autonomous TPM cadence profile. Not the Paseo watchdog policy, which is `<state-root>/supervision.yml`. |
+| `supervision` | path | Folder-relative `autonomous_tpm_v1` cadence profile. Not the Paseo watchdog policy, which is `<state-root>/supervision.yml`. |
 | `merge_authority` | mapping | `role`, `policy`. |
 | `documentation_roots` | list | Project documentation roots. |
 | `gap_ledger` | path | Project gap ledger. |
@@ -331,11 +331,12 @@ and ASMA's concrete values are the test case in
 | `holiday_countries` | list | ISO country codes for the holiday import. |
 | `currency` | string | ISO 4217 code for budgets and costs. |
 
-`max_parallel_tasks` is the hard ceiling for concurrent team-run tasks.
+`max_parallel_tasks` and `start_admission` come from the placement source.
+`max_parallel_tasks` is the hard ceiling for concurrent team-run tasks;
 `start_admission` is the initial concurrent admission and must be less than or
-equal to `max_parallel_tasks`. `max_delivery_seats` is the distinct
-delivery-seat count; it does not gate team-run admission and may be smaller
-than the admission ceiling.
+equal to it. `max_delivery_seats` is the distinct delivery-seat count from that
+same placement source (ASMA 2); it is not a global team-run ceiling and does
+not gate team-run admission.
 
 ASMA's values, exercised by the schema test:
 
@@ -349,10 +350,10 @@ ASMA's values, exercised by the schema test:
 | `forge.repositories` | `Carasent-ASMA/asma-modules`, `Carasent-ASMA/asma-rs-kontor` |
 | `forge.base_branch` | `master` |
 | `cli.command` | `asma` |
-| `project.supervision` | `orchestration/tpm-supervision.yml` (TPM cadence profile; the Paseo watchdog is `<state-root>/supervision.yml`) |
-| `documentation_roots` | `_docs`, `docs` |
+| `project.supervision` | `orchestration/tpm-supervision.yml` (`autonomous_tpm_v1` TPM cadence profile; the Paseo watchdog is `<state-root>/supervision.yml`) |
+| `documentation_roots` | `modules/_docs`, `kontor/docs` |
 | `check_runs` | `asma/publication-branch-title`, `asma/publication-identity` |
-| `capacity` | `max_delivery_seats: 2`, `max_parallel_tasks: 7`, `start_admission: 4` |
+| `capacity` | `max_delivery_seats: 2` (placement-source delivery seats, not a team-run ceiling), `max_parallel_tasks: 7`, `start_admission: 4` |
 | `time_zone`, `holiday_countries`, `currency` | `Europe/Oslo`, `[NO]`, `NOK` |
 
 ## Configuration authoring inventory (WP-02 refresh)
