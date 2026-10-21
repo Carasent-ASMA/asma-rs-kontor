@@ -2155,13 +2155,21 @@ def _public_example_errors(
 ) -> list[str]:
     errors: list[str] = []
     for path in files:
-        relative = _owning_label(path, project_root, resource_roots)
+        label = _owning_label(path, project_root, resource_roots)
+        key, separator, repository_path = label.partition("/")
+        policy_path = (
+            repository_path
+            if separator and key in resource_roots
+            else label
+        )
         try:
             content = path.read_bytes()
         except OSError:
             continue
-        for refusal in file_refusals(relative, content):
-            errors.append(refusal.render())
+        for refusal in file_refusals(policy_path, content):
+            errors.append(
+                f"{label}:{refusal.line}: {refusal.code}: {refusal.detail}"
+            )
     return errors
 
 

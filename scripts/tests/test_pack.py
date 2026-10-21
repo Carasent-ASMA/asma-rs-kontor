@@ -770,6 +770,28 @@ class CheckTests(PackCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("home_path", result.stderr)
 
+    def test_a_synthetic_evidence_receipt_is_refused(self) -> None:
+        config = self.config()
+        project = self.project(config)
+        self.write_doc(
+            project,
+            "docs/evidence/EXM-1/receipts/run.md",
+            "# Run receipt\n\nresult: synthetic\n",
+        )
+        self.router(
+            project,
+            [("Evidence receipt", "evidence/EXM-1/receipts/run.md")],
+        )
+        result = self.run_pack(
+            "--config-dir", str(config), "check", str(project)
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("run_receipt", result.stderr)
+        self.assertIn(
+            "project/docs/evidence/EXM-1/receipts/run.md",
+            result.stderr,
+        )
+
     def test_explicit_resource_roots_keep_repositories_separate(self) -> None:
         config = self.config()
         orchestration = config / "orchestration" / "orchestration.yml"
