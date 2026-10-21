@@ -54,9 +54,9 @@ export function OverviewPage(props: Props) {
   const jira = reads.filter((read) => read.source.kind === "jira");
   const observed = [...new Set(jira.flatMap((read) => read.status === "ready" && read.jiraHistory ? [day(read.jiraHistory.generated)] : []))];
   const wide = width >= 760;
-  const sessions = `${props.scoped ? "Sessions in this scope" : "Host sessions"}: ${count(total.total, "session")} · ${total.running} running · ${total.attention} native attention · ${total.needsInput} needs input · ${total.errors} errors.${!props.scoped && loose ? ` ${loose} without an epic stay in Sessions.` : ""}`;
+  const sessions = `${props.scoped ? "Sessions in this scope" : "Host sessions"}: ${count(total.total, "session")} · ${total.running} running · ${total.attention} native attention · ${total.needsInput} needs input · ${total.errors} errors.${!props.scoped && loose ? ` ${loose} with an unknown epic stay in Sessions.` : ""}`;
   const scope = `${props.scoped ? "Project" : "Global"} overview, available without kontord.`;
-  const meta = [signalLine(total), !props.scoped && loose ? `${loose} without an epic` : null, inventoryCue(props.directory)].filter(Boolean).join(" · ");
+  const meta = [signalLine(total), !props.scoped && loose ? `${loose} epic unknown` : null, inventoryCue(props.directory)].filter(Boolean).join(" · ");
   const jiraLabel = observed.length ? `Jira captured ${observed.map(shortDates).join(" / ")}` : "Jira not connected";
   return <View onLayout={(event) => setWidth(event.nativeEvent.layout.width)} style={{ width: "100%", maxWidth: 1100, alignSelf: "center", gap: 14 }}>
     {/* One title and one meta line; scope, exact counts and the read time stay in Sources and coverage. */}

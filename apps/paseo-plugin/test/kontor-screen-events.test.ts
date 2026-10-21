@@ -6,6 +6,7 @@ import { WorkspaceDescriptorPayloadSchema } from "@getpaseo/protocol/messages";
 import type { PluginHostSummary, PluginScreenProps } from "@getpaseo/plugin/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DirectoryEntry } from "../client/session-directory";
+import { confirmedEpic } from "../client/page-data";
 import { canonicalGraphSchema, jiraHistorySchema, type ReadSourceSummary, type SourceRead } from "../shared/read-sources";
 import { Linking } from "react-native";
 
@@ -633,6 +634,22 @@ describe("Kontor shell native actions", () => {
     screen.click("Overview"); expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab: "Overview", epicKey: "ASMA-1" });
     screen.openPicker("No plan linked"); screen.choose("All projects");
     expect(hostNavigation(screen.props.host.id).route).toMatchObject({ projectId: null, epicKey: null, sourceId: null, tab: "Overview" });
+  });
+  it("files a task-labelled session under its captured epic in the picker, Overview and Sessions, and never writes it to native", () => {
+    const source: ReadSourceSummary = { id: "jira-history", title: "Historical Jira", kind: "jira", path: "/configured/history.json", projectId: null, epic: null, workstream: null, revisionKind: "working copy" };
+    model.entries = [sessionEntry("task", { labels: { "asma.task": "ASMA-8541" } })];
+    model.sources = [source];
+    model.reads = { [source.id]: { source, status: "ready", revision: capturedHistory.provenance.sha256, readAt: "2026-10-21T09:00:00Z", modifiedAt: null, content: null, graph: null, records: null, diagnostics: [], jiraHistory: capturedHistory } };
+    const screen = mount(false); screen.click("Overview");
+    const overview = screen.elements().find((node) => node.type === ReadOnlyPage)!;
+    expect((overview.props.entries as DirectoryEntry[]).map(confirmedEpic)).toEqual(["ASMA-8539"]);
+    screen.openPicker("All projects"); screen.choose("ASMA-8539");
+    expect(hostNavigation(screen.props.host.id).route).toMatchObject({ epicKey: "ASMA-8539" });
+    expect((screen.elements().find((node) => node.type === ReadOnlyPage)!.props.entries as DirectoryEntry[]).map(({ id }) => id)).toEqual(["task"]);
+    screen.click("Sessions");
+    const sessions = screen.elements().find((node) => node.type === SessionsScreen)!;
+    expect((sessions.props.directory as { state: { entries: DirectoryEntry[] } }).state.entries[0]!.jira?.epics.get("ASMA-8541")).toBe("ASMA-8539");
+    expect(model.entries[0]!.jira).toBeUndefined();
   });
   it("groups and searches picker choices, reports no match, and starts each opening unfiltered", () => {
     model.entries = [sessionEntry("one", { projectKey: "p-one", projectName: "Kontor", labels: { epic: "ASMA-1" } }), sessionEntry("two", { projectKey: "p-two", projectName: "Billing", labels: { epic: "ASMA-2" } })];
