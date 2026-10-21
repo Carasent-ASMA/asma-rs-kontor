@@ -22,7 +22,8 @@ const hash = (value: string) => createHash("sha256").update(value).digest("hex")
 export function lifecycleRevision(agent: Agent): string {
   return hash(JSON.stringify([agent.id, agent.status, agent.archivedAt, agent.updatedAt, agent.provider, agent.model,
     agent.cwd, agent.workspaceId, agent.currentModeId, agent.effectiveThinkingOptionId, agent.activeTurn,
-    agent.pendingPermissions, agent.lastError, agent.labels, agent.persistence]));
+    agent.pendingPermissions, agent.lastError, agent.labels, agent.persistence, agent.providerUnavailable,
+    agent.runtimeInfo, agent.capabilities.supportsSessionPersistence, agent.attentionReason, parent(agent)]));
 }
 function parent(agent: Agent) { return ("parentAgentId" in agent && typeof agent.parentAgentId === "string" ? agent.parentAgentId : null) ?? agent.labels?.["paseo.parent-agent-id"] ?? null; }
 function childrenOf(agent: Agent, inventory: Agent[]): Agent[] {
@@ -124,7 +125,8 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
       const checkedAt = new Date().toISOString();
       try {
         const found = await client.agents.ref(id).refresh();
-        if (!found || found.agent.id !== id) { result[id] = { state: "missing", reason: "The host returned no session for this exact ID. Check again to reconcile a concurrent change.", checkedAt, revision: "missing" }; continue; }
+        if (!found) { result[id] = { state: "missing", reason: "The host returned no session for this exact ID. Check again to reconcile a concurrent change.", checkedAt, revision: "missing" }; continue; }
+        if (found.agent.id !== id) { result[id] = { state: "unknown", reason: "Availability unknown: the host reply identified a different session. This is not evidence that the requested session is missing.", checkedAt, revision: "unknown" }; continue; }
         result[id] = { state: "readable", reason: "Native session record is readable. Provider execution/recovery has not been tested.", checkedAt, revision: found.agent.updatedAt };
       } catch (error) { result[id] = { state: "unknown", reason: `Availability unknown: ${errorText(error)}`, checkedAt, revision: "unknown" }; }
     }
@@ -171,11 +173,9 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
       }
       // Final read after all potentially slow preflight calls. Never prompt an archived predecessor.
       const final = await agent.refresh();
-      if (!final || lifecycleRevision(final.agent) !== row.fingerprint) throw new Error("Session changed during preflight. Nothing dispatched; review again.");
-      if (review.action === "archive") {
-        const children = childrenOf(final.agent, await inventory(client));
-        if (children.length) throw new Error("A child appeared during review. Archive blocked to preserve its work.");
-      }
+      if (!final || final.agent.id !== agentId || lifecycleRevision(final.agent) !== row.fingerprint) throw new Error("Session changed during preflight. Nothing dispatched; review again.");
+      const finalDecision = lifecycleRow(final.agent, review.action === "archive" ? await inventory(client) : all, review.action, review.target);
+      if (!finalDecision.eligible) throw new Error(finalDecision.reason);
       row.outcome = "intent"; row.message = "Durable intent saved. An interrupted dispatch must be reconciled before retry."; await saveRow(reviewId, row);
       await writeFile(lockPath, JSON.stringify({ reviewId, agentId, action: review.action, phase: "intent", fingerprint: row.fingerprint }), { mode: 0o600 });
       dispatchStarted = true;
@@ -185,7 +185,7 @@ export function createLifecycleService(client: LifecycleClient, root: string) {
       } else {
         await agent.archive();
         const after = await agent.refresh();
-        if (!after?.agent.archivedAt || after.agent.status !== "closed" || after.agent.activeTurn) throw new Error("Archive returned but terminal retirement readback is unavailable. Do not retry automatically.");
+        if (!after || after.agent.id !== agentId || !after.agent.archivedAt || after.agent.status !== "closed" || after.agent.activeTurn) throw new Error("Archive returned but exact-ID terminal retirement readback is unavailable. Do not retry automatically.");
         row.outcome = "archived"; row.message = "Native archive succeeded and closed state was verified. Durable history and files remain with the host.";
       }
     } catch (error) {

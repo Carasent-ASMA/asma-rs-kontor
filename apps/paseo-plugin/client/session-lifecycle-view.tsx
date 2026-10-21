@@ -1,15 +1,15 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Platform, Pressable, Text, View } from "react-native";
 import { ScrollView, Icon } from "@getpaseo/plugin/client/react-native";
 import { Action, COARSE_POINTER, Disclosure, type Colors } from "./page-controls";
 import { AnchoredMenu, type MenuSize } from "./anchored-menu";
 import { RESUME_PROMPT, TAKEOVER_LIMIT } from "../shared/session-lifecycle";
 import type { useSessionLifecycle } from "./use-session-lifecycle";
 
-export function ArchiveSessionButton({ onPress, colors, disabled = false, compact = false, buttonRef }: { onPress: () => void; colors: Colors; disabled?: boolean; compact?: boolean; buttonRef?: (node: View | null) => void }) {
+export function ArchiveSessionButton({ session, onPress, colors, disabled = false, compact = false, buttonRef }: { session: { id: string; title: string }; onPress: () => void; colors: Colors; disabled?: boolean; compact?: boolean; buttonRef?: (node: View | null) => void }) {
   const [help, setHelp] = useState(false);
   return <View style={{ position: "relative" }}>
-    <Pressable ref={buttonRef} accessibilityRole="button" accessibilityLabel="Archive session" accessibilityHint="Review this exact session before native archive. History and files remain."
+    <Pressable ref={buttonRef} accessibilityRole="button" accessibilityLabel={`Archive session: ${session.title} (${session.id})`} accessibilityHint="Review this exact session before native archive. History and files remain."
       disabled={disabled} accessibilityState={{ disabled }} onPress={() => { setHelp(false); onPress(); }} onHoverIn={() => setHelp(true)} onHoverOut={() => setHelp(false)} onFocus={() => setHelp(true)} onBlur={() => setHelp(false)}
       style={{ width: compact || COARSE_POINTER ? 44 : 30, height: compact || COARSE_POINTER ? 44 : 30, alignItems: "center", justifyContent: "center", opacity: disabled ? 0.4 : 1 }}>
       <Icon name="X" size={14} color={colors.foregroundMuted} />
@@ -63,7 +63,13 @@ export function SessionLifecycleDialog({ lifecycle, scopeIds, root, anchor, root
           {review.action === "resume" ? <Action colors={colors} label="New review" disabled={running} onPress={lifecycle.clear} /> : null}
         </View>
         {review.rows.map((row) => <View key={row.id} style={{ borderWidth: 1, borderColor: colors.border, borderRadius: 7, padding: 8, gap: 4 }}>
-          <Pressable accessibilityRole="checkbox" accessibilityLabel={`Select ${row.title}. ${row.reason}`} accessibilityState={{ checked: selected.includes(row.id), disabled: running || row.outcome !== "pending" }} disabled={running || row.outcome !== "pending"}
+          <Pressable accessibilityRole="checkbox" accessibilityLabel={`Select ${row.title} (${row.id}). ${row.reason}`} accessibilityState={{ checked: selected.includes(row.id), disabled: running || row.outcome !== "pending" }} aria-checked={selected.includes(row.id)} aria-disabled={running || row.outcome !== "pending"} disabled={running || row.outcome !== "pending"}
+            {...(Platform.OS === "web" ? { onKeyDown: (event: { key: string; repeat?: boolean; preventDefault(): void; stopPropagation(): void }) => {
+              // React Native Web's Pressable only handles Space for button-like roles.
+              if (event.key !== " " && event.key !== "Spacebar") return;
+              event.preventDefault(); event.stopPropagation();
+              if (!event.repeat && !running && row.outcome === "pending") lifecycle.setSelected(selected.includes(row.id) ? selected.filter((id) => id !== row.id) : [...selected, row.id]);
+            } } : {})}
             onPress={() => lifecycle.setSelected(selected.includes(row.id) ? selected.filter((id) => id !== row.id) : [...selected, row.id])} style={{ minHeight: 44, justifyContent: "center" }}>
             {text(`${selected.includes(row.id) ? "☑" : "☐"} ${row.title}`)}
           </Pressable>

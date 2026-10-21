@@ -97,6 +97,19 @@ describe("reviewed exact-ID effects and durable replay", () => {
     s.client.agents.ref = (id) => ({ ...original(id), timeline: { refetch: async () => { s.records.set(id, agent(id, { archivedAt: "concurrently archived", status: "closed" })); return { entries: [{}], error: null }; } } });
     const review = await s.preview(); expect((await s.service.execute(review.id, "a")).outcome).toBe("blocked"); expect(s.send).not.toHaveBeenCalled();
   });
+  it.each<Array<[string, Partial<Agent>]>[number]>([
+    ["provider availability", { providerUnavailable: true }],
+    ["effective runtime model", { runtimeInfo: { provider: "codex", sessionId: "history-a", model: "other-model", thinkingOptionId: "xhigh", modeId: "full-access" } }],
+    ["persistence capability", { capabilities: { ...agent("a").capabilities, supportsSessionPersistence: false } }],
+    ["permission wait", { attentionReason: "permission" }],
+  ])("blocks a changed %s observed after history preflight even when updatedAt is unchanged", async (_label, patch) => {
+    const s = await setup(), original = s.client.agents.ref, before = s.records.get("a")!;
+    s.client.agents.ref = (id) => ({ ...original(id), timeline: { refetch: async () => { s.records.set(id, { ...s.records.get(id)!, ...patch }); return { entries: [{}], error: null }; } } });
+    const review = await s.preview(), result = await s.service.execute(review.id, "a");
+    expect(s.records.get("a")!.updatedAt).toBe(before.updatedAt);
+    expect(result).toMatchObject({ outcome: "blocked", message: expect.stringContaining("changed during preflight") });
+    expect(s.send).not.toHaveBeenCalled(); expect(s.archive).not.toHaveBeenCalled();
+  });
   it("requires successful archive plus terminal readback; partial archive remains uncertain and history is never deleted", async () => {
     const s = await setup(), review = await s.preview("archive");
     s.archive.mockImplementationOnce(async (id) => { s.records.set(id, agent(id, { archivedAt: "now", status: "running" })); throw new Error("Runtime close failed"); });
@@ -112,8 +125,41 @@ describe("reviewed exact-ID effects and durable replay", () => {
     expect(previewLifecycle.input.safeParse({ action: "archive", scope: "filtered", agentIds: ["a"], target, arbitraryPath: "/etc/passwd" }).success).toBe(false);
     expect(executeLifecycleItem.input.safeParse({ reviewId: "../../x", agentId: "a" }).success).toBe(false);
   });
+  it("holds a wrong-ID post-archive readback uncertain and preserves its no-replay barrier", async () => {
+    const s = await setup(), review = await s.preview("archive"); let reads = 0;
+    s.archive.mockImplementationOnce(async () => ({ archivedAt: "acknowledged-only" }));
+    s.refresh.mockImplementation(async (id) => ({ agent: ++reads === 3 ? agent("other-id", { archivedAt: "now", status: "closed" }) : s.records.get(id)!, project: null }));
+    expect(await s.service.execute(review.id, "a")).toMatchObject({ id: "a", outcome: "uncertain", message: expect.stringContaining("exact-ID terminal") });
+    expect(s.records.get("a")).toMatchObject({ status: "error", archivedAt: null });
+    const reloaded = createLifecycleService(s.client, s.root);
+    expect((await reloaded.read(review.id))?.rows[0]?.outcome).toBe("uncertain");
+    expect((await reloaded.execute(review.id, "a")).outcome).toBe("uncertain");
+    expect((await reloaded.execute((await s.preview("archive")).id, "a")).outcome).toBe("blocked");
+    expect(s.archive).toHaveBeenCalledExactlyOnceWith("a"); expect(s.send).not.toHaveBeenCalled();
+  });
 });
 describe("Attention availability evidence", () => {
+  it("retains a present target after a well-formed wrong-ID refresh reply", async () => {
+    const s = await setup(); s.refresh.mockResolvedValueOnce({ agent: agent("other-id"), project: null });
+    const result = (await s.service.probe(["a"])).a!;
+    expect(result).toMatchObject({ state: "unknown", reason: expect.stringContaining("different session") });
+    const entry = toDirectoryEntry({ agent: s.records.get("a")!, project: null });
+    // Apply the production client's binding to the requested displayed revision.
+    const displayed = { ...entry, availability: { ...result, revision: entry.updatedAt } };
+    expect(hasSessionAttention(displayed)).toBe(true);
+    const openAgent = vi.fn();
+    expect(openSessionById({ entries: [displayed], id: "a", serverId: "fixture-host", navigation: { openAgent, openWorkspace: vi.fn() } }).ok).toBe(true);
+    expect(openAgent).toHaveBeenCalledExactlyOnceWith({ agentId: "a", serverId: "fixture-host" });
+    expect(s.send).not.toHaveBeenCalled(); expect(s.archive).not.toHaveBeenCalled();
+  });
+  it("still treats a true null exact-ID response as absence", async () => {
+    const s = await setup(); s.refresh.mockResolvedValueOnce(null);
+    const result = (await s.service.probe(["a"])).a!;
+    expect(result.state).toBe("missing");
+    const entry = toDirectoryEntry({ agent: s.records.get("a")!, project: null });
+    expect(hasSessionAttention({ ...entry, availability: { ...result, revision: entry.updatedAt } })).toBe(false);
+    expect(s.send).not.toHaveBeenCalled(); expect(s.archive).not.toHaveBeenCalled();
+  });
   it("preserves good old sessions and unknown/probe failures; excludes only confirmed missing IDs and archives", async () => {
     const s = await setup(); s.refresh.mockImplementationOnce(async () => null).mockRejectedValueOnce(new Error("Provider/host temporarily unavailable"));
     const reads = await s.service.probe(["missing", "unknown", "a"]); expect(reads.missing?.state).toBe("missing"); expect(reads.unknown?.state).toBe("unknown"); expect(reads.a?.state).toBe("readable");
