@@ -514,7 +514,7 @@ describe("workspace.create hook", () => {
         context(paseoDirectLabels()),
         config(),
       ),
-    ).rejects.toThrow("Kontor workspace guard refused");
+    ).rejects.toThrow("worktree creation is outside it");
   });
 
   it("refuses a Paseo-direct-only seat using a relative directory path", async () => {
