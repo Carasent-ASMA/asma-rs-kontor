@@ -1716,6 +1716,89 @@ async fn native_observe_accepts_a_raw_node_sensitive_body_without_echoing_it() {
 }
 
 #[tokio::test]
+async fn native_recovery_accepts_a_raw_node_sensitive_body_without_echoing_it() {
+    // Recovering a previously planned Create by explicit key reads the body
+    // back from Jira. That readback carries the same external prose as an
+    // observation, so it must accept and withhold it too (ASMA-8515 N-02).
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/issue/ASMA-8101"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "key": "ASMA-8101",
+            "id": "908101",
+            "fields": {
+                "project": {"key": "ASMA"},
+                "issuetype": {"name": "Epic", "hierarchyLevel": 1},
+                "summary": "Publication identity enforcement",
+                "description": {
+                    "type": "doc",
+                    "version": 1,
+                    "content": [{
+                        "type": "paragraph",
+                        "content": [{"type": "text", "text": "password=not-a-real-secret"}]
+                    }]
+                },
+                "labels": ["kontor-epic-recovery-fixture"]
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let root = tempfile::tempdir().expect("a state root");
+    let project_id = ProjectId::generate();
+    std::fs::write(
+        root.path().join("jira.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "projects": [{
+                "project_id": project_id.to_string(),
+                "endpoint": server.uri(),
+                "project_key": "ASMA",
+                "credential_alias": "work"
+            }]
+        }))
+        .expect("configuration serializes"),
+    )
+    .expect("configuration is written");
+    let connectors = JiraConnectors::read_with_keychain(
+        root.path(),
+        kontor_core::id::RealmId::generate(),
+        Arc::new(FixtureKeychain::default()),
+    )
+    .expect("configuration loads");
+    let plan = JiraIssuePlan {
+        kind: JiraIssueKind::Epic,
+        requested_key: Some(ExternalId::parse("ASMA-8101").expect("issue key")),
+        marker: ExternalId::parse("kontor-epic-recovery-fixture").expect("marker"),
+        require_marker: true,
+        update_description: false,
+        summary: "Publication identity enforcement".to_owned(),
+        description:
+            "Kontor epic 01a0721b-ea30-7fe3-88a5-4d33ca613414: Publication identity enforcement"
+                .to_owned(),
+        parent_key: None,
+    };
+    let readback = connectors
+        .for_project(project_id)
+        .expect("project is configured")
+        .materialize(&plan)
+        .await
+        .expect("a raw-node sensitive body is recovered, not refused");
+    assert_eq!(readback.issue_key.as_str(), "ASMA-8101");
+    assert_eq!(readback.issue_id.as_str(), "908101");
+    assert_eq!(readback.readback_hash.as_str().len(), 64);
+    assert!(
+        readback.description.contains("withheld"),
+        "the rendering names the withholding: {}",
+        readback.description
+    );
+    assert!(
+        !readback.description.contains("not-a-real-secret"),
+        "the sensitive raw text is never echoed"
+    );
+}
+
+#[tokio::test]
 async fn native_requests_time_out_without_holding_the_daemon_open() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

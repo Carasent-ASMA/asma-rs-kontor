@@ -1014,20 +1014,39 @@ impl JiraConnector {
                 "marker": plan.marker.as_str(),
             })
         };
-        let readback_hash = CanonicalDocument::from_serializable(&readback)?
-            .hash()
-            .clone();
+        // An explicit-link readback carries the issue's observed summary and
+        // body, which a person wrote in Jira. Hashing that through the strict
+        // constructor would refuse the materialization before recovery could
+        // accept it, the same shape as N-02 on the observation path. Only the
+        // digest is kept; the rendering below withholds sensitive prose.
+        let readback_hash = if explicit_link {
+            CanonicalDocument::from_external_value(&readback)?
+        } else {
+            CanonicalDocument::from_serializable(&readback)?
+        }
+        .hash()
+        .clone();
         // Read after every conflict check, so a response that is going to be
         // refused is still refused for its own exact reason. Jira returns the
         // top-level id on every issue GET regardless of the `fields` filter, so
         // a response without one is malformed rather than merely unsupported,
         // and an accepted readback never carries an unproven identity.
         let issue_id = external_at(&value, &["id"])?;
+        // The readback names what the reader has. That body is external prose
+        // on an explicit link, so render it through the same withholding path
+        // as an observation rather than echoing sensitive text to the caller.
+        let description = if explicit_link {
+            observed_body(Some(&observed_description))?
+                .map(|body| body.plain_text.as_str().to_owned())
+                .unwrap_or_default()
+        } else {
+            adf_text(&observed_description)
+        };
         Ok(JiraIssueReadback {
             issue_key: key.clone(),
             issue_id,
             readback_hash,
-            description: adf_text(&observed_description),
+            description,
         })
     }
 }

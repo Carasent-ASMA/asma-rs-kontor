@@ -1710,6 +1710,11 @@ struct DescriptionJira {
     /// Applied inside the fake rather than from a racing task, so the refetch
     /// deterministically sees the overtaken body instead of whichever write won.
     overtake_with: Arc<Mutex<Option<String>>>,
+    /// Body served on the next issue read only, then [`DescriptionJira::body`].
+    ///
+    /// This makes a body change between the plan and its preview deterministic:
+    /// the plan sees the old placeholder, the preview sees the authored text.
+    first_read_body: Arc<Mutex<Option<serde_json::Value>>>,
 }
 
 impl DescriptionJira {
@@ -1724,7 +1729,16 @@ impl DescriptionJira {
             reads: Arc::new(AtomicUsize::new(0)),
             drop_confirmation: Arc::new(AtomicBool::new(false)),
             overtake_with: Arc::new(Mutex::new(None)),
+            first_read_body: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Serve `text` on the next issue read, then the held body.
+    fn next_read(&self, text: &str) {
+        *self
+            .first_read_body
+            .lock()
+            .expect("the next body is not poisoned") = Some(adf_document(text));
     }
 
     fn with_status(mut self, id: &'static str, name: &'static str, category: &'static str) -> Self {
@@ -1826,8 +1840,16 @@ impl Respond for DescriptionJira {
             }
             return ResponseTemplate::new(503);
         }
-        self.reads.fetch_add(1, Ordering::SeqCst);
-        let held = self.body.lock().expect("the body is not poisoned").clone();
+        let read_index = self.reads.fetch_add(1, Ordering::SeqCst);
+        let held = if read_index == 0 {
+            self.first_read_body
+                .lock()
+                .expect("the next body is not poisoned")
+                .take()
+                .unwrap_or_else(|| self.body.lock().expect("the body is not poisoned").clone())
+        } else {
+            self.body.lock().expect("the body is not poisoned").clone()
+        };
         ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "key": self.key,
             // The immutable REST id, derived exactly as a confirmed binding
@@ -1868,7 +1890,11 @@ struct HeldTaskJira {
 
 #[derive(Clone)]
 struct ClosedEpicJira {
+    /// Reads of the epic whose external status is a manual conflict.
     issue_reads: Arc<AtomicUsize>,
+    /// Reads of a second, converged epic. Its progress is the witness that a
+    /// resident pass ran while the conflicted epic was skipped.
+    healthy_reads: Arc<AtomicUsize>,
 }
 
 impl Respond for ClosedEpicJira {
@@ -1897,6 +1923,32 @@ impl Respond for ClosedEpicJira {
                     "issuetype": {"name": "Epic", "hierarchyLevel": 1},
                     "assignee": null,
                     "updated": "2026-09-03T10:00:00.000+0000"
+                }
+            }));
+        }
+        if request.method.as_str() == "GET" && path.contains("/rest/api/3/issue/ASMA-8204") {
+            self.healthy_reads.fetch_add(1, Ordering::SeqCst);
+            return ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "key": "ASMA-8204",
+                "id": "908204",
+                "fields": {
+                    "project": {"key": "ASMA"},
+                    "status": {
+                        "id": "10214",
+                        "name": "In Development",
+                        "statusCategory": {"name": "In Progress"}
+                    },
+                    "issuetype": {"name": "Epic", "hierarchyLevel": 1},
+                    "assignee": null,
+                    "updated": "2026-09-03T10:00:00.000+0000",
+                    "description": {
+                        "type": "doc",
+                        "version": 1,
+                        "content": [{
+                            "type": "paragraph",
+                            "content": [{"type": "text", "text": "Authored epic body."}]
+                        }]
+                    }
                 }
             }));
         }
@@ -19338,15 +19390,18 @@ async fn resident_jira_controller_confirms_each_epic_route_hop_once_and_replays_
 async fn resident_jira_conflict_replay_stops_retrying_until_resolution() {
     let server = MockServer::start().await;
     let issue_reads = Arc::new(AtomicUsize::new(0));
+    let healthy_reads = Arc::new(AtomicUsize::new(0));
     Mock::given(any())
         .respond_with(ClosedEpicJira {
             issue_reads: Arc::clone(&issue_reads),
+            healthy_reads: Arc::clone(&healthy_reads),
         })
         .mount(&server)
         .await;
 
     let project_id = ProjectId::generate();
     let epic_id = MiniProjectId::generate();
+    let healthy_epic_id = MiniProjectId::generate();
     let config_root = tempfile::tempdir().expect("a Jira config root");
     std::fs::write(
         config_root.path().join("jira.json"),
@@ -19357,7 +19412,7 @@ async fn resident_jira_conflict_replay_stops_retrying_until_resolution() {
                 "endpoint": server.uri(),
                 "project_key": "ASMA",
                 "credential_alias": "work",
-                "reconcile_epic_keys": ["ASMA-8203"]
+                "reconcile_epic_keys": ["ASMA-8203", "ASMA-8204"]
             }]
         }))
         .expect("the Jira configuration serializes"),
@@ -19388,6 +19443,14 @@ async fn resident_jira_conflict_replay_stops_retrying_until_resolution() {
                 created_at: at("2026-09-03T10:01:00Z"),
             })
             .expect("the epic is created");
+        store
+            .create_mini_project(&NewMiniProject {
+                id: healthy_epic_id,
+                project_id,
+                name: name("Converged Jira epic"),
+                created_at: at("2026-09-03T10:02:00Z"),
+            })
+            .expect("the healthy epic is created");
     });
     confirm_promoted_epic_identity(
         &world,
@@ -19395,6 +19458,13 @@ async fn resident_jira_conflict_replay_stops_retrying_until_resolution() {
         &epic_id.to_string(),
         "AUTO",
         "ASMA-8203",
+    );
+    confirm_promoted_epic_identity(
+        &world,
+        &project_id.to_string(),
+        &healthy_epic_id.to_string(),
+        "AUTO2",
+        "ASMA-8204",
     );
     world.daemon.state().with_store(|store| {
         let spec = kontor_jira::jira::SpecCatalog::bundled()
@@ -19421,23 +19491,34 @@ async fn resident_jira_conflict_replay_stops_retrying_until_resolution() {
     let append_signals = world.daemon.state().signals().appends();
     let first = world.daemon.reconcile_jira_once().await;
     assert_eq!(first.blocked, 1, "the first pass persists the conflict");
+    assert_eq!(first.epic_subjects, 2, "both confirmed epics are observed");
     assert_eq!(
         issue_reads.load(Ordering::SeqCst),
         1,
-        "the first pass observes the epic once"
+        "the first pass observes the conflicted epic once"
+    );
+    assert_eq!(
+        healthy_reads.load(Ordering::SeqCst),
+        1,
+        "the healthy epic is the pass witness"
     );
     let first_signal = *append_signals.borrow();
     let replay = world.daemon.reconcile_jira_once().await;
     assert_eq!(replay.blocked, 0, "the replay does not re-refuse");
     assert_eq!(replay.attention, 1, "the open conflict is typed attention");
     assert_eq!(
-        replay.epic_subjects, 0,
-        "the held subject is not re-observed"
+        replay.epic_subjects, 1,
+        "only the healthy epic is re-observed"
     );
     assert_eq!(
         issue_reads.load(Ordering::SeqCst),
         1,
         "an open conflict is not re-read on the next pass"
+    );
+    assert_eq!(
+        healthy_reads.load(Ordering::SeqCst),
+        2,
+        "the healthy epic proves the replay actually ran"
     );
     assert_eq!(
         *append_signals.borrow(),
@@ -19449,17 +19530,34 @@ async fn resident_jira_conflict_replay_stops_retrying_until_resolution() {
         world.daemon.jira_reconciler(),
         world.daemon.state().clone(),
     ));
-    // The controller's first pass is immediate; its next pass is the 30 s
-    // backstop. This asserts the immediate pass follows the same skip path the
-    // explicit replay above proved; waiting for a second poll would add half a
-    // minute without exercising a different decision.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // The healthy epic's reads prove the resident controller completed a pass.
+    // A second pass is then woken through the same append signal a committed
+    // control-plane change publishes; the held epic still must not be read.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while healthy_reads.load(Ordering::SeqCst) < 3 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the resident controller completes its immediate pass");
     assert_eq!(
         issue_reads.load(Ordering::SeqCst),
         1,
         "the resident controller leaves an open conflict alone"
     );
-    assert_eq!(*append_signals.borrow(), first_signal);
+    world.daemon.state().signals().appended();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while healthy_reads.load(Ordering::SeqCst) < 4 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the resident controller replays after a committed wake");
+    assert_eq!(
+        issue_reads.load(Ordering::SeqCst),
+        1,
+        "the resident replay skips the held subject too"
+    );
     world.daemon.state().signals().stop();
     controller
         .await
@@ -62625,6 +62723,126 @@ async fn automatic_reconciliation_honours_confirmed_epics_and_repairs_task_bodie
     assert_eq!(second.blocked, 0, "{second:?}");
     assert_eq!(second.content_conflicts, 0, "{second:?}");
     assert_eq!(second.converged, 2, "{second:?}");
+}
+
+/// A body that changes between the plan and its preview must converge, not
+/// apply. The plan saw a placeholder; by the time the repair previewed it, the
+/// reader already had the authored text. The preview therefore writes nothing,
+/// and the pass counts that as resolved, not as an external effect.
+#[tokio::test]
+async fn a_body_that_matches_at_preview_time_counts_as_convergence_not_an_apply() {
+    const TASK_KEY: &str = "ASMA-9403";
+    const TASK_TITLE: &str = "A task whose body already matches";
+    const PLACEHOLDER: &str = "Kontor task 00000000-0000-7000-8000-000000000000: stale placeholder";
+
+    let project_id = ProjectId::generate();
+    let epic_key = test_jira_key("Matching placeholder-epic");
+    let epic_jira = DescriptionJira::new(
+        Box::leak(epic_key.clone().into_boxed_str()),
+        "Epic",
+        1,
+        "## Summary / purpose\nAn authored epic body.",
+    )
+    .with_status("10214", "In Development", "In Progress");
+    let task_jira = DescriptionJira::new(TASK_KEY, "Task", 0, TASK_TITLE).with_status(
+        "10214",
+        "In Development",
+        "In Progress",
+    );
+    // The plan observes the old placeholder first; the repair's preview then
+    // observes the authored body that replaces it.
+    task_jira.next_read(PLACEHOLDER);
+    let task_reads = Arc::clone(&task_jira.reads);
+    let task_writes = Arc::clone(&task_jira.writes);
+    let server = MockServer::start().await;
+    mount_jira_responder(&server, &epic_jira, &epic_key).await;
+    mount_jira_responder(&server, &task_jira, TASK_KEY).await;
+    let world = jira_configured_world(
+        &server,
+        project_id,
+        "Matching placeholder project",
+        &[&epic_key],
+    )
+    .await;
+
+    let project_read = Call::get(format!("/v1/projects/{project_id}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(project_read.status, 200, "{}", project_read.body);
+    let category = first_category(&world).await;
+    let account = Call::post(
+        format!("/v1/projects/{project_id}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead", "harness": "fake.runtime",
+            "credential_alias": "lead", "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("matching-placeholder-account")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let applied = Call::post(
+        format!("/v1/projects/{project_id}/epics:apply"),
+        &epic_body(
+            project_read.json()["revision"].as_u64().expect("revision"),
+            "Matching placeholder",
+            &category,
+            serde_json::json!([{
+                "title": TASK_TITLE,
+                "ticket_links": [{
+                    "connector": "connector.jira",
+                    "external_issue_key": TASK_KEY
+                }]
+            }]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("matching-placeholder-apply")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic_id = applied.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
+    confirm_test_epic_identity(&world, &project_id.to_string(), &epic_id);
+    for (kind, key) in [
+        ("task", "matching-placeholder-task"),
+        ("epic", "matching-placeholder-epic"),
+    ] {
+        let installed =
+            install_jira_workflow_for_issue_type(&world, &project_id.to_string(), key, kind).await;
+        assert_eq!(installed.status, 200, "{}", installed.body);
+    }
+
+    let report = world.daemon.reconcile_jira_once().await;
+    assert_eq!(report.task_subjects, 1, "{report:?}");
+    assert_eq!(report.epic_subjects, 1, "{report:?}");
+    assert_eq!(report.blocked, 0, "{report:?}");
+    assert_eq!(
+        report.content_conflicts, 0,
+        "the preview saw the authored body, so nothing remained conflicted: {report:?}"
+    );
+    assert_eq!(
+        report.applied, 0,
+        "a preview with no write is not an external effect: {report:?}"
+    );
+    assert_eq!(
+        report.converged, 2,
+        "the epic and the now-matching task both converged: {report:?}"
+    );
+    assert_eq!(
+        task_writes.load(Ordering::SeqCst),
+        0,
+        "the preview wrote nothing"
+    );
+    assert_eq!(task_jira.rendered(), TASK_TITLE);
+    assert!(
+        task_reads.load(Ordering::SeqCst) >= 2,
+        "the plan and the preview each observed the task"
+    );
 }
 
 /// An epic outside the confirmed list is never observed, let alone written.
