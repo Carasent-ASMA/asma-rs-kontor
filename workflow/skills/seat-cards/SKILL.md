@@ -39,7 +39,7 @@ launched.
 | --- | --- | --- | --- | --- |
 | `LSA` | `leadership/<core-team-revision>/lsa` | `LSA` | `LSA` | registered: ECP `ROLE_CODE` |
 | `TPM` | `leadership/<core-team-revision>/tpm` | `TPM` | `TPM` | registered: ECP `ROLE_CODE` |
-| `TPM` (epic Adam) | `team/<desk-team-id>/adam` | `TPM` | `TPM • <epic key> • <topic>` | desk persona |
+| `TPM` (epic Adam) | `leadership/<core-team-revision>/tpm` | `TPM` | `TPM • <epic key> • <topic>` | desk persona |
 | `TPM` (PR Adam) | `team/<desk-team-id>/adam` | `TPM` | `TPM • <tracker key> • <repository>#<number>` | desk persona |
 | `SA` (scope) | `team/<team-definition-id>/scope` | `architect` | `SA` | registered: TSW `scope`, `ROLE_CODE` |
 | `SWE` (implement) | `team/<team-definition-id>/implement` | `builder` | `SWE` | registered: TSW `implement`, `ROLE_CODE` |
@@ -87,11 +87,12 @@ RESEARCHER B, SYNTHESIZER or FINAL REVIEWER as native labels.
 The advisor rows follow the ASW slots, not the generic binding, because an
 advisor slot can be an architect or an auditor. `ADAM` is the desk workspace,
 not a seat label; the two desk-persona rows carry the exact epic and pull
-request Adam seat names. A fleet slot absent from the selected fleet cannot be
-resolved; the seat is blocked and the role is not silently rerouted. The
-fleet's `fallback` and `open` bindings are route fallbacks, not seats, and have
-no card. A project that uses a different team definition keeps the role code
-and changes the slot id, not the card.
+request Adam seat names. The epic Adam routes through the leadership TPM slot;
+the PR Adam routes through the desk team's `adam` slot. A fleet slot absent
+from the selected fleet cannot be resolved; the seat is blocked and the role
+is not silently rerouted. The fleet's `fallback` and `open` bindings are route
+fallbacks, not seats, and have no card. A project that uses a different team
+definition keeps the role code and changes the slot id, not the card.
 
 ## LSA — Lead Software Architect
 

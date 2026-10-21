@@ -100,10 +100,9 @@ FLEET = REPO_ROOT / "config" / "examples" / "orchestration" / "fleet.yml"
 
 NON_SEAT_FLEET_SLOTS = ("fallback", "open")
 INVENTED_RESEARCH_LABELS = ("RESEARCHER A", "RESEARCHER B", "SYNTHESIZER", "FINAL REVIEWER")
-DESK_PERSONA_LABELS = {
-    "TPM • <epic key> • <topic>",
-    "TPM • <tracker key> • <repository>#<number>",
-}
+EPIC_ADAM_LABEL = "TPM • <epic key> • <topic>"
+PR_ADAM_LABEL = "TPM • <tracker key> • <repository>#<number>"
+DESK_PERSONA_LABELS = {EPIC_ADAM_LABEL, PR_ADAM_LABEL}
 
 SEAT_CARD_FIELDS = (
     "Purpose",
@@ -197,6 +196,13 @@ def fleet_advisor_slots() -> set[str]:
         for key in fleet_keys()
         if key.startswith("advisor/")
     }
+
+
+def fleet_leadership_tpm_binding() -> str:
+    for key in fleet_keys():
+        if re.fullmatch(r"leadership/[^/]+/tpm", key):
+            return key
+    raise AssertionError("the neutral fleet has no leadership tpm binding")
 
 
 def team_contract() -> tuple[
@@ -489,6 +495,22 @@ def naming_label_errors(
     return errors
 
 
+def desk_persona_slot_errors(
+    rows: list[dict[str, object]], epic_slot: str, pr_slot: str
+) -> list[str]:
+    errors: list[str] = []
+    expected = {EPIC_ADAM_LABEL: epic_slot, PR_ADAM_LABEL: pr_slot}
+    for label, slot in expected.items():
+        matches = [row for row in rows if row["label"] == label]
+        if len(matches) != 1:
+            errors.append(f"desk persona {label} has {len(matches)} rows")
+        elif matches[0]["slots"] != [slot]:
+            errors.append(
+                f"desk persona {label} uses {matches[0]['slots']} instead of {slot}"
+            )
+    return errors
+
+
 def tsw_slot_errors(
     rows: list[dict[str, object]], tsw_slots: dict[str, str]
 ) -> list[str]:
@@ -646,6 +668,12 @@ class SeatCardTests(unittest.TestCase):
         self.desk_slots = desk_slots()
         self.desk_labels = desk_label_roles()
         self.advisor_slots = fleet_advisor_slots()
+        self.epic_adam_slot = re.sub(
+            r"^leadership/[^/]+/tpm$",
+            "leadership/<core-team-revision>/tpm",
+            fleet_leadership_tpm_binding(),
+        )
+        self.pr_adam_slot = "team/<desk-team-id>/adam"
 
     def slot_errors(self, rows: list[dict[str, object]]) -> list[str]:
         return crosswalk_slot_errors(
@@ -815,6 +843,28 @@ class SeatCardTests(unittest.TestCase):
         adam = self.records["Adam"]
         self.assertEqual(adam["labels"], DESK_PERSONA_LABELS)
         self.assertNotIn("ADAM", adam["labels"])
+
+    def test_the_epic_adam_uses_the_neutral_leadership_tpm_binding(self) -> None:
+        epic = next(row for row in self.rows if row["label"] == EPIC_ADAM_LABEL)
+        pr = next(row for row in self.rows if row["label"] == PR_ADAM_LABEL)
+        self.assertEqual(epic["slots"], [self.epic_adam_slot])
+        self.assertEqual(pr["slots"], [self.pr_adam_slot])
+        self.assertEqual(
+            desk_persona_slot_errors(
+                self.rows, self.epic_adam_slot, self.pr_adam_slot
+            ),
+            [],
+        )
+
+    def test_team_desk_adam_on_the_epic_adam_is_rejected(self) -> None:
+        rows = [dict(row) for row in self.rows]
+        epic = next(row for row in rows if row["label"] == EPIC_ADAM_LABEL)
+        epic["slots"] = ["team/<desk-team-id>/adam"]
+        self.assertTrue(
+            desk_persona_slot_errors(
+                rows, self.epic_adam_slot, self.pr_adam_slot
+            )
+        )
 
     def test_adam_as_a_desk_persona_label_is_rejected(self) -> None:
         rows = [dict(row) for row in self.rows]
