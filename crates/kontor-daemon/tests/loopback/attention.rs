@@ -807,3 +807,93 @@ async fn a_second_rejection_parks_the_task_and_emits_exactly_one_alert() {
         "the second rejection does not double-emit"
     );
 }
+/// TEST-004: a timeout is logged and discarded; the command result is unchanged.
+#[tokio::test]
+async fn a_delivery_timeout_leaves_the_command_result_unchanged() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/workflows/attention"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_millis(1500)))
+        .mount(&server)
+        .await;
+    let world = World::open_with_attention(&attention_yaml_with(&server.uri(), 1, 1)).await;
+
+    let moved = transition(&world, TaskState::Blocked).await;
+    assert_eq!(moved.state, TaskState::Blocked);
+    assert_eq!(
+        wait_for_requests(&server, 1).await.len(),
+        1,
+        "the single attempt reached the destination"
+    );
+    tokio::time::sleep(Duration::from_millis(1700)).await;
+    let current = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_task(world.project, world.task))
+        .expect("the task reads")
+        .expect("the task exists");
+    assert_eq!(
+        current.state,
+        TaskState::Blocked,
+        "a timeout never changes the command result"
+    );
+}
+
+/// TEST-004: connection refusal is logged and discarded; the command succeeds.
+#[tokio::test]
+async fn a_connection_refusal_leaves_the_command_result_unchanged() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+    let address = listener.local_addr().expect("the bound address");
+    drop(listener);
+    let world = World::open_with_attention(&format!(
+        r#"schema_version: 1
+sinks:
+  - channel: teams_workflow
+    url: http://{address}/workflows/attention
+    timeout_seconds: 1
+    max_attempts: 2
+mention:
+  target: operator@example.com
+emit:
+  kinds:
+    - task_blocked
+"#
+    ))
+    .await;
+
+    let moved = transition(&world, TaskState::Blocked).await;
+    assert_eq!(
+        moved.state,
+        TaskState::Blocked,
+        "a refused connection never changes the command result"
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+}
+
+async fn transition(world: &World, to: TaskState) -> kontor_core::repository::Task {
+    let current = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_task(world.project, world.task))
+        .expect("the seeded task reads")
+        .expect("the seeded task exists");
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.transition_task(&kontor_core::repository::TaskTransitionRequest {
+                project_id: world.project,
+                task_id: world.task,
+                expected_revision: current.revision,
+                to,
+                resume_receipt: None,
+                reopen: false,
+                run_outcome: None,
+                produced_artifacts: std::collections::BTreeSet::new(),
+                completed_phases: std::collections::BTreeSet::new(),
+                team_closure: TaskTeamClosure::NoTeam,
+                occurred_at: kontor_api::now(),
+            })
+        })
+        .expect("the task transition commits")
+}
