@@ -2718,7 +2718,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       {optionMenuLayer}
       {detailsLayer}
       {lifecycleOpen ? <SessionLifecycleDialog lifecycle={lifecycle} scopeIds={shown.map((entry) => entry.id)} root={rootRef} anchor={lifecycleAnchor} rootSize={rootSize} colors={colors} compact={compact}
-        onClose={() => { setLifecycleOpen(false); const target = lifecycleAnchor.current; const kept = target === recoveryButton.current || target === slimRecoveryButton.current || [...archiveButtons.current.values()].includes(target!); if (target && kept) (target as View & { focus?: () => void }).focus?.(); else { lifecycleAnchor.current = rootRef.current; (listRef.current as NativeFlatList<ListRow> & { focus?: () => void } | null)?.focus?.(); } }} /> : null}
+        onClose={() => { setLifecycleOpen(false); const target = lifecycleAnchor.current; const kept = target === recoveryButton.current || target === slimRecoveryButton.current || [...archiveButtons.current.values()].includes(target!); const restore = target && kept ? target : recoveryButton.current ?? slimRecoveryButton.current ?? rootRef.current; lifecycleAnchor.current = restore; (restore as View & { focus?: () => void } | null)?.focus?.(); }} /> : null}
     </View>
   );
 }
