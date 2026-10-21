@@ -450,12 +450,12 @@ export const SessionRow = memo(function SessionRow({
           <SessionStateMarker state={state} colors={colors} />
         </>
       ) : compact ? (
-        <>
           <View style={{ flex: 1, minWidth: 0 }}>
+          {/* As on results: the title has its line to itself and up to three lines, so a nested row still shows where titles that share a role and task differ; the state and the age lead the usage line. */}
           <Text
             testID="sessions-row-title"
-            numberOfLines={1}
-            style={{ flex: 1, minWidth: 0, color: colors.foreground, fontSize: 14, lineHeight: 20 }}
+            numberOfLines={3}
+            style={{ minWidth: 0, color: colors.foreground, fontSize: 14, lineHeight: 20 }}
           >
             {displayTitle ?? entry.title}
             {compactMeta ? (
@@ -464,11 +464,12 @@ export const SessionRow = memo(function SessionRow({
               </Text>
             ) : null}
           </Text>
-          {age}
-          <SessionUsage entry={entry} colors={colors} />
+          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 8, rowGap: 2, minWidth: 0 }}>
+            <SessionStateMarker state={state} colors={colors} />
+            {age}
+            <SessionUsage entry={entry} colors={colors} />
           </View>
-          <SessionStateMarker state={state} colors={colors} />
-        </>
+          </View>
       ) : (
         <>
           <View style={{ flex: 1, minWidth: 0 }}>
