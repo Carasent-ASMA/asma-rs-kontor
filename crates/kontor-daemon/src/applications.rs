@@ -16997,9 +16997,12 @@ fn consultation_account_rungs(
             qualified.push(rung.clone());
             continue;
         }
-        let pooled = accounts
-            .iter()
-            .any(|account| account.selectable_providers.contains(provider));
+        // The pool exists only on the Claude family; a generic account of any
+        // other family must not keep its generic rung first.
+        let pooled = family == "claude"
+            && accounts
+                .iter()
+                .any(|account| account.selectable_providers.contains(provider));
         let mut ordered_accounts: Vec<_> = accounts.iter().collect();
         ordered_accounts.sort_by_key(|account| account.account_profile_id);
         let mut seen = BTreeSet::new();
@@ -48869,22 +48872,24 @@ mod tests {
         assert_eq!(providers, ["claude", "claude-work", "claude-personal"]);
         assert!(ensure_unambiguous_generic_consultation_routes(&expanded, &accounts).is_ok());
 
-        // Codex has no pool: its generic route still expands to aliases only.
+        // A generic codex account is not a pool. Without the Claude-family
+        // gate it would keep `codex` first and change a host that never opted
+        // in; the aliases-only expansion must stay exactly as before.
         let codex = ModelRung {
             provider: ProviderRef("codex".to_owned()),
             model: ModelRef("gpt-5.6-sol".to_owned()),
             effort: None,
         };
-        let codex_accounts = [account(
-            "0193f000-0000-7000-8000-000000000004",
-            "codex-work",
-        )];
-        assert_eq!(
-            consultation_account_rungs(std::slice::from_ref(&codex), &codex_accounts)[0]
-                .provider
-                .0,
-            "codex-work"
-        );
+        let codex_accounts = [
+            account("0193f000-0000-7000-8000-000000000004", "codex"),
+            account("0193f000-0000-7000-8000-000000000005", "codex-work"),
+        ];
+        let expanded = consultation_account_rungs(std::slice::from_ref(&codex), &codex_accounts);
+        let providers: Vec<&str> = expanded
+            .iter()
+            .map(|route| route.provider.0.as_str())
+            .collect();
+        assert_eq!(providers, ["codex-work"]);
     }
 
     /// ASMA-8237: a model the runtime does not list is refused when it is

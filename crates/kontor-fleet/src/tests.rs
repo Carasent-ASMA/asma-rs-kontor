@@ -546,9 +546,11 @@ fn a_requested_route_is_admitted_only_as_the_chain_offers_it() {
     }
 }
 
-/// ASMA-8433: a host that lists the ZeroSub pool's plain `claude` account
-/// first admits the launch receipt that names it. The same receipt is refused
-/// on the unamended policy above, which is the non-opted-in host.
+/// ASMA-8433: a characterization guard for the fleet gate the host-local pool
+/// edit depends on — no `kontor-fleet` production change is involved. A host
+/// that lists the ZeroSub pool's plain `claude` account first admits the
+/// launch receipt that names it; the same receipt is refused on the unamended
+/// policy, which is the non-opted-in host.
 #[test]
 fn a_fleet_that_lists_the_pool_provider_first_admits_its_route() {
     let seats = leadership_seats();
@@ -583,6 +585,19 @@ fn a_fleet_that_lists_the_pool_provider_first_admits_its_route() {
             .provider
             .0,
         "claude"
+    );
+
+    // The same receipt is refused on the unamended policy, which is the
+    // non-opted-in host: `claude` is not an account of its Claude domain.
+    let unamended =
+        FleetSnapshot::parse_policy(&policy(lsa.as_str(), tpm.as_str())).expect("valid policy");
+    assert!(
+        unamended
+            .resolve(TEAM)
+            .expect("TEAM is bound")
+            .route_for(&rung("claude", "claude-opus-5", Some(EffortLevel::Xhigh)))
+            .is_none(),
+        "the non-opted-in host must keep refusing the pool route"
     );
 }
 
