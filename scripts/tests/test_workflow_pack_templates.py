@@ -12,7 +12,12 @@ values, and relative links that resolve.
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -26,6 +31,51 @@ PLACEHOLDER_RE = re.compile(r"\{\{([^}]*)\}\}")
 
 def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def canonical_plan_graph() -> Path | None:
+    configured = os.environ.get("ASMA_PLAN_GRAPH_VALIDATOR")
+    if not configured:
+        return None
+    candidate = Path(configured).expanduser()
+    return candidate if candidate.is_file() else None
+
+
+def replace_once(text: str, old: str, new: str) -> str:
+    if old not in text:
+        raise AssertionError(f"template is missing {old!r}")
+    return text.replace(old, new, 1)
+
+
+def filled_plan_template() -> str:
+    text = read(TEMPLATES / "plan.md")
+    text = replace_once(
+        text,
+        "orchestration: '{{ document.orchestration }}'",
+        "orchestration: paseo",
+    )
+    text = replace_once(text, '"{{ document.epic }}"', '"ASMA-999999"')
+    text = replace_once(
+        text,
+        '    {"id": "TASK-001", "title": "{{ task.title }}", "phase": "Phase 1", "jira": "{{ task.key }}", "kontor_id": null, "depends_on": []},',
+        '    {"id": "TASK-001", "title": "Neutral task one", "phase": "Phase 1", "jira": "ASMA-999998", "kontor_id": null, "depends_on": []},',
+    )
+    text = replace_once(
+        text,
+        '    {"id": "TASK-002", "title": "{{ task.title }}", "phase": "Phase 1", "jira": "{{ task.key }}", "kontor_id": null, "depends_on": ["TASK-001"]}',
+        '    {"id": "TASK-002", "title": "Neutral task two", "phase": "Phase 1", "jira": "ASMA-999997", "kontor_id": null, "depends_on": ["TASK-001"]}',
+    )
+    text = replace_once(
+        text,
+        '| TASK-001 | {{ task.key }} | {{ task.description }} | {{ task.closure }} | | |',
+        '| TASK-001 | ASMA-999998 | Neutral task one | Neutral closure one | | |',
+    )
+    text = replace_once(
+        text,
+        '| TASK-002 | {{ task.key }} | {{ task.description }} | {{ task.closure }} | | |',
+        '| TASK-002 | ASMA-999997 | Neutral task two | Neutral closure two | | |',
+    )
+    return text
 
 
 def relative_links(path: Path) -> list[str]:
@@ -139,6 +189,97 @@ class ContentContractTests(unittest.TestCase):
         self.assertEqual(text.count("```plan-graph"), 1)
         self.assertIn("<!-- plan-graph:derived:start -->", text)
         self.assertIn("<!-- plan-graph:derived:end -->", text)
+
+    def test_the_plan_template_matches_the_plan_graph_contract(self) -> None:
+        text = read(TEMPLATES / "plan.md")
+        self.assertIn("## 2. Implementation Steps", text)
+        self.assertIn("### 2.5 Dependency Graph and Waves", text)
+        self.assertNotIn("### 2.5 Dependency graph", text)
+        self.assertIn(
+            "| Task | Tracker key | Description | Closure condition | Completed | Date |",
+            text,
+        )
+
+        match = re.search(r"```plan-graph\n(.*?)\n```", text, re.DOTALL)
+        self.assertIsNotNone(match, "the template has one plan-graph JSON block")
+        graph = json.loads(match.group(1))
+
+        self.assertEqual(
+            set(graph),
+            {"schema_version", "epic", "tasks", "external_fences"},
+            "the graph root matches the v1 contract",
+        )
+        self.assertEqual(graph["schema_version"], 1)
+        self.assertEqual(set(graph["epic"]), {"jira", "kontor_id"})
+        self.assertEqual(graph["external_fences"], [])
+        self.assertTrue(graph["tasks"], "the graph has at least one task")
+
+        task_keys = {"id", "title", "phase", "jira", "kontor_id", "depends_on"}
+        task_ids: list[str] = []
+        for task in graph["tasks"]:
+            self.assertEqual(set(task), task_keys)
+            self.assertIsInstance(task["depends_on"], list)
+            task_ids.append(task["id"])
+        self.assertEqual(len(task_ids), len(set(task_ids)), "task ids are unique")
+        for task in graph["tasks"]:
+            self.assertEqual(
+                len(task["depends_on"]),
+                len(set(task["depends_on"])),
+                f"{task['id']} has unique prerequisites",
+            )
+            for prerequisite in task["depends_on"]:
+                self.assertIn(prerequisite, task_ids)
+                self.assertNotEqual(prerequisite, task["id"])
+
+        section = text.split("## 2. Implementation Steps", 1)[1].split(
+            "### 2.5 Dependency Graph and Waves", 1
+        )[0]
+        table_ids = re.findall(r"^\|\s*(TASK-[0-9]+)\s*\|", section, re.MULTILINE)
+        self.assertEqual(
+            table_ids,
+            task_ids,
+            "the Task table IDs agree with the graph tasks",
+        )
+
+    def test_the_plan_template_derived_view_has_the_canonical_shape(self) -> None:
+        text = read(TEMPLATES / "plan.md")
+        for expected in [
+            "wave 0   TASK-001   (1 nodes)",
+            "wave 1   TASK-002   (1 nodes)",
+            "Dependencies (prerequisite -> dependent):",
+            "  TASK-001 -> TASK-002",
+            "{{ document.epic }}",
+            "  TASK-001 · {{ task.key }} · Phase 1 · wave 0 · {{ task.title }}",
+            "  TASK-002 · {{ task.key }} · Phase 1 · wave 1 · {{ task.title }}",
+            "Structural waves only; external fences, gates and capacity still govern admission.",
+        ]:
+            self.assertIn(expected, text)
+
+    def test_a_filled_plan_template_passes_the_canonical_validator(self) -> None:
+        validator = canonical_plan_graph()
+        if validator is None:
+            self.skipTest("set ASMA_PLAN_GRAPH_VALIDATOR to run canonical validation")
+        with tempfile.TemporaryDirectory() as directory:
+            plan = Path(directory) / "plan.md"
+            plan.write_text(filled_plan_template(), encoding="utf-8")
+            sync = subprocess.run(
+                [sys.executable, str(validator), "sync", str(plan)],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(sync.returncode, 0, sync.stderr)
+            validated = subprocess.run(
+                [sys.executable, str(validator), "validate", str(plan)],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(validated.returncode, 0, validated.stderr)
+            self.assertIn("PASS", validated.stdout)
+            self.assertIn("2 tasks", validated.stdout)
 
     def test_the_agents_template_has_both_parts(self) -> None:
         text = read(TEMPLATES / "AGENTS.md")
