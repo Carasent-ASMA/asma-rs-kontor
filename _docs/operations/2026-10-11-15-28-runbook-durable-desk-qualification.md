@@ -30,10 +30,10 @@ Same-vendor LSA→TPM and `keep_native` binding remain refused pending Igor's se
 Run from the isolated qualification checkout, containing all four merged implementations. Keep adapter installs out of commits. The recorder writes logs and JSON receipts under ignored `.qualification/`; it places fixture repositories and the Cargo target inside this checkout and removes inherited `KONTOR_AUTH` from test processes.
 
 ```sh
-python3 scripts/qualify-durable-desks.py baseline
-python3 scripts/qualify-durable-desks.py declarations \
+python3 evidence/ASMA-8454-qualify-durable-desks.py baseline
+python3 evidence/ASMA-8454-qualify-durable-desks.py declarations \
   --declaration-source "$DECLARATION_SOURCE"
-python3 scripts/qualify-durable-desks.py mutations
+python3 evidence/ASMA-8454-qualify-durable-desks.py mutations
 ```
 
 `DECLARATION_SOURCE` is the operator-supplied private declaration path; the path is

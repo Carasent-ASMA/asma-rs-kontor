@@ -12234,8 +12234,8 @@ def observation(is_closed):
         "status_name": "Closed" if is_closed else "In Development",
         "status_category": "Done" if is_closed else "In Progress",
         "issue_type": "User Story",
-        "assignee_account_id": "acct-igor",
-        "assignee_display": "Igor",
+        "assignee_account_id": "acct-owner",
+        "assignee_display": "Test Owner",
         "update_token": "2" if is_closed else "1",
         "observation_hash": ("b" if is_closed else "a") * 64,
     }}
@@ -12252,7 +12252,7 @@ response = {{
     "completed_at": "2026-08-19T10:00:01Z",
     "outcome": "observed" if operation in ("observe", "refetch") else "planned",
     "observation": before,
-    "principal_account_id": "acct-igor",
+    "principal_account_id": "acct-owner",
     "live_transitions": [] if closed else [{{
         "transition_id": "3", "to_status_id": "10228", "to_status_name": "Closed",
         "to_status_category": "Done"

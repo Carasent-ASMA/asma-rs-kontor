@@ -249,9 +249,9 @@
   "external_fences": [
     {
       "task": "TASK-002",
-      "prerequisite": "Igor's approval of the advisor's model-chain proposal",
-      "owner": "Igor",
-      "lift_condition": "Igor approves the proposed four-rung chains and bindings and they are written to the fleet source."
+      "prerequisite": "Test Owner's approval of the advisor's model-chain proposal",
+      "owner": "Test Owner",
+      "lift_condition": "Test Owner approves the proposed four-rung chains and bindings and they are written to the fleet source."
     }
   ]
 }

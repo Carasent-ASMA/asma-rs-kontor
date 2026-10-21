@@ -27,8 +27,8 @@ import { goBack, navigate, readRouteView, writeRouteView } from '../client/navig
 type Props = Parameters<typeof ReadOnlyPage>[0];
 type Element = ReactElement<Record<string, unknown>>;
 const catalog = sourceCatalog(JSON.stringify([
-  ['authoring', 'authoring-fleet.yml', '5e49c621a5ed28a181f7e5f7c5c7c67f7bdc09c8d1258e94d48c60988fa5cff4'],
-  ['operator', 'operator-fleet.yml', 'd0fd421cab74df1346a6fb3c96ae2d85814af7f6336c40fdcd4c95906dab2101'],
+  ['authoring', 'authoring-fleet.yml', '8c09c977cf1db9e6df78d5fe6bb91312460f550afe3ca06116217070d3995aec'],
+  ['operator', 'operator-fleet.yml', '5349f628b9de00e9f62ef9d69b4e8977d3c6a28c582f3b5497ed961c77060487'],
   ['roster', 'core-team.yml', '329f5fb70d34cb51409f32588533c1b200bd5bb434341a35d9d66fa142fd6cfc'],
   ['templates', 'mvp-team-pack.json', '2a5a0aed9c23450f984fd3d1f92c5824f4640a71b2bc9697349b0632fed8b3cc'],
 ].map(([id, filename, expectedSha256]) => ({ id, title: id, kind: 'teams', path: fileURLToPath(new URL(`./fixtures/teams-source/${filename}`, import.meta.url)), expectedSha256 }))));

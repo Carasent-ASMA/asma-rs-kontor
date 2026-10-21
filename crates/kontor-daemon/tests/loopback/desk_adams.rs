@@ -1002,7 +1002,7 @@ async fn durable_desk_lsa(realm: &DeskLed, seat_key: &str) -> (SeatBindingId, Ex
             "seat_label": "DESK WATCH",
             "model_route": claude_route(),
             "recovery_owner": "daemon",
-            "decided_by": "Igor",
+            "decided_by": "Test Owner",
             "decided_on": "2026-10-11",
         }),
     )

@@ -44,16 +44,16 @@ inspection. The setting exists because parallel worktrees each keep a
 
 ## Work in one focused branch
 
-- Name the branch `<type>/ASMA-<number>-<slug>` from the confirmed Jira key
+- Name the branch `<type>/<KEY>-<number>-<slug>` from the confirmed tracker key
   (`feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `perf`, `build`, `ci`,
   `releases`); the only keyless form is a hotpatch line
   `releases/v<major>.<minor>.<patch>`.
   [Native naming](docs/NATIVE_NAMING.md) describes the same grammar Kontor
   derives for task worktrees (ASMA-8101). Enable the local preflight once per
   clone with `git config core.hooksPath .githooks`; `.githooks/pre-push`
-  refuses an agent push of a non-canonical branch or of `master` before the
-  network round trip (it recognizes agent shells by their environment; humans
-  push normally).
+  refuses an agent push of a non-canonical branch or of the configured base
+  branch before the network round trip (it recognizes agent shells by their
+  environment; humans push normally).
 - Keep one issue/ticket to one reviewable diff.
 - Do not mix generated lockfile drift, formatting unrelated files or another
   contributor's work into the change.
@@ -116,12 +116,15 @@ never commit it. Receipts stay with the run that produced them.
 During development, `scripts/test-lanes.py` runs only what a change reaches:
 
 ```sh
-python3 scripts/test-lanes.py --lane fast --dry-run   # print the selection and commands
-python3 scripts/test-lanes.py --lane fast             # fmt, clippy + tests of affected quick packages, touched console checks
-python3 scripts/test-lanes.py --lane heavy            # slow packages' tests + console typecheck/tests, quiet, JSON receipt
-python3 scripts/test-lanes.py --lane full             # scripts/verify-tree.py --mode inplace
+KONTOR_CONFIG_FILE=.github/kontor-project.yml python3 scripts/test-lanes.py --lane fast --dry-run
+KONTOR_CONFIG_FILE=.github/kontor-project.yml python3 scripts/test-lanes.py --lane fast
+KONTOR_CONFIG_FILE=.github/kontor-project.yml python3 scripts/test-lanes.py --lane heavy
+python3 scripts/test-lanes.py --lane full             # no project selection needed
 ```
 
+- The full lane delegates to `scripts/verify-tree.py` and does not read the
+  project selection. The fast and heavy lanes do; pass `KONTOR_CONFIG_FILE` or
+  `KONTOR_CONFIG_DIR`, or the tool refuses by name.
 - The selection is the files changed since the merge base with
   `origin/master` (`--base <rev>` to change it), plus uncommitted files unless
   `--no-worktree`, plus any `--changed <path>`. A change under a package's
@@ -175,12 +178,51 @@ and runs every gate above except `pnpm --filter kontor-console verify:api`,
 which runs separately. `--mode staged` does the same for the staged tree before
 a commit exists; `--mode inplace` runs the gates in the current tree.
 
+## The selected project configuration
+
+The publication check, the `pre-push` hook and `scripts/test-lanes.py` read the
+project key, base branch and check name from one explicitly selected YAML
+config folder (`KONTOR_CONFIG_DIR`, or `--config-dir` where the tool offers
+it). The branch vocabulary comes from
+`crates/kontor-core/src/branch.rs`; none of those tools keeps its own copy.
+There is no implicit fallback for the tools. The `pre-push` hook alone falls
+back to the committed projection when neither selection is set, so a clean
+agent shell can push this repository.
+
+The trusted-base workflow cannot read an external folder. It prefers the
+repository variables `KONTOR_PROJECT_KEY`, `KONTOR_BASE_BRANCH` and
+`KONTOR_CHECK_NAME` when all three are set, and writes a temporary projection
+recording them as the source. Otherwise it reads
+[`.github/kontor-project.yml`](.github/kontor-project.yml). That committed
+projection is generated from
+[`tests/fixtures/config/asma-orchestration.yml`](tests/fixtures/config/asma-orchestration.yml),
+the ASMA schema test fixture. The live asma-modules config does not yet carry a
+`project:` block; do not treat it as the projection source. Regenerate the
+projection exactly with:
+
+```sh
+python3 scripts/kontor_project.py \
+  --config-file tests/fixtures/config/asma-orchestration.yml \
+  project --format yaml > .github/kontor-project.yml
+```
+
+The generated YAML carries the complete `generated:` provenance and quotes
+every string, so values such as `ON` or `2026` stay strings on reload. The
+workflow opens an API check run whose name it reads from the selected
+projection and completes it with the job result. Branch protection must require
+both that configured check and the static
+`Publication branch and title identity` job check: the static check fails on
+every preflight or configuration error, including an unresolvable check name.
+
+The retired escape hatch `ASMA_ALLOW_AGENT_PUSH` is now
+`KONTOR_ALLOW_AGENT_PUSH`.
+
 ## Pull requests
 
 The pull-request title leads with the branch's key and one space
-(`ASMA-<number> <summary>`); a `releases/v<X>.<Y>.<Z>` branch takes exactly
-`Release v<X>.<Y>.<Z>`, and the base is `master`. The
-`asma/publication-branch-title` check
+(`<KEY>-<number> <summary>`); a `releases/v<X>.<Y>.<Z>` branch takes exactly
+`Release v<X>.<Y>.<Z>`, and the base is the configured
+`project.forge.base_branch`. The publication check
 (`.github/workflows/publication-branch-title.yml`) reports any other branch,
 title or base as a failure, with one exception: a `dependabot/` branch
 opened by `dependabot[bot]` is accepted as `bot_branch_exempt`, and the base and

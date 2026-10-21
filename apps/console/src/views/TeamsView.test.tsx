@@ -308,8 +308,8 @@ describe('<TeamsView>', () => {
 
     // Effort ladder, per rung — it decides which pins the editor accepts.
     expect(
-      within(rungOf(architect, 1)).getByTitle('rung 1 effort ladder provenance: live'),
-    ).toHaveTextContent('live')
+      within(rungOf(architect, 1)).getByTitle('rung 1 effort ladder provenance: fixture/needs-verification'),
+    ).toHaveTextContent('fixture/needs-verification')
 
     // Need band, per seat — it drives a blocking rule.
     expect(
@@ -320,7 +320,7 @@ describe('<TeamsView>', () => {
 
     // Charging basis, per provider — it decides whether a dollar prints at all.
     const caption = within(architect).getByRole('table').querySelector('caption') as HTMLElement
-    expect(within(caption).getByTitle('charging basis: plan_allowance')).toBeInTheDocument()
+    expect(within(caption).getByTitle('charging basis: metered')).toBeInTheDocument()
     expect(
       within(caption).getByTitle('charging basis provenance: fixture/needs-verification'),
     ).toBeInTheDocument()
@@ -354,22 +354,23 @@ describe('<TeamsView>', () => {
     const modelSelect = within(rung).getByLabelText('Model')
     const effort = within(rung).getByLabelText('Effort')
 
-    expect(provider).toHaveValue('codex')
-    expect(modelSelect).toHaveValue('gpt-5.6-sol')
-    expect(effort).toHaveValue('xhigh')
+    expect(provider).toHaveValue('alpha')
+    expect(modelSelect).toHaveValue('alpha-one')
+    expect(effort).toHaveValue('high')
 
-    fireEvent.change(provider, { target: { value: 'deepseek' } })
+    fireEvent.change(provider, { target: { value: 'beta' } })
 
-    // Only that provider's routes are on offer, and the effort that was pinned
-    // is not one this route exposes, so it moved to one that is.
+    // Only that provider's routes are on offer. The pinned effort is exposed by
+    // the new route, so it is kept.
     const offered = within(within(rung).getByLabelText('Model')).getAllByRole('option')
-    expect(offered.map((option) => option.textContent)).toEqual(['DeepSeek V4.1 Flash'])
-    // The live ladder for this route is low/high/max — `xhigh` is not on it, so
-    // the pin moved to a level the route actually exposes.
-    expect(within(rung).getByLabelText('Effort')).toHaveValue('low')
+    expect(offered.map((option) => option.textContent)).toEqual([
+      'Beta One (offline fixture)',
+      'Beta Two (offline fixture)',
+    ])
+    expect(within(rung).getByLabelText('Effort')).toHaveValue('high')
     expect(
       within(within(rung).getByLabelText('Effort')).getAllByRole('option').map((o) => o.textContent),
-    ).toEqual(['low', 'high', 'max'])
+    ).toEqual(['low', 'medium', 'high'])
   })
 
   it('forces unset and disables the control on a route with no effort lever', () => {
@@ -392,8 +393,8 @@ describe('<TeamsView>', () => {
   it('keeps a pinned effort the new route also exposes', () => {
     const container = openDraft(/plan-build-verify/)
     const rung = rungOf(slotOf(container, 'architect'), 1)
-    fireEvent.change(within(rung).getByLabelText('Model'), { target: { value: 'gpt-5.6-terra' } })
-    expect(within(rung).getByLabelText('Effort')).toHaveValue('xhigh')
+    fireEvent.change(within(rung).getByLabelText('Model'), { target: { value: 'alpha-two' } })
+    expect(within(rung).getByLabelText('Effort')).toHaveValue('high')
   })
 
   it('reports a clamp as a notice under best effort and as a refusal under required', () => {
@@ -426,13 +427,13 @@ describe('<TeamsView>', () => {
       'extended',
       'native',
     ])
-    // Nothing establishes this route's ceiling, so no class can be shown to hold
-    // — which is a different answer from "it fits", and the table says so.
+    // The fixture states a 300000 ceiling, so the two smallest classes hold and
+    // the two above it clamp.
     expect(rows.map((row) => row.getAttribute('data-capability'))).toEqual([
-      'unsupported',
-      'unsupported',
-      'unsupported',
-      'unsupported',
+      'supported',
+      'supported',
+      'clamped',
+      'clamped',
       'supported',
     ])
     expect(table.querySelector('tr[data-selected="true"]')?.getAttribute('data-class')).toBe('deep')
@@ -505,7 +506,7 @@ describe('<TeamsView>', () => {
     // spends allowance — so a dollar column would be the wrong quantity even if
     // every rate in it had been verified.
     const container = openDraft(/plan-build-verify/)
-    const table = within(slotOf(container, 'architect')).getByRole('table')
+    const table = within(slotOf(container, 'audit')).getByRole('table')
 
     expect(within(rowsOf(table)).getAllByText('plan_allowance')).toHaveLength(5)
     expect(within(table).queryByText(/^\$/)).toBeNull()

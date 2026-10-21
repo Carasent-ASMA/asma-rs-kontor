@@ -46,7 +46,7 @@ fn paseo_direct_seat(seat_key: &str, label: &str, procedure: &str) -> serde_json
         "seat_label": label,
         "procedure": procedure,
         "recovery_owner": "paseo_direct",
-        "decided_by": "Igor",
+        "decided_by": "Test Owner",
         "decided_on": "2026-10-08",
     })
 }
@@ -59,7 +59,7 @@ fn daemon_seat(seat_key: &str, label: &str) -> serde_json::Value {
         "seat_label": label,
         "model_route": serde_json::from_str::<serde_json::Value>(ROUTE).expect("route"),
         "recovery_owner": "daemon",
-        "decided_by": "Igor",
+        "decided_by": "Test Owner",
         "decided_on": "2026-10-11",
     })
 }

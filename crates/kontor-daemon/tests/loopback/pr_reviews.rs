@@ -883,7 +883,7 @@ async fn closing_one_review_keeps_the_desk_its_durable_seat_and_the_other_review
             "seat_label": "KEEPER",
             "model_route": codex_route(),
             "recovery_owner": "daemon",
-            "decided_by": "Igor",
+            "decided_by": "Test Owner",
             "decided_on": "2026-10-11",
         }),
     )

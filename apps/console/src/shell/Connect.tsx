@@ -85,7 +85,7 @@ export function Connect({
           id="base-url"
           name="base_url"
           value={baseUrl}
-          placeholder="http://127.0.0.1:7777"
+          placeholder="http://127.0.0.1:7717"
           onChange={(event) => setBaseUrl(event.target.value)}
         />
         {locality === 'not_loopback' ? (

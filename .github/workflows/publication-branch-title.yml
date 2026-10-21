@@ -1,14 +1,30 @@
 # Publication branch and title identity (ASMA-8101 / ASMA-8103).
 #
 # Trusted-source design: `pull_request_target` runs this workflow from the
-# default branch; the checker is fetched through the GitHub Contents API from
-# the exact immutable workflow revision (`github.workflow_sha`) into the
+# default branch; the checker, its project-config helper, the YAML reader and
+# the kontor-core grammar source are fetched through the GitHub Contents API
+# from the exact immutable workflow revision (`github.workflow_sha`) into the
 # runner temp directory; nothing from the PR head or merge commit is ever
-# fetched or executed. The checker itself refuses any current base ref other
-# than master, so the trigger keeps no base filter and retargeting stays
-# observable via `edited`. A `dependabot/` branch opened by `dependabot[bot]`
-# is exempt from the branch and title grammar; PR_AUTHOR carries the PR
-# author's login for that exemption.
+# fetched or executed. The trigger keeps no base filter so retargeting stays
+# observable via `edited`.
+#
+# The project key, base branch and check name come from the selected YAML
+# config folder. This workflow cannot read that folder, so it prefers the
+# repository variables KONTOR_PROJECT_KEY, KONTOR_BASE_BRANCH and
+# KONTOR_CHECK_NAME when all three are set and writes a temporary projection
+# recording them as the source. Otherwise it reads the committed projection
+# `.github/kontor-project.yml`, generated from the named ASMA schema fixture
+# `tests/fixtures/config/asma-orchestration.yml` (not the live config).
+# The job opens a check run named by the selected check variable whenever that
+# name is usable, before validating the rest of the variables. A partial or
+# invalid variable set therefore completes the selected check as failure
+# instead of leaving an earlier success on the same head SHA. If no check name
+# is resolvable, it opens the committed projection's name. Branch protection
+# must require both that API check and the static job check
+# `Publication branch and title identity`, so an unresolvable name cannot leave
+# an earlier required API check green. A `dependabot/` branch opened
+# by `dependabot[bot]` is exempt from the branch and title grammar; PR_AUTHOR
+# carries the PR author's login for that exemption.
 name: Publication branch and title identity
 
 on:
@@ -22,6 +38,7 @@ on:
 
 permissions:
   contents: read
+  checks: write
 
 concurrency:
   group: publication-branch-title-${{ github.event.pull_request.number }}
@@ -29,16 +46,20 @@ concurrency:
 
 jobs:
   identity:
-    name: asma/publication-branch-title
+    name: Publication branch and title identity
     runs-on: ubuntu-latest
     steps:
-      - name: Fetch the checker from the exact workflow revision
+      - name: Fetch the trusted sources from the exact workflow revision
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           CHECKER_SOURCE_SHA: ${{ github.workflow_sha }}
           EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           CHECKER_PATH: ${{ runner.temp }}/publication_branch_title.py
+          PROJECT_HELPER_PATH: ${{ runner.temp }}/kontor_project.py
+          YAML_HELPER_PATH: ${{ runner.temp }}/pack.py
+          BRANCH_SOURCE_PATH: ${{ runner.temp }}/branch.rs
+          COMMITTED_PROJECTION_PATH: ${{ runner.temp }}/kontor-project.yml
         run: |
           set -euo pipefail
 
@@ -50,19 +71,133 @@ jobs:
           printf 'checker_source_sha=%s\n' "$CHECKER_SOURCE_SHA"
           printf 'event_base_sha=%s\n' "$EVENT_BASE_SHA"
 
-          curl --fail-with-body --silent --show-error --location \
-            --header "Authorization: Bearer ${GH_TOKEN}" \
-            --header "Accept: application/vnd.github.raw+json" \
-            --header "X-GitHub-Api-Version: 2022-11-28" \
-            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/contents/.github/scripts/publication_branch_title.py?ref=${CHECKER_SOURCE_SHA}" \
-            --output "$CHECKER_PATH"
+          fetch() {
+            source_path=$1
+            target_path=$2
+            curl --fail-with-body --silent --show-error --location \
+              --header "Authorization: Bearer ${GH_TOKEN}" \
+              --header "Accept: application/vnd.github.raw+json" \
+              --header "X-GitHub-Api-Version: 2022-11-28" \
+              "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/contents/${source_path}?ref=${CHECKER_SOURCE_SHA}" \
+              --output "$target_path"
+            test -s "$target_path"
+          }
 
-          test -s "$CHECKER_PATH"
+          fetch ".github/scripts/publication_branch_title.py" "$CHECKER_PATH"
+          fetch "scripts/kontor_project.py" "$PROJECT_HELPER_PATH"
+          fetch "scripts/pack.py" "$YAML_HELPER_PATH"
+          fetch "crates/kontor-core/src/branch.rs" "$BRANCH_SOURCE_PATH"
+          fetch ".github/kontor-project.yml" "$COMMITTED_PROJECTION_PATH"
+
+      - name: Open the configured publication check
+        id: configured-check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROJECT_HELPER_PATH: ${{ runner.temp }}/kontor_project.py
+          COMMITTED_PROJECTION: ${{ runner.temp }}/kontor-project.yml
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          KONTOR_PROJECT_KEY: ${{ vars.KONTOR_PROJECT_KEY }}
+          KONTOR_BASE_BRANCH: ${{ vars.KONTOR_BASE_BRANCH }}
+          KONTOR_CHECK_NAME: ${{ vars.KONTOR_CHECK_NAME }}
+        run: |
+          set -euo pipefail
+
+          committed_name=$(python3 "$PROJECT_HELPER_PATH" \
+            --config-file "$COMMITTED_PROJECTION" check-name)
+          test -n "$committed_name"
+
+          valid_name=1
+          case "$KONTOR_CHECK_NAME" in
+            ''|*[!A-Za-z0-9._/-]*) valid_name=0 ;;
+          esac
+          if [ "$valid_name" = 1 ]; then
+            check_name="$KONTOR_CHECK_NAME"
+            check_source=repository-variables
+          else
+            check_name="$committed_name"
+            check_source=committed-projection
+          fi
+          test -n "$check_name"
+          check_run_id=$(gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/check-runs" \
+            -f name="$check_name" \
+            -f head_sha="$HEAD_SHA" \
+            -f status=in_progress \
+            -f external_id="kontor-publication-${PR_NUMBER}-${HEAD_SHA}" \
+            --jq .id)
+          test -n "$check_run_id"
+          printf 'check_run_id=%s\n' "$check_run_id" >> "$GITHUB_OUTPUT"
+          printf 'check_name=%s\n' "$check_name" >> "$GITHUB_OUTPUT"
+          printf 'check_source=%s\n' "$check_source" >> "$GITHUB_OUTPUT"
+
+      - name: Project the repository variables
+        shell: bash
+        env:
+          KONTOR_PROJECT_KEY: ${{ vars.KONTOR_PROJECT_KEY }}
+          KONTOR_BASE_BRANCH: ${{ vars.KONTOR_BASE_BRANCH }}
+          KONTOR_CHECK_NAME: ${{ vars.KONTOR_CHECK_NAME }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          COMMITTED_PROJECTION: ${{ runner.temp }}/kontor-project.yml
+          SELECTED_PROJECTION: ${{ runner.temp }}/selected-project.yml
+        run: |
+          set -euo pipefail
+
+          if [ -z "$KONTOR_PROJECT_KEY" ] && [ -z "$KONTOR_BASE_BRANCH" ] \
+            && [ -z "$KONTOR_CHECK_NAME" ]; then
+            cp "$COMMITTED_PROJECTION" "$SELECTED_PROJECTION"
+            printf 'project_source=committed-projection\n'
+            exit 0
+          fi
+
+          for value in "$KONTOR_PROJECT_KEY" "$KONTOR_BASE_BRANCH" "$KONTOR_CHECK_NAME"; do
+            if [ -z "$value" ]; then
+              echo "repository variables must be all set or all empty" >&2
+              exit 1
+            fi
+          done
+
+          case "$KONTOR_PROJECT_KEY" in
+            ''|[0-9]*|*[!A-Z0-9]*)
+              echo "KONTOR_PROJECT_KEY must be uppercase letters" >&2
+              exit 1
+              ;;
+          esac
+          case "$KONTOR_BASE_BRANCH" in
+            ''|*[!A-Za-z0-9._/-]*)
+              echo "KONTOR_BASE_BRANCH contains unsupported characters" >&2
+              exit 1
+              ;;
+          esac
+          case "$KONTOR_CHECK_NAME" in
+            ''|*[!A-Za-z0-9._/-]*)
+              echo "KONTOR_CHECK_NAME contains unsupported characters" >&2
+              exit 1
+              ;;
+          esac
+
+          {
+            printf '# Generated projection of repository variables.\n'
+            printf 'schema_version: 1\n'
+            printf 'generated:\n'
+            printf '  source: "repository-variables"\n'
+            printf '  source_revision: "%s"\n' "$WORKFLOW_SHA"
+            printf '  variables: ["KONTOR_PROJECT_KEY", "KONTOR_BASE_BRANCH", "KONTOR_CHECK_NAME"]\n'
+            printf 'project:\n'
+            printf '  key: "%s"\n' "$KONTOR_PROJECT_KEY"
+            printf '  forge:\n'
+            printf '    base_branch: "%s"\n' "$KONTOR_BASE_BRANCH"
+            printf '  check_runs: ["%s"]\n' "$KONTOR_CHECK_NAME"
+          } > "$SELECTED_PROJECTION"
+          printf 'project_source=repository-variables\n'
 
       - name: Evaluate the current branch and title
         shell: bash
         env:
           CHECKER_PATH: ${{ runner.temp }}/publication_branch_title.py
+          KONTOR_CONFIG_FILE: ${{ runner.temp }}/selected-project.yml
+          KONTOR_BRANCH_GRAMMAR_SOURCE: ${{ runner.temp }}/branch.rs
           PR_ACTION: ${{ github.event.action }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
@@ -71,3 +206,23 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: python3 "$CHECKER_PATH"
+
+      - name: Complete the configured publication check
+        if: always() && steps.configured-check.outputs.check_run_id != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHECK_RUN_ID: ${{ steps.configured-check.outputs.check_run_id }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+
+          case "$JOB_STATUS" in
+            success) conclusion=success ;;
+            cancelled) conclusion=cancelled ;;
+            *) conclusion=failure ;;
+          esac
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/check-runs/${CHECK_RUN_ID}" \
+            -f status=completed \
+            -f conclusion="$conclusion" >/dev/null

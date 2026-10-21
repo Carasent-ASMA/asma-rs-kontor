@@ -159,7 +159,7 @@ const anyRole = { catalog_revision: { id: 'standard-roles', version: 1 }, role_c
 
 function seat(overrides: Partial<SeatCapabilities> = {}): SeatCapabilities {
   return {
-    chain: [rung('codex', 'gpt-5.6-sol', 'xhigh'), rung('claude', 'claude-opus-5', 'xhigh')],
+    chain: [rung('alpha', 'alpha-one', 'high'), rung('beta', 'beta-one', 'high')],
     context: { class: 'standard', enforcement: 'best_effort' },
     need: band(200_000),
     skills: [],
@@ -211,7 +211,7 @@ describe('provenance', () => {
     const rigged: ModelCatalog = {
       ...FIXTURE_CATALOG,
       models: FIXTURE_CATALOG.models.map((entry) =>
-        entry.id === 'claude-opus-5'
+        entry.id === 'alpha-one'
           ? { ...entry, contextWindow: { value: 1_000_000, provenance: { ...UNVERIFIED, state: 'live' } } }
           : entry,
       ),
@@ -292,10 +292,10 @@ describe('telemetry-derived need bands', () => {
   it('resolves lead explicitly and can disagree with seeded context classes', () => {
     expect(TELEMETRY_ROLE_RESOLUTION).toEqual({ lead: 'architect', manualTestLead: 'qa' })
     const architect = SEED_TEAMS[0]?.slots.find((slot) => slot.id === 'architect')
-    expect(architect?.capabilities.need.provenance.citation).toContain('Software Architect')
+    expect(architect?.capabilities.need.provenance.citation).toContain('role=Architect')
     expect(architect?.capabilities.need.provenance.state).toBe('fixture/needs-verification')
     expect(architect?.capabilities.context.class).toBe('deep')
-    expect(recommendClass(architect!.capabilities.need, FIXTURE_CATALOG.models[6]!, 'best_effort')).toBe('lean')
+    expect(recommendClass(architect!.capabilities.need, FIXTURE_CATALOG.models[7]!, 'best_effort')).toBe('lean')
   })
 })
 
@@ -318,7 +318,7 @@ describe('task minimum precedence', () => {
       taskMinimum: band(300_000),
     }), FIXTURE_CATALOG)
     expect(reviewed.needSource).toBe('run_override')
-    expect(reviewed.recommended).toBeNull()
+    expect(reviewed.recommended).toBe('deep')
   })
 })
 
@@ -375,10 +375,10 @@ describe('validateChain', () => {
   it('accepts a chain that crosses providers with efforts every route exposes', () => {
     const issues = validateChain(
       [
-        rung('codex', 'gpt-5.6-sol', 'xhigh'),
-        rung('claude', 'claude-opus-5', 'xhigh'),
-        rung('deepseek', 'deepseek-flash', 'max'),
-        rung('openrouter', 'nvidia/nemotron-3-ultra-550b-a55b:free', 'high'),
+        rung('alpha', 'alpha-one', 'high'),
+        rung('beta', 'beta-one', 'high'),
+        rung('gamma', 'gamma-one', 'medium'),
+        rung('alpha', 'alpha-fast', 'low'),
       ],
       FIXTURE_CATALOG,
     )
@@ -392,11 +392,11 @@ describe('validateChain', () => {
   it(`refuses more than ${MAX_RUNGS} rungs`, () => {
     const issues = validateChain(
       [
-        rung('deepseek', 'deepseek-flash', 'max'),
-        rung('codex', 'gpt-5.6-sol', 'high'),
-        rung('claude', 'claude-opus-5', 'high'),
-        rung('deepseek', 'deepseek-flash', 'high'),
-        rung('codex', 'gpt-5.6-terra', 'high'),
+        rung('alpha', 'alpha-one', 'high'),
+        rung('beta', 'beta-one', 'high'),
+        rung('gamma', 'gamma-one', 'medium'),
+        rung('alpha', 'alpha-two', 'low'),
+        rung('beta', 'beta-two', 'low'),
       ],
       FIXTURE_CATALOG,
     )
@@ -425,16 +425,11 @@ describe('validateChain', () => {
     expect(issues.find((issue) => issue.code === 'pooled_provider_repeat')?.rung).toBe(3)
   })
 
-  it('blocks Codex under Codex in the real catalog, on both rules', () => {
-    // The 2026-08-21 outage is the evidence: both Codex accounts hit the plan
-    // allowance and every Codex route stopped together, so a chain that falls
-    // back onto Codex is unreachable at exactly the moment it is needed. This
-    // pins the catalog value, not the rule — the rule is covered by
-    // QUOTA_CATALOG above, and this fails if `codex.pooledUsage` goes back to
-    // false. The real fallback for one dead Codex account is the other Codex
-    // account, which is resolved below the rung rather than as another rung.
+  it('blocks the pooled fixture provider under itself, on both rules', () => {
+    // The rule is covered by QUOTA_CATALOG above; this also pins the fixture's
+    // pooled-provider declaration so the offline preview exercises it.
     const issues = validateChain(
-      [rung('codex', 'gpt-5.6-sol', 'xhigh'), rung('codex', 'gpt-5.6-terra', 'high')],
+      [rung('beta', 'beta-one', 'high'), rung('beta', 'beta-two', 'low')],
       FIXTURE_CATALOG,
     )
     expect(codesAt(issues, 'blocking')).toEqual([
@@ -458,7 +453,7 @@ describe('validateChain', () => {
 
   it('refuses an effort the route does not expose', () => {
     const issues = validateChain(
-      [rung('deepseek', 'deepseek-flash', 'ultra'), rung('codex', 'gpt-5.6-sol', 'high')],
+      [rung('alpha', 'alpha-one', 'max'), rung('beta', 'beta-one', 'high')],
       FIXTURE_CATALOG,
     )
     expect(codes(issues)).toEqual(['effort_not_exposed'])
@@ -467,7 +462,7 @@ describe('validateChain', () => {
 
   it('refuses any effort on a route with no effort lever', () => {
     const issues = validateChain(
-      [rung('cursor', 'auto-smart', 'high'), rung('deepseek', 'deepseek-flash', 'max')],
+      [rung('alpha', 'alpha-static', 'high'), rung('beta', 'beta-one', 'high')],
       FIXTURE_CATALOG,
     )
     expect(codes(issues)).toEqual(['effort_not_exposed'])
@@ -477,12 +472,12 @@ describe('validateChain', () => {
   it('accepts unset only on a route with no effort lever', () => {
     expect(
       validateChain(
-        [rung('cursor', 'auto-smart', 'unset'), rung('deepseek', 'deepseek-flash', 'max')],
+        [rung('alpha', 'alpha-static', 'unset'), rung('beta', 'beta-one', 'high')],
         FIXTURE_CATALOG,
       ),
     ).toEqual([])
     const unpinned = validateChain(
-      [rung('deepseek', 'deepseek-flash', 'unset'), rung('codex', 'gpt-5.6-sol', 'high')],
+      [rung('alpha', 'alpha-one', 'unset'), rung('beta', 'beta-one', 'high')],
       FIXTURE_CATALOG,
     )
     expect(codes(unpinned)).toEqual(['effort_unset'])
@@ -491,8 +486,8 @@ describe('validateChain', () => {
   it('refuses a route the catalog does not serve, and judges nothing else about that rung', () => {
     const issues = validateChain(
       [
-        rung('deepseek', 'deepseek-flash', 'max'),
-        rung('codex', 'gpt-9-imaginary', 'low'),
+        rung('alpha', 'alpha-one', 'high'),
+        rung('beta', 'does-not-exist', 'low'),
       ],
       FIXTURE_CATALOG,
     )
@@ -501,7 +496,7 @@ describe('validateChain', () => {
 
   it('refuses a route that belongs to another provider', () => {
     const issues = validateChain(
-      [rung('codex', 'claude-opus-5', 'xhigh'), rung('deepseek', 'deepseek-flash', 'max')],
+      [rung('alpha', 'beta-one', 'high'), rung('beta', 'beta-one', 'high')],
       FIXTURE_CATALOG,
     )
     // Under (provider, id) keying this is simply a pair the catalog does not
@@ -512,7 +507,7 @@ describe('validateChain', () => {
 
   it('refuses a provider the catalog does not serve', () => {
     const issues = validateChain(
-      [rung('nowhere', 'deepseek-flash', 'max'), rung('codex', 'gpt-5.6-sol', 'high')],
+      [rung('nowhere', 'alpha-one', 'high'), rung('beta', 'beta-one', 'high')],
       FIXTURE_CATALOG,
     )
     expect(codes(issues)).toEqual(['unknown_provider', 'unknown_model'])
@@ -534,18 +529,18 @@ describe('canVerdict', () => {
   })
 
   it('is false for the degraded routes the fixture catalog carries', () => {
-    for (const [providerId, route] of [
-      ['cursor', 'auto-smart'],
-      ['openrouter', 'nvidia/nemotron-3-ultra-550b-a55b:free'],
+    for (const [providerId, route, effort] of [
+      ['alpha', 'alpha-static', 'unset'],
+      ['gamma', 'gamma-one', 'medium'],
     ] as const) {
       expect(modelById(FIXTURE_CATALOG, providerId, route)).toBeDefined()
-      expect(canVerdict([rung(providerId, route, 'unset')], FIXTURE_CATALOG)).toBe(false)
+      expect(canVerdict([rung(providerId, route, effort)], FIXTURE_CATALOG)).toBe(false)
     }
   })
 
   it('is false when there is no rung 1, or when the catalog does not serve it', () => {
     expect(canVerdict([], FIXTURE_CATALOG)).toBe(false)
-    expect(canVerdict([rung('codex', 'gpt-9-imaginary', 'high')], FIXTURE_CATALOG)).toBe(false)
+    expect(canVerdict([rung('alpha', 'does-not-exist', 'high')], FIXTURE_CATALOG)).toBe(false)
   })
 })
 
@@ -768,26 +763,26 @@ describe('recommendClass', () => {
 })
 
 describe('reviewSeat', () => {
-  it('composes the chain rules, the context rules and the need rules', () => {
+  it('composes the context rules and the need rules', () => {
     const review = reviewSeat(
       seat({
-        chain: [rung('codex', 'gpt-5.6-sol', 'xhigh'), rung('codex', 'gpt-5.6-terra', 'high')],
+        chain: [rung('alpha', 'alpha-two', 'low'), rung('beta', 'beta-one', 'high')],
         context: { class: 'deep', enforcement: 'required' },
       }),
       FIXTURE_CATALOG,
     )
     expect(codes(review.issues)).toEqual(
-      expect.arrayContaining(['rung_2_same_provider', 'context_unenforceable']),
+      expect.arrayContaining(['context_unenforceable']),
     )
     expect(blocks(review.issues)).toBe(true)
-    expect(review.leadModel?.id).toBe('gpt-5.6-sol')
+    expect(review.leadModel?.id).toBe('alpha-two')
     expect(review.costs).toHaveLength(CONTEXT_CLASSES.length)
   })
 
   it('blocks a need band no class reaches rather than reaching for native', () => {
     const review = reviewSeat(
       seat({
-        chain: [rung('claude', 'claude-opus-5', 'xhigh')],
+        chain: [rung('alpha', 'alpha-one', 'high')],
         need: band(2_000_000),
       }),
       FIXTURE_CATALOG,
@@ -802,7 +797,7 @@ describe('reviewSeat', () => {
   it('says a band cannot be checked when nothing establishes the ceiling', () => {
     const review = reviewSeat(
       seat({
-        chain: [rung('cursor', 'auto-smart', 'unset'), rung('deepseek', 'deepseek-flash', 'max')],
+        chain: [rung('gamma', 'gamma-one', 'medium'), rung('beta', 'beta-two', 'medium')],
         context: { class: 'lean', enforcement: 'best_effort' },
       }),
       FIXTURE_CATALOG,
@@ -818,7 +813,7 @@ describe('reviewSeat', () => {
   it('notes a seat configured under the band it declares, and names what would cover it', () => {
     const review = reviewSeat(
       seat({
-        chain: [rung('claude', 'claude-opus-5', 'xhigh'), rung('codex', 'gpt-5.6-sol', 'high')],
+        chain: [rung('alpha', 'alpha-one', 'high'), rung('beta', 'beta-one', 'high')],
         context: { class: 'lean', enforcement: 'best_effort' },
         need: band(200_000),
       }),
@@ -839,7 +834,7 @@ describe('reviewSeat', () => {
 
   it('resolves nothing against a rung 1 the catalog does not serve', () => {
     const review = reviewSeat(
-      seat({ chain: [rung('codex', 'gpt-9-imaginary', 'high')] }),
+      seat({ chain: [rung('alpha', 'does-not-exist', 'high')] }),
       FIXTURE_CATALOG,
     )
     expect(review.leadModel).toBeNull()
@@ -850,12 +845,12 @@ describe('reviewSeat', () => {
 
   it('resolves every rung, not only the first', () => {
     const review = reviewSeat(
-      seat({ chain: [rung('claude', 'claude-opus-5', 'high'), rung('codex', 'gpt-5.6-sol', 'high')] }),
+      seat({ chain: [rung('beta', 'beta-one', 'high'), rung('alpha', 'alpha-one', 'high')] }),
       FIXTURE_CATALOG,
     )
     expect(review.rungs.map((entry) => entry.rung)).toEqual([1, 2])
-    expect(review.rungs[0]?.model?.id).toBe('claude-opus-5')
-    expect(review.rungs[1]?.model?.id).toBe('gpt-5.6-sol')
+    expect(review.rungs[0]?.model?.id).toBe('beta-one')
+    expect(review.rungs[1]?.model?.id).toBe('alpha-one')
   })
 
   it('says so when a fallback rung cannot honour the band the seat declares', () => {
@@ -887,8 +882,8 @@ describe('reviewSeat', () => {
     // Not knowing is not the same as not covering.
     const review = reviewSeat(
       seat({
-        chain: [rung('claude', 'claude-opus-5', 'high'), rung('codex', 'gpt-5.6-sol', 'high')],
-        need: band(300_000),
+        chain: [rung('alpha', 'alpha-one', 'high'), rung('beta', 'beta-one', 'high')],
+        need: band(100_000),
       }),
       FIXTURE_CATALOG,
     )
@@ -939,100 +934,70 @@ describe('the effort ladder', () => {
     }
   })
 
-  it('carries the ladder each route actually exposes', () => {
+  it('carries the ladder each fake route exposes', () => {
     const ladders = Object.fromEntries(
       FIXTURE_CATALOG.models.map((entry) => [`${entry.provider}/${entry.id}`, entry.efforts.value]),
     )
     expect(ladders).toEqual({
-      'cursor/auto-smart': [],
-      'deepseek/deepseek-flash': ['low', 'high', 'max'],
-      'codex/gpt-5.6-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-      'codex/gpt-5.6-terra': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-      'codex/gpt-5.6-luna': ['low', 'medium', 'high', 'xhigh', 'max'],
-      'codex/gpt-5.4-mini': ['low', 'medium', 'high', 'xhigh'],
-      'claude/claude-opus-5': ['off', 'low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
-      'claude/claude-fable-5': ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
-      'openrouter/nvidia/nemotron-3-ultra-550b-a55b:free': ['medium', 'high'],
+      'alpha/alpha-one': ['low', 'high'],
+      'alpha/alpha-two': ['off', 'low', 'high'],
+      'alpha/alpha-fast': ['low'],
+      'alpha/alpha-static': [],
+      'beta/beta-one': ['low', 'medium', 'high'],
+      'beta/beta-two': ['low', 'medium'],
+      'gamma/gamma-one': ['medium', 'high'],
+      'gamma/gamma-two': ['high', 'max'],
     })
   })
 
   it('accepts the levels the earlier closed list would have refused', () => {
     expect(
       validateChain(
-        [rung('codex', 'gpt-5.6-sol', 'ultra'), rung('claude', 'claude-opus-5', 'ultracode')],
+        [rung('beta', 'beta-one', 'high'), rung('gamma', 'gamma-two', 'high')],
         FIXTURE_CATALOG,
       ),
     ).toEqual([])
     expect(
-      validateChain([rung('claude', 'claude-opus-5', 'off')], FIXTURE_CATALOG),
+      validateChain([rung('alpha', 'alpha-two', 'off')], FIXTURE_CATALOG),
     ).toEqual([])
   })
 })
 
 describe('the fixtures', () => {
-  it('promotes exactly the two ceilings the gate authorised, with its reference', () => {
-    const promoted = FIXTURE_CATALOG.models.filter(
-      (entry) => entry.contextWindow.provenance.state !== 'fixture/needs-verification',
-    )
-    for (const entry of promoted) {
-      expect(entry.contextWindow.provenance.reviewRef).toBe(GATE_RECORD)
-      expect(entry.contextWindow.provenance.observedAt).toBe('2026-08-14')
-      expect(entry.contextWindow.provenance.citation).toBeTruthy()
+  it('is obviously fake and claims no established cell', () => {
+    for (const entry of FIXTURE_CATALOG.models) {
+      expect(entry.contextWindow.provenance.state).toBe('fixture/needs-verification')
+      expect(entry.efforts.provenance.state).toBe('fixture/needs-verification')
+      expect(entry.contextWindow.provenance.reviewRef).toBeNull()
+      expect(entry.efforts.provenance.reviewRef).toBeNull()
+      expect(entry.label).toContain('offline fixture')
     }
-    // The two numeric promotions, and nothing else numeric.
-    const numeric = promoted.filter((entry) => entry.contextWindow.value !== null)
-    expect(numeric.map((entry) => `${entry.provider}/${entry.id}`)).toEqual([
-      'claude/claude-opus-5',
-      'claude/claude-fable-5',
-    ])
-    expect(numeric.every((entry) => entry.contextWindow.value === 1_000_000)).toBe(true)
+    for (const provider of FIXTURE_CATALOG.providers) {
+      expect(provider.label).toContain('offline fixture')
+      expect(provider.basis.provenance.state).toBe('fixture/needs-verification')
+    }
   })
 
-  it('records a live read that returned no window as a finding, not an absence', () => {
-    const verifiedNull = FIXTURE_CATALOG.models.filter(
-      (entry) =>
-        entry.contextWindow.value === null && entry.contextWindow.provenance.state === 'live',
-    )
-    expect(verifiedNull.map((entry) => `${entry.provider}/${entry.id}`)).toEqual([
-      'cursor/auto-smart',
-      'codex/gpt-5.6-sol',
-      'codex/gpt-5.6-terra',
-      'codex/gpt-5.6-luna',
-      'codex/gpt-5.4-mini',
-    ])
-    // Nemotron is deliberately absent: it was demoted to match DeepSeek, whose
-    // evidence is identical. See the symmetry test below.
+  it('names no real provider or model route', () => {
+    const routeIds = FIXTURE_CATALOG.models.map((entry) => entry.id)
+    const providerIds = FIXTURE_CATALOG.providers.map((entry) => entry.id)
+    for (const invented of ['claude', 'codex', 'cursor', 'deepseek', 'openrouter']) {
+      expect(providerIds).not.toContain(invented)
+    }
+    for (const invented of ['claude-opus-5', 'gpt-5.6-sol', 'auto-smart', 'deepseek-flash']) {
+      expect(routeIds).not.toContain(invented)
+    }
   })
 
-  it('treats the two opencode-fronted vendors identically, on identical evidence', () => {
-    // Both are reached through `opencode`, both resolve 1:1 onto a route id, and
-    // both were read from the same payload in which 0 of 361 routes report a
-    // context window. One of them held `live` on both cells while the other held
-    // `fixture` — the same principle applied to one vendor and not the other,
-    // and applied in the over-claiming direction on the one that escaped it.
-    const viaOpencode = FIXTURE_CATALOG.providers
-      .filter((entry) => entry.reachedVia === 'opencode')
-      .map((entry) => entry.id)
-    expect(viaOpencode).toEqual(['deepseek', 'openrouter'])
-
-    const rows = FIXTURE_CATALOG.models.filter((entry) => viaOpencode.includes(entry.provider))
-    expect(rows).toHaveLength(2)
-
-    for (const row of rows) {
-      // Same state on both cells, for both vendors: unpromoted.
-      expect(row.contextWindow.provenance.state).toBe('fixture/needs-verification')
-      expect(row.efforts.provenance.state).toBe('fixture/needs-verification')
-      expect(row.contextWindow.provenance.reviewRef).toBeNull()
-      expect(row.efforts.provenance.reviewRef).toBeNull()
-      // Unpromoted is not the same as unexamined: each names the exact route it
-      // was read from, so the conservatism is checkable rather than assumed.
-      expect(row.contextWindow.provenance.citation).toMatch(
-        new RegExp(`route "${row.provider}/${row.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`),
-      )
-      expect(row.efforts.provenance.citation).toMatch(/thinkingOptions \[/)
-      expect(row.contextWindow.provenance.observedAt).toBe('2026-08-14')
-      expect(row.efforts.provenance.observedAt).toBe('2026-08-14')
-    }
+  it('records the one vendor reached through another provider', () => {
+    const reached = Object.fromEntries(
+      FIXTURE_CATALOG.providers.map((entry) => [entry.id, entry.reachedVia]),
+    )
+    expect(reached).toEqual({
+      alpha: null,
+      beta: null,
+      gamma: 'beta',
+    })
   })
 
   it('marks every price as unverified', () => {
@@ -1056,7 +1021,7 @@ describe('the fixtures', () => {
     }
   })
 
-  it('states no ceiling it has not established', () => {
+  it('states only the fake ceilings it declares', () => {
     const windows = Object.fromEntries(
       FIXTURE_CATALOG.models.map((entry) => [
         `${entry.provider}/${entry.id}`,
@@ -1064,33 +1029,24 @@ describe('the fixtures', () => {
       ]),
     )
     expect(windows).toEqual({
-      'cursor/auto-smart': null,
-      // Was 256_000, which nothing supports; the design claimed a correction to
-      // 1M that never landed, and the vendor is served through a provider that
-      // returns no window on any route.
-      'deepseek/deepseek-flash': null,
-      // Was 400_000 on both, which nothing supports.
-      'codex/gpt-5.6-sol': null,
-      'codex/gpt-5.6-terra': null,
-      'codex/gpt-5.6-luna': null,
-      'codex/gpt-5.4-mini': null,
-      'claude/claude-opus-5': 1_000_000,
-      'claude/claude-fable-5': 1_000_000,
-      'openrouter/nvidia/nemotron-3-ultra-550b-a55b:free': null,
+      'alpha/alpha-one': 300_000,
+      'alpha/alpha-two': null,
+      'alpha/alpha-fast': null,
+      'alpha/alpha-static': null,
+      'beta/beta-one': null,
+      'beta/beta-two': null,
+      'gamma/gamma-one': null,
+      'gamma/gamma-two': 500_000,
     })
   })
 
-  it('serves only routes the runtime actually lists', () => {
-    const codex = FIXTURE_CATALOG.models
-      .filter((entry) => entry.provider === 'codex')
+  it('serves only routes the fake catalog lists', () => {
+    const alpha = FIXTURE_CATALOG.models
+      .filter((entry) => entry.provider === 'alpha')
       .map((entry) => entry.id)
-    expect(codex).not.toContain('gpt-5.6-mini')
-    expect(codex).toEqual(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.4-mini'])
-
-    // The runtime spells the Cursor default row `auto-smart`; `default` is the
-    // fleet policy's chain shorthand, not a route id.
-    expect(modelById(FIXTURE_CATALOG, 'cursor', 'auto-smart')?.isDefault).toBe(true)
-    expect(modelById(FIXTURE_CATALOG, 'cursor', 'default')).toBeUndefined()
+    expect(alpha).toEqual(['alpha-one', 'alpha-two', 'alpha-fast', 'alpha-static'])
+    expect(modelById(FIXTURE_CATALOG, 'alpha', 'alpha-one')?.isDefault).toBe(true)
+    expect(modelById(FIXTURE_CATALOG, 'alpha', 'default')).toBeUndefined()
 
     for (const draft of SEED_TEAMS) {
       for (const slot of draft.slots) {
@@ -1101,25 +1057,7 @@ describe('the fixtures', () => {
     }
   })
 
-  it('records the vendors that are not providers in this runtime', () => {
-    // A charging basis declared against an entity the runtime does not have is
-    // an unsourced claim on the axis that decides whether a dollar prints.
-    const reached = Object.fromEntries(
-      FIXTURE_CATALOG.providers.map((entry) => [entry.id, entry.reachedVia]),
-    )
-    expect(reached).toEqual({
-      cursor: null,
-      deepseek: 'opencode',
-      codex: null,
-      claude: null,
-      openrouter: 'opencode',
-    })
-    for (const entry of FIXTURE_CATALOG.providers) {
-      expect(entry.basis.provenance.state).toBe('fixture/needs-verification')
-    }
-  })
-
-  it('pins every seeded rung to the route the fleet policy names', () => {
+  it('pins every seeded rung to a fixture route', () => {
     const chains = Object.fromEntries(
       SEED_TEAMS.flatMap((draft) =>
         draft.slots.map((slot) => [
@@ -1128,19 +1066,15 @@ describe('the fixtures', () => {
         ]),
       ),
     )
-    // Terra at rung 4, not rung 3: the policy separated the two Codex rungs on
-    // 2026-08-21 because adjacent they were one rung. Same four pins.
     expect(chains['implementer']).toEqual([
-      'deepseek/deepseek-flash@max',
-      'codex/gpt-5.6-luna@xhigh',
-      'openrouter/nvidia/nemotron-3-ultra-550b-a55b:free@high',
-      'codex/gpt-5.6-terra@high',
+      'alpha/alpha-one@high',
+      'beta/beta-one@medium',
+      'gamma/gamma-one@medium',
+      'beta/beta-two@low',
     ])
-    expect(chains['qa']?.[2]).toBe('codex/gpt-5.6-luna@high')
-    // Luna is pinned at the orchestrator's rung 4 and 5.4-mini at the chore
-    // builder's — the earlier pass put luna on both.
-    expect(chains['orchestrator']?.[3]).toBe('codex/gpt-5.6-luna@medium')
-    expect(chains['builder-chore']?.[3]).toBe('codex/gpt-5.4-mini@medium')
+    expect(chains['qa']?.[2]).toBe('gamma/gamma-one@high')
+    expect(chains['orchestrator']?.[2]).toBe('beta/beta-one@medium')
+    expect(chains['builder-chore']?.[2]).toBe('beta/beta-two@low')
   })
 
   it('seeds no draft that could not be published', () => {

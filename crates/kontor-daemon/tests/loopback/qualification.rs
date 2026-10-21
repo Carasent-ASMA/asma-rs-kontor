@@ -294,7 +294,7 @@ async fn four_structures_restore_replay_and_selection_rollback_keep_old_pins_and
         let mut body = serde_json::json!({"expected_revision":
             current_project_revision(&realm.world, &realm.project).await,
             "seat_key": key, "role_code": "LSA", "seat_label": label,
-            "recovery_owner": owner, "decided_by": "Igor", "decided_on": "2026-10-08"});
+            "recovery_owner": owner, "decided_by": "Test Owner", "decided_on": "2026-10-08"});
         if owner == "daemon" {
             body["model_route"] = codex_route();
         } else {

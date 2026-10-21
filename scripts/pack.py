@@ -40,11 +40,6 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path, PurePosixPath
 
-try:  # pack.py runs beside public_tree.py in the pack checkout
-    from public_tree import file_refusals
-except ImportError:  # imported as scripts.pack
-    from scripts.public_tree import file_refusals
-
 try:  # DEP-005: the full parser when the environment supplies it
     import yaml as _pyyaml
 except ImportError:  # the standard-library subset below is the fallback
@@ -128,6 +123,21 @@ NESTED_REQUIRED = {
     "merge_authority": ("role", "policy"),
     "capacity": ("max_delivery_seats", "max_parallel_tasks", "start_admission"),
 }
+
+
+def _file_refusals(path: str, content: bytes):
+    """Import the public-tree check only where it is used.
+
+    The YAML reader in this module is also imported by the lightweight project
+    and publication helpers, which are fetched without the full pack checkout.
+    Keeping this import lazy lets those helpers load one module, not three.
+    """
+
+    try:  # pack.py runs beside public_tree.py in the pack checkout
+        from public_tree import file_refusals
+    except ImportError:  # imported as scripts.pack
+        from scripts.public_tree import file_refusals
+    return file_refusals(path, content)
 
 
 class PackError(ValueError):
@@ -2166,7 +2176,7 @@ def _public_example_errors(
             content = path.read_bytes()
         except OSError:
             continue
-        for refusal in file_refusals(policy_path, content):
+        for refusal in _file_refusals(policy_path, content):
             errors.append(
                 f"{label}:{refusal.line}: {refusal.code}: {refusal.detail}"
             )
