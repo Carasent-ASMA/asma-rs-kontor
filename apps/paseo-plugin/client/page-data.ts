@@ -1,4 +1,5 @@
-import { hasSessionAttention, type DirectoryEntry } from "./session-directory";
+import { hasSessionAttention, type DirectoryEntry, type JiraCapture } from "./session-directory";
+import { sessionEpic } from "./session-organization";
 import type { SourceRead } from "../shared/read-sources";
 export function jiraIssueUrl(key: string): string | null {
   return /^ASMA-[1-9]\d*$/.test(key) ? `https://carasent.atlassian.net/browse/${key}` : null;
@@ -19,13 +20,30 @@ export function readTime(value: string | number, now: number = Date.now()): stri
   return `${date.getDate()} ${MONTHS[date.getMonth()]}`;
 }
 
+/** The session's epic as a Jira key, the same one the Sessions tree files it under; null is unknown. */
 export function confirmedEpic(entry: DirectoryEntry): string | null {
-  const keys = new Set<string>();
-  for (const key of ["epic", "jira.epic", "origin.epic"]) {
-    const value = entry.labels[key]?.trim();
-    if (value && /^ASMA-[1-9]\d*$/.test(value)) keys.add(value);
+  const epic = sessionEpic(entry, undefined).epic?.toUpperCase() ?? null;
+  return epic !== null && /^ASMA-[1-9]\d*$/.test(epic) ? epic : null;
+}
+const NO_JIRA_CAPTURE: JiraCapture = { epics: new Map(), observed: [] };
+/** Each captured key's epic across the ready historical Jira captures; one stable value while none is ready. */
+export function jiraCapture(reads: readonly SourceRead[]): JiraCapture {
+  const ready = reads.flatMap((read) => read.source.kind === "jira" && read.status === "ready" && read.jiraHistory ? [read.jiraHistory] : []);
+  if (!ready.length) return NO_JIRA_CAPTURE;
+  const epics = new Map<string, string | null>();
+  for (const history of ready) for (const epic of history.epics) for (const issue of [epic, ...epic.children]) {
+    const known = epics.get(issue.key);
+    epics.set(issue.key, known === undefined || known === epic.key ? epic.key : null);
   }
-  return keys.size === 1 ? [...keys][0]! : null;
+  return { epics, observed: ready.map((history) => history.generated) };
+}
+/** Entries carrying the capture; the cache, one per capture, keeps an unchanged entry's identity across updates. */
+export function withJiraCapture(entries: readonly DirectoryEntry[], jira: JiraCapture, cache: WeakMap<DirectoryEntry, DirectoryEntry>): DirectoryEntry[] {
+  return entries.map((entry) => {
+    let linked = cache.get(entry);
+    if (!linked) cache.set(entry, linked = { ...entry, jira });
+    return linked;
+  });
 }
 export function nativeSummary(entries: readonly DirectoryEntry[]) {
   return { total: entries.length, running: entries.filter((entry) => entry.status === "running").length,

@@ -622,7 +622,7 @@ describe("Board declared teams", () => {
       const { header } = mount({ selectedId: "plan", reads: [plan, jira], sessions: sessionsOf(entries()), taskTeams });
       return text(elements(header).find((element) => element.props.testID === "board-source-notes"));
     };
-    expect(notes(reader({}))).toContain("Linked sessions: a session links to a task only when its jira.issue or task label equals the task's Jira key, or its kontor.ticket label equals its Kontor ticket.");
+    expect(notes(reader({}))).toContain("Linked sessions: a session links to a task only when its jira.issue, task or asma.task label equals the task's Jira key, or its kontor.ticket label equals its Kontor ticket.");
     expect(notes(reader({}))).toContain(coverage);
     expect(notes(reader({ [key(0)]: team }))).toMatch(/Team, workflow and risk tier: declared for 1 of 41 tasks by Team fixture\.$/);
   });

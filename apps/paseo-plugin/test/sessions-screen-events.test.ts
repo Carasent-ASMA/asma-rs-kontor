@@ -1006,11 +1006,11 @@ describe("SessionsScreen toolbar events", () => {
     ] };
     patchSessionView("host-a", { query: "" });
     renderScreen();
-    expect(groupRows().map((row) => `${row.group.kind}:${row.group.label}`)).toEqual(["workstream:Adam", "workspace:Workspace", "workstream:Kontor", "epic:No linked epic"]);
+    expect(groupRows().map((row) => `${row.group.kind}:${row.group.label}`)).toEqual(["workstream:Adam", "workspace:Workspace", "workstream:Kontor", "epic:Epic unknown"]);
     setStateFilter("idle");
     const renderItem = (info: { item: unknown }) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)(info);
     const results = listRows() as Extract<ListRow, { kind: "result" }>[];
-    expect(results.map((row) => (renderItem({ item: row }).props.provenance as { parts: string[] }).parts)).toEqual([["Adam desk", "Workspace"], ["Kontor", "No linked epic", "Workspace"]]);
+    expect(results.map((row) => (renderItem({ item: row }).props.provenance as { parts: string[] }).parts)).toEqual([["Adam desk", "Workspace"], ["Kontor", "Epic unknown", "Workspace"]]);
     (renderItem({ item: results[0] }).props.onShowInTree as (entry: unknown) => void)(results[0]!.entry); harness.flush();
     expect(groupRows().map((row) => `${row.group.kind}:${row.group.label}:${row.expanded}`).slice(0, 2)).toEqual(["workstream:Adam:true", "workspace:Workspace:true"]);
     expect(sessionRowIds()).toContain("desk");
@@ -1019,7 +1019,7 @@ describe("SessionsScreen toolbar events", () => {
     expect(groupRows().map((row) => `${row.group.label}:${row.expanded}`)).toEqual(["SWE:false", "No role:false"]);
     expandAll();
     const roleSessions = listRows().filter((row): row is Extract<ListRow, { kind: "session" }> => row.kind === "session" && row.entry.id.startsWith("loose"));
-    expect(roleSessions.map((row) => walk(renderItem({ item: row })).find((element) => "displayContext" in element.props)!.props.displayContext)).toEqual(["Kontor · No linked epic · Workspace", "Kontor · No linked epic · Workspace"]);
+    expect(roleSessions.map((row) => walk(renderItem({ item: row })).find((element) => "displayContext" in element.props)!.props.displayContext)).toEqual(["Kontor · Epic unknown · Workspace", "Kontor · Epic unknown · Workspace"]);
   });
 
   it("shows a result in the tree without saving the branches it opens, and Back returns to the results", () => {
@@ -1336,15 +1336,15 @@ describe("SessionsScreen toolbar events", () => {
     screen.open("long");
     expect(screen.dialog()!.props).toMatchObject({ dialog: true, label: "Details: QA • Reconcile the delivery evidence for the second review round", placement: { align: "stretch", width: 0, cover: true } });
     expect(textOf(findByTestID(screen.dialog()!.props.header, "sessions-details-title"))).toBe("QA • Reconcile the delivery evidence for the second review round");
-    expect(screen.lines()).toEqual(["Role: QA, from the kontor.role label", "Other role declarations: None", "Workstream: Kontor plugin and prototype parity across every host", "Epic: ASMA-8541",
+    expect(screen.lines()).toEqual(["Role: QA, from the kontor.role label", "Other role declarations: None", "Workstream: Kontor plugin and prototype parity across every host", "Epic: ASMA-8541, from the epic label",
       "Workspace: TSW • ASMA-8541 roles provenance correction workspace with a long name"]);
     expect(screen.details("long").props.expanded).toBe(true);
     expect(screen.details("conflict").props.expanded).toBe(false);
     const expected: Record<string, string[]> = {
-      conflict: ["Role: QA, from the role label", "Other role declarations: title says AUD", "Workstream: Review", "Epic: No linked epic", "Workspace: Workspace"],
+      conflict: ["Role: QA, from the role label", "Other role declarations: title says AUD", "Workstream: Review", "Epic: Unknown, no epic or task label", "Workspace: Workspace"],
       desk: ["Role: SWE, from the title", "Other role declarations: None", "Desk: Adam desk", "Workspace: Workspace"],
-      cwd: ["Role: SWE, from the title", "Other role declarations: None", "Workstream: Other work: no workstream or desk label and no display mapping", "Epic: No linked epic", "Workspace: No workspace · /tmp/scratch"],
-      nowhere: ["Role: No role: no kontor.role or role label, and no role prefix in the title", "Other role declarations: None", "Workstream: Other work: no workstream or desk label and no display mapping", "Epic: No linked epic", "Workspace: No workspace"],
+      cwd: ["Role: SWE, from the title", "Other role declarations: None", "Workstream: Other work: no workstream or desk label and no display mapping", "Epic: Unknown, no epic or task label", "Workspace: No workspace · /tmp/scratch"],
+      nowhere: ["Role: No role: no kontor.role or role label, and no role prefix in the title", "Other role declarations: None", "Workstream: Other work: no workstream or desk label and no display mapping", "Epic: Unknown, no epic or task label", "Workspace: No workspace"],
     };
     for (const [id, lines] of Object.entries(expected)) {
       (screen.dialog()!.props.onClose as () => void)(); harness.flush();
@@ -1434,24 +1434,24 @@ describe("SessionsScreen toolbar events", () => {
   it("reports native parentage and independent declared associations in desk Details", () => {
     const session = sessionEntry("desk-with-epic", { projectKey: "prj_desk", workspaceId: "wks_desk", projectName: "DESK • ADAM", labels: { epic: "ASMA-99101" } });
     const lines = (mappings: Parameters<typeof sessionDetailLines>[1]) => Object.fromEntries(sessionDetailLines(session, mappings).map(({ label, value }) => [label, value]));
-    expect(lines({})).toMatchObject({ "Native desk": "DESK • ADAM", "Native project ID": "prj_desk", "Native workspace ID": "wks_desk", "Workstream association": "Not declared", "Epic association": "ASMA-99101" });
+    expect(lines({})).toMatchObject({ "Native desk": "DESK • ADAM", "Native project ID": "prj_desk", "Native workspace ID": "wks_desk", "Workstream association": "Not declared", "Epic association": "ASMA-99101, from the epic label" });
     expect(lines({ "session:desk-with-epic": { workstream: "declared" } })["Workstream association"]).toBe("declared");
     expect(sessionDetailLines({ ...session, labels: { ...session.labels, workstream: "labelled" } }, {}).find((line) => line.label === "Workstream association")!.value).toBe("labelled");
     expect(lines({})).not.toHaveProperty("Workstream");
     expect(lines({})["Association verification"]).toBe("Workstream registry membership and epic/plan links are not checked here.");
     expect(lines({ "session:desk-with-epic": { workstream: "unregistered-association", epic: "ASMA-99999" } })).toMatchObject({
       "Native project ID": "prj_desk", "Native workspace ID": "wks_desk", "Workstream association": "unregistered-association",
-      "Epic association": "ASMA-99999", "Association verification": lines({})["Association verification"],
+      "Epic association": "ASMA-99999, from a display mapping", "Association verification": lines({})["Association verification"],
     });
   });
 
   it("names a declared Other work workstream or Unassigned epic as declared, and only a missing one as absent", () => {
     const chain = (entry: ReturnType<typeof sessionEntry>, mappings: Parameters<typeof sessionDetailLines>[1] = {}) =>
       sessionDetailLines(entry, mappings).filter(({ label }) => label === "Workstream" || label === "Epic").map(({ label, value }) => `${label}: ${value}`);
-    const absent = ["Workstream: Other work: no workstream or desk label and no display mapping", "Epic: No linked epic"];
-    expect(chain(sessionEntry("label", { labels: { workstream: "Other work", epic: "Unassigned" } }))).toEqual(["Workstream: Other work", "Epic: Unassigned"]);
-    expect(chain(sessionEntry("mapped"), { "session:mapped": { workstream: "Other work", epic: "Unassigned" } })).toEqual(["Workstream: Other work", "Epic: Unassigned"]);
-    expect(chain(sessionEntry("jira", { labels: { "jira.epic": "Unassigned" } }))).toEqual([absent[0], "Epic: Unassigned"]);
+    const absent = ["Workstream: Other work: no workstream or desk label and no display mapping", "Epic: Unknown, no epic or task label"];
+    expect(chain(sessionEntry("label", { labels: { workstream: "Other work", epic: "Unassigned" } }))).toEqual(["Workstream: Other work", "Epic: Unassigned, from the epic label"]);
+    expect(chain(sessionEntry("mapped"), { "session:mapped": { workstream: "Other work", epic: "Unassigned" } })).toEqual(["Workstream: Other work", "Epic: Unassigned, from a display mapping"]);
+    expect(chain(sessionEntry("jira", { labels: { "jira.epic": "Unassigned" } }))).toEqual([absent[0], "Epic: Unassigned, from the jira.epic label"]);
     expect(chain(sessionEntry("bare"))).toEqual(absent);
     // A blank label declares nothing.
     expect(chain(sessionEntry("blank", { labels: { workstream: " ", epic: "" } }))).toEqual(absent);
@@ -1688,7 +1688,7 @@ describe("SessionsScreen toolbar events", () => {
       compactContext: "PR Review desk · Workspace",
       accessibilityContext: "Role AUD from the title. Desk PR Review desk, workspace Workspace",
     });
-    expect(shown("loose")).toMatchObject({ displayTitle: undefined, displayContext: "Other work · No linked epic · No workspace · /tmp/notes", compactContext: "Other work · No workspace · /tmp/notes" });
+    expect(shown("loose")).toMatchObject({ displayTitle: undefined, displayContext: "Other work · Epic unknown · No workspace · /tmp/notes", compactContext: "Other work · No workspace · /tmp/notes" });
     const row = walk(renderItem(listRows().find((candidate) => candidate.kind === "session" && candidate.entry.id === "conflict"))).find((element) => "displayContext" in element.props) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike };
     // The harness's memo returns the component itself.
     const drawnRow = row.type(row.props);

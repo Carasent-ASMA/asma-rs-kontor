@@ -199,7 +199,7 @@ export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, r
   const coverage = [...teams.values()].flatMap((team) => team.state === "not-provided" ? [team.coverage] : [])[0] ?? null;
   // How sessions and teams were read stays in Source details; the Board shows only what they say.
   const sessionNotes = sessions && links.size ? [
-    "Linked sessions: a session links to a task only when its jira.issue or task label equals the task's Jira key, or its kontor.ticket label equals its Kontor ticket. Titles are not read; a role comes from the session's role label.",
+    "Linked sessions: a session links to a task only when its jira.issue, task or asma.task label equals the task's Jira key, or its kontor.ticket label equals its Kontor ticket. Titles are not read; a role comes from the session's role label.",
     declaredTasks ? `Team, workflow and risk tier: declared for ${declaredTasks} of ${links.size} tasks by ${declaringSources.join(", ")}.` : coverage,
   ].filter((note): note is string => !!note) : [];
   const days = captureDays(captureTimes);

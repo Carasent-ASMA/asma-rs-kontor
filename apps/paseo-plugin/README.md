@@ -148,7 +148,7 @@ label, native DESK project fallback, then Other work, in that order. These choic
 are neither a native project inventory nor a complete registry of workstreams.
 Native projects/workspaces have their own context scope and native IDs. Sessions
 of non-desk projects without declarations remain under Other work and their
-labelled epic, or No linked epic; no workstream is inferred from their titles.
+epic, or Epic unknown; no workstream is inferred from their titles.
 
 The authoritative workstream registry and its separate desk categories are not
 loaded by this selector. Neither are plan frontmatter declarations or verified
@@ -187,7 +187,8 @@ A Role row shows a short place. The **Details** button beside it shows the
 whole of it:
 - the role and where it came from, and every other role declaration;
 - the native desk/project and workspace IDs with separate epic/workstream associations, or the non-desk workstream, epic and workspace chain;
-- absent values by name, such as "No linked epic" or "No workspace · <cwd>".
+- absent values by name, such as "No workspace · <cwd>", and an unknown epic
+  with its reason, such as "Unknown, no epic or task label".
   A value is absent only when no display mapping or label supplies it, so a
   label that says "Other work" is shown as declared.
 
@@ -344,8 +345,19 @@ Keep host-specific candidates and read evidence outside published source.
 
 A projectless source can appear in several native projects through exact confirmed
 epic labels on sessions in each project. An explicit source `projectId` constrains
-it to that project. Conflicting epic labels leave a session unattributed. No
-project name, title or sibling label assigns an epic to an unlabelled session.
+it to that project.
+
+A session's epic is its display mapping, else what its `epic`, `jira.epic`,
+`origin.epic` and `asma.epic` labels name together with the historical Jira
+projection's epic for each key those labels or its `jira.issue`, `task` or
+`asma.task` label name. Every named epic must agree. When they disagree, or
+nothing names one, the epic is unknown and shows as Epic unknown, never as "no
+epic": no source here shows that a task has no parent. Session details name the
+sources and the capture's observation time, or why the epic is unknown. A capture
+cannot see a later move in Jira, so a label and a capture that agree can both be
+stale. Other label keys, project names, titles and sibling labels never assign
+an epic. The tree, results, Overview counts, the context picker and project
+scope all read this one resolver.
 Overview, the plan picker, Plan, Board, Graph and recorded Delivery use this scope.
 Source edits trigger fresh hash-checked exports; parse failures retain readable
 plan text without a graph, while missing files and revision mismatches stay
@@ -432,7 +444,8 @@ This explicit offline exporter is separate from the consumption pipeline and
 writes only the bounded JSON to stdout. The plugin retains its 2 MiB read cap.
 The projection retains the original observation time, source hash and selected
 keys; reading it later never makes it live. Exact parent/issue keys supply
-historical workflow observations in Overview, Board and Graph. The numerator is
+historical workflow observations in Overview, Board and Graph, and the epic of a
+session whose labels name a captured key. The numerator is
 captured Jira `done` categories; the coverage denominator is all tasks in each
 canonical plan, including missing/unbound tasks. Neither capture coverage nor a
 known-child count establishes complete Jira inventory, current completion,
