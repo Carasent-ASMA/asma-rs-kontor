@@ -9,7 +9,7 @@ export function projectEpicKeys(projectId: string | null, entries: readonly Dire
 }
 
 export function sourceEpic(source: ReadSourceSummary, read?: SourceRead): string | null {
-  return read?.graph?.epic.jira ?? source.epic;
+  return read?.graph?.epic.jira ?? read?.planMetadata?.epic ?? source.epic;
 }
 
 /** Explicit project bindings constrain a source; projectless sources join exact observed epic keys. */

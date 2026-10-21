@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { discoverPlanSources } from "../server/plan-discovery";
+import { discoverPlanCatalog, discoverPlanSources } from "../server/plan-discovery";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -24,14 +24,44 @@ async function exporter(path: string) {
     epic: { jira: /ASMA-\d+/.exec(content)?.[0] ?? null, kontor_id: null }, nodes: [], edges: [], waves: [], external_fences: [] });
 }
 describe("offline plan-source discovery", () => {
+  it.each([
+    ["plain scalar", "---\nworkstream: qnr-v2\n---\n", "qnr-v2"],
+    ["quoted scalar and comment", "---\nworkstream: 'ad-voca' # explicit\n---\n", "ad-voca"],
+    ["BOM and CRLF", '\uFEFF---\r\nworkstream: "kontor"\r\n---\r\n', "kontor"],
+    ["multiline goal", "---\ngoal: >-\n  workstream: unrelated\nworkstream: pr-lifecycle\n---\n", "pr-lifecycle"],
+    ["body only", "# Workstream kontor\nworkstream: kontor\n", null],
+    ["later frontmatter", "# Example\n---\nworkstream: kontor\n---\n", null],
+    ["nested field", "---\ntask:\n  workstream: kontor\n---\n", null],
+    ["missing field", "---\ntitle: Kontor\n---\n", null],
+    ["null field", "---\nworkstream: null\n---\n", null],
+    ["duplicate field", "---\nworkstream: kontor\nworkstream: qnr-v2\n---\n", null],
+    ["alias", "---\nother: &stream kontor\nworkstream: *stream\n---\n", null],
+    ["merge", "---\nother: &fields {workstream: kontor}\n<<: *fields\n---\n", null],
+    ["non-scalar", "---\nworkstream: [kontor]\n---\n", null],
+    ["tagged value", "---\nworkstream: !custom kontor\n---\n", null],
+    ["invalid YAML", "---\nworkstream: \"kontor\n---\n", null],
+    ["unterminated header", "---\nworkstream: kontor\n", null],
+  ])("keeps only explicit top-level workstream metadata: %s", async (_name, header, expected) => {
+    const root = await checkout({ "plans/a.md": header + plan("ASMA-1") });
+    const report = await discoverPlanSources(root, exporter);
+    expect(report.catalog).toHaveLength(1);
+    expect(report.catalog[0]).toMatchObject({ epic: "ASMA-1", projectId: null, workstream: expected });
+    expect(report.coverage[0]?.status).toBe("eligible");
+  });
+  it("refreshes explicit metadata from the same working-copy content as the canonical graph", async () => {
+    const root = await checkout({ "plans/a.md": "---\nworkstream: kontor\n---\n" + plan("ASMA-1") });
+    expect((await discoverPlanSources(root, exporter)).catalog[0]?.workstream).toBe("kontor");
+    await writeFile(join(root, "plans/a.md"), plan("ASMA-1"));
+    expect((await discoverPlanSources(root, exporter)).catalog[0]?.workstream).toBeNull();
+  });
   it("uses validated canonical bindings, excludes policy examples/untracked plans, and preserves ambiguous sources", async () => {
     const root = await checkout({ "plans/a.md": plan("ASMA-1"), "plans/b.md": plan("ASMA-1"), "plans/unlinked.md": plan(null), "plans/ASMA-2.md": "# ASMA-2\nNo graph", ".agents/skills/example.md": plan("ASMA-3") });
     await writeFile(join(root, "untracked.md"), plan("ASMA-4"));
     const report = await discoverPlanSources(root, exporter);
-    expect(report.catalog.map((source) => source.epic)).toEqual(["ASMA-1", "ASMA-1"]);
+    expect(report.catalog.map((source) => source.epic)).toEqual([null, "ASMA-1", "ASMA-1", null]);
     expect(report.conflicts).toEqual(["ASMA-1"]);
-    expect(report.coverage.map((row) => row.status)).toEqual(["eligible", "eligible", "unlinked"]);
-    expect(new Set(report.catalog.map((source) => source.id)).size).toBe(2);
+    expect(report.coverage.map((row) => row.status)).toEqual(["unlinked", "eligible", "eligible", "unlinked"]);
+    expect(new Set(report.catalog.map((source) => source.id)).size).toBe(4);
     expect(report.catalog.every((source) => source.projectId === null)).toBe(true);
     expect((await discoverPlanSources(root, exporter)).catalog).toEqual(report.catalog);
   });
@@ -44,7 +74,33 @@ describe("offline plan-source discovery", () => {
     expect((await discoverPlanSources(root, exporter)).coverage[0]!.revision).not.toBe(original);
     await rm(join(root, "plans/a.md"));
     const missing = await discoverPlanSources(root, exporter);
-    expect(missing.catalog).toEqual([]);
+    expect(missing.catalog.map((source) => source.epic)).toEqual([null]);
     expect(missing.coverage.every((row) => row.status === "invalid")).toBe(true);
   });
+});
+
+it.each(["plans/declared.md", "_docs/domain/implementation-plan.md"])("retains unavailable coverage for an admitted graphless plan: %s", async (relative) => {
+  const root = await checkout({ [relative]: "---\nworkstream: reporting\nepic: ASMA-9\n---\n# Declared plan", "plans/README.md": "# Plan directory", "_docs/unrelated.md": "# Documentation" });
+  expect((await discoverPlanSources(root, exporter)).catalog).toHaveLength(1);
+  await Promise.all([relative, "plans/README.md", "_docs/unrelated.md"].map((path) => rm(join(root, path))));
+  const missing = await discoverPlanSources(root, exporter);
+  expect(missing.catalog).toEqual([]);
+  expect(missing.coverage).toHaveLength(1);
+  expect(missing.coverage[0]).toMatchObject({ path: relative, status: "invalid", revision: null, tasks: null, boundTasks: null });
+  expect(missing.coverage[0]!.diagnostics.join(" ")).toContain("ENOENT");
+  expect(missing.coverage[0]!.diagnostics.join(" ")).toContain(relative);
+  expect((await discoverPlanCatalog([root], [], exporter)).reports[0]!.coverage).toEqual(missing.coverage);
+});
+
+it("discovers graphless declarations and deduplicates worktree copies while retaining differing revisions and pins", async () => {
+  const root = await checkout({ "plans/plain.md": "---\nworkstream: reporting\nepic: ASMA-9\n---\n# No graph or ESW" });
+  const first = await discoverPlanSources(root, exporter);
+  expect(first.catalog[0]).toMatchObject({ workstream: "reporting", epic: "ASMA-9" });
+  const copy = root + "-copy"; roots.push(copy);
+  execFileSync("git", ["-C", root, "worktree", "add", "--detach", copy], { stdio: "ignore" });
+  expect((await discoverPlanCatalog([root, copy], [], exporter)).catalog).toHaveLength(1);
+  await writeFile(join(copy, "plans/plain.md"), "---\nworkstream: access\nepic: ASMA-9\n---\n# Different revision");
+  expect((await discoverPlanCatalog([root, copy], [], exporter)).catalog).toHaveLength(2);
+  const pinned = { ...first.catalog[0]!, expectedSha256: first.coverage[0]!.revision!, revisionKind: "approved revision" as const };
+  expect((await discoverPlanCatalog([root], [pinned], exporter)).catalog).toEqual([pinned]);
 });

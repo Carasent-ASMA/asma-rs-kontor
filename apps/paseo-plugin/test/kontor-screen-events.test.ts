@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { URL } from "node:url";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import type { PaseoProject } from "@getpaseo/client";
+import { WorkspaceDescriptorPayloadSchema } from "@getpaseo/protocol/messages";
 import type { PluginHostSummary, PluginScreenProps } from "@getpaseo/plugin/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DirectoryEntry } from "../client/session-directory";
@@ -10,6 +11,7 @@ import { Linking } from "react-native";
 
 const model = vi.hoisted(() => ({
   projects: [] as PaseoProject[],
+  workspaces: [] as import("@getpaseo/client").PaseoWorkspace[],
   slots: [] as unknown[], cursor: 0, entries: [] as DirectoryEntry[], sources: [] as ReadSourceSummary[], reads: {} as Record<string, SourceRead>, values: {} as object,
   hosts: [] as PluginHostSummary[], toastError: vi.fn(), toastShow: vi.fn(), copyText: vi.fn(async (_text: string) => {}), updates: 0,
   keyboardSave: vi.fn(async () => true),
@@ -39,7 +41,7 @@ vi.mock("@getpaseo/plugin/client/react-native", () => ({
 vi.mock("../client/use-session-directory", () => ({ useSessionDirectory: () => ({ state: { entries: model.entries, status: "ready", live: false, lastUpdatedAt: 1, error: null, staleReason: null, pages: 1, includeArchived: false }, refresh: () => {} }) }));
 vi.mock("../client/use-organization-settings", () => ({ useOrganizationSettings: () => ({ state: { status: "ready", values: model.values, saving: false, saveError: null }, save: async () => true }) }));
 vi.mock("../client/use-read-sources", () => ({ useReadSources: () => ({ sources: model.sources, reads: model.reads, teamsSnapshots: {}, error: null, loading: false, available: true }) }));
-vi.mock("../client/use-workspace-directory", () => ({ useWorkspaceDirectory: () => ({ entries: [], error: null, readAt: null, projects: model.projects, projectError: null, projectsReadAt: null }) }));
+vi.mock("../client/use-workspace-directory", () => ({ useWorkspaceDirectory: () => ({ entries: model.workspaces, error: null, readAt: null, projects: model.projects, projectError: null, projectsReadAt: null }) }));
 vi.mock("../client/use-keyboard-settings", () => ({ useKeyboardSettings: () => ({ state: model.keyboard, save: model.keyboardSave }) }));
 vi.mock("../client/keyboard-shortcuts", async (original) => ({
   ...await original<typeof import("../client/keyboard-shortcuts")>(),
@@ -71,7 +73,7 @@ function elements(value: ReactNode): ReactElement<Record<string, unknown>>[] {
   return [value, ...elements(value.props.children as ReactNode)];
 }
 let sequence = 0;
-beforeEach(() => { model.projects = []; vi.clearAllMocks(); model.slots = []; model.cursor = 0; model.updates = 0; model.values = DEFAULT_ORGANIZATION_SETTINGS; model.entries = [sessionEntry("native", { labels: { epic: "ASMA-1" } })]; model.sources = []; model.reads = {}; model.hosts = []; model.keyboard = { status: "loading" }; model.shortcut = null; });
+beforeEach(() => { model.projects = []; model.workspaces = []; vi.clearAllMocks(); model.slots = []; model.cursor = 0; model.updates = 0; model.values = DEFAULT_ORGANIZATION_SETTINGS; model.entries = [sessionEntry("native", { labels: { epic: "ASMA-1" } })]; model.sources = []; model.reads = {}; model.hosts = []; model.keyboard = { status: "loading" }; model.shortcut = null; });
 /** Renders the header selector as the screen would, so its own semantics and style are visible. */
 function pickerField(picker: ReactElement<Record<string, unknown>>): ReactElement<Record<string, unknown>> {
   return (picker.type as (props: Record<string, unknown>) => ReactElement<Record<string, unknown>>)(picker.props);
@@ -657,4 +659,46 @@ describe("Kontor shell native actions", () => {
     expect(hostNavigation(screen.props.host.id).route).toMatchObject({ tab: "Overview", projectId: "p-two", epicKey: null, sourceId: null });
     expect(screen.picker()!.props).toMatchObject({ label: "Billing", epicKey: null });
   });
+});
+
+it.each([true, false])("retains a header-only epic when selecting a graphless plan (compact=%s)", async (compact) => {
+  const fixture = await import("./plan-workstream-fixtures");
+  const source = { ...fixture.source, epic: null };
+  model.sources = [source]; model.reads = { [source.id]: { ...fixture.read, source } };
+  model.entries = [sessionEntry("unrelated", { labels: { epic: "ASMA-2" } })];
+  const screen = mount(compact, { tab: "Plan" }); screen.openPicker();
+  expect(screen.menuItems().find((node) => node.props.label === source.title)?.props.detail).toBe("ASMA-7575 · adopus-graphql");
+  screen.choose(source.title);
+  expect(hostNavigation(screen.props.host.id).route).toMatchObject({ sourceId: source.id, sourceRevision: fixture.read.revision, epicKey: "ASMA-7575", projectId: null });
+  expect(screen.picker()?.props).toMatchObject({ label: source.title, epicKey: "ASMA-7575" });
+  expect(screen.elements().find((node) => node.type === ReadOnlyPage)!.props.entries).toEqual([]);
+});
+
+it.each([true, false])("projects a project-bound plan onto its existing empty workspace through HostScreen (compact=%s)", async (compact) => {
+  const fixture = await import("./plan-workstream-fixtures");
+  const source = { ...fixture.source, projectId: "native-project" };
+  model.sources = [source]; model.reads = { [source.id]: { ...fixture.read, source } };
+  model.entries = [];
+  model.workspaces = [WorkspaceDescriptorPayloadSchema.parse({ id: "empty", projectId: "native-project", projectDisplayName: "Existing project", projectRootPath: "/fixture/project", projectKind: "non_git", workspaceKind: "directory", name: "Existing empty workspace", status: "done", activityAt: null })];
+  model.values = { ...DEFAULT_ORGANIZATION_SETTINGS, displayMappings: { "workspace:empty": { epic: "ASMA-7575" } } };
+  const screen = mount(compact, { tab: "Sessions" });
+  const sessions = screen.elements().find((node) => node.type === SessionsScreen)!;
+  expect(sessions.props.workspaces).toEqual([{ id: "empty", name: "Existing empty workspace", projectKey: "native-project", projectName: "Existing project" }]);
+  expect(sessions.props.planMappings).toMatchObject({ "workspace:empty": { epic: "ASMA-7575", workstream: "adopus-graphql" } });
+  expect((sessions.props.directory as { state: { entries: DirectoryEntry[] } }).state.entries).toEqual([]);
+});
+
+it("finds a graphless plan by its explicit workstream and shows exact Plan context without linking unrelated sessions", async () => {
+  const { source, read } = await import("./plan-workstream-fixtures");
+  model.sources = [source]; model.reads = { [source.id]: read };
+  model.entries = [sessionEntry("unrelated", { labels: { epic: "ASMA-2" } })];
+  const screen = mount(true, { tab: "Plan" }); screen.openPicker();
+  const input = elements(screen.menu()!.props.header as ReactNode).find((node) => node.type === "TextInput")!;
+  (input.props.onChangeText as (value: string) => void)("adopus-graphql"); screen.render();
+  expect(screen.choices()).toEqual(["Plan: Declared plan"]);
+  expect(screen.menuItems().find((node) => node.props.label === source.title)?.props.detail).toBe("ASMA-7575 · adopus-graphql");
+  screen.choose(source.title);
+  expect(screen.picker()?.props).toMatchObject({ label: source.title, epicKey: "ASMA-7575" });
+  const page = screen.elements().find((node) => node.type === ReadOnlyPage)!;
+  expect(page.props.entries).toEqual([]);
 });
