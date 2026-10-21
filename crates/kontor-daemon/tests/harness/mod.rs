@@ -119,27 +119,6 @@ pub(crate) fn capabilities_with_history_page(page: u32) -> RuntimeCapabilities {
     declared
 }
 
-/// The test-owned runtime-refusal signals, mapped onto the catalogued aliases.
-///
-/// The fixture names neutral account aliases, while the compiled route catalog
-/// the test packs route through names the Codex logins `codex-work` and
-/// `codex-personal`. Only the two Codex `provider:` lines are mapped back; every
-/// marker, reset prefix and zone stays the fixture bytes.
-pub(crate) fn quota_signals_fixture() -> String {
-    let mut document =
-        include_str!("../../../../tests/fixtures/config/quota-signals.yml").to_owned();
-    for (shipped, catalogued) in [("codex-b", "codex-work"), ("codex-a", "codex-personal")] {
-        let line = format!("    provider: {shipped}\n");
-        assert_eq!(
-            document.matches(&line).count(),
-            1,
-            "the fixture declares {shipped} once"
-        );
-        document = document.replace(&line, &format!("    provider: {catalogued}\n"));
-    }
-    document
-}
-
 /// The same declaration, minus the named capabilities.
 pub(crate) fn capabilities_without(missing: &[RuntimeCapability]) -> RuntimeCapabilities {
     let mut declared = every_capability();
@@ -316,7 +295,23 @@ impl World {
     /// and `codex-personal`. Only the two Codex `provider:` lines are mapped
     /// back; every marker, reset prefix and zone stays the fixture bytes.
     pub(crate) async fn open_empty_with_quota_signals() -> Self {
-        Self::open_empty_with_quota_signal_document(&quota_signals_fixture()).await
+        let document = Self::catalogued_quota_signal_document();
+        Self::open_empty_with_quota_signal_document(&document).await
+    }
+
+    fn catalogued_quota_signal_document() -> String {
+        let mut document =
+            include_str!("../../../../tests/fixtures/config/quota-signals.yml").to_owned();
+        for (shipped, catalogued) in [("codex-b", "codex-work"), ("codex-a", "codex-personal")] {
+            let line = format!("    provider: {shipped}\n");
+            assert_eq!(
+                document.matches(&line).count(),
+                1,
+                "the fixture declares {shipped} once"
+            );
+            document = document.replace(&line, &format!("    provider: {catalogued}\n"));
+        }
+        document
     }
 
     /// Start an empty Realm with an exact test-owned signal document.
@@ -456,7 +451,7 @@ impl World {
             false,
             DEFAULT_CAPACITY,
             WorldComposition {
-                quota_signals: Some(quota_signals_fixture()),
+                quota_signals: Some(Self::catalogued_quota_signal_document()),
                 succession_summarizer: Some(summarizer),
                 ..WorldComposition::default()
             },
@@ -479,7 +474,7 @@ impl World {
             false,
             DEFAULT_CAPACITY,
             WorldComposition {
-                quota_signals: Some(quota_signals_fixture()),
+                quota_signals: Some(Self::catalogued_quota_signal_document()),
                 runtime_summarizer: Some(summary.to_owned()),
                 ..WorldComposition::default()
             },

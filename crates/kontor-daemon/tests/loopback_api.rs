@@ -27626,7 +27626,6 @@ async fn a_credential_rotation_during_the_transcript_fetch_still_redacts_the_pre
     // settles earlier (for example on an unmet quota precondition) never wakes
     // it. Both waits are bounded so an early return fails this test with the
     // recovery's own status instead of hanging the suite.
-    const STALL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
     let history = world.fake.pause_next_history();
     let route = format!("/v1/projects/{project}/agent-runs/{predecessor_id}/successors:recover");
     let recovery = Call::post_raw(&route, "")
@@ -27634,26 +27633,20 @@ async fn a_credential_rotation_during_the_transcript_fetch_still_redacts_the_pre
         .with_key("rotated-summary-recovery")
         .send(&world);
     tokio::pin!(recovery);
-    tokio::select! {
-        recovered = &mut recovery => panic!(
-            "the recovery settled before the transcript fetch, so no rotation could interleave: {} {}",
-            recovered.status, recovered.body
-        ),
-        entered = tokio::time::timeout(STALL_DEADLINE, history.entered()) => {
-            assert!(
-                entered.is_ok(),
-                "the recovery never entered the transcript fetch within {STALL_DEADLINE:?}; it is stalled before the rotation can interleave"
-            );
+    let recovered = tokio::select! {
+        response = &mut recovery => {
+            panic!("recovery returned before history entry: status={} body={}", response.status, response.body.replace(&previous_operator, "[SYNTHETIC_REDACTED]"));
         }
-    }
-    world
-        .daemon
-        .rotate_credentials()
-        .expect("the realm rotates while the transcript is in flight");
-    history.release();
-    let recovered = tokio::time::timeout(STALL_DEADLINE, recovery)
-        .await
-        .expect("the recovery settled after the paused transcript was released");
+        () = history.entered() => {
+        world
+            .daemon
+            .rotate_credentials()
+            .expect("the realm rotates while the transcript is in flight");
+        history.release();
+        tokio::time::timeout(std::time::Duration::from_secs(30), &mut recovery).await.expect("recovery still pending after history release")
+        }
+        () = tokio::time::sleep(std::time::Duration::from_secs(30)) => panic!("neither recovery response nor history entry within30s"),
+    };
     assert_eq!(recovered.status, 200, "{}", recovered.body);
     assert_eq!(recovered.json()["state"], "confirmed");
 

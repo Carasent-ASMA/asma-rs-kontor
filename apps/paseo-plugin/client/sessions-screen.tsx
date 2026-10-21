@@ -316,7 +316,7 @@ type SessionRowProps = {
   readonly displayTitle?: string;
   /** Placement context, shown only where the tree does not already say it (Role and Flat). */
   readonly displayContext?: string;
-  /** A shorter context that compact keeps beside the title instead of after it, so it stays in view (Role). */
+  /** A shorter context that compact shows with the age on the line under the title, so it stays in view without squeezing the title (Role). */
   readonly compactContext?: string;
   /** Spoken in place of displayContext. */
   readonly accessibilityContext?: string;
@@ -412,15 +412,17 @@ export const SessionRow = memo(function SessionRow({
     >
       {compact && compactContext !== undefined ? (
         <>
-          {/* The context keeps up to about half the line; the title gives way first. */}
+          {/* The title keeps the whole line; the context and the age take the line below, so neither squeezes it. */}
           <View style={{ flex: 1, minWidth: 0 }}>
-          <View style={{ minWidth: 0, flexDirection: "row", alignItems: "center", gap: 8 }}>
-            <Text testID="sessions-row-title" numberOfLines={1} style={{ flexShrink: 1, color: colors.foreground, fontSize: 14, lineHeight: 20 }}>
-              {displayTitle ?? entry.title}
-            </Text>
-            <Text testID="sessions-row-meta" numberOfLines={1} style={{ flexShrink: 0, maxWidth: "55%", color: colors.foregroundMuted, fontSize: 12 }}>
-              {compactMeta}
-            </Text>
+          <Text testID="sessions-row-title" numberOfLines={1} style={{ minWidth: 0, color: colors.foreground, fontSize: 14, lineHeight: 20 }}>
+            {displayTitle ?? entry.title}
+          </Text>
+          <View style={{ minWidth: 0, flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
+            {compactMeta ? (
+              <Text testID="sessions-row-meta" numberOfLines={2} style={{ flex: 1, minWidth: 0, color: colors.foregroundMuted, fontSize: 12, lineHeight: 16 }}>
+                {compactMeta}
+              </Text>
+            ) : null}
             {age}
           </View>
           <SessionUsage entry={entry} colors={colors} />
