@@ -2189,6 +2189,13 @@ const PERMISSION_WAIT: &str = r#"{
   ]
 }"#;
 
+/// A session whose transcript holds no permission event at all.
+const PERMISSION_SNAPSHOT_ONLY: &str = r#"{
+  "history": [
+    {"kind": "message", "sequence": 1, "emitted_at": "2026-08-10T09:01:00Z", "body": "working"}
+  ]
+}"#;
+
 /// One well-formed Delivery Team draft.
 ///
 /// The generic idempotency, authority and realm-qualification proofs used to
@@ -3734,6 +3741,89 @@ async fn a_permission_answer_is_applied_once_and_a_foreign_request_is_refused() 
             .iter()
             .any(|call| matches!(call, AdapterCall::RespondPermission(_))),
         "a permission request this session never raised is refused before dispatch"
+    );
+}
+
+#[tokio::test]
+async fn a_permission_only_on_the_runtime_snapshot_is_answerable_once() {
+    let world = World::open().await;
+    world.script(PERMISSION_SNAPSHOT_ONLY);
+    let (run, binding) = world.launch().await;
+    let permission_id = ExternalId::parse("perm-snapshot").expect("a permission id");
+    world
+        .fake
+        .raise_permission(&binding, permission_id.clone())
+        .expect("the runtime raises a snapshot-only permission");
+
+    let timeline = Call::get(format!("/v1/sessions/{run}/timeline?limit=64"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(timeline.status, 200, "{}", timeline.body);
+    assert!(
+        !timeline.json()["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .any(|item| item["kind"] == "permission_request"),
+        "the transcript must carry no permission event for this proof to be about the snapshot"
+    );
+
+    let key = kontor_runtime::request::MessageId::generate().to_string();
+    let allowed = Call::post(
+        format!("/v1/sessions/{run}/permissions/{permission_id}"),
+        &serde_json::json!({"decision": "allow"}),
+    )
+    .signed_as(&world, "operator")
+    .with_key(&key)
+    .send(&world)
+    .await;
+    assert_eq!(allowed.status, 200, "{}", allowed.body);
+    assert_eq!(
+        allowed.json()["value"]["decision"],
+        serde_json::json!("allow")
+    );
+
+    let replayed = Call::post(
+        format!("/v1/sessions/{run}/permissions/{permission_id}"),
+        &serde_json::json!({"decision": "allow"}),
+    )
+    .signed_as(&world, "operator")
+    .with_key(&key)
+    .send(&world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json(), allowed.json());
+    assert_eq!(
+        world
+            .fake
+            .content(&binding)
+            .iter()
+            .filter(|event| {
+                event.kind == kontor_runtime::timeline::SessionEventKind::PermissionResolved
+                    && event.subject
+                        == kontor_runtime::timeline::EventSubject::Permission(permission_id.clone())
+            })
+            .count(),
+        1,
+        "one durable answer must cause exactly one native effect"
+    );
+
+    let before = world.fake.calls().len();
+    let foreign = Call::post(
+        format!("/v1/sessions/{run}/permissions/perm-elsewhere"),
+        &serde_json::json!({"decision": "allow"}),
+    )
+    .signed_as(&world, "operator")
+    .with_key(kontor_runtime::request::MessageId::generate().to_string())
+    .send(&world)
+    .await;
+    assert_eq!(foreign.status, 404);
+    assert!(
+        !world.fake.calls()[before..]
+            .iter()
+            .any(|call| matches!(call, AdapterCall::RespondPermission(_))),
+        "a permission neither the transcript nor the snapshot raises is refused before dispatch"
     );
 }
 

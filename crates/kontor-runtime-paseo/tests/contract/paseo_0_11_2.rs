@@ -397,6 +397,15 @@ async fn a_native_permission_prompt_is_typed_attention_and_answerable_once() {
         1,
         "one answer, correlated by the permission id"
     );
+    let raised = plane
+        .adapter
+        .raised_permissions(&binding)
+        .await
+        .expect("the adapter still knows the request it answered");
+    assert!(
+        raised.contains(&external("perm_1")),
+        "an answered request remains raised here, so an exact replay reaches the ledger"
+    );
 }
 
 /// N-05: a settled consultation seat is archived and read back on 0.11.2, and

@@ -2104,6 +2104,20 @@ pub trait RuntimeAdapter: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Read every permission the runtime knows this session raised.
+    ///
+    /// The API's "raised here" fence runs before an answer is dispatched, and it
+    /// must admit an exact replay of an answer this session already gave. A
+    /// runtime that returned only open requests would turn that replay into
+    /// "no such request", so an adapter with a durable answer ledger includes
+    /// its own acknowledgements here as well as the pending set.
+    async fn raised_permissions(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+    ) -> RuntimeResult<Vec<ExternalId>> {
+        self.pending_permissions(binding).await
+    }
+
     /// Compact one live session's context **in place**.
     ///
     /// Three obligations, and the contract suite proves each of them:

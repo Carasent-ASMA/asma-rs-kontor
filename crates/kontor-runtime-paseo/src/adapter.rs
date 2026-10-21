@@ -5068,11 +5068,11 @@ impl PaseoAdapter {
     /// Create one OpenCode delivery seat, and return the snapshot it is judged
     /// from.
     ///
-    /// One `create_agent_request` carries the permission, the MCP surface, the
-    /// prompt and its deterministic message id. There is no second effect to
-    /// reconcile, and **no follow-up fetch**: the snapshot in the answer is the
-    /// state the daemon produced for this create, and a later read answers a
-    /// question about a later moment.
+    /// One `agent.create.request` carries the permission, the MCP surface, the
+    /// prompt and its deterministic message id. A completed answer needs no
+    /// follow-up fetch: its snapshot is the state the daemon produced for this
+    /// create, and a later read answers a question about a later moment. Only a
+    /// lost or failed answer is reconciled by a read, never by a second create.
     ///
     /// The three ways this can end:
     ///
@@ -10216,6 +10216,21 @@ impl RuntimeAdapter for PaseoAdapter {
             .collect();
         pending.sort_by(|left, right| left.as_str().cmp(right.as_str()));
         Ok(pending)
+    }
+
+    async fn raised_permissions(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+    ) -> RuntimeResult<Vec<ExternalId>> {
+        let mut raised = self.pending_permissions(binding).await?;
+        let binding_id = binding.binding_id();
+        for (permission_id, acknowledgement) in &self.lock().permission_acks {
+            if acknowledgement.binding_id == binding_id && !raised.contains(permission_id) {
+                raised.push(permission_id.clone());
+            }
+        }
+        raised.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        Ok(raised)
     }
 
     /// Report, honestly, that this daemon cannot compact a seat's context.

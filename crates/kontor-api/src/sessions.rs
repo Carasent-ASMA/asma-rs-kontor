@@ -981,18 +981,15 @@ fn unobservable_epoch(error: ApiError) -> ApiError {
 
 /// Re-state a refusal that happened *after* the message was delivered.
 ///
-/// The code is kept — whatever went wrong with the readback really did go
-/// wrong, and a caller's backoff for it is still right. What is replaced is the
-/// claim the caller would otherwise act on. An ordinary channel refusal advises
-/// "nothing was changed"; here the most important thing in the world did
-/// change, and a caller who resends under a fresh idempotency key puts a second
-/// copy of one instruction into a live seat's transcript.
+/// A delivered message whose readback failed is not a channel refusal: the
+/// effect may have landed, so keeping `unavailable` would tell the caller that
+/// nothing changed. The code becomes `delivery_unconfirmed`, which names the
+/// uncertainty and the safe next act, while the message still says which
+/// readback failed. An ordinary channel refusal advises "nothing was changed";
+/// here the most important thing in the world did change, and a caller who
+/// resends under a fresh idempotency key puts a second copy of one instruction
+/// into a live seat's transcript.
 fn after_delivery(error: ApiError) -> ApiError {
-    // The code changes too. Keeping the underlying code would leave a caller
-    // that branches on `unavailable` — whose action promises "nothing was
-    // changed" — holding a refusal that is false in the one way that matters.
-    // `delivery_unconfirmed` says the effect may have landed and names the safe
-    // next act, while this message says which readback failed.
     ApiError::new(
         error.realm_id,
         ApiErrorCode::DeliveryUnconfirmed,
@@ -1644,8 +1641,9 @@ pub async fn respond_permission(
 /// The runtime is asked as well as the transcript: Paseo carries its permission
 /// lifecycle on the agent snapshot and the unsolicited stream, so a request
 /// that is open and addressable may legitimately have no timeline event. The
-/// runtime read is scoped to this exact binding and returns only still-pending
-/// ids, so it cannot authorize another session's request.
+/// runtime read is scoped to this exact binding and returns the ids it knows
+/// this session raised, pending or already answered, so it cannot authorize
+/// another session's request.
 ///
 /// The question is *raised here*, not *still open*. An already-answered request
 /// has to reach the runtime: an identical retry is owed its original
@@ -1707,12 +1705,14 @@ async fn ensure_raised_here_unbounded(
     // unsolicited stream, not in the transcript. Asking the runtime that raised
     // the request is the typed answer; scanning content alone is why a native
     // prompt was never addressable (G-42). The read is scoped to this exact
-    // binding, so it cannot authorize another session's request.
+    // binding, so it cannot authorize another session's request. It includes
+    // this binding's own answers, so an exact replay is still routed to the
+    // adapter that owns the acknowledgement.
     if !raised.contains(permission_id) {
         raised.extend(
             session
                 .adapter
-                .pending_permissions(&session.snapshot)
+                .raised_permissions(&session.snapshot)
                 .await
                 .map_err(|error| ApiError::from_runtime(realm_id, &error))?,
         );
