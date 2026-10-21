@@ -267,6 +267,14 @@ orchestration plan pin, prove approval or infer an epic from a title. Review the
 candidate against the owning plan pins before installation. Paths in this output
 belong to that host; keep live candidates and coverage outside published source.
 
+Discovery copies only an explicit top-level frontmatter `workstream` string in
+lowercase key form into the candidate catalog. Missing declarations remain null;
+invalid headers or unsupported values remain null with coverage diagnostics.
+Aliases, merge keys, titles and nested task fields do not supply a workstream.
+This metadata passes through configured source reads. It does not populate the
+Sessions workstream filter, which uses session classifications and display mappings.
+Regenerating a candidate does not modify an installed catalog, a plan or the registry.
+
 A projectless source can appear in several native projects through exact confirmed
 epic labels on sessions in each project. An explicit source `projectId` constrains
 it to that project. Conflicting epic labels leave a session unattributed. No

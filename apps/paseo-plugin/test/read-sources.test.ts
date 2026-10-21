@@ -27,6 +27,15 @@ async function fixture(content = "# Plan\n\nNo dependencies are inferred from th
   return { source, graph, content };
 }
 describe("configured read sources", () => {
+  it("preserves explicit catalog workstreams through validation and exact-source reads", async () => {
+    const { source, graph } = await fixture();
+    const catalog = sourceCatalog(JSON.stringify([{ ...source, workstream: "ad-voca" }]));
+    expect(catalog.diagnostics).toEqual([]);
+    const result = await readConfiguredSource(catalog.sources[0]!, async () => JSON.stringify(graph));
+    expect(result.status).toBe("ready");
+    expect(result.source.workstream).toBe("ad-voca");
+    expect(source.workstream).toBeNull();
+  });
   it("fails closed for relative paths, duplicate IDs, unknown fields and malformed catalog", () => {
     expect(sourceCatalog("[]").sources).toEqual([]);
     for (const raw of ["no json", JSON.stringify([{ id: "x", title: "x", kind: "plan", path: "relative.md" }]), JSON.stringify([{ id: "x", title: "x", kind: "plan", path: "/tmp/p", credential: "forbidden" }])]) expect(sourceCatalog(raw).sources).toEqual([]);

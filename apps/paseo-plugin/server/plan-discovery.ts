@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { isMap, parseDocument } from "yaml";
 import type { ReadSourceSummary } from "../shared/read-sources";
 import { boundedRead, readConfiguredSource, sourceCatalog, type ExportPlan } from "./read-sources";
 
@@ -10,6 +11,22 @@ const execute = promisify(execFile);
 const GRAPH_FENCE = /^ {0,3}(?:`{3,}|~{3,})plan-graph\s*$/m;
 type PlanCoverage = { path: string; id: string; epic: string | null; revision: string | null; tasks: number | null; boundTasks: number | null;
   status: "eligible" | "unlinked" | "invalid"; diagnostics: string[] };
+
+function planWorkstream(content: string): { workstream: string | null; diagnostics: string[] } {
+  const unknown = (reason: string) => ({ workstream: null, diagnostics: [`${reason}; plan workstream remains unknown.`] });
+  const opening = /^\uFEFF?---[ \t]*\r?\n/.exec(content);
+  if (!opening) return { workstream: null, diagnostics: [] };
+  const rest = content.slice(opening[0].length);
+  const closing = /^(?:---|\.\.\.)[ \t]*\r?$/m.exec(rest);
+  if (!closing) return unknown("Unterminated frontmatter");
+  const header = parseDocument(rest.slice(0, closing.index));
+  if (header.errors.length || header.warnings.length || !isMap(header.contents)) return unknown("Unsupported or invalid frontmatter");
+  // Read only the explicit top-level scalar, without resolving aliases or merge keys.
+  const value = header.get("workstream");
+  if (value === undefined || value === null) return { workstream: null, diagnostics: [] };
+  if (typeof value !== "string" || !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(value)) return unknown("Unsupported workstream declaration");
+  return { workstream: value, diagnostics: [] };
+}
 
 /** Offline discovery in one operator-selected checkout. Titles and paths never supply epic identity. */
 export async function discoverPlanSources(checkout: string, exporter?: ExportPlan) {
@@ -35,12 +52,13 @@ export async function discoverPlanSources(checkout: string, exporter?: ExportPla
     const title = /^#\s+(.+)$/m.exec(content)?.[1]?.trim() || relative;
     const source: ReadSourceSummary = { id, title, kind: "plan", path, workstream: null, epic: null, projectId: null, revisionKind: "working copy" };
     const read = await readConfiguredSource(source, exporter);
+    const metadata = planWorkstream(read.content ?? "");
     const epic = read.graph?.epic.jira ?? null;
     const eligible = epic !== null && /^ASMA-[1-9]\d*$/.test(epic);
     coverage.push({ path: relative, id, epic, revision: read.revision, tasks: read.graph?.nodes.length ?? null,
       boundTasks: read.graph?.nodes.filter((node) => node.jira !== null).length ?? null,
-      status: read.status !== "ready" ? "invalid" : eligible ? "eligible" : "unlinked", diagnostics: read.diagnostics });
-    if (eligible && read.status === "ready") catalog.push({ ...source, epic });
+      status: read.status !== "ready" ? "invalid" : eligible ? "eligible" : "unlinked", diagnostics: [...read.diagnostics, ...metadata.diagnostics] });
+    if (eligible && read.status === "ready") catalog.push({ ...source, epic, workstream: metadata.workstream });
   }
   const validated = sourceCatalog(JSON.stringify(catalog));
   if (validated.diagnostics.length) throw new Error(validated.diagnostics.join(" "));
