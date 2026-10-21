@@ -119,6 +119,27 @@ pub(crate) fn capabilities_with_history_page(page: u32) -> RuntimeCapabilities {
     declared
 }
 
+/// The test-owned runtime-refusal signals, mapped onto the catalogued aliases.
+///
+/// The fixture names neutral account aliases, while the compiled route catalog
+/// the test packs route through names the Codex logins `codex-work` and
+/// `codex-personal`. Only the two Codex `provider:` lines are mapped back; every
+/// marker, reset prefix and zone stays the fixture bytes.
+pub(crate) fn quota_signals_fixture() -> String {
+    let mut document =
+        include_str!("../../../../tests/fixtures/config/quota-signals.yml").to_owned();
+    for (shipped, catalogued) in [("codex-b", "codex-work"), ("codex-a", "codex-personal")] {
+        let line = format!("    provider: {shipped}\n");
+        assert_eq!(
+            document.matches(&line).count(),
+            1,
+            "the fixture declares {shipped} once"
+        );
+        document = document.replace(&line, &format!("    provider: {catalogued}\n"));
+    }
+    document
+}
+
 /// The same declaration, minus the named capabilities.
 pub(crate) fn capabilities_without(missing: &[RuntimeCapability]) -> RuntimeCapabilities {
     let mut declared = every_capability();
@@ -295,18 +316,7 @@ impl World {
     /// and `codex-personal`. Only the two Codex `provider:` lines are mapped
     /// back; every marker, reset prefix and zone stays the fixture bytes.
     pub(crate) async fn open_empty_with_quota_signals() -> Self {
-        let mut document =
-            include_str!("../../../../tests/fixtures/config/quota-signals.yml").to_owned();
-        for (shipped, catalogued) in [("codex-b", "codex-work"), ("codex-a", "codex-personal")] {
-            let line = format!("    provider: {shipped}\n");
-            assert_eq!(
-                document.matches(&line).count(),
-                1,
-                "the fixture declares {shipped} once"
-            );
-            document = document.replace(&line, &format!("    provider: {catalogued}\n"));
-        }
-        Self::open_empty_with_quota_signal_document(&document).await
+        Self::open_empty_with_quota_signal_document(&quota_signals_fixture()).await
     }
 
     /// Start an empty Realm with an exact test-owned signal document.
@@ -446,9 +456,7 @@ impl World {
             false,
             DEFAULT_CAPACITY,
             WorldComposition {
-                quota_signals: Some(
-                    include_str!("../../../../tests/fixtures/config/quota-signals.yml").to_owned(),
-                ),
+                quota_signals: Some(quota_signals_fixture()),
                 succession_summarizer: Some(summarizer),
                 ..WorldComposition::default()
             },
@@ -471,9 +479,7 @@ impl World {
             false,
             DEFAULT_CAPACITY,
             WorldComposition {
-                quota_signals: Some(
-                    include_str!("../../../../tests/fixtures/config/quota-signals.yml").to_owned(),
-                ),
+                quota_signals: Some(quota_signals_fixture()),
                 runtime_summarizer: Some(summary.to_owned()),
                 ..WorldComposition::default()
             },
