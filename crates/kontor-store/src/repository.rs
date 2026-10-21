@@ -25204,19 +25204,17 @@ impl SqliteStore {
             )
             .map_err(backend)?;
         if exists {
-            let existing: (
-                String,
-                String,
-                String,
-                String,
-                String,
-                i64,
-                i64,
-                Option<String>,
-            ) = transaction
+            // Compare the facts an operator acts on, not the timestamps of the
+            // pass that re-observed them. `observed_at` changes on every
+            // controller pass by construction, so including it made an
+            // unchanged conflict look like new, different evidence and produced
+            // a refusal on every pass (ASMA-8515 N-01). The immutable first
+            // observation stays the evidence a human resolves; a later pass
+            // that sees the same status conflict is the same conflict.
+            let existing: (String, String, String, i64, i64, Option<String>) = transaction
                 .query_row(
                     "SELECT external_issue_key, observed_status_id, observed_status_name,
-                            observed_at, payload_hash, epic_revision, spec_version, milestone
+                            epic_revision, spec_version, milestone
                      FROM epic_status_conflicts
                      WHERE project_id = ?1 AND epic_id = ?2 AND kind = ?3
                        AND resolved_at IS NULL",
@@ -25233,25 +25231,21 @@ impl SqliteStore {
                             row.get(3)?,
                             row.get(4)?,
                             row.get(5)?,
-                            row.get(6)?,
-                            row.get(7)?,
                         ))
                     },
                 )
                 .map_err(backend)?;
-            let exact = existing.0 == record.external_issue_key.as_str()
+            let same_conflict = existing.0 == record.external_issue_key.as_str()
                 && existing.1 == record.observed_status.status_id.as_str()
                 && existing.2 == record.observed_status.status_name.as_str()
-                && existing.3 == text(record.observed_at)
-                && existing.4 == record.payload_hash.as_str()
-                && existing.5 == revision_column(record.epic_revision)?
-                && existing.6 == version_column(record.spec_version)
-                && existing.7.as_deref()
+                && existing.3 == revision_column(record.epic_revision)?
+                && existing.4 == version_column(record.spec_version)
+                && existing.5.as_deref()
                     == record
                         .milestone
                         .as_ref()
                         .map(kontor_core::id::SemanticMilestoneKey::as_str);
-            if exact {
+            if same_conflict {
                 transaction.commit().map_err(backend)?;
                 return Ok(false);
             }

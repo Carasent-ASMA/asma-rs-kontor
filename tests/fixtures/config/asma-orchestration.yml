@@ -47,6 +47,10 @@ project:
   team_pack: packs/team.yml
   fleet: orchestration/fleet.yml
   supervision: orchestration/tpm-supervision.yml
+  pr_desk:
+    command: python3 _tools/ai-orchestration/pr_desk.py
+    settings: orchestration/pr-desk.yml
+    history_root: pr-review
   merge_authority:
     role: platform owner
     policy: independent-review-then-owner

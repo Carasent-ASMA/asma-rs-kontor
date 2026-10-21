@@ -116,7 +116,8 @@ export function PlanReader(props: Props) {
   const lines = content?.split("\n") ?? [];
   const matches = needle ? blocks.filter((block) => block.text.toLocaleLowerCase().includes(needle)).length : 0;
   const width = { maxWidth: 900, width: "100%" as const, alignSelf: "center" as const };
-  const tasks = selected.graph ? `${selected.graph.nodes.length} plan tasks` : "task graph unavailable";
+  const workstream = selected.planMetadata ? selected.planMetadata.workstream : selected.source.workstream;
+  const tasks = `${workstream ? `Workstream: ${workstream}` : "Workstream: unknown"} · ${selected.graph ? `${selected.graph.nodes.length} plan tasks` : "task graph unavailable"}`;
   const linked = `${props.entries.length} linked session${props.entries.length === 1 ? "" : "s"}`;
   const notInferred = "A captured document, not a live plan revision. Approval, execution and lifecycle are not inferred from its text.";
   const status = view.target ? declaration

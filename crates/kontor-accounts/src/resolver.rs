@@ -213,12 +213,28 @@ fn security_input(
     Ok(input)
 }
 
+/// The bound on one keychain *read*.
+///
+/// A read starts `/usr/bin/security`, which may wait on the item's ACL or on a
+/// system authorization prompt that a headless daemon cannot answer. Five
+/// seconds was short enough that a cold or busy host reported a usable
+/// credential as "exceeded its bound" at startup (ASMA-8515 N-03). The outer
+/// connector bound is deliberately longer, so this is the bound that fires and
+/// reports the read's own refusal.
+pub const KEYCHAIN_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// The bound on one keychain *write* or delete.
+///
+/// A write has no reason to wait on a human: the operator who asked for it is
+/// present, and a stalled writer must not hold a stopped-realm operation open.
+const KEYCHAIN_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 #[cfg(target_os = "macos")]
 fn bounded_security(
     command: Command,
     input: Option<&str>,
 ) -> Result<std::process::Output, KeychainFailure> {
-    bounded_security_for(command, input, std::time::Duration::from_secs(5))
+    bounded_security_for(command, input, KEYCHAIN_WRITE_TIMEOUT)
 }
 
 #[cfg(target_os = "macos")]
@@ -462,6 +478,34 @@ mod security_transport_tests {
         let synthetic_input = "x".repeat(2 * 1024 * 1024);
         stalled_child(Some(&synthetic_input));
     }
+
+    /// A read that is slow but completes is not a read that failed.
+    ///
+    /// The live host reported a usable credential as "exceeded its bound" at
+    /// startup (ASMA-8515 N-03). The read bound must therefore be materially
+    /// longer than the write bound, and a child that answers inside it must be
+    /// collected rather than killed.
+    #[test]
+    fn a_slow_read_inside_the_read_bound_completes() {
+        assert_eq!(KEYCHAIN_READ_TIMEOUT, std::time::Duration::from_secs(20));
+        assert!(
+            KEYCHAIN_READ_TIMEOUT > KEYCHAIN_WRITE_TIMEOUT,
+            "the read bound must outlive the write bound"
+        );
+        // This child answers well inside the bound. The production bound's
+        // expiry is intentionally not waited out here; the connector suite's
+        // blocked-keychain test proves the outer 30 s refusal, and this test
+        // pins the read bound constant and proves a slow read is collected
+        // rather than reported as a failure.
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", "sleep 0.15; printf answered"])
+            .stdout(std::process::Stdio::piped());
+        let output = bounded_security_for(command, None, KEYCHAIN_READ_TIMEOUT)
+            .expect("a read inside the bound answers");
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"answered");
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -508,7 +552,9 @@ impl KeychainBackend for SystemKeychain {
                 "-w",
             ])
             .stdout(std::process::Stdio::piped());
-        let mut output = bounded_security(command, None)?;
+        // A read is the one operation that may have to wait on the item's ACL
+        // or an operator prompt, so it gets the longer, dedicated bound.
+        let mut output = bounded_security_for(command, None, KEYCHAIN_READ_TIMEOUT)?;
 
         if !output.status.success() {
             output.stdout.zeroize();

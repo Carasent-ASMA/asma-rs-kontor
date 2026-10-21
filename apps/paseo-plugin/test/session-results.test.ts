@@ -32,7 +32,7 @@ describe("filtered result provenance", () => {
     expect(sessionProvenance(epic, {})).toEqual({ parts: ["PR Review", "ASMA-9", "desk-review"], desk: false, workspace: "desk-review" });
     expect(sessionAncestors(buildOrganizationTree({ entries: [epic] }), "e")?.[1]).toContain("/epic:asma-9");
     const native = sessionEntry("n", { workspaceName: "ADAM", projectName: "DESK • ADAM" });
-    expect(sessionProvenance(native, {}).parts).toEqual(["adam desk", "ADAM"]);
+    expect(sessionProvenance(native, {}).parts).toEqual(["DESK • ADAM", "ADAM"]);
   });
 
   it("never passes a working directory off as a workspace", () => {
