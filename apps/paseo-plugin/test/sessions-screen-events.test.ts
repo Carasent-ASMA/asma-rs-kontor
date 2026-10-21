@@ -226,6 +226,7 @@ vi.mock("react-native", () => ({
 }));
 
 vi.mock("@getpaseo/plugin/client", () => ({
+  useRpc: () => async () => { throw new Error("Lifecycle RPC unavailable in this fixture"); },
   getPaseoClient: directory.getClient,
   useHosts: () => [
     { serverId: "host-a", status: "online" },
