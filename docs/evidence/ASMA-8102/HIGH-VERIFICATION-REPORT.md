@@ -131,7 +131,7 @@ Both mutants were reproduced in a disposable detached worktree at exact
 
    - route result: exit 101;
      `another_project_does_not_inherit_the_governed_repositories` observed an
-     ungoverned project accepted into `Carasent-ASMA/asma-modules` with no
+     ungoverned project accepted into `[parent-repository]` with no
      refusal reasons;
    - compiler secondary signal: the governed-project constant became unused.
 

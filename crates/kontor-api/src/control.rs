@@ -24,8 +24,9 @@ use serde::Deserialize;
 
 use crate::auth::CallerCapability;
 use crate::dto::{
-    BindingDto, ContextPolicyDto, EventDto, GapDto, HealthDto, ProjectionDto, RealmDto, RunDto,
-    SnapshotDto, TaskDto, run_revisions, task_revisions,
+    BindingCensusDto, BindingCensusItemDto, BindingDto, ContextPolicyDto, EventDto, GapDto,
+    HealthDto, NativeBindingStateDto, ProjectionDto, RealmDto, RunDto, SnapshotDto, TaskDto,
+    run_revisions, task_revisions,
 };
 use crate::error::{ApiError, ApiErrorCode};
 use crate::state::ApiState;
@@ -118,6 +119,59 @@ pub async fn run_snapshot(
         realm_id: state.realm_id(),
         snapshot_cursor: cursor,
         value: run_dto(&state, &inspection),
+    }))
+}
+
+/// Every persisted native binding in this Realm, with the work it served and
+/// whether this process can still address it.
+#[utoipa::path(
+    get, path = "/v1/runtime-bindings", tag = "control",
+    responses((status = 200, body = SnapshotDto<BindingCensusDto>), (status = 401), (status = 403))
+)]
+pub async fn binding_census(
+    State(state): State<ApiState>,
+    caller: Caller,
+) -> Result<Json<SnapshotDto<BindingCensusDto>>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let snapshot = state
+        .with_store(|store| store.snapshot_binding_census())
+        .map_err(|error| ApiError::from_repository(state.realm_id(), &error))?;
+    let cursor = snapshot.snapshot_cursor;
+    let entries = snapshot
+        .open(state.realm_id())
+        .map_err(|error| ApiError::from_domain(state.realm_id(), &error))?;
+    let bindings = entries
+        .into_iter()
+        .map(|entry| {
+            let attached = state.sessions().get(entry.binding.id).is_some();
+            let binding_state = if entry.run_closed_at.is_some() {
+                NativeBindingStateDto::Retired
+            } else if attached {
+                NativeBindingStateDto::Attached
+            } else {
+                NativeBindingStateDto::Detached
+            };
+            BindingCensusItemDto {
+                binding_id: entry.binding.id,
+                project_id: entry.project_id,
+                agent_run_id: entry.agent_run_id,
+                task_id: entry.task_id,
+                epic_id: entry.epic_id,
+                runtime_kind: entry.binding.identity.runtime_kind,
+                host: entry.binding.identity.host,
+                generation: entry.binding.identity.generation,
+                native_id: entry.binding.identity.native_id,
+                bound_at: entry.binding.bound_at,
+                run_lifecycle: entry.run_lifecycle,
+                run_closed_at: entry.run_closed_at,
+                state: binding_state,
+            }
+        })
+        .collect();
+    Ok(Json(SnapshotDto {
+        realm_id: state.realm_id(),
+        snapshot_cursor: cursor,
+        value: BindingCensusDto { bindings },
     }))
 }
 
@@ -494,6 +548,8 @@ fn run_dto(state: &ApiState, inspection: &RunInspection) -> RunDto {
         agent_run_id: inspection.run.id,
         project_id: inspection.project_id,
         team_run_id: inspection.run.team_run_id,
+        task_id: inspection.task_id,
+        epic_id: inspection.epic_id,
         parent_agent_run_id: inspection.run.parent_agent_run_id,
         role: inspection.run.role.clone(),
         account_profile_id: inspection.run.account_profile_id,

@@ -13,9 +13,9 @@ limiter           : this harness bounds the run at 600s wall clock and
 toolchain         : rustc 1.97.1 (8bab26f4f 2026-07-14)
 platform          : Darwin 25.6.0 arm64
 --- raw output ---
-   Compiling kontor-store v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-store)
-   Compiling kontor-api v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-api)
-   Compiling kontor-daemon v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-daemon)
+   Compiling kontor-store v0.2.1 ([task-workspace])
+   Compiling kontor-api v0.2.1 ([task-workspace])
+   Compiling kontor-daemon v0.2.1 ([task-workspace])
     Finished `test` profile [unoptimized + debuginfo] target(s) in 5.32s
      Running unittests src/main.rs (target/debug/deps/kontor_daemon-a20f67ba496d7207)
 

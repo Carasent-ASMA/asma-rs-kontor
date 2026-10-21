@@ -58,7 +58,7 @@ runtime reports.
   "seat_key": "general",
   "role_code": "LSA",
   "seat_label": "GENERAL",
-  "procedure": ".github/skills/asma-pr-review/SKILL.md",
+  "procedure": "[schematic-procedure-id]",
   "recovery_owner": "paseo_direct",
   "decided_by": "Igor",
   "decided_on": "2026-10-08"

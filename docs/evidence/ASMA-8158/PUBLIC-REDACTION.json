@@ -1,0 +1,24 @@
+{
+  "consumers": [
+    "PUBLIC-REDACTION.md"
+  ],
+  "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+  "files": {
+    "2026-10-03-00-39-report-cognee-local-candidate.md": {
+      "bytes": 11877,
+      "derivative_sha256": "98ac487691f6b1e3088f3cf518cb61e913671eb99d190cec02f1b53e8c8ecdd6",
+      "original_sha256": "a7df1608067090dcdd68ecf2a01e9d9c083b1f8136296995cf30a40be1298aa3"
+    }
+  },
+  "model": "The public copy is a redacted derivative. Original bytes and SHA-256 are retained in the access-controlled evidence store; the TPM owns the exact-path disposition ledger.",
+  "original_archive": "access-controlled evidence store outside the public repo; TPM-owned disposition ledger",
+  "placeholders": {
+    "[deployment-manifests]": "private deployment manifest path",
+    "[parent-plan]": "private parent plan path",
+    "[parent-report]": "private parent report path",
+    "[parent-repository]": "private parent repository",
+    "[project-cli-checkout]": "private project CLI path",
+    "[task-workspace]": "private task workspace path"
+  },
+  "scope": "docs/evidence/ASMA-8158"
+}

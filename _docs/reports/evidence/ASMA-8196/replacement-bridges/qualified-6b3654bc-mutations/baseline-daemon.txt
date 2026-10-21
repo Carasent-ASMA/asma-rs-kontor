@@ -15,7 +15,7 @@ QUALIFIED_SOURCE=6b3654bca823ac85ed7cc0bb1d6965bc730c4743
    Compiling kontor-api v0.2.1 (/private/tmp/ASMA-8196-hydration-mutations-6b3654bc/source/crates/kontor-api)
    Compiling kontor-daemon v0.2.1 (/private/tmp/ASMA-8196-hydration-mutations-6b3654bc/source/crates/kontor-daemon)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 08s
-     Running tests/loopback_api.rs ($HOME/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/loopback_api-b347fa1894c0337e)
+     Running tests/loopback_api.rs ([parent-tools])
 
 running 4 tests
 test replacement_bridges::trailing_abandoned_bridge_attempts_keep_the_bound_predecessor_named ... ok

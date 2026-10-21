@@ -37,11 +37,11 @@ export function Card({ title, children, colors }: { title: string; children: Rea
     <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: 15, fontWeight: "600" }}>{title}</Text>{children}
   </View>;
 }
-/** Square icon button; a touch pointer gets a real 44pt target, since the web ignores a hit slop. */
-export function IconButton({ label, icon, colors, onPress }: { label: string; icon: string; colors: Colors; onPress: () => void }) {
+/** Square icon button; a touch pointer gets a real 44pt target, since the web ignores a hit slop. A disabled button keeps its place. */
+export function IconButton({ label, icon, colors, onPress, disabled = false }: { label: string; icon: string; colors: Colors; onPress: () => void; disabled?: boolean }) {
   const size = COARSE_POINTER ? 44 : 34;
-  return <Pressable accessibilityRole="button" accessibilityLabel={label} onPress={onPress} style={{ width: size, height: size, borderRadius: 7, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center" }}>
-    <Icon name={icon} size={16} color={colors.foreground} />
+  return <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled }} aria-disabled={disabled} disabled={disabled} onPress={onPress} style={{ width: size, height: size, borderRadius: 7, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center", opacity: disabled ? 0.45 : 1 }}>
+    <Icon name={icon} size={16} color={disabled ? colors.foregroundMuted : colors.foreground} />
   </Pressable>;
 }
 /** True where a finger is the primary pointer: native apps, and web on phones and tablets. A mouse keeps the denser rows. */

@@ -1,5 +1,5 @@
 import datetime, hashlib, io, json, os, pathlib, subprocess, tarfile
-repo=pathlib.Path(os.environ['HOME'])/'carasent/asma-modules/.worktrees/asma-8113/asma-rs-kontor'
+repo=pathlib.Path(os.environ['HOME'])/'[task-workspace]'
 commit='1b99689d138aa1a4c1e406700f0a6be2316f5554';tree='738d887a11ab19c2e6039ca5dc74d20d5c255267'
 assert subprocess.check_output(['git','rev-parse','HEAD'],cwd=repo).decode().strip()==commit
 assert subprocess.check_output(['git','status','--porcelain'],cwd=repo)==b''
@@ -17,7 +17,7 @@ with log.open('wb') as out:
 receipt={'sourceCommit':commit,'sourceTree':tree,'archiveSha256':hashlib.sha256(archive).hexdigest(),'command':command,'startedAt':start,'finishedAt':finish,'exitCode':run.returncode,'logSha256':hashlib.sha256(log.read_bytes()).hexdigest(),'privateTarget':str(target),'scope':'Integrated exact-candidate archive qualification only. Earlier exact-51 evidence is not relabeled. No merge/deployment or task/epic acceptance.'}
 (folder/'receipt.json').write_text(json.dumps(receipt,indent=2)+'\n');print(json.dumps(receipt),flush=True)
 if run.returncode==0:
- cli=os.environ['HOME']+'/carasent/asma-modules/_tools/asma-rs-kontor/node_modules/.pnpm/openapi-typescript@7.13.0_typescript@5.9.3/node_modules/openapi-typescript/bin/cli.js'
+ cli=os.environ['HOME']+'/[parent-tools]'
  commands=[['cargo','test','--locked','-p','kontor-api','--test','openapi_contract'],['node',cli,str(source/'crates/kontor-api/contract/openapi.json'),'-o',str(folder/'schema-verify.d.ts')],['diff','-u',str(source/'apps/console/src/api/schema.d.ts'),str(folder/'schema-verify.d.ts')]]
  api=folder/'frozen-and-api.txt';records=[];api_start=datetime.datetime.now(datetime.timezone.utc).isoformat()
  with api.open('wb') as out:

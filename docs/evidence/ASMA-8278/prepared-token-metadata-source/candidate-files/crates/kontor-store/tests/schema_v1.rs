@@ -807,7 +807,7 @@ fn v108_worktree_correction_evidence_is_append_only() {
                 "task-1",
                 "/old/worktree",
                 "/new/worktree",
-                "_tools/asma-rs-kontor",
+                "asma-rs-kontor",
                 "feat/ASMA-8120-deploy-jira-key-runtime-and-migrate-current-native-containers",
                 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
                 "2026-09-19T19:23:28Z",

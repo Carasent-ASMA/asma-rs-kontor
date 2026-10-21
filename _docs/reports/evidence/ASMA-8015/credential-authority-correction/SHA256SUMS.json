@@ -57,5 +57,15 @@
     "qualified-e53f19b7/full-gate.txt.json": "e6e94d348c62326cca40f32101363ec8505399fd8ad04a3035dc83bc057bd4ca",
     "qualified-e53f19b7/runner.py": "3f8a0fc41b285b5d3f4900d979626cb7e26bf2061b42868f46b70afa293456dd",
     "qualified-e53f19b7/source-qualification.json": "5023fb0a02da94ed857c0069afdba85f50301ab9bd53631902f7d55496ab9571"
+  },
+  "public_derivative": {
+    "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+    "ledger": "../PUBLIC-REDACTION.json",
+    "note": "files maps original SHA-256; derivatives maps the public derivative SHA-256 for redacted files."
+  },
+  "derivatives": {
+    "mutations-e53f19b7/runner.py": "0b5ff684bc7b882902630fd6eb17443974c609d26b89da7a6ded00d62049d036",
+    "preliminary/runner.py": "194b0e01102f287c9524528c6fb4549f48b5f4bf35bbbb28a30cb02e5e4a2455",
+    "qualified-e53f19b7/runner.py": "b7ad23571ec410df5ef7faae2f5ef11b69490fc55a496fe73cc6e4ed9ca28c37"
   }
 }

@@ -267,6 +267,8 @@ const EXPECTED_TABLES: &[&str] = &[
     "desk_adam_subjects",
     // Schema v134 (ASMA-8453): PR review subjects.
     "pr_review_subjects",
+    // Schema v135 (ASMA-8514): the typed operational-gap ledger.
+    "operational_gaps",
 ];
 
 /// The frozen v1 script, so the upgrade test can build a genuine v1 file.
@@ -809,8 +811,8 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // that declare and reconcile them (ASMA-8451). v133 adds desk Adam
     // subjects and one live session per subject (ASMA-8452). v134 adds PR
     // review subjects and the receipt kinds that open and close a review
-    // (ASMA-8453).
-    assert_eq!(SCHEMA_VERSION, 134);
+    // (ASMA-8453). v135 adds the typed operational-gap ledger (ASMA-8514).
+    assert_eq!(SCHEMA_VERSION, 135);
 }
 
 #[test]
@@ -6846,7 +6848,7 @@ fn v123_upgrade_preserves_generic_ledger_and_enforces_immutable_memory_receipts(
     // now has the exact v119 table set and ledger, and opens through the real chain.
     let database = directory.path().join("kontor.db");
     let connection = Connection::open(&database).unwrap();
-    connection.execute_batch("DROP TABLE memory_projection_rebuild_results; DROP TABLE memory_projection_rebuild_keys; DROP TABLE memory_recall_keys; DROP TABLE memory_recall_metadata; DROP TABLE memory_experience_proposals; DROP TABLE memory_projection_active; DROP TABLE memory_projection_snapshots; DROP TABLE memory_experience_eligibility; DROP TABLE imported_record_evidence; DROP TABLE core_team_route_successions; PRAGMA user_version=119;").unwrap();
+    connection.execute_batch("DROP TABLE memory_projection_rebuild_results; DROP TABLE memory_projection_rebuild_keys; DROP TABLE memory_recall_keys; DROP TABLE memory_recall_metadata; DROP TABLE memory_experience_proposals; DROP TABLE memory_projection_active; DROP TABLE memory_projection_snapshots; DROP TABLE memory_experience_eligibility; DROP TABLE imported_record_evidence; DROP TABLE core_team_route_successions; DROP TABLE operational_gaps; PRAGMA user_version=119;").unwrap();
     // The ASMA-8278 feature generations are additive too: a fixture that replays
     // the chain from 119 must not leave their tables behind either.
     connection.execute_batch("DROP TABLE planning_pair_contributions; DROP TABLE planning_pair_record_revisions; DROP TABLE planning_pair_placements; DROP TABLE planning_pair_member_natives; DROP TABLE attestation_authority_keys; DROP TABLE attestation_authority_heads; DROP TABLE prepared_attestation_tokens; DROP TABLE attestation_token_heads; DROP TABLE pr_review_subjects; DROP TRIGGER desk_adam_subjects_host_one_session; DROP TRIGGER desk_adam_subjects_bound_ad_hoc_seats_no_one; DROP TRIGGER desk_adam_subjects_bound_ad_hoc_hosts_no_one; DROP TABLE desk_adam_subjects; DROP TABLE durable_seat_declarations; DROP TABLE desks;").unwrap();

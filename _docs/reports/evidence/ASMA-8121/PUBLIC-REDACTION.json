@@ -1,0 +1,155 @@
+{
+  "consumers": [
+    "SHA256SUMS.json",
+    "PUBLIC-REDACTION.md"
+  ],
+  "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+  "files": {
+    "SHA256SUMS.json": {
+      "bytes": 10756,
+      "derivative_sha256": "74cce9c710e04e696b1e29e9706061afc045ed9b6da84ebac3648e3b692364b7",
+      "original_sha256": "ce6a62d0895e28b8a4b605a8bd6f27af31959f5ce6da1134e516603359fd97fd"
+    },
+    "authority-correction/actual-lsa-79-audit.txt": {
+      "bytes": 3481,
+      "derivative_sha256": "5d9309ce20a98b05b11ed4a94e0c8a103b46c02390c73bef43c695efe0f5d5a8",
+      "original_sha256": "e5941848bd3b6b9f2db94219f13480894fea726660d7b7985b73e2029f8f49eb"
+    },
+    "authority-correction/actual-lsa-b42-audit.txt": {
+      "bytes": 3839,
+      "derivative_sha256": "56a42d140ddc6fae8b1bbc6989625b5f501b9de08db3364da62b127c51eceafe",
+      "original_sha256": "be6e89d1dc28745468fe2536ecab7d0cc4e0869e45cd1d6cb5ebdd205b2eea76"
+    },
+    "authority-correction/actual-lsa-source-merge-support.txt": {
+      "bytes": 1856,
+      "derivative_sha256": "0a7aabf472caeb69256009d4269c94f6f3b611a4bd4c7b4dd6980d9dbf21cd4f",
+      "original_sha256": "7e222b064fd798628983aa526c25487ff35da66936eec5fe3865f53b0a4056ff"
+    },
+    "authority-correction/allow-observation.txt": {
+      "bytes": 1605,
+      "derivative_sha256": "f77545d853dc8c5d7dd7a5c323e9bb139239377a7d116b27ba4cabba694a5ba4",
+      "original_sha256": "03432843ed4b57c64444c00a6b4dea1003f69cd59f7688dae4b0376c55ddb85c"
+    },
+    "authority-correction/authority-focused-green.txt": {
+      "bytes": 763,
+      "derivative_sha256": "eb7f2006079b86bce1368c35924a6953559df114f54f7c2b5e8b0bf06eb0b66d",
+      "original_sha256": "4d6f30fb2f34c49e13c80a27a024d14be78600b193293f5903109f89a0baa1b6"
+    },
+    "authority-correction/authority-regression-red.txt": {
+      "bytes": 1558,
+      "derivative_sha256": "e2cca230e99f95032d7763309f64a9b02282ff341e36b216bed991a01bd8fc2c",
+      "original_sha256": "2c6541dc6b1408c09fe51064b099db5174796317cea9bddb682296d8c3b5e9dd"
+    },
+    "authority-correction/backup-export-restored.txt": {
+      "bytes": 3610,
+      "derivative_sha256": "7c6daa5a146bb535be39e210feeb66b49ca5e7a65634e1c22986adf2ba0c60b0",
+      "original_sha256": "b432364fbfe5d0116596a1440db7b515404a9e83e21a44c37a9b18b455b0a960"
+    },
+    "authority-correction/ignore-project.txt": {
+      "bytes": 817,
+      "derivative_sha256": "b104d6ace61769c6c940a29c82b46e5fa89fdd2bbc45bc09421feb560b895be6",
+      "original_sha256": "e855351eb4f57abc94422c81005a17f91335004d30f601cd6fd0023c78becb64"
+    },
+    "authority-correction/reject-command.txt": {
+      "bytes": 1737,
+      "derivative_sha256": "3851910d3384cc7fb340e7d9e5b2927adc02062874aef53ab147807ecbca1365",
+      "original_sha256": "9d6ed8be7ae1c125a41cc76c52bc5ab8ce8940766d2d09b058d6eab19b7ac206"
+    },
+    "authority-correction/skip-authority.txt": {
+      "bytes": 2325,
+      "derivative_sha256": "cddb8dece8e52877328be565b5a85200f1c0d5257a3f06ac54d9de13d4896c56",
+      "original_sha256": "52fbedaed529638685cfea109b99e62495e63b88eb3eef830dfe78245d1c4d30"
+    },
+    "authority-correction/skip-canary.txt": {
+      "bytes": 1391,
+      "derivative_sha256": "f94d1c0e8e68a50425f4370156e4aa7d672a787646fdf6bb1118f144c5d3b8bb",
+      "original_sha256": "0943d0f1ac93d0bcaa85d362ec303f6d6d31eb1380e14b93b1ea4e26c8489818"
+    },
+    "authority-correction/skip-hash-recompute.txt": {
+      "bytes": 846,
+      "derivative_sha256": "73a02ddb9e42b2b34eb0735091700faec829d8fb74605c48fc77ed1a44ce626a",
+      "original_sha256": "a3c69df069d620d8ae2d4835bc3efd893171aced8a1e27ae7e3190d644404c5f"
+    },
+    "authority-correction/store-clippy.txt": {
+      "bytes": 145,
+      "derivative_sha256": "555b8959abb04a865936c5f7f5ebf1069766ba30bc06786fc056062d240de6ab",
+      "original_sha256": "2c310bdf8c7540a30dd9b053e995cf11ab50b6a7a0068347516b16007ed8df29"
+    },
+    "b42b5197-full-gate.txt": {
+      "bytes": 718396,
+      "derivative_sha256": "2797da3a7baffa40ee2bf7428ac09c83aa4a038b60b242ed181dbbd190282627",
+      "original_sha256": "adecad8ef6c264738497f90f3e756db76ffe868f4c60ffcc2b87bc73bd3b07fc"
+    },
+    "backup-export-green-restored.txt": {
+      "bytes": 2992,
+      "derivative_sha256": "9198edc2100a7fcca2599f92e15081d360ace11f0bbc570486438fb2bcc4e545",
+      "original_sha256": "7f4e7e973b2f1d99f717d612684ee90a405bf005cdb9e50adf216df778d8ad41"
+    },
+    "export-command-regression-red.txt": {
+      "bytes": 1402,
+      "derivative_sha256": "3ff73e3dceb7c4581dd10e801d16939590125bedd5e5ca3eba4bc0ed3a76615a",
+      "original_sha256": "416d8c9a17b2f35264fd53e8d26d097ea0644d20629ea88a2ceebf06428bf0bf"
+    },
+    "focused-command-green.txt": {
+      "bytes": 457,
+      "derivative_sha256": "3b6ead852e73175e5730e688782c176df53f5a82ff1631b408fe039258921c8d",
+      "original_sha256": "91d632db2de2e001f8e4876a71fe27477a0c3a8d5801a8dca620c7650a74ce2c"
+    },
+    "focused-observation-green.txt": {
+      "bytes": 329,
+      "derivative_sha256": "9894dbbc36a828f72ad5dd8bc6818c30a0994b77a8211d7a4131b54221126864",
+      "original_sha256": "63ab174bca3d37783c4afb6b0a56c804ed7d7c36586536b9765029aa2b248910"
+    },
+    "initial-backup-export-fixture-failure.txt": {
+      "bytes": 3551,
+      "derivative_sha256": "0fe8e091808c4224136356bff30d67a8a3f37d9351f8705b8d3c73a531c7be06",
+      "original_sha256": "6677de9b7ccdda9bde2c7664747ff769c94415997bc95e05431fc7fa80f7ee5f"
+    },
+    "jira-migration-mut003-baseline.txt": {
+      "bytes": 455,
+      "derivative_sha256": "cd6c961f29ee8db395c2f9aba610a9ef6953117529ddb937b6404ba50c97c925",
+      "original_sha256": "b65e886215a7dcab120444c89b00dcd4102ff098ef5d06621569b4762af99922"
+    },
+    "jira-migration-mut003-restored.txt": {
+      "bytes": 456,
+      "derivative_sha256": "f611077a220ab00274778a6bdddfb36ac55d2538a4e02829138a69d589972ec8",
+      "original_sha256": "dbd587649ab67d008cd7cc9f257b4c30b4e9266a5e09836ec349826800c12486"
+    },
+    "jira-migration-mut003.txt": {
+      "bytes": 994,
+      "derivative_sha256": "796a4b4f69e117d8efcf2e3ca3595b0a5bb1f2191d0a333850a89c2859d4dacb",
+      "original_sha256": "d42cfdce141c0a02e9b780d3384448ba66e47219077153cacffc3d2799934a3a"
+    },
+    "mutant-allow-observation.txt": {
+      "bytes": 1605,
+      "derivative_sha256": "d73587e2e8456c0d53b9ed648c7930c9943cf3798301de883aedf350e6888b57",
+      "original_sha256": "aa5c320de41ffc4d8af41f80bf485e1ca25e4160e23fe3f41930e23790742073"
+    },
+    "mutant-reject-command.txt": {
+      "bytes": 972,
+      "derivative_sha256": "b57c832f61cf90fac5e229ae3a93930f928e0aab24e4d8ee0cd488059fd1cd6c",
+      "original_sha256": "94f706c23c8ab43286aa333afca77b13bfbffa34cc4c3a6b3f4a89c3116043a0"
+    },
+    "mutant-skip-canary.txt": {
+      "bytes": 1391,
+      "derivative_sha256": "647bb7107c8e0832c38a477a14655c2917f48e2ae6d287f5377b8d13bd4c45a4",
+      "original_sha256": "2de228117bc6d650450eaf0a42d7e89535c80dc8c30c5da2c63fe4faf8a3c914"
+    },
+    "store-clippy.txt": {
+      "bytes": 576,
+      "derivative_sha256": "f93dd4c52691ffcbea08f23200fd4386e72886a36f8c9464aee06d67994c0079",
+      "original_sha256": "92cbe8d0457f15f82a1bd3737f833ed849ff907b2a39985aa49aeba6e3e86b0b"
+    }
+  },
+  "model": "The public copy is a redacted derivative. Original bytes and SHA-256 are retained in the access-controlled evidence store; the TPM owns the exact-path disposition ledger.",
+  "original_archive": "access-controlled evidence store outside the public repo; TPM-owned disposition ledger",
+  "placeholders": {
+    "[archived-private-evidence]": "private parent-repository evidence URL",
+    "[parent-plan]": "private parent plan path",
+    "[parent-repository]": "private parent-repository slug",
+    "[parent-tools]": "private parent tools path",
+    "[parent-workspace]": "private parent workspace path",
+    "[task-workspace]": "private task workspace path"
+  },
+  "scope": "_docs/reports/evidence/ASMA-8121"
+}

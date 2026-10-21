@@ -1,9 +1,10 @@
 # Provenance
 
 This repository is created by Carasent ASMA for the Kontor control plane MVP
-(plan `2026-08-08-20-12-plan-asma-kontor-mvp-control-plane.md`, Jira epic
+(private ASMA-7744 plan, revision `2026-08-08-20-12`, Jira epic
 `ASMA-7744`). The scaffold (KON-MVP-02) was authored from that plan and the
-Kontor architecture (`2026-08-08-20-12-architecture-asma-kontor-control-plane.md`).
+Kontor architecture (the private ASMA-7744 architecture record, revision
+`2026-08-08-20-12`).
 
 ## What lives here
 
@@ -18,7 +19,7 @@ Kontor architecture (`2026-08-08-20-12-architecture-asma-kontor-control-plane.md
 
 - Paseo, Agent Orchestrator and Codex runtimes: separately installed by the
   operator; Kontor only talks to their supported interfaces.
-- The `asma` CLI (`_tools/asma-cli`): a separate repository. It calls Kontor's
+- The `asma` CLI: a separate repository. It calls Kontor's
   publication endpoints; Kontor itself no longer shells out to it — Jira goes
   through the native `kontor-jira` connector and account capacity through
   `kontor-accounts`.
@@ -41,11 +42,9 @@ material, runtime transcript or token delta is in it, and it names in its own
 
 The code is open source under `MIT OR Apache-2.0`, and a maintainer may publish
 it. Publication has no separate review gate. Igor Efrem decided this on
-2026-10-17, recorded as
-[decision H-1](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/analysis/2026-10-17-10-45-analysis-kontor-gap-drift-open-source-and-recommended-setup.md#11-decisions-for-igor)
-of the Kontor gap analysis in the parent `asma-modules` documentation. It
-replaces the three release prerequisites this file used to list: an employer
-intellectual-property review, a product-name clearance and a final review of
-`NOTICE` and `THIRD_PARTY_NOTICES.md`.
+2026-10-17, recorded as decision H-1 of the Kontor gap analysis, a historical
+planning record. It replaces the three release prerequisites this file used to
+list: an employer intellectual-property review, a product-name clearance and a
+final review of `NOTICE` and `THIRD_PARTY_NOTICES.md`.
 Credentials, run receipts and account data must stay out of the repository;
 they belong in the operator's own stores.

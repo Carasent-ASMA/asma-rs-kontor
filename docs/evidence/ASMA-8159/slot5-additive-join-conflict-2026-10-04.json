@@ -355,7 +355,7 @@
       "100644 68c4766cd4a254c3c74cdc64a7d2fa6e4d985410 2\ttests/contract/mcp_parity.rs",
       "100644 e76a4fa8ccab2e7d34002c9ba04b06d2fecf9029 3\ttests/contract/mcp_parity.rs"
     ],
-    "merge_head_path": "$HOME/carasent/asma-modules/.git/modules/_tools/asma-rs-kontor/worktrees/feat-asma-8155-kontor-experience-memory-and/MERGE_HEAD",
+    "merge_head_path": "[parent-workspace merge-head path]",
     "merge_head_exists": true,
     "merge_head": "1d7a71dde5214774dd35153f1a31435e129cbd01",
     "staged_changed_paths": [

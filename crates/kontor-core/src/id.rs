@@ -291,6 +291,9 @@ entity_ids! {
     /// firings are append-only children addressed by ordinal within it, so a
     /// correction never needs a new identity to replace an old one.
     OpenQuestionId,
+    /// Identifies one durable operational-gap record: a missing Kontor
+    /// capability a seat had to contain rather than work around silently.
+    OperationalGapId,
     /// Identifies one raw provider/account observation.
     ///
     /// Raw evidence is addressable in its own right because an operator's
@@ -545,6 +548,13 @@ open_keys! {
     /// The key is the seat's identity inside its desk. Its title is declared
     /// beside it and is never parsed back into a key.
     DurableSeatKey,
+    /// Names the failure class of one operational gap, such as
+    /// `capability_missing` or `runtime_unavailable`.
+    ///
+    /// The set is open because the corpus of observed gaps grows with the
+    /// control plane, but the spelling is still a key rather than prose: a
+    /// class can be counted and compared without a taxonomy migration.
+    GapFailureClass,
 }
 
 impl ModuleKey {

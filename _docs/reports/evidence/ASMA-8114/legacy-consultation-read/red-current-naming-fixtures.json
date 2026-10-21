@@ -2,7 +2,7 @@
   "label": "red-current-naming-fixtures",
   "startedAt": "2026-09-26T16:19:31.854024+00:00",
   "finishedAt": "2026-09-26T16:19:56.190666+00:00",
-  "cwd": "$HOME/carasent/asma-modules/.worktrees/asma-8113/asma-rs-kontor",
+  "cwd": "[task-workspace]",
   "runs": [
     {
       "command": [

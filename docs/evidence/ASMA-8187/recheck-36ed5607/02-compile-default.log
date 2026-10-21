@@ -41,7 +41,7 @@ disk free   : 16Gi
     Checking chrono v0.4.45
     Checking security-framework v3.7.0
     Checking rusqlite v0.40.2
-    Checking kontor-core v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-core)
+    Checking kontor-core v0.2.1 ([task-workspace])
     Checking rustls-webpki v0.103.15
    Compiling crc32fast v1.5.2
     Checking rustls v0.23.45
@@ -71,9 +71,9 @@ disk free   : 16Gi
    Compiling darling v0.24.1
     Checking serde_yaml_ng v0.10.0
     Checking rand_core v0.9.5
-    Checking kontor-runtime v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-runtime)
-    Checking kontor-policy v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-policy)
-    Checking kontor-context v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-context)
+    Checking kontor-runtime v0.2.1 ([task-workspace])
+    Checking kontor-policy v0.2.1 ([task-workspace])
+    Checking kontor-context v0.2.1 ([task-workspace])
     Checking ppv-lite86 v0.2.21
    Compiling siphasher v1.0.3
     Checking icu_provider v2.3.1
@@ -84,8 +84,8 @@ disk free   : 16Gi
     Checking toml_datetime v1.1.1+spec-1.1.0
    Compiling fastrand v2.5.0
     Checking dirs-sys v0.5.0
-    Checking kontor-scheduler v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-scheduler)
-    Checking kontor-teams v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-teams)
+    Checking kontor-scheduler v0.2.1 ([task-workspace])
+    Checking kontor-teams v0.2.1 ([task-workspace])
    Compiling phf_generator v0.13.1
    Compiling zip v3.0.0
     Checking bit-vec v0.8.0
@@ -93,12 +93,12 @@ disk free   : 16Gi
     Checking icu_normalizer v2.3.0
     Checking hyper-util v0.1.20
     Checking quick-error v1.2.3
-    Checking kontor-profiles v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-profiles)
+    Checking kontor-profiles v0.2.1 ([task-workspace])
     Checking bit-set v0.8.0
     Checking rand v0.10.2
    Compiling rust-embed-utils v8.12.0
     Checking rusty-fork v0.3.1
-    Checking kontor-accounts v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-accounts)
+    Checking kontor-accounts v0.2.1 ([task-workspace])
     Checking ref-cast v1.0.27
     Checking crypto-common v0.1.7
     Checking clap v4.6.6
@@ -171,17 +171,17 @@ disk free   : 16Gi
    Compiling utoipa-swagger-ui v9.0.2
    Compiling toml_writer v1.1.2+spec-1.1.0
    Compiling dtoa v1.0.11
-    Checking kontor-calendar v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-calendar)
-    Checking kontor-runtime-paseo v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-runtime-paseo)
-    Checking kontor-jira v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-jira)
-    Checking kontor-mcp v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-mcp)
-    Checking kontor-store v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-store)
+    Checking kontor-calendar v0.2.1 ([task-workspace])
+    Checking kontor-runtime-paseo v0.2.1 ([task-workspace])
+    Checking kontor-jira v0.2.1 ([task-workspace])
+    Checking kontor-mcp v0.2.1 ([task-workspace])
+    Checking kontor-store v0.2.1 ([task-workspace])
    Compiling parking_lot v0.12.5
    Compiling string_cache v0.9.0
    Compiling dtoa-short v0.3.5
    Compiling tendril v0.5.1
    Compiling selectors v0.36.1
-    Checking kontor-tests-contract v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/tests/contract)
+    Checking kontor-tests-contract v0.2.1 ([task-workspace])
    Compiling indexmap v1.9.3
    Compiling derive_more-impl v2.1.1
    Compiling cssparser-macros v0.6.1
@@ -322,7 +322,7 @@ disk free   : 16Gi
    Compiling syn v1.0.109
     Checking foreign-types-shared v0.3.1
    Compiling bitflags v1.3.2
-    Checking kontor-api v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-api)
+    Checking kontor-api v0.2.1 ([task-workspace])
    Compiling png v0.17.16
     Checking foreign-types v0.5.0
     Checking scrypt v0.11.0
@@ -355,7 +355,7 @@ disk free   : 16Gi
     Checking dirs v4.0.0
    Compiling ico v0.5.0
     Checking dispatch2 v0.3.1
-    Checking kontor-intake v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-intake)
+    Checking kontor-intake v0.2.1 ([task-workspace])
     Checking dirs-sys-next v0.1.2
    Compiling tauri-runtime-wry v2.11.4
    Compiling base64 v0.22.1
@@ -379,18 +379,18 @@ disk free   : 16Gi
     Checking constant_time_eq v0.3.1
     Checking embed_plist v1.2.2
     Checking rust-argon2 v2.1.0
-    Checking kontor-runtime-codex v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-runtime-codex)
-    Checking kontor-runtime-ao v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-runtime-ao)
-    Checking kontor-tests-e2e v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/tests/e2e)
-    Checking kontor-cli v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-cli)
+    Checking kontor-runtime-codex v0.2.1 ([task-workspace])
+    Checking kontor-runtime-ao v0.2.1 ([task-workspace])
+    Checking kontor-tests-e2e v0.2.1 ([task-workspace])
+    Checking kontor-cli v0.2.1 ([task-workspace])
    Compiling tauri-build v2.6.3
    Compiling tauri-plugin v2.6.3
    Compiling tauri-codegen v2.6.3
    Compiling tauri-plugin-stronghold v2.3.1
    Compiling tauri v2.11.5
-   Compiling kontor-desktop v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/apps/desktop/src-tauri)
+   Compiling kontor-desktop v0.2.1 ([task-workspace])
    Compiling tauri-macros v2.6.3
-    Checking kontor-daemon v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-daemon)
+    Checking kontor-daemon v0.2.1 ([task-workspace])
     Checking stronghold-runtime v2.0.1
     Checking stronghold_engine v2.0.1
     Checking iota_stronghold v2.1.0

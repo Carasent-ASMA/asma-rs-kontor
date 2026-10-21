@@ -7,7 +7,7 @@ toolchain   : rustc 1.97.1 (8bab26f4f 2026-07-14)
 started     : 2026-10-03T16:30:08Z
 disk free   : 15Gi
 --- raw output ---
-   Compiling kontor-store v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-store)
+   Compiling kontor-store v0.2.1 ([task-workspace])
     Finished `test` profile [unoptimized + debuginfo] target(s) in 13.13s
      Running unittests src/lib.rs (target/debug/deps/kontor_store-34db727cb992c811)
 

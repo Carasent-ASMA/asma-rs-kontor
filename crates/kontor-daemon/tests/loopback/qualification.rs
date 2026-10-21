@@ -463,16 +463,14 @@ async fn four_structures_restore_replay_and_selection_rollback_keep_old_pins_and
     } = world;
     drop(router);
     daemon.shutdown();
-    // Match recovery_security's stopped in-process fixture: drain committed WAL.
-    let database =
-        rusqlite::Connection::open(directory.path().join(DATABASE_FILE)).expect("database");
-    let (busy, _, _): (i64, i64, i64) = database
-        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })
-        .expect("checkpoint");
-    assert_eq!(busy, 0, "the disposable fixture has no writer");
-    drop(database);
+    // A clean stop must release the store connection, not just the state-root
+    // lock: a retained handle leaves committed frames in the WAL, and restore
+    // refuses that rather than discarding them.
+    let wal = directory.path().join(format!("{DATABASE_FILE}-wal"));
+    assert!(
+        !wal.exists() || std::fs::metadata(&wal).expect("wal metadata").len() == 0,
+        "the stopped fixture leaves no WAL frames behind"
+    );
     let restored = kontor_daemon::recovery::restore(directory.path(), &snapshot.snapshot, now)
         .expect("verified same-realm restore");
     assert!(restored.reconciliation_required);

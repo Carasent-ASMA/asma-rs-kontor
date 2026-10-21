@@ -32,9 +32,12 @@ Run from the isolated qualification checkout, containing all four merged impleme
 ```sh
 python3 scripts/qualify-durable-desks.py baseline
 python3 scripts/qualify-durable-desks.py declarations \
-  --declaration-source $HOME/.paseo/worktrees/0vl4ss0m/asma-8419-pr-draft-status-checker/config/orchestration/pr-desk.yml
+  --declaration-source "$DECLARATION_SOURCE"
 python3 scripts/qualify-durable-desks.py mutations
 ```
+
+`DECLARATION_SOURCE` is the operator-supplied private declaration path; the path is
+deliberately not recorded.
 
 The first command runs the four daemon acceptance suites, including the integrated four-structure snapshot/restore/replay/rollback rehearsal. The second reads the explicitly named source without writing it and compares its exact hash, titles, roles, skills and dated owner with the fixture's supported seat report. `premium` stays a source chain declaration; the comparison does not resolve it into a model route or launch/adopt either permanent seat.
 

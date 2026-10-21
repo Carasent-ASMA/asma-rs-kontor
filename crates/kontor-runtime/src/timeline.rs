@@ -485,6 +485,26 @@ impl PermissionLedger {
         self.pending.keys().cloned().collect()
     }
 
+    /// Every request still waiting for an answer that `binding_id` owns.
+    #[must_use]
+    pub fn pending_for(&self, binding_id: RuntimeBindingId) -> Vec<ExternalId> {
+        self.pending
+            .iter()
+            .filter(|(_, owner)| **owner == binding_id)
+            .map(|(permission_id, _)| permission_id.clone())
+            .collect()
+    }
+
+    /// Every answered request `binding_id` owns.
+    #[must_use]
+    pub fn resolved_for(&self, binding_id: RuntimeBindingId) -> Vec<ExternalId> {
+        self.resolved
+            .iter()
+            .filter(|(_, ack)| ack.binding_id == binding_id)
+            .map(|(permission_id, _)| permission_id.clone())
+            .collect()
+    }
+
     /// Decide whether an answer may be applied.
     ///
     /// # Errors

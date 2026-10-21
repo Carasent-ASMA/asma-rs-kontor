@@ -41,5 +41,10 @@
     "No-proved-container close branch source-verified, not directly tested"
   ],
   "publication_exception": "Paseo-direct draft publication uses --without-attestation to avoid a live Kontor publication ledger/epic write under CON-007; no outage is claimed.",
-  "recorded_at": "2026-10-11T15:56:59.851825+00:00"
+  "recorded_at": "2026-10-11T15:56:59.851825+00:00",
+  "public_derivative": {
+    "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+    "ledger": "PUBLIC-REDACTION.json",
+    "note": "This public copy is a redacted derivative. The root ledger records original and derivative digests."
+  }
 }

@@ -12,6 +12,7 @@ import { Action, Copy, Disclosure, type Colors } from "./page-controls";
 import { safeHttpsUrl } from "./plan-links";
 import { OverviewPage } from "./overview-page";
 import { PlanReader, type PlanView } from "./plan-reader";
+import { attentionLabel, earlierErrorLabel } from "./session-view";
 
 type PageProps = {
   teamsSources?: readonly ReadSourceSummary[]; teamsJsonReads?: Readonly<Record<string, SourceRead>>;
@@ -28,8 +29,7 @@ type PageProps = {
 };
 const day = (value: string) => value.slice(0, 10);
 function sessionDetail(entry: DirectoryEntry): string {
-  const attention = entry.needsInput ? "needs input" : entry.status === "error" ? "error" : entry.attentionReason ?? (entry.requiresAttention ? "native attention" : null);
-  return [entry.status, attention, entry.workspaceName ?? "Unassigned workspace", confirmedEpic(entry) ?? "No epic"].filter(Boolean).join(" · ");
+  return [entry.status, attentionLabel(entry), earlierErrorLabel(entry), entry.workspaceName ?? "Unassigned workspace", confirmedEpic(entry) ?? "No epic"].filter(Boolean).join(" · ");
 }
 /** Compact native session rows; opening one uses Paseo's own session view. `label` adds exact values to the row's label. */
 function SessionRows({ entries, colors, onOpen, detail = sessionDetail, label }: { entries: readonly DirectoryEntry[]; colors: Colors; onOpen: (entry: DirectoryEntry) => void; detail?: (entry: DirectoryEntry) => string; label?: (entry: DirectoryEntry) => string }) {

@@ -142,7 +142,12 @@ export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, r
     {read || jiraReads.length ? toggle : null}
   </View>;
   let sourceNote: string | null = null;
-  if (!read) sourceNote = selectedId ? "Selected source unavailable in this context." : epic ? "No plan selected. Plan declarations and dependencies are unavailable." : "No plan or epic in this context. Select a plan in the top context picker.";
+  if (!read) {
+    if (error) sourceNote = "Plan sources unavailable. See source diagnostics.";
+    else if (selectedId) sourceNote = "Selected source unavailable in this context.";
+    else if (plans.length > 1) sourceNote = "Several plans are linked here. Choose an exact source.";
+    else sourceNote = epic ? "No plan selected. Plan declarations and dependencies are unavailable." : "No plan or epic in this context. Select a plan in the top context picker.";
+  }
   else if (!valid) sourceNote = "No valid exact-source canonical graph available. No legacy text extraction or inferred task state.";
   let jiraNote: string | null = null;
   if (!epic) jiraNote = read ? "No epic linked to this plan; captured Jira tasks cannot be matched." : null;

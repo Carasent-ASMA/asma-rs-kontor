@@ -24,7 +24,14 @@ pill is the in-session return control where the composer supports it.
   state.
 - **Live native truth.** Initializing, running, idle, error and closed come
   from the host. Attention is a separate signal with its reason (`finished`,
-  `error`, `permission`) when the host supplies it. A subscription streams
+  `error`, `permission`) when the host supplies it. Error counts and red badges
+  follow the current native `error` status. A retained error notice after the
+  session starts, recovers or closes is shown as **Earlier error · now …**;
+  it does not inflate Error or Attention. **More → Earlier errors** finds these
+  sessions; **Include archived sessions** also brings archived records into that
+  search. Closed sessions with no `archivedAt` remain in the default inventory,
+  including those in archived workspaces. Other unread attention signals keep
+  their native meaning. A subscription streams
   native `agent_update` upserts and removals. If the initial observation
   bootstrap fails, the last inventory stays visible and the plugin retries the
   owned observation with bounded backoff. Cleanup cancels the retry and releases
@@ -219,9 +226,13 @@ home configuration and the same JSON entry validation, unique IDs and maximum
 of 64 entries. The file must be regular and at most 2 MiB. An absent file leaves
 an honest no-sources state; malformed or unreadable files report diagnostics.
 
-The catalog is a snapshot loaded when the plugin starts or reloads. An operator
-can atomically replace this file, then reload the plugin without restarting the
-daemon. The plugin never writes it, watches it, or accepts its path from a client.
+The server rereads the catalog for each list, read and association request. An
+operator can atomically replace the file; Settings → Refresh sources or the
+30-second source refresh picks up additions, edits and removals without a daemon
+restart. A catalog changed during a refresh fails that refresh rather than mixing
+bindings and replacement paths. Failed requests retain previous client reads with
+a stale warning; invalid or missing catalogs return their own diagnostics and no
+sources. The plugin never writes the catalog or accepts its path from a client.
 Presentation settings do not store catalog paths or source contents. This file
 only declares read sources; it does not activate teams or grant execution.
 
@@ -244,6 +255,33 @@ the validator. Otherwise the installed CLI resolves its normal workspace. The
 documentation file's directory is not assumed to contain the validator. Reads
 are bounded to 2 MiB; each export has a 15-second timeout. Invalid configuration,
 missing files and exporter diagnostics identify the specific source.
+
+Offline discovery can prepare a candidate from one explicitly selected documentation
+checkout (no network access, installation or checkout changes):
+
+```sh
+bun scripts/discover-plan-sources.ts /srv/asma-docs > coverage.json
+bun scripts/discover-plan-sources.ts /srv/asma-docs --catalog > candidate.json
+```
+
+Discovery examines tracked Markdown with a `plan-graph` block and validates each
+exact file through the same exporter and hash checks as the RPC. Only canonical
+ASMA epic bindings become catalog entries. Unbound plans, parse failures, hashes,
+task binding coverage and multiple plans per epic stay in the report; multiple
+plans retain an explicit choice. The report identifies the checkout HEAD and
+working-copy hashes. It does not choose between divergent checkouts, supersede an
+orchestration plan pin, prove approval or infer an epic from a title. Review the
+candidate against the owning plan pins before installation. Paths in this output
+belong to that host; keep live candidates and coverage outside published source.
+
+A projectless source can appear in several native projects through exact confirmed
+epic labels on sessions in each project. An explicit source `projectId` constrains
+it to that project. Conflicting epic labels leave a session unattributed. No
+project name, title or sibling label assigns an epic to an unlabelled session.
+Overview, the plan picker, Plan, Board, Graph and recorded Delivery use this scope.
+Source edits trigger fresh hash-checked exports; parse failures retain readable
+plan text without a graph, while missing files and revision mismatches stay
+unavailable. No source cache or fallback graph hides these changes.
 
 The existing `sources.read` RPC keeps its explicit JSON-record format (including
 Teams JSON records); it does not infer text/YAML:

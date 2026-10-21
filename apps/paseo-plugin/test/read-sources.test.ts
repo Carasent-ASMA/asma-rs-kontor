@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginServerContext, PluginSettings } from "@getpaseo/plugin/server";
 import { contributeReadSources, readConfiguredSource, sourceCatalog } from "../server/read-sources";
 import { DEFAULT_ORGANIZATION_SETTINGS, organizationSettingsSchema } from "../shared/organization";
-import { readPlanAssociations, type ReadSourceSummary } from "../shared/read-sources";
+import { listReadSources, readSource, readPlanAssociations, type ReadSourceSummary } from "../shared/read-sources";
 
 const catalogFailure = vi.hoisted(() => ({ denyOpen: false }));
 vi.mock("node:fs", async (original) => {
@@ -124,6 +124,26 @@ describe("operator catalog file on plugin load/reload", () => {
     await writeFile(file, JSON.stringify([{ ...entry, id: "replacement" }]));
     expect(sourceCatalog().sources[0]?.id).toBe("replacement");
     expect(previous.sources[0]?.id).toBe(entry.id);
+  });
+  it("refreshes list/read/association RPCs without a worker reload and revokes removed or invalid entries", async () => {
+    const { source } = await fixture();
+    const server = { handle: vi.fn() };
+    const settings: PluginSettings<typeof organizationSettingsSchema> = { read: async () => ({ status: "ready", revision: "1", values: DEFAULT_ORGANIZATION_SETTINGS }), subscribe: () => () => {} };
+    const stop = contributeReadSources(server, settings);
+    const handler = (name: string) => server.handle.mock.calls.find(([rpc]) => rpc.name === name)![1];
+    expect(handler(listReadSources.name)({}).sources).toEqual([]);
+    await writeFile(file, JSON.stringify([{ ...source, kind: "delivery" }]));
+    await writeFile(source.path, JSON.stringify({ delivery: [] }));
+    expect(handler(listReadSources.name)({}).sources).toHaveLength(1);
+    expect(await handler(readSource.name)({ sourceId: source.id })).toMatchObject({ status: "ready", records: { delivery: [] } });
+    await writeFile(file, JSON.stringify([source]));
+    expect(await handler(readPlanAssociations.name)({})).toMatchObject({ sources: [source] });
+    await writeFile(file, "invalid JSON");
+    expect(handler(listReadSources.name)({}).diagnostics.join()).toContain("Invalid source catalog");
+    expect(() => handler(readSource.name)({ sourceId: source.id })).toThrow("not in the configured host catalog");
+    await rm(file);
+    expect(handler(listReadSources.name)({}).diagnostics.join()).toContain("No read sources configured");
+    stop();
   });
   it("uses the existing default Paseo home when PASEO_HOME is absent", async () => {
     vi.stubEnv("PASEO_HOME", undefined); vi.stubEnv("HOME", home);

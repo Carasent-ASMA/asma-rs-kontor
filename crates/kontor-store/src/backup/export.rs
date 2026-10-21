@@ -1712,6 +1712,10 @@ fn redaction_summary() -> RedactionSummary {
             "imported_record_evidence",
             "imported testimony about another Realm's records is inspectable here and is never forwarded onward as though this Realm were its source",
         ),
+        (
+            "operational_gaps",
+            "delivery evidence names this Realm's exact task, run and seat identities; a verified same-Realm snapshot preserves it, a redacted cross-Realm export does not",
+        ),
     ];
     let excluded_columns = [
         (

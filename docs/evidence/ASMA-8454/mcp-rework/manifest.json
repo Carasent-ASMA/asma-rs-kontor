@@ -627,5 +627,10 @@
       "bytes": 974,
       "sha256": "8de489c9e226bf1356dd9a22e850145ff2bb3dac7d5d5d9a4605b33d22346ccd"
     }
-  ]
+  ],
+  "public_derivative": {
+    "decision": "LSA-WP01-PUBLIC-EVIDENCE-001",
+    "ledger": "../PUBLIC-REDACTION.json",
+    "note": "This public copy is a redacted derivative. The root ledger records original and derivative digests."
+  }
 }

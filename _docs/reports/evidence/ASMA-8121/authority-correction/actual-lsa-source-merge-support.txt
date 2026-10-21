@@ -11,12 +11,12 @@ Verified:
 - `68bbc000` is a clean, synchronized docs-only child of source commit `79b07f31028704a6a98203b89877264fd179a535`.
 - No non-`_docs` paths changed.
 - `export.rs` and `backup_export.rs` Git blobs and SHA-256 values are identical between `79b07f31` and `68bbc000`.
-- [Qualification receipt]($HOME/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/_docs/reports/evidence/ASMA-8121/79b07f31-source-qualification.json) binds:
+- Qualification receipt ([archived-private-evidence]) binds:
   - commit `79b07f31`
   - tree `ebd20eb03d5659b30747bc2202e2b2ee0896528d`
   - full gate exit `0`
   - API verification exit `0`
-- Independent recomputation from the [raw full-gate log]($HOME/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/_docs/reports/evidence/ASMA-8121/79b07f31-full-gate.txt):
+- Independent recomputation from the raw full-gate log ([archived-private-evidence]):
   - 149 Rust binaries
   - 2,905 passed
   - 0 failed
@@ -24,7 +24,7 @@ Verified:
   - 305 console tests passed
   - fmt, strict workspace Clippy, locked workspace tests, audit, deny, frozen install, typecheck and production audit all recorded
   - terminal `PROCESS_EXIT_CODE=0` at `2026-09-26T07:49:52.778749Z`
-- [API log]($HOME/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/_docs/reports/evidence/ASMA-8121/79b07f31-verify-api.txt) ends with exit `0`.
+- API log ([archived-private-evidence]) ends with exit `0`.
 - All 46 manifest artifacts hash correctly.
 - The prior b42 audit and the 79 corrective audit remain preserved verbatim.
 - The owning report now explicitly states that b42’s gate does not qualify the authority correction and separately records the exact-79 qualification.

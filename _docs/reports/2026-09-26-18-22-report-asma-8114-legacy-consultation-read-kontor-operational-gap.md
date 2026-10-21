@@ -14,7 +14,7 @@ Load when qualifying this source candidate or recovering supported reads of the 
 
 ## Cause and bounded correction
 
-Installed `e29b895d0f045c499144870a2fa610fc642b6cc0` returns 409 for three historical Committee GETs because optional name projection invokes strict subject authority before reading findings. The [full actual independent diagnosis](evidence/ASMA-8114/legacy-consultation-read/actual-lsa-legacy-read-diagnosis.txt.json), with its unchanged native receipt, identifies P1 archival-read enforcement and P2 missing read-contract coverage. Original observations, nine findings and native discrepancies are durably preserved in [superproject checkpoint 132f9d0f](https://github.com/Carasent-ASMA/asma-modules/blob/132f9d0f96def235f51be5d16ca947e0c5ab69bc/_docs/ai-orchestration/reports/2026-09-26-18-05-report-asma-8114-legacy-consultation-read-kontor-operational-gap.md).
+Installed `e29b895d0f045c499144870a2fa610fc642b6cc0` returns 409 for three historical Committee GETs because optional name projection invokes strict subject authority before reading findings. The [full actual independent diagnosis](evidence/ASMA-8114/legacy-consultation-read/actual-lsa-legacy-read-diagnosis.txt.json), with its unchanged native receipt, identifies P1 archival-read enforcement and P2 missing read-contract coverage. Original observations, nine findings and native discrepancies are durably preserved in the parent's historical checkpoint `132f9d0f` (private record).
 
 `consultation_container_name` now returns `None` for a missing legacy subject. That helper serves the Committee and Advisor read DTOs. It does not infer an epic, backfill a subject or rewrite a title. `subject_task_for_container` and native effect paths retain their exact strict implementation.
 

@@ -286,7 +286,7 @@ describe("Kontor filters affordance", () => {
     });
     const running = sessionEntry("running", { status: "running" });
     const failed = sessionEntry("failed", {
-      status: "idle",
+      status: "error",
       requiresAttention: false,
       attentionReason: "error",
     });

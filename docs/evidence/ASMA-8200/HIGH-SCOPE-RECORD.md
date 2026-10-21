@@ -32,7 +32,7 @@ claim a restart is required.
 ## Evidenced root cause and live baseline
 
 The canonical worktree is
-`asma-modules/.worktrees/asma-8200/asma-rs-kontor`, branch
+`[task-workspace]`, branch
 `feat/ASMA-8200-enforce-persisted-capacity-configuration-at-runtime`, clean at
 `2e4b9985fc1073dd25c22b78349d8f36d6b1d4ec` when this record was written.
 

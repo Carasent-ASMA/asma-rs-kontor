@@ -4,7 +4,7 @@
    Compiling futures-task v0.3.34
    Compiling slab v0.4.12
    Compiling futures-util v0.3.34
-   Compiling kontor-core v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-core)
+   Compiling kontor-core v0.2.1 ([compat-workspace]/crates/kontor-core)
    Compiling futures-channel v0.3.34
    Compiling hyper v1.11.1
    Compiling nom v8.0.0
@@ -17,15 +17,15 @@
    Compiling iso8601 v0.6.5
    Compiling nom-language v0.1.0
    Compiling reqwest v0.13.4
-   Compiling kontor-runtime v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-runtime)
-   Compiling kontor-context v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-context)
-   Compiling kontor-policy v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-policy)
-   Compiling kontor-teams v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-teams)
-   Compiling kontor-scheduler v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-scheduler)
+   Compiling kontor-runtime v0.2.1 ([compat-workspace]/crates/kontor-runtime)
+   Compiling kontor-context v0.2.1 ([compat-workspace]/crates/kontor-context)
+   Compiling kontor-policy v0.2.1 ([compat-workspace]/crates/kontor-policy)
+   Compiling kontor-teams v0.2.1 ([compat-workspace]/crates/kontor-teams)
+   Compiling kontor-scheduler v0.2.1 ([compat-workspace]/crates/kontor-scheduler)
    Compiling icalendar v0.17.13
-   Compiling kontor-calendar v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-calendar)
-   Compiling kontor-profiles v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-profiles)
-   Compiling kontor-store v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-store)
+   Compiling kontor-calendar v0.2.1 ([compat-workspace]/crates/kontor-calendar)
+   Compiling kontor-profiles v0.2.1 ([compat-workspace]/crates/kontor-profiles)
+   Compiling kontor-store v0.2.1 ([compat-workspace]/crates/kontor-store)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 36.55s
      Running tests/operational_topology.rs (target/debug/deps/operational_topology-2fa9316bbb487eec)
 

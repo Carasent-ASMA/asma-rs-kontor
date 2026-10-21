@@ -14,7 +14,7 @@ GitHub checks are green at this SHA (Rust workspace gates, Console gates).
 Judged against OP-REQ-038 as pinned by
 [`architecture-handoff.json`](architecture-handoff.json) and its
 `canonical_requirement`, the KON-OP-12 section of
-`_docs/ai-orchestration/plans/2026-08-14-23-21-plan-kontor-operational-mvp.md`.
+the parent-workspace Kontor operational MVP plan.
 
 ## Acceptance-risk questions carried into this review
 

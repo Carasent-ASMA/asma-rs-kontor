@@ -327,6 +327,13 @@ pub struct DeliveryCreate<'a> {
     pub role_slot_id: &'a str,
     /// The first turn, carried on the create itself.
     pub prompt: &'a str,
+    /// Whether this daemon journals keyed creation with a durable lifecycle.
+    ///
+    /// When true the create is `agent.create.request` with the launch key and
+    /// a caller-supplied native id. When false it keeps the legacy
+    /// `create_agent_request` shape proven against daemons that do not
+    /// advertise the lifecycle.
+    pub idempotent: bool,
 }
 
 /// One built delivery create, with the labels a census must match.
@@ -340,6 +347,9 @@ pub struct DeliveryCreateRequest {
     pub intent_digest: String,
     /// The deterministic client message id the first turn carries.
     pub client_message_id: String,
+    /// The launch key this create is journaled under, when the daemon can
+    /// journal one.
+    pub idempotency_key: Option<String>,
 }
 
 /// One Paseo CLI invocation, as an argv array.
@@ -1163,17 +1173,56 @@ impl PaseoRpc {
         labels.insert(crate::wire::label::LAUNCH_INTENT.to_owned(), digest.clone());
         message["labels"] = serde_json::json!(labels);
 
+        // Keyed creation is added *after* the digest on purpose. The key and the
+        // caller-supplied id are the same launch identity every attempt uses,
+        // so they must not make the intent label differ between an attempt on a
+        // lifecycle daemon and one on a legacy daemon; a census that matched
+        // less would stop recognising this launch's own prior effect.
+        let idempotency_key = parts.idempotent.then(|| parts.binding_id.to_owned());
+        if let Some(key) = &idempotency_key {
+            message["idempotencyKey"] = serde_json::json!(key);
+            // The contract for a keyed creation accepts the caller's native id.
+            // Using the launch's own binding id means a retry can address the
+            // very agent the first attempt may have made, without a census.
+            message["agentId"] = serde_json::json!(parts.binding_id);
+        }
+        let (request_type, response_type) = if idempotency_key.is_some() {
+            ("agent.create.request", "agent.create.response")
+        } else {
+            ("create_agent_request", "status")
+        };
+
         Ok(DeliveryCreateRequest {
             rpc: Self::mutate(
-                "create_agent_request",
-                "status",
+                request_type,
+                response_type,
                 parts.request_id.to_owned(),
                 message,
             ),
             labels,
             intent_digest: digest,
             client_message_id,
+            idempotency_key,
         })
+    }
+
+    /// `creation.subscribe.request` — the durable snapshot for one launch key.
+    ///
+    /// Available only on a daemon that advertises the creation lifecycle. The
+    /// request is a read: it returns what the journal recorded, and never
+    /// starts or repeats a creation.
+    #[must_use]
+    pub fn creation_subscribe(request_id: String, idempotency_key: &str) -> Self {
+        Self::read(
+            "creation.subscribe.request",
+            "creation.subscribe.response",
+            request_id,
+            serde_json::json!({
+                "kind": "agent",
+                "idempotencyKey": idempotency_key,
+                "subscribe": false,
+            }),
+        )
     }
 
     /// `fetch_agents_request`, narrowed by exact labels and one bounded page.
@@ -1301,7 +1350,7 @@ impl PaseoRpc {
     /// operations, generated from the one member surface list.
     pub fn with_planning_pair_member_mcp(&mut self, seat: &crate::seat_mcp::SeatMcp) {
         self.message["config"]["mcpServers"] =
-            seat.server_config(kontor_core::planning_pair::MEMBER_SERVE_PROFILE);
+            seat.server_config(crate::seat_mcp::SeatKind::PlanningPairMember.serve_profile());
         self.message["config"]["toolPolicy"] = serde_json::json!({
             "preapproved": kontor_core::planning_pair::MEMBER_MCP_TOOLS
                 .iter()
@@ -1313,7 +1362,8 @@ impl PaseoRpc {
     /// Inject the credential-scoped consultation MCP and approve only its four
     /// registry operations through Paseo's exact tool-policy contract.
     pub fn with_consultation_mcp(&mut self, seat: &crate::seat_mcp::SeatMcp) {
-        self.message["config"]["mcpServers"] = seat.server_config("consultation");
+        self.message["config"]["mcpServers"] =
+            seat.server_config(crate::seat_mcp::SeatKind::Consultation.serve_profile());
         self.message["config"]["toolPolicy"] = serde_json::json!({"preapproved": [
             {"kind":"mcp", "server":"kontor", "tool":"kontor_advisor_run_get"},
             {"kind":"mcp", "server":"kontor", "tool":"kontor_advisor_run_settle"},
@@ -1326,7 +1376,8 @@ impl PaseoRpc {
     /// provider. This contains no credential: the MCP child inherits the seat's
     /// secret environment from the session frame, never shared configuration.
     pub fn with_leadership_mcp(&mut self, seat: &crate::seat_mcp::SeatMcp) {
-        self.message["config"]["mcpServers"] = seat.server_config("leadership");
+        self.message["config"]["mcpServers"] =
+            seat.server_config(crate::seat_mcp::SeatKind::Leadership.serve_profile());
         self.message["config"]["toolPolicy"] = serde_json::json!({"preapproved": [
             {"kind":"mcp", "server":"kontor", "tool":"kontor_completion_get"},
             {"kind":"mcp", "server":"kontor", "tool":"kontor_completion_remediate"},
@@ -3714,6 +3765,7 @@ mod tests {
             agent_run_id: "run-1",
             role_slot_id: "implement-a",
             prompt: "go",
+            idempotent: false,
         })
         .expect("the delivery create builds");
 

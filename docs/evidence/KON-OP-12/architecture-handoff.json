@@ -3,7 +3,7 @@
   "task": "KON-OP-12",
   "jira": "ASMA-7881",
   "status": "architect_handoff",
-  "canonical_requirement": "../../../../../_docs/ai-orchestration/plans/2026-08-14-23-21-plan-kontor-operational-mvp.md#kon-op-12--make-an-unresolved-ambiguity-a-durable-dispositioned-record",
+  "canonical_requirement": "[parent-plan]",
   "baseline": {
     "worktree_submodule_head": "33e07a274dfc7b36318fbf6667520557b12cab55",
     "observed_origin_master": "ba57bcd",

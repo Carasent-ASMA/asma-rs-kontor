@@ -26,7 +26,7 @@ green, no cross-project read and no post-cutover dual writer.
 ## EVD-028 — compaction-policy continuity
 
 The governing outer input is
-`_docs/ai-orchestration/reports/2026-08-13-10-08-report-seat-context-transition-evidence.md`.
+the parent-workspace seat-context transition evidence report.
 Its SHA-256 is
 `846431761c0b1ac8e0b375c7a58646bdc5505b99050667e9492f0fe8517f06b7`.
 The committed runtime/session model retains the same native seat and strict

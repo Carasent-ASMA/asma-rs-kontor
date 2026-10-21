@@ -11,6 +11,7 @@ type EpicTab = "Plan" | "Board" | "Graph" | "Sessions";
 type Props = {
   colors: Colors; compact?: boolean; contextLabel?: string; scoped?: boolean; entries: readonly DirectoryEntry[]; directory: DirectoryState;
   reads: Readonly<Record<string, SourceRead>>; query: string; setQuery: (query: string) => void;
+  sourceError?: string | null;
   onSource: (id: string) => void; onEpicTab: (tab: EpicTab, epicKey: string | null, sourceId: string | null) => void;
 };
 const FILTERS: readonly PortfolioFilter[] = ["all", "active", "review", "decisions", "completed", "delivered"];
@@ -96,13 +97,14 @@ export function OverviewPage(props: Props) {
     </View>
   </View>;
 }
-function PortfolioItem({ row, last, wide, colors, compact, onSource, onEpicTab }: Props & { row: PortfolioRow; last: boolean; wide: boolean }) {
+function PortfolioItem({ row, last, wide, colors, compact, onSource, onEpicTab, sourceError }: Props & { row: PortfolioRow; last: boolean; wide: boolean }) {
   const single = row.plans.length === 1 ? row.plans[0]!.source.id : null;
   const go = (tab: EpicTab) => row.epicKey === null && tab === "Plan" && single ? onSource(single) : onEpicTab(tab, row.epicKey, tab === "Sessions" ? null : single);
   const sessions = row.sessions;
   // Full statements stay in the row's label; the visible lines keep only what is captured and non-zero.
-  const next = row.plans.length === 1 ? "Captured plan available" : row.plans.length > 1 ? `${row.plans.length} configured plans · choose one in the context picker` : row.tasks ? "Plan not captured · captured tasks remain available" : "No plan linked";
-  const nextLine = row.plans.length === 1 ? null : row.plans.length > 1 ? `${row.plans.length} configured plans` : row.tasks ? "Plan not captured" : "No plan linked";
+  const planProblem = row.plans.length === 1 && row.plans[0]!.status !== "ready" ? row.plans[0]!.status === "partial" ? "Plan graph unavailable" : "Plan unavailable" : null;
+  const next = planProblem ?? (row.plans.length === 1 ? "Captured plan available" : row.plans.length > 1 ? `${row.plans.length} configured plans · choose one in the context picker` : sourceError ? "Plan sources unavailable" : row.tasks ? "Plan not captured · captured tasks remain available" : "No plan linked");
+  const nextLine = planProblem ?? (row.plans.length === 1 ? null : row.plans.length > 1 ? `${row.plans.length} configured plans` : sourceError ? "Plan sources unavailable" : row.tasks ? "Plan not captured" : "No plan linked");
   const signals = row.epicKey ? `${count(sessions.total, "session")} · ${sessions.running} running · ${sessions.attention} native attention · ${sessions.needsInput} needs input · ${sessions.errors} errors` : "No epic linked · sessions are not attributed to this plan";
   const records = `Decisions: ${row.decisions === null ? "Not captured" : `${row.decisions} open recorded`} · Delivery: ${row.delivery === null ? "Not captured" : `${row.delivery} recorded, confirmation Unknown`}`;
   const recordLine = [row.decisions === null ? null : row.decisions ? count(row.decisions, "open decision") : "No open decisions",

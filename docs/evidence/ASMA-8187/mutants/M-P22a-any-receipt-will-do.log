@@ -9,15 +9,15 @@ platform        : Darwin 25.6.0 arm64
 --- mutated sha256 ---
 9c651b5a2b92e9734c8fa06f0bf159acfe37d589c9aa0d9f2ab826d2bb0213d6  crates/kontor-store/src/repository.rs
 --- raw output ---
-   Compiling kontor-core v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-core)
-   Compiling kontor-runtime v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-runtime)
-   Compiling kontor-policy v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-policy)
-   Compiling kontor-context v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-context)
-   Compiling kontor-scheduler v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-scheduler)
-   Compiling kontor-teams v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-teams)
-   Compiling kontor-profiles v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-profiles)
-   Compiling kontor-calendar v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-calendar)
-   Compiling kontor-store v0.2.1 ($HOME/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-store)
+   Compiling kontor-core v0.2.1 ([task-workspace])
+   Compiling kontor-runtime v0.2.1 ([task-workspace])
+   Compiling kontor-policy v0.2.1 ([task-workspace])
+   Compiling kontor-context v0.2.1 ([task-workspace])
+   Compiling kontor-scheduler v0.2.1 ([task-workspace])
+   Compiling kontor-teams v0.2.1 ([task-workspace])
+   Compiling kontor-profiles v0.2.1 ([task-workspace])
+   Compiling kontor-calendar v0.2.1 ([task-workspace])
+   Compiling kontor-store v0.2.1 ([task-workspace])
     Finished `test` profile [unoptimized + debuginfo] target(s) in 16.88s
      Running tests/hosted_seat_autonomy.rs (target/debug/deps/hosted_seat_autonomy-37350dd3fcfb6d32)
 

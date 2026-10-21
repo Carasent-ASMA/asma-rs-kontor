@@ -11,8 +11,9 @@
 - **Task:** `01a02a7f-8e47-7682-be52-1b9f2a632ac4`, `ai_short_name: permission posture`.
 - **Jira:** none — Kontor-native. **This is not ASMA-7968** (see `README.md` in this directory).
 - **Module:** `asma-rs-kontor`, branch `feat/KON-OP-20-permission-posture-at-spawn`, baseline `origin/master` = `e814661`.
-- **Plan:** `_docs/ai-orchestration/plans/2026-08-30-15-05-plan-kontor-op20-permission-posture-reconciliation.md` (supersedes the 2026-08-23 plan).
-- **Design authority:** `2026-08-22-13-00-design-agent-permission-posture-at-spawn.md` (LSA ASMA-8001 → TPM ASMA-7869 handoff).
+- **Plan:** the parent-workspace OP-20 permission-posture reconciliation plan (supersedes the 2026-08-23 plan).
+- **Design authority:** the private ASMA-8001 permission-posture design record
+  (2026-08-22 revision; LSA ASMA-8001 → TPM ASMA-7869 handoff).
 
 ## What was wrong
 
@@ -54,7 +55,7 @@ The plan's D3 says `<cwd>/opencode.json`. That target is wrong for the
 repositories these seats actually run in, and the deviation is recorded here for
 the architect rather than taken silently:
 
-- A seat's cwd is a worktree of the `asma-modules` superproject, which **tracks**
+- A seat's cwd is a worktree of the parent superproject, which **tracks**
   a root `opencode.json` (model, instructions, mcp). Verified:
   `git ls-files --error-unmatch opencode.json` succeeds.
 - Git applies no ignore rule to a tracked file, so D3's stated mitigation —

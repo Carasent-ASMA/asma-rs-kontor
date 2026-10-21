@@ -4,12 +4,14 @@ import { useHosts } from "@getpaseo/plugin/client";
 import { copyText, Icon, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { KeyboardAvoidingView, Linking, Pressable, SafeAreaView, ScrollView, Text, View } from "react-native";
 import { DEFAULT_ORGANIZATION_SETTINGS } from "../shared/organization";
+import { ControlHelpProvider } from "./control-help";
 import { SessionsScreen } from "./sessions-screen";
 import { useOrganizationSettings } from "./use-organization-settings";
 import { useKeyboardSettings } from "./use-keyboard-settings";
 import { useBackShortcut } from "./keyboard-shortcuts";
 import { KeyboardSettingsCard } from "./keyboard-settings-card";
 import { useReadSources } from "./use-read-sources";
+import { projectEpicKeys, sourceEpic, sourceInProject } from "./source-scope";
 import { useSessionDirectory } from "./use-session-directory";
 import { patchSessionView, readSessionView, sessionViewTransition } from "./session-view-store";
 import { DESTINATIONS, contextHeading, goBack, hostNavigation, navigate, NO_SCOPE, readPageView, readRouteView, refreshSourceRevision, routeViewKey, sessionScopeKey, tabScope, writePageView, writeRouteView, type Destination, type KontorRoute } from "./navigation-state";
@@ -60,6 +62,7 @@ function HostScreen(props: PluginScreenProps) {
   const [, setTeamsViewRevision] = useState(0);
   const directory = useSessionDirectory({ hostId: host.id, hostStatus, includeArchived });
   const sourceState = useReadSources(host.id, hostStatus);
+  const projectEpics = useMemo(() => projectEpicKeys(route.projectId, directory.state.entries), [route.projectId, directory.state.entries]);
   const taskTeams = useMemo(() => taskTeamReader(sourceState.sources, sourceState.teamsSnapshots), [sourceState.sources, sourceState.teamsSnapshots]);
   const workspaces = useWorkspaceDirectory(host.id, hostStatus === "online");
   const presentation = sourceState.error && !sourceState.available
@@ -77,7 +80,7 @@ function HostScreen(props: PluginScreenProps) {
   }, [props.params.tab, props.params.sourceId, props.params.agentId, visit]);
   useEffect(() => {
     if (routeViewKey(hostNavigation(host.id).route) !== routeViewKey(route)) return;
-    const resolved = resolveContextPlan(route, sourceState.sources, sourceState.reads, route.originAgentId ? saved.planAssociations[route.originAgentId] ?? [] : null);
+    const resolved = resolveContextPlan(route, sourceState.sources, sourceState.reads, route.originAgentId ? saved.planAssociations[route.originAgentId] ?? [] : null, projectEpics);
     if (resolved.sourceId && resolved.sourceId !== route.sourceId) {
       const next = refreshContextSource(host.id, resolved.sourceId, resolved.sourceRevision);
       setRoute(next); setQuery(readRouteView(host.id, next).query); return;
@@ -87,19 +90,19 @@ function HostScreen(props: PluginScreenProps) {
       const next = refreshSourceRevision(host.id, revision);
       setRoute(next); setQuery(readRouteView(host.id, next).query);
     }
-  }, [host.id, route, sourceState.sources, sourceState.reads, saved.planAssociations]);
+  }, [host.id, route, sourceState.sources, sourceState.reads, saved.planAssociations, projectEpics]);
   const projects = useMemo(() => {
-    const names = new Map<string, string>();
-    for (const entry of directory.state.entries) if (entry.projectKey) names.set(entry.projectKey, entry.projectName ?? entry.projectKey);
-    for (const workspace of workspaces.entries) names.set(workspace.projectId, workspace.projectCustomName ?? workspace.projectDisplayName);
+    const names = new Map((workspaces.projects ?? []).map((project) => [project.projectId, project.projectCustomName ?? project.projectDisplayName]));
+    for (const entry of directory.state.entries) if (entry.projectKey && !names.has(entry.projectKey)) names.set(entry.projectKey, entry.projectName ?? entry.projectKey);
+    for (const workspace of workspaces.entries) if (!names.has(workspace.projectId)) names.set(workspace.projectId, workspace.projectCustomName ?? workspace.projectDisplayName);
     return [...names];
-  }, [directory.state.entries, workspaces.entries]);
+  }, [directory.state.entries, workspaces.entries, workspaces.projects]);
   const selectedPlan = route.sourceId ? sourceState.sources.find((source) => source.id === route.sourceId && source.kind === "plan") : undefined;
   const scopedEpic = selectedPlan ? sourceState.reads[selectedPlan.id]?.graph?.epic.jira ?? selectedPlan.epic : route.epicKey;
   const entries = useMemo(() => directory.state.entries.filter((entry) => (route.projectId === null || entry.projectKey === route.projectId) && (scopedEpic === null || confirmedEpic(entry) === scopedEpic) && !(route.tab === "Overview" && route.sourceId && !scopedEpic)), [directory.state.entries, route.projectId, scopedEpic, route.tab, route.sourceId]);
-  const sourcesInContext = sourceState.sources.filter((source) => source.kind === "jira"
-    ? source.projectId === null || route.projectId === null || source.projectId === route.projectId
-    : (route.projectId === null || source.projectId === route.projectId) && (scopedEpic === null || (sourceState.reads[source.id]?.graph?.epic.jira ?? source.epic) === scopedEpic) && (route.tab !== "Overview" || route.sourceId === null || source.id === route.sourceId || (source.kind !== "plan" && scopedEpic !== null)));
+  const sourcesInContext = sourceState.sources.filter((source) => sourceInProject(source, sourceState.reads[source.id], route.projectId, projectEpics)
+    && (source.kind === "jira" || (scopedEpic === null || sourceEpic(source, sourceState.reads[source.id]) === scopedEpic)
+      && (route.tab !== "Overview" || route.sourceId === null || source.id === route.sourceId || (source.kind !== "plan" && scopedEpic !== null))));
   const associationIds = route.originAgentId ? linkedPlans(saved.planAssociations, route.originAgentId, new Set(sourceState.sources.filter((source) => source.kind === "plan").map((source) => source.id))) : null;
   const linkedContext = ["Plan", "Graph", "Board"].includes(route.tab) && associationIds !== null;
   const sources = linkedContext ? sourcesInContext.filter((source) => source.kind !== "plan" || associationIds!.includes(source.id)) : sourcesInContext;
@@ -107,11 +110,11 @@ function HostScreen(props: PluginScreenProps) {
   const epics = [...new Set([...directory.state.entries.map(confirmedEpic), ...sourceState.sources.map((source) => sourceState.reads[source.id]?.graph?.epic.jira ?? source.epic)].filter((key): key is string => key !== null))].sort();
   const projectName = route.projectId === null ? null : projects.find(([id]) => id === route.projectId)?.[1] ?? null;
   const projectLabel = route.epicKey ?? (route.projectId === null ? "All projects" : projectName ?? "Project unavailable");
-  const heading = contextHeading(route, sourceState.sources, sourceState.reads, linkedContext ? associationIds : null, projectName);
-  const pickerPlans = contextPlanSources(linkedContext ? { ...route, epicKey: null, projectId: null } : route, sourceState.sources, sourceState.reads, linkedContext ? associationIds : null);
+  const heading = contextHeading(route, sourceState.sources, sourceState.reads, linkedContext ? associationIds : null, projectName, projectEpics, sourceState.error);
+  const pickerPlans = contextPlanSources(linkedContext ? { ...route, epicKey: null, projectId: null } : route, sourceState.sources, sourceState.reads, linkedContext ? associationIds : null, projectEpics);
   const visitContext = (patch: Partial<KontorRoute>, queryOverride?: string) => {
     const candidate = { ...hostNavigation(host.id).route, ...patch };
-    const resolved = resolveContextPlan(candidate, sourceState.sources, sourceState.reads, candidate.originAgentId ? saved.planAssociations[candidate.originAgentId] ?? [] : null);
+    const resolved = resolveContextPlan(candidate, sourceState.sources, sourceState.reads, candidate.originAgentId ? saved.planAssociations[candidate.originAgentId] ?? [] : null, projectEpicKeys(candidate.projectId, directory.state.entries));
     visit({ ...patch, sourceId: resolved.sourceId, sourceRevision: resolved.sourceRevision }, queryOverride);
   };
   const selectSource = (sourceId: string, tab?: Destination) => {
@@ -151,15 +154,22 @@ function HostScreen(props: PluginScreenProps) {
     else toast.error(link.reason);
   };
   const conversationReturn = route.originAgentId && props.navigation ? <Action label="Return to conversation" colors={colors} disabled={!directory.state.entries.some((entry) => entry.id === route.originAgentId)} onPress={() => { const entry = directory.state.entries.find((candidate) => candidate.id === route.originAgentId); if (entry) open(entry); }} /> : null;
+  const canGoBack = hostNavigation(host.id).back.length > 0;
+  // Desktop keeps Back in place, disabled when there is nowhere to go, so the views beside it never move.
+  const backButton = <IconButton label="Back" icon="ChevronLeft" colors={colors} disabled={!canGoBack} onPress={back} />;
+  const contextPicker = route.tab !== "Sessions" ? <ContextPicker ref={contextRef} label={heading.title} epicKey={heading.key} compact={layout.compact} expanded={menu === "context"} colors={colors} onPress={() => toggle("context")} /> : null;
+  const freshness = <NativeFreshnessPill state={directory.state} hostStatus={hostStatus} hostLabel={host.label} colors={colors} />;
   const moreActive = !primary.includes(route.tab);
   const navigationItems = <>
       {primary.map((tab) => <Action key={tab} tab stacked={layout.compact} colors={colors} icon={ICONS[tab]} label={tab} selected={route.tab === tab} onPress={() => tabPress(tab)} />)}
       <Action ref={moreRef} stacked={layout.compact} colors={colors} icon="Ellipsis" label="More" trailing={layout.compact ? undefined : "⌄"} accessibilityLabel={`More Kontor views${moreActive ? `, current: ${route.tab}` : ""}`} expanded={menu === "more"} selected={moreActive} onPress={() => toggle("more")} />
     </>;
-  // Left-grouped desktop strip and a five-column compact bottom bar, as in the prototype.
-  const navigation = <View accessibilityRole="tablist" accessibilityLabel="Kontor views" style={{ flexDirection: "row", borderTopWidth: layout.compact ? 1 : 0, borderBottomWidth: layout.compact ? 0 : 1, borderColor: colors.border, backgroundColor: colors.surface0, ...(layout.compact ? { gap: 2, paddingHorizontal: 6, paddingTop: 5, paddingBottom: 6 } : {}) }}>
-    {layout.compact ? navigationItems : <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ flexDirection: "row", alignItems: "center", gap: 3, paddingHorizontal: 12, paddingVertical: 8 }}>{navigationItems}</ScrollView>}
-  </View>;
+  // A desktop strip inside the context row and a five-column compact bottom bar, as in the prototype.
+  const navigation = layout.compact
+    ? <View accessibilityRole="tablist" accessibilityLabel="Kontor views" style={{ flexDirection: "row", borderTopWidth: 1, borderColor: colors.border, backgroundColor: colors.surface0, gap: 2, paddingHorizontal: 6, paddingTop: 5, paddingBottom: 6 }}>{navigationItems}</View>
+    : <View accessibilityRole="tablist" accessibilityLabel="Kontor views" style={{ flexShrink: 1, minWidth: 0 }}>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ flexDirection: "row", alignItems: "center", gap: 3 }}>{navigationItems}</ScrollView>
+    </View>;
   const needle = pickerQuery.trim().toLocaleLowerCase();
   const matches = (...values: (string | null | undefined)[]) => !needle || values.some((value) => value?.toLocaleLowerCase().includes(needle));
   const boundEpics = new Set(sourceState.sources.filter((source) => source.kind === "plan").map((source) => sourceState.reads[source.id]?.graph?.epic.jira ?? source.epic));
@@ -198,8 +208,9 @@ function HostScreen(props: PluginScreenProps) {
   if (route.tab === "Sessions") page = <SessionsScreen key={sessionScopeKey(host.id, route)} viewScope={sessionScopeKey(host.id, route)} {...props} theme={{ ...props.theme, colors }} directory={directory} organization={presentation} projectId={route.projectId} epicKey={route.epicKey} onIncludeArchived={setIncludeArchived}
     scopeLabel={route.epicKey ?? (route.projectId === null ? null : projectName ?? "Project unavailable")} onClearScope={() => visit({ ...NO_SCOPE })}
     planSources={planSources} onEpicTab={(tab, epicKey, sourceId) => visitContext({ tab, epicKey, sourceId, sourceRevision: sourceId ? sourceState.reads[sourceId]?.revision ?? null : null, originAgentId: null })}
+    projects={projects.map(([id, name]) => ({ id, name }))}
     workspaces={workspaces.entries.filter((workspace) => (route.projectId === null || workspace.projectId === route.projectId) && (route.epicKey === null || saved.displayMappings[`workspace:${workspace.id}`]?.epic?.trim().toLocaleLowerCase() === route.epicKey.trim().toLocaleLowerCase())).map((workspace) => ({ id: workspace.id, name: workspace.title ?? workspace.name, projectKey: workspace.projectId, projectName: workspace.projectCustomName ?? workspace.projectDisplayName }))}
-    workspaceNote={workspaces.error ? `Workspace list unavailable: ${workspaces.error}` : workspaces.readAt ? `Empty workspaces from the workspace list read ${new Date(workspaces.readAt).toLocaleTimeString()}` : "Reading the workspace list…"} />;
+    workspaceNote={[workspaces.error ?? (workspaces.readAt ? `Empty workspaces from the workspace list read ${new Date(workspaces.readAt).toLocaleTimeString()}` : "Reading the workspace list…"), workspaces.projectError ?? (workspaces.projectsReadAt ? `Projects read ${new Date(workspaces.projectsReadAt).toLocaleTimeString()}` : "Reading the project list…")].join(" · ")} />;
   else if (route.tab === "Settings") page = <OrganizationSettingsPage colors={colors} state={presentation.state} entries={directory.state.entries} workspaces={workspaces.entries.map((workspace) => ({ id: workspace.id, name: workspace.title ?? workspace.name }))} sources={sourceState.sources} reads={sourceState.reads} teamsSnapshots={sourceState.teamsSnapshots} teamsErrors={sourceState.teamsErrors} sourcesAvailable={sourceState.available} sourceError={sourceState.error} refresh={() => { void sourceState.refresh(); }}
     onOpenTeams={() => visit({ tab: "AI teams & sessions", ...tabScope(host.id, "AI teams & sessions") }, undefined, (next) => writePageView(host.id, next, { ...readPageView(host.id, next, DEFAULT_TEAMS_VIEW), configured: true }))}
     keyboard={<KeyboardSettingsCard state={keyboard.state} save={keyboard.save} colors={colors} web={layout.platform === "web"} root={rootRef} copy={copy} />} />;
@@ -228,29 +239,38 @@ function HostScreen(props: PluginScreenProps) {
     planView={readPageView(host.id, route, DEFAULT_PLAN_VIEW)} onPlanView={(view) => writePageView(host.id, route, view)}
     teamsView={readPageView(host.id, route, DEFAULT_TEAMS_VIEW)} onTeamsView={(view) => { writePageView(host.id, route, view); setTeamsViewRevision((revision) => revision + 1); }}
     initialOffset={readRouteView(host.id, route).offset} onScroll={(offset) => { writeRouteView(host.id, route, { offset }); }} />;
-  return <SafeAreaView style={{ flex: 1, backgroundColor: colors.surface0 }}><KeyboardAvoidingView behavior={layout.platform === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
+  return <ControlHelpProvider colors={colors}><SafeAreaView style={{ flex: 1, backgroundColor: colors.surface0 }}><KeyboardAvoidingView behavior={layout.platform === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
     <View ref={rootRef} style={{ flex: 1 }} onLayout={(event) => { const { width, height } = event.nativeEvent.layout; if (width !== rootSize.width || height !== rootSize.height) setRootSize({ width, height }); }}>
-    <View testID="kontor-context-row" style={{ flexDirection: "row", alignItems: "center", gap: layout.compact ? 5 : 8, paddingHorizontal: layout.compact ? 6 : 10, paddingVertical: 3, minHeight: 51, borderBottomWidth: 1, borderColor: colors.border, backgroundColor: colors.surface0 }}>
-      {hostNavigation(host.id).back.length ? <IconButton label="Back" icon="ChevronLeft" colors={colors} onPress={back} /> : null}
-      <Text accessibilityRole="header" numberOfLines={1} style={{ color: colors.foreground, fontSize: layout.compact ? 12 : 13, fontWeight: "600" }}>Kontor</Text>
-      {route.tab !== "Sessions" ? <ContextPicker ref={contextRef} label={heading.title} epicKey={heading.key} compact={layout.compact} expanded={menu === "context"} colors={colors} onPress={() => toggle("context")} /> : null}
+    {/* Paseo's own header above already names Kontor and, when there is a choice, the host; this row adds only what it cannot show. */}
+    {layout.compact ? <View testID="kontor-context-row" style={{ flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 6, paddingVertical: 3, minHeight: 51, borderBottomWidth: 1, borderColor: colors.border, backgroundColor: colors.surface0 }}>
+      {canGoBack ? backButton : null}
+      {contextPicker}
       <View style={{ flex: 1 }} />
-      {!layout.compact ? <Text numberOfLines={1} style={{ color: colors.foreground, fontSize: 12, fontWeight: "600", flexShrink: 1 }}>{host.label}</Text> : null}
-      <NativeFreshnessPill state={directory.state} hostStatus={hostStatus} colors={colors} />
-      {!layout.compact ? conversationReturn : null}
-    </View>
+      {freshness}
+    </View> : <View testID="kontor-context-row" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 12, paddingHorizontal: 10, paddingVertical: 3, minHeight: 51, borderBottomWidth: 1, borderColor: colors.border, backgroundColor: colors.surface0 }}>
+      {/* One row when it fits; on a narrow screen the context, status and return wrap below the views instead of hiding. */}
+      <View testID="kontor-views-group" style={{ flexDirection: "row", alignItems: "center", gap: 8, flexShrink: 1, minWidth: 0, maxWidth: "100%", minHeight: 44 }}>
+        {backButton}
+        {navigation}
+      </View>
+      <View testID="kontor-context-group" style={{ flexDirection: "row", alignItems: "center", gap: 8, flexGrow: 1, flexShrink: 1, minWidth: 0, minHeight: 44 }}>
+        {contextPicker}
+        <View style={{ flexGrow: 1 }} />
+        {freshness}
+        {conversationReturn}
+      </View>
+    </View>}
     {layout.compact && conversationReturn ? <View testID="kontor-conversation-return-row" style={{ minHeight: 44, flexDirection: "row", justifyContent: "flex-end" }}>{conversationReturn}</View> : null}
-    {!layout.compact ? navigation : null}
     <View style={{ flex: 1 }}>{page}</View>
     {layout.compact ? navigation : null}
     {menus}
     </View>
-  </KeyboardAvoidingView></SafeAreaView>;
+  </KeyboardAvoidingView></SafeAreaView></ControlHelpProvider>;
 }
 /** Bounded, left-aligned title-only selector; the confirmed Jira key floats on its lower border. */
 function ContextPicker({ label, epicKey, compact, expanded, colors, onPress, ref }: { label: string; epicKey: string | null; compact: boolean; expanded: boolean; colors: Colors; onPress: () => void; ref?: Ref<View> }) {
   return <Pressable ref={ref} testID="kontor-context-picker" accessibilityRole="button" accessibilityLabel={`Plan / project: ${epicKey ? `${epicKey} · ` : ""}${label}`} accessibilityHint="Choose a plan, epic or project" accessibilityState={{ expanded }} aria-expanded={expanded} onPress={onPress}
-    style={{ flexGrow: 0, flexShrink: 1, flexBasis: compact ? 180 : 320, minWidth: compact ? 44 : 100, maxWidth: 420, height: 44, justifyContent: "center", paddingLeft: 9, paddingRight: 26 }}>
+    style={{ flexGrow: 1, flexShrink: 1, flexBasis: compact ? 180 : 220, minWidth: compact ? 44 : 100, maxWidth: 420, height: 44, justifyContent: "center", paddingLeft: 9, paddingRight: 26 }}>
     <View pointerEvents="none" style={{ position: "absolute", top: 5, bottom: 8, left: 0, right: 0, borderWidth: 1, borderColor: expanded ? colors.accent : colors.border, borderRadius: 6, backgroundColor: colors.surface1 }} />
     <Text numberOfLines={1} ellipsizeMode="tail" style={{ color: colors.foreground, fontSize: 12, lineHeight: 16, fontWeight: "600", marginBottom: 3 }}>{label}</Text>
     {epicKey ? <Text testID="kontor-context-epic" accessible={false} pointerEvents="none" numberOfLines={1} style={{ position: "absolute", left: 7, bottom: 2, maxWidth: "80%", paddingHorizontal: 4, fontSize: 9, lineHeight: 12, fontFamily: "monospace", color: colors.foregroundMuted, backgroundColor: colors.surface1 }}>{epicKey}</Text> : null}

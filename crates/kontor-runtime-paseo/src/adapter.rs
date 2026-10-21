@@ -945,6 +945,14 @@ struct PaseoState {
     resolved_in_history: BTreeSet<ExternalId>,
     permission_acks: Vec<(ExternalId, PermissionAck)>,
     adoptions: BTreeMap<ExternalId, PaseoAdoptionIntent>,
+    /// Natives this process has read back as archived.
+    ///
+    /// A replacement is admitted only when the runtime has observed the holder
+    /// finish, and "archived" is the only terminal fact Paseo offers. The
+    /// in-process generation alone cannot see a predecessor archived before a
+    /// restart or by another process, so the fresh archive stamp is recorded
+    /// here and [`PaseoSeatFacts`] accepts it alongside the generation.
+    retired_natives: BTreeSet<ExternalId>,
     epochs: EpochRegistry,
     cursors: BTreeMap<RuntimeBindingId, TimelinePosition>,
     request_seq: u64,
@@ -954,6 +962,7 @@ struct PaseoState {
 struct PaseoSeatFacts<'a> {
     bindings: &'a IssuedBindingRegistry,
     generation: u64,
+    retired_natives: &'a BTreeSet<ExternalId>,
 }
 
 impl SeatFacts for PaseoSeatFacts<'_> {
@@ -974,8 +983,15 @@ impl SeatFacts for PaseoSeatFacts<'_> {
     fn holder_is_finished_or_retired(
         &self,
         binding_id: RuntimeBindingId,
-        _native_id: &ExternalId,
+        native_id: &ExternalId,
     ) -> bool {
+        // Archive is the terminal fact; generation is only the local memory of
+        // it. A predecessor archived before this process started, or by another
+        // process, carries no stale generation here, and admitting its
+        // replacement is the whole of A4. A live holder is still refused.
+        if self.retired_natives.contains(native_id) {
+            return true;
+        }
         match self.bindings.get(binding_id) {
             None => true,
             Some(snapshot) => snapshot.identity().generation != self.generation,
@@ -1340,6 +1356,7 @@ impl PaseoAdapter {
                 resolved_in_history,
                 permission_acks: checkpoint.permission_acks.clone(),
                 adoptions: BTreeMap::new(),
+                retired_natives: BTreeSet::new(),
                 epochs,
                 cursors: checkpoint.cursors.iter().copied().collect(),
                 request_seq: 0,
@@ -2128,15 +2145,45 @@ impl PaseoAdapter {
         &self,
         agent_id: &str,
     ) -> RuntimeResult<Option<PaseoAgent>> {
-        match self.fetch_agent(agent_id).await {
-            Ok(agent) => Ok(Some(agent)),
-            Err(RuntimeError::StaleBinding { .. }) => Ok(self
+        let found = match self.fetch_agent(agent_id).await {
+            Ok(agent) => Some(agent),
+            Err(RuntimeError::StaleBinding { .. }) => self
                 .fetch_agents(&BTreeMap::new(), true)
                 .await?
                 .into_iter()
-                .find(|agent| agent.id == agent_id)),
-            Err(error) => Err(error),
+                .find(|agent| agent.id == agent_id),
+            Err(error) => return Err(error),
+        };
+        if let Some(agent) = &found
+            && agent.is_archived()
+            && let Ok(id) = ExternalId::parse(&agent.id)
+        {
+            // Every archive stamp this adapter reads becomes admitted evidence
+            // for a later replacement. It is recorded even on read paths so a
+            // seat retired before a restart is not invisible to admission.
+            self.lock().retired_natives.insert(id);
         }
+        Ok(found)
+    }
+
+    /// Read one agent that a driving operation may address.
+    ///
+    /// `fetch_agent` already hides an archived agent, but the paginated
+    /// fallback can still find one. Sending to that identity is how Paseo's
+    /// message handler unarchives a retired seat (G-03), so an archived
+    /// readback is a refusal here rather than something to drive.
+    async fn fetch_driveable_agent(&self, agent_id: &str) -> RuntimeResult<PaseoAgent> {
+        let agent = self.find_agent_including_archived(agent_id).await?.ok_or(
+            RuntimeError::StaleBinding {
+                rule: "the exact native agent no longer exists",
+            },
+        )?;
+        if agent.is_archived() {
+            return Err(RuntimeError::StaleBinding {
+                rule: "this session has been retired and cannot be driven",
+            });
+        }
+        Ok(agent)
     }
 
     async fn hosted_seat_agent(
@@ -4513,6 +4560,17 @@ impl PaseoAdapter {
 // RuntimeAdapter
 // ---------------------------------------------------------------------------
 
+/// How one delivery launch reaches the runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FrameDelivery {
+    /// Create through the session frame, which is the only delivery surface
+    /// that can carry a per-agent MCP config for this provider.
+    create: bool,
+    /// Require the daemon's per-agent `providerOptionsApplied` acknowledgement
+    /// before the seat may bind.
+    requires_applied_posture: bool,
+}
+
 impl PaseoAdapter {
     /// The capability set to judge an operation by, read fresh.
     ///
@@ -4624,7 +4682,7 @@ impl PaseoAdapter {
         // spent no native call at all. Both inputs are local — the daemon's
         // advertised feature from the identity already read, expressibility from
         // a table.
-        let opencode_delivery = self.opencode_delivery_gate(request)?;
+        let frame_delivery = self.frame_delivery_gate(request)?;
 
         // Rerun the placement checks against a *fresh* readback. A binding made
         // ten minutes ago is evidence about ten minutes ago, and the whole point
@@ -4649,7 +4707,7 @@ impl PaseoAdapter {
         // launch-intent digest and the census must match the labels the created
         // agent will actually have. This is also the reconciliation claim: the
         // digest exists, and is identical on every attempt, before any effect.
-        let delivery = if opencode_delivery && !adoption_only {
+        let delivery = if frame_delivery.create && !adoption_only {
             let allowances = self
                 .config
                 .scope
@@ -4666,11 +4724,16 @@ impl PaseoAdapter {
                 labels: &labels,
                 allowances: &allowances,
                 seat_mcp: self.config.seat_mcp.as_ref(),
-                serve_profile: "worker",
+                serve_profile: crate::seat_mcp::SeatKind::Delivery.serve_profile(),
                 binding_id: &request.binding_id().to_string(),
                 agent_run_id: &request.agent_run_id().to_string(),
                 role_slot_id: request.role_slot_id().as_str(),
                 prompt: request.prompt().as_str(),
+                idempotent: self
+                    .lock()
+                    .server
+                    .as_ref()
+                    .is_some_and(crate::wire::PaseoServerInfo::supports_creation_lifecycle),
             })?;
             labels = created.labels.clone();
             Some(created)
@@ -4764,20 +4827,21 @@ impl PaseoAdapter {
         )?;
 
         // Compose the seat's worktree-local MCP config before anything is
-        // spawned, so a Claude seat starts with exactly one kontor server at
-        // operator tier under the consultation profile instead of whatever
+        // spawned, so a Claude delivery seat starts with exactly one kontor
+        // server at operator tier under the worker profile instead of whatever
         // ambient harness config the machine carries. Loud on failure: a seat
         // silently launched without its control-plane surface would fail later,
         // further from the cause.
         //
-        // An OpenCode seat *does* reach this line now that delivery is enabled,
-        // and `compose_for_seat` is a no-op for it: its posture rides in the
-        // create's `providerOptions`, so there is nothing here to write. That is
-        // also why two OpenCode seats can share one worktree — they have no file
-        // to race over. `seat_mcp::an_opencode_seat_leaves_the_shared_worktree_untouched`
+        // Codex, Cursor and OpenCode do reach this line, and
+        // `compose_for_delivery_seat` is a no-op for them: their worker surface
+        // rides in the creation frame, so there is nothing here to write. That
+        // is also why two OpenCode seats can share one worktree — they have no
+        // file to race over.
+        // `seat_mcp::an_opencode_seat_leaves_the_shared_worktree_untouched`
         // holds it to that against a real directory.
         if !adoption_only {
-            crate::seat_mcp::compose_for_seat(
+            crate::seat_mcp::compose_for_delivery_seat(
                 self.config.seat_mcp.as_ref(),
                 request.model_rung().provider.0.as_str(),
                 posture,
@@ -4791,9 +4855,10 @@ impl PaseoAdapter {
             })?;
         }
 
-        // The CLI create, for every provider whose posture is its mode. OpenCode
-        // does not come through here: its posture has to travel in
-        // `providerOptions`, which only the session socket carries.
+        // The CLI create, for every provider that has a worktree file or no
+        // per-seat MCP surface. Codex, Cursor and OpenCode do not come through
+        // here: their worker surface and (for OpenCode) posture have to travel
+        // in the session frame.
         let command = PaseoCommand::agent_run(
             &workspace_id,
             task_scope.worktree.as_str(),
@@ -4806,8 +4871,9 @@ impl PaseoAdapter {
         )?;
 
         let agent = match (recovered, delivery.as_ref()) {
-            // An OpenCode seat this launch already made, found by its exact
-            // launch intent. The census snapshot is this attempt's own read.
+            // A frame-delivered seat this launch already made, found by its
+            // exact launch intent. The census snapshot is this attempt's own
+            // read.
             (Some(agent), Some(_)) => agent,
             // An adoption-only recovery binds the complete census snapshot. It
             // never starts or prompts another native and does not need a second
@@ -4818,7 +4884,7 @@ impl PaseoAdapter {
             (Some(agent), None) => self.fetch_agent(&agent.id).await?,
             // One create carrying permission, MCP, prompt and message id, and the
             // snapshot it answers with is what the seat is judged from.
-            (None, Some(delivery)) => self.create_opencode_seat(delivery).await?,
+            (None, Some(delivery)) => self.create_frame_seat(delivery).await?,
             (None, None) => {
                 let native_id = match self.transport.run(&command).await {
                     Ok(output) => {
@@ -4858,7 +4924,7 @@ impl PaseoAdapter {
                 Self::verify_agent_route(&agent, request.model_rung(), request.autonomy())
             })
             .and_then(|()| {
-                if !opencode_delivery || agent.provider_options_applied() {
+                if !frame_delivery.requires_applied_posture || agent.provider_options_applied() {
                     Ok(())
                 } else {
                     Err(RuntimeError::LaunchNotAdmitted {
@@ -4957,15 +5023,14 @@ impl PaseoAdapter {
         })
     }
 
-    /// Whether this launch is an OpenCode delivery, refusing it if it cannot be
-    /// proved.
+    /// Whether this delivery launch must be created through the session frame,
+    /// refusing it if its posture cannot be proved.
     ///
-    /// `Ok(false)` for every other provider: their posture *is* their mode, the
-    /// mode readback proves it, and their CLI launch path is untouched.
+    /// Codex, Cursor and OpenCode have no worktree config file, so their
+    /// `worker` surface travels in the creation frame. Claude keeps its worktree
+    /// `.mcp.json`, and every other provider keeps its CLI launch path.
     ///
-    /// # What is asked, and what deliberately is not
-    ///
-    /// Exactly one thing: does this daemon advertise
+    /// OpenCode additionally asks exactly one thing: does this daemon advertise
     /// [`PaseoFeature::ProviderOptionsApplied`](crate::wire::PaseoFeature::ProviderOptionsApplied)?
     ///
     /// **Not the version.** Kontor already shipped a path gated on `0.6.1` that
@@ -4991,36 +5056,55 @@ impl PaseoAdapter {
     /// # Errors
     /// [`RuntimeError::LaunchNotAdmitted`] when the daemon does not advertise the
     /// feature, or when the provider cannot express the declared posture.
-    fn opencode_delivery_gate(&self, request: &LaunchRequest) -> RuntimeResult<bool> {
+    fn frame_delivery_gate(&self, request: &LaunchRequest) -> RuntimeResult<FrameDelivery> {
         let provider = request.model_rung().provider.0.as_str();
-        if crate::client::built_in_provider(provider) != "opencode" {
-            return Ok(false);
+        match crate::client::built_in_provider(provider) {
+            "codex" | "cursor" => {
+                // The frame carries the worker MCP and the provider-native mode.
+                // The refusal is `paseo_mode`'s own, so an autonomy the provider
+                // cannot express is refused here rather than at the wire.
+                crate::posture::render_posture(provider, request.autonomy(), &[])?;
+                Ok(FrameDelivery {
+                    create: true,
+                    requires_applied_posture: false,
+                })
+            }
+            "opencode" => {
+                let applies = self
+                    .lock()
+                    .server
+                    .as_ref()
+                    .is_some_and(crate::wire::PaseoServerInfo::applies_provider_options);
+                if !applies {
+                    return Err(RuntimeError::LaunchNotAdmitted {
+                        rule: "this Paseo does not advertise providerOptionsApplied, so an OpenCode posture cannot be proved",
+                    });
+                }
+                // And the provider must be able to express the declared posture
+                // at all. The refusal is `paseo_mode`'s own, so an advisory seat
+                // on a provider with no contained mode is refused here rather
+                // than at the wire.
+                crate::posture::render_posture(provider, request.autonomy(), &[])?;
+                Ok(FrameDelivery {
+                    create: true,
+                    requires_applied_posture: true,
+                })
+            }
+            _ => Ok(FrameDelivery {
+                create: false,
+                requires_applied_posture: false,
+            }),
         }
-        let applies = self
-            .lock()
-            .server
-            .as_ref()
-            .is_some_and(crate::wire::PaseoServerInfo::applies_provider_options);
-        if !applies {
-            return Err(RuntimeError::LaunchNotAdmitted {
-                rule: "this Paseo does not advertise providerOptionsApplied, so an OpenCode posture cannot be proved",
-            });
-        }
-        // And the provider must be able to express the declared posture at all.
-        // The refusal is `paseo_mode`'s own, so an advisory seat on a provider
-        // with no contained mode is refused here rather than at the wire.
-        crate::posture::render_posture(provider, request.autonomy(), &[])?;
-        Ok(true)
     }
 
-    /// Create one OpenCode delivery seat, and return the snapshot it is judged
-    /// from.
+    /// Create one frame-delivered seat (Codex, Cursor or OpenCode), and return
+    /// the snapshot it is judged from.
     ///
-    /// One `create_agent_request` carries the permission, the MCP surface, the
-    /// prompt and its deterministic message id. There is no second effect to
-    /// reconcile, and **no follow-up fetch**: the snapshot in the answer is the
-    /// state the daemon produced for this create, and a later read answers a
-    /// question about a later moment.
+    /// One `agent.create.request` carries the permission, the MCP surface, the
+    /// prompt and its deterministic message id. A completed answer needs no
+    /// follow-up fetch: its snapshot is the state the daemon produced for this
+    /// create, and a later read answers a question about a later moment. Only a
+    /// lost or failed answer is reconciled by a read, never by a second create.
     ///
     /// The three ways this can end:
     ///
@@ -5030,7 +5114,7 @@ impl PaseoAdapter {
     ///   settles it like every other non-created answer;
     /// * the answer is lost or unrecognised, and reconciliation decides, never a
     ///   second create.
-    async fn create_opencode_seat(
+    async fn create_frame_seat(
         &self,
         delivery: &crate::client::DeliveryCreateRequest,
     ) -> RuntimeResult<PaseoAgent> {
@@ -5039,10 +5123,40 @@ impl PaseoAdapter {
             // The create may have landed. Never sent again: that is how one seat
             // acquires two sessions, each holding a worktree.
             Err(RuntimeError::Transport { .. }) => {
-                return self.reconcile_delivery_create(delivery).await;
+                return self.reconcile_delivery_create_after_attempt(delivery).await;
             }
             Err(other) => return Err(other),
         };
+        if delivery.rpc.response_type == "agent.create.response" {
+            let answer: crate::wire::PaseoAgentCreateAnswer =
+                frame.resolve(&delivery.rpc, "PaseoAgentCreateAnswer")?;
+            // A keyed answer may carry a partially provisioned agent alongside
+            // a failed or unresolved creation. Only a completed, provable
+            // creation is a bind target; everything else is reconciled.
+            let completed = answer.creation.as_ref().is_none_or(|creation| {
+                creation.phase == crate::wire::PaseoCreationSnapshot::COMPLETED
+                    && !creation.outcome_unknown
+            });
+            if let Some(agent) = answer.agent
+                && completed
+            {
+                return Ok(agent);
+            }
+            tracing::warn!(
+                error = answer.error.as_deref().unwrap_or("none"),
+                phase = answer
+                    .creation
+                    .as_ref()
+                    .map(|creation| creation.phase.as_str())
+                    .unwrap_or("none"),
+                outcome_unknown = answer
+                    .creation
+                    .as_ref()
+                    .is_some_and(|creation| creation.outcome_unknown),
+                "keyed delivery create did not return an agent; consulting its durable snapshot"
+            );
+            return self.reconcile_delivery_create_after_attempt(delivery).await;
+        }
         let answer: crate::wire::PaseoAgentCreated =
             frame.resolve(&delivery.rpc, "PaseoAgentCreated")?;
         if let Some(agent) = answer.created() {
@@ -5085,7 +5199,43 @@ impl PaseoAdapter {
         self.reconcile_delivery_create(delivery).await
     }
 
-    /// Decide an ambiguous delivery create from the agent directory alone.
+    /// Read the durable creation journal for one launch key.
+    ///
+    /// A read, never a create: `creation.subscribe.request` returns what the
+    /// daemon recorded for the key, and a key with no record returns `None`.
+    async fn creation_snapshot(
+        &self,
+        idempotency_key: &str,
+    ) -> RuntimeResult<Option<crate::wire::PaseoCreationSnapshot>> {
+        let rpc = PaseoRpc::creation_subscribe(self.next_request_id(), idempotency_key);
+        let frame = self.transport.request(&rpc).await?;
+        let answer: crate::wire::PaseoCreationSubscription =
+            frame.resolve(&rpc, "PaseoCreationSubscription")?;
+        Ok(answer.snapshot)
+    }
+
+    /// Reconcile a create whose attempt may already have landed.
+    ///
+    /// A read failure here is not a channel fact about an untouched runtime; it
+    /// is a failure to settle an effect that may exist. It must keep the seat
+    /// claim, so it is typed as an unknown outcome rather than a plain
+    /// transport error.
+    async fn reconcile_delivery_create_after_attempt(
+        &self,
+        delivery: &crate::client::DeliveryCreateRequest,
+    ) -> RuntimeResult<PaseoAgent> {
+        self.reconcile_delivery_create(delivery)
+            .await
+            .map_err(|error| match error {
+                RuntimeError::Transport { .. } => RuntimeError::DeliveryConfirmationUnknown {
+                    rule: "the create was attempted and the read that would settle it did not answer; a second create would duplicate the seat",
+                },
+                other => other,
+            })
+    }
+
+    /// Decide an ambiguous delivery create from the durable journal, then from
+    /// the agent directory alone.
     ///
     /// The launch-intent digest is in `labels`, and it covers the create
     /// configuration *and* the prompt, so at most one agent in this project can
@@ -5107,6 +5257,39 @@ impl PaseoAdapter {
         &self,
         delivery: &crate::client::DeliveryCreateRequest,
     ) -> RuntimeResult<PaseoAgent> {
+        // A keyed create has a durable answer that is strictly better than a
+        // label census: it names the resource the daemon journaled for this
+        // exact launch key. `completed` is the only phase that may be adopted,
+        // and `outcomeUnknown` is the daemon saying it cannot prove either way.
+        if let Some(key) = &delivery.idempotency_key {
+            match self.creation_snapshot(key).await {
+                Ok(Some(snapshot)) => {
+                    if let Some(agent_id) = snapshot.completed_agent_id() {
+                        let agent = self.fetch_agent(agent_id).await?;
+                        self.first_turn_proved(agent_id, &delivery.client_message_id)
+                            .await?;
+                        return Ok(agent);
+                    }
+                    if snapshot.outcome_unknown
+                        || snapshot.phase == crate::wire::PaseoCreationSnapshot::FAILED
+                    {
+                        return Err(RuntimeError::DeliveryConfirmationUnknown {
+                            rule: "the keyed create reports an outcome the daemon could not confirm; it is never replayed as a second create",
+                        });
+                    }
+                }
+                Ok(None) => {}
+                // The durable read is the settling evidence. If it cannot be
+                // reached after a create was attempted, the outcome is unknown
+                // and must keep the seat claim.
+                Err(RuntimeError::Transport { .. }) => {
+                    return Err(RuntimeError::DeliveryConfirmationUnknown {
+                        rule: "the keyed create's durable snapshot could not be reached, so its outcome is unknown",
+                    });
+                }
+                Err(error) => return Err(error),
+            }
+        }
         let labels = &delivery.labels;
         let (agents, complete) = self.census_by_labels(labels, false).await?;
         if !complete {
@@ -7555,14 +7738,34 @@ impl RuntimeAdapter for PaseoAdapter {
         })
     }
 
-    /// Admission is bookkeeping about seats: it starts nothing and reaches no
-    /// Paseo surface, so "the daemon was never called" keeps meaning what it
-    /// says.
+    /// Admission decides who may fill a seat, and a replacement additionally
+    /// requires the runtime's own archive evidence.
+    ///
+    /// A vacant seat and a same-run resume are decided from the reservation
+    /// table alone. A replacement is the one case that reads Paseo first: the
+    /// citation names a predecessor, and the only terminal fact this wire
+    /// offers is `archivedAt`. That read is bounded, read-only, and happens
+    /// before the table is touched, so a refusal still changes nothing.
     async fn admit_launch(&self, request: &AdmissionRequest) -> RuntimeResult<AdmissionOutcome> {
+        if request.replaces.is_some() {
+            let predecessor = self.lock().admissions.occupied_native(&request.slot);
+            if let Some(native_id) = predecessor {
+                let observed = self
+                    .find_agent_including_archived(native_id.as_str())
+                    .await?;
+                // Only a stamped archive is evidence. A live predecessor, or
+                // one Paseo no longer holds at all, leaves the holder
+                // unproved and the admission refuses.
+                if observed.is_some_and(|agent| agent.is_archived()) {
+                    self.lock().retired_natives.insert(native_id);
+                }
+            }
+        }
         let state = &mut *self.lock();
         let facts = PaseoSeatFacts {
             bindings: &state.bindings,
             generation: state.generation,
+            retired_natives: &state.retired_natives,
         };
         state.admissions.admit(request, &facts)
     }
@@ -8584,7 +8787,13 @@ impl RuntimeAdapter for PaseoAdapter {
         // Last thing before the wire, and deliberately after both short-circuits
         // above: a replay answering from recorded evidence produces no effect, so
         // it has no tree to be wrong about. What follows does.
-        let fresh = self.fetch_agent(&native_id).await?;
+        //
+        // Archived is refused here even though the exact lookup already hides
+        // one: Paseo unarchives an agent when it accepts a message, so a send
+        // addressed to a retired seat would reactivate it. The fallback read
+        // makes that refusal explicit instead of relying on which lookup shape
+        // the daemon happens to answer.
+        let fresh = self.fetch_driveable_agent(&native_id).await?;
         self.verify_seat_placement(&binding, &fresh).await?;
         self.ensure_provider_available(&fresh.provider)?;
 
@@ -8756,7 +8965,7 @@ impl RuntimeAdapter for PaseoAdapter {
         }
 
         let native_id = binding.identity().native_id.as_str();
-        let fresh = self.fetch_agent(native_id).await?;
+        let fresh = self.fetch_driveable_agent(native_id).await?;
         self.verify_seat_placement(&binding, &fresh).await?;
         self.ensure_provider_available(&fresh.provider)?;
         let rpc = PaseoRpc::send_message(
@@ -9998,6 +10207,62 @@ impl RuntimeAdapter for PaseoAdapter {
                 rule: "runtime accepted the answer but its resolution has not appeared yet",
             }),
         }
+    }
+
+    async fn pending_permissions(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+    ) -> RuntimeResult<Vec<ExternalId>> {
+        let binding = self.attested(binding)?;
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::Inspect,
+        )
+        .await?;
+        let declared = self.declared().await?;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::Inspect,
+                autonomous: false,
+                account_pinned: false,
+                binding: Some(&binding),
+                placement: None,
+                current_generation: Some(self.generation()),
+                demand: None,
+                context_policy: None,
+            },
+        )?;
+        let native_id = binding.identity().native_id.as_str().to_owned();
+        // The snapshot is where this wire records the open requests. A fresh
+        // read is the answer: a cached list would be a description of the past,
+        // and the answer decides whether an answer may be dispatched at all.
+        let agent = self.fetch_agent(&native_id).await?;
+        self.observe_permissions(binding.binding_id(), &agent);
+        let mut pending: Vec<ExternalId> = self
+            .lock()
+            .permission_owners
+            .iter()
+            .filter(|(_, owner)| **owner == binding.binding_id())
+            .map(|(permission_id, _)| permission_id.clone())
+            .collect();
+        pending.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        Ok(pending)
+    }
+
+    async fn raised_permissions(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+    ) -> RuntimeResult<Vec<ExternalId>> {
+        let mut raised = self.pending_permissions(binding).await?;
+        let binding_id = binding.binding_id();
+        for (permission_id, acknowledgement) in &self.lock().permission_acks {
+            if acknowledgement.binding_id == binding_id && !raised.contains(permission_id) {
+                raised.push(permission_id.clone());
+            }
+        }
+        raised.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        Ok(raised)
     }
 
     /// Report, honestly, that this daemon cannot compact a seat's context.

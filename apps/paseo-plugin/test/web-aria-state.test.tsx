@@ -4,7 +4,7 @@ vi.mock("react", async (original) => ({ ...await original<typeof import("react")
 vi.mock("react-native", () => ({ BackHandler: { addEventListener: () => ({ remove: () => undefined }) }, Pressable: "Pressable", Text: "Text", View: "View" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
 import { MenuItem } from "../client/anchored-menu";
-import { Action, Disclosure } from "../client/page-controls";
+import { Action, Disclosure, IconButton } from "../client/page-controls";
 
 type Element = ReactElement<Record<string, unknown>>;
 const colors = {} as never;
@@ -33,6 +33,12 @@ describe("control state on the web", () => {
     // More is a menu button: open or closed, never a toggle, even while one of its views is current.
     expect(action({ expanded: true, selected: true })).toEqual({ "aria-expanded": true });
     expect(action({})).toEqual({});
+  });
+
+  it("exposes Back as disabled until navigation history exists", () => {
+    const back = (disabled: boolean) => pressable(<IconButton label="Back" icon="ChevronLeft" colors={colors} disabled={disabled} onPress={() => {}} />);
+    expect(back(true)).toMatchObject({ disabled: true, accessibilityState: { disabled: true }, "aria-disabled": true });
+    expect(back(false)).toMatchObject({ disabled: false, accessibilityState: { disabled: false }, "aria-disabled": false });
   });
 
   it("marks only the current menu item", () => {

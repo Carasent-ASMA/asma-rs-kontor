@@ -1,4 +1,4 @@
-   Compiling kontor-store v0.2.1 ($HOME/carasent/asma-modules/.worktrees/kontor-compat-recovery/asma-rs-kontor/crates/kontor-store)
+   Compiling kontor-store v0.2.1 ([compat-workspace]/crates/kontor-store)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 11.82s
      Running tests/repository_roundtrip.rs (target/qualification/debug/deps/repository_roundtrip-be4e190cd6ddcb18)
 

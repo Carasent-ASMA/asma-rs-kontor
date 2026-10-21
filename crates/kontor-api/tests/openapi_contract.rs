@@ -123,7 +123,9 @@ fn the_contract_document_names_every_route_the_router_exposes() {
         "/v1/health",
         "/v1/realm",
         "/v1/runs/{agent_run_id}",
+        "/v1/runtime-bindings",
         "/v1/projects/{project_id}/tasks/{task_id}",
+        "/v1/projects/{project_id}/tasks/{task_id}/operational-gaps:record",
         "/v1/events",
         "/v1/sessions/{agent_run_id}/timeline",
         "/v1/sessions/{agent_run_id}/stream",
@@ -208,4 +210,47 @@ fn experience_contract_exposes_closed_typed_documents_and_frozen_readbacks() {
             format!("#/components/schemas/{response}")
         );
     }
+}
+
+/// ASMA-8514: the run lookup, the binding census and the gap write are all in
+/// the generated contract, with the identities and the typed state they promise.
+#[test]
+fn the_run_lookup_census_and_gap_surface_is_in_the_contract() {
+    let document = serde_json::to_value(kontor_api::openapi::document()).unwrap();
+    let run = &document["components"]["schemas"]["RunDto"]["properties"];
+    assert!(run["task_id"].is_object(), "run-get names its task");
+    assert!(run["epic_id"].is_object(), "run-get names its epic");
+
+    let census = &document["components"]["schemas"]["BindingCensusItemDto"]["properties"];
+    for field in [
+        "binding_id",
+        "agent_run_id",
+        "task_id",
+        "epic_id",
+        "native_id",
+        "state",
+    ] {
+        assert!(census[field].is_object(), "the census carries {field}");
+    }
+    assert_eq!(
+        document["components"]["schemas"]["NativeBindingStateDto"]["enum"],
+        serde_json::json!(["attached", "detached", "retired"])
+    );
+
+    let gap = &document["components"]["schemas"]["RecordOperationalGapRequest"]["properties"];
+    for field in [
+        "gap_id",
+        "failure_class",
+        "intended_operation",
+        "checkpoint",
+        "fallback_action",
+        "owner",
+    ] {
+        assert!(gap[field].is_object(), "the gap request carries {field}");
+    }
+    assert_eq!(
+        document["paths"]["/v1/runtime-bindings"]["get"]["responses"]["200"]["content"]["application/json"]
+            ["schema"]["$ref"],
+        "#/components/schemas/SnapshotDto_BindingCensusDto"
+    );
 }

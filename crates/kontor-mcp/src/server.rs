@@ -306,6 +306,7 @@ mod tests {
 
     use super::*;
     use crate::capability::Denied;
+    use crate::client::Method;
     use crate::fake::RecordingTransport;
     use crate::registry::{CLI_ONLY, REGISTRY, ServeProfile, ToolSpec};
 
@@ -341,8 +342,8 @@ mod tests {
         );
         assert_eq!(
             served.len(),
-            25,
-            "the worker profile includes artifact recovery and OpenQuestion reads and reports"
+            26,
+            "the worker profile includes artifact recovery, OpenQuestion reads and reports, and typed gap recording"
         );
     }
 
@@ -587,6 +588,80 @@ mod tests {
             text.contains("kontor_execution_arm"),
             "ready work runs without arm; the instructions must say so"
         );
+    }
+
+    /// KR-09: recording an operational gap is Operator work. An observer
+    /// server must refuse it before a request exists, with the authority
+    /// refusal's own code rather than a generic failure.
+    #[tokio::test]
+    async fn an_observer_cannot_record_an_operational_gap() {
+        let recorder = std::sync::Arc::new(RecordingTransport::new(CallerTier::Observer));
+        let dispatcher = Dispatcher::new(Box::new(std::sync::Arc::clone(&recorder)));
+        let failure = dispatcher
+            .call(
+                "kontor_operational_gap_record",
+                &serde_json::json!({
+                    "project_id": "01936b3e-7c2a-7bd0-9f4a-2c8e1d5a6b70",
+                    "task_id": "01936b3e-7c2a-7bd0-9f4a-2c8e1d5a6b71",
+                    "idempotency_key": "observer-gap",
+                    "gap_id": "01936b3e-7c2a-7bd0-9f4a-2c8e1d5a6b72",
+                    "failure_class": "capability_missing",
+                    "intended_operation": "kontor_run_get",
+                    "checkpoint": "before the fallback",
+                    "fallback_action": "read the repository report",
+                    "owner": "delivery seat",
+                }),
+            )
+            .await
+            .expect_err("an observer may not record a gap");
+        assert!(
+            matches!(
+                failure,
+                Failure::Denied(Denied::Authority {
+                    required: CallerTier::Operator,
+                    configured: CallerTier::Observer,
+                    ..
+                })
+            ),
+            "the refusal is the typed authority refusal: {failure}"
+        );
+        assert_eq!(failure.code(), "forbidden");
+        assert_eq!(recorder.count(), 0, "the write was never attempted");
+    }
+
+    /// KR-09: an operator reaches the one registered route with the gap's
+    /// typed fields, and the caller's key is carried as the header.
+    #[tokio::test]
+    async fn an_operator_records_an_operational_gap_through_the_registered_route() {
+        let recorder = std::sync::Arc::new(RecordingTransport::new(CallerTier::Operator));
+        let dispatcher = Dispatcher::new(Box::new(std::sync::Arc::clone(&recorder)));
+        dispatcher
+            .call(
+                "kontor_operational_gap_record",
+                &serde_json::json!({
+                    "project_id": "01936b3e-7c2a-7bd0-9f4a-2c8e1d5a6b70",
+                    "task_id": "01936b3e-7c2a-7bd0-9f4a-2c8e1d5a6b71",
+                    "idempotency_key": "operator-gap",
+                    "gap_id": "01936b3e-7c2a-7bd0-9f4a-2c8e1d5a6b72",
+                    "failure_class": "capability_missing",
+                    "intended_operation": "kontor_run_get",
+                    "checkpoint": "before the fallback",
+                    "fallback_action": "read the repository report",
+                    "owner": "delivery seat",
+                }),
+            )
+            .await
+            .expect("an operator records the gap");
+        let request = recorder.only_request();
+        assert_eq!(request.method, Method::Post);
+        assert_eq!(
+            request.path,
+            "/v1/projects/01936b3e-7c2a-7bd0-9f4a-2c8e1d5a6b70/tasks/01936b3e-7c2a-7bd0-9f4a-2c8e1d5a6b71/operational-gaps:record"
+        );
+        assert_eq!(request.idempotency_key.as_deref(), Some("operator-gap"));
+        let body = request.body.expect("a write body");
+        assert_eq!(body["failure_class"], "capability_missing");
+        assert_eq!(body["gap_id"], "01936b3e-7c2a-7bd0-9f4a-2c8e1d5a6b72");
     }
 
     #[tokio::test]

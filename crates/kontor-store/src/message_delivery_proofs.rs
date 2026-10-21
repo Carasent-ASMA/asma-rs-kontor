@@ -1,11 +1,11 @@
 //! Durable canonical-history proof progress. No method dispatches a message.
 
-use kontor_core::id::{CanonicalDocument, ContentHash};
+use kontor_core::id::{CanonicalDocument, ContentHash, Timestamp};
 use kontor_core::repository::{RepositoryError, RepositoryResult};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
-use crate::repository::{backend, conflict};
+use crate::repository::{backend, conflict, read_timestamp};
 use crate::{MessageIssuance, SqliteStore};
 
 /// A previously confirmed occurrence in this exact binding and generation.
@@ -127,26 +127,57 @@ impl SqliteStore {
     }
 
     /// Find genuine earlier delivery/turn evidence in the same binding generation.
+    ///
+    /// Canonical timestamps keep the fractional precision they were written
+    /// with, so `...05.724Z` and `...05.724434Z` sort by text in the wrong
+    /// order. SQL narrows to the bound's whole second, which is exact for every
+    /// earlier second and a superset within the bound's own; the instant
+    /// comparison itself is parsed, never textual.
     pub fn message_delivery_proof_anchor(
         &self,
         issued: &MessageIssuance,
     ) -> RepositoryResult<Option<MessageProofAnchor>> {
-        let held: Option<(String, i64, i64)> = self.connection.query_row(
-            "SELECT message_id, epoch, sequence FROM (
-                SELECT message_id, delivered_epoch AS epoch, delivered_sequence AS sequence, issued_at AS at
-                  FROM runtime_message_issuances
-                 WHERE runtime_binding_id = ?1 AND issued_at <= ?2 AND delivered_epoch IS NOT NULL
-                UNION ALL
-                SELECT t.runtime_message_id, t.message_timeline_epoch, t.message_timeline_sequence, t.settled_at
-                  FROM role_turns t JOIN runtime_bindings b ON b.agent_run_id = t.agent_run_id
-                 WHERE b.id = ?1 AND t.binding_generation = b.generation
-                   AND t.settled_at <= ?2 AND t.runtime_message_id IS NOT NULL
-                   AND t.message_timeline_epoch IS NOT NULL AND t.message_timeline_sequence IS NOT NULL
-            ) ORDER BY at DESC LIMIT 1",
-            params![issued.runtime_binding_id, issued.issued_at.to_string()],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        ).optional().map_err(backend)?;
-        held.map(|(message_id, epoch, sequence)| {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT message_id, epoch, sequence, at FROM (
+                    SELECT message_id, delivered_epoch AS epoch, delivered_sequence AS sequence, issued_at AS at
+                      FROM runtime_message_issuances
+                     WHERE runtime_binding_id = ?1 AND delivered_epoch IS NOT NULL
+                       AND substr(issued_at, 1, 19) <= substr(?2, 1, 19)
+                    UNION ALL
+                    SELECT t.runtime_message_id, t.message_timeline_epoch, t.message_timeline_sequence, t.settled_at
+                      FROM role_turns t JOIN runtime_bindings b ON b.agent_run_id = t.agent_run_id
+                     WHERE b.id = ?1 AND t.binding_generation = b.generation
+                       AND t.runtime_message_id IS NOT NULL
+                       AND t.message_timeline_epoch IS NOT NULL AND t.message_timeline_sequence IS NOT NULL
+                       AND substr(t.settled_at, 1, 19) <= substr(?2, 1, 19)
+                )",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(
+                params![issued.runtime_binding_id, issued.issued_at.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .map_err(backend)?;
+        let mut held: Option<(String, i64, i64, Timestamp)> = None;
+        for row in rows {
+            let (message_id, epoch, sequence, at) = row.map_err(backend)?;
+            let at = read_timestamp(&at)?;
+            if at <= issued.issued_at && held.as_ref().is_none_or(|(_, _, _, latest)| at > *latest)
+            {
+                held = Some((message_id, epoch, sequence, at));
+            }
+        }
+        held.map(|(message_id, epoch, sequence, _)| {
             Ok(MessageProofAnchor {
                 message_id,
                 epoch: u64::try_from(epoch)

@@ -29,15 +29,15 @@
    Compiling tempfile v3.27.0
    Compiling icalendar v0.17.13
    Compiling reqwest v0.13.4
-   Compiling kontor-core v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-core)
-   Compiling kontor-runtime v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-runtime)
-   Compiling kontor-policy v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-policy)
-   Compiling kontor-context v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-context)
-   Compiling kontor-teams v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-teams)
-   Compiling kontor-scheduler v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-scheduler)
-   Compiling kontor-profiles v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-profiles)
-   Compiling kontor-calendar v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-calendar)
-   Compiling kontor-store v0.2.1 ($HOME/carasent/asma-modules/.worktrees/asma-8454/asma-rs-kontor/crates/kontor-store)
+   Compiling kontor-core v0.2.1 ([qualification-workspace]/crates/kontor-core)
+   Compiling kontor-runtime v0.2.1 ([qualification-workspace]/crates/kontor-runtime)
+   Compiling kontor-policy v0.2.1 ([qualification-workspace]/crates/kontor-policy)
+   Compiling kontor-context v0.2.1 ([qualification-workspace]/crates/kontor-context)
+   Compiling kontor-teams v0.2.1 ([qualification-workspace]/crates/kontor-teams)
+   Compiling kontor-scheduler v0.2.1 ([qualification-workspace]/crates/kontor-scheduler)
+   Compiling kontor-profiles v0.2.1 ([qualification-workspace]/crates/kontor-profiles)
+   Compiling kontor-calendar v0.2.1 ([qualification-workspace]/crates/kontor-calendar)
+   Compiling kontor-store v0.2.1 ([qualification-workspace]/crates/kontor-store)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 30.78s
      Running unittests src/lib.rs (target/debug/deps/kontor_store-faf5f54623ec0389)
 

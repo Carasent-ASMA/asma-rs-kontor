@@ -48,6 +48,7 @@ pub mod memory;
 mod memory_schema;
 pub mod open_questions;
 pub mod openapi;
+pub mod operational_gaps;
 pub mod planning_pair;
 pub mod pr_reviews;
 pub mod sessions;
@@ -364,6 +365,11 @@ pub fn router(state: ApiState) -> Router {
         )
         .route("/v1/openapi.json", get(openapi_document))
         .route("/v1/runs/{agent_run_id}", get(control::run_snapshot))
+        .route("/v1/runtime-bindings", get(control::binding_census))
+        .route(
+            "/v1/projects/{project_id}/tasks/{task_id}/operational-gaps:record",
+            post(operational_gaps::record_operational_gap),
+        )
         .route(
             "/v1/projects/{project_id}/tasks/{task_id}",
             get(control::task_snapshot),

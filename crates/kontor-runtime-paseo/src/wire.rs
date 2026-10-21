@@ -436,6 +436,21 @@ pub enum PaseoFeature {
     WorkspaceMultiplicity,
     /// A subscription can be narrowed to one agent's timeline.
     SelectiveAgentTimeline,
+    /// Message deliveries are journaled by caller id, so a retry of a known
+    /// id returns the recorded outcome instead of delivering twice.
+    ///
+    /// Added in Paseo 0.8.0. The adapter refuses to drive a daemon that does
+    /// not advertise it, because every delivery receipt this plane issues
+    /// rests on that journal.
+    AgentRequestReceipts,
+    /// Creation is keyed and has a durable lifecycle (`agent.create.request`
+    /// and `creation.subscribe.request`), so a lost acknowledgement returns
+    /// the same agent instead of licensing a second create.
+    ///
+    /// Added in Paseo 0.8.0 but not advertised by every 0.8 build; absence
+    /// keeps the legacy `create_agent_request` path this adapter already
+    /// proves.
+    CreationLifecycle,
     /// A project's display name can be changed through a supported operation.
     ///
     /// The supported baseline does **not** advertise this flag; the correlated
@@ -476,6 +491,8 @@ impl PaseoFeature {
             Self::ProjectRemove => "projectRemove",
             Self::WorkspaceMultiplicity => "workspaceMultiplicity",
             Self::SelectiveAgentTimeline => "selectiveAgentTimeline",
+            Self::AgentRequestReceipts => "agentRequestReceipts",
+            Self::CreationLifecycle => "creationLifecycle",
             Self::ProjectRename => "projectRename",
             Self::Compaction => "compaction",
             Self::ProviderOptionsApplied => "providerOptionsApplied",
@@ -490,6 +507,10 @@ pub const REQUIRED_FEATURES: &[PaseoFeature] = &[
     PaseoFeature::ProjectAdd,
     PaseoFeature::WorkspaceMultiplicity,
     PaseoFeature::SelectiveAgentTimeline,
+    // A delivery receipt is the only evidence that a message landed, and the
+    // whole of this adapter's exactly-once send rule rests on the daemon
+    // journaling the caller's id. A daemon without it cannot be driven.
+    PaseoFeature::AgentRequestReceipts,
 ];
 
 /// What the daemon says about itself, pushed as `status/server_info` right
@@ -573,6 +594,17 @@ impl PaseoServerInfo {
     #[must_use]
     pub fn applies_provider_options(&self) -> bool {
         self.supports(PaseoFeature::ProviderOptionsApplied)
+    }
+
+    /// Whether this daemon journals keyed creation with a durable lifecycle.
+    ///
+    /// When it does, a create can carry the launch key and a caller-supplied
+    /// agent id, and a lost acknowledgement is settled by
+    /// `creation.subscribe.request` instead of by a second create. When it does
+    /// not, the adapter keeps the legacy create path it already proves.
+    #[must_use]
+    pub fn supports_creation_lifecycle(&self) -> bool {
+        self.supports(PaseoFeature::CreationLifecycle)
     }
 
     /// Whether this exact daemon connection supports native project retitle.
@@ -1153,6 +1185,80 @@ impl PaseoAgentCreated {
             .then_some(self.agent.as_ref())
             .flatten()
     }
+}
+
+/// The durable progress of one keyed creation (`agent.create.request`).
+///
+/// The fields below are the closed part this adapter acts on. `phase` is
+/// Paseo's own word; `agentId` is present once the daemon claimed the identity;
+/// `outcomeUnknown` is the daemon stating that the effect may have landed even
+/// though it could not finish recording the outcome.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoCreationSnapshot {
+    /// The resource kind, `agent` for this adapter.
+    #[serde(default)]
+    pub kind: String,
+    /// The launch key this creation is journaled under.
+    #[serde(default, rename = "idempotencyKey")]
+    pub idempotency_key: String,
+    /// The creation's monotonic revision.
+    #[serde(default)]
+    pub revision: u64,
+    /// Paseo's phase word, e.g. `completed` or `failed`.
+    #[serde(default)]
+    pub phase: String,
+    /// The native agent the daemon claimed, once it has one.
+    #[serde(default, rename = "agentId")]
+    pub agent_id: Option<String>,
+    /// Whether the daemon could not prove the effect did or did not land.
+    #[serde(default, rename = "outcomeUnknown")]
+    pub outcome_unknown: bool,
+    /// The daemon's refusal, when the creation failed.
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+impl PaseoCreationSnapshot {
+    /// The wire word for a creation that finished.
+    pub const COMPLETED: &'static str = "completed";
+    /// The wire word for a creation that failed.
+    pub const FAILED: &'static str = "failed";
+
+    /// The claimed native id, when the creation completed successfully.
+    ///
+    /// A failed or unresolved creation is never an agent to adopt, even when
+    /// it names one: the daemon is saying it could not prove what happened.
+    #[must_use]
+    pub fn completed_agent_id(&self) -> Option<&str> {
+        (self.phase == Self::COMPLETED && !self.outcome_unknown)
+            .then_some(self.agent_id.as_deref())
+            .flatten()
+    }
+}
+
+/// The answer to `agent.create.request`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoAgentCreateAnswer {
+    /// The created agent, present when the creation completed.
+    #[serde(default)]
+    pub agent: Option<PaseoAgent>,
+    /// The daemon's refusal, when it refused.
+    #[serde(default)]
+    pub error: Option<String>,
+    /// The durable creation snapshot, when the daemon returned one.
+    #[serde(default)]
+    pub creation: Option<PaseoCreationSnapshot>,
+}
+
+/// The answer to `creation.subscribe.request`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaseoCreationSubscription {
+    /// The durable snapshot, or `None` when this key has no creation record.
+    #[serde(default)]
+    pub snapshot: Option<PaseoCreationSnapshot>,
+    /// The daemon's refusal, when it refused.
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 /// The answer to `send_agent_message_request`.
