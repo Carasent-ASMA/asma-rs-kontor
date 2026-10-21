@@ -57,3 +57,48 @@ fn an_earlier_issuance_with_fewer_fractional_digits_is_still_the_anchor() {
     assert_eq!(anchor.message_id, prior.message_id);
     assert_eq!((anchor.epoch, anchor.sequence), (1, 1));
 }
+
+#[test]
+fn an_equal_instant_does_not_displace_the_first_delivered_anchor() {
+    let home = support::state_root();
+    let store = SqliteStore::open(&home.path().join("kontor.db")).expect("the store opens");
+    let binding = "01a12b8f-7a7a-7f73-90c3-89d27add6793";
+    let first = issuance(
+        "01a12b8f-7a7b-7d80-8bf9-e1df35e9eb67",
+        binding,
+        "first",
+        "2026-10-11T15:23:05.724Z",
+    );
+    store
+        .record_message_issuance(&first)
+        .expect("the first issuance is recorded");
+    store
+        .record_message_delivery(&first.message_id, 1, 1)
+        .expect("the first issuance is delivered");
+    let second = issuance(
+        "01a12b8f-7a7b-7d80-8bf9-e1df35e9eb68",
+        binding,
+        "second",
+        "2026-10-11T15:23:05.724Z",
+    );
+    store
+        .record_message_issuance(&second)
+        .expect("the second issuance is recorded");
+    store
+        .record_message_delivery(&second.message_id, 1, 2)
+        .expect("the second issuance is delivered");
+    let later = issuance(
+        "01a12b8f-7a7c-7cf3-b542-f57559872a2b",
+        binding,
+        "later",
+        "2026-10-11T15:23:06Z",
+    );
+    let anchor = store
+        .message_delivery_proof_anchor(&later)
+        .expect("the anchor reads")
+        .expect("a delivered issuance is the anchor");
+    assert_eq!(
+        anchor.message_id, first.message_id,
+        "an equal instant must not displace the first delivered anchor"
+    );
+}
