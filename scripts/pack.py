@@ -40,8 +40,19 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path, PurePosixPath
 
+try:  # pack.py runs beside public_tree.py in the pack checkout
+    from public_tree import file_refusals
+except ImportError:  # imported as scripts.pack
+    from scripts.public_tree import file_refusals
+
+try:  # DEP-005: the full parser when the environment supplies it
+    import yaml as _pyyaml
+except ImportError:  # the standard-library subset below is the fallback
+    _pyyaml = None
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PACK_SKILLS = REPO_ROOT / "workflow" / "skills"
+PACK_RESOURCES_DIRNAME = ".pack"
 
 PLACEHOLDER_RE = re.compile(r"\{\{(.*?)\}\}", re.DOTALL)
 PROJECT_PLACEHOLDER_RE = re.compile(r"project\.[A-Za-z0-9_.]+")
@@ -52,28 +63,17 @@ LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 HEADING_RE = re.compile(r"^\s*(?:>\s*)*#{1,6}\s+(.*?)\s*#*\s*$")
 INLINE_CODE_RE = re.compile(r"`[^`]*`")
 LINE_ANCHOR_RE = re.compile(r"^L\d+(?:-L\d+)?$")
-HOME_PATH_RE = re.compile(
-    r"(?<![\w.-])(?:/Users|/home)/([A-Za-z0-9._-]+)"
-)
-ACCOUNT_ALIAS_RE = re.compile(
-    r"\b(?:claude|codex|cursor|opencode)-(?:personal|work)\b"
-)
 TASK_ID_RE = re.compile(r"[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*-[0-9]+\Z")
 PLAN_SECTION = "### 2.5 Dependency Graph and Waves"
 PLAN_START = "<!-- plan-graph:derived:start -->"
 PLAN_END = "<!-- plan-graph:derived:end -->"
 PLAN_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})([^\n]*)$")
-RUN_RECEIPT_PATH_RES = (
-    re.compile(r"/receipts/"),
-    re.compile(r"/[^/]*receipt[^/]*\.json$"),
-)
 
 BUDGETS = {
     "AGENTS.md": 8192,
     "CLAUDE.md": 4096,
     ".github/copilot-instructions.md": 4096,
 }
-SYNTHETIC_HOME_USERS = frozenset({"me", "operator", "someone", "test"})
 HOLD_REASONS = frozenset(
     {
         "waiting_on_dependency",
@@ -218,13 +218,19 @@ def _parse_scalar(value: str) -> object:
     value = value.strip()
     if not value:
         return ""
-    if len(value) >= 2 and value[0] == value[-1] and value[0] == "'":
-        return value[1:-1].replace("''", "'")
-    if len(value) >= 2 and value[0] == value[-1] and value[0] == '"':
+    if value[0] in "'\"":
+        if len(value) < 2 or value[-1] != value[0]:
+            raise YamlError(f"unclosed quoted scalar: {value}")
+        if value[0] == "'":
+            return value[1:-1].replace("''", "'")
         try:
             return json.loads(value)
         except json.JSONDecodeError as exc:
             raise YamlError(f"invalid double-quoted scalar: {exc}") from exc
+    if value.startswith("[") and not value.endswith("]"):
+        raise YamlError(f"unclosed flow sequence: {value}")
+    if value.startswith("{") and not value.endswith("}"):
+        raise YamlError(f"unclosed flow mapping: {value}")
     if value.startswith("[") and value.endswith("]"):
         return [_parse_scalar(part) for part in _split_flow(value[1:-1])]
     if value.startswith("{") and value.endswith("}"):
@@ -262,6 +268,8 @@ def _parse_map(
         key, found, rest = _split_key(content)
         if not found:
             raise YamlError(f"expected a mapping entry: {content}")
+        if key in result:
+            raise YamlError(f"duplicate mapping key: {key}")
         index += 1
         if rest in ("|", ">", "|-", ">-", "|+", ">+"):
             lines = []
@@ -276,6 +284,15 @@ def _parse_map(
             value = _parse_scalar(rest)
         elif index < len(tokens) and tokens[index][0] > indent:
             value, index = _parse_node(tokens, index, tokens[index][0])
+        elif (
+            index < len(tokens)
+            and tokens[index][0] == indent
+            and (
+                tokens[index][1] == "-"
+                or tokens[index][1].startswith("- ")
+            )
+        ):
+            value, index = _parse_seq(tokens, index, indent)
         else:
             value = None
         result[key] = value
@@ -316,12 +333,15 @@ def _parse_seq(
 def _parse_node(
     tokens: list[tuple[int, str]], index: int, indent: int
 ) -> tuple[object, int]:
-    if tokens[index][1] == "-" or tokens[index][1].startswith("- "):
+    content = tokens[index][1]
+    if content == "-" or content.startswith("- "):
         return _parse_seq(tokens, index, indent)
+    if not _looks_like_mapping(content):
+        return _parse_scalar(content), index + 1
     return _parse_map(tokens, index, indent)
 
 
-def load_yaml_text(text: str) -> object:
+def _load_yaml_subset(text: str) -> object:
     tokens = _tokens(text)
     if not tokens:
         return None
@@ -331,6 +351,15 @@ def load_yaml_text(text: str) -> object:
     return value
 
 
+def load_yaml_text(text: str) -> object:
+    if _pyyaml is not None:
+        try:
+            return _pyyaml.safe_load(text)
+        except _pyyaml.YAMLError as exc:
+            raise YamlError(str(exc)) from exc
+    return _load_yaml_subset(text)
+
+
 def load_yaml(path: Path) -> object:
     try:
         return load_yaml_text(path.read_text(encoding="utf-8"))
@@ -338,7 +367,17 @@ def load_yaml(path: Path) -> object:
         raise YamlError(f"{path}: {exc}") from exc
 
 
-def _frontmatter(text: str) -> dict[str, object]:
+def _metadata_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return str(value)
+
+
+def _frontmatter(text: str) -> dict[str, str]:
     match = SKILL_FRONTMATTER_RE.match(text)
     if match is None:
         return {}
@@ -350,7 +389,7 @@ def _frontmatter(text: str) -> dict[str, object]:
         return {}
     if not isinstance(value, dict):
         raise PackError("frontmatter must be a YAML mapping")
-    return value
+    return {str(key): _metadata_text(item) for key, item in value.items()}
 
 
 def _lookup(project: dict[str, object], dotted: str) -> object:
@@ -402,10 +441,10 @@ class Config:
 
 def _required_keys(
     folder: Path, data: dict[str, object]
-) -> tuple[tuple[str, ...], dict[str, tuple[str, ...]]]:
+) -> tuple[tuple[str, ...], tuple[str, ...], dict[str, tuple[str, ...]]]:
     schema_path = folder / "orchestration" / "orchestration.schema.yml"
     if not schema_path.is_file():
-        return ROOT_REQUIRED, NESTED_REQUIRED
+        return ROOT_REQUIRED, PROJECT_REQUIRED, NESTED_REQUIRED
     try:
         schema = load_yaml(schema_path)
     except YamlError as exc:
@@ -426,7 +465,11 @@ def _required_keys(
             values = spec.get("required") if isinstance(spec, dict) else None
             if isinstance(values, list):
                 nested_required[str(name)] = tuple(str(value) for value in values)
-    return tuple(str(value) for value in root), nested_required
+    return (
+        tuple(str(value) for value in root),
+        tuple(str(value) for value in project_required),
+        nested_required,
+    )
 
 
 def load_config(folder: Path) -> Config:
@@ -460,14 +503,14 @@ def load_config(folder: Path) -> Config:
     if not isinstance(data, dict):
         raise PackError(f"{orchestration}: expected a mapping")
 
-    root_required, nested_required = _required_keys(folder, data)
+    root_required, project_required, nested_required = _required_keys(folder, data)
     missing = [key for key in root_required if key not in data]
     if missing:
         raise PackError(f"{orchestration}: missing {', '.join(missing)}")
     project = data.get("project")
     if not isinstance(project, dict):
         raise PackError(f"{orchestration}: project must be a mapping")
-    missing = [key for key in PROJECT_REQUIRED if key not in project]
+    missing = [key for key in project_required if key not in project]
     if missing:
         raise PackError(
             f"{orchestration}: project is missing {', '.join(missing)}"
@@ -590,12 +633,177 @@ def _render_text(text: str, project: dict[str, object], label: str) -> str:
     return rendered
 
 
+def _is_rendered_skill_link(relative: Path, skill_names: set[str]) -> bool:
+    parts = relative.parts
+    return (
+        len(parts) >= 4
+        and parts[0] == "workflow"
+        and parts[1] == "skills"
+        and parts[2] in skill_names
+    )
+
+
+def _code_span_ranges(line: str) -> list[tuple[int, int]]:
+    ranges: list[tuple[int, int]] = []
+    index = 0
+    while index < len(line):
+        if line[index] != "`":
+            index += 1
+            continue
+        closing = line.find("`", index + 1)
+        if closing == -1:
+            break
+        ranges.append((index, closing + 1))
+        index = closing + 1
+    return ranges
+
+
+def _line_links(line: str) -> list[re.Match[str]]:
+    ranges = _code_span_ranges(line)
+    return [
+        match
+        for match in LINK_RE.finditer(line)
+        if not any(start <= match.start() < end for start, end in ranges)
+    ]
+
+
+def _iter_links(text: str):
+    in_fence = False
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith(("```", "~~~")):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        for match in _line_links(line):
+            yield match.group(1)
+
+
+def _rewrite_link(
+    match: re.Match[str],
+    *,
+    source_path: Path,
+    rendered_path: Path,
+    project_root: Path,
+    resources: dict[Path, Path],
+    skill_names: set[str],
+    label: str,
+) -> str | None:
+    target = match.group(1)
+    if target.startswith(
+        ("http://", "https://", "mailto:", "skill://", "#")
+    ) or "{{" in target:
+        return None
+    raw_path, separator, fragment = target.partition("#")
+    if not raw_path:
+        return None
+    source_target = (source_path.parent / raw_path).resolve()
+    try:
+        relative = source_target.relative_to(REPO_ROOT)
+    except ValueError as exc:
+        raise PackError(f"{label}: link leaves the pack: {target}") from exc
+    if _is_rendered_skill_link(relative, skill_names):
+        return None
+    if not source_target.is_file():
+        raise PackError(
+            f"{label}: linked pack file does not exist: {target}"
+        )
+    resources[relative] = source_target
+    destination = (
+        project_root / ".github" / "skills" / PACK_RESOURCES_DIRNAME / relative
+    )
+    new_path = Path(
+        os.path.relpath(destination, rendered_path.parent)
+    ).as_posix()
+    return new_path + (separator + fragment if separator else "")
+
+
+def _rewrite_links(
+    text: str,
+    *,
+    source_path: Path,
+    rendered_path: Path,
+    project_root: Path,
+    resources: dict[Path, Path],
+    skill_names: set[str],
+    label: str,
+) -> str:
+    output: list[str] = []
+    in_fence = False
+    for line in text.splitlines(keepends=True):
+        stripped = line.lstrip()
+        if stripped.startswith(("```", "~~~")):
+            in_fence = not in_fence
+            output.append(line)
+            continue
+        if in_fence:
+            output.append(line)
+            continue
+        matches = _line_links(line)
+        for match in reversed(matches):
+            replacement = _rewrite_link(
+                match,
+                source_path=source_path,
+                rendered_path=rendered_path,
+                project_root=project_root,
+                resources=resources,
+                skill_names=skill_names,
+                label=label,
+            )
+            if replacement is not None and replacement != match.group(1):
+                line = (
+                    line[: match.start(1)]
+                    + replacement
+                    + line[match.end(1) :]
+                )
+        output.append(line)
+    return "".join(output)
+
+
+def _collect_resources(resources: dict[Path, Path]) -> None:
+    queue = list(resources.items())
+    while queue:
+        relative, source = queue.pop()
+        if source.suffix.lower() not in (".md", ".markdown", ".txt"):
+            continue
+        try:
+            text = source.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for target in _iter_links(text):
+            if target.startswith(
+                ("http://", "https://", "mailto:", "skill://", "#")
+            ) or "{{" in target:
+                continue
+            raw_path = target.partition("#")[0]
+            if not raw_path:
+                continue
+            linked = (source.parent / raw_path).resolve()
+            try:
+                linked_relative = linked.relative_to(REPO_ROOT)
+            except ValueError as exc:
+                raise PackError(
+                    f"{relative}: linked pack file leaves the repository: "
+                    f"{target}"
+                ) from exc
+            if not linked.is_file():
+                raise PackError(
+                    f"{relative}: linked pack file does not exist: {target}"
+                )
+            if linked_relative not in resources:
+                resources[linked_relative] = linked
+                queue.append((linked_relative, linked))
+
+
 def _rendered_skills(
-    project: dict[str, object],
-) -> dict[str, dict[str, bytes]]:
+    project: dict[str, object], project_root: Path
+) -> tuple[dict[str, dict[str, bytes]], dict[Path, Path]]:
     skills = _skills(PACK_SKILLS)
     if not skills:
         raise PackError(f"pack skills are absent or empty: {PACK_SKILLS}")
+    skill_names = set(skills)
+    resources: dict[Path, Path] = {}
     rendered: dict[str, dict[str, bytes]] = {}
     for name, directory in skills.items():
         files: dict[str, bytes] = {}
@@ -609,11 +817,23 @@ def _rendered_skills(
             except UnicodeDecodeError:
                 files[relative] = data
                 continue
-            files[relative] = _render_text(
-                text, project, f"{name}/{relative}"
-            ).encode("utf-8")
+            label = f"{name}/{relative}"
+            text = _render_text(text, project, label)
+            text = _rewrite_links(
+                text,
+                source_path=path,
+                rendered_path=(
+                    project_root / ".github" / "skills" / name / relative
+                ),
+                project_root=project_root,
+                resources=resources,
+                skill_names=skill_names,
+                label=label,
+            )
+            files[relative] = text.encode("utf-8")
         rendered[name] = files
-    return rendered
+    _collect_resources(resources)
+    return rendered, resources
 
 
 def _sync_mirror(project_root: Path) -> list[str]:
@@ -649,12 +869,46 @@ def _existing_mirror(project_root: Path) -> Path | None:
     return None
 
 
+def _mirror_pack_resources(project_root: Path) -> list[str]:
+    source = project_root / ".github" / "skills" / PACK_RESOURCES_DIRNAME
+    destination = project_root / ".agents" / "skills" / PACK_RESOURCES_DIRNAME
+    if not source.is_dir():
+        if destination.is_symlink():
+            raise PackError(
+                f"refusing to replace symlinked mirror resources: {destination}"
+            )
+        if destination.exists():
+            if not destination.is_dir():
+                raise PackError(
+                    f"refusing to replace non-directory mirror resources: "
+                    f"{destination}"
+                )
+            shutil.rmtree(destination)
+        return []
+    if destination.is_symlink():
+        raise PackError(
+            f"refusing to replace symlinked mirror resources: {destination}"
+        )
+    if destination.exists():
+        if not destination.is_dir():
+            raise PackError(
+                f"refusing to replace non-directory mirror resources: "
+                f"{destination}"
+            )
+        shutil.rmtree(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source, destination, symlinks=True)
+    return [f"mirrored pack resources into {destination}"]
+
+
 def run_mirror(project_root: Path) -> list[str]:
     """Run the project's own mirror when present, otherwise the byte mirror."""
 
     existing = _existing_mirror(project_root)
     if existing is None:
-        return _sync_mirror(project_root)
+        messages = _sync_mirror(project_root)
+        messages.extend(_mirror_pack_resources(project_root))
+        return messages
     result = subprocess.run(
         [
             sys.executable,
@@ -671,11 +925,13 @@ def run_mirror(project_root: Path) -> list[str]:
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
         raise PackError(f"project mirror failed: {detail}")
-    return [f"project mirror passed: {existing.relative_to(project_root)}"]
+    messages = [f"project mirror passed: {existing.relative_to(project_root)}"]
+    messages.extend(_mirror_pack_resources(project_root))
+    return messages
 
 
 def render(project_root: Path, config: Config) -> list[str]:
-    rendered = _rendered_skills(config.project)
+    rendered, resources = _rendered_skills(config.project, project_root)
     for name, files in rendered.items():
         destination = project_root / ".github" / "skills" / name
         if destination.is_symlink():
@@ -688,10 +944,32 @@ def render(project_root: Path, config: Config) -> list[str]:
             path = destination / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(data)
+
+    pack_root = project_root / ".github" / "skills" / PACK_RESOURCES_DIRNAME
+    if pack_root.is_symlink():
+        raise PackError(
+            f"refusing to replace symlinked pack resources: {pack_root}"
+        )
+    if pack_root.exists() and not pack_root.is_dir():
+        raise PackError(
+            f"refusing to replace non-directory pack resources: {pack_root}"
+        )
+    if pack_root.exists():
+        shutil.rmtree(pack_root)
+    if resources:
+        for relative, source in sorted(resources.items()):
+            destination = pack_root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
+
     messages = [
         f"rendered {len(rendered)} skills into "
         f"{project_root / '.github' / 'skills'}"
     ]
+    if resources:
+        messages.append(
+            f"installed {len(resources)} pack resource(s) into {pack_root}"
+        )
     messages.extend(run_mirror(project_root))
     return messages
 
@@ -721,7 +999,10 @@ def _metadata_errors(path: Path, text: str) -> list[str]:
 
 def _rendered_placeholder_errors(project_root: Path) -> list[str]:
     errors: list[str] = []
-    for name, directory in _skills(project_root / ".github" / "skills").items():
+    pack_skills = set(_skills(PACK_SKILLS))
+    rendered = _skills(project_root / ".github" / "skills")
+    for name in sorted(pack_skills & rendered.keys()):
+        directory = rendered[name]
         for path in sorted(directory.rglob("*.md")):
             text = path.read_text(encoding="utf-8", errors="replace")
             if "{{" in text or "}}" in text:
@@ -764,6 +1045,16 @@ def _mirror_errors(project_root: Path) -> list[str]:
                 errors.append(
                     f"Claude native skill must point to canonical source: {name}"
                 )
+
+    canonical_pack = project_root / ".github" / "skills" / PACK_RESOURCES_DIRNAME
+    mirror_pack = project_root / ".agents" / "skills" / PACK_RESOURCES_DIRNAME
+    if canonical_pack.is_dir():
+        if not mirror_pack.is_dir():
+            errors.append("missing .agents mirror for rendered pack resources")
+        elif _resources(canonical_pack) != _resources(mirror_pack):
+            errors.append(
+                "rendered pack resources differ from the .agents mirror"
+            )
     return errors
 
 
@@ -890,9 +1181,10 @@ def _slug(text: str) -> str:
 
 def _anchors(path: Path, cache: dict[Path, set[str]]) -> set[str]:
     if path not in cache:
-        found: set[str] = set()
+        text = path.read_text(encoding="utf-8", errors="replace")
+        found = set(re.findall(r'<a id="([^"]+)"', text))
         in_fence = False
-        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        for line in text.splitlines():
             if line.lstrip().startswith(("```", "~~~")):
                 in_fence = not in_fence
                 continue
@@ -905,41 +1197,129 @@ def _anchors(path: Path, cache: dict[Path, set[str]]) -> set[str]:
     return cache[path]
 
 
+def _resource_roots(project: dict[str, object]) -> tuple[dict[str, str], list[str]]:
+    raw = project.get("resource_roots")
+    if not isinstance(raw, dict) or not raw:
+        return {}, ["project.resource_roots must be a nonempty mapping"]
+    roots: dict[str, str] = {}
+    errors: list[str] = []
+    for key, value in raw.items():
+        if (
+            not isinstance(key, str)
+            or not key
+            or not isinstance(value, str)
+            or not value
+        ):
+            errors.append(f"project.resource_roots has an invalid entry: {key!r}")
+        else:
+            roots[key] = value
+    return roots, errors
+
+
 def _documentation_roots(
-    project_root: Path, project: dict[str, object]
-) -> list[Path]:
-    values: list[str] = []
-    roots = project.get("documentation_roots")
-    if isinstance(roots, list):
-        values.extend(str(value) for value in roots)
+    project_root: Path,
+    project: dict[str, object],
+    overrides: dict[str, Path],
+) -> tuple[list[tuple[str, Path]], list[str], list[str]]:
+    errors: list[str] = []
+    notes: list[str] = []
+    roots, root_errors = _resource_roots(project)
+    errors.extend(root_errors)
+    forge = project.get("forge")
+    repositories = forge.get("repositories") if isinstance(forge, dict) else None
+    if isinstance(repositories, list):
+        listed = {str(repository) for repository in repositories}
+        for key, repository in roots.items():
+            if repository not in listed:
+                errors.append(
+                    f"project.resource_roots.{key} does not name a "
+                    f"project.forge.repositories entry: {repository}"
+                )
+    for key in overrides:
+        if key not in roots:
+            errors.append(f"undeclared resource root override: {key}")
+    if not overrides and len(roots) == 1:
+        overrides = {next(iter(roots)): project_root}
+    for key in sorted(roots):
+        if key not in overrides:
+            notes.append(
+                f"resource root {key} was not checked; "
+                f"pass --resource-root {key}=PATH"
+            )
+    for key, path in overrides.items():
+        if key in roots and not path.is_dir():
+            errors.append(f"resource root {key} is not a directory: {path}")
+
+    entries: list[tuple[str, str, bool]] = []
+    documentation = project.get("documentation_roots")
+    if isinstance(documentation, list):
+        entries.extend(
+            (str(value), "documentation_roots", True) for value in documentation
+        )
+    else:
+        errors.append("project.documentation_roots must be a sequence")
     authorities = project.get("decision_authorities")
     if isinstance(authorities, dict) and authorities.get("decision_records_root"):
-        values.append(str(authorities["decision_records_root"]))
+        entries.append(
+            (str(authorities["decision_records_root"]), "decision_records_root", False)
+        )
     for key in ("gap_ledger", "glossary"):
         if project.get(key):
-            values.append(str(project[key]))
-    found: list[Path] = []
-    for value in values:
+            entries.append((str(project[key]), key, False))
+
+    found: list[tuple[str, Path]] = []
+    for value, label, required in entries:
         pure = PurePosixPath(value)
-        if pure.is_absolute() or ".." in pure.parts:
+        if not value or pure.is_absolute() or ".." in pure.parts:
+            errors.append(f"{label} path escapes the project: {value!r}")
             continue
         parts = pure.parts
-        path = project_root.joinpath(*parts[1:]) if len(parts) > 1 else project_root / value
-        if path.is_file() or path.is_dir():
-            found.append(path)
-    result: list[Path] = []
-    for path in found:
-        if path in result:
+        if len(parts) < 2:
+            errors.append(
+                f"{label} path must start with a declared resource root: {value}"
+            )
             continue
-        if any(other != path and other.is_dir() and path.is_relative_to(other) for other in found):
+        if parts[0] not in roots:
+            errors.append(
+                f"{label} path uses an undeclared resource root "
+                f"{parts[0]!r}: {value}"
+            )
             continue
-        result.append(path)
-    return result
+        if parts[0] not in overrides:
+            if required:
+                errors.append(
+                    f"{label} path cannot be checked without "
+                    f"--resource-root {parts[0]}=PATH: {value}"
+                )
+            continue
+        path = overrides[parts[0]].joinpath(*parts[1:])
+        if not path.exists():
+            if required:
+                errors.append(f"{label} path does not exist: {value}")
+            continue
+        if required and path.is_file():
+            errors.append(f"{label} path is not a directory: {value}")
+            continue
+        found.append((parts[0], path))
+
+    result: list[tuple[str, Path]] = []
+    for key, path in found:
+        if any(item[1] == path for item in result):
+            continue
+        if any(
+            other != path and other.is_dir() and path.is_relative_to(other)
+            for _, other in found
+        ):
+            continue
+        result.append((key, path))
+    return result, errors, notes
 
 
-def _link_files(project_root: Path, project: dict[str, object]) -> list[Path]:
+def _link_files(
+    project_root: Path, roots: list[tuple[str, Path]]
+) -> list[Path]:
     files: list[Path] = []
-    for root in _documentation_roots(project_root, project):
+    for _, root in roots:
         if root.is_file() and root.suffix == ".md":
             files.append(root)
         elif root.is_dir():
@@ -952,16 +1332,12 @@ def _link_files(project_root: Path, project: dict[str, object]) -> list[Path]:
         path = project_root / relative
         if path.is_file():
             files.append(path)
-    return sorted({path.resolve() for path in files})
-
-
-def _documentation_files(project_root: Path, project: dict[str, object]) -> list[Path]:
-    files = _link_files(project_root, project)
-    for root in (
-        project_root / ".github" / "skills",
-        project_root / ".github" / "instructions",
-        project_root / ".github" / "prompts",
+    for relative in (
+        ".github/skills",
+        ".github/instructions",
+        ".github/prompts",
     ):
+        root = project_root / relative
         if root.is_dir():
             files.extend(
                 path
@@ -971,9 +1347,28 @@ def _documentation_files(project_root: Path, project: dict[str, object]) -> list
     return sorted({path.resolve() for path in files})
 
 
-def _link_errors(files: list[Path], project_root: Path) -> list[str]:
+def _link_prefixes(
+    roots: dict[str, str], overrides: dict[str, Path]
+) -> dict[str, Path]:
+    prefixes: dict[str, Path] = {}
+    for key, repository in roots.items():
+        if key not in overrides:
+            continue
+        prefixes[key] = overrides[key]
+        tail = repository.rsplit("/", 1)[-1]
+        if tail:
+            prefixes.setdefault(tail, overrides[key])
+    return prefixes
+
+
+def _link_errors(
+    files: list[Path],
+    project_root: Path,
+    prefixes: dict[str, Path],
+) -> list[str]:
     errors: list[str] = []
     cache: dict[Path, set[str]] = {}
+    skill_tree = (project_root / ".github" / "skills").resolve()
     for path in files:
         in_fence = False
         try:
@@ -997,11 +1392,29 @@ def _link_errors(files: list[Path], project_root: Path) -> list[str]:
                 if not raw_path:
                     resolved = path
                 else:
-                    resolved = (path.parent / raw_path).resolve()
+                    first, separator, rest = raw_path.partition("/")
+                    if separator and first in prefixes:
+                        resolved = (
+                            prefixes[first] / rest
+                            if rest
+                            else prefixes[first]
+                        ).resolve()
+                    else:
+                        resolved = (path.parent / raw_path).resolve()
                 try:
                     relative = path.relative_to(project_root)
                 except ValueError:
                     relative = path
+                under_skill_tree = skill_tree in path.parents
+                if under_skill_tree and (
+                    resolved != skill_tree
+                    and skill_tree not in resolved.parents
+                ):
+                    errors.append(
+                        f"{relative}:{number}: relative link leaves the "
+                        f"skill tree: {target}"
+                    )
+                    continue
                 if not resolved.exists():
                     errors.append(
                         f"{relative}:{number}: broken link: {target}"
@@ -1026,58 +1439,102 @@ def _router_candidates(root: Path) -> list[Path]:
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         if (
-            "| Document | Summary | Status | When to load |" in text
+            re.search(
+                r"(?im)^\|\s*Document\s*\|\s*Summary\s*\|\s*Status\s*\|"
+                r"\s*When to load\s*\|",
+                text,
+            )
             or re.search(r"(?im)^#\s+.*documentation index", text)
         ):
             candidates.append(path)
     return candidates
 
 
+def _router_links(router: Path) -> dict[Path, int]:
+    counts: dict[Path, int] = {}
+    for line in router.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip().startswith("|"):
+            continue
+        for match in LINK_RE.finditer(INLINE_CODE_RE.sub("", line)):
+            raw = match.group(1).partition("#")[0]
+            if not raw or raw.startswith(
+                ("http://", "https://", "mailto:", "skill://")
+            ):
+                continue
+            target = (router.parent / raw).resolve()
+            counts[target] = counts.get(target, 0) + 1
+    return counts
+
+
 def _routed_once_errors(
-    project_root: Path, project: dict[str, object]
+    project_root: Path, roots: list[tuple[str, Path]]
 ) -> list[str]:
     errors: list[str] = []
-    for root in _documentation_roots(project_root, project):
+    for key, root in roots:
         if not root.is_dir():
             continue
         documents = [
-            path
+            path.resolve()
             for path in sorted(root.rglob("*.md"))
             if "node_modules" not in path.parts
         ]
         if not documents:
             continue
-        candidates = _router_candidates(root)
-        if not candidates:
+        routers = [path.resolve() for path in _router_candidates(root)]
+        if not routers:
             errors.append(
-                f"{root.relative_to(project_root)}: documentation index/router "
-                "missing; every document must be routed once"
+                f"{key}: documentation index/router missing; every document "
+                "must be routed once"
             )
             continue
-        if len(candidates) > 1:
-            names = ", ".join(
-                str(path.relative_to(project_root)) for path in candidates
-            )
-            errors.append(f"more than one documentation router: {names}")
+        by_directory: dict[Path, Path] = {}
+        ambiguous = False
+        for router in routers:
+            if router.parent in by_directory:
+                errors.append(
+                    "more than one documentation router in "
+                    f"{router.parent.relative_to(project_root)}: "
+                    f"{by_directory[router.parent].name}, {router.name}"
+                )
+                ambiguous = True
+            else:
+                by_directory[router.parent] = router
+        if ambiguous:
             continue
-        router = candidates[0]
-        targets: list[Path] = []
-        for line in router.read_text(encoding="utf-8", errors="replace").splitlines():
-            if not line.strip().startswith("|"):
-                continue
-            for match in LINK_RE.finditer(INLINE_CODE_RE.sub("", line)):
-                raw = match.group(1).partition("#")[0]
-                if not raw or raw.startswith(("http://", "https://", "mailto:", "skill://")):
-                    continue
-                targets.append((router.parent / raw).resolve())
-        routed = {target: targets.count(target) for target in set(targets)}
+        root_router = by_directory.get(root.resolve())
+        if root_router is None:
+            errors.append(
+                f"{key}: documentation index/router missing at the root; "
+                "every document must be routed once"
+            )
+            continue
+        links = {router: _router_links(router) for router in routers}
         for document in documents:
-            if document.resolve() == router.resolve():
+            if document == root_router:
                 continue
-            count = routed.get(document.resolve(), 0)
-            relative = document.relative_to(project_root)
+            candidates = [
+                router
+                for router in routers
+                if router != document
+                and (
+                    router.parent == document.parent
+                    or router.parent in document.parent.parents
+                )
+            ]
+            if not candidates:
+                errors.append(
+                    "document has no owning index: "
+                    f"{key}/{document.relative_to(root).as_posix()}"
+                )
+                continue
+            owner = max(candidates, key=lambda router: len(router.parent.parts))
+            count = links[owner].get(document, 0)
+            relative = f"{key}/{document.relative_to(root).as_posix()}"
             if count == 0:
-                errors.append(f"unrouted document: {relative}")
+                errors.append(
+                    f"unrouted document: {relative} "
+                    f"(owning index {key}/{owner.relative_to(root).as_posix()})"
+                )
             elif count > 1:
                 errors.append(f"routed more than once: {relative} ({count})")
     return errors
@@ -1104,20 +1561,32 @@ def _parse_hold(text: str) -> dict[str, object] | None:
     return parsed["hold"]
 
 
-def _hold_errors(path: Path, text: str, today: date) -> list[str]:
+def _hold_errors(
+    project_root: Path, path: Path, text: str, today: date
+) -> list[str]:
+    try:
+        relative: Path | str = path.relative_to(project_root)
+    except ValueError:
+        relative = path
     try:
         metadata = _frontmatter(text)
     except PackError as exc:
-        return [f"{path}: {exc}"]
+        status_line = re.search(r"(?m)^status:[ \t]*(.*)$", text)
+        status = (
+            status_line.group(1).strip().strip("'\"").casefold()
+            if status_line
+            else ""
+        )
+        return [f"{relative}: {exc}"] if status == "on hold" else []
     status = str(metadata.get("status", "")).strip().strip("'\"").casefold()
     if status != "on hold":
         return []
     try:
         hold = _parse_hold(text)
     except PackError as exc:
-        return [f"{path}: {exc}"]
+        return [f"{relative}: {exc}"]
     if hold is None:
-        return [f"{path}: status On Hold has no hold: block"]
+        return [f"{relative}: status On Hold has no hold: block"]
     errors = []
     reason = str(hold.get("reason", "")).strip()
     owner = str(hold.get("owner", "")).strip()
@@ -1125,7 +1594,7 @@ def _hold_errors(path: Path, text: str, today: date) -> list[str]:
     review_by = str(hold.get("review_by", "")).strip()
     if reason not in HOLD_REASONS:
         errors.append(
-            f"{path}: hold reason {reason!r} is not one of "
+            f"{relative}: hold reason {reason!r} is not one of "
             + ", ".join(sorted(HOLD_REASONS))
         )
     for name, value in (
@@ -1134,20 +1603,20 @@ def _hold_errors(path: Path, text: str, today: date) -> list[str]:
         ("review_by", review_by),
     ):
         if not value:
-            errors.append(f"{path}: hold field {name} is required")
+            errors.append(f"{relative}: hold field {name} is required")
     if review_by:
         try:
             reviewed = date.fromisoformat(review_by)
         except ValueError:
-            errors.append(f"{path}: hold review_by is not an ISO date: {review_by}")
+            errors.append(f"{relative}: hold review_by is not an ISO date: {review_by}")
         else:
             if reviewed < today:
                 errors.append(
-                    f"{path}: expired hold: review_by {review_by} has passed"
+                    f"{relative}: expired hold: review_by {review_by} has passed"
                 )
             elif reviewed > today + timedelta(days=30):
                 errors.append(
-                    f"{path}: hold review_by {review_by} is more than 30 days ahead"
+                    f"{relative}: hold review_by {review_by} is more than 30 days ahead"
                 )
     return errors
 
@@ -1527,10 +1996,10 @@ def _is_plan(path: Path, text: str) -> bool:
 
 
 def _plan_files(
-    project_root: Path, project: dict[str, object]
+    project_root: Path, roots: list[tuple[str, Path]]
 ) -> list[Path]:
     files: set[Path] = set()
-    for root in _documentation_roots(project_root, project):
+    for _, root in roots:
         if root.is_dir():
             files.update(
                 path
@@ -1547,11 +2016,6 @@ def _plan_files(
 def _validator_path() -> Path | None:
     configured = os.environ.get("ASMA_PLAN_GRAPH_VALIDATOR")
     if not configured:
-        if os.environ.get("CI"):
-            raise PackError(
-                "ASMA_PLAN_GRAPH_VALIDATOR must be set in CI for the "
-                "conditional plan-graph check"
-            )
         return None
     path = Path(configured).expanduser()
     if not path.is_file():
@@ -1562,18 +2026,53 @@ def _validator_path() -> Path | None:
     return path
 
 
+def _changed_plan_paths(project_root: Path, base: str | None) -> set[Path]:
+    if not base:
+        raise PackError("--plan-graphs changed requires --base REV")
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(project_root),
+            "diff",
+            "--name-only",
+            "--diff-filter=ACMR",
+            "-z",
+            base,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise PackError(f"cannot read changed plans from {base}: {detail}")
+    return {
+        (project_root / relative).resolve()
+        for relative in result.stdout.split("\0")
+        if relative
+    }
+
+
 def _plan_graph_errors(
-    project_root: Path, config: Config
+    project_root: Path,
+    config: Config,
+    roots: list[Path],
+    mode: str = "all",
+    base: str | None = None,
 ) -> list[str]:
     errors: list[str] = []
     validator = _validator_path()
-    for path in _plan_files(project_root, config.project):
+    changed = _changed_plan_paths(project_root, base) if mode == "changed" else set()
+    for path in _plan_files(project_root, roots):
         text = path.read_text(encoding="utf-8", errors="replace")
         if not _is_plan(path, text):
             continue
         relative = path.relative_to(project_root)
-        if not _has_graph_marker(text):
-            if not _is_historical(text):
+        marker = _has_graph_marker(text)
+        required = mode == "all" or (mode == "changed" and path.resolve() in changed)
+        if not marker:
+            if required and not _is_historical(text):
                 errors.append(
                     f"{relative}: current plan requires a canonical "
                     "plan-graph block in §2.5"
@@ -1584,9 +2083,12 @@ def _plan_graph_errors(
         except PackError as exc:
             errors.append(f"{relative}: {exc}")
             continue
-        if validator is not None and _has_graph_marker(text):
+        if validator is not None:
+            child_env = os.environ.copy()
+            child_env["KONTOR_CONFIG_DIR"] = str(config.folder)
             result = subprocess.run(
                 [sys.executable, str(validator), "validate", str(path)],
+                env=child_env,
                 capture_output=True,
                 text=True,
                 check=False,
@@ -1604,24 +2106,14 @@ def _public_example_errors(files: list[Path], project_root: Path) -> list[str]:
     for path in files:
         try:
             relative = path.relative_to(project_root).as_posix()
-            text = path.read_text(encoding="utf-8", errors="replace")
+        except ValueError:
+            relative = path.as_posix()
+        try:
+            content = path.read_bytes()
         except OSError:
             continue
-        if relative.startswith(("docs/evidence/", "evidence/", "_docs/reports/evidence/")):
-            if any(pattern.search("/" + relative) for pattern in RUN_RECEIPT_PATH_RES):
-                errors.append(f"{relative}: a run receipt belongs outside the public tree")
-                continue
-        for match in HOME_PATH_RE.finditer(text):
-            if match.group(1) not in SYNTHETIC_HOME_USERS:
-                errors.append(
-                    f"{relative}:{text.count(chr(10), 0, match.start()) + 1}: "
-                    "a home directory path; write $HOME or a synthetic user"
-                )
-        for match in ACCOUNT_ALIAS_RE.finditer(text):
-            errors.append(
-                f"{relative}:{text.count(chr(10), 0, match.start()) + 1}: "
-                "a provider-account alias; use a neutral alias"
-            )
+        for refusal in file_refusals(relative, content):
+            errors.append(refusal.render())
     return errors
 
 
@@ -1652,24 +2144,59 @@ def _placeholder_errors(config: Config) -> list[str]:
     return errors
 
 
-def check(project_root: Path, config: Config, today: date | None = None) -> list[str]:
+def check(
+    project_root: Path,
+    config: Config,
+    today: date | None = None,
+    *,
+    resource_roots: dict[str, Path] | None = None,
+    plan_graphs: str = "all",
+    plan_base: str | None = None,
+    links: bool = True,
+    routed_once: bool = True,
+    public_lint: bool = True,
+    notes: list[str] | None = None,
+) -> list[str]:
     today = today or date.today()
     errors = _placeholder_errors(config)
     errors.extend(_rendered_placeholder_errors(project_root))
     errors.extend(_mirror_errors(project_root))
     errors.extend(_budget_errors(project_root))
     errors.extend(_routing_errors(project_root))
-    documentation = _documentation_files(project_root, config.project)
-    errors.extend(_link_errors(_link_files(project_root, config.project), project_root))
-    errors.extend(_routed_once_errors(project_root, config.project))
-    plan_files = _plan_files(project_root, config.project)
+    declared, _ = _resource_roots(config.project)
+    effective = dict(resource_roots or {})
+    if not effective and len(declared) == 1:
+        effective = {next(iter(declared)): project_root}
+    roots, root_errors, root_notes = _documentation_roots(
+        project_root, config.project, effective
+    )
+    errors.extend(root_errors)
+    if notes is not None:
+        notes.extend(root_notes)
+    files = _link_files(project_root, roots)
+    if links:
+        errors.extend(
+            _link_errors(
+                files, project_root, _link_prefixes(declared, effective)
+            )
+        )
+    if routed_once:
+        errors.extend(_routed_once_errors(project_root, roots))
+    plan_files = _plan_files(project_root, roots)
     for path in plan_files:
-        errors.extend(_hold_errors(path, path.read_text(encoding="utf-8", errors="replace"), today))
-    errors.extend(_plan_graph_errors(project_root, config))
-    lint_files = sorted({*documentation, *plan_files})
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if _is_plan(path, text):
+            errors.extend(_hold_errors(project_root, path, text, today))
+    errors.extend(
+        _plan_graph_errors(project_root, config, roots, plan_graphs, plan_base)
+    )
+    lint_files = sorted({*files, *plan_files})
     for name, directory in _skills(project_root / ".github" / "skills").items():
         lint_files.extend(sorted(directory.rglob("*.md")))
-    errors.extend(_public_example_errors(sorted(set(lint_files)), project_root))
+    if public_lint:
+        errors.extend(
+            _public_example_errors(sorted(set(lint_files)), project_root)
+        )
     return errors
 
 
@@ -1744,6 +2271,24 @@ def install_adapters(
     return [f"installed {len(actions)} adapter link(s) into {target_root}"]
 
 
+def _parse_resource_root_overrides(values: list[str]) -> dict[str, Path]:
+    overrides: dict[str, Path] = {}
+    for value in values:
+        key, separator, raw = value.partition("=")
+        if not separator or not key or not raw:
+            raise PackError(f"--resource-root must be KEY=PATH: {value}")
+        if key in overrides:
+            raise PackError(f"duplicate --resource-root for {key}")
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = Path.cwd() / path
+        path = path.resolve()
+        if not path.is_dir():
+            raise PackError(f"resource root {key} is not a directory: {path}")
+        overrides[key] = path
+    return overrides
+
+
 def _config_from_args(args: argparse.Namespace) -> Config:
     cwd = Path.cwd()
     return load_config(resolve_config(getattr(args, "config_dir", None), cwd))
@@ -1759,9 +2304,26 @@ def _command_render(args: argparse.Namespace) -> int:
 
 
 def _command_check(args: argparse.Namespace) -> int:
+    if args.base and args.plan_graphs != "changed":
+        raise PackError("--base requires --plan-graphs changed")
+    if args.plan_graphs == "changed" and not args.base:
+        raise PackError("--plan-graphs changed requires --base REV")
     config = _config_from_args(args)
     project_root = _resolve_project(args.project, Path.cwd())
-    errors = check(project_root, config)
+    notes: list[str] = []
+    errors = check(
+        project_root,
+        config,
+        resource_roots=_parse_resource_root_overrides(args.resource_root),
+        plan_graphs=args.plan_graphs,
+        plan_base=args.base,
+        links=not args.no_links,
+        routed_once=not args.no_routed_once,
+        public_lint=not args.no_public_lint,
+        notes=notes,
+    )
+    for note in notes:
+        print(f"[NOTE] {note}")
     if errors:
         for error in errors:
             print(f"[ERROR] {error}", file=sys.stderr)
@@ -1851,6 +2413,37 @@ def build_parser() -> argparse.ArgumentParser:
     check_parser = commands.add_parser("check", help="check one project")
     _add_config(check_parser)
     check_parser.add_argument("project")
+    check_parser.add_argument(
+        "--resource-root",
+        action="append",
+        default=[],
+        metavar="KEY=PATH",
+        help="explicit path for one declared project.resource_roots key",
+    )
+    check_parser.add_argument(
+        "--plan-graphs",
+        choices=("all", "marker", "changed"),
+        default="all",
+        help="require graphs on all current plans, marker plans only, or changed plans",
+    )
+    check_parser.add_argument(
+        "--base", help="base revision for --plan-graphs changed"
+    )
+    check_parser.add_argument(
+        "--no-links",
+        action="store_true",
+        help="disable link and anchor checking for a legacy documentation tree",
+    )
+    check_parser.add_argument(
+        "--no-routed-once",
+        action="store_true",
+        help="disable routed-once checking for a legacy documentation tree",
+    )
+    check_parser.add_argument(
+        "--no-public-lint",
+        action="store_true",
+        help="disable the public-example lint for a private documentation tree",
+    )
     check_parser.set_defaults(handler=_command_check)
 
     install_parser = commands.add_parser(

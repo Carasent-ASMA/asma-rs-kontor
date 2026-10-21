@@ -23,6 +23,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PACK = REPO_ROOT / "scripts" / "pack.py"
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+import pack  # noqa: E402
 EXAMPLES = REPO_ROOT / "config" / "examples"
 ASMA_FIXTURE = REPO_ROOT / "tests" / "fixtures" / "config" / "asma-orchestration.yml"
 PUBLIC_DOCS = ("WORKFLOW.md", "GLOSSARY.md", "PRINCIPLES.md")
@@ -36,6 +38,33 @@ def clean_env(**overrides: str) -> dict[str, str]:
     }
     env.update(overrides)
     return env
+
+
+class YamlReaderTests(unittest.TestCase):
+    def test_an_unindented_sequence_under_a_key_is_read(self) -> None:
+        data = pack.load_yaml_text(
+            "seats:\n"
+            "- role_slot_id: lsa\n"
+            "  role_code: LSA\n"
+            "- role_slot_id: tpm\n"
+            "  role_code: TPM\n"
+        )
+        self.assertEqual(
+            [seat["role_slot_id"] for seat in data["seats"]], ["lsa", "tpm"]
+        )
+        self.assertEqual(data["seats"][0]["role_code"], "LSA")
+
+    def test_an_indented_flow_sequence_under_a_key_is_read(self) -> None:
+        data = pack.load_yaml_text("tags:\n  [one, two]\n")
+        self.assertEqual(data["tags"], ["one", "two"])
+
+    def test_an_unclosed_flow_sequence_is_refused(self) -> None:
+        with self.assertRaises(pack.YamlError):
+            pack.load_yaml_text("owner: [Platform Owner\n")
+
+    def test_an_unclosed_quoted_scalar_is_refused(self) -> None:
+        with self.assertRaises(pack.YamlError):
+            pack.load_yaml_text("owner: 'Platform Owner\n")
 
 
 class PackCase(unittest.TestCase):
@@ -198,6 +227,33 @@ class RenderTests(PackCase):
             .read_bytes(),
             skill.read_bytes(),
         )
+        for resource in (
+            "docs/WORKFLOW.md",
+            "docs/GLOSSARY.md",
+            "workflow/templates/plan.md",
+            "config/examples/paseo-supervision.yml",
+        ):
+            self.assertTrue(
+                (project / ".github" / "skills" / ".pack" / resource).is_file(),
+                resource,
+            )
+
+    def test_render_accepts_the_asma_team_yaml_shapes(self) -> None:
+        config = self.config()
+        (config / "packs" / "team.yml").write_text(
+            "seats:\n"
+            "- role_slot_id: lsa\n"
+            "  role_code: LSA\n"
+            "tags:\n"
+            "  [one, two]\n",
+            encoding="utf-8",
+        )
+        project = self.tmp / "project"
+        project.mkdir()
+        result = self.run_pack(
+            "--config-dir", str(config), "render", str(project)
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_render_into_the_asma_fixture_succeeds(self) -> None:
         config = self.config(asma=True)
@@ -253,6 +309,29 @@ class RenderTests(PackCase):
         self.assertNotEqual(checked.returncode, 0)
         self.assertIn("project.cli.command", checked.stderr)
 
+    def test_an_unclosed_flow_sequence_is_refused(self) -> None:
+        config = self.config()
+        orchestration = config / "orchestration" / "orchestration.yml"
+        text = orchestration.read_text(encoding="utf-8")
+        orchestration.write_text(
+            text.replace(
+                "  owner: Platform Owner\n", "  owner: [Platform Owner\n"
+            ),
+            encoding="utf-8",
+        )
+        project = self.tmp / "project"
+        project.mkdir()
+        render = self.run_pack(
+            "--config-dir", str(config), "render", str(project)
+        )
+        self.assertNotEqual(render.returncode, 0)
+        self.assertIn("unclosed flow sequence", render.stderr)
+        checked = self.run_pack(
+            "--config-dir", str(config), "check", str(project)
+        )
+        self.assertNotEqual(checked.returncode, 0)
+        self.assertIn("unclosed flow sequence", checked.stderr)
+
     def test_rendering_is_deterministic(self) -> None:
         config = self.config()
         project = self.tmp / "project"
@@ -299,12 +378,20 @@ class RenderTests(PackCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(marker.is_file())
         self.assertIn("project mirror passed", result.stdout)
-        self.assertFalse((project / ".agents").exists())
+        self.assertTrue(
+            (project / ".agents" / "skills" / ".pack").is_dir()
+        )
+        self.assertFalse(
+            (project / ".agents" / "skills" / "epic-orchestration").exists()
+        )
 
 
 class ConfigSelectionTests(PackCase):
     def test_an_absent_selection_is_refused_by_name(self) -> None:
-        result = self.run_pack("check", str(self.tmp))
+        caller = self.tmp / "caller"
+        shutil.copytree(EXAMPLES, caller)
+        (caller / "project" / "docs").mkdir(parents=True)
+        result = self.run_pack("check", "project", cwd=caller)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("--config-dir", result.stderr)
         self.assertIn("KONTOR_CONFIG_DIR", result.stderr)
@@ -359,7 +446,7 @@ class CheckTests(PackCase):
     def test_check_passes_on_an_empty_project(self) -> None:
         config = self.config()
         project = self.tmp / "project"
-        project.mkdir()
+        (project / "docs").mkdir(parents=True)
         result = self.run_pack(
             "--config-dir", str(config), "check", str(project)
         )
@@ -372,6 +459,25 @@ class CheckTests(PackCase):
             "--config-dir", str(config), "check", str(project)
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_schema_project_required_drives_missing_keys(self) -> None:
+        config = self.config()
+        schema = config / "orchestration" / "orchestration.schema.yml"
+        text = schema.read_text(encoding="utf-8")
+        schema.write_text(
+            text.replace(
+                "project:\n  required:\n    - key\n",
+                "project:\n  required:\n    - custom_required\n    - key\n",
+            ),
+            encoding="utf-8",
+        )
+        project = self.tmp / "project"
+        (project / "docs").mkdir(parents=True)
+        result = self.run_pack(
+            "--config-dir", str(config), "check", str(project)
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("custom_required", result.stderr)
 
     def test_a_missing_parameter_fails_check(self) -> None:
         config = self.config()
@@ -387,6 +493,28 @@ class CheckTests(PackCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("owner", result.stderr)
+
+    def test_a_link_to_an_explicit_html_anchor_passes(self) -> None:
+        config = self.config()
+        project = self.project(config)
+        self.write_doc(
+            project,
+            "docs/guide.md",
+            '# Guide\n\n<a id="manual-anchor"></a>\n',
+        )
+        self.write_doc(
+            project,
+            "docs/other.md",
+            "# Other\n\n[guide](guide.md#manual-anchor)\n",
+        )
+        self.router(
+            project,
+            [("Guide", "guide.md"), ("Other", "other.md")],
+        )
+        result = self.run_pack(
+            "--config-dir", str(config), "check", str(project)
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_a_broken_anchor_fails_check(self) -> None:
         config = self.config()
@@ -414,6 +542,466 @@ class CheckTests(PackCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("unrouted document", result.stderr)
         self.assertIn("extra.md", result.stderr)
+
+    def test_rendered_skill_links_are_checked(self) -> None:
+        config = self.config()
+        project = self.project(config)
+        for base in (".github", ".agents"):
+            path = project / base / "skills" / "epic-orchestration" / "SKILL.md"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + "\n[missing](missing.md)\n",
+                encoding="utf-8",
+            )
+        result = self.run_pack(
+            "--config-dir", str(config), "check", str(project)
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("broken link", result.stderr)
+        self.assertIn("missing.md", result.stderr)
+
+    def test_an_invalid_documentation_path_does_not_disable_checks(self) -> None:
+        config = self.config()
+        orchestration = config / "orchestration" / "orchestration.yml"
+        text = orchestration.read_text(encoding="utf-8")
+        orchestration.write_text(
+            text.replace(
+                "  documentation_roots: [project/docs]",
+                "  documentation_roots: [project/docs, ../outside]",
+            ),
+            encoding="utf-8",
+        )
+        project = self.project(config)
+        self.write_doc(project, "docs/extra.md", "# Extra\n")
+        result = self.run_pack(
+            "--config-dir", str(config), "check", str(project)
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("escapes the project", result.stderr)
+        self.assertIn("unrouted document", result.stderr)
+        self.assertIn("extra.md", result.stderr)
+
+    def test_an_undeclared_resource_root_is_refused(self) -> None:
+        config = self.config()
+        orchestration = config / "orchestration" / "orchestration.yml"
+        text = orchestration.read_text(encoding="utf-8")
+        orchestration.write_text(
+            text.replace(
+                "  documentation_roots: [project/docs]",
+                "  documentation_roots: [unknown/docs]",
+            ),
+            encoding="utf-8",
+        )
+        project = self.project(config)
+        result = self.run_pack(
+            "--config-dir", str(config), "check", str(project)
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("undeclared resource root", result.stderr)
+
+    def test_yaml_boolean_always_apply_is_enforced(self) -> None:
+        config = self.config()
+        project = self.project(config)
+        rule = project / ".github" / "rules" / "wide.mdc"
+        rule.parent.mkdir(parents=True, exist_ok=True)
+        rule.write_text(
+            "---\n"
+            "description: wide rule\n"
+            "globs: '**'\n"
+            "alwaysApply: true\n"
+            "---\n"
+            + ("x" * 17000)
+            + "\n",
+            encoding="utf-8",
+        )
+        result = self.run_pack(
+            "--config-dir", str(config), "check", str(project)
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Cursor unconditional instructions", result.stderr)
+
+    def test_nested_routers_are_allowed(self) -> None:
+        config = self.config()
+        project = self.project(config)
+        self.write_doc(project, "docs/sub/guide.md", "# Guide\n")
+        self.write_doc(
+            project,
+            "docs/sub/index.md",
+            "# Sub documentation index\n\n"
+            "| Document | Summary | Status | When to load |\n"
+            "| --- | --- | --- | --- |\n"
+            "| [Guide](guide.md) | Guide | Current | Always |\n",
+        )
+        self.router(project, [("Sub index", "sub/index.md")])
+        result = self.run_pack(
+            "--config-dir", str(config), "check", str(project)
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_a_nested_router_must_route_its_documents(self) -> None:
+        config = self.config()
+        project = self.project(config)
+        self.write_doc(project, "docs/sub/guide.md", "# Guide\n")
+        self.write_doc(
+            project,
+            "docs/sub/index.md",
+            "# Sub documentation index\n\n"
+            "| Document | Summary | Status | When to load |\n"
+            "| --- | --- | --- | --- |\n"
+            "| [Other](other.md) | Other | Current | Always |\n",
+        )
+        self.write_doc(project, "docs/sub/other.md", "# Other\n")
+        self.router(project, [("Sub index", "sub/index.md")])
+        result = self.run_pack(
+            "--config-dir", str(config), "check", str(project)
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("unrouted document", result.stderr)
+        self.assertIn("guide.md", result.stderr)
+
+    def test_a_json_escaped_home_path_fails_public_lint(self) -> None:
+        config = self.config()
+        project = self.project(config)
+        escaped = "\\" + "/" + "Users" + "\\" + "/" + "jdoe"
+        self.write_doc(
+            project,
+            "docs/notes.md",
+            '# Notes\n\n{"path": "' + escaped + '"}\n',
+        )
+        self.router(project, [("Notes", "notes.md")])
+        result = self.run_pack(
+            "--config-dir", str(config), "check", str(project)
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("home_path", result.stderr)
+
+    def test_explicit_resource_roots_keep_repositories_separate(self) -> None:
+        config = self.config()
+        orchestration = config / "orchestration" / "orchestration.yml"
+        text = orchestration.read_text(encoding="utf-8")
+        text = text.replace(
+            "    project: example-org/example-project\n",
+            "    one: example-org/one\n    two: example-org/two\n",
+        )
+        text = text.replace(
+            "      - example-org/example-project\n",
+            "      - example-org/one\n      - example-org/two\n",
+        )
+        text = text.replace(
+            "decision_records_root: project/docs/decisions/",
+            "decision_records_root: one/docs/decisions/",
+        )
+        text = text.replace(
+            "  documentation_roots: [project/docs]",
+            "  documentation_roots: [one/docs, two/docs]",
+        )
+        text = text.replace(
+            "  gap_ledger: project/docs/GAPS.md",
+            "  gap_ledger: one/docs/GAPS.md",
+        )
+        text = text.replace(
+            "  glossary: project/docs/GLOSSARY.md",
+            "  glossary: one/docs/GLOSSARY.md",
+        )
+        orchestration.write_text(text, encoding="utf-8")
+
+        one = self.tmp / "one"
+        two = self.tmp / "two"
+        candidate = self.tmp / "candidate"
+        (one / "docs").mkdir(parents=True)
+        (two / "docs").mkdir(parents=True)
+        candidate.mkdir()
+        (two / "docs" / "index.md").write_text(
+            "# Docs\n\n"
+            "| Document | Summary | Status | When to load |\n"
+            "| --- | --- | --- | --- |\n"
+            "| [Guide](guide.md) | Guide | Current | Always |\n",
+            encoding="utf-8",
+        )
+        (two / "docs" / "guide.md").write_text(
+            "# Guide\n\n[missing](missing.md)\n", encoding="utf-8"
+        )
+
+        unchecked = self.run_pack(
+            "--config-dir", str(config), "check", str(candidate)
+        )
+        self.assertEqual(unchecked.returncode, 1)
+        self.assertIn("cannot be checked without --resource-root", unchecked.stderr)
+        self.assertIn("[NOTE] resource root one", unchecked.stdout)
+        self.assertIn("[NOTE] resource root two", unchecked.stdout)
+
+        checked = self.run_pack(
+            "--config-dir",
+            str(config),
+            "check",
+            str(candidate),
+            "--resource-root",
+            f"one={one}",
+            "--resource-root",
+            f"two={two}",
+        )
+        self.assertEqual(checked.returncode, 1)
+        self.assertIn("two/docs/guide.md", checked.stderr)
+        self.assertIn("broken link", checked.stderr)
+        self.assertNotIn("candidate/docs", checked.stderr)
+
+    def test_an_undeclared_resource_override_is_refused(self) -> None:
+        config = self.config()
+        project = self.project(config)
+        result = self.run_pack(
+            "--config-dir",
+            str(config),
+            "check",
+            str(project),
+            "--resource-root",
+            f"other={project}",
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("undeclared resource root override", result.stderr)
+
+    def test_non_pack_skill_placeholders_are_ignored(self) -> None:
+        config = self.config()
+        project = self.project(config)
+        text = (
+            "---\n"
+            "name: asma-only\n"
+            "description: A project-owned skill with its own template syntax.\n"
+            "---\n\n"
+            "# Project skill\n\n{{ project-owned-value }}\n"
+        )
+        for base in (".github", ".agents"):
+            directory = project / base / "skills" / "asma-only"
+            directory.mkdir(parents=True)
+            (directory / "SKILL.md").write_text(text, encoding="utf-8")
+        result = self.run_pack(
+            "--config-dir", str(config), "check", str(project)
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_a_rendered_link_that_leaves_the_skill_tree_is_refused(self) -> None:
+        config = self.config()
+        project = self.project(config)
+        for base in (".github", ".agents"):
+            path = project / base / "skills" / "epic-orchestration" / "SKILL.md"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + "\n[outside](../../../docs/WORKFLOW.md)\n",
+                encoding="utf-8",
+            )
+        result = self.run_pack(
+            "--config-dir", str(config), "check", str(project)
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("relative link leaves the skill tree", result.stderr)
+
+    def test_missing_rendered_resource_mirror_is_refused(self) -> None:
+        config = self.config()
+        project = self.project(config)
+        shutil.rmtree(project / ".agents" / "skills" / ".pack")
+        result = self.run_pack(
+            "--config-dir", str(config), "check", str(project)
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("missing .agents mirror", result.stderr)
+
+    def test_rendered_resource_mirror_content_is_checked(self) -> None:
+        config = self.config()
+        project = self.project(config)
+        target = (
+            project
+            / ".agents"
+            / "skills"
+            / ".pack"
+            / "docs"
+            / "WORKFLOW.md"
+        )
+        target.write_text("changed\n", encoding="utf-8")
+        result = self.run_pack(
+            "--config-dir", str(config), "check", str(project)
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("differ from the .agents mirror", result.stderr)
+
+    def test_a_rendered_pack_placeholder_is_refused(self) -> None:
+        config = self.config()
+        project = self.project(config)
+        for base in (".github", ".agents"):
+            path = project / base / "skills" / "epic-orchestration" / "SKILL.md"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + "\n{{ project.owner }}\n",
+                encoding="utf-8",
+            )
+        result = self.run_pack(
+            "--config-dir", str(config), "check", str(project)
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("unfilled placeholder", result.stderr)
+
+    def test_plan_graphs_marker_allows_a_current_plan_without_a_graph(self) -> None:
+        config = self.config()
+        project = self.project(config)
+        self.write_doc(
+            project,
+            "docs/plans/plan-no-graph.md",
+            "---\nstatus: Draft\norchestration: paseo\n---\n\n"
+            "# No graph\n\n## 2. Implementation Steps\n\n"
+            "| Task | Tracker key | Description | Closure condition | "
+            "Completed | Date |\n"
+            "| --- | --- | --- | --- | --- | --- |\n"
+            "| TASK-001 | EXM-1 | Do | Done | | |\n",
+        )
+        self.router(project, [("No graph", "plans/plan-no-graph.md")])
+        strict = self.run_pack(
+            "--config-dir", str(config), "check", str(project)
+        )
+        self.assertEqual(strict.returncode, 1)
+        self.assertIn("current plan requires", strict.stderr)
+        marker = self.run_pack(
+            "--config-dir",
+            str(config),
+            "check",
+            str(project),
+            "--plan-graphs",
+            "marker",
+        )
+        self.assertEqual(marker.returncode, 0, marker.stderr)
+
+    def test_plan_graphs_changed_checks_only_changed_plans(self) -> None:
+        config = self.config()
+        project = self.project(config)
+        plan = self.add_plan(
+            project,
+            config,
+            plan=self.plan_text(),
+            relative="docs/plans/plan-changed.md",
+        )
+        self.router(project, [("Changed plan", "plans/plan-changed.md")])
+        subprocess.run(["git", "init"], cwd=project, check=True,
+                       capture_output=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@example.invalid"],
+            cwd=project,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test"],
+            cwd=project,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(["git", "add", "-A"], cwd=project, check=True,
+                       capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "base"],
+            cwd=project,
+            check=True,
+            capture_output=True,
+        )
+        plan.write_text(
+            "---\nstatus: Draft\norchestration: paseo\n---\n\n"
+            "# Changed plan\n",
+            encoding="utf-8",
+        )
+        changed = self.run_pack(
+            "--config-dir",
+            str(config),
+            "check",
+            str(project),
+            "--plan-graphs",
+            "changed",
+            "--base",
+            "HEAD",
+        )
+        self.assertEqual(changed.returncode, 1)
+        self.assertIn("current plan requires", changed.stderr)
+        marker = self.run_pack(
+            "--config-dir",
+            str(config),
+            "check",
+            str(project),
+            "--plan-graphs",
+            "marker",
+        )
+        self.assertEqual(marker.returncode, 0, marker.stderr)
+
+    def test_plan_graphs_changed_requires_a_base(self) -> None:
+        config = self.config()
+        project = self.project(config)
+        result = self.run_pack(
+            "--config-dir",
+            str(config),
+            "check",
+            str(project),
+            "--plan-graphs",
+            "changed",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("requires --base", result.stderr)
+
+    def test_no_routed_once_and_no_public_lint_are_explicit_opt_outs(self) -> None:
+        config = self.config()
+        project = self.project(config)
+        self.write_doc(project, "docs/extra.md", "# Extra\n")
+        escaped = "\\" + "/" + "Users" + "\\" + "/" + "jdoe"
+        self.write_doc(
+            project,
+            "docs/notes.md",
+            '# Notes\n\n[broken](missing.md)\n\n'
+            '{"path": "' + escaped + '"}\n',
+        )
+        self.router(project, [("Notes", "notes.md")])
+        refused = self.run_pack(
+            "--config-dir", str(config), "check", str(project)
+        )
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("unrouted document", refused.stderr)
+        self.assertIn("broken link", refused.stderr)
+        self.assertIn("home_path", refused.stderr)
+        accepted = self.run_pack(
+            "--config-dir",
+            str(config),
+            "check",
+            str(project),
+            "--no-routed-once",
+            "--no-public-lint",
+            "--no-links",
+        )
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+
+    def test_routing_requires_one_claude_import(self) -> None:
+        config = self.config()
+        project = self.project(config)
+        self.write_doc(project, "AGENTS.md", "# Agents\n")
+        self.write_doc(project, "CLAUDE.md", "# Claude\n")
+        result = self.run_pack(
+            "--config-dir", str(config), "check", str(project)
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("must import AGENTS.md exactly once", result.stderr)
+
+    def test_malformed_frontmatter_without_a_hold_is_ignored(self) -> None:
+        config = self.config()
+        project = self.project(config)
+        self.write_doc(
+            project,
+            "docs/plans/plan-legacy.md",
+            "---\n"
+            "> **Date:** 2026-07-13 13:45\n"
+            "---\n\n"
+            "# Legacy plan\n",
+        )
+        self.router(project, [("Legacy", "plans/plan-legacy.md")])
+        result = self.run_pack(
+            "--config-dir",
+            str(config),
+            "check",
+            str(project),
+            "--plan-graphs",
+            "marker",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_an_expired_hold_fails_check(self) -> None:
         config = self.config()
@@ -513,7 +1101,7 @@ class CheckTests(PackCase):
         self.assertIn("ASMA_PLAN_GRAPH_VALIDATOR", result.stderr)
         self.assertIn("refusing to skip", result.stderr)
 
-    def test_ci_requires_the_validator(self) -> None:
+    def test_ci_does_not_require_an_external_validator(self) -> None:
         config = self.config()
         project = self.project(config)
         result = self.run_pack(
@@ -523,8 +1111,7 @@ class CheckTests(PackCase):
             str(project),
             env=clean_env(CI="true"),
         )
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("must be set in CI", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_the_plan_graph_uses_the_project_key_pattern(self) -> None:
         config = self.config()
@@ -562,10 +1149,7 @@ class CheckTests(PackCase):
             str(config),
             "check",
             str(project),
-            env=clean_env(
-                KONTOR_CONFIG_DIR=str(config),
-                ASMA_PLAN_GRAPH_VALIDATOR=str(PACK),
-            ),
+            env=clean_env(ASMA_PLAN_GRAPH_VALIDATOR=str(PACK)),
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
