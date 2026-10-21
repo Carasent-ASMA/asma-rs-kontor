@@ -177,9 +177,40 @@ async fn two_selected_folders_start_independent_realms_and_report_their_own_iden
         second_settings.project.forge.repositories,
         ["alternate-org/alternate-project"]
     );
+    assert!(
+        first
+            .state()
+            .with_store(|store| store.list_projects())
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        second
+            .state()
+            .with_store(|store| store.list_projects())
+            .unwrap()
+            .is_empty()
+    );
     assert_ne!(first.realm_id(), second.realm_id());
     assert_ne!(first_settings.root(), second_settings.root());
     assert!(first.state().runtimes().families().next().is_none());
     first.shutdown();
     second.shutdown();
+}
+
+#[tokio::test]
+async fn oversized_yaml_memory_settings_preserve_the_legacy_refusal() {
+    let root = tempfile::tempdir().unwrap();
+    let folder = support::write_config_folder(root.path());
+    std::fs::write(
+        folder.join("orchestration/memory.yml"),
+        format!("#{}\nenabled: false\n", "padding".repeat(1400)),
+    )
+    .unwrap();
+    let error = Daemon::start_configured(
+        DaemonConfig::at(root.path().join("state")).with_config_dir(&folder),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("orchestration/memory.yml"), "{error}");
 }

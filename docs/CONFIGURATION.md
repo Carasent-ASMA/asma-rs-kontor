@@ -81,15 +81,14 @@ that explicitly supply a runtime registry retain their existing composition
 seam; the executable uses selected-folder startup.
 
 Project identity is available from the resolved entry at startup. Publication
-mapping, per-realm tracker/team installation and the backup-and-equivalence
-migration command are subsequent slices of the config-folder migration; this
-loader does not claim those migrations are complete. Do not upgrade an existing
-realm until its migration procedure is available and qualified on a copy.
+mapping and per-realm tracker/team installation are subsequent loader slices.
+Clean-start acceptance uses an empty state root and the explicitly selected
+YAML folder; startup does not repopulate work from plans or tracker epics.
+Generic snapshot and recovery capabilities remain available independently.
 
-Ship the complete config-folder migration together in one release after the
-relaunch release has been deployed with readback. Loader checkpoints remain
-draft work until backup, equivalence, active-pin preservation and restore have
-been qualified on a disposable realm copy.
+Ship the complete config-folder work together in one release after the relaunch
+release has been deployed with readback. Loader checkpoints remain draft work
+until clean empty-state startup, project isolation and admission are qualified.
 
 ### Layout and references
 
