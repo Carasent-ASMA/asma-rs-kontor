@@ -3,7 +3,7 @@ import { useRpc } from "@getpaseo/plugin/client";
 import { DEFAULT_RECOVERY_TARGET, executeLifecycleItem, lifecycleCapabilities, previewLifecycle, readLifecycleReview, type LifecycleReview, type RecoveryTarget } from "../shared/session-lifecycle";
 
 /** One user-reviewed batch, one request at a time. Closing/cancel stops before the next row. */
-export function useSessionLifecycle(hostId: string, onChanged: () => void) {
+export function useSessionLifecycle(hostId: string, onChanged: (rows: LifecycleReview["rows"]) => void) {
   const preview = useRpc(previewLifecycle), execute = useRpc(executeLifecycleItem), read = useRpc(readLifecycleReview), discover = useRpc(lifecycleCapabilities);
   const [review, setReview] = useState<LifecycleReview | null>(null);
   const [action, setAction] = useState<LifecycleReview["action"]>("resume");
@@ -27,14 +27,14 @@ export function useSessionLifecycle(hostId: string, onChanged: () => void) {
     try {
       const result = await preview({ action, scope, agentIds: ids, target });
       if (owner.current !== host) return;
-      setReview(result); setSelected(result.rows.filter((row) => row.eligible).map((row) => row.id));
+      onChanged(result.rows); setReview(result); setSelected(result.rows.filter((row) => row.eligible).map((row) => row.id));
     } catch (failure) { if (owner.current === host) fail(failure); }
     finally { active.current = false; setBusy(false); }
   };
   const restore = async () => {
     if (active.current) return;
     active.current = true; setError(null); setBusy(true); const host = hostId;
-    try { const result = await read({}); if (owner.current === host) { setReview(result); setSelected([]); setAction(result?.action ?? "resume"); } }
+    try { const result = await read({}); if (owner.current === host) { if (result) onChanged(result.rows); setReview(result); setSelected([]); setAction(result?.action ?? "resume"); } }
     catch (failure) { if (owner.current === host) fail(failure); } finally { active.current = false; setBusy(false); }
   };
   const loadCapabilities = async () => { const host = hostId; try { const result = await discover({}); if (owner.current === host) setCapabilities(result); } catch (failure) { if (owner.current === host) fail(failure); } };
@@ -51,7 +51,7 @@ export function useSessionLifecycle(hostId: string, onChanged: () => void) {
         const result = await execute({ reviewId: batch.id, agentId: id });
         if (owner.current !== host) break;
         setReview((current) => current?.id === batch.id ? { ...current, rows: current.rows.map((entry) => entry.id === id ? result : entry) } : current);
-        onChanged();
+        onChanged([result]);
       }
     } catch (failure) { fail(failure); }
     finally { active.current = false; setRunning(false); }

@@ -1,3 +1,4 @@
+import { freshAvailability } from "../shared/session-lifecycle";
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import type { DirectoryEntry } from "./session-directory";
 
@@ -30,7 +31,7 @@ export function openSessionById(input: {
       message: "That session is no longer in the directory. Refresh the list and try again.",
     };
   }
-  if (entry.availability?.state === "missing" && entry.availability.revision === entry.updatedAt) {
+  if (freshAvailability(entry)?.state === "missing") {
     return { ok: false, reason: "missing", message: "The host could not find this exact session ID at the last availability check. Refresh availability before opening it again." };
   }
   if (!input.navigation) {
