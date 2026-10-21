@@ -20039,7 +20039,8 @@ async fn resident_failed_epic_apply_emits_no_immediate_replay_wake() {
                 "project_id": project_id.to_string(),
                 "endpoint": server.uri(),
                 "project_key": "ASMA",
-                "credential_alias": "work"
+                "credential_alias": "work",
+                "reconcile_epic_keys": ["ASMA-8204"]
             }]
         }))
         .expect("the Jira configuration serializes"),
