@@ -161,6 +161,19 @@ Native projects/workspaces have their own context scope and native IDs. Sessions
 of non-desk projects without declarations remain under Other work and their
 epic, or Epic unknown; no workstream is inferred from their titles.
 
+A native project whose sessions settle different epics shows one row per epic.
+Its Epic unknown row follows the project's last recognised row when both are in
+one workstream, and stays in place when they are not. Either way the rows name
+each other: how many of the project's sessions have no known epic, how many of
+its workspaces have no sessions, and in which workstreams. Rows match by native
+project ID, never by name. Projects whose sibling rows read alike, directly or
+through another such project, are named together: one folder of each project's
+root, the last one where the roots differ and below any home folder, or their
+position when the roots cannot tell them apart safely or a name would make a row
+read like any other sibling. Compact rows
+show a group's detail under its label, in up to two lines. No session moves,
+merges or hides, and no epic or workstream is assigned.
+
 The authoritative workstream registry and its separate desk categories are not
 loaded by this selector. Neither are plan frontmatter declarations or verified
 epic-to-workstream links. Available choices can include unregistered names;

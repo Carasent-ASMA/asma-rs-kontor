@@ -2438,10 +2438,11 @@ describe("plan-derived visible workstream choices on the current mobile/lifecycl
   const esw = (key: string) => ({ projectKey: `prj_${key}`, projectName: `ESW • ASMA-${key}` });
   const linking = "Settings, under Presentation and associations, can map this session or link it to a plan. Project and session names never link it.";
   type Plan = typeof import("./plan-workstream-fixtures");
-  function renderEsw(compact: boolean, plan: Plan, entries: readonly ReturnType<typeof sessionEntry>[], emptyWorkspaces: readonly { id: string; name: string }[] = []) {
+  function renderEsw(compact: boolean, plan: Plan, entries: readonly ReturnType<typeof sessionEntry>[], emptyWorkspaces: readonly { id: string; name: string }[] = [],
+    projects?: Parameters<typeof SessionsScreen>[0]["projects"]) {
     directory.state = { ...emptyDirectoryState(), entries, status: "ready", live: true, inventoryComplete: true };
     patchSessionView("host-a", { query: "", grouping: "hierarchy", status: "all", ...toolbarOpenPatch(true) });
-    renderScreen(undefined, compact, compact ? "ios" : "web", { workstreamSources: [plan.source], workstreamReads: { plan: plan.read }, planMappings: {},
+    renderScreen(undefined, compact, compact ? "ios" : "web", { workstreamSources: [plan.source], workstreamReads: { plan: plan.read }, planMappings: {}, projects,
       workspaces: [...entries.map((entry) => ({ id: entry.workspaceId!, name: entry.workspaceName!, projectKey: entry.projectKey, projectName: entry.projectName })),
         ...emptyWorkspaces.map((workspace) => ({ ...workspace, ...esw("8101") }))] });
     expandAll();
@@ -2494,5 +2495,23 @@ describe("plan-derived visible workstream choices on the current mobile/lifecycl
     expect(epicRows()).toEqual([["ASMA-8001 · ESW • ASMA-7869", 1], ["Epic unknown · ESW • ASMA-8108", 1]]);
     expect(placement("task-8343")).toEqual(["Epic: Unknown, no Jira capture read for ASMA-8343", `Linking: No known ASMA epic, so no plan applies. ${linking}`]);
     expect(placement("dual-8001")).toEqual(dual);
+  });
+
+  // A native project split by its sessions' own labels: its Epic unknown row sits under its recognised one and says why,
+  // on a phone too; same-named native projects read apart by one folder of their root. No session moves or merges.
+  it.each([true, false])("shows a split project's Epic unknown row under its recognised row and tells same-named projects apart (compact=%s)", async (compact) => {
+    const folders = ["asma-8564", "asma-8574"];
+    const entries = [sessionEntry("labelled-7869", { ...esw("7869"), workspaceId: "wks_7869_a", labels: { "jira.epic": "ASMA-7869" } }), sessionEntry("bare-7869", { ...esw("7869"), workspaceId: "wks_7869_b" }),
+      sessionEntry("labelled-8101", { ...esw("8101"), workspaceId: "wks_8101", labels: { "jira.epic": "ASMA-8101" } }),
+      ...folders.map((folder) => sessionEntry(`kontor-${folder}`, { projectKey: `prj_${folder}`, projectName: "asma-rs-kontor", workspaceId: `wks_${folder}` }))];
+    renderEsw(compact, await import("./plan-workstream-fixtures"), entries, [], folders.map((folder) => ({ id: `prj_${folder}`, name: "asma-rs-kontor", root: `/checkouts/.worktrees/${folder}/asma-rs-kontor` })));
+    expect(listRows().flatMap((row) => row.kind === "group" && row.group.kind === "epic" ? [[row.group.label, row.group.totalCount, row.group.detail]] : [])).toEqual([
+      ["ASMA-7869 · ESW • ASMA-7869", 1, "1 more session of this project has no known epic"],
+      ["Epic unknown · ESW • ASMA-7869", 1, "1 session with no known epic · same project as ASMA-7869"],
+      ["ASMA-8101 · ESW • ASMA-8101", 1, null],
+      ["Epic unknown · asma-rs-kontor (asma-8564)", 1, "1 session with no known epic"],
+      ["Epic unknown · asma-rs-kontor (asma-8574)", 1, "1 session with no known epic"],
+    ]);
+    expect(listRows().flatMap((row) => row.kind === "session" ? [row.entry.id] : []).sort()).toEqual(entries.map((entry) => entry.id).sort());
   });
 });

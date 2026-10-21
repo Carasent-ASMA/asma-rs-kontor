@@ -129,7 +129,7 @@ describe("Kontor shell native actions", () => {
     expect(hostNavigation(screen.props.host.id).route.projectId).toBe("prj_empty");
     screen.click("Sessions");
     const sessions = screen.elements().find((node) => node.type === SessionsScreen)!;
-    expect(sessions.props.projects).toEqual([{ id: "prj_empty", name: "DESK • RESEARCH" }, { id: "prj_1", name: "Project" }]);
+    expect(sessions.props.projects).toEqual([{ id: "prj_empty", name: "DESK • RESEARCH", root: "/fixture/empty" }, { id: "prj_1", name: "Project" }]);
     expect(sessions.props.workspaces).toEqual([]);
   });
 
