@@ -23,6 +23,8 @@ export type Scenario = {
     readonly status?: "error" | "needs_input" | "running" | "attention" | "earlier_error";
     /** Grouping chosen in this Sessions view (kept in memory, not saved). */
     readonly grouping?: SessionGrouping;
+    readonly advancedOpen?: boolean;
+    readonly toolbarOpen?: boolean;
   };
   /** Scripted native changes, applied in order and labelled simulated. */
   readonly script?: readonly { readonly afterMs: number; readonly agentId: string; readonly patch: Record<string, unknown>; readonly note: string }[];
@@ -42,6 +44,8 @@ const EXPANDED: Partial<OrganizationSettings> = {
 };
 
 export const SCENARIOS: readonly Scenario[] = [
+  { id: "legend-reference", title: "Legend: hierarchy and workspace reference", summary: "Open Legend in Filters & view. Check the matching tree icons, aligned workspace codes and separate grouping explanation. Resize, navigate away and back, and open Role label rules with keyboard or touch. Fictional combined inventory; native accessibility still needs device verification.", inventory: "integration", sources: true, start: { advancedOpen: true, toolbarOpen: true } },
+  { id: "legend-filtered", title: "Legend: preserve filtered results", summary: "Search starts at Model report. Open and close Legend and Role label rules, then resize and return from another view. Search, selected filters and result context must stay intact. All sessions and reports are fictional.", inventory: "integration", sources: true, start: { query: "Model report", advancedOpen: true, toolbarOpen: true } },
   { id: "compact-icons", title: "Compact controls: combined review", summary: "Fictional combined inventory: configured/reported/missing/custom models, absent/zero token reports, stale cases, roles and long titles. Hover or focus controls for help; touch opens exact Details. Source and status semantics remain unchanged.", inventory: "integration", sources: true, start: { grouping: "flat", query: "Model report" } },
   { id: "compact-icons-stale", title: "Compact controls: stale inventory", summary: "The combined fixture host goes offline at 3 seconds; model and counter report age remains unknown. Details preserves all source limits.", inventory: "integration", sources: true, start: { grouping: "flat", query: "Model report" }, hostOfflineAfterMs: 3000 },
   { id: "baseline", title: "Baseline", summary: "Default inventory, Sessions tree with one epic open.", inventory: "base", sources: true, settings: EXPANDED },
