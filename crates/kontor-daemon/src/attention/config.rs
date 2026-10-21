@@ -23,6 +23,8 @@ const MIN_ATTEMPTS: u32 = 1;
 const MAX_ATTEMPTS: u32 = 10;
 /// The longest mention target accepted.
 const MAX_MENTION_TARGET: usize = 256;
+/// The largest destination list accepted.
+const MAX_DESTINATIONS: usize = 8;
 
 /// Raw agent-attention names a config may not select.
 ///
@@ -66,18 +68,41 @@ pub enum AttentionConfigError {
 pub struct AttentionPolicy {
     /// Schema generation of this document.
     pub schema_version: u32,
-    /// The one configured webhook destination.
-    pub sink: SinkPolicy,
+    /// The configured destinations, in delivery order.
+    ///
+    /// One entry is implemented today (`teams_workflow`), but the list is the
+    /// point: a second channel is another entry plus one formatting function,
+    /// not a schema and sink-type refactor (REQ-013, TASK-005).
+    pub destinations: Vec<DestinationPolicy>,
     /// The mention a channel post must carry to raise a phone notification.
     pub mention: MentionPolicy,
     /// Which Kontor-semantic kinds are enabled.
     pub emit: EmitPolicy,
 }
 
-/// The generic outbound webhook. Teams is a consumer of it, not a coded-in
-/// destination (GUD-002): moving to another mechanism changes this URL.
+/// Which formatting function a destination uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DestinationChannel {
+    /// Microsoft Teams through a Power Automate Workflows webhook.
+    TeamsWorkflow,
+}
+
+impl DestinationChannel {
+    /// The stable wire spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::TeamsWorkflow => "teams_workflow",
+        }
+    }
+}
+
+/// One configured destination. The URL is a consumer of the channel, not a
+/// coded-in destination (GUD-002): moving to another mechanism changes this URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SinkPolicy {
+pub struct DestinationPolicy {
+    /// Which destination formatter to use.
+    pub channel: DestinationChannel,
     /// The Workflows URL one `POST` goes to.
     pub url: String,
     /// Per-attempt timeout.
@@ -120,7 +145,7 @@ impl AttentionPolicy {
 #[serde(deny_unknown_fields)]
 struct RawPolicy {
     schema_version: u32,
-    sink: Option<RawSink>,
+    sinks: Option<Vec<RawSink>>,
     mention: Option<RawMention>,
     emit: Option<RawEmit>,
 }
@@ -128,6 +153,7 @@ struct RawPolicy {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawSink {
+    channel: Option<String>,
     url: Option<String>,
     timeout_seconds: Option<u64>,
     max_attempts: Option<u32>,
@@ -156,24 +182,52 @@ pub fn parse(document: &str) -> Result<AttentionPolicy, AttentionConfigError> {
     if raw.schema_version != 1 {
         return invalid("schema_version must be 1");
     }
-    let sink = raw.sink.ok_or(AttentionConfigError::Invalid {
-        rule: "sink is required when attention.yml is present",
+    let raw_sinks = raw.sinks.ok_or(AttentionConfigError::Invalid {
+        rule: "sinks is required when attention.yml is present",
     })?;
-    let url = sink.url.ok_or(AttentionConfigError::Invalid {
-        rule: "sink.url is required when attention.yml is present",
-    })?;
-    validate_url(&url)?;
-    let timeout_seconds = sink.timeout_seconds.ok_or(AttentionConfigError::Invalid {
-        rule: "sink.timeout_seconds is required",
-    })?;
-    if !(MIN_TIMEOUT_SECONDS..=MAX_TIMEOUT_SECONDS).contains(&timeout_seconds) {
-        return invalid("sink.timeout_seconds is outside the safe bound");
+    if raw_sinks.is_empty() {
+        return invalid("sinks must name at least one destination");
     }
-    let max_attempts = sink.max_attempts.ok_or(AttentionConfigError::Invalid {
-        rule: "sink.max_attempts is required",
-    })?;
-    if !(MIN_ATTEMPTS..=MAX_ATTEMPTS).contains(&max_attempts) {
-        return invalid("sink.max_attempts is outside the safe bound");
+    if raw_sinks.len() > MAX_DESTINATIONS {
+        return invalid("sinks exceeds the safe destination bound");
+    }
+    let mut destinations = Vec::with_capacity(raw_sinks.len());
+    for raw_sink in raw_sinks {
+        let channel = raw_sink.channel.ok_or(AttentionConfigError::Invalid {
+            rule: "sinks.channel is required",
+        })?;
+        let channel = match channel.as_str() {
+            "teams_workflow" => DestinationChannel::TeamsWorkflow,
+            _ => {
+                return invalid(
+                    "sinks.channel names only the implemented teams_workflow destination",
+                );
+            }
+        };
+        let url = raw_sink.url.ok_or(AttentionConfigError::Invalid {
+            rule: "sinks.url is required",
+        })?;
+        validate_url(&url)?;
+        let timeout_seconds = raw_sink
+            .timeout_seconds
+            .ok_or(AttentionConfigError::Invalid {
+                rule: "sinks.timeout_seconds is required",
+            })?;
+        if !(MIN_TIMEOUT_SECONDS..=MAX_TIMEOUT_SECONDS).contains(&timeout_seconds) {
+            return invalid("sinks.timeout_seconds is outside the safe bound");
+        }
+        let max_attempts = raw_sink.max_attempts.ok_or(AttentionConfigError::Invalid {
+            rule: "sinks.max_attempts is required",
+        })?;
+        if !(MIN_ATTEMPTS..=MAX_ATTEMPTS).contains(&max_attempts) {
+            return invalid("sinks.max_attempts is outside the safe bound");
+        }
+        destinations.push(DestinationPolicy {
+            channel,
+            url,
+            timeout_seconds,
+            max_attempts,
+        });
     }
     let mention = raw.mention.ok_or(AttentionConfigError::Invalid {
         rule: "mention is required when attention.yml is present",
@@ -215,11 +269,7 @@ pub fn parse(document: &str) -> Result<AttentionPolicy, AttentionConfigError> {
     }
     Ok(AttentionPolicy {
         schema_version: raw.schema_version,
-        sink: SinkPolicy {
-            url,
-            timeout_seconds,
-            max_attempts,
-        },
+        destinations,
         mention: MentionPolicy { target },
         emit: EmitPolicy { kinds },
     })
@@ -241,13 +291,13 @@ pub fn read(state_root: &Path) -> Result<Option<AttentionPolicy>, AttentionConfi
 
 fn validate_url(url: &str) -> Result<(), AttentionConfigError> {
     let parsed = reqwest::Url::parse(url).map_err(|_| AttentionConfigError::Invalid {
-        rule: "sink.url must be an absolute http or https URL",
+        rule: "sinks.url must be an absolute http or https URL",
     })?;
     if !matches!(parsed.scheme(), "http" | "https") || parsed.host().is_none() {
-        return invalid("sink.url must be an absolute http or https URL");
+        return invalid("sinks.url must be an absolute http or https URL");
     }
     if !parsed.username().is_empty() || parsed.password().is_some() {
-        return invalid("sink.url may not carry credentials");
+        return invalid("sinks.url may not carry credentials");
     }
     Ok(())
 }
@@ -265,6 +315,11 @@ mod tests {
     #[test]
     fn the_example_is_valid_and_selects_the_kontor_kinds() {
         let policy = parse(EXAMPLE).expect("the shipped example is valid");
+        assert_eq!(policy.destinations.len(), 1);
+        assert_eq!(
+            policy.destinations[0].channel,
+            DestinationChannel::TeamsWorkflow
+        );
         assert!(policy.emits(AlertKind::TaskNeedsHuman));
         assert!(policy.emits(AlertKind::TaskBlocked));
         assert!(policy.emits(AlertKind::WaitingSeatStalled));
@@ -318,11 +373,11 @@ mod tests {
     #[test]
     fn unsafe_bounds_are_refused() {
         assert!(matches!(
-            parse(&EXAMPLE.replace("  timeout_seconds: 10", "  timeout_seconds: 0")),
+            parse(&EXAMPLE.replace("    timeout_seconds: 10", "    timeout_seconds: 0")),
             Err(AttentionConfigError::Invalid { .. })
         ));
         assert!(matches!(
-            parse(&EXAMPLE.replace("  max_attempts: 3", "  max_attempts: 99")),
+            parse(&EXAMPLE.replace("    max_attempts: 3", "    max_attempts: 99")),
             Err(AttentionConfigError::Invalid { .. })
         ));
     }
@@ -330,10 +385,11 @@ mod tests {
     #[test]
     fn needs_human_is_never_suppressed_by_configuration() {
         let document = r#"schema_version: 1
-sink:
-  url: http://127.0.0.1:9999/workflows/attention
-  timeout_seconds: 1
-  max_attempts: 1
+sinks:
+  - channel: teams_workflow
+    url: http://127.0.0.1:9999/workflows/attention
+    timeout_seconds: 1
+    max_attempts: 1
 mention:
   target: operator@example.com
 emit:
@@ -347,7 +403,7 @@ emit:
     #[test]
     fn a_missing_url_is_refused() {
         let document = EXAMPLE.replace(
-            "  url: https://example.logic.azure.com/workflows/attention\n",
+            "    url: https://example.logic.azure.com/workflows/attention\n",
             "",
         );
         assert!(matches!(

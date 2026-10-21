@@ -12,6 +12,8 @@
 //! and why. Line numbers are deliberately not part of the identity: a move is not
 //! a change, a different statement is.
 
+mod support;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -224,4 +226,115 @@ fn literals(source: &str) -> Vec<String> {
         }
     }
     found
+}
+
+/// TEST-002, runtime half: the classified-`None` writers do not emit.
+///
+/// The static scan proves the set; this proves the four sites an operator is
+/// most likely to reach (a local intent, its confirmation, a dispatch intent and
+/// its claim) stay silent. A stray `notify_attention` there would fail here.
+#[test]
+fn the_non_settling_writers_emit_no_attention() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use kontor_core::id::{
+        AggregateRevision, CanonicalDocument, CommandReceiptId, ExternalId, ExternalName,
+        IdempotencyKey, ProjectId, TaskId, Timestamp,
+    };
+    use kontor_core::receipt::{AggregateRef, CommandKind};
+    use kontor_core::repository::{
+        CommandRepository, NewCommandIntent, NewLocalCommand, NewProject, NewTask,
+        ProjectRepository,
+    };
+    use kontor_core::state::TaskState;
+    use kontor_store::SqliteStore;
+
+    let home = support::state_root();
+    let store = SqliteStore::open(&home.path().join("kontor.db")).expect("the store opens");
+    let count = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&count);
+    store.set_attention_observer(Some(Arc::new(move |_signal| {
+        observed.fetch_add(1, Ordering::SeqCst);
+    })));
+
+    let now: Timestamp = "2026-10-21T10:00:00Z".parse().expect("a canonical instant");
+    let project_id = ProjectId::generate();
+    store
+        .create_project(&NewProject {
+            id: project_id,
+            name: ExternalName::parse("Attention writer fixture").expect("a name"),
+            root_path: ExternalName::parse("/tmp/attention-writer-fixture").expect("a path"),
+            created_at: now,
+        })
+        .expect("the project is created");
+    let task_id = TaskId::generate();
+    store
+        .create_task(&NewTask {
+            id: task_id,
+            project_id,
+            mini_project_id: None,
+            title: ExternalName::parse("Attention writer task").expect("a title"),
+            module: None,
+            state: TaskState::Ready,
+            created_at: now,
+        })
+        .expect("the task is created");
+    let revision = AggregateRevision::INITIAL;
+    let target = AggregateRef::Task { task_id };
+    let intent = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "operation": "attention-writer-fixture"
+    }))
+    .expect("a canonical intent");
+
+    let local = store
+        .record_local_command(&NewLocalCommand {
+            project_id,
+            receipt_id: CommandReceiptId::generate(),
+            idempotency_key: IdempotencyKey::parse("attention-local").expect("a key"),
+            kind: CommandKind::ApproveIntake,
+            target,
+            target_revision: revision,
+            intent: intent.clone(),
+            created_at: now,
+        })
+        .expect("the local intent is recorded");
+    store
+        .complete_local_command(&local.idempotency_key, now)
+        .expect("the local command is confirmed");
+
+    let dispatch = store
+        .record_intent(&NewCommandIntent {
+            project_id,
+            receipt_id: CommandReceiptId::generate(),
+            idempotency_key: IdempotencyKey::parse("attention-dispatch").expect("a key"),
+            kind: CommandKind::ApproveIntake,
+            target,
+            target_revision: revision,
+            intent,
+            payload: CanonicalDocument::from_value(&serde_json::json!({
+                "schema_version": 1,
+                "operation": "attention-writer-dispatch"
+            }))
+            .expect("a canonical payload"),
+            desired: None,
+            not_before: now,
+            created_at: now,
+        })
+        .expect("the dispatch intent is recorded");
+    store
+        .claim_receipt_for_dispatch(
+            project_id,
+            dispatch.id,
+            &ExternalId::parse("attention-correlation").expect("a correlation"),
+            now,
+        )
+        .expect("the dispatch is claimed");
+
+    assert_eq!(
+        count.load(Ordering::SeqCst),
+        0,
+        "intent_persisted, dispatch_pending and ordinary local confirmations emit nothing (REQ-006)"
+    );
 }

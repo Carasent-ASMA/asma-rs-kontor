@@ -371,6 +371,22 @@ impl World {
         .await
     }
 
+    /// Start an empty Realm with a test-owned `attention.yml`.
+    pub(crate) async fn open_empty_with_attention(attention: &str) -> Self {
+        Self::compose_with_connector(
+            every_capability(),
+            true,
+            false,
+            false,
+            DEFAULT_CAPACITY,
+            WorldComposition {
+                attention: Some(attention.to_owned()),
+                ..WorldComposition::default()
+            },
+        )
+        .await
+    }
+
     /// Start the seeded Realm with a test-owned `attention.yml`.
     pub(crate) async fn open_with_attention(attention: &str) -> Self {
         Self::compose_with_connector(

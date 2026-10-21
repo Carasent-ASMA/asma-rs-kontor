@@ -867,8 +867,10 @@ An absent file means Kontor emits nothing; there is no default destination.
 The document mirrors the supervision policy's shape and rules:
 
 - `schema_version` must be `1`;
-- `sink.url` is one absolute `http`/`https` Workflows webhook, and
-  `sink.timeout_seconds` / `sink.max_attempts` are bounded;
+- `sinks` is a non-empty list; each entry names `channel: teams_workflow` (the
+  only implemented formatter), an absolute `http`/`https` URL, and bounded
+  `timeout_seconds` / `max_attempts`. The list is deliberate: a second channel
+  is another entry plus one formatting function (REQ-013);
 - `mention.target` is required: a channel post without a mention does not
   reliably raise a phone notification;
 - `emit.kinds` is a closed list of Kontor-semantic kinds. Raw agent attention
@@ -876,9 +878,11 @@ The document mirrors the supervision policy's shape and rules:
   push already owns it. `task_needs_human` always emits, even when omitted;
 - invalid documents refuse the start with a typed rule rather than a panic.
 
-Delivery is one `POST` per alert in a detached one-shot task: the command path
-never awaits it, a failed delivery is logged with its receipt id and discarded,
-and bounded retries stay inside that task. The waiting-seat observation class
+Delivery is one detached one-shot per alert: each configured destination gets
+its own bounded `POST` sequence (per-attempt `timeout_seconds`, at most
+`max_attempts`, plus backoff between attempts), the command path never awaits
+it, and a failed destination is logged with its receipt id and discarded without
+affecting other destinations or the command result. The waiting-seat observation class
 rides the `supervision.yml` cadence; it adds no resident task.
 
 The resident loop waits for the startup reconciliation barrier, first resumes

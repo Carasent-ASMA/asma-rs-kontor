@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use kontor_core::repository::{ProjectRepository, WorkflowRepository};
+use kontor_core::repository::{ProjectRepository, RunRepository, WorkflowRepository};
 use kontor_core::state::{TaskState, TaskTeamClosure};
 use serde_json::Value;
 use wiremock::matchers::{method, path};
@@ -16,12 +16,17 @@ use crate::harness::World;
 use crate::kickoff_world_with_attention;
 
 fn attention_yaml(url: &str, max_attempts: u32) -> String {
+    attention_yaml_with(url, 1, max_attempts)
+}
+
+fn attention_yaml_with(url: &str, timeout_seconds: u64, max_attempts: u32) -> String {
     format!(
         r#"schema_version: 1
-sink:
-  url: {url}/workflows/attention
-  timeout_seconds: 1
-  max_attempts: {max_attempts}
+sinks:
+  - channel: teams_workflow
+    url: {url}/workflows/attention
+    timeout_seconds: {timeout_seconds}
+    max_attempts: {max_attempts}
 mention:
   target: operator@example.com
 emit:
@@ -67,6 +72,7 @@ async fn a_task_entering_needs_human_emits_exactly_one_content_safe_alert() {
     let server = MockServer::start().await;
     mount_accepting(&server).await;
     let world = World::open_with_attention(&attention_yaml(&server.uri(), 1)).await;
+    let (_seat_run, _seat_snapshot) = world.launch().await;
 
     let current = world
         .daemon
@@ -108,6 +114,10 @@ async fn a_task_entering_needs_human_emits_exactly_one_content_safe_alert() {
     assert!(
         body.contains("needs_human"),
         "the payload names the settled state"
+    );
+    assert!(
+        body.contains("harness-seat"),
+        "the payload names the seat that last worked the task: {body}"
     );
     for forbidden in ["transcript", "assistant_response", "tool_result"] {
         assert!(
@@ -469,4 +479,368 @@ async fn a_waiting_seat_emits_once_and_re_observation_is_suppressed() {
         2,
         "a cadence tick is not a repeating alarm"
     );
+}
+
+/// Rule (a): a seat holding a pending permission raises exactly one alert, and
+/// re-observing the same evidence raises none.
+#[tokio::test]
+async fn a_pending_permission_emits_once_and_unchanged_evidence_is_suppressed() {
+    use kontor_core::id::ExternalId;
+
+    let server = MockServer::start().await;
+    mount_accepting(&server).await;
+    let world = World::open_with_attention(&attention_yaml(&server.uri(), 1)).await;
+    let (_run, snapshot) = world.launch().await;
+    world
+        .fake
+        .raise_permission(
+            &snapshot,
+            ExternalId::parse("permission-attention-1").expect("a permission id"),
+        )
+        .expect("the fake runtime holds the pending permission");
+
+    assert_eq!(
+        world
+            .daemon
+            .observe_waiting_seats_once()
+            .await
+            .expect("the waiting-seat scan runs"),
+        1,
+        "a non-empty pending-permission list is one alert"
+    );
+    let requests = wait_for_requests(&server, 1).await;
+    assert_eq!(requests.len(), 1);
+    let body = String::from_utf8(requests[0].body.clone()).expect("a JSON body");
+    assert!(body.contains("waiting_seat_pending_permission"), "{body}");
+
+    assert_eq!(
+        world
+            .daemon
+            .observe_waiting_seats_once()
+            .await
+            .expect("the second scan runs"),
+        0,
+        "unchanged evidence is suppressed"
+    );
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        server
+            .received_requests()
+            .await
+            .expect("the mock records requests")
+            .len(),
+        1,
+        "the destination saw exactly one alert"
+    );
+}
+
+/// The abandon receipt is born confirmed and raises exactly one command alert;
+/// an exact idempotent replay raises none.
+#[tokio::test]
+async fn an_abandon_receipt_emits_once_and_an_exact_replay_emits_none() {
+    use kontor_core::id::{
+        AgentRunId, CanonicalDocument, CommandReceiptId, IdempotencyKey, RoleKey,
+    };
+    use kontor_core::receipt::AggregateRef;
+    use kontor_core::repository::{NewAbandonReceipt, NewAgentRun};
+
+    let server = MockServer::start().await;
+    mount_accepting(&server).await;
+    let world = World::open_with_attention(&attention_yaml(&server.uri(), 1)).await;
+    let run = AgentRunId::generate();
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.create_agent_run(&NewAgentRun {
+                id: run,
+                project_id: world.project,
+                team_run_id: world.team_run,
+                parent_agent_run_id: None,
+                role: RoleKey::parse("abandon-seat").expect("a role"),
+                account_profile_id: None,
+                binding: None,
+                created_at: kontor_api::now(),
+            })
+        })
+        .expect("an unbound run is created");
+    let revision = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_agent_run(world.project, run))
+        .expect("the run reads")
+        .expect("the run exists")
+        .revision;
+    let receipt_id = CommandReceiptId::generate();
+    let request = NewAbandonReceipt {
+        project_id: world.project,
+        receipt_id,
+        idempotency_key: IdempotencyKey::parse("attention-abandon").expect("a key"),
+        target: AggregateRef::AgentRun { agent_run_id: run },
+        target_revision: revision,
+        intent: CanonicalDocument::from_value(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "attention_abandon_fixture"
+        }))
+        .expect("a canonical decision"),
+        recorded_at: kontor_api::now(),
+    };
+    world
+        .daemon
+        .state()
+        .with_store(|store| store.record_abandon_receipt(&request))
+        .expect("the abandon receipt is confirmed");
+
+    let requests = wait_for_requests(&server, 1).await;
+    assert_eq!(requests.len(), 1, "one abandon is one alert");
+    let body = String::from_utf8(requests[0].body.clone()).expect("a JSON body");
+    assert!(body.contains("command_confirmed"), "{body}");
+    assert!(
+        body.contains(&world.task.to_string()),
+        "the command alert names its task: {body}"
+    );
+    assert!(
+        body.contains("abandon-seat"),
+        "the command alert names its seat: {body}"
+    );
+
+    world
+        .daemon
+        .state()
+        .with_store(|store| store.record_abandon_receipt(&request))
+        .expect("the exact replay answers with the first receipt");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        server
+            .received_requests()
+            .await
+            .expect("the mock records requests")
+            .len(),
+        1,
+        "an exact replay does not raise a second alert"
+    );
+}
+
+/// B2 / TEST-017: a second rejection by the same principal parks the task and
+/// raises exactly one `task_parked` alert through the production store path the
+/// daemon's reject route calls.
+#[tokio::test]
+async fn a_second_rejection_parks_the_task_and_emits_exactly_one_alert() {
+    use kontor_core::id::{CanonicalDocument, ExternalId, TaskId};
+    use kontor_core::realm::ReceiptEnvelope;
+    use kontor_core::receipt::{AggregateRef, CommandKind};
+    use kontor_core::repository::{
+        NewGateEvaluation, NewLocalCommand, ProjectRepository, WorkflowRepository,
+    };
+    use kontor_core::state::GateVerdict;
+
+    let server = MockServer::start().await;
+    mount_accepting(&server).await;
+    let world = World::open_empty_with_attention(&attention_yaml(&server.uri(), 1)).await;
+    world.script(super::HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = super::seated(&world, "attention-park").await;
+    let inspector = super::inspector_run(&world, &runs).await;
+    let (uri, revision, gate) = super::gate_record_target(&world, &seed).await;
+    let workflow = super::active_workflow(&world, &seed);
+    let gate_spec = workflow
+        .snapshot
+        .definition
+        .gates
+        .iter()
+        .find(|candidate| candidate.id.as_str() == gate)
+        .expect("the projected gate is frozen")
+        .clone();
+    let principal = "attention-reviewer-principal";
+
+    let first = crate::harness::Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": revision,
+            "verdict": "rejected",
+            "evaluator_role": gate_spec.evaluator_roles[0].as_str(),
+            "evaluator_account": seed.account,
+            "reviewer_principal": principal,
+            "evidence": [],
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("attention-park-reject-1")
+    .send(&world)
+    .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    assert_eq!(
+        server
+            .received_requests()
+            .await
+            .expect("the mock records requests")
+            .len(),
+        0,
+        "the first rejection does not park"
+    );
+
+    let project = kontor_core::id::ProjectId::parse(&seed.project).expect("a project id");
+    let task_id = TaskId::parse(&seed.task).expect("a task id");
+    let task = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_task(project, task_id))
+        .expect("the task reads")
+        .expect("the task exists");
+    let workflow = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_active_task_workflow(project, task_id))
+        .expect("the workflow reads")
+        .expect("the workflow exists");
+    let now = kontor_api::now();
+    let command = ReceiptEnvelope::new(
+        world.daemon.state().realm_id(),
+        NewLocalCommand {
+            project_id: project,
+            receipt_id: kontor_core::id::CommandReceiptId::generate(),
+            idempotency_key: kontor_core::id::IdempotencyKey::parse("attention-park-reject-2")
+                .expect("a key"),
+            kind: CommandKind::RecordGateVerdict,
+            target: AggregateRef::Task { task_id },
+            target_revision: task.revision,
+            intent: CanonicalDocument::from_value(&serde_json::json!({
+                "schema_version": 1,
+                "operation": "attention_park_second_rejection",
+                "gate": gate,
+            }))
+            .expect("a canonical intent"),
+            created_at: now,
+        },
+    );
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.append_gate_evaluation_with_intent(
+                &NewGateEvaluation {
+                    project_id: project,
+                    workflow_id: workflow.id,
+                    gate: kontor_core::id::GateKey::parse(&gate).expect("a gate"),
+                    verdict: GateVerdict::Rejected,
+                    evaluator_role: gate_spec.evaluator_roles[0].clone(),
+                    evaluator_account: kontor_core::id::AccountProfileId::parse(&seed.account)
+                        .expect("an account"),
+                    evidence: Vec::new(),
+                    agent_run_id: Some(
+                        kontor_core::id::AgentRunId::parse(&inspector).expect("a run id"),
+                    ),
+                    session_evidence: None,
+                    reviewer_principal: Some(ExternalId::parse(principal).expect("a principal")),
+                    policy_evaluation_id: None,
+                    recorded_at: now,
+                },
+                workflow.revision,
+                &command,
+            )
+        })
+        .expect("the second rejection parks the task");
+
+    let requests = wait_for_requests(&server, 1).await;
+    assert_eq!(requests.len(), 1, "the park is exactly one alert");
+    let body = String::from_utf8(requests[0].body.clone()).expect("a JSON body");
+    assert!(body.contains("task_parked"), "{body}");
+    let task = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_task(project, task_id))
+        .expect("the task reads")
+        .expect("the task exists");
+    assert_eq!(task.state, TaskState::Parked);
+}
+
+/// TEST-004: a timeout is logged and discarded; the command result is unchanged.
+#[tokio::test]
+async fn a_delivery_timeout_leaves_the_command_result_unchanged() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/workflows/attention"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_millis(1500)))
+        .mount(&server)
+        .await;
+    let world = World::open_with_attention(&attention_yaml_with(&server.uri(), 1, 1)).await;
+
+    let moved = transition(&world, TaskState::Blocked).await;
+    assert_eq!(moved.state, TaskState::Blocked);
+    assert_eq!(
+        wait_for_requests(&server, 1).await.len(),
+        1,
+        "the single attempt reached the destination"
+    );
+    tokio::time::sleep(Duration::from_millis(1700)).await;
+    let current = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_task(world.project, world.task))
+        .expect("the task reads")
+        .expect("the task exists");
+    assert_eq!(
+        current.state,
+        TaskState::Blocked,
+        "a timeout never changes the command result"
+    );
+}
+
+/// TEST-004: connection refusal is logged and discarded; the command succeeds.
+#[tokio::test]
+async fn a_connection_refusal_leaves_the_command_result_unchanged() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+    let address = listener.local_addr().expect("the bound address");
+    drop(listener);
+    let world = World::open_with_attention(&format!(
+        r#"schema_version: 1
+sinks:
+  - channel: teams_workflow
+    url: http://{address}/workflows/attention
+    timeout_seconds: 1
+    max_attempts: 2
+mention:
+  target: operator@example.com
+emit:
+  kinds:
+    - task_blocked
+"#
+    ))
+    .await;
+
+    let moved = transition(&world, TaskState::Blocked).await;
+    assert_eq!(
+        moved.state,
+        TaskState::Blocked,
+        "a refused connection never changes the command result"
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+}
+
+async fn transition(world: &World, to: TaskState) -> kontor_core::repository::Task {
+    let current = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_task(world.project, world.task))
+        .expect("the seeded task reads")
+        .expect("the seeded task exists");
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.transition_task(&kontor_core::repository::TaskTransitionRequest {
+                project_id: world.project,
+                task_id: world.task,
+                expected_revision: current.revision,
+                to,
+                resume_receipt: None,
+                reopen: false,
+                run_outcome: None,
+                produced_artifacts: std::collections::BTreeSet::new(),
+                completed_phases: std::collections::BTreeSet::new(),
+                team_closure: TaskTeamClosure::NoTeam,
+                occurred_at: kontor_api::now(),
+            })
+        })
+        .expect("the task transition commits")
 }

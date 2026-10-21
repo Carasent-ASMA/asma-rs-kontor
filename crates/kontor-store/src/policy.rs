@@ -56,8 +56,8 @@ use kontor_core::state::{
 };
 use kontor_policy::model::{
     ApprovalReceipt, ApprovalReceiptId, ArtifactEvidenceId, AuthoritySource, EscalationCause,
-    GateWaiverId, GuardrailEvaluation, GuardrailRuleKey, PolicyVerdict, ReasonCode,
-    RecoveryEpisode, RecoveryEpisodeId, RecoveryStatus, RecoveryStepKind,
+    EvaluationSubject, GateWaiverId, GuardrailEvaluation, GuardrailRuleKey, PolicyVerdict,
+    ReasonCode, RecoveryEpisode, RecoveryEpisodeId, RecoveryStatus, RecoveryStepKind, SubjectKind,
 };
 use kontor_policy::recovery::{Escalation, RecoveryRequest, RecoveryTransition};
 use rusqlite::{OptionalExtension, Transaction, params};
@@ -669,17 +669,7 @@ impl SqliteStore {
             let parked_task = finish_park(&transaction, request, workflow.task_id, &parked)?;
             transaction.commit().map_err(backend)?;
             if let Some(task) = parked_task {
-                self.notify_attention(AttentionSignal {
-                    realm_id: self.realm_id(),
-                    project_id: task.project_id,
-                    mini_project_id: task.mini_project_id,
-                    task_id: Some(task.task_id),
-                    task_title: Some(task.title),
-                    command_kind: Some(CommandKind::AbandonRun),
-                    receipt_id: Some(parked.closure_receipt_id),
-                    kind: AttentionSignalKind::TaskParked,
-                    occurred_at: task.occurred_at,
-                });
+                notify_parked_task(self, task, parked.closure_receipt_id);
             }
             return Ok(RejectionOutcome {
                 sequence,
@@ -824,7 +814,7 @@ fn insert_policy_evaluation(
 ///
 /// Rows with no recorded principal are attributable to nobody and are skipped by
 /// the predicate rather than folded into somebody's stream.
-fn rejections_since_pass_in(
+pub(crate) fn rejections_since_pass_in(
     transaction: &Transaction<'_>,
     project_id: ProjectId,
     workflow_id: TaskWorkflowId,
@@ -860,13 +850,73 @@ fn rejections_since_pass_in(
     Ok(count)
 }
 
+/// The identities a production rejection path uses when the count parks.
+///
+/// The caller cannot know the count before the transaction opens, so the plan
+/// is generated here; every identity is unused unless the rejection reaches the
+/// threshold.
+pub(crate) fn auto_park_plan(gate: &GateKey, recorded_at: Timestamp) -> RepositoryResult<ParkPlan> {
+    let inputs = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "rule": "second_rejection_parks",
+        "gate": gate.as_str(),
+    }))?;
+    let inputs_hash = inputs.hash().clone();
+    let closure_receipt_id = CommandReceiptId::generate();
+    Ok(ParkPlan {
+        evaluation: GuardrailEvaluation {
+            id: GuardrailEvaluationId::generate(),
+            rule_key: GuardrailRuleKey::SecondRejectionParks,
+            rule_version: SpecVersion::FIRST,
+            subject: EvaluationSubject {
+                kind: SubjectKind::Gate,
+                id: ExternalId::parse(gate.as_str())?,
+            },
+            inputs,
+            inputs_hash,
+            verdict: PolicyVerdict::Park,
+            reason_code: ReasonCode::SecondRejectionParks,
+            evidence_refs: Vec::new(),
+            recorded_at,
+        },
+        episode_id: RecoveryEpisodeId::generate(),
+        closure_receipt_id,
+        closure_key: IdempotencyKey::parse(&format!("auto-park-{closure_receipt_id}"))?,
+        closure_intent: CanonicalDocument::from_value(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "gate_rejection_park",
+            "gate": gate.as_str(),
+        }))?,
+    })
+}
+
+/// Emit the post-commit `TaskParked` signal for a park either path wrote.
+pub(crate) fn notify_parked_task(
+    store: &SqliteStore,
+    task: ParkedTask,
+    closure_receipt_id: CommandReceiptId,
+) {
+    store.notify_attention(AttentionSignal {
+        realm_id: store.realm_id(),
+        project_id: task.project_id,
+        mini_project_id: task.mini_project_id,
+        task_id: Some(task.task_id),
+        task_title: Some(task.title),
+        seat: task.seat,
+        command_kind: Some(CommandKind::AbandonRun),
+        receipt_id: Some(closure_receipt_id),
+        kind: AttentionSignalKind::TaskParked,
+        occurred_at: task.occurred_at,
+    });
+}
+
 /// The half of a park that must happen before the rejection row exists.
 ///
 /// Refusals live here, together: an unusable plan, a rejection that names no
 /// run, a run that is already closed. Every one of them is raised before the
 /// first row is written, so a park that cannot complete takes the rejection down
 /// with it rather than leaving a rejection whose consequences never happened.
-fn prepare_park(
+pub(crate) fn prepare_park(
     transaction: &Transaction<'_>,
     request: &GateRejection,
     task_id: TaskId,
@@ -922,7 +972,7 @@ fn prepare_park(
 }
 
 /// The half of a park that happens once the rejection is on record.
-fn finish_park(
+pub(crate) fn finish_park(
     transaction: &Transaction<'_>,
     request: &GateRejection,
     task_id: TaskId,
@@ -1026,20 +1076,25 @@ fn finish_park(
         )
         .map_err(backend)?;
 
-    park_task(
+    let parked_task = park_task(
         transaction,
         request.project_id,
         task_id,
         request.recorded_at,
-    )
+    )?;
+    Ok(parked_task.map(|task| ParkedTask {
+        seat: Some(run.role.clone()),
+        ..task
+    }))
 }
 
 /// The task fact a gate-rejection park settled, for post-commit observation.
-struct ParkedTask {
+pub(crate) struct ParkedTask {
     project_id: ProjectId,
     mini_project_id: Option<MiniProjectId>,
     task_id: TaskId,
     title: ExternalName,
+    seat: Option<RoleKey>,
     occurred_at: Timestamp,
 }
 
@@ -1174,6 +1229,7 @@ fn park_task(
             .transpose()?,
         task_id,
         title: ExternalName::parse(&title)?,
+        seat: None,
         occurred_at: at,
     }))
 }

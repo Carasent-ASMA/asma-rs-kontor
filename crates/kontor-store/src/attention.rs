@@ -15,7 +15,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
 use kontor_core::id::{
-    CommandReceiptId, ExternalName, MiniProjectId, ProjectId, RealmId, TaskId, Timestamp,
+    CommandReceiptId, ExternalName, MiniProjectId, ProjectId, RealmId, RoleKey, TaskId, Timestamp,
 };
 use kontor_core::receipt::CommandKind;
 use kontor_core::state::TaskState;
@@ -77,6 +77,8 @@ pub struct AttentionSignal {
     pub task_id: Option<TaskId>,
     /// The task's normalized human title.
     pub task_title: Option<ExternalName>,
+    /// The seat/role code that owns or last worked the task, when known.
+    pub seat: Option<RoleKey>,
     /// The command kind, when the signal names a receipt.
     pub command_kind: Option<CommandKind>,
     /// The receipt, when the signal names one.

@@ -14,7 +14,9 @@ use std::time::Duration;
 
 use tracing::{info, warn};
 
-use crate::attention::config::{AttentionPolicy, MentionPolicy, SinkPolicy};
+use crate::attention::config::{
+    AttentionPolicy, DestinationChannel, DestinationPolicy, MentionPolicy,
+};
 use crate::attention::payload::AttentionPayload;
 
 /// Why one delivery attempt did not succeed.
@@ -41,29 +43,42 @@ pub enum SinkError {
     Exhausted,
 }
 
-/// One configured Teams Workflows destination.
+/// One composed destination and its HTTP client.
 #[derive(Debug)]
-pub struct AttentionSink {
+struct Destination {
     client: reqwest::Client,
-    sink: SinkPolicy,
+    policy: DestinationPolicy,
     mention: MentionPolicy,
 }
 
+/// The configured destination list, composed once at start.
+#[derive(Debug)]
+pub struct AttentionSink {
+    destinations: Vec<Destination>,
+}
+
 impl AttentionSink {
-    /// Compose the configured destination.
+    /// Compose every configured destination.
     ///
     /// # Errors
-    /// Returns [`SinkError::Client`] when the HTTP client cannot be built.
+    /// Returns [`SinkError::Client`] when an HTTP client cannot be built.
     pub fn from_policy(policy: &AttentionPolicy) -> Result<Self, SinkError> {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(policy.sink.timeout_seconds))
-            .build()
-            .map_err(|_| SinkError::Client)?;
-        Ok(Self {
-            client,
-            sink: policy.sink.clone(),
-            mention: policy.mention.clone(),
-        })
+        let mut destinations = Vec::with_capacity(policy.destinations.len());
+        for destination in &policy.destinations {
+            match destination.channel {
+                DestinationChannel::TeamsWorkflow => {}
+            }
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(destination.timeout_seconds))
+                .build()
+                .map_err(|_| SinkError::Client)?;
+            destinations.push(Destination {
+                client,
+                policy: destination.clone(),
+                mention: policy.mention.clone(),
+            });
+        }
+        Ok(Self { destinations })
     }
 
     /// Spawn exactly one detached delivery task for one alert.
@@ -107,14 +122,39 @@ impl AttentionSink {
     /// # Errors
     /// Returns the final [`SinkError`] after every configured attempt failed.
     pub async fn deliver_once(&self, payload: &AttentionPayload) -> Result<u32, SinkError> {
+        let mut attempts = 0_u32;
+        let mut first_failure = None;
+        for destination in &self.destinations {
+            match destination.deliver(payload).await {
+                Ok(used) => attempts = attempts.max(used),
+                Err(error) => {
+                    warn!(
+                        kind = payload.kind.as_str(),
+                        receipt = ?payload.receipt_id,
+                        channel = destination.policy.channel.as_str(),
+                        detail = %error,
+                        "one attention destination failed; other destinations continue"
+                    );
+                    if first_failure.is_none() {
+                        first_failure = Some(error);
+                    }
+                }
+            }
+        }
+        first_failure.map_or(Ok(attempts), Err)
+    }
+}
+
+impl Destination {
+    async fn deliver(&self, payload: &AttentionPayload) -> Result<u32, SinkError> {
         let document = teams_document(payload, &self.mention.target);
         let mut last = SinkError::Exhausted;
-        for attempt in 1..=self.sink.max_attempts {
+        for attempt in 1..=self.policy.max_attempts {
             match self
                 .client
-                .post(&self.sink.url)
+                .post(&self.policy.url)
                 .json(&document)
-                .timeout(Duration::from_secs(self.sink.timeout_seconds))
+                .timeout(Duration::from_secs(self.policy.timeout_seconds))
                 .send()
                 .await
             {
@@ -150,7 +190,7 @@ impl AttentionSink {
                     );
                 }
             }
-            if attempt < self.sink.max_attempts {
+            if attempt < self.policy.max_attempts {
                 tokio::time::sleep(retry_delay(attempt)).await;
             }
         }
@@ -207,8 +247,8 @@ pub fn teams_document(payload: &AttentionPayload, mention: &str) -> serde_json::
                 "version": "1.4",
                 "body": [
                     {"type": "TextBlock", "text": mention_text, "wrap": true},
-                    {"type": "TextBlock", "text": payload.title, "weight": "Bolder", "wrap": true},
-                    {"type": "TextBlock", "text": payload.body, "wrap": true},
+                    {"type": "TextBlock", "text": escape_markdown_text(&payload.title), "weight": "Bolder", "wrap": true},
+                    {"type": "TextBlock", "text": escape_markdown_text(&payload.body), "wrap": true},
                     {"type": "FactSet", "facts": facts}
                 ],
                 "actions": [{
@@ -229,12 +269,70 @@ pub fn teams_document(payload: &AttentionPayload, mention: &str) -> serde_json::
 }
 
 fn fact(name: &str, value: &str) -> serde_json::Value {
-    serde_json::json!({"title": name, "value": value})
+    serde_json::json!({"title": name, "value": escape_markdown(value)})
+}
+
+/// Neutralize Markdown at the destination edge.
+///
+/// The payload already refuses active Markdown punctuation, but a destination
+/// must not depend on that contract holding for a future caller. Escaping here
+/// means `[x](url)` and `**bold**` render as literal text even if they arrive.
+fn escape_markdown(value: &str) -> String {
+    escape_with(value, false)
+}
+
+/// Title and body may also contain emphasis underscores; facts are identifiers
+/// such as `needs_human`, whose underscores must stay readable.
+fn escape_markdown_text(value: &str) -> String {
+    escape_with(value, true)
+}
+
+fn escape_with(value: &str, underscore: bool) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        if matches!(
+            character,
+            '\\' | '`' | '*' | '[' | ']' | '(' | ')' | '#' | '!' | '|' | '>' | '~'
+        ) || (underscore && character == '_')
+        {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_destination_escapes_markdown_even_for_a_crafted_payload() {
+        let mut payload = crate::attention::payload::AttentionPayload::new(
+            crate::attention::payload::AlertKind::TaskNeedsHuman,
+            crate::attention::payload::Severity::Critical,
+            kontor_core::id::RealmId::generate(),
+            kontor_core::id::ProjectId::generate(),
+            None,
+            Some(kontor_core::id::TaskId::generate()),
+            None,
+            None,
+            None,
+            crate::attention::payload::ResultingState::NeedsHuman,
+            kontor_core::id::Timestamp::now(),
+            "http://127.0.0.1:7717/v1/projects/x/tasks/y".to_owned(),
+            "Task needs a human".to_owned(),
+            "The task entered needs_human.".to_owned(),
+        )
+        .expect("a valid payload");
+        payload.title = "[click](https://example)".to_owned();
+        payload.body = "**bold** and _emphasis_".to_owned();
+        let document = teams_document(&payload, "operator@example.com");
+        let rendered = document.to_string();
+        assert!(rendered.contains("\\\\[click\\\\]"), "{rendered}");
+        assert!(rendered.contains("\\\\*\\\\*bold\\\\*\\\\*"), "{rendered}");
+        assert!(rendered.contains("\\\\_emphasis\\\\_"), "{rendered}");
+    }
 
     #[test]
     fn the_destination_document_is_the_only_place_markup_appears() {

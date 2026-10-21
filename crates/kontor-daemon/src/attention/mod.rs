@@ -171,7 +171,7 @@ impl AttentionChannel {
             signal.project_id,
             signal.mini_project_id,
             signal.task_id,
-            None,
+            signal.seat,
             signal.command_kind,
             signal.receipt_id,
             resulting_state,

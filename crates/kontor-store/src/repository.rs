@@ -126,6 +126,7 @@ use kontor_core::ticket::{
     ExternalCommentRevision, ExternalTicketObservation, ExternalWorkflowSpec, StatusConflict,
     StatusTransitionReceipt, TicketFieldSpec, TicketSyncProjection,
 };
+use kontor_policy::REJECTIONS_BEFORE_PARK;
 
 type EpicTransitionIntentRow = (
     String,
@@ -14831,11 +14832,103 @@ fn emit_task_attention(store: &SqliteStore, task: &Task, from: TaskState) {
         mini_project_id: task.mini_project_id,
         task_id: Some(task.id),
         task_title: Some(task.title.clone()),
+        seat: task_seat(store, task.project_id, task.id),
         command_kind: None,
         receipt_id: None,
         kind,
         occurred_at: task.updated_at,
     });
+}
+
+/// The seat/role that last worked a task. REQ-005 wants a seat on every alert;
+/// a task transition has no caller-supplied run, so name the most recent one.
+fn task_seat(store: &SqliteStore, project_id: ProjectId, task_id: TaskId) -> Option<RoleKey> {
+    store
+        .connection
+        .query_row(
+            "SELECT runs.role_key
+             FROM agent_runs AS runs
+             JOIN team_runs AS teams
+               ON teams.project_id = runs.project_id AND teams.id = runs.team_run_id
+             WHERE teams.project_id = ?1 AND teams.task_id = ?2
+             ORDER BY runs.created_at DESC, runs.id DESC
+             LIMIT 1",
+            params![project_id.to_string(), task_id.to_string()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+        .and_then(|role| RoleKey::parse(&role).ok())
+}
+
+/// The task and seat an abandoned aggregate belongs to, for the alert allowlist.
+struct AbandonContext {
+    task_id: TaskId,
+    mini_project_id: Option<MiniProjectId>,
+    title: ExternalName,
+    seat: Option<RoleKey>,
+}
+
+fn abandon_context(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    target: &AggregateRef,
+) -> RepositoryResult<Option<AbandonContext>> {
+    let (team_run_id, seat): (TeamRunId, Option<RoleKey>) = match target {
+        AggregateRef::AgentRun { agent_run_id } => {
+            let row: Option<(String, String)> = transaction
+                .query_row(
+                    "SELECT team_run_id, role_key FROM agent_runs
+                     WHERE project_id = ?1 AND id = ?2",
+                    params![project_id.to_string(), agent_run_id.to_string()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(backend)?;
+            let Some((team_run_id, role)) = row else {
+                return Ok(None);
+            };
+            (
+                TeamRunId::parse(&team_run_id)?,
+                Some(RoleKey::parse(&role)?),
+            )
+        }
+        AggregateRef::TeamRun { team_run_id } => (*team_run_id, None),
+        _ => return Ok(None),
+    };
+    let task_id: Option<String> = transaction
+        .query_row(
+            "SELECT task_id FROM team_runs WHERE project_id = ?1 AND id = ?2",
+            params![project_id.to_string(), team_run_id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?;
+    let Some(task_id) = task_id else {
+        return Ok(None);
+    };
+    let task_id = TaskId::parse(&task_id)?;
+    let row: Option<(String, Option<String>)> = transaction
+        .query_row(
+            "SELECT title, mini_project_id FROM tasks WHERE project_id = ?1 AND id = ?2",
+            params![project_id.to_string(), task_id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(backend)?;
+    let Some((title, mini_project_id)) = row else {
+        return Ok(None);
+    };
+    Ok(Some(AbandonContext {
+        task_id,
+        mini_project_id: mini_project_id
+            .as_deref()
+            .map(MiniProjectId::parse)
+            .transpose()?,
+        title: ExternalName::parse(&title)?,
+        seat,
+    }))
 }
 
 fn command_receipt_by_key(
@@ -16429,6 +16522,49 @@ fn parse_gate_record_result(
     Ok((TaskWorkflowId::parse(workflow)?, sequence))
 }
 
+/// Prepare the automatic park a rejection reaches, before its row exists.
+fn prepare_park_if_due(
+    transaction: &Transaction<'_>,
+    request: &NewGateEvaluation,
+    task_id: TaskId,
+) -> RepositoryResult<Option<(crate::policy::GateRejection, crate::policy::ParkedRecovery)>> {
+    if request.verdict != GateVerdict::Rejected {
+        return Ok(None);
+    }
+    let (Some(principal), Some(agent_run_id)) =
+        (request.reviewer_principal.as_ref(), request.agent_run_id)
+    else {
+        return Ok(None);
+    };
+    let count = crate::policy::rejections_since_pass_in(
+        transaction,
+        request.project_id,
+        request.workflow_id,
+        &request.gate,
+        principal,
+    )?
+    .saturating_add(1);
+    if count < REJECTIONS_BEFORE_PARK {
+        return Ok(None);
+    }
+    let plan = crate::policy::auto_park_plan(&request.gate, request.recorded_at)?;
+    let rejection = crate::policy::GateRejection {
+        project_id: request.project_id,
+        workflow_id: request.workflow_id,
+        gate: request.gate.clone(),
+        evaluator_role: request.evaluator_role.clone(),
+        evaluator_account: request.evaluator_account,
+        reviewer_principal: principal.clone(),
+        agent_run_id: Some(agent_run_id),
+        evidence: request.evidence.clone(),
+        recorded_at: request.recorded_at,
+        park: plan,
+    };
+    let parked =
+        crate::policy::prepare_park(transaction, &rejection, task_id, request.recorded_at)?;
+    Ok(Some((rejection, parked)))
+}
+
 fn gate_record_result_in_transaction(
     transaction: &Transaction<'_>,
     receipt: &CommandReceipt,
@@ -16489,7 +16625,16 @@ impl SqliteStore {
             )
             .map_err(backend)?;
         revision_of(task_revision)?.expect("task", intent.target_revision)?;
-        let (sequence, routed) = append_gate_evaluation_in_transaction(&transaction, request)?;
+        // A second rejection by the same principal parks the work. Prepare the
+        // park before the evaluation row exists so that row can cite the
+        // guardrail evaluation that caused it; the evaluation and the park then
+        // commit in this same transaction.
+        let prepared_park = prepare_park_if_due(&transaction, request, workflow.task_id)?;
+        let mut evaluation = request.clone();
+        if let Some((_, parked)) = &prepared_park {
+            evaluation.policy_evaluation_id = Some(parked.evaluation_id);
+        }
+        let (sequence, routed) = append_gate_evaluation_in_transaction(&transaction, &evaluation)?;
         let mut payload: serde_json::Value = from_json(intent.intent.json())?;
         payload
             .as_object_mut()
@@ -16538,7 +16683,16 @@ impl SqliteStore {
                 },
             )?;
         }
+        let parked_task = match &prepared_park {
+            Some((rejection, parked)) => {
+                crate::policy::finish_park(&transaction, rejection, workflow.task_id, parked)?
+            }
+            None => None,
+        };
         transaction.commit().map_err(backend)?;
+        if let (Some(task), Some((_, parked))) = (parked_task, &prepared_park) {
+            crate::policy::notify_parked_task(self, task, parked.closure_receipt_id);
+        }
         Ok((sequence, receipt))
     }
 
@@ -18225,13 +18379,17 @@ impl RunRepository for SqliteStore {
             Some(&evidence),
             request.recorded_at,
         )?;
+        // The alert must name the task and seat the abandoned aggregate belongs
+        // to (REQ-005), so resolve that context inside the same transaction.
+        let context = abandon_context(&transaction, request.project_id, &target)?;
         transaction.commit().map_err(backend)?;
         self.notify_attention(AttentionSignal {
             realm_id: self.realm_id(),
             project_id: request.project_id,
-            mini_project_id: None,
-            task_id: None,
-            task_title: None,
+            mini_project_id: context.as_ref().and_then(|context| context.mini_project_id),
+            task_id: context.as_ref().map(|context| context.task_id),
+            task_title: context.as_ref().map(|context| context.title.clone()),
+            seat: context.as_ref().and_then(|context| context.seat.clone()),
             command_kind: Some(CommandKind::AbandonRun),
             receipt_id: Some(request.receipt_id),
             kind: AttentionSignalKind::CommandConfirmed,
