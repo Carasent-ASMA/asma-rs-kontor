@@ -5,7 +5,7 @@ import { anchoredPanelOpen, menuFrame, type MenuFrame } from "./anchored-menu";
 
 type Anchor = RefObject<View | null>;
 type Help = { anchor: Anchor; text: string; focused: boolean };
-type Controller = { id: string; show(anchor: Anchor, text: string, focused?: boolean): void; leave(anchor: Anchor, blur?: boolean): void; enter(): void; dismiss(): void };
+type Controller = { id: string; show(anchor: Anchor, text: string, focused?: boolean): void; refresh(anchor: Anchor, text: string): void; leave(anchor: Anchor, blur?: boolean): void; enter(): void; dismiss(): void };
 const HelpContext = createContext<Controller | null>(null);
 type KeyEvent = { key: string; target?: unknown; preventDefault(): void; stopPropagation(): void; stopImmediatePropagation?(): void };
 type EventTarget = { addEventListener(type: string, listener: (event: KeyEvent) => void, capture?: boolean): void; removeEventListener(type: string, listener: (event: KeyEvent) => void, capture?: boolean): void };
@@ -26,20 +26,29 @@ export function ControlHelpProvider({ children, colors }: { children: ReactNode;
   const controller = useMemo<Controller>(() => {
     const cancel = () => { if (timer.current !== null) clearTimeout(timer.current); timer.current = null; };
     const dismiss = () => { cancel(); revision.current++; current.current = null; setHelp(null); setFrame(null); };
+    const place = (next: Help) => {
+      const token = ++revision.current;
+      current.current = next;
+      root.current?.measureInWindow((rootX, rootY, width, height) => next.anchor.current?.measureInWindow((x, y, w, h) => {
+        if (token !== revision.current || !w || !h || !width || !height) return;
+        if (x + w < rootX || x > rootX + width || y + h < rootY || y > rootY + height) { setHelp(null); setFrame(null); return; }
+        setFrame(menuFrame({ x: x - rootX, y: y - rootY, width: w, height: h }, { width, height }, { align: "start", width: 360, gap: 0, margin: 6, maxHeight: Math.min(220, height - 12) }));
+        setHelp(next);
+      }));
+    };
     return {
       id: helpId, dismiss, enter: cancel,
       show(anchor, text, focused = false) {
         if (!text || (current.current?.focused && !focused)) return;
         cancel();
-        const next = { anchor, text, focused };
-        const token = ++revision.current;
-        current.current = next;
-        root.current?.measureInWindow((rootX, rootY, width, height) => anchor.current?.measureInWindow((x, y, w, h) => {
-          if (token !== revision.current || !w || !h || !width || !height) return;
-          if (x + w < rootX || x > rootX + width || y + h < rootY || y > rootY + height) { setHelp(null); setFrame(null); return; }
-          setFrame(menuFrame({ x: x - rootX, y: y - rootY, width: w, height: h }, { width, height }, { align: "start", width: 360, gap: 0, margin: 6, maxHeight: Math.min(220, height - 12) }));
-          setHelp(next);
-        }));
+        place({ anchor, text, focused });
+      },
+      refresh(anchor, text) {
+        const value = current.current;
+        if (!value || value.anchor !== anchor || value.text === text) return;
+        if (!text) { dismiss(); return; }
+        // Preserve focus ownership and any pending pointer-leave dismissal.
+        place({ ...value, text });
       },
       leave(anchor, blur = false) {
         if (current.current?.anchor !== anchor) return;
@@ -95,7 +104,13 @@ export function useControlHelp(text: string, forwarded?: Ref<View>) {
   return {
     bindings: {
       "aria-describedby": text ? controller?.id : undefined,
-      ref: (node: View | null) => { anchor.current = node; if (typeof forwarded === "function") forwarded(node); else if (forwarded) forwarded.current = node; },
+      ref: (node: View | null) => {
+        anchor.current = node;
+        if (typeof forwarded === "function") forwarded(node); else if (forwarded) forwarded.current = node;
+        // The existing ref is committed with the latest text. Only the active
+        // anchor refreshes; no row effects, polling, or dismissed-help reopening.
+        if (node) controller?.refresh(anchor, text);
+      },
       onHoverIn: () => controller?.show(anchor, text, focused.current),
       onHoverOut: () => controller?.leave(anchor),
       onFocus: () => { focused.current = true; controller?.show(anchor, text, true); },

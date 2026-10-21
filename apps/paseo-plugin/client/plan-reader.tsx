@@ -166,11 +166,11 @@ export function PlanReader(props: Props) {
             {needle ? <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>{matches} match{matches === 1 ? "" : "es"}</Text> : null}
           </View>
           {props.onGraph ? <Action small={!props.compact} label="Dependency graph" colors={colors} onPress={props.onGraph} /> : null}
-          {props.onCopy && content !== null ? <Action small={!props.compact} label="Copy Markdown" accessibilityLabel="Copy the exact Markdown source" colors={colors} onPress={() => props.onCopy!(content, "Plan Markdown")} /> : null}
+          {props.onCopy && content !== null ? <Action small={!props.compact} label="Copy Markdown" icon="Copy" iconOnly accessibilityLabel="Copy the exact Markdown source" colors={colors} onPress={() => props.onCopy!(content, "Plan Markdown")} /> : null}
         </View>
         {status ? <View style={{ ...width, flexDirection: "row", alignItems: "center", gap: 8, paddingTop: 4 }}>
           <Text accessibilityRole="text" testID="plan-target-status" style={{ flex: 1, color: declaration ? colors.foreground : colors.statusWarning, fontSize: 12 }}>{status}</Text>
-          <Action small={!props.compact} label="Clear" accessibilityLabel={`Clear ${view.target!.taskId} highlight`} colors={colors} onPress={() => { pendingTarget.current = false; update({ target: null, revealed: false }); }} />
+          <Action small={!props.compact} label="Clear" icon="X" iconOnly accessibilityLabel={`Clear ${view.target!.taskId} highlight`} colors={colors} onPress={() => { pendingTarget.current = false; update({ target: null, revealed: false }); }} />
         </View> : null}
       </View>
       <View testID="plan-article" onLayout={(event) => { geometry.current.article = event.nativeEvent.layout.y; reveal(); }} style={{ ...width, paddingTop: 10 }}>

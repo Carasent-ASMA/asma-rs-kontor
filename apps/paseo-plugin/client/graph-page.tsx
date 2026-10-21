@@ -134,7 +134,7 @@ export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, r
   </View>;
 
   const plans = sources.filter((source) => source.kind === "plan");
-  const toggle = <Action colors={colors} small={!compact} label="Source details" expanded={evidenceOpen} onPress={() => setEvidenceOpen(!evidenceOpen)} />;
+  const toggle = <Action colors={colors} small={!compact} label="Source details" icon="Info" iconOnly expanded={evidenceOpen} onPress={() => setEvidenceOpen(!evidenceOpen)} />;
   const actions = <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
     {read ? <Action colors={colors} small={!compact} label="Open source plan" onPress={() => onPlan(read.source.id)} /> : null}
     {!read && onChooseSource ? <Action colors={colors} small={!compact} label="Choose plan" onPress={onChooseSource} /> : null}

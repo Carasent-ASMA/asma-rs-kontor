@@ -13,7 +13,7 @@ export function SourceDetails({ read, colors, expanded, bare = false, summary, n
     <Copy colors={colors} muted small>{read.source.title} · {read.status} · {read.source.kind === "jira" ? "Historical Jira snapshot" : read.source.revisionKind}</Copy>
     <Copy colors={colors} muted small>{read.source.kind === "jira" ? `Observed ${read.jiraHistory?.generated ?? "Unknown"} · not live` : `Read ${read.readAt}`}</Copy>
   </>;
-  const toggle = expanded === undefined ? <View style={{ alignSelf: "flex-start" }}><Action small={!COARSE_POINTER} colors={colors} label="Source details" accessibilityLabel={`Source details: ${read.source.title}`} expanded={open} onPress={() => setOpen(!open)} /></View> : null;
+  const toggle = expanded === undefined ? <View style={{ alignSelf: "flex-start" }}><Action small={!COARSE_POINTER} colors={colors} label="Source details" icon="Info" iconOnly accessibilityLabel={`Source details: ${read.source.title}`} expanded={open} onPress={() => setOpen(!open)} /></View> : null;
   return <View style={{ gap: 2 }}>
     {summary !== undefined ? <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}><View style={{ flex: 1, minWidth: 0 }}>{summary}</View>{toggle}</View> : bare ? null : lines}
     {read.status !== "ready" ? <Copy colors={colors} small>Source unavailable or partial. Open Source details for diagnostics.</Copy> : null}

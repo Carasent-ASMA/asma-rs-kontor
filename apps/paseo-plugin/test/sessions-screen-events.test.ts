@@ -21,6 +21,7 @@ type HookQueueItem = {
 };
 
 const accessibility = vi.hoisted(() => ({ screenReader: false }));
+const controlHelp = vi.hoisted(() => ({ current: null as null | { dismiss(): void } }));
 const { harness, directory } = vi.hoisted(() => {
   const slots: HookSlot[] = [];
   let cursor = 0;
@@ -190,7 +191,7 @@ const { harness, directory } = vi.hoisted(() => {
 vi.mock("react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react")>();
   return {
-    ...actual,
+    ...actual, useContext: () => controlHelp.current,
     memo: (component: unknown) => component,
     useCallback: harness.useCallback,
     useEffect: harness.useEffect,
@@ -259,6 +260,7 @@ import {
   COMPACT_SCROLL_SLACK,
   compactToolbarOpen,
   FILTER_SUMMARY_TEST_ID,
+  FilterChip,
   FiltersButton,
   ClearFiltersButton,
   HIDE_FILTERS_TEST_ID,
@@ -281,6 +283,10 @@ import { MobileFiltersPage } from "../client/mobile-filters";
 import { MobileQuickToolbar } from "../client/mobile-quick-toolbar";
 import { MobileQuickChooser } from "../client/mobile-quick-chooser";
 import { StateBadge } from "../client/organization-row";
+import { SessionStateMarker, SessionStatusIcon } from "../client/session-state-marker";
+import { QUICK_FILTER_ICONS } from "../client/mobile-quick-filter-options";
+import type { StatusFilter } from "../client/session-view";
+import { SessionDetailSection } from "../client/session-detail-section";
 import { SessionUsage, SessionUsageLines } from "../client/session-usage-view";
 import { AnchoredMenu, MenuItem } from "../client/anchored-menu";
 import { nativeFreshnessLabel } from "../client/native-freshness";
@@ -523,7 +529,7 @@ describe("SessionsScreen toolbar events", () => {
     const earlier = findByTestID(harness.current(), "sessions-filter-earlier_error");
     expect(earlier.props.label).toBe("Earlier errors");
     expect(earlier.props.count).toBe(13);
-    expect(earlier.props.dot).not.toBe(colors.statusDanger);
+    expect(earlier.props.status).toBe("earlier_error");
     (earlier.props.onPress as () => void)(); harness.flush();
     if (compact) closeMobileFilters();
     expect(sessionRowIds().sort()).toEqual(history.map((entry) => entry.id).sort());
@@ -534,7 +540,7 @@ describe("SessionsScreen toolbar events", () => {
     expect(pressable.props.accessibilityLabel).toContain("Native status closed");
     expect(pressable.props.accessibilityLabel).toContain("Earlier error · now closed");
     expect(pressable.props.accessibilityLabel).not.toContain("Needs attention");
-    expect(walk(row).find((element) => element.type === StateBadge)!.props.state).toBe("closed");
+    expect(walk(row).find((element) => element.type === SessionStateMarker)!.props.state).toBe("closed");
     // Archive remains an explicit independent option, and never hides closed-unarchived history.
     if (compact) openMobileFilters();
     (findByTestID(harness.current(), "sessions-advanced-archived").props.onPress as () => void)(); harness.flush();
@@ -543,6 +549,56 @@ describe("SessionsScreen toolbar events", () => {
     expect(sessionRowIds()).toHaveLength(13);
     setStateFilter("error");
     expect(sessionRowIds()).toEqual(["current"]);
+  });
+
+  it.each([true, false])("keeps exact status icons, counts, selection and activation in quick/expanded filter choices, compact=%s", compact => {
+    for (const status of Object.keys(QUICK_FILTER_ICONS) as StatusFilter[]) {
+      const onPress = vi.fn(), onFocus = vi.fn(), onBlur = vi.fn();
+      for (const active of [false, true]) {
+        const chip = FilterChip({ status, label: status, count: 3, colors, compact, active, onPress, onFocus, onBlur });
+        const marker = walk(chip).find(element => element.type === SessionStatusIcon)!;
+        const icon = walk(SessionStatusIcon(marker.props as Parameters<typeof SessionStatusIcon>[0])).find(element => element.type === "Icon")!;
+        expect(icon.props.name).toBe(QUICK_FILTER_ICONS[status]);
+        expect(chip.props.accessibilityLabel).toBe(`${status}, 3`);
+        expect(chip.props.accessibilityState).toEqual({ selected: active, disabled: false });
+        expect(chip.props.style).toMatchObject({ borderColor: active ? colors.accent : colors.border, backgroundColor: active ? colors.surface2 : colors.surface1 });
+        chip.props.onFocus?.(); chip.props.onBlur?.(); chip.props.onPress();
+      }
+      expect(onPress).toHaveBeenCalledTimes(2);
+      expect(onFocus).toHaveBeenCalledTimes(2);
+      expect(onBlur).toHaveBeenCalledTimes(2);
+    }
+  });
+
+  it.each([true, false])("updates the same row marker through native transitions without changing its accessible name or adding controls, compact=%s", compact => {
+    patchSessionView("host-a", { query: "", grouping: "flat", status: "all", includeArchived: false });
+    renderScreen(undefined, compact);
+    const transitions = [
+      [sessionEntry("live", { status: "initializing" }), "initializing"],
+      [sessionEntry("live"), "idle"],
+      [sessionEntry("live", { status: "running" }), "running"],
+      [sessionEntry("live", { status: "running", pendingPermissionCount: 1 }), "needs_input"],
+      [sessionEntry("live", { status: "error", requiresAttention: true, attentionReason: "error" }), "failed"],
+      [sessionEntry("live", { status: "closed", requiresAttention: true, attentionReason: "error" }), "closed"],
+      [sessionEntry("live", { requiresAttention: true, attentionReason: "finished" }), "attention"],
+      [sessionEntry("live"), "idle"],
+    ] as const;
+    for (const [entry, state] of transitions) {
+      directory.state = { ...(directory.state as object), entries: [entry] };
+      harness.flush();
+      const row = renderSessionLeaf();
+      expect(walk(row).filter(element => element.type === SessionStateMarker).map(element => element.props.state)).toEqual([state]);
+      expect(walk(row).filter(element => element.type === "Pressable")).toHaveLength(1);
+      expect(row.props.accessibilityLabel).toContain(`Native status ${entry.status}`);
+      expect(row.props.accessibilityLabel).toContain("Session live");
+      expect(row.props["aria-describedby"]).toBeUndefined();
+      expect(walk(row).some(element => element.type === StateBadge)).toBe(false);
+    }
+    // Labeled filters teach the same shapes, keeping their labels and exact counts.
+    if (compact) openMobileFilters();
+    expect(findByTestID(harness.current(), "sessions-filter-idle").props).toMatchObject({ status: "idle", label: "Idle", count: 1 });
+    expect(findByTestID(harness.current(), "sessions-filter-error").props).toMatchObject({ status: "error", label: "Error", count: 0 });
+    if (compact) closeMobileFilters();
   });
 
   it("shows the count line only for results or an incomplete read, and keeps the full count and read in Filters", () => {
@@ -1252,11 +1308,11 @@ describe("SessionsScreen toolbar events", () => {
     const details = (id: string) => row(id).props.details as ElementLike;
     const dialog = () => walk(harness.current()).find((element) => element.props.testID === "sessions-details");
     const content = () => (findByTestID(dialog()!.props.children, "sessions-details-lines").props.children as unknown[]).flat() as (ElementLike & { readonly type: unknown })[];
-    // The times come first, drawn by their own clock-driven component; the role and place lines follow.
-    const times = () => content()[0]!;
+    // Timing keeps its clock-driven component inside the named section.
+    const times = () => walk(content()).find(line => (line as ElementLike & { type: unknown }).type === SessionTimeLines)! as ElementLike & { type: unknown };
     const usage = () => content().find((line) => line.type === SessionUsageLines)!;
-    const lines = () => content().filter((line) => line.type === "View")
-      .map((line) => (line.props.children as ElementLike[]).map(textOf).join(": "));
+    const lines = () => (content().find(line => line.type === SessionDetailSection && line.props.title === "Role and placement")!.props.values as { label: string; value: string }[])
+      .map(({ label, value }) => `${label}: ${value}`);
     const close = () => walk(dialog()!.props.header).find((element) => element.props.label === "Close")!;
     const open = (id: string) => { (details(id).props.onPress as () => void)(); harness.flush(); };
     return { openAgent, save, row, details, dialog, times, usage, lines, close, open };
@@ -1321,6 +1377,36 @@ describe("SessionsScreen toolbar events", () => {
     expect(screen.openAgent.mock.calls[0]![0]).toMatchObject({ agentId: "long" });
     expect(screen.dialog()).toBeUndefined();
     expect(screen.save).not.toHaveBeenCalled();
+  });
+
+  it("keeps restored Details focus without help blocking the next session action", () => {
+    let helpVisible = false;
+    controlHelp.current = { dismiss: () => { helpVisible = false; } };
+    try {
+      const screen = renderDetails(placeEntries());
+      const button = { focus: vi.fn(() => { helpVisible = true; }) };
+      (screen.details("long").props.ref as (node: unknown) => void)(button);
+      screen.open("long");
+      (screen.close().props.onPress as () => void)(); harness.flush();
+      expect(button.focus).toHaveBeenCalledOnce();
+      expect(helpVisible).toBe(false);
+      const next = screen.row("conflict").props.children as ElementLike;
+      (next.props.onPress as (entry: unknown) => void)(next.props.entry);
+      expect(screen.openAgent).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ agentId: "conflict" }));
+
+      screen.open("long");
+      const scroller = { focus: vi.fn(() => { helpVisible = true; }) };
+      (findByTestID(harness.current(), "sessions-list").props.ref as RefLike).current = { getScrollableNode: () => scroller };
+      (screen.details("long").props.ref as (node: unknown) => void)(null);
+      vi.stubGlobal("document", { activeElement: null, body: {} });
+      directory.state = { ...(directory.state as object), entries: placeEntries().filter(entry => entry.id !== "long") };
+      harness.flush();
+      expect(scroller.focus).toHaveBeenCalledOnce();
+      expect(helpVisible).toBe(false);
+    } finally {
+      controlHelp.current = null;
+      vi.unstubAllGlobals();
+    }
   });
 
   it("anchors the details beside the row on a wide screen, closes them when the grouping changes, and gives every row its details", () => {
@@ -1461,7 +1547,7 @@ describe("SessionsScreen toolbar events", () => {
     vi.stubGlobal("document", { activeElement: null, body: {} });
     try {
       screen.open("long");
-      expect(region().props).toMatchObject({ tabIndex: 0, role: "region", accessibilityLabel: "Times, role, placement, model and token report" });
+      expect(region().props).toMatchObject({ tabIndex: 0, role: "region", accessibilityLabel: "Model, reported usage, timing and placement" });
       expect(list().props.tabIndex).toBe(-1);
       expect(region().props.style).not.toHaveProperty("outlineWidth");
       (region().props.onFocus as () => void)(); harness.flush();
@@ -1557,14 +1643,15 @@ describe("SessionsScreen toolbar events", () => {
     expect(sessionRowIds()).toEqual(["swe-in", "qa-in"]);
   });
 
-  it("draws a Role header with its two leading states and a separate total, calling them last known when stale", () => {
-    const { drawn } = renderRoles(qaEntries());
+  it.each([true, false])("draws the same leading Role icons and counts with a separate total and stale cue, compact=%s", compact => {
+    const { drawn } = renderRoles(qaEntries(), undefined, compact);
     const [qa] = groupRows();
     expect([qa!.group.label, qa!.expanded]).toEqual(["QA", false]);
     const header = drawn(qa);
     const counts = walk(header).find((element) => "aggregate" in element.props) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike };
     const words = walk(counts.type(counts.props)).map((element) => element.props.children).filter((child) => typeof child === "string" || typeof child === "number");
-    expect(words).toEqual(["▲", 1, "needs input", "✕", 1, "error"]);
+    expect(words).toEqual(compact ? [1, 1] : [1, "needs input", 1, "error"]);
+    expect(walk(counts.type(counts.props)).filter(element => element.type === SessionStateMarker).map(element => element.props.state)).toEqual(["needs_input", "failed"]);
     expect(walk(header).filter((element) => element.props.children === "5")).toHaveLength(1);
     const label = () => String(walk(drawn(groupRows()[0])).find((element) => element.props.accessibilityRole === "button")!.props.accessibilityLabel);
     expect(label()).toMatch(/^Role QA, 5 sessions\. 1 needs input · 1 error · 3 running\. Native counts: 0 initializing, 1 idle, 3 running, 1 errors, 0 closed\.$/);
@@ -1573,7 +1660,7 @@ describe("SessionsScreen toolbar events", () => {
     expect(label()).toContain("5 sessions. Last known: 1 needs input · 1 error · 3 running.");
     const staleCounts = walk(drawn(groupRows()[0])).find((element) => "aggregate" in element.props) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike };
     expect(walk(staleCounts.type(staleCounts.props)).map((element) => element.props.children).filter((child) => typeof child === "string" || typeof child === "number"))
-      .toEqual(["Last known", "▲", 1, "needs input", "✕", 1, "error"]);
+      .toEqual(compact ? ["Last known", 1, 1] : ["Last known", 1, "needs input", 1, "error"]);
   });
 
   it("shows a Role row's conflict cue and place, keeping the place beside the title on compact", () => {
@@ -1874,7 +1961,7 @@ describe("SessionsScreen mobile filter page", () => {
     expect(leaf.props.accessibilityLabel).toContain("Reported input tokens: 100");
     expect(leaf.props.accessibilityLabel).toContain("Reported output tokens: 20");
     expect(age.props.style).toMatchObject({ flexShrink: 0 });
-    expect(walk(leaf).some((element) => (element as { type?: unknown }).type === StateBadge && element.props.state === "needs_input")).toBe(true);
+    expect(walk(leaf).some((element) => (element as { type?: unknown }).type === SessionStateMarker && element.props.state === "needs_input")).toBe(true);
     // ST-02: the native ID is in the accessible label, never in the visible row.
     expect(textOf(leaf)).not.toContain("01234567");
     expect(leaf.props.accessibilityLabel).toContain("Native ID 0123456789abcdef");
@@ -1903,11 +1990,11 @@ describe("SessionsScreen mobile filter page", () => {
     const root = harness.current() as ElementLike;
     expect((root.props.children as unknown[]).some((child) => (child as ElementLike | null)?.props?.testID === "sessions-full-toolbar-slot")).toBe(true);
     expect(findByTestID(root, "sessions-list").props.ListHeaderComponent).toBeNull();
-    // Wide session rows keep the title and the right-hand state column.
+    // Wide session rows keep their status in a compact trailing marker.
     const leaf = renderSessionLeaf();
     expect(testIDs(leaf)).not.toContain("sessions-row-meta");
-    const column = walk(leaf).find((element) => (element.props.style as { width?: number } | undefined)?.width === 95);
-    expect(column && walk(column).some((element) => (element as { type?: unknown }).type === StateBadge)).toBe(true);
+    expect(walk(leaf).some((element) => element.type === SessionStateMarker)).toBe(true);
+    expect(walk(leaf).some((element) => (element.props.style as { width?: number } | undefined)?.width === 95)).toBe(false);
 
     compact = true; harness.flush();
     expect(fullToolbarShown()).toBe(false);

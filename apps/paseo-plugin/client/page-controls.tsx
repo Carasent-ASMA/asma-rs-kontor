@@ -1,12 +1,15 @@
 import { useState, type ReactNode, type Ref } from "react";
 import { Pressable, Text, View } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
+import { useControlHelp } from "./control-help";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 export type Colors = PluginTheme["colors"];
 /** Wide tabs follow the prototype's compact left-grouped strip; stacked tabs are the compact bottom bar. A touch pointer gets 44pt in every style. */
-export function Action({ label, accessibilityLabel, onPress, colors, icon, stacked = false, tab = false, selected: selectedProp, disabled = false, expanded, trailing, small = false, ref }: {
+export function Action({ label, accessibilityLabel, onPress, colors, icon, stacked = false, tab = false, selected: selectedProp, disabled = false, expanded, trailing, small = false, iconOnly = false, help, ref }: {
   label: string; onPress: () => void; colors: Colors; selected?: boolean; disabled?: boolean;
   icon?: string;
+  /** Only familiar secondary actions opt in. Touch keeps the visible label. */
+  iconOnly?: boolean; help?: string;
   stacked?: boolean; tab?: boolean;
   accessibilityLabel?: string;
   /** Menu or disclosure trigger state. */
@@ -14,18 +17,20 @@ export function Action({ label, accessibilityLabel, onPress, colors, icon, stack
   ref?: Ref<View>;
 }) {
   const selected = selectedProp ?? false;
+  const hideLabel = iconOnly && !!icon && !COARSE_POINTER && !tab && !stacked;
+  const hint = useControlHelp(hideLabel || help ? (help ?? accessibilityLabel ?? label) : "", ref);
   // Web reads state from ARIA: a tab is selected, and a button given `selected` is a toggle. A menu
   // button already says it is expanded, and its label names the current view.
   const aria = tab ? { "aria-selected": selected } : selectedProp === undefined || expanded !== undefined ? {} : { "aria-pressed": selectedProp };
   const strip = !stacked && (tab || trailing !== undefined);
   const compactButton = small && !stacked && !strip;
-  return <Pressable ref={ref} accessibilityRole={tab ? "tab" : "button"} accessibilityLabel={accessibilityLabel ?? label} accessibilityState={{ selected, disabled, ...(expanded === undefined ? {} : { expanded }) }} aria-expanded={expanded} {...aria}
-    disabled={disabled} onPress={onPress} style={strip ? { minHeight: COARSE_POINTER ? 44 : 32, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 5, justifyContent: "center", flexDirection: "row", alignItems: "center", gap: 4,
+  return <Pressable {...hint.bindings} accessibilityRole={tab ? "tab" : "button"} accessibilityLabel={accessibilityLabel ?? label} accessibilityState={{ ...(tab || selectedProp !== undefined ? { selected } : {}), disabled, ...(expanded === undefined ? {} : { expanded }) }} aria-expanded={expanded} {...aria}
+    disabled={disabled} onPress={() => { hint.dismiss(); onPress(); }} style={hideLabel ? { minWidth: 34, minHeight: 30, paddingHorizontal: 7, alignItems: "center", justifyContent: "center", borderRadius: 6, borderWidth: 1, borderColor: colors.border, opacity: disabled ? 0.5 : 1, backgroundColor: selected ? colors.surface2 : undefined } : strip ? { minHeight: COARSE_POINTER ? 44 : 32, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 5, justifyContent: "center", flexDirection: "row", alignItems: "center", gap: 4,
       backgroundColor: selected ? colors.surface2 : undefined, opacity: disabled ? 0.5 : 1 } : compactButton ? { minHeight: COARSE_POINTER ? 44 : 30, minWidth: COARSE_POINTER ? 44 : 30, paddingHorizontal: 9, justifyContent: "center", flexDirection: "row", alignItems: "center", gap: 5,
       borderRadius: 6, borderWidth: 1, borderColor: colors.border, backgroundColor: selected ? colors.surface2 : undefined, opacity: disabled ? 0.5 : 1 } : { minHeight: stacked ? 48 : 44, minWidth: 44, flex: stacked ? 1 : undefined, paddingHorizontal: stacked ? 2 : 10, justifyContent: "center",
       borderRadius: stacked ? 6 : 8, backgroundColor: selected ? colors.surface2 : undefined, opacity: disabled ? 0.5 : 1, flexDirection: stacked ? "column" : "row", alignItems: "center", gap: stacked ? 3 : 5 }}>
-    {icon && !strip ? <Icon name={icon} size={stacked ? 19 : 16} color={selected ? colors.accent : colors.foregroundMuted} /> : null}
-    <Text numberOfLines={1} ellipsizeMode="tail" style={{ flexShrink: 1, color: strip ? (selected ? colors.foreground : colors.foregroundMuted) : selected ? colors.accent : colors.foreground, fontSize: stacked ? 10 : strip || compactButton ? 12 : 13, fontWeight: strip && selected ? "600" : compactButton ? "600" : "400" }}>{label}</Text>
+    {icon && (!strip || hideLabel) ? <Icon name={icon} size={stacked ? 19 : 16} color={selected ? colors.accent : colors.foregroundMuted} /> : null}
+    {hideLabel ? null : <Text numberOfLines={1} ellipsizeMode="tail" style={{ flexShrink: 1, color: strip ? (selected ? colors.foreground : colors.foregroundMuted) : selected ? colors.accent : colors.foreground, fontSize: stacked ? 10 : strip || compactButton ? 12 : 13, fontWeight: strip && selected ? "600" : compactButton ? "600" : "400" }}>{label}</Text>}
     {trailing ? <Text importantForAccessibility="no" accessibilityElementsHidden style={{ color: colors.foregroundMuted, fontSize: 11 }}>{trailing}</Text> : null}
   </Pressable>;
 }
@@ -39,8 +44,9 @@ export function Card({ title, children, colors }: { title: string; children: Rea
 }
 /** Square icon button; a touch pointer gets a real 44pt target, since the web ignores a hit slop. A disabled button keeps its place. */
 export function IconButton({ label, icon, colors, onPress, disabled = false }: { label: string; icon: string; colors: Colors; onPress: () => void; disabled?: boolean }) {
+  const hint = useControlHelp(label);
   const size = COARSE_POINTER ? 44 : 34;
-  return <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled }} aria-disabled={disabled} disabled={disabled} onPress={onPress} style={{ width: size, height: size, borderRadius: 7, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center", opacity: disabled ? 0.45 : 1 }}>
+  return <Pressable {...hint.bindings} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled }} aria-disabled={disabled} disabled={disabled} onPress={() => { hint.dismiss(); onPress(); }} style={{ width: size, height: size, borderRadius: 7, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center", opacity: disabled ? 0.45 : 1 }}>
     <Icon name={icon} size={16} color={disabled ? colors.foregroundMuted : colors.foreground} />
   </Pressable>;
 }

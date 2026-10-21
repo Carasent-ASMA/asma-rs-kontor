@@ -56,7 +56,8 @@ export function formatTokens(value: number, locale?: string): string {
   return formatter.format(value);
 }
 
-function exactTokens(value: unknown, locale?: string): string {
+/** Format an exact report, preserving absent/invalid values and explicit zero. */
+export function exactTokens(value: unknown, locale?: string): string {
   if (value === undefined || value === null) return "Not reported";
   const formatter = locale === undefined ? exactTokenNumber : new Intl.NumberFormat(locale);
   return validTokenCount(value) ? formatter.format(value) : "Invalid report (not shown)";
@@ -76,10 +77,11 @@ export function usagePresentation(entry: SessionUsageEntry, locale?: string) {
 
 export function sessionUsageLabel(entry: SessionUsageEntry): string {
   const model = modelPresentation(entry);
-  return `${model.source}: ${model.model ?? "Unknown"}. ${usagePresentation(entry).spoken} Report age and model attribution unknown; see Details.`;
+  return `${model.source}: ${model.model ?? "Unknown"}. ${usagePresentation(entry).spoken}`;
 }
 
-function usageScope(entry: SessionUsageEntry): string {
+/** Reporting limits for the provider actually identified by this snapshot. */
+export function usageScope(entry: SessionUsageEntry): string {
   // An opaque route cannot establish which underlying adapter is in use.
   const provider = entry.telemetry?.runtimeInfo?.provider ?? entry.provider;
   if (provider === "codex") return "Codex tokenUsage.last report, not a session total. The reporting window is not identified in the snapshot. Cached input is included in input; do not add it again. Reasoning breakdown and cumulative totals are not exposed by this snapshot.";

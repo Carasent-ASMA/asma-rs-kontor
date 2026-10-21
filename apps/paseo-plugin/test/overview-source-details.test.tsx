@@ -4,7 +4,7 @@ import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { jiraHistorySchema, type CanonicalGraph, type SourceRead } from "../shared/read-sources";
 const model = vi.hoisted(() => ({ open: false }));
-vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useState: () => [model.open, (value: boolean) => { model.open = value; }], useRef: (current: unknown) => ({ current }), useMemo: (factory: () => unknown) => factory() }));
+vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useContext: () => null, useState: () => [model.open, (value: boolean) => { model.open = value; }], useRef: (current: unknown) => ({ current }), useMemo: (factory: () => unknown) => factory() }));
 vi.mock("react-native", () => ({ ScrollView: "ScrollView", Text: "Text", View: "View", Pressable: "Pressable" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput", Icon: "Icon" }));
 import { SourceDetails } from "../client/source-details";

@@ -7,7 +7,7 @@ import { teamsSourceBindings } from "../shared/teams-source-bindings";
 import type { TeamsFleetData, TeamsSourceSnapshot, TeamsTemplatesData } from "../shared/teams-source-snapshot";
 import { sessionEntry } from "./session-fixtures";
 const hooks = vi.hoisted(() => ({ values: [] as unknown[], cursor: 0 }));
-vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useState: <T,>(initial: T) => {
+vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useContext: () => null, useRef: (current: unknown) => ({ current }), useState: <T,>(initial: T) => {
   const index = hooks.cursor++; if (!(index in hooks.values)) hooks.values[index] = initial;
   return [hooks.values[index] as T, (value: T) => { hooks.values[index] = value; }];
 } }));
