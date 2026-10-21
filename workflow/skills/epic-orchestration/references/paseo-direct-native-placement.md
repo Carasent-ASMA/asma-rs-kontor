@@ -11,7 +11,7 @@ work) creates or reuses every workspace. The rest of this file says
 - [Paseo-direct epic placement](#paseo-direct-epic-placement-the-default-surface)
 - [Terms](#terms)
 - [Names](#names) and [provisional seat naming](#provisional-seat-naming)
-- [Launch and readback](#launch-and-readback)
+- [Launch and readback](#launch-and-readback) and [session labels](#session-labels)
 - [Seats and reuse](#idle-seat-reuse)
 - [Autonomous coordination](#autonomous-coordination)
 - [Capacity](#capacity)
@@ -148,6 +148,30 @@ LSA • EXM-8001 • Release readiness
   create or resume. An identity or path mismatch blocks work and verdicts.
 - If project rename is unsupported, record `rename_pending` and rename through
   the Paseo app. Never edit Paseo's internal state files.
+
+<a id="session-labels"></a>
+
+### Session labels
+
+Every Paseo-direct seat create passes four Paseo session labels, which are
+key/value metadata and not the seat's display name:
+
+| Key | Value |
+| --- | --- |
+| `epic` | The confirmed tracker epic key of the seat's scope |
+| `task` | The confirmed tracker task key of the seat's scope |
+| `role` | The exact registered role code from the pinned role or team definition |
+| `orchestration` | `paseo-direct` |
+
+- The values come from the seat's own confirmed scope, never from the parent's
+  or a sibling's labels: a parent often launches work for another scope. A seat
+  with no confirmed epic or task key omits that label instead of guessing.
+- Read all four back with the placement. A mismatch blocks work and verdicts
+  like a placement mismatch.
+- A Kontor-governed seat carries the labels `kontord` writes instead.
+- With the Kontor plugin floor on, its workspace guard treats
+  `orchestration=paseo-direct` as a guarded seat. Turn the floor on only once
+  the installed guard accepts a Paseo-direct seat that has no Kontor binding.
 
 <a id="idle-seat-reuse"></a>
 ## Seats and reuse
@@ -289,6 +313,10 @@ owns only the Paseo-direct placement.
 - Read back the CSW's `projectId`, `workspaceId`, kind and `cwd` before creating
   seats. Then pass that exact `workspaceId` for every seat the pinned Team
   Definition and Committee template declare.
+- Every committee seat, `SEAT A`, `SEAT B` and `JUDGE` alike, passes the four
+  [session labels](#session-labels): the debated scope's confirmed `epic` and
+  `task`, `orchestration=paseo-direct`, and as `role` the role code the selected
+  Committee template or role definition declares for that seat.
 - Cardinality and aggregation come from the pinned template. `kontord` serves
   Operational Committee templates; a Kontor-governed epic uses the template its
   run pinned, never a hand-assembled shape.
