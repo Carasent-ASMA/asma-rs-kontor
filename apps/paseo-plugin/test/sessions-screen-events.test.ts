@@ -220,6 +220,7 @@ vi.mock("react-native", () => ({
   },
   // Group rows create a drag responder; the row tests below only read what the row draws.
   PanResponder: { create: () => ({ panHandlers: {} }) },
+  Platform: { OS: "web" },
   Pressable: "Pressable",
   Text: "Text",
   View: "View",
@@ -256,6 +257,7 @@ import {
   compactToolbarOpen,
   FILTER_SUMMARY_TEST_ID,
   FiltersButton,
+  ClearFiltersButton,
   HIDE_FILTERS_TEST_ID,
   OPTIONS_MIN_HEIGHT,
   OPTIONS_SPACE_SHARE,
@@ -271,6 +273,9 @@ import {
   SlimToolbar,
   toolbarOpenPatch,
 } from "../client/sessions-screen";
+import { MobileFiltersPage } from "../client/mobile-filters";
+import { MobileQuickToolbar } from "../client/mobile-quick-toolbar";
+import { MobileQuickChooser } from "../client/mobile-quick-chooser";
 import { StateBadge } from "../client/organization-row";
 import { SessionUsage, SessionUsageLines } from "../client/session-usage-view";
 import { AnchoredMenu, MenuItem } from "../client/anchored-menu";
@@ -327,6 +332,11 @@ function findByTestID(node: unknown, testID: string): ElementLike {
   return found[0]!;
 }
 
+function sessionSearch(): ElementLike {
+  const toolbar = walk(harness.current()).find((node) => node.type === MobileQuickToolbar);
+  return toolbar ? { props: { value: toolbar.props.query, onChangeText: toolbar.props.onQuery } } : findByTestID(harness.current(), "sessions-search");
+}
+
 function scrollEvent(
   offset: number,
   contentHeight = 2000,
@@ -341,7 +351,7 @@ function scrollEvent(
   } as NativeSyntheticEvent<NativeScrollEvent>;
 }
 
-function renderScreen(organization?: Parameters<typeof SessionsScreen>[0]["organization"], compact = true, platform: "ios" | "web" = compact ? "ios" : "web", native?: Pick<Parameters<typeof SessionsScreen>[0], "projects" | "workspaces">) {
+function renderScreen(organization?: Parameters<typeof SessionsScreen>[0]["organization"], compact = false, platform: "ios" | "web" = compact ? "ios" : "web", native?: Pick<Parameters<typeof SessionsScreen>[0], "projects" | "workspaces">) {
   const navigation = {
     openAgent: () => undefined,
     openBrowser: () => undefined,
@@ -359,12 +369,12 @@ function renderScreen(organization?: Parameters<typeof SessionsScreen>[0]["organ
     } as PluginScreenProps),
   );
   const list = findByTestID(tree, "sessions-list");
-  const fullToolbar = findByTestID(tree, "sessions-full-toolbar");
-  const slimSlot = findByTestID(tree, "sessions-slim-toolbar-slot");
-  (fullToolbar.props.onLayout as (event: unknown) => void)({
+  const fullToolbar = walk(tree).find((element) => element.props.testID === "sessions-full-toolbar");
+  const slimSlot = walk(tree).find((element) => element.props.testID === "sessions-slim-toolbar-slot");
+  if (fullToolbar) (fullToolbar.props.onLayout as (event: unknown) => void)({
     nativeEvent: { layout: { x: 0, y: 0, width: 400, height: 220 } },
   });
-  (slimSlot.props.onLayout as (event: unknown) => void)({
+  if (slimSlot) (slimSlot.props.onLayout as (event: unknown) => void)({
     nativeEvent: { layout: { x: 0, y: 0, width: 400, height: 44 } },
   });
   const scrollToOffset = vi.fn();
@@ -405,14 +415,21 @@ function toggle(kind: string) {
 }
 
 function expandAll() {
+  const mobile = walk(harness.current()).some((node) => node.type === MobileQuickToolbar);
+  if (mobile) openMobileFilters();
   const options = walk(harness.current()).some((element) => element.props.testID === "sessions-options");
   if (!options) {
     const toggle = walk(findByTestID(harness.current(), "sessions-full-toolbar")).find((element) => element.props.expanded === false && "activeCount" in element.props)!;
-    (toggle.props.onPress as () => void)();
-    harness.flush();
+    (toggle.props.onPress as () => void)(); harness.flush();
   }
-  (findByTestID(harness.current(), "sessions-expand-all").props.onPress as () => void)();
-  harness.flush();
+  (findByTestID(harness.current(), "sessions-expand-all").props.onPress as () => void)(); harness.flush();
+  if (mobile) closeMobileFilters();
+}
+function setStateFilter(status: string) {
+  const mobile = walk(harness.current()).some((node) => node.type === MobileQuickToolbar);
+  if (mobile) openMobileFilters();
+  (findByTestID(harness.current(), `sessions-filter-${status}`).props.onPress as () => void)(); harness.flush();
+  if (mobile) closeMobileFilters();
 }
 
 function fullToolbarShown(): boolean {
@@ -468,6 +485,7 @@ describe("SessionsScreen toolbar events", () => {
     ], includeArchived: false };
     patchSessionView("host-a", { query: "", includeArchived: false });
     renderScreen(undefined, compact);
+    if (compact) openMobileFilters();
     expect(findByTestID(harness.current(), "sessions-filter-error").props.count).toBe(1);
     expect(findByTestID(harness.current(), "sessions-filter-attention").props.count).toBe(2);
     expect(findByTestID(harness.current(), "sessions-filter-closed").props.count).toBe(13);
@@ -476,6 +494,7 @@ describe("SessionsScreen toolbar events", () => {
     expect(earlier.props.count).toBe(13);
     expect(earlier.props.dot).not.toBe(colors.statusDanger);
     (earlier.props.onPress as () => void)(); harness.flush();
+    if (compact) closeMobileFilters();
     expect(sessionRowIds().sort()).toEqual(history.map((entry) => entry.id).sort());
     expect(resultCues(history[0]!)).toContain("Earlier error · now closed");
     const row = SessionRow({ entry: history[0]!, colors, compact, onPress: () => {}, displayContext: "Archived workspace" });
@@ -486,10 +505,12 @@ describe("SessionsScreen toolbar events", () => {
     expect(pressable.props.accessibilityLabel).not.toContain("Needs attention");
     expect(walk(row).find((element) => element.type === StateBadge)!.props.state).toBe("closed");
     // Archive remains an explicit independent option, and never hides closed-unarchived history.
+    if (compact) openMobileFilters();
     (findByTestID(harness.current(), "sessions-advanced-archived").props.onPress as () => void)(); harness.flush();
     expect(directory.inputs.at(-1)?.includeArchived).toBe(true);
+    if (compact) closeMobileFilters();
     expect(sessionRowIds()).toHaveLength(13);
-    (findByTestID(harness.current(), "sessions-filter-error").props.onPress as () => void)(); harness.flush();
+    setStateFilter("error");
     expect(sessionRowIds()).toEqual(["current"]);
   });
 
@@ -497,7 +518,7 @@ describe("SessionsScreen toolbar events", () => {
     const list = () => findByTestID(harness.current(), "sessions-list");
     const header = () => list().props.ListHeaderComponent;
     renderScreen();
-    const search = (query: string) => { (findByTestID(harness.current(), "sessions-search").props.onChangeText as (query: string) => void)(query); harness.flush(); };
+    const search = (query: string) => { (sessionSearch().props.onChangeText as (query: string) => void)(query); harness.flush(); };
     search("");
     expect(testIDs(header())).not.toContain("sessions-count");
     expect(textOf(findByTestID(harness.current(), "sessions-options-count"))).toMatch(/^1 session · 1 workspace · complete inventory read /);
@@ -539,7 +560,7 @@ describe("SessionsScreen toolbar events", () => {
 
   it("keeps the workspace read note in Filters and shows only a workspace list failure under the list", () => {
     const render = (workspaceNote: string) => harness.render(() => SessionsScreen({
-      host: { id: "host-a", label: "srv_host-a" }, layout: { compact: true, platform: "ios" },
+      host: { id: "host-a", label: "srv_host-a" }, layout: { compact: false, platform: "web" },
       navigation: { openAgent: () => undefined, openBrowser: () => undefined, openWorkspace: () => undefined },
       theme: { colors } as PluginTheme, params: {}, workspaceNote,
     } as PluginScreenProps));
@@ -584,17 +605,17 @@ describe("SessionsScreen toolbar events", () => {
       );
 
     render();
-    expect(findByTestID(harness.current(), "sessions-search").props.value).toBe(
+    expect(sessionSearch().props.value).toBe(
       "host-a query",
     );
 
     activeHost = "host-b";
     harness.flush();
-    expect(findByTestID(harness.current(), "sessions-search").props.value).toBe(
+    expect(sessionSearch().props.value).toBe(
       "host-b query",
     );
 
-    const search = findByTestID(harness.current(), "sessions-search");
+    const search = sessionSearch();
     (search.props.onChangeText as (query: string) => void)("host-b edited");
     harness.flush();
 
@@ -638,17 +659,17 @@ describe("SessionsScreen toolbar events", () => {
     expect(scrollToOffset).toHaveBeenLastCalledWith({ offset: 420, animated: false });
 
     viewScope = "host-a:epic-b"; harness.flush(); vi.advanceTimersByTime(0);
-    expect(findByTestID(harness.current(), "sessions-search").props.value).toBe("other");
+    expect(sessionSearch().props.value).toBe("other");
     expect(scrollToOffset).toHaveBeenLastCalledWith({ offset: 180, animated: false });
     expect(directory.inputs.at(-1)?.includeArchived).toBe(false);
-    (findByTestID(harness.current(), "sessions-search").props.onChangeText as (query: string) => void)("edited b");
+    (sessionSearch().props.onChangeText as (query: string) => void)("edited b");
     harness.flush();
     expect(readSessionView("host-a:epic-b").query).toBe("edited b");
     expect(readSessionView("host-a:epic-a")).toMatchObject({ query: "session-a", scrollOffset: 420 });
     expect(readSessionView("host-a").query).toBe("host default");
 
     viewScope = "host-a:epic-a"; harness.flush(); vi.advanceTimersByTime(0);
-    expect(findByTestID(harness.current(), "sessions-search").props.value).toBe("session-a");
+    expect(sessionSearch().props.value).toBe("session-a");
     expect(scrollToOffset).toHaveBeenLastCalledWith({ offset: 420, animated: false });
     expect(directory.inputs.at(-1)?.includeArchived).toBe(true);
   });
@@ -709,51 +730,6 @@ describe("SessionsScreen toolbar events", () => {
     expect(current!.state.entries).toEqual([]);
   });
 
-  it("closes the in-list compact toolbar once it has scrolled out of view, compensates the offset, and leaves reopening to the manual controls", () => {
-    const { scrollToOffset } = renderScreen();
-    // The open toolbar and its gap head the list content.
-    const toolbarHeight = 220 + TOOLBAR_LAYOUT_GAP;
-    const saved = readSessionView("host-a");
-
-    // While any of it is in view it scrolls with the rows and stays open.
-    scroll(100);
-    scroll(toolbarHeight - 1);
-    expect(fullToolbarShown()).toBe(true);
-    expect(scrollToOffset).not.toHaveBeenCalled();
-
-    // Out of view: it closes, and the offset drops by its height in the same
-    // step, so a row at content y keeps its screen position (y + 228 - 300 = y - 72).
-    scroll(300);
-    expect(scrollToOffset).toHaveBeenLastCalledWith({
-      offset: 300 - toolbarHeight,
-      animated: false,
-    });
-    expect(fullToolbarShown()).toBe(false);
-    expect(readSessionView("host-a").scrollOffset).toBe(72);
-    expect(compactToolbarOpen(readSessionView("host-a"))).toBe(false);
-
-    // A bottom bounce, a reverse scroll and the top all keep the space for sessions.
-    vi.advanceTimersByTime(300);
-    scroll(1400);
-    scrollToOffset.mockClear();
-    scroll(1405);
-    expect(readSessionView("host-a").scrollOffset).toBe(1400);
-    scroll(1389);
-    scroll(4);
-    expect(fullToolbarShown()).toBe(false);
-    expect(scrollToOffset).not.toHaveBeenCalled();
-
-    const after = readSessionView("host-a");
-    expect(after.shortcut ?? null).toBe(saved.shortcut ?? null);
-    expect(after).toMatchObject({
-      query: saved.query,
-      status: saved.status,
-      includeArchived: saved.includeArchived,
-      advancedOpen: saved.advancedOpen,
-      scrollOffset: 4,
-    });
-  });
-
   it("compensates wide collapse and near-bottom reveal through the actual screen event path", () => {
     const { scrollToOffset } = renderScreen(undefined, false);
     // Wide layouts swap the full toolbar for the slim row in the same slot.
@@ -789,7 +765,7 @@ describe("SessionsScreen toolbar events", () => {
   it("selects an empty native desk by ID, distinguishes duplicate names and retains selection across rename", () => {
     patchSessionView("host-a", { query: "", advancedOpen: true, shortcut: null, toolbarOpen: true });
     const native: Pick<Parameters<typeof SessionsScreen>[0], "projects" | "workspaces"> = { projects: [{ id: "prj_one", name: "DESK • RESEARCH" }, { id: "prj_two", name: "DESK • RESEARCH" }], workspaces: [] };
-    renderScreen(undefined, true, "ios", native);
+    renderScreen(undefined, false, "web", native);
     const openScope = () => { (findByTestID(harness.current(), "sessions-scope").props.onPress as () => void)(); harness.flush(); };
     openScope();
     const choices = walk(harness.current()).filter((element) => element.type === MenuItem && element.props.label === "DESK • RESEARCH");
@@ -863,10 +839,10 @@ describe("SessionsScreen toolbar events", () => {
     renderScreen();
     expect(sessionRowIds()).toEqual([]);
     expect(findByTestID(harness.current(), "sessions-collapse-all").props.disabled).toBe(false);
-    (findByTestID(harness.current(), "sessions-filter-idle").props.onPress as () => void)(); harness.flush();
+    setStateFilter("idle");
     expect(sessionRowIds()).toEqual(["quiet"]);
     expect(findByTestID(harness.current(), "sessions-collapse-all").props.disabled).toBe(true);
-    (findByTestID(harness.current(), "sessions-filter-all").props.onPress as () => void)(); harness.flush();
+    setStateFilter("all");
     expect(sessionRowIds()).toEqual([]);
     expect(groupRows().map((row) => `${row.group.kind}:${row.expanded}`)).toEqual(["workstream:true", "epic:false"]);
   });
@@ -880,7 +856,7 @@ describe("SessionsScreen toolbar events", () => {
     patchSessionView("host-a", { query: "" });
     renderScreen();
     expect(groupRows().map((row) => `${row.group.kind}:${row.group.label}`)).toEqual(["workstream:Adam", "workspace:Workspace", "workstream:Kontor", "epic:No linked epic"]);
-    (findByTestID(harness.current(), "sessions-filter-idle").props.onPress as () => void)(); harness.flush();
+    setStateFilter("idle");
     const renderItem = (info: { item: unknown }) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)(info);
     const results = listRows() as Extract<ListRow, { kind: "result" }>[];
     expect(results.map((row) => (renderItem({ item: row }).props.provenance as { parts: string[] }).parts)).toEqual([["Adam desk", "Workspace"], ["Kontor", "No linked epic", "Workspace"]]);
@@ -903,7 +879,7 @@ describe("SessionsScreen toolbar events", () => {
     ] };
     patchSessionView("host-a", { query: "" });
     renderScreen({ state: { status: "ready", values: DEFAULT_ORGANIZATION_SETTINGS, revision: "revision-a", saving: false, saveError: null, save, reload: async () => {}, reset: async () => true }, save } as unknown as NonNullable<Parameters<typeof SessionsScreen>[0]["organization"]>);
-    (findByTestID(harness.current(), "sessions-filter-idle").props.onPress as () => void)(); harness.flush();
+    setStateFilter("idle");
     // The current render's row renderer, since rows read the peek from its closure.
     const renderItem = (info: { item: unknown }) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)(info);
     const [result] = listRows() as [Extract<ListRow, { kind: "result" }>];
@@ -923,7 +899,7 @@ describe("SessionsScreen toolbar events", () => {
     (back.props.onPress as () => void)(); harness.flush();
     expect(testIDs(harness.current())).not.toContain("sessions-peek");
     expect(sessionRowIds()).toEqual(["quiet"]);
-    (findByTestID(harness.current(), "sessions-filter-all").props.onPress as () => void)(); harness.flush();
+    setStateFilter("all");
     expect(groupRows().map((row) => `${row.group.kind}:${row.expanded}`)).toEqual(["workstream:true", "epic:false"]);
     expect(save).not.toHaveBeenCalled();
   });
@@ -934,7 +910,7 @@ describe("SessionsScreen toolbar events", () => {
       sessionEntry("quiet", { status: "idle", labels: { epic: "ASMA-1" } }),
     ] };
     patchSessionView("host-a", { query: "" });
-    renderScreen();
+    renderScreen(undefined, true);
     const rootHeight = (height: number) => { ((harness.current() as ElementLike).props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height } } }); harness.flush(); };
     const header = () => testIDs(findByTestID(harness.current(), "sessions-list").props.ListHeaderComponent);
     const peekText = () => walk(findByTestID(harness.current(), "sessions-peek")).find((element) => "numberOfLines" in element.props)!;
@@ -945,26 +921,26 @@ describe("SessionsScreen toolbar events", () => {
     };
     const back = () => walk(findByTestID(harness.current(), "sessions-peek")).find((element) => element.props.label === "Back to 1 result")!;
     rootHeight(SHORT_PEEK_HEIGHT - 100);
-    (findByTestID(harness.current(), "sessions-filter-idle").props.onPress as () => void)(); harness.flush();
+    setStateFilter("idle");
     // Results keep their toolbar and filters at any height; only the peek folds them.
-    expect(testIDs(harness.current())).toContain("sessions-slim-toolbar-slot");
-    expect(header()).toContain("sessions-full-toolbar");
+    expect(walk(harness.current()).some((node) => node.type === MobileQuickToolbar)).toBe(true);
+    expect(header()).not.toContain("sessions-full-toolbar");
     showInTree();
-    expect(testIDs(harness.current())).not.toContain("sessions-slim-toolbar-slot");
+    expect(walk(harness.current()).some((node) => node.type === MobileQuickToolbar)).toBe(false);
     expect(header()).toEqual([]);
     expect([textOf(peekText()), peekText().props.numberOfLines, peekText().props.accessibilityLabel]).toEqual(["In the tree · not saved", 1, "Showing “Session quiet” in the tree. Branches opened here are not saved."]);
     // A full-size Back, the 44pt touch action.
     expect(back().props.small).toBe(false);
     expect(sessionRowIds()).toEqual(expect.arrayContaining(["quiet"]));
     (back().props.onPress as () => void)(); harness.flush();
-    expect(testIDs(harness.current())).toContain("sessions-slim-toolbar-slot");
-    expect(header()).toContain("sessions-full-toolbar");
+    expect(walk(harness.current()).some((node) => node.type === MobileQuickToolbar)).toBe(true);
+    expect(header()).not.toContain("sessions-full-toolbar");
     expect(sessionRowIds()).toEqual(["quiet"]);
     // A phone-height screen keeps the toolbar and the longer note during the peek.
     rootHeight(SHORT_PEEK_HEIGHT);
     showInTree();
-    expect(testIDs(harness.current())).toContain("sessions-slim-toolbar-slot");
-    expect(header()).toContain("sessions-full-toolbar");
+    expect(walk(harness.current()).some((node) => node.type === MobileQuickToolbar)).toBe(true);
+    expect(header()).not.toContain("sessions-full-toolbar");
     expect([textOf(peekText()), peekText().props.numberOfLines]).toEqual(["Shown in the tree. Branches opened here are not saved.", 2]);
   });
 
@@ -977,7 +953,7 @@ describe("SessionsScreen toolbar events", () => {
     renderScreen();
     const scrollToIndex = vi.fn();
     (findByTestID(harness.current(), "sessions-list").props.ref as RefLike).current = { scrollToOffset: vi.fn(), scrollToIndex };
-    (findByTestID(harness.current(), "sessions-filter-idle").props.onPress as () => void)(); harness.flush();
+    setStateFilter("idle");
     const [result] = listRows() as [Extract<ListRow, { kind: "result" }>];
     ((findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: result }).props.onShowInTree as (entry: unknown) => void)(result.entry);
     harness.flush();
@@ -1003,7 +979,7 @@ describe("SessionsScreen toolbar events", () => {
     render();
     const scrollToIndex = vi.fn();
     (findByTestID(harness.current(), "sessions-list").props.ref as RefLike).current = { scrollToOffset: vi.fn(), scrollToIndex };
-    (findByTestID(harness.current(), "sessions-filter-idle").props.onPress as () => void)(); harness.flush();
+    setStateFilter("idle");
     const showInTree = () => {
       const [result] = listRows() as [Extract<ListRow, { kind: "result" }>];
       ((findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: result }).props.onShowInTree as (entry: unknown) => void)(result.entry);
@@ -1443,8 +1419,10 @@ describe("SessionsScreen toolbar events", () => {
       without("none");
       screen.open("cwd");
       const choose = (label: string) => {
+        openMobileFilters();
         (walk(harness.current()).find((element) => element.props.testID === "sessions-grouping")!.props.onPress as () => void)(); harness.flush();
         (walk(harness.current()).find((element) => element.type === MenuItem && element.props.label === label)!.props.onPress as () => void)(); harness.flush();
+        closeMobileFilters();
       };
       choose("Workstreams");
       choose("Role");
@@ -1547,7 +1525,7 @@ describe("SessionsScreen toolbar events", () => {
   it("opens a result's Role header for Show in tree without saving it, and the header is closed again after Back", () => {
     const save = vi.fn(async (_patch: object) => true);
     renderRoles(qaEntries(), { state: { status: "ready", values: DEFAULT_ORGANIZATION_SETTINGS, revision: "revision-a", saving: false, saveError: null, save, reload: async () => {}, reset: async () => true }, save } as unknown as NonNullable<Parameters<typeof SessionsScreen>[0]["organization"]>);
-    (findByTestID(harness.current(), "sessions-filter-idle").props.onPress as () => void)(); harness.flush();
+    setStateFilter("idle");
     const [result] = listRows() as [Extract<ListRow, { kind: "result" }>];
     expect(result.entry.id).toBe("n");
     ((findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: result }).props.onShowInTree as (entry: unknown) => void)(result.entry);
@@ -1556,7 +1534,7 @@ describe("SessionsScreen toolbar events", () => {
     (walk(findByTestID(harness.current(), "sessions-peek")).find((element) => String(element.props.label).startsWith("Back to "))!.props.onPress as () => void)();
     harness.flush();
     expect(sessionRowIds()).toEqual(["n"]);
-    (findByTestID(harness.current(), "sessions-filter-all").props.onPress as () => void)(); harness.flush();
+    setStateFilter("all");
     expect(groupRows().map((row) => `${row.group.label}:${row.expanded}`)).toEqual(["QA:false"]);
     expect(save.mock.calls.filter(([patch]) => "expandedGroups" in patch)).toEqual([]);
   });
@@ -1566,7 +1544,7 @@ describe("SessionsScreen toolbar events", () => {
     patchSessionView("host-a", { query: "" });
     const { scrollToOffset } = renderScreen(undefined, false);
     scroll(480);
-    const search = (query: string) => { (findByTestID(harness.current(), "sessions-search").props.onChangeText as (query: string) => void)(query); harness.flush(); };
+    const search = (query: string) => { (sessionSearch().props.onChangeText as (query: string) => void)(query); harness.flush(); };
     search("quiet");
     expect(readSessionView("host-a")).toMatchObject({ treeOffset: 480, scrollOffset: 0 });
     vi.runOnlyPendingTimers();
@@ -1717,7 +1695,7 @@ function renderSessionLeaf(): ElementLike & { readonly type: unknown } {
   return leaf.type(leaf.props) as ElementLike & { readonly type: unknown };
 }
 
-describe("SessionsScreen compact toolbar", () => {
+describe("SessionsScreen mobile filter page", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
@@ -1741,131 +1719,6 @@ describe("SessionsScreen compact toolbar", () => {
   afterEach(() => {
     harness.unmount();
     vi.useRealTimers();
-  });
-
-  it("opens on one slim line: no heading, shortcuts, search or state chips above the tree", () => {
-    renderCompact();
-    const tree = screen() as ElementLike;
-    const ids = testIDs(tree);
-    for (const hidden of ["sessions-full-toolbar-slot", "sessions-full-toolbar", "sessions-heading", "sessions-shortcut-0", "sessions-search", "sessions-filter-all", "sessions-filter-idle", "sessions-advanced-toggle", "sessions-filter-summary-row", HIDE_FILTERS_TEST_ID]) {
-      expect(ids).not.toContain(hidden);
-    }
-    // Only the slim slot sits above the list.
-    const above = (tree.props.children as unknown[]).filter((child) => child !== null && child !== undefined && child !== false);
-    expect(above.map((child) => (child as ElementLike).props.testID)).toEqual(["sessions-slim-toolbar-slot", "sessions-list"]);
-    // The host name on one line; its live state is the top bar's pill.
-    const host = findByTestID(tree, "sessions-slim-host");
-    expect(host.props.style).toMatchObject({ flexDirection: "row" });
-    expect(walk(host).filter((element) => element !== host).every((element) => element.props.numberOfLines === 1)).toBe(true);
-    expect(textOf(host)).toBe("srv_host-a");
-    expect(findByTestID(tree, "sessions-slim-search").props.accessibilityState).toEqual({ expanded: false });
-    expect(findByTestID(tree, "sessions-slim-filters").props.accessibilityState).toEqual({ expanded: false });
-    expect([findByTestID(tree, "sessions-slim-search").props["aria-expanded"], findByTestID(tree, "sessions-slim-filters").props["aria-expanded"]]).toEqual([false, false]);
-    expect(compactToolbarOpen(readSessionView("host-a"))).toBe(false);
-  });
-
-  it("opens from Search and Filters, closes with Hide filters, and keeps the choice across re-entry", () => {
-    renderCompact();
-    press("sessions-slim-search");
-    expect(fullToolbarShown()).toBe(true);
-    expect(compactToolbarOpen(readSessionView("host-a"))).toBe(true);
-    const focus = vi.fn();
-    const blur = vi.fn();
-    (findByTestID(harness.current(), "sessions-search").props.ref as RefLike).current = { focus, blur };
-    vi.advanceTimersByTime(0);
-    expect(focus).toHaveBeenCalledOnce();
-    expect(findByTestID(screen(), "sessions-slim-search").props.accessibilityState).toEqual({ expanded: true });
-    expect(findByTestID(screen(), "sessions-slim-search").props["aria-expanded"]).toBe(true);
-    const hide = findByTestID(screen(), HIDE_FILTERS_TEST_ID);
-    expect(textOf(hide)).toBe("Hide filters");
-    expect(hide.props.accessibilityLabel).toBe("Hide filters");
-    expect(hide.props.accessibilityState).toEqual({ expanded: true });
-    expect((hide.props.style as { minHeight: number }).minHeight).toBeGreaterThanOrEqual(44);
-    expect(testIDs(screen())).not.toContain("sessions-slim-filters");
-
-    press(HIDE_FILTERS_TEST_ID);
-    expect(blur).toHaveBeenCalledOnce();
-    expect(fullToolbarShown()).toBe(false);
-    expect(testIDs(harness.current())).not.toContain("sessions-search");
-    expect(compactToolbarOpen(readSessionView("host-a"))).toBe(false);
-
-    // Back and re-entry remount the screen; the store keeps the choice.
-    harness.reset(); renderCompact();
-    expect(fullToolbarShown()).toBe(false);
-    press("sessions-slim-filters");
-    expect(fullToolbarShown()).toBe(true);
-    expect(testIDs(harness.current())).toContain("sessions-options");
-    expect(readSessionView("host-a")).toMatchObject({ advancedOpen: true });
-    expect(compactToolbarOpen(readSessionView("host-a"))).toBe(true);
-    harness.reset(); renderCompact();
-    expect(fullToolbarShown()).toBe(true);
-    expect(testIDs(harness.current())).toContain("sessions-options");
-  });
-
-  it("closes the open toolbar after a small downward scroll even when the list is shorter than the screen", () => {
-    patchSessionView("host-a", toolbarOpenPatch(true));
-    const { scrollToOffset } = renderScreen();
-    const list = () => findByTestID(harness.current(), "sessions-list");
-    (list().props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 0, width: 400, height: 500 } } });
-    harness.flush();
-    // The short list keeps room for the closing drag on web and Android.
-    expect(list().props.contentContainerStyle).toMatchObject({ minHeight: 500 + COMPACT_SCROLL_SLACK });
-
-    scroll(COMPACT_COLLAPSE_DISTANCE - 1, 500 + COMPACT_SCROLL_SLACK, 500);
-    expect(fullToolbarShown()).toBe(true);
-    scroll(COMPACT_COLLAPSE_DISTANCE + 6, 500 + COMPACT_SCROLL_SLACK, 500);
-    expect(fullToolbarShown()).toBe(false);
-    expect(compactToolbarOpen(readSessionView("host-a"))).toBe(false);
-    // The toolbar never left the view, so the rows take its place from the top.
-    expect(scrollToOffset).toHaveBeenLastCalledWith({ offset: 0, animated: false });
-    expect(list().props.contentContainerStyle).not.toHaveProperty("minHeight");
-
-    // iOS: a rubber-band drag past a 300px list in a 500px viewport closes it too.
-    press("sessions-slim-search");
-    vi.advanceTimersByTime(2_000);
-    scroll(0, 300, 500);
-    scroll(COMPACT_COLLAPSE_DISTANCE + 6, 300, 500);
-    expect(fullToolbarShown()).toBe(false);
-  });
-
-  it("does not close while the search input or a toolbar control has focus", () => {
-    patchSessionView("host-a", toolbarOpenPatch(true));
-    renderScreen();
-    const search = () => findByTestID(harness.current(), "sessions-search");
-    (search().props.onFocus as () => void)();
-    scroll(60, 300, 500);
-    expect(fullToolbarShown()).toBe(true);
-    (search().props.onBlur as () => void)();
-
-    const chip = () => findByTestID(harness.current(), "sessions-filter-idle");
-    (chip().props.onFocus as () => void)();
-    vi.advanceTimersByTime(2_000);
-    scroll(120, 300, 500);
-    expect(fullToolbarShown()).toBe(true);
-    (chip().props.onBlur as () => void)();
-
-    // With focus gone, the next deliberate scroll closes it.
-    scroll(120 + COMPACT_COLLAPSE_DISTANCE, 300, 500);
-    expect(fullToolbarShown()).toBe(false);
-  });
-
-  it("on web keeps the toolbar for keyboard focus but not for a chip focused by a click or tap", () => {
-    patchSessionView("host-a", toolbarOpenPatch(true));
-    renderScreen();
-    const chip = () => findByTestID(harness.current(), "sessions-filter-idle");
-    // The browser marks keyboard focus as :focus-visible; a pointer press focuses without it.
-    const focus = (visible: boolean) => (chip().props.onFocus as (event: unknown) => void)({ target: { matches: (selector: string) => selector === ":focus-visible" && visible } });
-    focus(true);
-    vi.advanceTimersByTime(2_000);
-    scroll(120, 300, 500);
-    expect(fullToolbarShown()).toBe(true);
-    (chip().props.onBlur as () => void)();
-
-    focus(false);
-    // Only the short interaction pin holds; once it lapses, a deliberate scroll closes the toolbar.
-    vi.advanceTimersByTime(2_000);
-    scroll(120 + COMPACT_COLLAPSE_DISTANCE, 300, 500);
-    expect(fullToolbarShown()).toBe(false);
   });
 
   it("tells a web screen reader which chips are on, which workstreams are checked, what is open and which sessions are favorites", () => {
@@ -1896,79 +1749,6 @@ describe("SessionsScreen compact toolbar", () => {
     const star = (id: string) => walk(drawn({ kind: "session", entry: sessionEntry(id, {}), depth: 1, parentKey: group.group.key })).find((element) => /^(Un)?favorite /i.test(String(element.props.accessibilityLabel)))!.props["aria-pressed"];
     expect([star("session-a"), star("session-b")]).toEqual([true, false]);
   });
-
-  it("keeps the toolbar for a native screen reader but not for React Native Web's always-on report", async () => {
-    accessibility.screenReader = true;
-    for (const [platform, open] of [["ios", true], ["web", false]] as const) {
-      harness.reset(); clearSessionViews();
-      patchSessionView("host-a", toolbarOpenPatch(true));
-      renderScreen(undefined, true, platform);
-      await Promise.resolve(); await Promise.resolve();
-      scroll(120, 300, 500);
-      expect(fullToolbarShown()).toBe(open);
-    }
-  });
-
-  it("does not read an offset shift from rows inserted above the viewport as a closing scroll", () => {
-    directory.state = { ...(directory.state as object), entries: [
-      sessionEntry("busy", { status: "running" }), sessionEntry("quiet", { status: "idle" }),
-    ] };
-    patchSessionView("host-a", { query: "", status: "running", grouping: "flat", ...toolbarOpenPatch(true) });
-    renderScreen();
-    // Too short to scroll the 228px toolbar out of view, so the small drag decides.
-    scroll(10, 700, 600);
-    // Same entry order, one more matching row: the native list keeps its visible row by moving the offset.
-    directory.state = { ...(directory.state as object), entries: [
-      sessionEntry("busy", { status: "running" }), sessionEntry("quiet", { status: "running" }),
-    ] };
-    harness.flush();
-    scroll(10 + 48, 748, 600);
-    expect(fullToolbarShown()).toBe(true);
-    scroll(10 + 48 + COMPACT_COLLAPSE_DISTANCE, 748, 600);
-    expect(fullToolbarShown()).toBe(false);
-  });
-
-  it("stays open while arranging, so Move up and Move down remain reachable", () => {
-    patchSessionView("host-a", { ...toolbarOpenPatch(true), arranging: true, advancedOpen: true });
-    renderScreen();
-    vi.advanceTimersByTime(2_000);
-    scroll(300);
-    expect(fullToolbarShown()).toBe(true);
-  });
-
-  it("keeps active filters and the page scope visible as one-tap chips while collapsed", () => {
-    patchSessionView("host-a:scoped", { query: "", status: "idle", shortcut: "PR Review", scrollOffset: 0 });
-    const onClearScope = vi.fn();
-    renderCompact({ viewScope: "host-a:scoped", scopeLabel: "ASMA-1", onClearScope });
-    const summary = findByTestID(screen(), FILTER_SUMMARY_TEST_ID);
-    expect(textOf(summary)).toBe("Idle · PR Review✕");
-    expect(summary.props.accessibilityLabel).toBe("Active filters: Idle, PR Review. Clear filters");
-    expect((summary.props.style as { minHeight: number }).minHeight).toBeGreaterThanOrEqual(44);
-    const filters = findByTestID(screen(), "sessions-slim-filters");
-    expect(textOf(filters)).toBe("Filters2");
-    expect(filters.props.accessibilityLabel).toBe("Filters and view, 2 active");
-
-    const scope = findByTestID(screen(), SCOPE_SUMMARY_TEST_ID);
-    expect(textOf(scope)).toContain("ASMA-1");
-    (scope.props.onPress as () => void)();
-    expect(onClearScope).toHaveBeenCalledOnce();
-
-    press(FILTER_SUMMARY_TEST_ID);
-    expect(readSessionView("host-a:scoped")).toMatchObject({ query: "", status: "all", shortcut: null, streams: null, includeArchived: false });
-    expect(testIDs(screen())).not.toContain(FILTER_SUMMARY_TEST_ID);
-    expect(fullToolbarShown()).toBe(false);
-  });
-
-  it("keeps source warnings visible outside the closed compact toolbar", () => {
-    directory.state = { ...(directory.state as object), status: "stale", live: false, staleReason: "Live updates are unavailable." };
-    renderCompact();
-    expect(fullToolbarShown()).toBe(false);
-    const notices = findByTestID(harness.current(), "sessions-notices");
-    const banner = findByTestID(notices, "sessions-source-banner");
-    expect(banner.props.disabled).toBeUndefined();
-    expect(banner.props.actionLabel).toBe("Retry");
-  });
-
   it("keeps a compact title and context together, with its Updated time, wrapped report metadata and state badge", () => {
     directory.state = { ...(directory.state as object), entries: [{ ...sessionEntry("0123456789abcdef", {
       title: "A deliberately long session title that would otherwise wrap onto a second line on a phone",
@@ -1998,107 +1778,6 @@ describe("SessionsScreen compact toolbar", () => {
     expect(textOf(leaf)).not.toContain("01234567");
     expect(leaf.props.accessibilityLabel).toContain("Native ID 0123456789abcdef");
   });
-
-  it("draws the open toolbar inside the list's scroll content, under the pinned slim line", () => {
-    patchSessionView("host-a", toolbarOpenPatch(true));
-    renderCompact();
-    const root = harness.current() as ElementLike;
-    // A drag on the toolbar is a drag on the list: only the slim line sits outside it.
-    const above = (root.props.children as unknown[]).filter((child) => child !== null && child !== undefined && child !== false);
-    expect(above.map((child) => (child as ElementLike).props.testID)).toEqual(["sessions-slim-toolbar-slot", "sessions-list"]);
-    const list = findByTestID(root, "sessions-list");
-    const header = list.props.ListHeaderComponent as ElementLike;
-    const ids = testIDs(header);
-    expect(ids).toEqual(expect.arrayContaining(["sessions-full-toolbar-slot", "sessions-full-toolbar", "sessions-heading", "sessions-search", "sessions-filter-all"]));
-    // A complete, unfiltered read has no count line; the group rows carry the counts.
-    expect(ids).not.toContain("sessions-count");
-    // Its gap is list content too, so closing removes exactly the compensated height.
-    expect(findByTestID(header, "sessions-full-toolbar-slot").props.style).toContainEqual({ paddingBottom: TOOLBAR_LAYOUT_GAP });
-    // After typing, the first tap on a chip applies it rather than only dismissing the keyboard.
-    expect(list.props.keyboardShouldPersistTaps).toBe("handled");
-    expect(testIDs(findByTestID(screen(), "sessions-slim-toolbar-slot"))).toContain(HIDE_FILTERS_TEST_ID);
-  });
-
-  it("gives the space back on Hide filters without moving the rows in view", () => {
-    patchSessionView("host-a", toolbarOpenPatch(true));
-    const { scrollToOffset } = renderScreen();
-    const toolbarHeight = 220 + TOOLBAR_LAYOUT_GAP;
-    // Typing pins the toolbar open while the list scrolls past it.
-    (findByTestID(harness.current(), "sessions-search").props.onFocus as () => void)();
-    scroll(600);
-    expect(fullToolbarShown()).toBe(true);
-    expect(scrollToOffset).not.toHaveBeenCalled();
-    press(HIDE_FILTERS_TEST_ID);
-    expect(fullToolbarShown()).toBe(false);
-    expect(scrollToOffset).toHaveBeenLastCalledWith({ offset: 600 - toolbarHeight, animated: false });
-    expect(readSessionView("host-a")).toMatchObject({ scrollOffset: 600 - toolbarHeight, toolbarOpen: false });
-
-    // Partly in view: the rows move up only by the part that was showing.
-    vi.advanceTimersByTime(2_000);
-    press("sessions-slim-search");
-    vi.advanceTimersByTime(2_000);
-    scroll(100);
-    expect(fullToolbarShown()).toBe(true);
-    scrollToOffset.mockClear();
-    press(HIDE_FILTERS_TEST_ID);
-    expect(scrollToOffset).toHaveBeenLastCalledWith({ offset: 0, animated: false });
-  });
-
-  it("opens from Search or Filters at the top of the list, where the toolbar lives, and never on a scroll up", () => {
-    patchSessionView("host-a", toolbarOpenPatch(true));
-    const { scrollToOffset } = renderScreen();
-    scroll(300);
-    expect(fullToolbarShown()).toBe(false);
-    vi.advanceTimersByTime(300);
-    scroll(900);
-    scroll(20);
-    scroll(900);
-    expect(fullToolbarShown()).toBe(false);
-    scrollToOffset.mockClear();
-
-    press("sessions-slim-filters");
-    expect(fullToolbarShown()).toBe(true);
-    expect(scrollToOffset).toHaveBeenLastCalledWith({ offset: 0, animated: false });
-    expect(readSessionView("host-a")).toMatchObject({ scrollOffset: 0, toolbarOpen: true, advancedOpen: true });
-
-    // From the top the same rules close it again.
-    vi.advanceTimersByTime(2_000);
-    scroll(100);
-    expect(fullToolbarShown()).toBe(true);
-    scroll(300);
-    expect(fullToolbarShown()).toBe(false);
-    expect(scrollToOffset).toHaveBeenLastCalledWith({ offset: 300 - (220 + TOOLBAR_LAYOUT_GAP), animated: false });
-  });
-
-  it("leaves the host's live state to the top bar; a stale or offline host still gets the source banner", () => {
-    const labels = new Set<string>();
-    for (const hostStatus of ["online", "connecting", "idle", "offline", "error"] as const) {
-      for (const status of ["idle", "loading", "ready", "stale", "error"] as const) {
-        for (const live of [true, false]) labels.add(nativeFreshnessLabel({ hostStatus, status, live }));
-      }
-    }
-    expect([...labels]).toEqual(expect.arrayContaining(["Live", "Stale", "Host offline"]));
-    directory.state = { ...(directory.state as object), status: "stale", live: false, staleReason: "Live updates are unavailable." };
-    for (const [hostId, compact] of [["host-a", true], ["host-offline", true], ["host-offline", false]] as const) {
-      harness.reset();
-      harness.render(() => SessionsScreen({
-        host: { id: hostId, label: `srv_${hostId}` },
-        layout: compact ? { compact: true, platform: "ios" } : { compact: false, platform: "web" },
-        navigation: { openAgent: () => undefined, openBrowser: () => undefined, openWorkspace: () => undefined },
-        theme: { colors } as PluginTheme,
-        params: {},
-      } as PluginScreenProps));
-      const slim = textOf(findByTestID(screen(), "sessions-slim-toolbar-slot"));
-      expect(slim).toContain(`srv_${hostId}`);
-      for (const label of labels) {
-        expect(slim).not.toContain(label);
-      }
-      const banner = findByTestID(harness.current(), "sessions-source-banner");
-      expect(banner.props.message).toContain("Live updates are unavailable.");
-      expect(banner.props.actionLabel).toBe("Retry");
-    }
-  });
-
   it("leaves wide layouts unchanged, including after a compact session", () => {
     patchSessionView("host-a", { query: "", grouping: "flat", ...toolbarOpenPatch(false) });
     let compact = false;
@@ -2134,7 +1813,26 @@ describe("SessionsScreen compact toolbar", () => {
     compact = false; harness.flush();
     expect(fullToolbarShown()).toBe(true);
   });
-
+  it("bounds wide Filters & view by the screen it shares with the list, so a short window keeps every control in the frame", () => {
+    patchSessionView("host-a", { advancedOpen: true });
+    renderScreen(undefined, false);
+    const frame = () => findByTestID(harness.current(), "sessions-options").props.style as { maxHeight?: number };
+    const layout = (target: ElementLike, values: { y?: number; height?: number }) => {
+      (target.props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 0, width: 1200, height: 0, ...values } } });
+      harness.flush();
+    };
+    expect(frame().maxHeight).toBeUndefined();
+    // 1440x900, mouse: a 752pt screen with the frame 120pt down the toolbar has room for the whole 354pt panel.
+    layout(harness.current() as ElementLike, { height: 752 });
+    layout(findByTestID(harness.current(), "sessions-options"), { y: 120 });
+    expect(frame().maxHeight).toBe(384);
+    // 1440x600, touch: the frame scrolls instead of pushing Arrange, Expand all, Collapse all and Legend off the screen.
+    layout(harness.current() as ElementLike, { height: 452 });
+    layout(findByTestID(harness.current(), "sessions-options"), { y: 156 });
+    expect(frame().maxHeight).toBe(138);
+    layout(harness.current() as ElementLike, { height: 300 });
+    expect(frame().maxHeight).toBe(132);
+  });
   it("chooses Workspace scope and Group by from compact selects that keep every choice, mark the current one and return focus", () => {
     const save = vi.fn(async () => true);
     const organization = {
@@ -2143,7 +1841,8 @@ describe("SessionsScreen compact toolbar", () => {
     } as unknown as NonNullable<Parameters<typeof SessionsScreen>[0]["organization"]>;
     directory.state = { ...(directory.state as object), entries: [sessionEntry("desk", { labels: { desk: "Ops" } }), sessionEntry("epic-work")] };
     patchSessionView("host-a", { ...toolbarOpenPatch(true), advancedOpen: true });
-    renderScreen(organization);
+    renderScreen(organization, true);
+    openMobileFilters();
     const select = (id: string) => findByTestID(harness.current(), id).props;
     const menus = () => walk(harness.current()).filter((element) => /^sessions-(scope|grouping)-menu$/.test(String(element.props.testID))).map((element) => element.props.testID);
     const items = () => walk(harness.current()).filter((element) => typeof element.props.onPress === "function" && typeof element.props.selected === "boolean" && "tall" in element.props);
@@ -2207,60 +1906,201 @@ describe("SessionsScreen compact toolbar", () => {
 
     // A menu left open closes with the options panel and does not come back when it reopens.
     (select("sessions-scope").onPress as () => void)(); harness.flush();
-    const filters = () => walk(harness.current()).find((element) => (element as { type?: unknown }).type === FiltersButton)!.props;
-    (filters().onPress as () => void)(); harness.flush();
+    closeMobileFilters();
     expect(menus()).toEqual([]);
-    (filters().onPress as () => void)(); harness.flush();
+    openMobileFilters();
     expect([select("sessions-scope").expanded, menus()]).toEqual([false, []]);
   });
 
-  it("bounds compact Filters & view to its own scroll frame, so the list keeps a share of the viewport and every control stays in the frame", () => {
-    patchSessionView("host-a", { ...toolbarOpenPatch(true), advancedOpen: true });
-    renderScreen();
-    const options = () => findByTestID(harness.current(), "sessions-options") as ElementLike & { readonly type: unknown };
-    const layout = (testID: string, values: { y?: number; height?: number }) => {
-      (findByTestID(harness.current(), testID).props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 0, ...values } } });
-      harness.flush();
-    };
-    expect([options().type, options().props.nestedScrollEnabled, options().props.keyboardShouldPersistTaps]).toEqual(["ScrollView", true, "handled"]);
-    // Unmeasured, the frame is not guessed.
-    expect((options().props.style as { maxHeight?: number }).maxHeight).toBeUndefined();
-    // 390x844, touch: a 585pt list viewport, and the frame starts 278pt down the toolbar.
-    layout("sessions-list", { height: 585 });
-    layout("sessions-options", { y: 278 });
-    const frame = () => (options().props.style as { maxHeight?: number; flexGrow?: number });
-    expect(frame()).toMatchObject({ flexGrow: 0, maxHeight: 132 });
-    // The toolbar ends at 70% of the viewport; 175pt below it still shows sessions.
-    expect([OPTIONS_MIN_HEIGHT, OPTIONS_SPACE_SHARE, 585 - 278 - frame().maxHeight!]).toEqual([132, 0.7, 175]);
-    // A taller viewport gives the frame the extra room; a shorter one keeps three 44pt controls.
-    layout("sessions-list", { height: 760 });
-    expect(frame().maxHeight).toBe(254);
-    layout("sessions-list", { height: 400 });
-    expect(frame().maxHeight).toBe(132);
-    // Every control is still in the frame: nothing moved out or was dropped.
-    const ids = walk(options()).map((element) => element.props.testID).filter(Boolean);
-    expect(ids).toEqual(expect.arrayContaining(["sessions-grouping", "sessions-scope", "sessions-filter-initializing", "sessions-filter-closed", "sessions-advanced-archived", "sessions-arrange", "sessions-expand-all", "sessions-collapse-all", "sessions-options-count"]));
-    expect(walk(options()).some((element) => element.props.label === "Legend")).toBe(true);
+  it("keeps source warnings visible outside the closed compact toolbar", () => {
+    directory.state = { ...(directory.state as object), status: "stale", live: false, staleReason: "Live updates are unavailable." };
+    renderCompact();
+    expect(fullToolbarShown()).toBe(false);
+    const notices = findByTestID(harness.current(), "sessions-notices");
+    const banner = findByTestID(notices, "sessions-source-banner");
+    expect(banner.props.disabled).toBeUndefined();
+    expect(banner.props.actionLabel).toBe("Retry");
   });
 
-  it("bounds wide Filters & view by the screen it shares with the list, so a short window keeps every control in the frame", () => {
+  it("keeps the quick toolbar and one full-page Filters route beside results, ignoring the old inline-open preference", () => {
+    patchSessionView("host-a", { toolbarOpen: true, advancedOpen: true, status: "idle", grouping: "role" });
+    renderCompact();
+    expect(testIDs(harness.current())).toContain("sessions-list");
+    expect(testIDs(harness.current())).not.toContain("sessions-full-toolbar");
+    expect(testIDs(harness.current())).not.toContain("sessions-options");
+    const triggers = walk(harness.current()).filter((node) => node.type === MobileQuickToolbar);
+    expect(triggers).toHaveLength(1);
+    expect(triggers[0]!.props.activeCount).toBe(1);
+    expect(triggers[0]!.props.summary).toContain("Idle");
+  });
+
+  it.each([true, false])("explains incomplete workstream availability with zero, one and unregistered associations (compact=%s)", (compact) => {
     patchSessionView("host-a", { advancedOpen: true });
-    renderScreen(undefined, false);
-    const frame = () => findByTestID(harness.current(), "sessions-options").props.style as { maxHeight?: number };
-    const layout = (target: ElementLike, values: { y?: number; height?: number }) => {
-      (target.props.onLayout as (event: unknown) => void)({ nativeEvent: { layout: { x: 0, y: 0, width: 1200, height: 0, ...values } } });
-      harness.flush();
-    };
-    expect(frame().maxHeight).toBeUndefined();
-    // 1440x900, mouse: a 752pt screen with the frame 120pt down the toolbar has room for the whole 354pt panel.
-    layout(harness.current() as ElementLike, { height: 752 });
-    layout(findByTestID(harness.current(), "sessions-options"), { y: 120 });
-    expect(frame().maxHeight).toBe(384);
-    // 1440x600, touch: the frame scrolls instead of pushing Arrange, Expand all, Collapse all and Legend off the screen.
-    layout(harness.current() as ElementLike, { height: 452 });
-    layout(findByTestID(harness.current(), "sessions-options"), { y: 156 });
-    expect(frame().maxHeight).toBe(138);
-    layout(harness.current() as ElementLike, { height: 300 });
-    expect(frame().maxHeight).toBe(132);
+    directory.state = { ...(directory.state as object), entries: [] };
+    renderScreen(undefined, compact);
+    if (compact) openMobileFilters();
+    expect(textOf(findByTestID(harness.current(), "sessions-workstream-availability"))).toContain("this list may be incomplete");
+    expect(textOf(harness.current())).toContain("No workstream associations available in this context.");
+    const choices = () => walk(harness.current()).filter((node) => node.props.checkbox === true);
+    expect(choices()).toHaveLength(0);
+
+    directory.state = { ...(directory.state as object), entries: [sessionEntry("missing", {})] };
+    harness.flush();
+    expect(choices().map((node) => node.props.label)).toEqual(["Other work"]);
+    expect(textOf(harness.current())).not.toContain("No workstream associations available");
+    (choices()[0]!.props.onPress as () => void)(); harness.flush();
+    expect(readSessionView("host-a").streams).toEqual([]);
+
+    directory.state = { ...(directory.state as object), entries: [sessionEntry("missing", {}), sessionEntry("unknown", { labels: { workstream: "unregistered-key" } })] };
+    harness.flush();
+    expect(choices().map((node) => node.props.label).sort()).toEqual(["Other work", "unregistered-key"]);
+    expect(textOf(findByTestID(harness.current(), "sessions-workstream-availability"))).toContain("Names may be unregistered");
+    expect(readSessionView("host-a").streams).toEqual([]);
+  });
+
+  it("applies all seven quick actions to actual rows and updates counts with search, without a settings write", () => {
+    directory.state = { ...(directory.state as object), entries: [
+      sessionEntry("run", { title: "mobile run", status: "running" }),
+      sessionEntry("idle", { title: "mobile idle" }),
+      sessionEntry("error", { title: "mobile error", status: "error", requiresAttention: true, attentionReason: "error" }),
+      sessionEntry("input", { title: "mobile input", needsInput: true, requiresAttention: true, attentionReason: "permission" }),
+      sessionEntry("notice", { title: "mobile notice", requiresAttention: true, attentionReason: "finished" }),
+      sessionEntry("other", { title: "unrelated" }),
+    ] };
+    const save = vi.fn(async () => true);
+    const organization = { state: { status: "ready", values: { ...DEFAULT_ORGANIZATION_SETTINGS, favorites: ["idle"] }, revision: "r", saving: false, saveError: null, save: async () => true, reset: async () => true, reload: async () => {} }, save } satisfies NonNullable<Parameters<typeof SessionsScreen>[0]["organization"]>;
+    patchSessionView("host-a", { query: "mobile", grouping: "flat" });
+    renderScreen(organization, true);
+    const toolbar = () => walk(harness.current()).find((node) => node.type === MobileQuickToolbar)!;
+    const expected = { all: ["error", "idle", "input", "notice", "run"], running: ["run"], idle: ["idle", "input", "notice"], error: ["error"], needs_input: ["input"], attention: ["error", "input", "notice"], favorites: ["idle"] };
+    for (const [status, ids] of Object.entries(expected)) {
+      (toolbar().props.onStatus as (status: string) => void)(status); harness.flush();
+      expect(sessionRowIds().sort()).toEqual(ids);
+      expect((toolbar().props.counts as Record<string, number>)[status]).toBe(ids.length);
+      expect(readSessionView("host-a").query).toBe("mobile");
+    }
+    (toolbar().props.onChooser as () => void)(); harness.flush();
+    expect(readSessionView("host-a").status).toBe("favorites");
+    const chooser = walk(harness.current()).find((node) => node.type === MobileQuickChooser)!;
+    (chooser.props.onClose as () => void)(); harness.flush();
+    (toolbar().props.onQuery as (query: string) => void)("run"); harness.flush();
+    expect(sessionRowIds()).toEqual([]);
+    expect((toolbar().props.counts as Record<string, number>).all).toBe(1);
+    (toolbar().props.onStatus as (status: string) => void)("all"); harness.flush();
+    expect(sessionRowIds()).toEqual(["run"]);
+    (toolbar().props.onQuery as (query: string) => void)(""); harness.flush();
+    expect(sessionRowIds()).toHaveLength(6);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("applies filters immediately and Back keeps search, grouping, task/scope choices and results", () => {
+    directory.state = { ...(directory.state as object), entries: [sessionEntry("idle", { title: "SWE • mobile", status: "idle" }), sessionEntry("running", { title: "QA • mobile", status: "running" })] };
+    patchSessionView("host-a", { query: "mobile", grouping: "role" });
+    renderCompact();
+    openMobileFilters();
+    expect(testIDs(harness.current())).not.toContain("sessions-list");
+    expect(testIDs(harness.current())).toContain("sessions-options");
+    expect(textOf(harness.current())).toContain("Changes apply immediately. Back keeps your choices.");
+    (findByTestID(harness.current(), "sessions-filter-running").props.onPress as () => void)(); harness.flush();
+    expect(readSessionView("host-a")).toMatchObject({ query: "mobile", status: "running", grouping: "role" });
+    closeMobileFilters();
+    expect(sessionRowIds()).toEqual(["running"]);
+    openMobileFilters();
+    expect(findByTestID(harness.current(), "sessions-filter-running").props.active).toBe(true);
+    (walk(harness.current()).find((node) => node.type === ClearFiltersButton)!.props.onPress as () => void)(); harness.flush();
+    closeMobileFilters();
+    expect((walk(harness.current()).find((node) => node.type === MobileQuickToolbar)!.props.counts as Record<string, number>).all).toBe(2);
+    expect(groupRows().map((row) => row.group.label).sort()).toEqual(["QA", "SWE"]);
+    expect(readSessionView("host-a")).toMatchObject({ query: "", status: "all", grouping: "role", shortcut: null, includeArchived: false });
+  });
+
+  it.each(["quick", "full-page", "desktop", "collapsed", "empty"] as const)("clears compound filters from %s within the explicit project/epic and preserves preferences", (entry) => {
+    const scope = "host-a:project-a:ASMA-1";
+    const onClearScope = vi.fn(), save = vi.fn(async () => true), refresh = vi.fn(), archive = vi.fn();
+    const values = { ...DEFAULT_ORGANIZATION_SETTINGS, grouping: "flat" as const, favorites: ["match"], expandedGroups: { keep: true } };
+    const organization = { state: { status: "ready" as const, values, revision: "r", saving: false, saveError: null, save: async () => true, reset: async () => true, reload: async () => {} }, save };
+    const supplied = { state: { ...emptyDirectoryState(), status: "ready" as const, entries: [
+      sessionEntry("match", { projectKey: "project-a", labels: { epic: "ASMA-1" } }),
+      sessionEntry("second", { projectKey: "project-a", labels: { epic: "ASMA-1" }, status: "running" }),
+      sessionEntry("outside-project", { projectKey: "project-b", labels: { epic: "ASMA-1" } }),
+      sessionEntry("outside-epic", { projectKey: "project-a", labels: { epic: "ASMA-2" } }),
+    ], pages: 1, lastUpdatedAt: 0, inventoryComplete: true }, refresh };
+    patchSessionView(scope, { query: "no match", status: "favorites", task: { jira: "ASMA-9", kontorId: null, label: "ASMA-9" },
+      shortcut: "Adam", streams: [], includeArchived: true, grouping: "flat", arranging: true, advancedOpen: true, toolbarOpen: false, scrollOffset: entry === "collapsed" ? 300 : 0, treeOffset: 70 });
+    const compact = entry === "quick" || entry === "full-page";
+    harness.render(() => SessionsScreen({ host: { id: "host-a", label: "Host" }, layout: { compact, platform: "web" }, theme: { colors } as PluginTheme, params: {},
+      directory: supplied, organization, projectId: "project-a", epicKey: "ASMA-1", scopeLabel: "ASMA-1", onClearScope, onIncludeArchived: archive, viewScope: scope }));
+    expect(sessionRowIds()).toEqual([]);
+    let clear: () => void;
+    if (entry === "quick") clear = walk(harness.current()).find((node) => node.type === MobileQuickToolbar)!.props.onClear as () => void;
+    else if (entry === "collapsed") clear = walk(harness.current()).find((node) => node.type === ActiveFilterSummary)!.props.onClear as () => void;
+    else if (entry === "empty") clear = walk(findByTestID(harness.current(), "sessions-list").props.ListEmptyComponent).find((node) => node.props.accessibilityLabel === "Clear filters")!.props.onPress as () => void;
+    else {
+      if (entry === "full-page") openMobileFilters();
+      clear = walk(harness.current()).find((node) => node.type === ClearFiltersButton)!.props.onPress as () => void;
+    }
+    clear(); harness.flush();
+    if (entry === "full-page") {
+      expect(walk(harness.current()).some((node) => node.type === MobileFiltersPage)).toBe(true);
+      expect(walk(harness.current()).some((node) => node.type === MobileQuickToolbar)).toBe(false);
+      expect(testIDs(harness.current()).filter((id) => id === "sessions-search")).toHaveLength(1);
+      closeMobileFilters();
+    }
+    expect(readSessionView(scope)).toMatchObject({ query: "", status: "all", task: null, shortcut: null, streams: null, includeArchived: false,
+      grouping: "flat", advancedOpen: true, toolbarOpen: false, arranging: true, scrollOffset: 70, peek: null });
+    expect(sessionRowIds().sort()).toEqual(["match", "second"]);
+    const cleared = readSessionView(scope);
+    clear(); harness.flush();
+    expect(readSessionView(scope)).toEqual(cleared);
+    expect(values.favorites).toEqual(["match"]);
+    expect(values.expandedGroups).toEqual({ keep: true });
+    expect(save).not.toHaveBeenCalled(); expect(refresh).not.toHaveBeenCalled(); expect(onClearScope).not.toHaveBeenCalled();
+    expect(archive).toHaveBeenLastCalledWith(false);
+    expect(directory.inputs.at(-1)?.enabled).toBe(false);
+  });
+
+  it("returns keyboard focus to Filters and restores an unchanged list offset", () => {
+    patchSessionView("host-a", { grouping: "flat", scrollOffset: 370 });
+    renderCompact(); vi.runAllTimers();
+    const ref = walk(harness.current()).find((node) => node.type === MobileQuickToolbar)!.props.filtersTriggerRef as RefLike;
+    const calls: string[] = [];
+    const focus = vi.fn(() => calls.push("focus")); ref.current = { focus };
+    const dismiss = vi.fn(() => calls.push("dismiss"));
+    const helpRef = walk(harness.current()).find((node) => node.type === MobileQuickToolbar)!.props.helpDismissRef as { current: (() => void) | null };
+    helpRef.current = dismiss;
+    openMobileFilters(); closeMobileFilters();
+    const scrollToOffset = vi.fn();
+    (findByTestID(harness.current(), "sessions-list").props.ref as RefLike).current = { scrollToOffset };
+    vi.runAllTimers();
+    expect(focus).toHaveBeenCalledOnce();
+    expect(calls).toEqual(["focus", "dismiss"]);
+    expect(scrollToOffset).toHaveBeenCalledWith({ offset: 370, animated: false });
+  });
+
+  it("retains choices across a resize and keeps filter pages isolated by context", () => {
+    let compact = true;
+    let scope = "project:a";
+    patchSessionView(scope, { scrollOffset: 370 });
+    const render = () => SessionsScreen({ host: { id: "host-a", label: "Host" }, layout: { compact, platform: "web" }, theme: { colors } as PluginTheme, params: {}, viewScope: scope });
+    harness.render(render); openMobileFilters();
+    setStateFilter("idle");
+    compact = false; harness.flush();
+    expect(testIDs(harness.current())).not.toContain("sessions-mobile-filters");
+    expect(fullToolbarShown()).toBe(true);
+    expect(readSessionView(scope).status).toBe("idle");
+    compact = true; harness.flush(); openMobileFilters();
+    scope = "project:b"; harness.flush();
+    expect(walk(harness.current()).some((node) => node.type === MobileFiltersPage)).toBe(false);
+    expect(readSessionView(scope).status).toBe("all");
+    expect(readSessionView("project:a").status).toBe("idle");
   });
 });
+
+function openMobileFilters() {
+  const trigger = walk(harness.current()).find((node) => node.type === MobileQuickToolbar)!;
+  (trigger.props.onFilters as () => void)(); harness.flush();
+}
+function closeMobileFilters() {
+  const page = walk(harness.current()).find((node) => node.type === MobileFiltersPage)!;
+  (page.props.onBack as () => void)(); harness.flush();
+}
