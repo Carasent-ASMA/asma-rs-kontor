@@ -1350,7 +1350,7 @@ impl PaseoRpc {
     /// operations, generated from the one member surface list.
     pub fn with_planning_pair_member_mcp(&mut self, seat: &crate::seat_mcp::SeatMcp) {
         self.message["config"]["mcpServers"] =
-            seat.server_config(kontor_core::planning_pair::MEMBER_SERVE_PROFILE);
+            seat.server_config(crate::seat_mcp::SeatKind::PlanningPairMember.serve_profile());
         self.message["config"]["toolPolicy"] = serde_json::json!({
             "preapproved": kontor_core::planning_pair::MEMBER_MCP_TOOLS
                 .iter()
@@ -1362,7 +1362,8 @@ impl PaseoRpc {
     /// Inject the credential-scoped consultation MCP and approve only its four
     /// registry operations through Paseo's exact tool-policy contract.
     pub fn with_consultation_mcp(&mut self, seat: &crate::seat_mcp::SeatMcp) {
-        self.message["config"]["mcpServers"] = seat.server_config("consultation");
+        self.message["config"]["mcpServers"] =
+            seat.server_config(crate::seat_mcp::SeatKind::Consultation.serve_profile());
         self.message["config"]["toolPolicy"] = serde_json::json!({"preapproved": [
             {"kind":"mcp", "server":"kontor", "tool":"kontor_advisor_run_get"},
             {"kind":"mcp", "server":"kontor", "tool":"kontor_advisor_run_settle"},
@@ -1375,7 +1376,8 @@ impl PaseoRpc {
     /// provider. This contains no credential: the MCP child inherits the seat's
     /// secret environment from the session frame, never shared configuration.
     pub fn with_leadership_mcp(&mut self, seat: &crate::seat_mcp::SeatMcp) {
-        self.message["config"]["mcpServers"] = seat.server_config("leadership");
+        self.message["config"]["mcpServers"] =
+            seat.server_config(crate::seat_mcp::SeatKind::Leadership.serve_profile());
         self.message["config"]["toolPolicy"] = serde_json::json!({"preapproved": [
             {"kind":"mcp", "server":"kontor", "tool":"kontor_completion_get"},
             {"kind":"mcp", "server":"kontor", "tool":"kontor_completion_remediate"},

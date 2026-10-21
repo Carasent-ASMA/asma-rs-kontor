@@ -98,6 +98,9 @@ mod hosted_directory;
 #[path = "contract/paseo_0_11_2.rs"]
 mod paseo_0_11_2;
 
+#[path = "contract/seat_profiles.rs"]
+mod seat_profiles;
+
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------

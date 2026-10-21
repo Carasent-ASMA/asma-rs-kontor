@@ -1079,12 +1079,18 @@ The daemon composes its own seats' servers from the same registry
 (`../crates/kontor-runtime-paseo/src/seat_mcp.rs`). Every composed server runs
 `kontor-mcp --credential-tier operator --serve-profile <profile>`; a scoped
 consultation or hosted credential reaches it only through `KONTOR_AUTH` in the
-creation frame's secret channel, never through a shared file. At `0971674d`:
+creation frame's secret channel, never through a shared file.
+
+**The seat kind selects the profile.** Every admitted delivery seat composes
+`worker`; every Advisor and Committee seat composes `consultation`, and never the
+worker or admin surface. Claude receives the profile in its worktree `.mcp.json`;
+Codex and OpenCode receive it in the creation frame. The remaining composed
+kinds keep their own profiles:
 
 | Profile | Tools | Composed for |
 | --- | --- | --- |
-| `worker` | 25, as above | OpenCode delivery seats, in the creation frame |
-| `consultation` | 5: Advisor run read and settle, Committee run and artifact read, findings record | Advisor and Committee fillers, with the consultation tool guard; Claude delivery seats, in the worktree `.mcp.json` |
+| `worker` | 25, as above | **Delivery seats**: Claude in the worktree `.mcp.json`; Codex and OpenCode in the creation frame |
+| `consultation` | 5: Advisor run read and settle, Committee run and artifact read, findings record | **Advisor and Committee seats**, with the consultation tool guard: Claude in the worktree `.mcp.json`; Codex and OpenCode in the creation frame |
 | `planning_pair_member` | 3: run read, findings record, answer record | planning-pair members, with the guard — refused before launch through Paseo today ([above](#direct-mode-resolution-without-a-daemon)) |
 | `planning_pair_caller` | 4: run read, invoke, clarification request, disposition record | nothing; selectable by name only |
 | `leadership` | 6: completion read and remediation, open-question list and record, Committee-seat permission inspection and response | hosted LSA, TPM and desk seats: Claude's cwd files plus the creation frame for every provider |

@@ -4560,6 +4560,17 @@ impl PaseoAdapter {
 // RuntimeAdapter
 // ---------------------------------------------------------------------------
 
+/// How one delivery launch reaches the runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FrameDelivery {
+    /// Create through the session frame, which is the only delivery surface
+    /// that can carry a per-agent MCP config for this provider.
+    create: bool,
+    /// Require the daemon's per-agent `providerOptionsApplied` acknowledgement
+    /// before the seat may bind.
+    requires_applied_posture: bool,
+}
+
 impl PaseoAdapter {
     /// The capability set to judge an operation by, read fresh.
     ///
@@ -4671,7 +4682,7 @@ impl PaseoAdapter {
         // spent no native call at all. Both inputs are local — the daemon's
         // advertised feature from the identity already read, expressibility from
         // a table.
-        let opencode_delivery = self.opencode_delivery_gate(request)?;
+        let frame_delivery = self.frame_delivery_gate(request)?;
 
         // Rerun the placement checks against a *fresh* readback. A binding made
         // ten minutes ago is evidence about ten minutes ago, and the whole point
@@ -4696,7 +4707,7 @@ impl PaseoAdapter {
         // launch-intent digest and the census must match the labels the created
         // agent will actually have. This is also the reconciliation claim: the
         // digest exists, and is identical on every attempt, before any effect.
-        let delivery = if opencode_delivery && !adoption_only {
+        let delivery = if frame_delivery.create && !adoption_only {
             let allowances = self
                 .config
                 .scope
@@ -4713,7 +4724,7 @@ impl PaseoAdapter {
                 labels: &labels,
                 allowances: &allowances,
                 seat_mcp: self.config.seat_mcp.as_ref(),
-                serve_profile: "worker",
+                serve_profile: crate::seat_mcp::SeatKind::Delivery.serve_profile(),
                 binding_id: &request.binding_id().to_string(),
                 agent_run_id: &request.agent_run_id().to_string(),
                 role_slot_id: request.role_slot_id().as_str(),
@@ -4816,20 +4827,20 @@ impl PaseoAdapter {
         )?;
 
         // Compose the seat's worktree-local MCP config before anything is
-        // spawned, so a Claude seat starts with exactly one kontor server at
-        // operator tier under the consultation profile instead of whatever
+        // spawned, so a Claude delivery seat starts with exactly one kontor
+        // server at operator tier under the worker profile instead of whatever
         // ambient harness config the machine carries. Loud on failure: a seat
         // silently launched without its control-plane surface would fail later,
         // further from the cause.
         //
-        // An OpenCode seat *does* reach this line now that delivery is enabled,
-        // and `compose_for_seat` is a no-op for it: its posture rides in the
-        // create's `providerOptions`, so there is nothing here to write. That is
-        // also why two OpenCode seats can share one worktree — they have no file
-        // to race over. `seat_mcp::an_opencode_seat_leaves_the_shared_worktree_untouched`
+        // Codex and OpenCode do reach this line, and `compose_for_delivery_seat` is a
+        // no-op for them: their worker surface rides in the creation frame, so
+        // there is nothing here to write. That is also why two OpenCode seats
+        // can share one worktree — they have no file to race over.
+        // `seat_mcp::an_opencode_seat_leaves_the_shared_worktree_untouched`
         // holds it to that against a real directory.
         if !adoption_only {
-            crate::seat_mcp::compose_for_seat(
+            crate::seat_mcp::compose_for_delivery_seat(
                 self.config.seat_mcp.as_ref(),
                 request.model_rung().provider.0.as_str(),
                 posture,
@@ -4843,9 +4854,10 @@ impl PaseoAdapter {
             })?;
         }
 
-        // The CLI create, for every provider whose posture is its mode. OpenCode
-        // does not come through here: its posture has to travel in
-        // `providerOptions`, which only the session socket carries.
+        // The CLI create, for every provider that has a worktree file or no
+        // per-seat MCP surface. Codex and OpenCode do not come through here:
+        // their worker surface and (for OpenCode) posture have to travel in the
+        // session frame.
         let command = PaseoCommand::agent_run(
             &workspace_id,
             task_scope.worktree.as_str(),
@@ -4858,8 +4870,9 @@ impl PaseoAdapter {
         )?;
 
         let agent = match (recovered, delivery.as_ref()) {
-            // An OpenCode seat this launch already made, found by its exact
-            // launch intent. The census snapshot is this attempt's own read.
+            // A frame-delivered seat this launch already made, found by its
+            // exact launch intent. The census snapshot is this attempt's own
+            // read.
             (Some(agent), Some(_)) => agent,
             // An adoption-only recovery binds the complete census snapshot. It
             // never starts or prompts another native and does not need a second
@@ -4870,7 +4883,7 @@ impl PaseoAdapter {
             (Some(agent), None) => self.fetch_agent(&agent.id).await?,
             // One create carrying permission, MCP, prompt and message id, and the
             // snapshot it answers with is what the seat is judged from.
-            (None, Some(delivery)) => self.create_opencode_seat(delivery).await?,
+            (None, Some(delivery)) => self.create_frame_seat(delivery).await?,
             (None, None) => {
                 let native_id = match self.transport.run(&command).await {
                     Ok(output) => {
@@ -4910,7 +4923,7 @@ impl PaseoAdapter {
                 Self::verify_agent_route(&agent, request.model_rung(), request.autonomy())
             })
             .and_then(|()| {
-                if !opencode_delivery || agent.provider_options_applied() {
+                if !frame_delivery.requires_applied_posture || agent.provider_options_applied() {
                     Ok(())
                 } else {
                     Err(RuntimeError::LaunchNotAdmitted {
@@ -5009,15 +5022,14 @@ impl PaseoAdapter {
         })
     }
 
-    /// Whether this launch is an OpenCode delivery, refusing it if it cannot be
-    /// proved.
+    /// Whether this delivery launch must be created through the session frame,
+    /// refusing it if its posture cannot be proved.
     ///
-    /// `Ok(false)` for every other provider: their posture *is* their mode, the
-    /// mode readback proves it, and their CLI launch path is untouched.
+    /// Codex and OpenCode have no worktree config file, so their `worker`
+    /// surface travels in the creation frame. Claude keeps its worktree
+    /// `.mcp.json`, and every other provider keeps its CLI launch path.
     ///
-    /// # What is asked, and what deliberately is not
-    ///
-    /// Exactly one thing: does this daemon advertise
+    /// OpenCode additionally asks exactly one thing: does this daemon advertise
     /// [`PaseoFeature::ProviderOptionsApplied`](crate::wire::PaseoFeature::ProviderOptionsApplied)?
     ///
     /// **Not the version.** Kontor already shipped a path gated on `0.6.1` that
@@ -5043,30 +5055,49 @@ impl PaseoAdapter {
     /// # Errors
     /// [`RuntimeError::LaunchNotAdmitted`] when the daemon does not advertise the
     /// feature, or when the provider cannot express the declared posture.
-    fn opencode_delivery_gate(&self, request: &LaunchRequest) -> RuntimeResult<bool> {
+    fn frame_delivery_gate(&self, request: &LaunchRequest) -> RuntimeResult<FrameDelivery> {
         let provider = request.model_rung().provider.0.as_str();
-        if crate::client::built_in_provider(provider) != "opencode" {
-            return Ok(false);
+        match crate::client::built_in_provider(provider) {
+            "codex" => {
+                // The frame carries the worker MCP and the provider-native mode.
+                // The refusal is `paseo_mode`'s own, so an autonomy Codex cannot
+                // express is refused here rather than at the wire.
+                crate::posture::render_posture(provider, request.autonomy(), &[])?;
+                Ok(FrameDelivery {
+                    create: true,
+                    requires_applied_posture: false,
+                })
+            }
+            "opencode" => {
+                let applies = self
+                    .lock()
+                    .server
+                    .as_ref()
+                    .is_some_and(crate::wire::PaseoServerInfo::applies_provider_options);
+                if !applies {
+                    return Err(RuntimeError::LaunchNotAdmitted {
+                        rule: "this Paseo does not advertise providerOptionsApplied, so an OpenCode posture cannot be proved",
+                    });
+                }
+                // And the provider must be able to express the declared posture
+                // at all. The refusal is `paseo_mode`'s own, so an advisory seat
+                // on a provider with no contained mode is refused here rather
+                // than at the wire.
+                crate::posture::render_posture(provider, request.autonomy(), &[])?;
+                Ok(FrameDelivery {
+                    create: true,
+                    requires_applied_posture: true,
+                })
+            }
+            _ => Ok(FrameDelivery {
+                create: false,
+                requires_applied_posture: false,
+            }),
         }
-        let applies = self
-            .lock()
-            .server
-            .as_ref()
-            .is_some_and(crate::wire::PaseoServerInfo::applies_provider_options);
-        if !applies {
-            return Err(RuntimeError::LaunchNotAdmitted {
-                rule: "this Paseo does not advertise providerOptionsApplied, so an OpenCode posture cannot be proved",
-            });
-        }
-        // And the provider must be able to express the declared posture at all.
-        // The refusal is `paseo_mode`'s own, so an advisory seat on a provider
-        // with no contained mode is refused here rather than at the wire.
-        crate::posture::render_posture(provider, request.autonomy(), &[])?;
-        Ok(true)
     }
 
-    /// Create one OpenCode delivery seat, and return the snapshot it is judged
-    /// from.
+    /// Create one frame-delivered seat (Codex or OpenCode), and return the
+    /// snapshot it is judged from.
     ///
     /// One `agent.create.request` carries the permission, the MCP surface, the
     /// prompt and its deterministic message id. A completed answer needs no
@@ -5082,7 +5113,7 @@ impl PaseoAdapter {
     ///   settles it like every other non-created answer;
     /// * the answer is lost or unrecognised, and reconciliation decides, never a
     ///   second create.
-    async fn create_opencode_seat(
+    async fn create_frame_seat(
         &self,
         delivery: &crate::client::DeliveryCreateRequest,
     ) -> RuntimeResult<PaseoAgent> {
