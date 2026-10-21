@@ -256,8 +256,9 @@ Drive epic completion through `completion-get`, `completion-advance` and
    converges;
 4. the observed tracker epic still passes the linked epic content contract, its
    Goal matches the current agreed plan, and its Done means checks actually pass;
-5. the shared memory disposition is recorded; any required experience proposal,
-   authorized approval and projection/recall evidence meet the owning Goal and
+5. the shared memory disposition is recorded through the
+   [experience-memory procedure](../../experience-memory/SKILL.md); any required
+   experience proposal, authorized approval and projection/recall evidence meet the owning Goal and
    selected completion profile, without treating proposal as approval;
 6. final Kontor and external readback confirms the epic's terminal state.
 

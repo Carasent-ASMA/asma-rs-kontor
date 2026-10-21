@@ -1,4 +1,4 @@
-"""Tests for the neutral coordination and planning skills (ASMA-8565).
+"""Tests for the neutral workflow skills (ASMA-8565 and ASMA-8566).
 
 Run from the repository root:
 
@@ -9,8 +9,9 @@ check depend on: the expected skills exist once, every placeholder resolves
 against the full nested project: path in the neutral and ASMA fixtures, no
 private project value leaks outside a marked example, every relative and
 same-file link resolves, and each repeated rule has one owner that the other
-skills link to. They also prove every inventory row assigned to WP-03 is
-recorded with a disposition.
+skills link to. They also prove every inventory row assigned to WP-03 and WP-04
+is recorded with a disposition, and that the seat cards and the role crosswalk
+cover every role the workflow teams use.
 
 These tests live in the scripts lane until WP-05 supplies `scripts/pack.py` and
 the workflow-only lane; WP-05 owns moving or wiring them there.
@@ -48,6 +49,16 @@ EXPECTED_SKILLS = (
     "create-implementation-plan",
     "tracker-linked-creation",
     "long-task-commit-checkpoints",
+    "kontor-communication",
+    "pr-review",
+    "committee-protocol",
+    "seat-cards",
+    "experience-memory",
+    "document-organization",
+    "docs-navigation",
+    "decision-records",
+    "mutation-testing",
+    "ubiquitous-language",
 )
 
 # Private values that must never appear in the public pack, even inside an
@@ -73,6 +84,40 @@ NEVER_PUBLIC = (
 
 EXPECTED_INVENTORY_ROWS = {
     f"WP03-INV-{number:02d}" for number in range(1, 9)
+}
+
+EXPECTED_WP04_ROWS = {
+    f"WP04-INV-{number:02d}" for number in range(1, 8)
+}
+
+SEAT_CARDS = SKILLS / "seat-cards" / "SKILL.md"
+
+SEAT_CARD_FIELDS = (
+    "Purpose",
+    "Inputs",
+    "Outputs",
+    "Tool profile",
+    "Stop conditions",
+    "Personality",
+)
+
+EXPECTED_SEAT_LABELS = {
+    "LSA • <epic key>",
+    "TPM • <epic key>",
+    "ADAM",
+    "SA • <topic>",
+    "SWE • <task key>",
+    "QA • <task key>",
+    "AUD • <task key>",
+    "UAT • <task key>",
+    "SEAT A",
+    "SEAT B",
+    "REV A",
+    "REV B",
+    "REV SEC",
+    "REV DB",
+    "JUDGE",
+    "FINAL REVIEWER",
 }
 
 
@@ -528,9 +573,13 @@ class RuleOwnershipTests(unittest.TestCase):
         self.assertIn("seat-takeover owns resuming", text)
 
 
-def inventory_errors(rows: dict[str, list[str]]) -> list[str]:
+def inventory_errors(
+    rows: dict[str, list[str]], expected: set[str] | None = None
+) -> list[str]:
     errors = []
-    if set(rows) != EXPECTED_INVENTORY_ROWS:
+    if expected is None:
+        expected = EXPECTED_INVENTORY_ROWS
+    if set(rows) != expected:
         errors.append("inventory row set is incomplete or unknown")
     for row_id, row in rows.items():
         if len(row) != 3 or not row[2]:
@@ -608,6 +657,222 @@ class InventoryRowTests(unittest.TestCase):
         self.assertEqual(
             disposition_parameter_errors(mutated, pack_text),
             ["WP03-INV-01 claims unused project.tracker.architecture"],
+        )
+
+
+class Wp04InventoryRowTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.readme = read(SKILLS / "README.md")
+        table = table_starting_with(self.readme, "WP-04 row")
+        self.assertIsNotNone(table)
+        self.rows = {row[0]: row for row in table[1:]}
+
+    def test_every_wp04_inventory_row_is_recorded(self) -> None:
+        self.assertEqual(set(self.rows), EXPECTED_WP04_ROWS)
+
+    def test_every_wp04_inventory_row_has_a_disposition(self) -> None:
+        self.assertEqual(inventory_errors(self.rows, EXPECTED_WP04_ROWS), [])
+
+    def test_wp04_inventory_validation_refuses_missing_rows(self) -> None:
+        missing = dict(self.rows)
+        missing.pop("WP04-INV-01")
+        self.assertTrue(inventory_errors(missing, EXPECTED_WP04_ROWS))
+
+    def test_every_wp04_inventory_source_is_in_the_pack(self) -> None:
+        for row_id, row in self.rows.items():
+            for name in re.findall(r"`([^`]+)`", row[1]):
+                with self.subTest(row=row_id, source=name):
+                    matches = list(SKILLS.rglob(f"{name}/SKILL.md"))
+                    matches += list(SKILLS.rglob(f"{name}.md"))
+                    self.assertTrue(matches, f"{name} is not in the pack")
+
+    def test_wp04_dispositions_only_claim_used_parameters(self) -> None:
+        pack_text = "\n".join(
+            read(path) for path in SKILLS.rglob("*.md") if path.name != "README.md"
+        )
+        self.assertEqual(disposition_parameter_errors(self.rows, pack_text), [])
+
+    def test_wp04_inventory_validation_refuses_a_claim_the_pack_does_not_use(self) -> None:
+        pack_text = "\n".join(
+            read(path) for path in SKILLS.rglob("*.md") if path.name != "README.md"
+        )
+        mutated = {row_id: list(row) for row_id, row in self.rows.items()}
+        mutated["WP04-INV-01"][2] = "Claim `project.tracker.architecture`."
+        self.assertEqual(
+            disposition_parameter_errors(mutated, pack_text),
+            ["WP04-INV-01 claims unused project.tracker.architecture"],
+        )
+
+
+def seat_card_sections(text: str) -> dict[str, str]:
+    sections: dict[str, str] = {}
+    for block in re.split(r"^## ", text, flags=re.MULTILINE)[1:]:
+        heading, _, body = block.partition("\n")
+        name = heading.split(" — ", 1)[0].strip()
+        if name in ("Crosswalk", "Common tool boundary", "Keeping the cards current"):
+            continue
+        sections[name] = body
+    return sections
+
+
+class SeatCardTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.text = read(SEAT_CARDS)
+        self.cards = seat_card_sections(self.text)
+        table = table_starting_with(self.text, "Role code")
+        self.assertIsNotNone(table)
+        self.crosswalk = table[1:]
+
+    def test_every_expected_role_has_one_card(self) -> None:
+        self.assertEqual(
+            set(self.cards),
+            {
+                "LSA",
+                "TPM",
+                "Adam",
+                "SA",
+                "SWE",
+                "QA",
+                "AUD",
+                "UAT",
+                "Reviewer",
+                "Judge",
+                "Security reviewer",
+                "Database reviewer",
+                "Advisor",
+            },
+        )
+
+    def test_every_card_has_the_six_required_fields(self) -> None:
+        for name, body in self.cards.items():
+            with self.subTest(card=name):
+                for field in SEAT_CARD_FIELDS:
+                    self.assertIn(f"- **{field}:**", body, f"{name} lacks {field}")
+
+    def test_every_card_has_one_personality_line(self) -> None:
+        for name, body in self.cards.items():
+            with self.subTest(card=name):
+                matches = re.findall(r"- \*\*Personality:\*\* (.+)", body)
+                self.assertEqual(len(matches), 1)
+                self.assertTrue(matches[0].strip())
+
+    def test_the_crosswalk_has_four_columns_and_no_empty_cell(self) -> None:
+        for row in self.crosswalk:
+            with self.subTest(row=row):
+                self.assertEqual(len(row), 4)
+                self.assertTrue(all(cell.strip() for cell in row))
+
+    def test_every_fleet_slot_uses_an_existing_binding_family(self) -> None:
+        for row in self.crosswalk:
+            for slot in row[1].replace("`", "").split(","):
+                with self.subTest(row=row[0], slot=slot):
+                    self.assertRegex(
+                        slot.strip(),
+                        r"^(leadership|team|committee|advisor)/[^\s]+$",
+                    )
+
+    def test_every_crosswalk_role_has_a_card(self) -> None:
+        card_roles = {
+            self._card_role(name, body) for name, body in self.cards.items()
+        }
+        for row in self.crosswalk:
+            token = re.match(r"`([^`]+)`", row[0])
+            self.assertIsNotNone(token, row[0])
+            with self.subTest(row=row[0]):
+                self.assertIn(token.group(1), card_roles)
+
+    def test_every_card_role_appears_in_the_crosswalk(self) -> None:
+        crosswalk_roles = {
+            re.match(r"`([^`]+)`", row[0]).group(1) for row in self.crosswalk
+        }
+        for name, body in self.cards.items():
+            with self.subTest(card=name):
+                self.assertIn(self._card_role(name, body), crosswalk_roles)
+
+    def test_the_crosswalk_covers_the_workflow_seat_labels(self) -> None:
+        labels = {
+            label.strip()
+            for row in self.crosswalk
+            for label in row[3].replace("`", "").split(",")
+        }
+        for label in EXPECTED_SEAT_LABELS:
+            with self.subTest(label=label):
+                self.assertIn(label, labels)
+
+    def test_the_crosswalk_keeps_contrasting_reviewer_slots(self) -> None:
+        groups = [row[1] for row in self.crosswalk if row[0].startswith("`reviewer`")]
+        self.assertTrue(any("reviewer-a" in slot for slot in groups))
+        self.assertTrue(any("reviewer-b" in slot for slot in groups))
+        self.assertTrue(any("rev-sec" in slot for slot in groups))
+        self.assertTrue(any("rev-db" in slot for slot in groups))
+
+    @staticmethod
+    def _card_role(name: str, body: str) -> str:
+        match = re.search(r"- \*\*(?:Role code|Template role):\*\* `([^`]+)`", body)
+        if match is None:
+            raise AssertionError(f"{name} has no role code or template role")
+        return match.group(1)
+
+
+class Wp04OwnershipTests(unittest.TestCase):
+    def test_the_review_skill_links_its_rule_owners(self) -> None:
+        text = read(SKILLS / "pr-review" / "SKILL.md")
+        for owner in (
+            "../kontor-communication/SKILL.md",
+            "../seat-cards/SKILL.md",
+            "../committee-protocol/SKILL.md#independence-rules",
+            "../document-organization/SKILL.md#three-homes-for-information",
+        ):
+            with self.subTest(owner=owner):
+                self.assertIn(owner, text)
+
+    def test_the_committee_skill_owns_independence(self) -> None:
+        text = read(SKILLS / "committee-protocol" / "SKILL.md")
+        self.assertIn("## Independence rules", text)
+        for phrase in (
+            "Read-only seats",
+            "Fleet-bound models",
+            "Contrasting reviewers",
+            "Fresh judge",
+            "No self-review",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, text)
+
+    def test_committee_callers_link_the_protocol(self) -> None:
+        for path in (
+            SKILLS / "epic-orchestration" / "SKILL.md",
+            SKILLS / "agent-dispatch" / "SKILL.md",
+            SKILLS / "pr-review" / "SKILL.md",
+            SKILLS / "epic-orchestration" / "references" / "paseo-direct-native-placement.md",
+        ):
+            with self.subTest(path=str(path.relative_to(SKILLS))):
+                self.assertIn("committee-protocol", read(path))
+
+    def test_the_checklist_owns_eleven_checks_and_done_means(self) -> None:
+        text = read(SKILLS / "pr-review" / "references" / "review-checklist.md")
+        self.assertIn("The 11 human-judgment checks", text)
+        checks = re.findall(r"^\d+\. \*\*", text, re.MULTILINE)
+        self.assertEqual(len(checks), 11)
+        self.assertIn("**Done means.**", text)
+        self.assertIn("check (11)", read(SKILLS / "pr-review" / "SKILL.md"))
+        self.assertIn("check (11)", read(SKILLS / "pr-review" / "references" / "desk-messages.md"))
+
+    def test_the_three_homes_have_one_owner(self) -> None:
+        occurrences = 0
+        for path in SKILLS.rglob("*.md"):
+            text = read(path)
+            occurrences += len(re.findall(r'<a id="three-homes-for-information"', text))
+        self.assertEqual(occurrences, 1)
+        self.assertIn(
+            '<a id="three-homes-for-information">',
+            read(SKILLS / "document-organization" / "SKILL.md"),
+        )
+
+    def test_the_execution_plan_links_the_mutation_owner(self) -> None:
+        self.assertIn(
+            "../mutation-testing/SKILL.md",
+            read(SKILLS / "create-implementation-plan" / "SKILL.md"),
         )
 
 

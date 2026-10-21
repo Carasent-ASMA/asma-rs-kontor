@@ -270,6 +270,11 @@ and ticket TSWs, never seats inside a working ticket TSW. Create it when the
 orchestration flow calls for a committee: final close-out gate, root-cause
 analysis, competing plans, reviewer disagreement or advisor uncertainty.
 
+The committee method itself — read-only seats, fleet-bound models, contrasting
+reviewers, a fresh judge, independent findings, aggregation and reuse — is owned
+by [`committee-protocol`](../../committee-protocol/SKILL.md). This reference
+owns only the Paseo-direct placement.
+
 - The CSW title comes from the pinned Team Definition. Recommended:
   `CSW • <scope key> • <topic>` (task question or epic-wide question).
 - Scope follows the debated subject, not the caller. An epic-wide CSW is still a
@@ -287,34 +292,17 @@ analysis, competing plans, reviewer disagreement or advisor uncertainty.
 - Cardinality and aggregation come from the pinned template. `kontord` serves
   Operational Committee templates; a Kontor-governed epic uses the template its
   run pinned, never a hand-assembled shape.
-- **Independent Review** is the default shipped template: two reviewers on
-  contrasting providers plus a Judge. That three-seat shape is the shipped
-  fixture, not a universal rule; a template may declare other cardinality,
-  quorum and bounded rounds.
-- Every protocol starts with independent findings. Enforce the template's
-  provider/model diversity, quorum or conjunctive rules before aggregation.
 - The recommended Independent Review configuration names its seats exactly
   `SEAT A`, `SEAT B` and `JUDGE`, with no tracker-key, topic or role-code
-  suffix. Seat A and Seat B use contrasting providers.
-- All committee seats are **read-only**: never modify code, tickets, tracker,
-  runtime state or evidence.
-- A Judge or aggregator never fabricates or predicts a member's findings. An
-  aggregate verdict before every protocol-required finding is durable is
-  `pending`, not a guess.
-- Persist all independent findings, evidence references, dissent and the typed
-  aggregate verdict.
-- Independent Review compliance preset: all required reviewers approve **and**
-  no unresolved P0/P1, missing acceptance evidence, hidden scope reduction or
-  state drift remains. Missing evidence counts against; dissent is recorded,
-  not resolved away.
-- After the gate, reuse the same committee seats for corrective re-reviews under
-  the [context policy](autonomous-tpm-operation.md#context-policy). Do not
-  create duplicate reviewer sessions.
+  suffix. The protocol's independence rules decide which models may fill them.
+- Reuse the same committee seats for corrective re-reviews under the
+  [context policy](autonomous-tpm-operation.md#context-policy). Do not create
+  duplicate reviewer sessions. A materially different subject gets another CSW.
 
 ### Used alone (free work)
 
 A `workflow: free` caller may run a committee without an epic or a TPM. The
 caller acts as the coordinator and, at the user's explicit choice, either reuses
 the chosen workspace as the CSW or creates a CSW workspace inside the chosen
-existing project, with the existing id and path readback. The committee
-procedure above is otherwise unchanged.
+existing project, with the existing id and path readback. The
+[committee protocol](../../committee-protocol/SKILL.md) is otherwise unchanged.
