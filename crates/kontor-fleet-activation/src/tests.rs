@@ -465,6 +465,27 @@ fn a_manifest_pinning_another_role_catalog_fails_closed() {
 }
 
 #[test]
+fn the_forbidden_mode_is_enforced_on_the_open_handle() {
+    let root = tempfile::tempdir().expect("state root");
+    let path = root.path().join("owner-only.env");
+    private(&path, b"KEY=VALUE\n");
+    let checked = std::fs::symlink_metadata(&path).expect("the path check");
+    let file = std::fs::File::open(&path).expect("the open");
+    // The mode widens after the path was checked and opened: only the handle
+    // can still see it.
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).expect("mode");
+    let owner_only = Guard {
+        forbidden_mode: 0o077,
+        ..POLICY_GUARD
+    };
+    assert_eq!(refused(check_opened(&file, &checked, &owner_only)), P02);
+    assert!(
+        check_opened(&file, &checked, &POLICY_GUARD).is_ok(),
+        "0o640 carries no group/other write bit"
+    );
+}
+
+#[test]
 fn every_named_file_is_read_under_its_own_guard() {
     type Target = fn(&Bundle) -> PathBuf;
     let targets: [(Target, &str, &str, &str, &str); 4] = [

@@ -4,9 +4,17 @@
 //! realm state root, read at start, validated into typed errors that name a
 //! stable rule rather than a configured value. An absent file means the Realm
 //! emits nothing; there is no default destination, ever.
+//!
+//! The two secret values — the Workflows URL and the mention list — may instead
+//! come from an owner-only `<state root>/.env`, so an operator edits one file
+//! and never the policy. The `.env` value beats `attention.yml`; both are read
+//! once at start, so a change needs a daemon restart.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+
+use kontor_fleet::FleetError;
+use kontor_fleet_activation::{Guard, read_guarded};
 
 use serde::Deserialize;
 
@@ -21,8 +29,19 @@ const MAX_TIMEOUT_SECONDS: u64 = 300;
 /// The lowest and highest accepted attempt count.
 const MIN_ATTEMPTS: u32 = 1;
 const MAX_ATTEMPTS: u32 = 10;
-/// The longest mention target accepted.
+/// The longest single mention target accepted.
 const MAX_MENTION_TARGET: usize = 256;
+/// The most mention targets one post may carry.
+const MAX_MENTIONS: usize = 10;
+
+/// The optional secret overrides file inside a Realm state root.
+pub const ENV_FILE: &str = ".env";
+/// Overrides the one `teams_workflow` sink's `url`.
+const ENV_TEAMS_URL: &str = "KONTOR_ATTENTION_TEAMS_URL";
+/// Overrides `mention.target`; a comma-separated list.
+const ENV_MENTIONS: &str = "KONTOR_ATTENTION_MENTIONS";
+/// The key prefix this module owns inside `.env`.
+const ENV_PREFIX: &str = "KONTOR_ATTENTION_";
 /// The largest destination list accepted.
 const MAX_DESTINATIONS: usize = 8;
 
@@ -111,11 +130,12 @@ pub struct DestinationPolicy {
     pub max_attempts: u32,
 }
 
-/// The required mention target.
+/// The required mention targets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MentionPolicy {
-    /// The Teams identity a destination adapter mentions at the edge.
-    pub target: String,
+    /// The Teams identities a destination adapter mentions at the edge, in
+    /// configured order, deduplicated, between one and ten.
+    pub targets: Vec<String>,
 }
 
 /// The closed emit-kind selection.
@@ -171,12 +191,26 @@ struct RawEmit {
     kinds: Option<Vec<String>>,
 }
 
+/// The `KONTOR_ATTENTION_*` values found in `.env`.
+///
+/// Deliberately not `Debug`: the values are secret and must never reach a log.
+#[derive(Default)]
+struct EnvOverrides {
+    teams_url: Option<String>,
+    mentions: Option<String>,
+}
+
 /// Parse and validate an attention YAML document.
 ///
 /// # Errors
 /// Returns [`AttentionConfigError`] for malformed, incomplete or unsafe
 /// configuration. Rules are stable names and never echo a configured value.
 pub fn parse(document: &str) -> Result<AttentionPolicy, AttentionConfigError> {
+    parse_with(document, &EnvOverrides::default())
+}
+
+/// Parse `attention.yml` with the `.env` values applied on top.
+fn parse_with(document: &str, env: &EnvOverrides) -> Result<AttentionPolicy, AttentionConfigError> {
     let raw: RawPolicy =
         serde_yaml_ng::from_str(document).map_err(|_| AttentionConfigError::Document)?;
     if raw.schema_version != 1 {
@@ -191,6 +225,17 @@ pub fn parse(document: &str) -> Result<AttentionPolicy, AttentionConfigError> {
     if raw_sinks.len() > MAX_DESTINATIONS {
         return invalid("sinks exceeds the safe destination bound");
     }
+    if env.teams_url.is_some()
+        && raw_sinks
+            .iter()
+            .filter(|sink| sink.channel.as_deref() == Some("teams_workflow"))
+            .count()
+            != 1
+    {
+        return invalid(
+            "KONTOR_ATTENTION_TEAMS_URL needs exactly one teams_workflow sink to override",
+        );
+    }
     let mut destinations = Vec::with_capacity(raw_sinks.len());
     for raw_sink in raw_sinks {
         let channel = raw_sink.channel.ok_or(AttentionConfigError::Invalid {
@@ -204,7 +249,8 @@ pub fn parse(document: &str) -> Result<AttentionPolicy, AttentionConfigError> {
                 );
             }
         };
-        let url = raw_sink.url.ok_or(AttentionConfigError::Invalid {
+        let url = env.teams_url.clone().or(raw_sink.url);
+        let url = url.ok_or(AttentionConfigError::Invalid {
             rule: "sinks.url is required",
         })?;
         validate_url(&url)?;
@@ -229,22 +275,14 @@ pub fn parse(document: &str) -> Result<AttentionPolicy, AttentionConfigError> {
             max_attempts,
         });
     }
-    let mention = raw.mention.ok_or(AttentionConfigError::Invalid {
-        rule: "mention is required when attention.yml is present",
-    })?;
-    let target = mention.target.ok_or(AttentionConfigError::Invalid {
-        rule: "mention.target is required and may not be empty",
-    })?;
-    if target.trim().is_empty()
-        || target.chars().count() > MAX_MENTION_TARGET
-        || target
-            .chars()
-            .any(|character| character.is_control() || character.is_whitespace())
-        || target.contains('<')
-        || target.contains('>')
-    {
-        return invalid("mention.target is one bounded identity token");
-    }
+    let targets = match (&env.mentions, raw.mention) {
+        (Some(list), _) => list.clone(),
+        (None, None) => return invalid("mention is required when attention.yml is present"),
+        (None, Some(mention)) => mention.target.ok_or(AttentionConfigError::Invalid {
+            rule: "mention.target is required and may not be empty",
+        })?,
+    };
+    let targets = parse_mentions(&targets)?;
     let emit = raw.emit.ok_or(AttentionConfigError::Invalid {
         rule: "emit.kinds is required; absence of the file is how a Realm emits nothing",
     })?;
@@ -270,23 +308,146 @@ pub fn parse(document: &str) -> Result<AttentionPolicy, AttentionConfigError> {
     Ok(AttentionPolicy {
         schema_version: raw.schema_version,
         destinations,
-        mention: MentionPolicy { target },
+        mention: MentionPolicy { targets },
         emit: EmitPolicy { kinds },
     })
 }
 
-/// Read this Realm's optional attention policy.
+/// Read this Realm's optional attention policy and its `.env` overrides.
+///
+/// `.env` is read only when `attention.yml` is present: the policy file is
+/// still what arms the channel.
 ///
 /// # Errors
 /// Returns [`AttentionConfigError`] when a present file cannot be read or
-/// validated. An absent file is not an error and emits nothing.
+/// validated, or when `.env` is not an owner-only regular file. An absent
+/// `attention.yml` is not an error and emits nothing.
 pub fn read(state_root: &Path) -> Result<Option<AttentionPolicy>, AttentionConfigError> {
     let path = state_root.join(ATTENTION_FILE);
-    match std::fs::read_to_string(&path) {
-        Ok(document) => parse(&document).map(Some),
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(source) => Err(AttentionConfigError::Read { path, source }),
+    let document = match std::fs::read_to_string(&path) {
+        Ok(document) => document,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => return Err(AttentionConfigError::Read { path, source }),
+    };
+    parse_with(&document, &read_env(state_root)?).map(Some)
+}
+
+/// The `.env` file rules, read by the shared guarded reader so it is checked
+/// like every other state-root file: a regular file (a symlink or a FIFO is
+/// refused before it is opened), owner-only on the path and again on the open
+/// handle, owned by the state root's owner, bounded and the same inode when
+/// read as when checked.
+const ENV_GUARD: Guard = Guard {
+    symlink: ".env must be a regular file, not a symlink",
+    writable: ".env must be readable only by its owner (chmod 600)",
+    owner: ".env must be owned by the state root's owner",
+    oversized: ".env exceeds 64 KiB",
+    swapped: ".env changed while it was being read",
+    utf8: ".env is not UTF-8",
+    limit: 64 * 1024,
+    forbidden_mode: 0o077,
+};
+
+/// Read the optional owner-only `<state root>/.env`.
+fn read_env(state_root: &Path) -> Result<EnvOverrides, AttentionConfigError> {
+    let path = state_root.join(ENV_FILE);
+    let document = match read_guarded(state_root, &path, &ENV_GUARD) {
+        Ok(document) => document,
+        Err(FleetError::Read { source }) if source.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(EnvOverrides::default());
+        }
+        Err(FleetError::Read { source }) => {
+            return Err(AttentionConfigError::Read { path, source });
+        }
+        Err(FleetError::Invalid { rule }) => return invalid(rule),
+        Err(_) => return invalid(".env could not be read safely"),
+    };
+    parse_env(&document)
+}
+
+/// Parse plain `KEY=VALUE` lines and `#` comments.
+///
+/// A leading UTF-8 BOM and a shell `export ` prefix are accepted. Keys that do
+/// not mention `KONTOR_ATTENTION_` belong to someone else and are skipped; any
+/// other key that is not exactly a known one — a typo, another case, a quoted
+/// key — would silently do nothing, so it is refused. No rule echoes a line,
+/// because a line may hold a secret.
+fn parse_env(document: &str) -> Result<EnvOverrides, AttentionConfigError> {
+    let document = document.strip_prefix('\u{feff}').unwrap_or(document);
+    let mut overrides = EnvOverrides::default();
+    for line in document.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            return invalid(".env lines must be KEY=VALUE or # comments");
+        };
+        let key = key.trim();
+        let key = key
+            .strip_prefix("export")
+            .filter(|rest| rest.starts_with(char::is_whitespace))
+            .map_or(key, str::trim_start);
+        let slot = match key {
+            ENV_TEAMS_URL => &mut overrides.teams_url,
+            ENV_MENTIONS => &mut overrides.mentions,
+            other if unquote(other).to_ascii_uppercase().contains(ENV_PREFIX) => {
+                return invalid(".env names an unknown or misspelled KONTOR_ATTENTION_ key");
+            }
+            _ => continue,
+        };
+        if slot.replace(unquote(value.trim()).to_owned()).is_some() {
+            return invalid(".env names a KONTOR_ATTENTION_ key more than once");
+        }
     }
+    Ok(overrides)
+}
+
+/// Strip one pair of matching surrounding quotes.
+fn unquote(value: &str) -> &str {
+    for quote in ['"', '\''] {
+        if let Some(inner) = value
+            .strip_prefix(quote)
+            .and_then(|rest| rest.strip_suffix(quote))
+        {
+            return inner;
+        }
+    }
+    value
+}
+
+/// Split a comma-separated mention list into validated, deduplicated targets.
+fn parse_mentions(list: &str) -> Result<Vec<String>, AttentionConfigError> {
+    let mut targets: Vec<String> = Vec::new();
+    for target in list
+        .split(',')
+        .map(str::trim)
+        .filter(|target| !target.is_empty())
+    {
+        if target.chars().count() > MAX_MENTION_TARGET
+            || target
+                .chars()
+                .any(|character| character.is_control() || character.is_whitespace())
+            || target.contains('<')
+            || target.contains('>')
+        {
+            return invalid("mention.target is a comma-separated list of bounded identity tokens");
+        }
+        // Teams identities are e-mail-shaped and compare case-insensitively.
+        if !targets
+            .iter()
+            .any(|known| known.eq_ignore_ascii_case(target))
+        {
+            targets.push(target.to_owned());
+        }
+    }
+    if targets.is_empty() {
+        return invalid("mention.target is required and may not be empty");
+    }
+    if targets.len() > MAX_MENTIONS {
+        return invalid("mention.target names at most 10 identities");
+    }
+    Ok(targets)
 }
 
 fn validate_url(url: &str) -> Result<(), AttentionConfigError> {
@@ -398,6 +559,298 @@ emit:
         let policy = parse(document).expect("an empty kind list is valid");
         assert!(policy.emits(AlertKind::TaskNeedsHuman));
         assert!(!policy.emits(AlertKind::TaskBlocked));
+    }
+
+    const SECRET_URL: &str = "https://secret-host.example/workflows/secret-signature";
+
+    fn env(teams_url: Option<&str>, mentions: Option<&str>) -> EnvOverrides {
+        EnvOverrides {
+            teams_url: teams_url.map(str::to_owned),
+            mentions: mentions.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn a_mention_list_is_split_trimmed_deduplicated_and_bounded() {
+        assert_eq!(
+            parse_mentions(" a@example.com, ,b@example.com,A@EXAMPLE.com,, ")
+                .expect("a valid list"),
+            ["a@example.com", "b@example.com"]
+        );
+        assert!(matches!(
+            parse_mentions(" , ,"),
+            Err(AttentionConfigError::Invalid {
+                rule: "mention.target is required and may not be empty"
+            })
+        ));
+        assert!(matches!(
+            parse_mentions("a@example.com,b c@example.com"),
+            Err(AttentionConfigError::Invalid { .. })
+        ));
+        assert!(matches!(
+            parse_mentions("<at>a</at>"),
+            Err(AttentionConfigError::Invalid { .. })
+        ));
+        let ten: Vec<_> = (0..10).map(|n| format!("u{n}@example.com")).collect();
+        assert_eq!(
+            parse_mentions(&ten.join(","))
+                .expect("ten is the bound")
+                .len(),
+            10
+        );
+        let eleven: Vec<_> = (0..11).map(|n| format!("u{n}@example.com")).collect();
+        assert!(matches!(
+            parse_mentions(&eleven.join(",")),
+            Err(AttentionConfigError::Invalid {
+                rule: "mention.target names at most 10 identities"
+            })
+        ));
+    }
+
+    #[test]
+    fn the_yaml_mention_target_is_a_list_too() {
+        let document = EXAMPLE.replace(
+            "  target: operator@example.com",
+            "  target: operator@example.com, second@example.com",
+        );
+        let policy = parse(&document).expect("a list is valid");
+        assert_eq!(
+            policy.mention.targets,
+            ["operator@example.com", "second@example.com"]
+        );
+    }
+
+    #[test]
+    fn env_values_beat_the_yaml() {
+        let policy = parse_with(
+            EXAMPLE,
+            &env(Some(SECRET_URL), Some("igor@example.com,ops@example.com")),
+        )
+        .expect("overrides apply");
+        assert_eq!(policy.destinations[0].url, SECRET_URL);
+        assert_eq!(
+            policy.mention.targets,
+            ["igor@example.com", "ops@example.com"]
+        );
+        let plain = parse_with(EXAMPLE, &env(None, None)).expect("no overrides");
+        assert_eq!(plain, parse(EXAMPLE).expect("the example"));
+    }
+
+    #[test]
+    fn the_yaml_may_omit_what_env_supplies() {
+        let document = EXAMPLE
+            .replace(
+                "    url: https://example.logic.azure.com/workflows/attention\n",
+                "",
+            )
+            .replace(
+                "mention:\n  # Required: a channel post without a mention does not reliably raise a phone\n  # notification (OQ-OS-2).\n  target: operator@example.com\n",
+                "",
+            );
+        assert!(!document.contains("url:") && !document.contains("mention:"));
+        assert!(
+            parse(&document).is_err(),
+            "without .env the fields are required"
+        );
+        let policy = parse_with(&document, &env(Some(SECRET_URL), Some("igor@example.com")))
+            .expect(".env supplies both");
+        assert_eq!(policy.destinations[0].url, SECRET_URL);
+        assert_eq!(policy.mention.targets, ["igor@example.com"]);
+    }
+
+    #[test]
+    fn an_env_url_needs_exactly_one_teams_sink() {
+        let document = EXAMPLE.replace(
+            "sinks:\n",
+            "sinks:\n  - channel: teams_workflow\n    url: https://other.example/w\n    timeout_seconds: 1\n    max_attempts: 1\n",
+        );
+        assert!(parse(&document).is_ok());
+        assert!(matches!(
+            parse_with(&document, &env(Some(SECRET_URL), None)),
+            Err(AttentionConfigError::Invalid {
+                rule: "KONTOR_ATTENTION_TEAMS_URL needs exactly one teams_workflow sink to override"
+            })
+        ));
+    }
+
+    #[test]
+    fn the_env_file_is_plain_key_value_lines() {
+        let parsed = parse_env(
+            "# attention secrets\n\nOTHER_TOOL=ignored\n  KONTOR_ATTENTION_TEAMS_URL = \"https://a.example/w\"\nKONTOR_ATTENTION_MENTIONS=a@example.com,b@example.com\n",
+        )
+        .expect("a valid file");
+        assert_eq!(parsed.teams_url.as_deref(), Some("https://a.example/w"));
+        assert_eq!(
+            parsed.mentions.as_deref(),
+            Some("a@example.com,b@example.com")
+        );
+        assert!(matches!(
+            parse_env("KONTOR_ATTENTION_MENTION=a@example.com\n"),
+            Err(AttentionConfigError::Invalid {
+                rule: ".env names an unknown or misspelled KONTOR_ATTENTION_ key"
+            })
+        ));
+        assert!(matches!(
+            parse_env("KONTOR_ATTENTION_MENTIONS=a\nKONTOR_ATTENTION_MENTIONS=b\n"),
+            Err(AttentionConfigError::Invalid { .. })
+        ));
+        assert!(matches!(
+            parse_env("just a line\n"),
+            Err(AttentionConfigError::Invalid { .. })
+        ));
+    }
+
+    #[test]
+    fn a_leading_bom_is_accepted() {
+        let parsed = parse_env("\u{feff}KONTOR_ATTENTION_MENTIONS=a@example.com\n")
+            .expect("a BOM-prefixed file");
+        assert_eq!(parsed.mentions.as_deref(), Some("a@example.com"));
+    }
+
+    #[test]
+    fn a_shell_export_prefix_is_accepted() {
+        let parsed = parse_env(
+            "export KONTOR_ATTENTION_MENTIONS=a@example.com\nexport\tKONTOR_ATTENTION_TEAMS_URL=https://a.example/w\n",
+        )
+        .expect("export lines");
+        assert_eq!(parsed.mentions.as_deref(), Some("a@example.com"));
+        assert_eq!(parsed.teams_url.as_deref(), Some("https://a.example/w"));
+    }
+
+    #[test]
+    fn a_key_in_another_case_is_refused_not_ignored() {
+        assert!(matches!(
+            parse_env("kontor_attention_mentions=a@example.com\n"),
+            Err(AttentionConfigError::Invalid {
+                rule: ".env names an unknown or misspelled KONTOR_ATTENTION_ key"
+            })
+        ));
+    }
+
+    #[test]
+    fn a_quoted_key_is_refused_not_ignored() {
+        assert!(matches!(
+            parse_env("\"KONTOR_ATTENTION_MENTIONS\"=a@example.com\n"),
+            Err(AttentionConfigError::Invalid {
+                rule: ".env names an unknown or misspelled KONTOR_ATTENTION_ key"
+            })
+        ));
+        assert!(matches!(
+            parse_env("export 'KONTOR_ATTENTION_TEAMS_URL'=https://a.example/w\n"),
+            Err(AttentionConfigError::Invalid { .. })
+        ));
+    }
+
+    #[test]
+    fn one_key_from_env_and_the_other_from_yaml() {
+        let policy = parse_with(EXAMPLE, &env(Some(SECRET_URL), None)).expect("url from .env");
+        assert_eq!(policy.destinations[0].url, SECRET_URL);
+        assert_eq!(policy.mention.targets, ["operator@example.com"]);
+
+        let policy =
+            parse_with(EXAMPLE, &env(None, Some("igor@example.com"))).expect("mentions from .env");
+        assert_eq!(
+            policy.destinations[0].url,
+            "https://example.logic.azure.com/workflows/attention"
+        );
+        assert_eq!(policy.mention.targets, ["igor@example.com"]);
+    }
+
+    #[test]
+    fn a_non_regular_env_is_refused_without_opening_it() {
+        let root = tempfile::tempdir().expect("a state root");
+        std::fs::write(root.path().join(ATTENTION_FILE), EXAMPLE).expect("the policy");
+        let env_path = root.path().join(ENV_FILE);
+
+        // A FIFO would block an open() forever; the guard refuses it first.
+        let made = std::process::Command::new("mkfifo")
+            .arg(&env_path)
+            .status()
+            .expect("mkfifo runs");
+        assert!(made.success());
+        assert!(matches!(
+            read(root.path()),
+            Err(AttentionConfigError::Invalid {
+                rule: ".env must be a regular file, not a symlink"
+            })
+        ));
+        std::fs::remove_file(&env_path).expect("remove the FIFO");
+
+        let target = root.path().join("real.env");
+        std::fs::write(&target, format!("{ENV_MENTIONS}=igor@example.com\n")).expect("target");
+        std::fs::set_permissions(&target, std::os::unix::fs::PermissionsExt::from_mode(0o600))
+            .expect("chmod");
+        std::os::unix::fs::symlink(&target, &env_path).expect("symlink");
+        assert!(matches!(
+            read(root.path()),
+            Err(AttentionConfigError::Invalid {
+                rule: ".env must be a regular file, not a symlink"
+            })
+        ));
+    }
+
+    #[test]
+    fn the_env_file_is_read_at_start_only_when_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().expect("a state root");
+        std::fs::write(root.path().join(ATTENTION_FILE), EXAMPLE).expect("the policy");
+        let env_path = root.path().join(ENV_FILE);
+        std::fs::write(
+            &env_path,
+            format!("{ENV_TEAMS_URL}={SECRET_URL}\n{ENV_MENTIONS}=igor@example.com\n"),
+        )
+        .expect("the env file");
+        for mode in [0o644, 0o640, 0o604, 0o660] {
+            std::fs::set_permissions(&env_path, std::fs::Permissions::from_mode(mode))
+                .expect("chmod");
+            let refused = read(root.path()).expect_err("a shared .env is refused");
+            assert!(matches!(
+                refused,
+                AttentionConfigError::Invalid {
+                    rule: ".env must be readable only by its owner (chmod 600)"
+                }
+            ));
+            assert!(!refused.to_string().contains("secret"));
+        }
+        std::fs::set_permissions(&env_path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+        let policy = read(root.path())
+            .expect("an owner-only .env is read")
+            .expect("the policy is present");
+        assert_eq!(policy.destinations[0].url, SECRET_URL);
+        assert_eq!(policy.mention.targets, ["igor@example.com"]);
+
+        std::fs::remove_file(root.path().join(ATTENTION_FILE)).expect("remove the policy");
+        assert!(
+            read(root.path()).expect("absence is valid").is_none(),
+            ".env alone arms nothing"
+        );
+    }
+
+    #[test]
+    fn no_error_carries_a_configured_value() {
+        let secret = "s3cr3t-value";
+        let refusals = [
+            parse_env(&format!("{secret}\n")).err(),
+            parse_env(&format!("KONTOR_ATTENTION_{secret}={secret}\n")).err(),
+            parse_env(&format!(
+                "{ENV_MENTIONS}={secret}\n{ENV_MENTIONS}={secret}\n"
+            ))
+            .err(),
+            parse_mentions(&format!("{secret} {secret}")).err(),
+            parse_mentions(&format!("<{secret}>")).err(),
+            parse_with(EXAMPLE, &env(Some(&format!("ftp://{secret}")), None)).err(),
+            parse_with(
+                EXAMPLE,
+                &env(Some(&format!("https://{secret}:{secret}@h.example/")), None),
+            )
+            .err(),
+            parse_with(EXAMPLE, &env(Some(secret), None)).err(),
+        ];
+        for refusal in refusals {
+            let refusal = refusal.expect("each case is refused");
+            assert!(!refusal.to_string().contains(secret), "{refusal}");
+            assert!(!format!("{refusal:?}").contains(secret), "{refusal:?}");
+        }
     }
 
     #[test]

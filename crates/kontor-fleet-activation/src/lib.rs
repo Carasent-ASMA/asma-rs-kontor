@@ -139,7 +139,7 @@ use rule::{
 pub struct Guard {
     /// Not a regular file (a symlink, a directory, a device).
     pub symlink: &'static str,
-    /// Writable by group or others.
+    /// Carries a permission bit in [`Guard::forbidden_mode`].
     pub writable: &'static str,
     /// Owned by someone other than the state root's owner.
     pub owner: &'static str,
@@ -151,6 +151,9 @@ pub struct Guard {
     pub utf8: &'static str,
     /// Largest accepted size, in bytes.
     pub limit: u64,
+    /// Permission bits the file may not carry, checked on the path and again
+    /// on the opened handle. Fleet files refuse group/other write (`0o022`).
+    pub forbidden_mode: u32,
 }
 
 /// The file rules of a published fleet policy.
@@ -162,6 +165,7 @@ pub const POLICY_GUARD: Guard = Guard {
     swapped: P05,
     utf8: P06,
     limit: MAX_FILE_BYTES,
+    forbidden_mode: 0o022,
 };
 
 /// The file rules of the activation record.
@@ -173,6 +177,7 @@ pub const ACTIVATION_GUARD: Guard = Guard {
     swapped: A05,
     utf8: A06,
     limit: MAX_ACTIVATION_BYTES,
+    forbidden_mode: 0o022,
 };
 
 /// The file rules of a published bundle manifest.
@@ -184,6 +189,7 @@ pub const MANIFEST_GUARD: Guard = Guard {
     swapped: M05,
     utf8: M06,
     limit: MAX_MANIFEST_BYTES,
+    forbidden_mode: 0o022,
 };
 
 /// The file rules of a published Core Team revision.
@@ -195,13 +201,15 @@ pub const ROSTER_GUARD: Guard = Guard {
     swapped: C05,
     utf8: C06,
     limit: MAX_ROSTER_BYTES,
+    forbidden_mode: 0o022,
 };
 
 /// Read one state-root file under its own refusal texts.
 ///
-/// The file must be a regular file, not writable by group or others, owned by
-/// the state root's owner, within the size limit, the same inode when opened
-/// as when checked, and UTF-8.
+/// The file must be a regular file, carry no bit of the guard's forbidden mode
+/// (on the path and on the opened handle), be owned by the state root's owner,
+/// be within the size limit, be the same inode when opened as when checked,
+/// and be UTF-8.
 ///
 /// # Errors
 /// [`FleetError::Read`] when the file cannot be read at all (including when it
@@ -211,7 +219,7 @@ pub fn read_guarded(state_root: &Path, path: &Path, guard: &Guard) -> Result<Str
     if !metadata.file_type().is_file() {
         return Err(invalid(guard.symlink));
     }
-    if metadata.mode() & 0o022 != 0 {
+    if metadata.mode() & guard.forbidden_mode != 0 {
         return Err(invalid(guard.writable));
     }
     let root =
@@ -223,12 +231,7 @@ pub fn read_guarded(state_root: &Path, path: &Path, guard: &Guard) -> Result<Str
         return Err(invalid(guard.oversized));
     }
     let file = std::fs::File::open(path).map_err(|source| FleetError::Read { source })?;
-    let opened = file
-        .metadata()
-        .map_err(|source| FleetError::Read { source })?;
-    if opened.dev() != metadata.dev() || opened.ino() != metadata.ino() {
-        return Err(invalid(guard.swapped));
-    }
+    check_opened(&file, &metadata, guard)?;
     let mut bytes = Vec::new();
     file.take(guard.limit + 1)
         .read_to_end(&mut bytes)
@@ -991,6 +994,26 @@ pub fn resolve(
     eligibility: &Eligibility,
 ) -> Result<FleetSelection, FleetError> {
     Ok(load(state_root)?.resolve(binding_key)?.select(eligibility))
+}
+
+/// The checks that must hold for the file actually opened, not only for the
+/// path checked before it: the same inode, and no forbidden permission bit on
+/// the handle itself.
+fn check_opened(
+    file: &std::fs::File,
+    checked: &std::fs::Metadata,
+    guard: &Guard,
+) -> Result<(), FleetError> {
+    let opened = file
+        .metadata()
+        .map_err(|source| FleetError::Read { source })?;
+    if opened.dev() != checked.dev() || opened.ino() != checked.ino() {
+        return Err(invalid(guard.swapped));
+    }
+    if opened.mode() & guard.forbidden_mode != 0 {
+        return Err(invalid(guard.writable));
+    }
+    Ok(())
 }
 
 fn read_named(

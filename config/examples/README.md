@@ -40,6 +40,7 @@ may sit anywhere on the machine and have any name.
   quota-signals.yml            optional vendor refusal wording
   paseo-supervision.yml        sample for <state-root>/supervision.yml, not a project key
   attention.yml                sample for <state-root>/attention.yml; absent means no alerts
+  attention.env                sample for <state-root>/.env (mode 600): attention URL and mentions
   .gitignore                   ignores host.yml
 ```
 

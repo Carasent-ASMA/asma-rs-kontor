@@ -4,8 +4,9 @@
 //! The split is deliberate:
 //!
 //! * [`payload`] owns the allowlist and the plain-text boundary;
-//! * [`config`] owns `attention.yml`, including the channel split that refuses
-//!   raw agent attention because Paseo's own push already owns it;
+//! * [`config`] owns `attention.yml` and its owner-only `.env` overrides,
+//!   including the channel split that refuses raw agent attention because
+//!   Paseo's own push already owns it;
 //! * [`sink`] owns each destination's `POST` and the detached, bounded,
 //!   isolated delivery;
 //! * this module owns the triggers and the two observation classes that have no

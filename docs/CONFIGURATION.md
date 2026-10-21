@@ -872,11 +872,53 @@ The document mirrors the supervision policy's shape and rules:
   `timeout_seconds` / `max_attempts`. The list is deliberate: a second channel
   is another entry plus one formatting function (REQ-013);
 - `mention.target` is required: a channel post without a mention does not
-  reliably raise a phone notification;
+  reliably raise a phone notification. It is a comma-separated list: entries
+  are trimmed, empty entries dropped, each must be one identity token (no
+  whitespace, control characters, `<` or `>`, at most 256 characters),
+  duplicates are removed case-insensitively, and the list holds between 1 and
+  10 targets. The Teams card carries one `<at>…</at>` per target in its text
+  and one `msteams.entities` mention per target;
 - `emit.kinds` is a closed list of Kontor-semantic kinds. Raw agent attention
   (`permission_requested`, `turn_finished`) is refused because Paseo's native
   push already owns it. `task_needs_human` always emits, even when omitted;
 - invalid documents refuse the start with a typed rule rather than a panic.
+
+### Attention secrets in `.env`
+
+The Workflows URL and the mention list are secrets an operator edits more often
+than the policy. They may live in an optional `<state-root>/.env` instead;
+[`config/examples/attention.env`](../config/examples/attention.env) is the
+placeholder sample.
+
+| Key | Overrides | Value |
+| --- | --- | --- |
+| `KONTOR_ATTENTION_TEAMS_URL` | the `url` of the one `teams_workflow` sink | absolute `http`/`https` URL without credentials |
+| `KONTOR_ATTENTION_MENTIONS` | `mention.target` | comma-separated list, same rules as `mention.target` |
+
+- **Precedence.** A key that is set in `.env` beats the same field in
+  `attention.yml`, and `attention.yml` may then omit that field (`url`, or the
+  whole `mention` block). Kinds, timeouts and attempts stay in `attention.yml`.
+  `KONTOR_ATTENTION_TEAMS_URL` is refused unless exactly one `teams_workflow`
+  sink exists.
+- **Arming.** `attention.yml` is required: `.env` is read only when
+  `attention.yml` is present, so `.env` alone emits nothing. Once
+  `attention.yml` exists, a field it omits must come from `.env`; if neither
+  supplies the URL (or the mention list), the daemon refuses to start, by
+  design.
+- **File rules.** `.env` is read by the same guarded reader as other
+  state-root files. It must be a regular file (a symlink, FIFO or device is
+  refused without being opened), owned by the state root's owner, readable only
+  by its owner (`chmod 600`; any group or other permission bit is refused,
+  checked on the path and enforced again on the opened file), at most 64 KiB, UTF-8, and the same file when read as when checked. Each
+  failure refuses the start with a typed rule.
+- **Format.** Plain `KEY=VALUE` lines and `#` comments; a leading UTF-8 BOM and
+  a shell `export ` prefix are accepted, and one pair of surrounding quotes is
+  stripped from a value. Keys that do not mention `KONTOR_ATTENTION_` are
+  ignored. Any other key that is not exactly one of the two above — a typo,
+  another letter case, a quoted key — is refused, as is a repeated key or a
+  line without `=`. No error or log prints a value.
+- **Restart.** Values are read once when the daemon starts. There is no hot
+  reload: restart the daemon after editing `.env`.
 
 Delivery is one detached one-shot per alert: each configured destination gets
 its own bounded `POST` sequence (per-attempt `timeout_seconds`, at most

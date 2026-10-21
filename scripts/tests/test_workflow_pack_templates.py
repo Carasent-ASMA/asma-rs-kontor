@@ -309,12 +309,17 @@ class ContentContractTests(unittest.TestCase):
 class NeutralExampleTests(unittest.TestCase):
     def test_the_example_folder_is_yaml_only(self) -> None:
         allowed = {".yml", ".yaml", ".md", ".gitignore"}
+        # The one non-YAML file is the placeholder sample for the daemon's
+        # owner-only <state-root>/.env attention secrets, not config-folder input.
+        state_root_samples = {"attention.env"}
         for path in EXAMPLES.rglob("*"):
             if path.is_dir():
                 continue
             with self.subTest(path=str(path.relative_to(EXAMPLES))):
                 self.assertTrue(
-                    path.name == ".gitignore" or path.suffix in allowed,
+                    path.name == ".gitignore"
+                    or path.suffix in allowed
+                    or path.relative_to(EXAMPLES).as_posix() in state_root_samples,
                     f"{path} is YAML, Markdown or the host ignore file",
                 )
 
