@@ -2209,6 +2209,28 @@ function closeMobileFilters() {
 describe("plan-derived visible workstream choices on the current mobile/lifecycle screen", () => {
   beforeEach(() => { vi.useFakeTimers(); clearSessionViews(); harness.reset(); });
   afterEach(() => { harness.unmount(); vi.useRealTimers(); });
+  it.each([true, false])("renders zero-session registered choices from operator configuration (compact=%s)", async (compact) => {
+    const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
+    const { join } = await import("node:path"); const { tmpdir } = await import("node:os");
+    const { readWorkstreamRegistry } = await import("../server/read-sources");
+    const root = await mkdtemp(join(tmpdir(), "kontor-registry-options-"));
+    try {
+      await mkdir(join(root, "plugin-config/kontor"), { recursive: true });
+      await mkdir(join(root, "config/orchestration"), { recursive: true });
+      await writeFile(join(root, "plugin-config/kontor/registry.json"), JSON.stringify({ workspaceRoot: root }));
+      await writeFile(join(root, "config/orchestration/workstreams.json"), JSON.stringify({ schema_version: 1, workstreams: { access: { name: "Access" }, reporting: { name: "Reporting" } }, desks: { "pr-review-desk": { name: "Review" }, "adam-adhoc": { name: "Adam" } } }));
+      vi.stubEnv("PASEO_HOME", root); vi.stubEnv("KONTOR_PLUGIN_ASMA_WORKSPACE", "");
+      const registry = await readWorkstreamRegistry();
+      directory.state = { ...emptyDirectoryState(), entries: [], status: "ready", live: true, inventoryComplete: true };
+      patchSessionView("host-a", { query: "", advancedOpen: true, ...toolbarOpenPatch(true) });
+      renderScreen(undefined, compact, compact ? "ios" : "web", { workstreamSources: [], workstreamReads: {}, workstreamRegistry: registry });
+      if (compact) openMobileFilters();
+      for (const key of ["access", "reporting"]) expect(findByTestID(harness.current(), `workstream-option-${key}`).props.label).toContain("0 sessions");
+      const options = walk(harness.current()).filter(node => String(node.props.testID).startsWith("workstream-option-")).map(node => node.props.testID);
+      expect(options).toEqual(["workstream-option-access", "workstream-option-reporting"]);
+      expect(Object.keys(registry.desks)).toHaveLength(2);
+    } finally { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); }
+  });
   it.each([true, false])("renders graphless and registry-only choices, filters rows, and clears streams (compact=%s)", async (compact) => {
     const { source, read, registry } = await import("./plan-workstream-fixtures");
     const entries = [sessionEntry("linked", { labels: { epic: "ASMA-7575" } })];

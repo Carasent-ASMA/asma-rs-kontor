@@ -5,6 +5,7 @@ import { open, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
+import { parseDocument } from "yaml";
 import type { PluginServerContext, PluginSettings } from "@getpaseo/plugin/server";
 import { canonicalGraphSchema, jiraHistorySchema, listReadSources, readPlanAssociations, readSource, recordsSchema,
   sourceSummarySchema, workstreamRegistrySchema, type ReadSourceSummary, type SourceRead, type WorkstreamRegistry } from "../shared/read-sources";
@@ -72,11 +73,22 @@ export async function boundedRead(path: string): Promise<string> {
 }
 export type ExportPlan = (path: string) => Promise<string>;
 /** One bounded authoritative file, refreshed with the catalog; no filesystem discovery in the UI. */
-export async function readWorkstreamRegistry(workspace = process.env.KONTOR_PLUGIN_ASMA_WORKSPACE?.trim()): Promise<WorkstreamRegistry> {
+export async function readWorkstreamRegistry(workspace = process.env.KONTOR_PLUGIN_ASMA_WORKSPACE?.trim() || undefined): Promise<WorkstreamRegistry> {
   const result: WorkstreamRegistry = { path: null, revision: null, workstreams: {}, desks: {}, diagnostics: [] };
-  if (!workspace || !isAbsolute(workspace)) { result.diagnostics.push("Workstream registry unavailable: configure an absolute KONTOR_PLUGIN_ASMA_WORKSPACE."); return result; }
-  result.path = join(workspace, "config/orchestration/workstreams.json");
   try {
+    if (workspace === undefined) {
+      // Operator-owned, like the source catalog; clients cannot supply filesystem roots.
+      const file = join(dirname(readConfig().paseoWorktreesRoot), "plugin-config", "kontor", "registry.json");
+      if (!isAbsolute(file)) throw new Error("Registry configuration path must be absolute");
+      const raw = await boundedRead(file);
+      const parsed: unknown = JSON.parse(raw);
+      if (parseDocument(raw).errors.length) throw new Error("Registry configuration must not repeat keys");
+      const config = z.object({ workspaceRoot: z.string().refine(isAbsolute, "Workspace root must be absolute") }).strict()
+        .parse(parsed);
+      workspace = config.workspaceRoot;
+    }
+    if (!workspace || !isAbsolute(workspace)) throw new Error("Configure an absolute workspace root in KONTOR_PLUGIN_ASMA_WORKSPACE or plugin-config/kontor/registry.json");
+    result.path = join(workspace, "config/orchestration/workstreams.json");
     const content = await boundedRead(result.path);
     const raw = z.object({ schema_version: z.literal(1), workstreams: workstreamRegistrySchema.shape.workstreams, desks: workstreamRegistrySchema.shape.desks }).parse(JSON.parse(content));
     return { ...result, workstreams: raw.workstreams, desks: raw.desks, revision: sha256(content) };

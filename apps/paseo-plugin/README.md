@@ -316,6 +316,22 @@ association and appears in Source details. The registry is read separately from
 `config/orchestration/workstreams.json` in `KONTOR_PLUGIN_ASMA_WORKSPACE` on each
 catalog refresh. Missing registry configuration is reported; no roster is hard-coded.
 
+The operator can configure registry resolution without changing the daemon environment:
+`$PASEO_HOME/plugin-config/kontor/registry.json` (default
+`~/.paseo/plugin-config/kontor/registry.json`) accepts exactly
+`{"workspaceRoot":"/absolute/asma-workspace"}`. Like the catalog and `floor.json`,
+this is a host-local operator file, read only by the plugin. Organization settings
+and RPC inputs cannot supply the path. The plugin reads the file and registry
+again on each source-list refresh; no worker or daemon restart is needed.
+
+An explicit server-side reader argument takes precedence, followed by a nonblank
+`KONTOR_PLUGIN_ASMA_WORKSPACE`, then the local file. A present invalid override
+reports an unavailable registry and does not fall back. The root must be absolute;
+the reader never infers it from cwd or native project names. Invalid/missing files
+and unsupported registry schemas retain diagnostics and empty registration data.
+Registered workstream keys and desk categories remain separate. This file configures
+only registry resolution; it does not change canonical-export execution context.
+
 Discovery deduplicates copies by repository common directory, relative plan path
 and content revision. Divergent revisions remain separate source choices. Existing
 entries, IDs, pins, project bindings and explicit catalog mappings are preserved;
