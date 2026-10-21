@@ -4,7 +4,7 @@ import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { jiraHistorySchema, type CanonicalGraph, type SourceRead } from "../shared/read-sources";
 const model = vi.hoisted(() => ({ open: false }));
-vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useState: () => [model.open, (value: boolean) => { model.open = value; }], useRef: (current: unknown) => ({ current }), useMemo: (factory: () => unknown) => factory() }));
+vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useContext: () => null, useState: () => [model.open, (value: boolean) => { model.open = value; }], useRef: (current: unknown) => ({ current }), useMemo: (factory: () => unknown) => factory() }));
 vi.mock("react-native", () => ({ ScrollView: "ScrollView", Text: "Text", View: "View", Pressable: "Pressable" }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ TextInput: "TextInput", Icon: "Icon" }));
 import { SourceDetails } from "../client/source-details";
@@ -127,15 +127,15 @@ describe("compact Overview source evidence", () => {
     const tree = overview({ plan, jira: read }, { entries, contextLabel: undefined });
     const visible = text(tree);
     expect(visible).toContain("All projects"); expect(visible).not.toMatch(/\d+ of \d+ shown/);
-    expect(visible).toContain("2 sessions · 1 running · 1 without an epic");
-    expect(meta(tree)).toContain("Host sessions: 2 sessions · 1 running"); expect(meta(tree)).toContain("1 without an epic stay in Sessions.");
+    expect(visible).toContain("2 sessions · 1 running · 1 epic unknown");
+    expect(meta(tree)).toContain("Host sessions: 2 sessions · 1 running"); expect(meta(tree)).toContain("1 with an unknown epic stay in Sessions.");
     expect(visible).not.toContain("Unassigned / ad-hoc");
     const phoneTree = overview({ plan, jira: read }, { entries, contextLabel: undefined, compact: true }); const phone = text(phoneTree);
     // Scope and the exact read stay in the meta label and Sources and coverage; host status lives only in the top-bar Native pill.
     expect(phone).not.toContain("kontord"); expect(phone).not.toContain("Last inventory read ");
     expect(meta(phoneTree)).toContain("Global overview, available without kontord."); expect(meta(phoneTree)).toContain("Last inventory read ");
     expect(phone).not.toContain("Live"); expect(phone).not.toContain("Not live"); expect(visible).not.toContain("Live host subscription"); expect(visible).not.toContain("Not live");
-    expect(phone).toContain("2 sessions · 1 running · 1 without an epic · inventory completeness Unknown");
+    expect(phone).toContain("2 sessions · 1 running · 1 epic unknown · inventory completeness Unknown");
     expect(phone).not.toContain("Native sessions come from this host"); expect(phone).not.toContain("Host sessions:");
     expect(visible).toContain("ASMA-8190"); expect(visible).toContain("Plan not captured"); expect(visible).not.toContain("captured tasks remain available");
     expect(visible).toContain("13 / 17 captured tasks done");

@@ -122,7 +122,18 @@ The plugin body has Sessions, Overview, Plan, Board and More on compact clients.
 Desktop also exposes Graph and Delivery directly. More contains the remaining
 destinations, including Inbox, Search and Settings. The compact context picker
 offers All projects, observed native projects, confirmed epic keys and configured
-plans. The same picker scopes Overview; All projects clears the selection. Plan queries and positions are scoped to the host,
+plans on every main view, including Sessions. Native project identity is separate
+from the selected epic or plan; the selector names both when applicable. Sessions,
+Overview, Plan, Board, Graph and Delivery retain that selection. Sessions filters
+by native project and epic, not by exact plan links: two plans in the same epic
+share its sessions, counts and filters. The selector says Epic sessions while
+retaining the plan for the other views. All projects explicitly clears the selection.
+A concise Native · Live badge describes the reconciled native session
+inventory only; Reading, Stale, offline and errors remain distinct, and configured
+plan/Jira freshness is reported on their own pages. The selector, Back and inventory
+status share one local toolbar. Paseo 0.12 owns its native screen title; its supported
+plugin-screen contract has no picker slot (`addHeaderButton` is workspace-only).
+Plan queries and positions are scoped to the host,
 project, epic, exact source identity and revision. Organization placement uses
 explicit display mapping, then desk, then workstream. Back retains the previous query, position and session
 filters; the native **← Kontor** control returns to the last host-local view.
@@ -148,7 +159,7 @@ label, native DESK project fallback, then Other work, in that order. These choic
 are neither a native project inventory nor a complete registry of workstreams.
 Native projects/workspaces have their own context scope and native IDs. Sessions
 of non-desk projects without declarations remain under Other work and their
-labelled epic, or No linked epic; no workstream is inferred from their titles.
+epic, or Epic unknown; no workstream is inferred from their titles.
 
 The authoritative workstream registry and its separate desk categories are not
 loaded by this selector. Neither are plan frontmatter declarations or verified
@@ -187,7 +198,8 @@ A Role row shows a short place. The **Details** button beside it shows the
 whole of it:
 - the role and where it came from, and every other role declaration;
 - the native desk/project and workspace IDs with separate epic/workstream associations, or the non-desk workstream, epic and workspace chain;
-- absent values by name, such as "No linked epic" or "No workspace · <cwd>".
+- absent values by name, such as "No workspace · <cwd>", and an unknown epic
+  with its reason, such as "Unknown, no epic or task label".
   A value is absent only when no display mapping or label supplies it, so a
   label that says "Other work" is shown as declared.
 
@@ -316,6 +328,22 @@ association and appears in Source details. The registry is read separately from
 `config/orchestration/workstreams.json` in `KONTOR_PLUGIN_ASMA_WORKSPACE` on each
 catalog refresh. Missing registry configuration is reported; no roster is hard-coded.
 
+The operator can configure registry resolution without changing the daemon environment:
+`$PASEO_HOME/plugin-config/kontor/registry.json` (default
+`~/.paseo/plugin-config/kontor/registry.json`) accepts exactly
+`{"workspaceRoot":"/absolute/asma-workspace"}`. Like the catalog and `floor.json`,
+this is a host-local operator file, read only by the plugin. Organization settings
+and RPC inputs cannot supply the path. The plugin reads the file and registry
+again on each source-list refresh; no worker or daemon restart is needed.
+
+An explicit server-side reader argument takes precedence, followed by a nonblank
+`KONTOR_PLUGIN_ASMA_WORKSPACE`, then the local file. A present invalid override
+reports an unavailable registry and does not fall back. The root must be absolute;
+the reader never infers it from cwd or native project names. Invalid/missing files
+and unsupported registry schemas retain diagnostics and empty registration data.
+Registered workstream keys and desk categories remain separate. This file configures
+only registry resolution; it does not change canonical-export execution context.
+
 Discovery deduplicates copies by repository common directory, relative plan path
 and content revision. Divergent revisions remain separate source choices. Existing
 entries, IDs, pins, project bindings and explicit catalog mappings are preserved;
@@ -329,6 +357,25 @@ and observed native session classifications as distinct facts. Counts precede
 search/state/workstream filters; zero sessions means none linked in the current
 inventory. Registered desk categories are separate from workstreams. Native desk,
 workspace and project identities remain native, including unlabelled sessions.
+
+Each workstream choice names its kind first: **desk category**, **plan only** (a plan
+declares it; no session or workspace is linked) or, for Other work, **no workstream
+link**. Session, workspace and plan counts follow, then **registered** or
+**unregistered** only while the registry is loaded; otherwise the footer says once
+that it is not. Counts follow the association the choice filters by, and the tree
+keeps every session of a native desk project under that desk. So a choice counting
+such sessions says "N shown under DESK • …", and a desk choice says how many more
+sessions its desk holds for other workstreams. Workspace counts cover workspaces
+with a counted session or a workspace mapping; the tree also lists empty native
+workspaces until workstream choices narrow it, and a desk choice says how many of
+its desk's native workspaces are empty. The shortcut for everything outside
+desks is **Outside desks** (saved views keep the `Other work` scope ID); the **Other
+work** group and choice hold only sessions with no workstream association. Details
+of such a session add a **Linking** line: why no plan links it (no known ASMA epic, no
+configured plan for its epic, plans bound to other projects, plans that do not agree
+on one ready workstream, or explicit plan links that do not resolve), and that
+Settings › Presentation and associations can map it or link a plan. No project or
+session name links a session.
 
 Display precedence is: saved session mapping, saved workspace mapping, desk label,
 workstream label, native desk classification, then an unambiguous declared-plan
@@ -344,8 +391,21 @@ Keep host-specific candidates and read evidence outside published source.
 
 A projectless source can appear in several native projects through exact confirmed
 epic labels on sessions in each project. An explicit source `projectId` constrains
-it to that project. Conflicting epic labels leave a session unattributed. No
-project name, title or sibling label assigns an epic to an unlabelled session.
+it to that project.
+
+A session's epic is its display mapping, else what its `epic`, `jira.epic`,
+`origin.epic` and `asma.epic` labels name together with the historical Jira
+projection's epic for each key those labels or its `jira.issue`, `task` or
+`asma.task` label name. Every named epic must agree. When they disagree, or
+nothing names one, the epic is unknown and shows as Epic unknown, never as "no
+epic": no source here shows that a task has no parent. Session details name the
+sources and the capture's observation time, or why the epic is unknown. A
+workspace carries no labels, so a project's unmapped workspaces without sessions form an
+Epic unknown group that says so beside the project's known epics. A capture
+cannot see a later move in Jira, so a label and a capture that agree can both be
+stale. Other label keys, project names, titles and sibling labels never assign
+an epic. The tree, results, Overview counts, the context picker and project
+scope all read this one resolver.
 Overview, the plan picker, Plan, Board, Graph and recorded Delivery use this scope.
 Source edits trigger fresh hash-checked exports; parse failures retain readable
 plan text without a graph, while missing files and revision mismatches stay
@@ -432,7 +492,8 @@ This explicit offline exporter is separate from the consumption pipeline and
 writes only the bounded JSON to stdout. The plugin retains its 2 MiB read cap.
 The projection retains the original observation time, source hash and selected
 keys; reading it later never makes it live. Exact parent/issue keys supply
-historical workflow observations in Overview, Board and Graph. The numerator is
+historical workflow observations in Overview, Board and Graph, and the epic of a
+session whose labels name a captured key. The numerator is
 captured Jira `done` categories; the coverage denominator is all tasks in each
 canonical plan, including missing/unbound tasks. Neither capture coverage nor a
 known-child count establishes complete Jira inventory, current completion,
@@ -628,7 +689,7 @@ Evidence checklist:
 | --- | --- |
 | `before("agent.create")` | Adds one stable system-prompt line and the `kontor-observer` MCP server at **observer** authority. A server already named `kontor` is preserved, so Kontor-composed seats are untouched. |
 | `before("agent.session_open")` | Reads the session's own labels from the local daemon and sets `KONTOR_SEAT` from the keys Kontor actually writes (`kontor.seat_binding_id`, `kontor.role_slot_id`, or `kontor.agent-run`), or `KONTOR_SEAT=unbound`. A failed or slow read sets `KONTOR_SEAT=unresolved`. The key is rewritten on every open, so an old seat never survives a resume. It never blocks the open. |
-| `before("workspace.create")` | Refuses a labelled Kontor seat's explicit workspace creation outside that seat's own placement: its bound project and canonical worktree. Both the initial agent's labels and the caller carried on the request (`agent.callerAgentId`) are checked. Interactive and unlabelled creation is unchanged, and an unreadable caller lookup with no seat labels on the request fails open. |
+| `before("workspace.create")` | Refuses a guarded seat's explicit workspace creation outside Kontor placement. A seat with any `kontor.*` label gets full binding enforcement: its bound project and canonical worktree. A Paseo-direct-only seat (`orchestration=paseo-direct` without `kontor.*`) gets only the checks that do not need a binding. Both the initial agent's labels and the caller carried on the request (`agent.callerAgentId`) are checked. Interactive and unlabelled sessions are unchanged, and an unreadable caller lookup with no seat labels on the request fails open. |
 
 The plugin registers these three hooks unless the operator turns the floor off
 with `floor.json` (see [Installation mode](#installation-mode-floorjson)).
@@ -639,20 +700,30 @@ Center commands and the per-agent **← Kontor** composer pill described above.
 
 ## Kontor placement
 
-A labelled seat may register an existing directory only inside its own binding:
-the native project its own workspace belongs to and the canonical worktree
-named by its `kontor.worktree` label. The binding is read from the seat's
-`kontor.workspace_id` and `kontor.worktree` labels plus a read-only Paseo
-workspace read. Everything else is refused as outside Kontor placement:
+A seat with any `kontor.*` label may register an existing directory only inside
+its own binding: the native project its own workspace belongs to and the
+canonical worktree named by its `kontor.worktree` label. The binding is read
+from the seat's `kontor.workspace_id` and `kontor.worktree` labels plus a
+read-only Paseo workspace read.
+
+Kontor never binds a Paseo-direct seat (`orchestration=paseo-direct` without a
+`kontor.*` label). The guard still owns that seat, but applies only the checks
+that need no binding. A seat that carries both label sets gets the full binding
+enforcement.
+
+Every guarded seat is refused for:
 
 - a Paseo-owned worktree source (`kind: "worktree"`);
 - a directory without an explicit `projectId` (Paseo would infer a project);
 - a relative directory path;
 - a directory inside Paseo's own `~/.paseo/worktrees` root;
+- a directory outside `KONTOR_PLUGIN_PLACEMENT_ROOTS`, when configured.
+
+A seat with a `kontor.*` label is additionally refused for:
+
 - a project other than the seat binding's native project;
 - a directory other than the seat binding's canonical worktree;
-- a directory outside `KONTOR_PLUGIN_PLACEMENT_ROOTS`, when configured;
-- an unresolved binding for a labelled seat.
+- an unresolved binding.
 
 The plugin resolves the binding read-only and holds no Kontor write credential;
 `kontord` still owns the native binding and readback.
@@ -805,6 +876,9 @@ pnpm --filter @carasent/kontor-paseo-plugin test
 apps/paseo-plugin/scripts/closure-suite.sh
 ```
 
+`test/plan-workstreams.test.ts` reconciles every workstream choice with the tree:
+desk-held sessions are named, each session counts once, and choosing a choice shows
+exactly its count. It also pins choice wording and the unlinked-session plan notes.
 `test/session-directory.test.ts` covers a 505-session three-page walk, repeated
 and missing cursors, native upserts/removals, attention, archival scope,
 recognized epic/workstream label search, disconnect staleness, reconnect

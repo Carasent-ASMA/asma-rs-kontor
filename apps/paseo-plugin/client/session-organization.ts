@@ -2,8 +2,11 @@ import { hasSessionAttention, type DirectoryEntry } from "./session-directory";
 
 export const OTHER_WORKSTREAM = "Other work";
 export const UNASSIGNED_EPIC = "Unassigned";
-/** What the tree and results show for UNASSIGNED_EPIC; group keys keep the original word, so saved disclosure still applies. */
-export const NO_LINKED_EPIC = "No linked epic";
+/**
+ * What the tree and results show for UNASSIGNED_EPIC: nothing settles the epic, which is not "no epic". Group keys
+ * keep the original word, so saved disclosure still applies.
+ */
+export const NO_LINKED_EPIC = "Epic unknown";
 export const UNASSIGNED_WORKSPACE = "Unassigned workspace";
 
 export type OrganizationGroupKind =
@@ -284,7 +287,50 @@ function mappedValue(
   return null;
 }
 
-/** The workstream and epic a display mapping or label names; null where none does, so a declared "Other work" is not read as absent. */
+/** Label keys whose value names a session's epic. */
+export const EPIC_LABELS = ["epic", "jira.epic", "origin.epic", "asma.epic"] as const;
+/** Label keys whose exact value may name a task's Jira key. */
+export const TASK_JIRA_LABELS = ["jira.issue", "task", "asma.task"] as const;
+
+/** A session's epic, null when unknown; the note names the sources that settle it or why it is unknown. */
+export type SessionEpic = { readonly epic: string | null; readonly note: string };
+
+/**
+ * A display mapping wins. Otherwise the epic labels and the Jira capture's epic for each key they or a task
+ * label name must all agree. The capture is dated evidence: it fills an epic nothing names, and a label it
+ * disagrees with makes the epic unknown. Null never means "no epic"; no source here shows a task has none.
+ */
+export function sessionEpic(entry: DirectoryEntry, mappings: OrganizationInput["displayMappings"]): SessionEpic {
+  const mapped = mappedValue(mappings, entry, "epic");
+  if (mapped !== null) return { epic: mapped, note: "from a display mapping" };
+  const labelled = EPIC_LABELS.flatMap((key) => {
+    const value = clean(entry.labels[key]);
+    return value === null ? [] : [{ value, source: `the ${key} label` }];
+  });
+  const tasks = [...new Set(TASK_JIRA_LABELS.flatMap((key) => clean(entry.labels[key])?.toUpperCase() ?? []))];
+  const observed = entry.jira?.observed.join(" / ");
+  const captured = [...new Set([...labelled.map(({ value }) => value.toUpperCase()), ...tasks])].flatMap((key) => {
+    const epic = entry.jira?.epics.get(key);
+    return epic === undefined ? [] : [{ value: epic, source: epic === null ? `the Jira captures of ${observed} disagree on ${key}` : `the Jira capture of ${observed} for ${key}` }];
+  });
+  const claims = [...labelled, ...captured];
+  const values = claims.map(({ value }) => value?.toUpperCase() ?? null);
+  if (new Set(values).size > 1 || values.includes(null)) {
+    // One statement per distinct value; labels come first.
+    const said = claims.filter((_, index) => values.indexOf(values[index] ?? null) === index);
+    return { epic: null, note: `sources disagree: ${said.map(({ value, source }) => value === null ? source : `${source} says ${value}`).join("; ")}` };
+  }
+  const epic = labelled[0]?.value ?? captured[0]?.value ?? null;
+  if (epic !== null) return { epic, note: `from ${claims.map(({ source }) => source).join(" and ")}` };
+  const named = tasks.join(", ");
+  return { epic: null, note: !named ? "no epic or task label" : observed ? `${named} is not in the Jira capture of ${observed}` : `no Jira capture read for ${named}` };
+}
+/** The epic as session details show it, with its sources. */
+export function epicDetail({ epic, note }: SessionEpic): string {
+  return `${epic ?? "Unknown"}, ${note}`;
+}
+
+/** The workstream a display mapping or label names and the session's epic; null where none does, so a declared "Other work" is not read as absent. */
 export function declaredScope(
   entry: DirectoryEntry,
   mappings: OrganizationInput["displayMappings"],
@@ -293,12 +339,7 @@ export function declaredScope(
     mappedValue(mappings, entry, "workstream") ??
     clean(entry.labels.desk) ??
     clean(entry.labels.workstream);
-  const epic =
-    mappedValue(mappings, entry, "epic") ??
-    clean(entry.labels.epic) ??
-    clean(entry.labels["jira.epic"]) ??
-    clean(entry.labels["origin.epic"]);
-  return { workstream, epic };
+  return { workstream, epic: sessionEpic(entry, mappings).epic };
 }
 
 /**
@@ -327,7 +368,7 @@ export function organizationScope(
   };
 }
 
-/** The epic as shown: no display mapping or epic label links the session to one. */
+/** The epic as shown: UNASSIGNED_EPIC is unknown, never a claim that the session has no epic. */
 export function epicLabel(epic: string): string {
   return epic === UNASSIGNED_EPIC ? NO_LINKED_EPIC : epic;
 }
@@ -731,6 +772,9 @@ function buildEpicGroup(input: {
   readonly displayLabel?: string;
 }): OrganizationGroup {
   const epicKey = `${input.workstreamKey}/project:${segment(input.projectKey ?? "unknown")}/epic:${segment(normalizedPrefix(input.epic))}`;
+  // A workspace carries no labels: without a session nothing can name its epic, so say so rather than leave
+  // Epic unknown beside the project's known epic looking like a contradiction.
+  const sessionless = input.epic === UNASSIGNED_EPIC && !input.entries.length ? input.emptyWorkspaces?.length ?? 0 : 0;
   return group({
     key: epicKey,
     kind: "epic",
@@ -738,6 +782,7 @@ function buildEpicGroup(input: {
     shortCode: null,
     parentKey: input.workstreamKey,
     depth: input.depth,
+    detail: sessionless ? `${sessionless} workspace${sessionless === 1 ? "" : "s"} without sessions` : null,
     sessions: [],
     groups: workspaceChildren({
       entries: input.entries,

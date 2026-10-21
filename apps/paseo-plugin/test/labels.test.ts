@@ -1,5 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { isKontorSeat, seatBinding } from "../server/labels";
+import { hasKontorLabels, isKontorSeat, seatBinding } from "../server/labels";
+
+describe("hasKontorLabels", () => {
+  it("recognizes any runtime-owned Kontor label", () => {
+    expect(hasKontorLabels({ "kontor.seat_binding_id": "binding-1" })).toBe(true);
+    expect(hasKontorLabels({ "kontor.worktree": "/tmp/worktree" })).toBe(true);
+  });
+
+  it("leaves a Paseo-direct-only seat unbound", () => {
+    expect(hasKontorLabels({ orchestration: "paseo-direct", "asma.slot": "SWE" })).toBe(false);
+    expect(hasKontorLabels({})).toBe(false);
+    expect(hasKontorLabels(null)).toBe(false);
+  });
+});
 
 describe("isKontorSeat", () => {
   it("recognizes runtime-owned Kontor labels", () => {

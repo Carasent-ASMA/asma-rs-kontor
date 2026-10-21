@@ -126,6 +126,40 @@ describe("evaluatePlacement", () => {
     ).toMatchObject({ allowed: false, reason: expect.stringContaining("binding") });
   });
 
+  it("accepts an explicit directory outside Paseo's worktree root without a binding", () => {
+    expect(
+      evaluatePlacement(
+        create({
+          kind: "directory",
+          path: "/Users/test/carasent/asma-modules/workspaces/asma-8507",
+          projectId: "prj_paseo_direct",
+        }),
+        rules,
+        null,
+      ),
+    ).toEqual({ allowed: true });
+  });
+
+  it("keeps the binding-free checks without a binding", () => {
+    expect(
+      evaluatePlacement(
+        create({
+          kind: "directory",
+          path: "/Users/test/carasent/asma-modules/workspaces/asma-8507",
+        }),
+        rules,
+        null,
+      ),
+    ).toMatchObject({ allowed: false, reason: expect.stringContaining("projectId") });
+    expect(
+      evaluatePlacement(
+        create({ kind: "worktree", cwd: "/Users/test/carasent/asma-modules", projectId: "prj_1" }),
+        rules,
+        null,
+      ),
+    ).toMatchObject({ allowed: false, reason: expect.stringContaining("worktree") });
+  });
+
   it("applies configured placement roots as extra containment", () => {
     const contained = {
       ...rules,

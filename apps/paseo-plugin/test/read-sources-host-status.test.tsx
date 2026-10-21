@@ -13,7 +13,7 @@ const model = vi.hoisted(() => ({
   queryOptions: null as { queryKey: readonly unknown[]; enabled: boolean; refetchInterval: number | false; retry: boolean; staleTime: number } | null,
   rpc: vi.fn(), refetch: vi.fn(async () => ({})),
 }));
-vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useState: (initial: unknown) => [typeof initial === "function" ? initial() : initial, vi.fn()], useRef: (current: unknown) => ({ current }), useMemo: (factory: () => unknown) => factory(), useCallback: (callback: unknown) => callback, useEffect: () => {} }));
+vi.mock("react", async (original) => ({ ...await original<typeof import("react")>(), useContext: () => null, useId: () => "source-help", useState: (initial: unknown) => [typeof initial === "function" ? initial() : initial, vi.fn()], useRef: (current: unknown) => ({ current }), useMemo: (factory: () => unknown) => factory(), useCallback: (callback: unknown) => callback, useEffect: () => {} }));
 vi.mock("react-native", () => ({ SafeAreaView: "SafeAreaView", KeyboardAvoidingView: "KeyboardAvoidingView", ScrollView: "ScrollView", Text: "Text", View: "View", Pressable: "Pressable", Linking: { openURL: vi.fn() } }));
 vi.mock("@getpaseo/plugin/client", () => ({ useHosts: () => [{ serverId: "source-host", label: "Host", status: model.status }], useRpc: () => model.rpc }));
 vi.mock("@getpaseo/plugin/client/react-native", () => ({ Modal: Object.assign(() => null, { Content: () => null }), TextInput: "TextInput", ScrollView: "ScrollView", FlatList: "FlatList", Icon: "Icon", useToast: () => ({ error: vi.fn() }) }));
@@ -52,7 +52,8 @@ function screen(tab: "Delivery" | "Decisions") {
   const nodes = elements(tree);
   const pill = nodes.find((node) => node.type === NativeFreshnessPill)!;
   const page = nodes.find((node) => node.type === ReadOnlyPage)!;
-  return { indicator: text(NativeFreshnessPill(pill.props as Parameters<typeof NativeFreshnessPill>[0])), visible: text(ReadOnlyPage(page.props as Parameters<typeof ReadOnlyPage>[0])), page };
+  const indicator = NativeFreshnessPill(pill.props as Parameters<typeof NativeFreshnessPill>[0]);
+  return { indicator: text(indicator), indicatorLabel: indicator.props.accessibilityLabel, visible: text(ReadOnlyPage(page.props as Parameters<typeof ReadOnlyPage>[0])), page };
 }
 describe("actual source hook and native indicator agree on SDK host status", () => {
   it.each([
@@ -63,12 +64,12 @@ describe("actual source hook and native indicator agree on SDK host status", () 
   ] as const)("retains records and an honest stale banner through online → $status → online", ({ status, host, indicator }) => {
     for (const tab of ["Delivery", "Decisions"] as const) {
       const retained = model.data!.reads;
-      expect(screen(tab).indicator).toContain("Native · Live");
+      expect(screen(tab).indicator).toContain("Live");
       expect(model.queryOptions).toMatchObject({ enabled: true, refetchInterval: 30_000 });
       model.status = status;
       const disconnected = screen(tab);
       const banner = `Paseo host ${host}. Configured sources unavailable; retained reads are stale.`;
-      expect(disconnected.indicator).toContain(`Native · ${indicator}`);
+      expect(disconnected.indicator).toContain(`${indicator}`);
       expect(disconnected.visible).toContain(banner); expect(disconnected.page.props.sourceError).toBe(banner);
       if (status !== "offline") expect(disconnected.visible).not.toContain("Paseo host offline");
       expect(disconnected.page.props.reads).toEqual(retained);
@@ -87,6 +88,8 @@ describe("actual source hook and native indicator agree on SDK host status", () 
     const page = screen("Delivery");
     expect(page.visible).toContain("Configured source service unavailable: Source request failed. Retained reads are stale.");
     expect(page.visible).toContain("Retained delivery record"); expect(page.indicator).toContain("Native · Live");
+    expect(page.indicatorLabel).toContain("Native sessions from Host: Live");
+    expect(page.indicatorLabel).toContain("Source freshness is reported separately");
     expect(useReadSources("source-host", "online").available).toBe(false);
     expect(model.queryOptions).toMatchObject({ enabled: true, refetchInterval: 30_000 });
   });

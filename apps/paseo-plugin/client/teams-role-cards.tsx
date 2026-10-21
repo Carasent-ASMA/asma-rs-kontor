@@ -38,7 +38,7 @@ function useCardsView<T>(fallback: T, view: T | undefined, onView: ((view: T) =>
 function Paging({ page, count, onPage, colors, label }: { page: number; count: number; onPage: (page: number) => void; colors: Colors; label: string }) {
   const pages = Math.max(1, Math.ceil(count / PAGE_SIZE));
   if (pages === 1) return <Copy colors={colors} muted small>{count} {label}</Copy>;
-  return <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center" }}><Action label={`Previous ${label}`} disabled={page === 0} colors={colors} onPress={() => onPage(page - 1)} /><Copy colors={colors} muted small>{page + 1}/{pages} · {count} {label}</Copy><Action label={`Next ${label}`} disabled={page + 1 >= pages} colors={colors} onPress={() => onPage(page + 1)} /></View>;
+  return <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center" }}><Action label={`Previous ${label}`} icon="ChevronLeft" iconOnly disabled={page === 0} colors={colors} onPress={() => onPage(page - 1)} /><Copy colors={colors} muted small>{page + 1}/{pages} · {count} {label}</Copy><Action label={`Next ${label}`} icon="ChevronRight" iconOnly disabled={page + 1 >= pages} colors={colors} onPress={() => onPage(page + 1)} /></View>;
 }
 /** Compact selectable card, as in the prototype template grid. */
 function CardButton({ title, meta, detail, accessibilityLabel, onPress, colors }: { title: string; meta: string; detail?: string; accessibilityLabel: string; onPress: () => void; colors: Colors }) {

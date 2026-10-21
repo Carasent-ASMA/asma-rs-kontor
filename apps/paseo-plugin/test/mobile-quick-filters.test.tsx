@@ -31,7 +31,7 @@ describe("mobile quick filter discovery", () => {
     const onStatus = vi.fn(), onClose = vi.fn();
     const counts = Object.fromEntries(QUICK_STATUS_FILTERS.map((status, index) => [status, index])) as Record<StatusFilter, number>;
     const ref = { current: null };
-    const tree = MobileQuickChooser({ root: ref, rootSize: { width: 320, height: 320 }, anchor: ref, colors: {} as PluginTheme["colors"], status: "needs_input", counts, onStatus, onClose });
+    const tree = MobileQuickChooser({ root: ref, rootSize: { width: 320, height: 320 }, anchor: ref, colors: { foreground: "#111111", foregroundMuted: "#555555", surface0: "#ffffff", surface1: "#f8f8f8", surface2: "#eeeeee", accent: "#0060c0", statusDanger: "#b00020", statusWarning: "#805000", statusSuccess: "#006b3c" } as PluginTheme["colors"], status: "needs_input", counts, onStatus, onClose });
     const choices = walk(tree).filter((node) => String(node.props.testID).startsWith("sessions-choose-"));
     expect(choices).toHaveLength(7);
     expect(choices.map((node) => node.props["aria-pressed"])).toEqual([false, false, false, false, true, false, false]);

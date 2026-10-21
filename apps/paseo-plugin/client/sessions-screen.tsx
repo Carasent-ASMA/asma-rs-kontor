@@ -77,18 +77,21 @@ import {
 import { useSessionDirectory } from "./use-session-directory";
 import { DEFAULT_ORGANIZATION_SETTINGS, type OrganizationSettings } from "../shared/organization";
 import type { useOrganizationSettings } from "./use-organization-settings";
-import { allGroupKeys, buildOrganizationTree, declaredScope, defaultGroupExpanded, deriveDeskScopes, filterOrganizationTree, flattenOrganizationTree, inEpicScope, matchesScope, nativeDesk, NO_LINKED_EPIC, NO_ROLE_KEY, organizationScope, organizationGroupRank, organizationWorkspaceCount, OTHER_WORKSTREAM, ROLE_ROOT_KEY, scopeKeepsGroup, sessionRole, sessionState, STATE_LABELS, titleRoleCode, UNASSIGNED_EPIC, visibleSessions, workstreamRank, type OrganizationGroup, type OrganizationRow, type OrganizationWorkspace, type OrganizationProject, type RoleSource } from "./session-organization";
+import { allGroupKeys, buildOrganizationTree, declaredScope, defaultGroupExpanded, deriveDeskScopes, epicDetail, filterOrganizationTree, flattenOrganizationTree, inEpicScope, matchesScope, nativeDesk, NO_ROLE_KEY, organizationScope, organizationGroupRank, organizationWorkspaceCount, OTHER_WORKSTREAM, ROLE_ROOT_KEY, scopeKeepsGroup, sessionEpic, sessionRole, sessionState, STATE_LABELS, titleRoleCode, UNASSIGNED_EPIC, visibleSessions, workstreamRank, type OrganizationGroup, type OrganizationRow, type OrganizationWorkspace, type OrganizationProject, type RoleSource } from "./session-organization";
 import { rowKey, siblingKeys, reorderSavedSiblingOrder } from "./organization-order";
-import { OrganizationRowView, StateBadge, stateColor as sessionStateColor } from "./organization-row";
+import { OrganizationRowView, stateColor as sessionStateColor } from "./organization-row";
+import { SessionStateMarker, SessionStatusIcon } from "./session-state-marker";
 import { AnchoredMenu, MenuItem } from "./anchored-menu";
 import { Action, COARSE_POINTER, Disclosure } from "./page-controls";
 import { SessionsLegend } from "./sessions-legend";
 import { nativeFreshnessLabel } from "./native-freshness";
 import { sessionTimeLines, useClock, useUpdatedTime, type RowTime, type TimeFreshness } from "./session-time";
 import { sessionUsageLabel } from "./session-usage";
-import { planWorkstreamOptions } from "./plan-workstreams";
+import { planFallbackNote, planWorkstreamOptions, workstreamOptionLabel } from "./plan-workstreams";
 import type { ReadSourceSummary, SourceRead, WorkstreamRegistry } from "../shared/read-sources";
-import { SessionUsage, SessionUsageLines } from "./session-usage-view";
+import { useControlHelp } from "./control-help";
+import { SessionUsage, SessionUsageLines, SessionMetadataGuide } from "./session-usage-view";
+import { SessionDetailSection } from "./session-detail-section";
 import { MobileFiltersPage, focusControl } from "./mobile-filters";
 import { MobileQuickToolbar } from "./mobile-quick-toolbar";
 import { MobileQuickChooser } from "./mobile-quick-chooser";
@@ -108,12 +111,15 @@ export function indicatorColor(entry: DirectoryEntry, colors: ThemeColors): stri
   return sessionStateColor(sessionState(entry), colors);
 }
 
-/** Desk shortcuts; Other work is every session outside a desk workstream. */
+/**
+ * Desk shortcuts. Outside desks is every session no desk holds; its ID stays "Other work" for saved
+ * views, while the Other work group and choice hold only sessions with no workstream association.
+ */
 export const SESSION_SHORTCUTS: readonly { readonly id: string | null; readonly label: string }[] = [
   { id: null, label: "All sessions" },
   { id: "PR Review", label: "PR Review" },
   { id: "Adam", label: "Adam desk" },
-  { id: "Other work", label: "Other work" },
+  { id: "Other work", label: "Outside desks" },
 ];
 /** Workspace scope, a menu in Filters & view; the shortcuts above repeat all but Durable desks. */
 const SCOPE_CHOICES: readonly { readonly id: string | null; readonly label: string }[] = [
@@ -121,7 +127,7 @@ const SCOPE_CHOICES: readonly { readonly id: string | null; readonly label: stri
   { id: "Desks", label: "Durable desks" },
   { id: "PR Review", label: "PR Review desk" },
   { id: "Adam", label: "Adam desk" },
-  { id: "Other work", label: "Other workspaces" },
+  { id: "Other work", label: "Outside desks" },
 ];
 const GROUPINGS: readonly { readonly id: SessionGrouping; readonly label: string }[] = [
   { id: "hierarchy", label: "Desks & workstreams" },
@@ -129,9 +135,6 @@ const GROUPINGS: readonly { readonly id: SessionGrouping; readonly label: string
   { id: "role", label: "Role" },
   { id: "flat", label: "Flat" },
 ];
-const STATUS_DOTS: Partial<Record<StatusFilter, Parameters<typeof sessionStateColor>[0]>> = {
-  running: "running", idle: "idle", error: "failed", needs_input: "needs_input", attention: "attention", initializing: "initializing", closed: "closed",
-};
 
 export function matchesShortcut(
   entry: DirectoryEntry,
@@ -343,12 +346,13 @@ export const SessionRow = memo(function SessionRow({
   highlighted = false,
   live = false,
 }: SessionRowProps) {
+  const state = sessionState(entry);
+  const stateHint = useControlHelp(STATE_LABELS[state]);
   const time = useUpdatedTime(entry.updatedAt, live);
   const age = time ? rowAge(time, compact, colors) : null;
   const attention = attentionLabel(entry);
   const archived = archivedLabel(entry);
   const history = earlierErrorLabel(entry);
-  const state = sessionState(entry);
   const context = entry.workspaceName ?? entry.projectName ?? entry.cwd;
   const project =
     entry.projectName && entry.projectName !== entry.workspaceName
@@ -384,11 +388,13 @@ export const SessionRow = memo(function SessionRow({
 
   return (
     <Pressable
+      ref={stateHint.bindings.ref} onFocus={stateHint.bindings.onFocus} onBlur={stateHint.bindings.onBlur}
+      onHoverIn={stateHint.bindings.onHoverIn} onHoverOut={stateHint.bindings.onHoverOut}
       testID={`sessions-row-${entry.id}`}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
       accessibilityHint="Opens the existing Paseo session"
-      onPress={() => onPress(entry)}
+      onPress={() => { stateHint.dismiss(); onPress(entry); }}
       style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => ({
         minHeight: compact || COARSE_POINTER ? 44 : 40,
         paddingLeft: 8,
@@ -418,7 +424,7 @@ export const SessionRow = memo(function SessionRow({
           </View>
           <SessionUsage entry={entry} colors={colors} />
           </View>
-          <StateBadge state={state} colors={colors} compact={false} />
+          <SessionStateMarker state={state} colors={colors} />
         </>
       ) : compact ? (
         <>
@@ -438,7 +444,7 @@ export const SessionRow = memo(function SessionRow({
           {age}
           <SessionUsage entry={entry} colors={colors} />
           </View>
-          <StateBadge state={state} colors={colors} compact={false} />
+          <SessionStateMarker state={state} colors={colors} />
         </>
       ) : (
         <>
@@ -459,8 +465,8 @@ export const SessionRow = memo(function SessionRow({
             ) : null}
           </View>
           <View style={{ maxWidth: 340, minWidth: 0, flexShrink: 1 }}><SessionUsage entry={entry} colors={colors} /></View>
-          <View style={{ width: 95, gap: 2 }}>
-            <StateBadge state={state} colors={colors} compact={false} />
+          <View style={{ alignItems: "flex-end", gap: 2 }}>
+            <SessionStateMarker state={state} colors={colors} />
             {runtime ? (
               <Text style={{ color: colors.foregroundMuted, fontSize: 9 }}>
                 {runtimeLabel}
@@ -526,9 +532,10 @@ const pageDocument = () => (globalThis as { document?: { activeElement?: unknown
 /**
  * Everything a Role row shortens, for its details: the role and where it came from, every other
  * declaration, and the whole desk or workstream, epic and workspace chain, with absent values named.
- * A workstream may come from a native desk project when no display mapping or label names it.
+ * A workstream may come from a native desk project when no display mapping or label names it. A session
+ * nothing links also says why no plan links it and where an explicit link is made; no name is read.
  */
-export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<typeof organizationScope>[1]): { label: string; value: string }[] {
+export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<typeof organizationScope>[1], planNote: string | null = null): { label: string; value: string }[] {
   const role = sessionRole(entry);
   const provenance = sessionProvenance(entry, mappings);
   const lines = [
@@ -543,14 +550,16 @@ export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<t
       { label: "Workspace", value: provenance.workspace },
       { label: "Native workspace ID", value: provenance.nativeDesk.workspaceId ?? "Unavailable" },
       { label: "Workstream association", value: declared.workstream ?? "Not declared" },
-      { label: "Epic association", value: declared.epic ?? NO_LINKED_EPIC },
+      { label: "Epic association", value: epicDetail(sessionEpic(entry, mappings)) },
       { label: "Association verification", value: "Workstream registry membership and epic/plan links are not checked here." }];
   }
   if (provenance.desk) return [...lines, { label: "Desk", value: provenance.parts[0]! }, { label: "Workspace", value: provenance.workspace }];
   const declared = declaredScope(entry, mappings);
+  const unlinked = declared.workstream === null && nativeDesk(entry.projectName) === null;
   return [...lines,
     { label: "Workstream", value: declared.workstream ?? (nativeDesk(entry.projectName) !== null ? `${organizationScope(entry, mappings).workstream} (native desk project)` : `${OTHER_WORKSTREAM}: no workstream or desk label and no display mapping`) },
-    { label: "Epic", value: declared.epic ?? NO_LINKED_EPIC },
+    { label: "Epic", value: epicDetail(sessionEpic(entry, mappings)) },
+    ...(unlinked ? [{ label: "Linking", value: `${planNote ? `${planNote} ` : ""}Settings, under Presentation and associations, can map this session or link it to a plan. Project and session names never link it.` }] : []),
     { label: "Workspace", value: provenance.workspace }];
 }
 
@@ -558,10 +567,11 @@ export function sessionDetailLines(entry: DirectoryEntry, mappings: Parameters<t
 export function SessionDetailsButton({ title, expanded, compact, colors, onPress, ref }: {
   readonly title: string; readonly expanded: boolean; readonly compact: boolean; readonly colors: ThemeColors; readonly onPress: () => void; readonly ref?: Ref<View>;
 }) {
+  const help = useControlHelp("Show model, reported usage, timing and placement.", ref);
   const size = compact || COARSE_POINTER ? 44 : 30;
   return (
-    <Pressable ref={ref} testID="sessions-row-details" accessibilityRole="button" accessibilityLabel={`Details: ${title}`} accessibilityHint="Shows exact times with their time zone, model, token report, role and placement details"
-      accessibilityState={{ expanded }} aria-expanded={expanded} onPress={onPress}
+    <Pressable {...help.bindings} testID="sessions-row-details" accessibilityRole="button" accessibilityLabel={`Details: ${title}`} accessibilityHint="Shows session facts and optional explanations"
+      accessibilityState={{ expanded }} aria-expanded={expanded} onPress={() => { help.dismiss(); onPress(); }}
       style={({ pressed, hovered, focused }: { pressed: boolean; hovered?: boolean; focused?: boolean }) => ({ width: size, height: size, borderRadius: 6, alignItems: "center", justifyContent: "center", backgroundColor: pressed || hovered || focused ? colors.surface2 : undefined })}>
       <Icon name="Info" size={compact ? 16 : 14} color={colors.foregroundMuted} />
     </Pressable>
@@ -576,7 +586,8 @@ export function SessionTimeLines({ entry, freshness, colors }: { readonly entry:
       {sessionTimeLines(entry, clock, freshness).map(({ label, value }) => (
         <View key={label} style={{ paddingHorizontal: 6, paddingVertical: 4 }}>
           <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>{label}</Text>
-          <Text selectable style={{ color: colors.foreground, fontSize: 13, lineHeight: 18 }}>{value}</Text>
+          <Text selectable style={{ color: colors.foreground, fontSize: 13, lineHeight: 18 }}>{value.split("\n")[0]}</Text>
+          {value.includes("\n") ? <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17, marginTop: 3 }}>{value.slice(value.indexOf("\n") + 1)}</Text> : null}
         </View>
       ))}
     </View>
@@ -620,15 +631,19 @@ type SessionResultRowProps = {
 const SessionResultRow = memo(function SessionResultRow({ entry, provenance, colors, compact, onPress, onShowInTree, treeButtonRef, live, details, lifecycleAction }: SessionResultRowProps) {
   const cues = resultCues(entry);
   const coarse = compact || COARSE_POINTER;
+  const state = sessionState(entry);
+  const stateHint = useControlHelp(STATE_LABELS[state]);
   const time = useUpdatedTime(entry.updatedAt, live);
   return (
     <View testID={`sessions-result-${entry.id}`} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
       <Pressable
+        ref={stateHint.bindings.ref} onFocus={stateHint.bindings.onFocus} onBlur={stateHint.bindings.onBlur}
+        onHoverIn={stateHint.bindings.onHoverIn} onHoverOut={stateHint.bindings.onHoverOut}
         testID={`sessions-row-${entry.id}`}
         accessibilityRole="button"
         accessibilityLabel={[resultAccessibilityLabel(entry, provenance), time?.spoken].filter(Boolean).join(". ")}
         accessibilityHint="Opens the existing Paseo session"
-        onPress={() => onPress(entry)}
+        onPress={() => { stateHint.dismiss(); onPress(entry); }}
         style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => ({
           flex: 1,
           minWidth: 0,
@@ -647,7 +662,7 @@ const SessionResultRow = memo(function SessionResultRow({ entry, provenance, col
           </Text>
           {time ? rowAge(time, compact, colors) : null}
           {compact ? null : <View style={{ maxWidth: 340, minWidth: 0, flexShrink: 1 }}><SessionUsage entry={entry} colors={colors} /></View>}
-          <StateBadge state={sessionState(entry)} colors={colors} compact={false} />
+          <SessionStateMarker state={state} colors={colors} />
         </View>
         <Text testID="sessions-result-place" numberOfLines={compact ? 2 : 1} style={{ color: colors.foregroundMuted, fontSize: compact ? 12 : 11, lineHeight: compact ? 16 : 15 }}>
           {provenance.parts.join(" › ")}
@@ -1073,7 +1088,7 @@ export function FilterChip({
   colors,
   compact = false,
   count,
-  dot,
+  status,
   checkbox = false,
   disabled = false,
   onBlur,
@@ -1087,7 +1102,8 @@ export function FilterChip({
   compact?: boolean;
   /** Matching sessions under the other active filters. */
   count?: number;
-  dot?: string;
+  /** Same shape as session rows; the existing label supplies its meaning. */
+  status?: StatusFilter;
   /** Multi-select choice rather than one of a set. */
   checkbox?: boolean;
   disabled?: boolean;
@@ -1122,7 +1138,7 @@ export function FilterChip({
         opacity: disabled ? 0.5 : 1,
       }}
     >
-      {dot ? <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: dot }} /> : null}
+      {status ? <SessionStatusIcon status={status} colors={colors} /> : null}
       <Text style={{ flexShrink: checkbox ? 1 : undefined, color: colors.foreground, fontSize: compact ? 12 : 11, fontWeight: active ? "600" : "400" }}>
         {label}
       </Text>
@@ -2053,6 +2069,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
   // One session's details at a time. The anchor reads the row's current button, so focus
   // returns to it even if the list drew the row again while the details were open.
   const [detailsId, setDetailsId] = useState<string | null>(null);
+  const detailsHelp = useControlHelp("");
   const detailsIdRef = useRef(detailsId);
   detailsIdRef.current = detailsId;
   // The grouping and list mode the details opened in; another one draws the row elsewhere, or not at all.
@@ -2284,7 +2301,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
             testID={`sessions-filter-${status}`}
             label={statusFilterLabel(status)}
             count={statusCounts[status]}
-            dot={STATUS_DOTS[status] ? sessionStateColor(STATUS_DOTS[status], colors) : undefined}
+            status={status}
             compact={compact}
             active={view.status === status}
             colors={colors}
@@ -2321,18 +2338,18 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
         >
           <OptionSelect testID="sessions-grouping" label="Group by" value={GROUPINGS.find(({ id }) => id === grouping)?.label ?? grouping} expanded={optionMenu === "grouping"} anchor={groupingRef} compact={compact} colors={colors} {...focusProps} onPress={() => setOptionMenu(optionMenu === "grouping" ? null : "grouping")} />
           <OptionLine label={streams === null ? `Workstream associations · all ${streamChoices.length} available` : `Workstream associations · ${streams.length} selected of ${streamChoices.length} available`} colors={colors}>
-            {workstreamOptions.map(({key, label, sessions, plans, workspaces, registered, desk}) => <FilterChip key={key} testID={`workstream-option-${key}`} checkbox label={workstreamRegistry || workstreamSources.length ? `${label} · ${sessions} sessions · ${workspaces} workspaces · ${plans} plans · ${desk ? "desk category" : registered ? "registered" : workstreamRegistry?.revision ? "unregistered" : "registration unavailable"}` : label} compact={compact} active={streams === null || streams.includes(key)} colors={colors} {...focusProps} onPress={() => toggleStream(key)} />)}
+            {workstreamOptions.map((option) => <FilterChip key={option.key} testID={`workstream-option-${option.key}`} checkbox label={workstreamRegistry || workstreamSources.length ? workstreamOptionLabel(option, !!workstreamRegistry?.revision) : option.label} compact={compact} active={streams === null || streams.includes(option.key)} colors={colors} {...focusProps} onPress={() => toggleStream(option.key)} />)}
             <FilterChip label="None" compact={compact} active={streams?.length === 0} colors={colors} {...focusProps} onPress={() => { pinFilterInteraction(); updateView({ streams: [], scrollOffset: 0 }); }} />
             {streams !== null ? <FilterChip label="All" compact={compact} active={false} colors={colors} {...focusProps} onPress={() => { pinFilterInteraction(); updateView({ streams: null, scrollOffset: 0 }); }} /> : null}
             {streamChoices.length === 0 ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>No workstream associations available in this context.</Text> : null}
           </OptionLine>
-          <Text testID="sessions-workstream-availability" style={{ color: colors.foregroundMuted, fontSize: 11 }}>{!workstreamRegistry?.revision && workstreamSources.length === 0 ? "Choices come from session metadata and display mappings, with desk and Other work fallbacks. Names may be unregistered. The full workstream registry and plan declarations are not loaded here; this list may be incomplete. " : ""}{workstreamRegistry?.revision ? `${Object.keys(workstreamRegistry.workstreams).length} registered workstreams · ${workstreamOptions.filter((option) => option.plans > 0).length} declared plan keys here · ${Object.keys(workstreamRegistry.desks).length} registered desk categories. ` : ""}Registered keys are global. Plan and session counts use this project/epic context, before search, state and workstream filters. Zero sessions means none linked in this inventory. Plans without workspaces are included. Native desks stay separate.{workstreamNote ? ` ${workstreamNote}` : ""}</Text>
+          <Text testID="sessions-workstream-availability" style={{ color: colors.foregroundMuted, fontSize: 11 }}>{!workstreamRegistry?.revision && workstreamSources.length === 0 ? "Choices come from session metadata and display mappings, with desk and Other work fallbacks. Names may be unregistered. The full workstream registry and plan declarations are not loaded here; this list may be incomplete. " : ""}{workstreamRegistry?.revision ? `${Object.keys(workstreamRegistry.workstreams).length} registered workstreams · ${workstreamOptions.filter((option) => option.plans > 0).length} declared plan keys here · ${Object.keys(workstreamRegistry.desks).length} registered desk categories. Registered keys are global. ` : workstreamSources.length ? "The workstream registry is not loaded, so no choice says whether it is registered. " : ""}Counts follow each session's workstream association, which these choices filter by, in this project/epic context before search, state and workstream filters. The tree keeps every session of a native desk project under that desk, so a choice names the desk where it counts sessions shown there. Workspaces count where a counted session runs or a workspace mapping points; the tree also lists empty native workspaces until workstream choices narrow it. Zero sessions means none linked in this inventory: a plan links a session only through the session's known epic or an explicit plan link. Plan-only choices are included.{workstreamNote ? ` ${workstreamNote}` : ""}</Text>
           <OptionSelect testID="sessions-scope" label="Workspace scope" value={scopeChoiceLabel ?? SCOPE_CHOICES[0]!.label} expanded={optionMenu === "scope"} anchor={scopeRef} compact={compact} colors={colors} {...focusProps} onPress={() => setOptionMenu(optionMenu === "scope" ? null : "scope")} />
           <OptionLine label="Epic lifecycle" colors={colors}>
             <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>Not captured in session data; no lifecycle is inferred from idle or closed sessions.</Text>
           </OptionLine>
           <OptionLine label="More states" colors={colors}>
-            {MORE_STATUS_FILTERS.map((status) => <FilterChip key={status} testID={`sessions-filter-${status}`} label={statusFilterLabel(status)} count={statusCounts[status]} dot={sessionStateColor(STATUS_DOTS[status] ?? null, colors)} compact={compact} active={view.status === status} colors={colors} {...focusProps} onPress={() => updateFilter({ status })} />)}
+            {MORE_STATUS_FILTERS.map((status) => <FilterChip key={status} testID={`sessions-filter-${status}`} label={statusFilterLabel(status)} count={statusCounts[status]} status={status} compact={compact} active={view.status === status} colors={colors} {...focusProps} onPress={() => updateFilter({ status })} />)}
           </OptionLine>
           <ToggleRow
             testID="sessions-advanced-archived"
@@ -2390,6 +2407,8 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     const target = detailsReturn();
     setDetailsId(null);
     target?.focus?.();
+    // Restoring focus must not cover the next touch target with help.
+    detailsHelp.dismiss();
   };
   // Details whose session has left, or whose grouping or list mode has changed, close. Focus they held,
   // which the page has now dropped, goes where Close would send it; focus elsewhere stays put.
@@ -2399,6 +2418,7 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
     const target = document && (document.activeElement == null || document.activeElement === document.body) ? detailsReturn() : null;
     setDetailsId(null);
     target?.focus?.();
+    if (target) detailsHelp.dismiss();
   }, [detailsId, detailsEntry === null]);
   // Over the list on a compact screen, so a short one still shows the title, Close and a scrolling chain.
   const detailsLayer = detailsEntry === null ? null : (
@@ -2407,20 +2427,18 @@ export function SessionsScreen({ host, layout, navigation, theme, directory, org
       placement={compact ? { align: "stretch", width: 0, cover: true } : { align: "end", width: 360, maxHeight: 440 }}
       header={<View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8, paddingLeft: 6, paddingBottom: 4 }}>
         <Text testID="sessions-details-title" selectable style={{ flex: 1, minWidth: 0, paddingTop: 6, color: colors.foreground, fontSize: 13, fontWeight: "600" }}>{detailsEntry.title}</Text>
-        <Action ref={detailsCloseRef} small={!compact} colors={colors} label="Close" accessibilityLabel={`Close details: ${detailsEntry.title}`} onPress={closeDetails} />
+        <Action ref={detailsCloseRef} small={!compact} colors={colors} label="Close" icon="X" iconOnly help="Close details" accessibilityLabel={`Close details: ${detailsEntry.title}`} onPress={closeDetails} />
       </View>}>
       {/* On web the lines are a named stop of their own, so a keyboard can scroll a chain longer than the screen. */}
-      <ScrollView testID="sessions-details-lines" {...(pageDocument() ? { tabIndex: 0, role: "region", accessibilityLabel: "Times, role, placement, model and token report" } as const : {})}
+      <ScrollView testID="sessions-details-lines" {...(pageDocument() ? { tabIndex: 0, role: "region", accessibilityLabel: "Model, reported usage, timing and placement" } as const : {})}
         onFocus={() => setDetailsLinesFocused(true)} onBlur={() => setDetailsLinesFocused(false)}
         style={{ flexGrow: 0, flexShrink: 1, borderRadius: 6, ...(detailsLinesFocused ? { outlineColor: colors.accent, outlineStyle: "solid", outlineWidth: 2 } as const : null) }}>
-        <SessionTimeLines entry={detailsEntry} freshness={{ live: timesLive, readAt: state.lastUpdatedAt }} colors={colors} />
-        {sessionDetailLines(detailsEntry, mappings).map(({ label, value }) => (
-          <View key={label} style={{ paddingHorizontal: 6, paddingVertical: 4 }}>
-            <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>{label}</Text>
-            <Text selectable style={{ color: colors.foreground, fontSize: 13, lineHeight: 18 }}>{value}</Text>
-          </View>
-        ))}
         <SessionUsageLines entry={detailsEntry} colors={colors} stale={showBanner} />
+        <SessionDetailSection title="Timing" colors={colors}>
+          <SessionTimeLines entry={detailsEntry} freshness={{ live: timesLive, readAt: state.lastUpdatedAt }} colors={colors} />
+        </SessionDetailSection>
+        <SessionDetailSection title="Role and placement" values={sessionDetailLines(detailsEntry, mappings, planFallbackNote(workstreamSources, workstreamReads, declaredScope(detailsEntry, mappings).epic, detailsEntry.projectKey, preferences.planAssociations[detailsEntry.id]))} colors={colors} />
+        <SessionMetadataGuide key={detailsEntry.id} entry={detailsEntry} colors={colors} />
       </ScrollView>
     </AnchoredMenu>
   );

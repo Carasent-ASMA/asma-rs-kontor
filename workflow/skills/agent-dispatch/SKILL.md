@@ -146,9 +146,15 @@ Existing epics keep their names, seats and placement.
 7. **Launch** through the correct supervisor path so native parentage matches the
    intended tree: on existing work, Adam launches the TPM and the TPM launches
    delivery; on new work, Adam launches the workforce directly. Watchdog-created
-   agents are not automatically Adam or TPM children.
+   agents are not automatically Adam or TPM children. On Paseo-direct work the
+   create passes the seat's four
+   [session labels](../epic-orchestration/references/paseo-direct-native-placement.md#session-labels):
+   `epic` and `task` as confirmed in step 2 for this seat, `role` as the
+   registered role code, and `orchestration=paseo-direct`. Never copy them from
+   the parent.
 8. **Read back** effective model/effort, permission posture, native ID, parent,
-   workspace/cwd and checkout before accepting task effects or verdicts.
+   workspace/cwd, checkout and, on Paseo-direct work, the four session labels
+   before accepting task effects or verdicts.
 9. **Record** dispatch evidence: discovered / supplied / read / behaviorally
    exercised loading is classified separately; file presence is not activation.
 

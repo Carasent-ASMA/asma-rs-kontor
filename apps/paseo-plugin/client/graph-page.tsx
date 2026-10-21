@@ -134,7 +134,7 @@ export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, r
   </View>;
 
   const plans = sources.filter((source) => source.kind === "plan");
-  const toggle = <Action colors={colors} small={!compact} label="Source details" expanded={evidenceOpen} onPress={() => setEvidenceOpen(!evidenceOpen)} />;
+  const toggle = <Action colors={colors} small={!compact} label="Source details" icon="Info" iconOnly expanded={evidenceOpen} onPress={() => setEvidenceOpen(!evidenceOpen)} />;
   const actions = <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
     {read ? <Action colors={colors} small={!compact} label="Open source plan" onPress={() => onPlan(read.source.id)} /> : null}
     {!read && onChooseSource ? <Action colors={colors} small={!compact} label="Choose plan" onPress={onChooseSource} /> : null}
@@ -199,7 +199,7 @@ export function GraphPage({ mode, hostId, theme, compact, sources, selectedId, r
   const coverage = [...teams.values()].flatMap((team) => team.state === "not-provided" ? [team.coverage] : [])[0] ?? null;
   // How sessions and teams were read stays in Source details; the Board shows only what they say.
   const sessionNotes = sessions && links.size ? [
-    "Linked sessions: a session links to a task only when its jira.issue or task label equals the task's Jira key, or its kontor.ticket label equals its Kontor ticket. Titles are not read; a role comes from the session's role label.",
+    "Linked sessions: a session links to a task only when its jira.issue, task or asma.task label equals the task's Jira key, or its kontor.ticket label equals its Kontor ticket. Titles are not read; a role comes from the session's role label.",
     declaredTasks ? `Team, workflow and risk tier: declared for ${declaredTasks} of ${links.size} tasks by ${declaringSources.join(", ")}.` : coverage,
   ].filter((note): note is string => !!note) : [];
   const days = captureDays(captureTimes);

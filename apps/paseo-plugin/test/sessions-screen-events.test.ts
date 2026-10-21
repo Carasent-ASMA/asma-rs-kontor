@@ -21,6 +21,7 @@ type HookQueueItem = {
 };
 
 const accessibility = vi.hoisted(() => ({ screenReader: false }));
+const controlHelp = vi.hoisted(() => ({ current: null as null | { dismiss(): void } }));
 const { harness, directory } = vi.hoisted(() => {
   const slots: HookSlot[] = [];
   let cursor = 0;
@@ -190,7 +191,7 @@ const { harness, directory } = vi.hoisted(() => {
 vi.mock("react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react")>();
   return {
-    ...actual,
+    ...actual, useContext: () => controlHelp.current,
     memo: (component: unknown) => component,
     useCallback: harness.useCallback,
     useEffect: harness.useEffect,
@@ -259,6 +260,7 @@ import {
   COMPACT_SCROLL_SLACK,
   compactToolbarOpen,
   FILTER_SUMMARY_TEST_ID,
+  FilterChip,
   FiltersButton,
   ClearFiltersButton,
   HIDE_FILTERS_TEST_ID,
@@ -281,6 +283,10 @@ import { MobileFiltersPage } from "../client/mobile-filters";
 import { MobileQuickToolbar } from "../client/mobile-quick-toolbar";
 import { MobileQuickChooser } from "../client/mobile-quick-chooser";
 import { StateBadge } from "../client/organization-row";
+import { SessionStateMarker, SessionStatusIcon } from "../client/session-state-marker";
+import { QUICK_FILTER_ICONS } from "../client/mobile-quick-filter-options";
+import type { StatusFilter } from "../client/session-view";
+import { SessionDetailSection } from "../client/session-detail-section";
 import { SessionUsage, SessionUsageLines } from "../client/session-usage-view";
 import { AnchoredMenu, MenuItem } from "../client/anchored-menu";
 import { nativeFreshnessLabel } from "../client/native-freshness";
@@ -523,7 +529,7 @@ describe("SessionsScreen toolbar events", () => {
     const earlier = findByTestID(harness.current(), "sessions-filter-earlier_error");
     expect(earlier.props.label).toBe("Earlier errors");
     expect(earlier.props.count).toBe(13);
-    expect(earlier.props.dot).not.toBe(colors.statusDanger);
+    expect(earlier.props.status).toBe("earlier_error");
     (earlier.props.onPress as () => void)(); harness.flush();
     if (compact) closeMobileFilters();
     expect(sessionRowIds().sort()).toEqual(history.map((entry) => entry.id).sort());
@@ -534,7 +540,7 @@ describe("SessionsScreen toolbar events", () => {
     expect(pressable.props.accessibilityLabel).toContain("Native status closed");
     expect(pressable.props.accessibilityLabel).toContain("Earlier error · now closed");
     expect(pressable.props.accessibilityLabel).not.toContain("Needs attention");
-    expect(walk(row).find((element) => element.type === StateBadge)!.props.state).toBe("closed");
+    expect(walk(row).find((element) => element.type === SessionStateMarker)!.props.state).toBe("closed");
     // Archive remains an explicit independent option, and never hides closed-unarchived history.
     if (compact) openMobileFilters();
     (findByTestID(harness.current(), "sessions-advanced-archived").props.onPress as () => void)(); harness.flush();
@@ -543,6 +549,56 @@ describe("SessionsScreen toolbar events", () => {
     expect(sessionRowIds()).toHaveLength(13);
     setStateFilter("error");
     expect(sessionRowIds()).toEqual(["current"]);
+  });
+
+  it.each([true, false])("keeps exact status icons, counts, selection and activation in quick/expanded filter choices, compact=%s", compact => {
+    for (const status of Object.keys(QUICK_FILTER_ICONS) as StatusFilter[]) {
+      const onPress = vi.fn(), onFocus = vi.fn(), onBlur = vi.fn();
+      for (const active of [false, true]) {
+        const chip = FilterChip({ status, label: status, count: 3, colors, compact, active, onPress, onFocus, onBlur });
+        const marker = walk(chip).find(element => element.type === SessionStatusIcon)!;
+        const icon = walk(SessionStatusIcon(marker.props as Parameters<typeof SessionStatusIcon>[0])).find(element => element.type === "Icon")!;
+        expect(icon.props.name).toBe(QUICK_FILTER_ICONS[status]);
+        expect(chip.props.accessibilityLabel).toBe(`${status}, 3`);
+        expect(chip.props.accessibilityState).toEqual({ selected: active, disabled: false });
+        expect(chip.props.style).toMatchObject({ borderColor: active ? colors.accent : colors.border, backgroundColor: active ? colors.surface2 : colors.surface1 });
+        chip.props.onFocus?.(); chip.props.onBlur?.(); chip.props.onPress();
+      }
+      expect(onPress).toHaveBeenCalledTimes(2);
+      expect(onFocus).toHaveBeenCalledTimes(2);
+      expect(onBlur).toHaveBeenCalledTimes(2);
+    }
+  });
+
+  it.each([true, false])("updates the same row marker through native transitions without changing its accessible name or adding controls, compact=%s", compact => {
+    patchSessionView("host-a", { query: "", grouping: "flat", status: "all", includeArchived: false });
+    renderScreen(undefined, compact);
+    const transitions = [
+      [sessionEntry("live", { status: "initializing" }), "initializing"],
+      [sessionEntry("live"), "idle"],
+      [sessionEntry("live", { status: "running" }), "running"],
+      [sessionEntry("live", { status: "running", pendingPermissionCount: 1 }), "needs_input"],
+      [sessionEntry("live", { status: "error", requiresAttention: true, attentionReason: "error" }), "failed"],
+      [sessionEntry("live", { status: "closed", requiresAttention: true, attentionReason: "error" }), "closed"],
+      [sessionEntry("live", { requiresAttention: true, attentionReason: "finished" }), "attention"],
+      [sessionEntry("live"), "idle"],
+    ] as const;
+    for (const [entry, state] of transitions) {
+      directory.state = { ...(directory.state as object), entries: [entry] };
+      harness.flush();
+      const row = renderSessionLeaf();
+      expect(walk(row).filter(element => element.type === SessionStateMarker).map(element => element.props.state)).toEqual([state]);
+      expect(walk(row).filter(element => element.type === "Pressable")).toHaveLength(1);
+      expect(row.props.accessibilityLabel).toContain(`Native status ${entry.status}`);
+      expect(row.props.accessibilityLabel).toContain("Session live");
+      expect(row.props["aria-describedby"]).toBeUndefined();
+      expect(walk(row).some(element => element.type === StateBadge)).toBe(false);
+    }
+    // Labeled filters teach the same shapes, keeping their labels and exact counts.
+    if (compact) openMobileFilters();
+    expect(findByTestID(harness.current(), "sessions-filter-idle").props).toMatchObject({ status: "idle", label: "Idle", count: 1 });
+    expect(findByTestID(harness.current(), "sessions-filter-error").props).toMatchObject({ status: "error", label: "Error", count: 0 });
+    if (compact) closeMobileFilters();
   });
 
   it("shows the count line only for results or an incomplete read, and keeps the full count and read in Filters", () => {
@@ -950,11 +1006,11 @@ describe("SessionsScreen toolbar events", () => {
     ] };
     patchSessionView("host-a", { query: "" });
     renderScreen();
-    expect(groupRows().map((row) => `${row.group.kind}:${row.group.label}`)).toEqual(["workstream:Adam", "workspace:Workspace", "workstream:Kontor", "epic:No linked epic"]);
+    expect(groupRows().map((row) => `${row.group.kind}:${row.group.label}`)).toEqual(["workstream:Adam", "workspace:Workspace", "workstream:Kontor", "epic:Epic unknown"]);
     setStateFilter("idle");
     const renderItem = (info: { item: unknown }) => (findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)(info);
     const results = listRows() as Extract<ListRow, { kind: "result" }>[];
-    expect(results.map((row) => (renderItem({ item: row }).props.provenance as { parts: string[] }).parts)).toEqual([["Adam desk", "Workspace"], ["Kontor", "No linked epic", "Workspace"]]);
+    expect(results.map((row) => (renderItem({ item: row }).props.provenance as { parts: string[] }).parts)).toEqual([["Adam desk", "Workspace"], ["Kontor", "Epic unknown", "Workspace"]]);
     (renderItem({ item: results[0] }).props.onShowInTree as (entry: unknown) => void)(results[0]!.entry); harness.flush();
     expect(groupRows().map((row) => `${row.group.kind}:${row.group.label}:${row.expanded}`).slice(0, 2)).toEqual(["workstream:Adam:true", "workspace:Workspace:true"]);
     expect(sessionRowIds()).toContain("desk");
@@ -963,7 +1019,7 @@ describe("SessionsScreen toolbar events", () => {
     expect(groupRows().map((row) => `${row.group.label}:${row.expanded}`)).toEqual(["SWE:false", "No role:false"]);
     expandAll();
     const roleSessions = listRows().filter((row): row is Extract<ListRow, { kind: "session" }> => row.kind === "session" && row.entry.id.startsWith("loose"));
-    expect(roleSessions.map((row) => walk(renderItem({ item: row })).find((element) => "displayContext" in element.props)!.props.displayContext)).toEqual(["Kontor · No linked epic · Workspace", "Kontor · No linked epic · Workspace"]);
+    expect(roleSessions.map((row) => walk(renderItem({ item: row })).find((element) => "displayContext" in element.props)!.props.displayContext)).toEqual(["Kontor · Epic unknown · Workspace", "Kontor · Epic unknown · Workspace"]);
   });
 
   it("shows a result in the tree without saving the branches it opens, and Back returns to the results", () => {
@@ -1252,11 +1308,11 @@ describe("SessionsScreen toolbar events", () => {
     const details = (id: string) => row(id).props.details as ElementLike;
     const dialog = () => walk(harness.current()).find((element) => element.props.testID === "sessions-details");
     const content = () => (findByTestID(dialog()!.props.children, "sessions-details-lines").props.children as unknown[]).flat() as (ElementLike & { readonly type: unknown })[];
-    // The times come first, drawn by their own clock-driven component; the role and place lines follow.
-    const times = () => content()[0]!;
+    // Timing keeps its clock-driven component inside the named section.
+    const times = () => walk(content()).find(line => (line as ElementLike & { type: unknown }).type === SessionTimeLines)! as ElementLike & { type: unknown };
     const usage = () => content().find((line) => line.type === SessionUsageLines)!;
-    const lines = () => content().filter((line) => line.type === "View")
-      .map((line) => (line.props.children as ElementLike[]).map(textOf).join(": "));
+    const lines = () => (content().find(line => line.type === SessionDetailSection && line.props.title === "Role and placement")!.props.values as { label: string; value: string }[])
+      .map(({ label, value }) => `${label}: ${value}`);
     const close = () => walk(dialog()!.props.header).find((element) => element.props.label === "Close")!;
     const open = (id: string) => { (details(id).props.onPress as () => void)(); harness.flush(); };
     return { openAgent, save, row, details, dialog, times, usage, lines, close, open };
@@ -1280,15 +1336,15 @@ describe("SessionsScreen toolbar events", () => {
     screen.open("long");
     expect(screen.dialog()!.props).toMatchObject({ dialog: true, label: "Details: QA • Reconcile the delivery evidence for the second review round", placement: { align: "stretch", width: 0, cover: true } });
     expect(textOf(findByTestID(screen.dialog()!.props.header, "sessions-details-title"))).toBe("QA • Reconcile the delivery evidence for the second review round");
-    expect(screen.lines()).toEqual(["Role: QA, from the kontor.role label", "Other role declarations: None", "Workstream: Kontor plugin and prototype parity across every host", "Epic: ASMA-8541",
+    expect(screen.lines()).toEqual(["Role: QA, from the kontor.role label", "Other role declarations: None", "Workstream: Kontor plugin and prototype parity across every host", "Epic: ASMA-8541, from the epic label",
       "Workspace: TSW • ASMA-8541 roles provenance correction workspace with a long name"]);
     expect(screen.details("long").props.expanded).toBe(true);
     expect(screen.details("conflict").props.expanded).toBe(false);
     const expected: Record<string, string[]> = {
-      conflict: ["Role: QA, from the role label", "Other role declarations: title says AUD", "Workstream: Review", "Epic: No linked epic", "Workspace: Workspace"],
+      conflict: ["Role: QA, from the role label", "Other role declarations: title says AUD", "Workstream: Review", "Epic: Unknown, no epic or task label", "Workspace: Workspace"],
       desk: ["Role: SWE, from the title", "Other role declarations: None", "Desk: Adam desk", "Workspace: Workspace"],
-      cwd: ["Role: SWE, from the title", "Other role declarations: None", "Workstream: Other work: no workstream or desk label and no display mapping", "Epic: No linked epic", "Workspace: No workspace · /tmp/scratch"],
-      nowhere: ["Role: No role: no kontor.role or role label, and no role prefix in the title", "Other role declarations: None", "Workstream: Other work: no workstream or desk label and no display mapping", "Epic: No linked epic", "Workspace: No workspace"],
+      cwd: ["Role: SWE, from the title", "Other role declarations: None", "Workstream: Other work: no workstream or desk label and no display mapping", "Epic: Unknown, no epic or task label", "Linking: Settings, under Presentation and associations, can map this session or link it to a plan. Project and session names never link it.", "Workspace: No workspace · /tmp/scratch"],
+      nowhere: ["Role: No role: no kontor.role or role label, and no role prefix in the title", "Other role declarations: None", "Workstream: Other work: no workstream or desk label and no display mapping", "Epic: Unknown, no epic or task label", "Linking: Settings, under Presentation and associations, can map this session or link it to a plan. Project and session names never link it.", "Workspace: No workspace"],
     };
     for (const [id, lines] of Object.entries(expected)) {
       (screen.dialog()!.props.onClose as () => void)(); harness.flush();
@@ -1323,6 +1379,36 @@ describe("SessionsScreen toolbar events", () => {
     expect(screen.save).not.toHaveBeenCalled();
   });
 
+  it("keeps restored Details focus without help blocking the next session action", () => {
+    let helpVisible = false;
+    controlHelp.current = { dismiss: () => { helpVisible = false; } };
+    try {
+      const screen = renderDetails(placeEntries());
+      const button = { focus: vi.fn(() => { helpVisible = true; }) };
+      (screen.details("long").props.ref as (node: unknown) => void)(button);
+      screen.open("long");
+      (screen.close().props.onPress as () => void)(); harness.flush();
+      expect(button.focus).toHaveBeenCalledOnce();
+      expect(helpVisible).toBe(false);
+      const next = screen.row("conflict").props.children as ElementLike;
+      (next.props.onPress as (entry: unknown) => void)(next.props.entry);
+      expect(screen.openAgent).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ agentId: "conflict" }));
+
+      screen.open("long");
+      const scroller = { focus: vi.fn(() => { helpVisible = true; }) };
+      (findByTestID(harness.current(), "sessions-list").props.ref as RefLike).current = { getScrollableNode: () => scroller };
+      (screen.details("long").props.ref as (node: unknown) => void)(null);
+      vi.stubGlobal("document", { activeElement: null, body: {} });
+      directory.state = { ...(directory.state as object), entries: placeEntries().filter(entry => entry.id !== "long") };
+      harness.flush();
+      expect(scroller.focus).toHaveBeenCalledOnce();
+      expect(helpVisible).toBe(false);
+    } finally {
+      controlHelp.current = null;
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("anchors the details beside the row on a wide screen, closes them when the grouping changes, and gives every row its details", () => {
     const screen = renderDetails(placeEntries(), false);
     screen.open("desk");
@@ -1348,24 +1434,24 @@ describe("SessionsScreen toolbar events", () => {
   it("reports native parentage and independent declared associations in desk Details", () => {
     const session = sessionEntry("desk-with-epic", { projectKey: "prj_desk", workspaceId: "wks_desk", projectName: "DESK • ADAM", labels: { epic: "ASMA-99101" } });
     const lines = (mappings: Parameters<typeof sessionDetailLines>[1]) => Object.fromEntries(sessionDetailLines(session, mappings).map(({ label, value }) => [label, value]));
-    expect(lines({})).toMatchObject({ "Native desk": "DESK • ADAM", "Native project ID": "prj_desk", "Native workspace ID": "wks_desk", "Workstream association": "Not declared", "Epic association": "ASMA-99101" });
+    expect(lines({})).toMatchObject({ "Native desk": "DESK • ADAM", "Native project ID": "prj_desk", "Native workspace ID": "wks_desk", "Workstream association": "Not declared", "Epic association": "ASMA-99101, from the epic label" });
     expect(lines({ "session:desk-with-epic": { workstream: "declared" } })["Workstream association"]).toBe("declared");
     expect(sessionDetailLines({ ...session, labels: { ...session.labels, workstream: "labelled" } }, {}).find((line) => line.label === "Workstream association")!.value).toBe("labelled");
     expect(lines({})).not.toHaveProperty("Workstream");
     expect(lines({})["Association verification"]).toBe("Workstream registry membership and epic/plan links are not checked here.");
     expect(lines({ "session:desk-with-epic": { workstream: "unregistered-association", epic: "ASMA-99999" } })).toMatchObject({
       "Native project ID": "prj_desk", "Native workspace ID": "wks_desk", "Workstream association": "unregistered-association",
-      "Epic association": "ASMA-99999", "Association verification": lines({})["Association verification"],
+      "Epic association": "ASMA-99999, from a display mapping", "Association verification": lines({})["Association verification"],
     });
   });
 
   it("names a declared Other work workstream or Unassigned epic as declared, and only a missing one as absent", () => {
     const chain = (entry: ReturnType<typeof sessionEntry>, mappings: Parameters<typeof sessionDetailLines>[1] = {}) =>
       sessionDetailLines(entry, mappings).filter(({ label }) => label === "Workstream" || label === "Epic").map(({ label, value }) => `${label}: ${value}`);
-    const absent = ["Workstream: Other work: no workstream or desk label and no display mapping", "Epic: No linked epic"];
-    expect(chain(sessionEntry("label", { labels: { workstream: "Other work", epic: "Unassigned" } }))).toEqual(["Workstream: Other work", "Epic: Unassigned"]);
-    expect(chain(sessionEntry("mapped"), { "session:mapped": { workstream: "Other work", epic: "Unassigned" } })).toEqual(["Workstream: Other work", "Epic: Unassigned"]);
-    expect(chain(sessionEntry("jira", { labels: { "jira.epic": "Unassigned" } }))).toEqual([absent[0], "Epic: Unassigned"]);
+    const absent = ["Workstream: Other work: no workstream or desk label and no display mapping", "Epic: Unknown, no epic or task label"];
+    expect(chain(sessionEntry("label", { labels: { workstream: "Other work", epic: "Unassigned" } }))).toEqual(["Workstream: Other work", "Epic: Unassigned, from the epic label"]);
+    expect(chain(sessionEntry("mapped"), { "session:mapped": { workstream: "Other work", epic: "Unassigned" } })).toEqual(["Workstream: Other work", "Epic: Unassigned, from a display mapping"]);
+    expect(chain(sessionEntry("jira", { labels: { "jira.epic": "Unassigned" } }))).toEqual([absent[0], "Epic: Unassigned, from the jira.epic label"]);
     expect(chain(sessionEntry("bare"))).toEqual(absent);
     // A blank label declares nothing.
     expect(chain(sessionEntry("blank", { labels: { workstream: " ", epic: "" } }))).toEqual(absent);
@@ -1461,7 +1547,7 @@ describe("SessionsScreen toolbar events", () => {
     vi.stubGlobal("document", { activeElement: null, body: {} });
     try {
       screen.open("long");
-      expect(region().props).toMatchObject({ tabIndex: 0, role: "region", accessibilityLabel: "Times, role, placement, model and token report" });
+      expect(region().props).toMatchObject({ tabIndex: 0, role: "region", accessibilityLabel: "Model, reported usage, timing and placement" });
       expect(list().props.tabIndex).toBe(-1);
       expect(region().props.style).not.toHaveProperty("outlineWidth");
       (region().props.onFocus as () => void)(); harness.flush();
@@ -1557,14 +1643,15 @@ describe("SessionsScreen toolbar events", () => {
     expect(sessionRowIds()).toEqual(["swe-in", "qa-in"]);
   });
 
-  it("draws a Role header with its two leading states and a separate total, calling them last known when stale", () => {
-    const { drawn } = renderRoles(qaEntries());
+  it.each([true, false])("draws the same leading Role icons and counts with a separate total and stale cue, compact=%s", compact => {
+    const { drawn } = renderRoles(qaEntries(), undefined, compact);
     const [qa] = groupRows();
     expect([qa!.group.label, qa!.expanded]).toEqual(["QA", false]);
     const header = drawn(qa);
     const counts = walk(header).find((element) => "aggregate" in element.props) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike };
     const words = walk(counts.type(counts.props)).map((element) => element.props.children).filter((child) => typeof child === "string" || typeof child === "number");
-    expect(words).toEqual(["▲", 1, "needs input", "✕", 1, "error"]);
+    expect(words).toEqual(compact ? [1, 1] : [1, "needs input", 1, "error"]);
+    expect(walk(counts.type(counts.props)).filter(element => element.type === SessionStateMarker).map(element => element.props.state)).toEqual(["needs_input", "failed"]);
     expect(walk(header).filter((element) => element.props.children === "5")).toHaveLength(1);
     const label = () => String(walk(drawn(groupRows()[0])).find((element) => element.props.accessibilityRole === "button")!.props.accessibilityLabel);
     expect(label()).toMatch(/^Role QA, 5 sessions\. 1 needs input · 1 error · 3 running\. Native counts: 0 initializing, 1 idle, 3 running, 1 errors, 0 closed\.$/);
@@ -1573,7 +1660,7 @@ describe("SessionsScreen toolbar events", () => {
     expect(label()).toContain("5 sessions. Last known: 1 needs input · 1 error · 3 running.");
     const staleCounts = walk(drawn(groupRows()[0])).find((element) => "aggregate" in element.props) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike };
     expect(walk(staleCounts.type(staleCounts.props)).map((element) => element.props.children).filter((child) => typeof child === "string" || typeof child === "number"))
-      .toEqual(["Last known", "▲", 1, "needs input", "✕", 1, "error"]);
+      .toEqual(compact ? ["Last known", 1, 1] : ["Last known", 1, "needs input", 1, "error"]);
   });
 
   it("shows a Role row's conflict cue and place, keeping the place beside the title on compact", () => {
@@ -1601,7 +1688,7 @@ describe("SessionsScreen toolbar events", () => {
       compactContext: "PR Review desk · Workspace",
       accessibilityContext: "Role AUD from the title. Desk PR Review desk, workspace Workspace",
     });
-    expect(shown("loose")).toMatchObject({ displayTitle: undefined, displayContext: "Other work · No linked epic · No workspace · /tmp/notes", compactContext: "Other work · No workspace · /tmp/notes" });
+    expect(shown("loose")).toMatchObject({ displayTitle: undefined, displayContext: "Other work · Epic unknown · No workspace · /tmp/notes", compactContext: "Other work · No workspace · /tmp/notes" });
     const row = walk(renderItem(listRows().find((candidate) => candidate.kind === "session" && candidate.entry.id === "conflict"))).find((element) => "displayContext" in element.props) as ElementLike & { type: (props: Record<string, unknown>) => ElementLike };
     // The harness's memo returns the component itself.
     const drawnRow = row.type(row.props);
@@ -1874,7 +1961,7 @@ describe("SessionsScreen mobile filter page", () => {
     expect(leaf.props.accessibilityLabel).toContain("Reported input tokens: 100");
     expect(leaf.props.accessibilityLabel).toContain("Reported output tokens: 20");
     expect(age.props.style).toMatchObject({ flexShrink: 0 });
-    expect(walk(leaf).some((element) => (element as { type?: unknown }).type === StateBadge && element.props.state === "needs_input")).toBe(true);
+    expect(walk(leaf).some((element) => (element as { type?: unknown }).type === SessionStateMarker && element.props.state === "needs_input")).toBe(true);
     // ST-02: the native ID is in the accessible label, never in the visible row.
     expect(textOf(leaf)).not.toContain("01234567");
     expect(leaf.props.accessibilityLabel).toContain("Native ID 0123456789abcdef");
@@ -1903,11 +1990,11 @@ describe("SessionsScreen mobile filter page", () => {
     const root = harness.current() as ElementLike;
     expect((root.props.children as unknown[]).some((child) => (child as ElementLike | null)?.props?.testID === "sessions-full-toolbar-slot")).toBe(true);
     expect(findByTestID(root, "sessions-list").props.ListHeaderComponent).toBeNull();
-    // Wide session rows keep the title and the right-hand state column.
+    // Wide session rows keep their status in a compact trailing marker.
     const leaf = renderSessionLeaf();
     expect(testIDs(leaf)).not.toContain("sessions-row-meta");
-    const column = walk(leaf).find((element) => (element.props.style as { width?: number } | undefined)?.width === 95);
-    expect(column && walk(column).some((element) => (element as { type?: unknown }).type === StateBadge)).toBe(true);
+    expect(walk(leaf).some((element) => element.type === SessionStateMarker)).toBe(true);
+    expect(walk(leaf).some((element) => (element.props.style as { width?: number } | undefined)?.width === 95)).toBe(false);
 
     compact = true; harness.flush();
     expect(fullToolbarShown()).toBe(false);
@@ -1998,9 +2085,9 @@ describe("SessionsScreen mobile filter page", () => {
       expect(children[0]!.props.style).toEqual({ flexGrow: 0, flexShrink: 1 });
       return walk(children[0]).filter((element) => "tall" in element.props).map((element) => element.props.label);
     };
-    expect(choices("scope")).toEqual(["All Paseo workspaces", "Durable desks", "PR Review desk", "Adam desk", "Other workspaces"]);
+    expect(choices("scope")).toEqual(["All Paseo workspaces", "Durable desks", "PR Review desk", "Adam desk", "Outside desks"]);
     // Durable desks lives only here; the four others repeat the desk shortcuts.
-    expect(items().map((item) => [item.props.label, item.props.selected])).toEqual([["All Paseo workspaces", true], ["Durable desks", false], ["PR Review desk", false], ["Adam desk", false], ["Other workspaces", false]]);
+    expect(items().map((item) => [item.props.label, item.props.selected])).toEqual([["All Paseo workspaces", true], ["Durable desks", false], ["PR Review desk", false], ["Adam desk", false], ["Outside desks", false]]);
     choose("Durable desks");
     expect([select("sessions-scope").value, select("sessions-scope").expanded, ariaExpanded("sessions-scope"), menus(), scopeFocus.mock.calls.length]).toEqual(["Durable desks", false, false, [], 1]);
     expect(readSessionView("host-a").shortcut).toBe("Desks");
@@ -2239,6 +2326,28 @@ function closeMobileFilters() {
 describe("plan-derived visible workstream choices on the current mobile/lifecycle screen", () => {
   beforeEach(() => { vi.useFakeTimers(); clearSessionViews(); harness.reset(); });
   afterEach(() => { harness.unmount(); vi.useRealTimers(); });
+  it.each([true, false])("renders zero-session registered choices from operator configuration (compact=%s)", async (compact) => {
+    const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
+    const { join } = await import("node:path"); const { tmpdir } = await import("node:os");
+    const { readWorkstreamRegistry } = await import("../server/read-sources");
+    const root = await mkdtemp(join(tmpdir(), "kontor-registry-options-"));
+    try {
+      await mkdir(join(root, "plugin-config/kontor"), { recursive: true });
+      await mkdir(join(root, "config/orchestration"), { recursive: true });
+      await writeFile(join(root, "plugin-config/kontor/registry.json"), JSON.stringify({ workspaceRoot: root }));
+      await writeFile(join(root, "config/orchestration/workstreams.json"), JSON.stringify({ schema_version: 1, workstreams: { access: { name: "Access" }, reporting: { name: "Reporting" } }, desks: { "pr-review-desk": { name: "Review" }, "adam-adhoc": { name: "Adam" } } }));
+      vi.stubEnv("PASEO_HOME", root); vi.stubEnv("KONTOR_PLUGIN_ASMA_WORKSPACE", "");
+      const registry = await readWorkstreamRegistry();
+      directory.state = { ...emptyDirectoryState(), entries: [], status: "ready", live: true, inventoryComplete: true };
+      patchSessionView("host-a", { query: "", advancedOpen: true, ...toolbarOpenPatch(true) });
+      renderScreen(undefined, compact, compact ? "ios" : "web", { workstreamSources: [], workstreamReads: {}, workstreamRegistry: registry });
+      if (compact) openMobileFilters();
+      for (const key of ["access", "reporting"]) expect(findByTestID(harness.current(), `workstream-option-${key}`).props.label).toContain("0 sessions");
+      const options = walk(harness.current()).filter(node => String(node.props.testID).startsWith("workstream-option-")).map(node => node.props.testID);
+      expect(options).toEqual(["workstream-option-access", "workstream-option-reporting"]);
+      expect(Object.keys(registry.desks)).toHaveLength(2);
+    } finally { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); }
+  });
   it.each([true, false])("renders graphless and registry-only choices, filters rows, and clears streams (compact=%s)", async (compact) => {
     const { source, read, registry } = await import("./plan-workstream-fixtures");
     const entries = [sessionEntry("linked", { labels: { epic: "ASMA-7575" } })];
@@ -2248,7 +2357,7 @@ describe("plan-derived visible workstream choices on the current mobile/lifecycl
     const mappings = planWorkstreamMappings([source], { plan: read }, entries, [], {}, {});
     renderScreen(undefined, compact, compact ? "ios" : "web", { workstreamSources: [source], workstreamReads: { plan: read }, workstreamRegistry: registry, planMappings: mappings });
     if (compact) openMobileFilters();
-    expect(findByTestID(harness.current(), "workstream-option-adopus-graphql").props.label).toContain("1 sessions");
+    expect(findByTestID(harness.current(), "workstream-option-adopus-graphql").props.label).toContain("1 session · 1 workspace · 1 plan · registered");
     expect(findByTestID(harness.current(), "workstream-option-access").props.label).toContain("0 sessions");
     if (compact) closeMobileFilters();
     expect(sessionRowIds()).toEqual([]);
@@ -2273,6 +2382,117 @@ describe("plan-derived visible workstream choices on the current mobile/lifecycl
       workstreamSources: [source], workstreamReads: { plan: read }, workstreamRegistry: registry,
     });
     if (compact) openMobileFilters();
-    expect(findByTestID(harness.current(), "workstream-option-adopus-graphql").props.label).toContain("0 sessions · 1 workspaces · 1 plans");
+    expect(findByTestID(harness.current(), "workstream-option-adopus-graphql").props.label).toContain("0 sessions · 1 workspace · 1 plan · registered");
+  });
+  it.each([true, false])("names desk-held, plan-only and unlinked choices, an unloaded registry once, and the outside-desks shortcut (compact=%s)", async (compact) => {
+    const { source, read } = await import("./plan-workstream-fixtures");
+    const plan = { ...source, id: "beta", path: "/docs/beta.md", epic: "ASMA-2" };
+    const planRead = { ...read, source: plan, planMetadata: { workstream: "beta", epic: "ASMA-2", diagnostics: [] } };
+    const desk = { projectKey: "prj_desk", projectName: "DESK • ADAM", workspaceId: "wks_desk" };
+    const entries = [sessionEntry("desk-own", desk), sessionEntry("desk-filed", { ...desk, labels: { workstream: "alpha" } }),
+      sessionEntry("esw-filed", { projectKey: "prj_esw", projectName: "ESW • ASMA-1", workspaceId: "wks_esw", labels: { workstream: "alpha" } }),
+      sessionEntry("esw-bare", { projectKey: "prj_plan", projectName: "ESW • ASMA-2", workspaceId: "wks_plan" })];
+    directory.state = { ...emptyDirectoryState(), entries, status: "ready", live: true, inventoryComplete: true };
+    patchSessionView("host-a", { query: "", advancedOpen: true, ...toolbarOpenPatch(true) });
+    renderScreen(undefined, compact, compact ? "ios" : "web", { workstreamSources: [plan], workstreamReads: { beta: planRead }, planMappings: {} });
+    if (compact) openMobileFilters();
+    const chip = (key: string) => findByTestID(harness.current(), `workstream-option-${key}`).props;
+    expect(chip("alpha").label).toBe("alpha · 2 sessions (1 shown under DESK • ADAM) · 2 workspaces · 0 plans");
+    expect(chip("adam").label).toBe("adam · desk category · 1 session · 1 workspace · 0 plans · desk shows 1 more session filed under other workstreams");
+    expect(chip("beta").label).toBe("beta · plan only · 0 sessions · 0 workspaces · 1 plan");
+    expect(chip("other work").label).toBe("Other work · no workstream link · 1 session · 1 workspace · 0 plans");
+    // The visible text is the checkbox's name; nothing waits behind hover.
+    expect(chip("alpha")).toMatchObject({ checkbox: true, active: true });
+    const footer = textOf(findByTestID(harness.current(), "sessions-workstream-availability"));
+    expect(footer).toContain("The workstream registry is not loaded, so no choice says whether it is registered.");
+    expect(footer).toContain("a choice names the desk where it counts sessions shown there");
+    (chip("alpha").onPress as () => void)(); harness.flush();
+    expect(readSessionView("host-a").streams).toEqual(["adam", "beta", "other work"]);
+    if (compact) closeMobileFilters();
+    if (!compact) {
+      const shortcut = findByTestID(harness.current(), "sessions-shortcut-3").props;
+      expect([shortcut.label, shortcut.count]).toEqual(["Outside desks", 2]);
+    }
+    // A partial read keeps the same association counts, and Filters says beside them that the read is partial.
+    directory.state = { ...emptyDirectoryState(), entries, status: "ready", live: false, inventoryComplete: false, lastUpdatedAt: 0 };
+    renderScreen(undefined, compact, compact ? "ios" : "web", { workstreamSources: [plan], workstreamReads: { beta: planRead }, planMappings: {} });
+    if (compact) openMobileFilters();
+    expect(chip("alpha").label).toBe("alpha · 2 sessions (1 shown under DESK • ADAM) · 2 workspaces · 0 plans");
+    expect(chip("other work").label).toBe("Other work · no workstream link · 1 session · 1 workspace · 0 plans");
+    expect(textOf(findByTestID(harness.current(), "sessions-options-count"))).toContain("partial inventory read");
+    if (compact) closeMobileFilters();
+    const { planFallbackNote } = await import("../client/plan-workstreams");
+    const note = planFallbackNote([plan], { beta: planRead }, null, "prj_plan");
+    expect(sessionDetailLines(entries[3]!, {}, note).find((line) => line.label === "Linking")!.value).toBe("No known ASMA epic, so no plan applies. Settings, under Presentation and associations, can map this session or link it to a plan. Project and session names never link it.");
+    // Epic sources that disagree leave no known epic, and the note agrees with the Epic line rather than claiming no label.
+    const { declaredScope } = await import("../client/session-organization");
+    const disputed = sessionEntry("disputed", { projectKey: "prj_plan", projectName: "ESW • ASMA-2", workspaceId: "wks_plan", labels: { epic: "ASMA-2", "jira.epic": "ASMA-3" } });
+    const disputedLines = sessionDetailLines(disputed, {}, planFallbackNote([plan], { beta: planRead }, declaredScope(disputed, {}).epic, "prj_plan"));
+    expect(disputedLines.find((line) => line.label === "Epic")!.value).toBe("Unknown, sources disagree: the epic label says ASMA-2; the jira.epic label says ASMA-3");
+    expect(disputedLines.find((line) => line.label === "Linking")!.value).toMatch(/^No known ASMA epic, so no plan applies\. Settings/);
+    expect(sessionDetailLines(entries[1]!, {}, note).some((line) => line.label === "Linking")).toBe(false);
+  });
+  // The reported "Epic unknown · ESW • ASMA-7869/8101/8108" rows beside a recognized "ASMA-8101 · ESW • ASMA-8101" row, as the
+  // 2026-10-21 reads shape them, with neutral native IDs. A session's own labels, or the Jira capture for its task, settle its
+  // epic; an unlabelled session or an unmapped empty workspace stays unknown; no project name settles an epic.
+  const esw = (key: string) => ({ projectKey: `prj_${key}`, projectName: `ESW • ASMA-${key}` });
+  const linking = "Settings, under Presentation and associations, can map this session or link it to a plan. Project and session names never link it.";
+  type Plan = typeof import("./plan-workstream-fixtures");
+  function renderEsw(compact: boolean, plan: Plan, entries: readonly ReturnType<typeof sessionEntry>[], emptyWorkspaces: readonly { id: string; name: string }[] = []) {
+    directory.state = { ...emptyDirectoryState(), entries, status: "ready", live: true, inventoryComplete: true };
+    patchSessionView("host-a", { query: "", grouping: "hierarchy", status: "all", ...toolbarOpenPatch(true) });
+    renderScreen(undefined, compact, compact ? "ios" : "web", { workstreamSources: [plan.source], workstreamReads: { plan: plan.read }, planMappings: {},
+      workspaces: [...entries.map((entry) => ({ id: entry.workspaceId!, name: entry.workspaceName!, projectKey: entry.projectKey, projectName: entry.projectName })),
+        ...emptyWorkspaces.map((workspace) => ({ ...workspace, ...esw("8101") }))] });
+    expandAll();
+  }
+  const epicRows = () => listRows().flatMap((row) => row.kind === "group" && row.group.kind === "epic" ? [[row.group.label, row.group.totalCount] as const] : []).sort();
+  /** A session's Epic and Linking lines from its own Details; Close and focus return stay with the R5 Details tests above. */
+  function placement(id: string) {
+    const row = listRows().find((candidate) => candidate.kind === "session" && candidate.entry.id === id);
+    (((findByTestID(harness.current(), "sessions-list").props.renderItem as (info: { item: unknown }) => ElementLike)({ item: row }).props.details as ElementLike).props.onPress as () => void)();
+    harness.flush();
+    const dialog = walk(harness.current()).find((element) => element.props.testID === "sessions-details")!;
+    const content = (findByTestID(dialog.props.children, "sessions-details-lines").props.children as unknown[]).flat() as (ElementLike & { readonly type: unknown })[];
+    const values = content.find((line) => line.type === SessionDetailSection && line.props.title === "Role and placement")!.props.values as { label: string; value: string }[];
+    return values.filter(({ label }) => label === "Epic" || label === "Linking").map(({ label, value }) => `${label}: ${value}`);
+  }
+
+  it.each([true, false])("keeps an empty-workspace unknown row apart from unknown sessions and the recognized epic, and says why in Details (compact=%s)", async (compact) => {
+    const entries = [sessionEntry("labelled-8101", { ...esw("8101"), workspaceId: "wks_8101", labels: { "jira.epic": "ASMA-8101" } }),
+      sessionEntry("bare-7869", { ...esw("7869"), workspaceId: "wks_7869" }), sessionEntry("bare-8108", { ...esw("8108"), workspaceId: "wks_8108" })];
+    renderEsw(compact, await import("./plan-workstream-fixtures"), entries,
+      [{ id: "wks_8101_empty_a", name: "ASMA-8107 • Merged producer provenance" }, { id: "wks_8101_empty_b", name: "TSW • ASMA-8107 • Lifecycle merged provenance" }]);
+    // ESW • ASMA-8101's unknown row holds only its two empty workspaces, so no session or Details sits behind it.
+    expect(epicRows()).toEqual([["ASMA-8101 · ESW • ASMA-8101", 1], ["Epic unknown · ESW • ASMA-7869", 1], ["Epic unknown · ESW • ASMA-8101", 0], ["Epic unknown · ESW • ASMA-8108", 1]]);
+    expect(listRows().flatMap((row) => row.kind === "session" && row.entry.projectKey === "prj_8101" ? [row.entry.id] : [])).toEqual(["labelled-8101"]);
+    if (compact) openMobileFilters();
+    expect(findByTestID(harness.current(), "workstream-option-other work").props.label).toBe("Other work · no workstream link · 3 sessions · 3 workspaces · 0 plans");
+    if (compact) closeMobileFilters();
+    // The screen passes each session's own known epic to the note, so a recognized epic is named, not reported unknown.
+    expect(placement("labelled-8101")).toEqual(["Epic: ASMA-8101, from the jira.epic label", `Linking: No configured plan declares ASMA-8101. ${linking}`]);
+    for (const id of ["bare-7869", "bare-8108"]) expect(placement(id)).toEqual(["Epic: Unknown, no epic or task label", `Linking: No known ASMA epic, so no plan applies. ${linking}`]);
+  });
+
+  it.each([true, false])("names the epic a task-only or dual-epic session settles on, and shows a task-only epic as unknown without a Jira capture (compact=%s)", async (compact) => {
+    const plan = await import("./plan-workstream-fixtures");
+    const { jiraCapture } = await import("../client/page-data");
+    const generated = "2026-10-20T16:03:00+00:00";
+    const issue = (key: string) => ({ key, status: "In Progress", cat: "indeterminate" as const });
+    const captured = jiraCapture([{ ...plan.read, source: { ...plan.source, id: "jira", kind: "jira" }, jiraHistory: { schema: "consumption/data@2", generated,
+      provenance: { path: "/configured/capture.json", sha256: "b".repeat(64), capturedEpics: 1 }, selection: ["ASMA-8108"], epics: [{ ...issue("ASMA-8108"), children: [issue("ASMA-8343")] }] } }]);
+    // Only the capture names task ASMA-8343's parent. jira.parent is not an epic label, so the jira.epic label alone settles the second.
+    const shapes = [sessionEntry("task-8343", { ...esw("8108"), workspaceId: "wks_8343", labels: { "asma.task": "ASMA-8343" } }),
+      sessionEntry("dual-8001", { ...esw("7869"), workspaceId: "wks_8001", labels: { "jira.epic": "ASMA-8001", "jira.parent": "ASMA-7869" } })];
+    const dual = ["Epic: ASMA-8001, from the jira.epic label", `Linking: No configured plan declares ASMA-8001. ${linking}`];
+    renderEsw(compact, plan, shapes.map((entry) => ({ ...entry, jira: captured })));
+    expect(epicRows()).toEqual([["ASMA-8001 · ESW • ASMA-7869", 1], ["ASMA-8108 · ESW • ASMA-8108", 1]]);
+    expect(placement("task-8343")).toEqual([`Epic: ASMA-8108, from the Jira capture of ${generated} for ASMA-8343`, `Linking: No configured plan declares ASMA-8108. ${linking}`]);
+    expect(placement("dual-8001")).toEqual(dual);
+    // With no Jira capture read, the same task-only session is unknown and says why; the labelled one is unchanged.
+    renderEsw(compact, plan, shapes.map((entry) => ({ ...entry, jira: jiraCapture([]) })));
+    expect(epicRows()).toEqual([["ASMA-8001 · ESW • ASMA-7869", 1], ["Epic unknown · ESW • ASMA-8108", 1]]);
+    expect(placement("task-8343")).toEqual(["Epic: Unknown, no Jira capture read for ASMA-8343", `Linking: No known ASMA epic, so no plan applies. ${linking}`]);
+    expect(placement("dual-8001")).toEqual(dual);
   });
 });

@@ -13,6 +13,7 @@ import { safeHttpsUrl } from "./plan-links";
 import { OverviewPage } from "./overview-page";
 import { PlanReader, type PlanView } from "./plan-reader";
 import { attentionLabel, earlierErrorLabel } from "./session-view";
+import { NO_LINKED_EPIC } from "./session-organization";
 
 type PageProps = {
   teamsSources?: readonly ReadSourceSummary[]; teamsJsonReads?: Readonly<Record<string, SourceRead>>;
@@ -29,7 +30,7 @@ type PageProps = {
 };
 const day = (value: string) => value.slice(0, 10);
 function sessionDetail(entry: DirectoryEntry): string {
-  return [entry.status, attentionLabel(entry), earlierErrorLabel(entry), entry.workspaceName ?? "Unassigned workspace", confirmedEpic(entry) ?? "No epic"].filter(Boolean).join(" · ");
+  return [entry.status, attentionLabel(entry), earlierErrorLabel(entry), entry.workspaceName ?? "Unassigned workspace", confirmedEpic(entry) ?? NO_LINKED_EPIC].filter(Boolean).join(" · ");
 }
 /** Compact native session rows; opening one uses Paseo's own session view. `label` adds exact values to the row's label. */
 function SessionRows({ entries, colors, onOpen, detail = sessionDetail, label }: { entries: readonly DirectoryEntry[]; colors: Colors; onOpen: (entry: DirectoryEntry) => void; detail?: (entry: DirectoryEntry) => string; label?: (entry: DirectoryEntry) => string }) {
@@ -134,7 +135,7 @@ function RecordLink({ url, label, title, colors, compact = false, onOpen }: { ur
   const safe = safeHttpsUrl(url);
   if (!safe) return <Copy colors={colors} muted small>Source link unavailable: a valid HTTPS URL without credentials is required.</Copy>;
   return <View style={{ alignItems: "flex-end", gap: 2, maxWidth: 160 }}>
-    <Action small={!compact} label={label === "Open evidence" ? "Evidence" : "Source"} accessibilityLabel={`${label}: ${title}`} colors={colors} disabled={!onOpen} onPress={() => onOpen?.(safe)} />
+    <Action small={!compact} label={label === "Open evidence" ? "Evidence" : "Source"} icon="ExternalLink" iconOnly accessibilityLabel={`${label}: ${title}`} colors={colors} disabled={!onOpen} onPress={() => onOpen?.(safe)} />
     {!onOpen ? <Copy colors={colors} muted small>Source link opening is unavailable on this host.</Copy> : null}
   </View>;
 }
