@@ -2821,6 +2821,20 @@ fn atomic_local_gate_and_done_survive_restart_and_replay_after_reopen() {
 /// notices when it does not.
 fn apply_v115_to_legacy_fixture(fixture: &Fixture) {
     let connection = Connection::open(&fixture.path).expect("migration connection");
+    // This fixture starts at today's schema; its v114 stamp must not retain the
+    // later additive attention table or erase attention evidence.
+    let attention_rows: i64 = connection
+        .query_row("SELECT count(*) FROM execution_hold_attention", [], |row| {
+            row.get(0)
+        })
+        .expect("the attention table reads");
+    assert_eq!(
+        attention_rows, 0,
+        "a historical rewind must not erase hold attention evidence"
+    );
+    connection
+        .execute_batch("DROP TABLE execution_hold_attention;")
+        .expect("the empty attention table is removed");
     connection
         .execute_batch(
             // Every artefact introduced after v114 has to go, or reopening
@@ -3003,7 +3017,15 @@ fn v115_confirms_exact_local_mutations_with_typed_provenance_and_preserves_histo
             .expect("dispatch scan")
             .is_empty()
     );
-    SqliteStore::open(&fixture.path).expect("repaired store restarts without repeating migration");
+    let reopened = SqliteStore::open(&fixture.path)
+        .expect("repaired store restarts without repeating migration");
+    assert_eq!(
+        reopened
+            .schema_version()
+            .expect("the reopened schema version reads"),
+        kontor_store::SCHEMA_VERSION,
+        "the repaired store must reach the current generation"
+    );
 }
 
 #[test]
