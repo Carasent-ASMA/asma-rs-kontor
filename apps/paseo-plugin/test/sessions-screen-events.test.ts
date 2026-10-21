@@ -354,7 +354,7 @@ function scrollEvent(
   } as NativeSyntheticEvent<NativeScrollEvent>;
 }
 
-function renderScreen(organization?: Parameters<typeof SessionsScreen>[0]["organization"], compact = false, platform: "ios" | "web" = compact ? "ios" : "web", native?: Pick<Parameters<typeof SessionsScreen>[0], "projects" | "workspaces" | "projectId" | "epicKey">) {
+function renderScreen(organization?: Parameters<typeof SessionsScreen>[0]["organization"], compact = false, platform: "ios" | "web" = compact ? "ios" : "web", native?: Pick<Parameters<typeof SessionsScreen>[0], "projects" | "workspaces" | "projectId" | "epicKey" | "workstreamSources" | "workstreamReads" | "workstreamRegistry" | "planMappings">) {
   const navigation = {
     openAgent: () => undefined,
     openBrowser: () => undefined,
@@ -2204,3 +2204,45 @@ function closeMobileFilters() {
   const page = walk(harness.current()).find((node) => node.type === MobileFiltersPage)!;
   (page.props.onBack as () => void)(); harness.flush();
 }
+
+
+describe("plan-derived visible workstream choices on the current mobile/lifecycle screen", () => {
+  beforeEach(() => { vi.useFakeTimers(); clearSessionViews(); harness.reset(); });
+  afterEach(() => { harness.unmount(); vi.useRealTimers(); });
+  it.each([true, false])("renders graphless and registry-only choices, filters rows, and clears streams (compact=%s)", async (compact) => {
+    const { source, read, registry } = await import("./plan-workstream-fixtures");
+    const entries = [sessionEntry("linked", { labels: { epic: "ASMA-7575" } })];
+    directory.state = { ...emptyDirectoryState(), entries, status: "ready", live: true, inventoryComplete: true };
+    patchSessionView("host-a", { query: "", advancedOpen: true, includeArchived: false, streams: [], ...toolbarOpenPatch(true) });
+    const { planWorkstreamMappings } = await import("../client/plan-workstreams");
+    const mappings = planWorkstreamMappings([source], { plan: read }, entries, [], {}, {});
+    renderScreen(undefined, compact, compact ? "ios" : "web", { workstreamSources: [source], workstreamReads: { plan: read }, workstreamRegistry: registry, planMappings: mappings });
+    if (compact) openMobileFilters();
+    expect(findByTestID(harness.current(), "workstream-option-adopus-graphql").props.label).toContain("1 sessions");
+    expect(findByTestID(harness.current(), "workstream-option-access").props.label).toContain("0 sessions");
+    if (compact) closeMobileFilters();
+    expect(sessionRowIds()).toEqual([]);
+    if (compact) openMobileFilters();
+    (findByTestID(harness.current(), "workstream-option-adopus-graphql").props.onPress as () => void)(); harness.flush();
+    if (compact) closeMobileFilters();
+    expandAll(); expect(sessionRowIds()).toEqual(["linked"]);
+    if (compact) openMobileFilters();
+    const clear = walk(harness.current()).find((node) => node.type === ClearFiltersButton)!;
+    (clear.props.onPress as () => void)(); harness.flush();
+    expect(readSessionView("host-a").streams).toBeNull();
+  });
+  it.each([true, false])("counts only native workspaces in the current project and epic (compact=%s)", async (compact) => {
+    const { source, read, registry } = await import("./plan-workstream-fixtures");
+    directory.state = { ...emptyDirectoryState(), entries: [], status: "ready", live: true, inventoryComplete: true };
+    patchSessionView("host-a", { query: "", advancedOpen: true, ...toolbarOpenPatch(true) });
+    renderScreen(undefined, compact, compact ? "ios" : "web", {
+      projectId: "included-project", epicKey: "ASMA-7575",
+      projects: [{ id: "included-project", name: "Existing project" }, { id: "outside-project", name: "Other project" }],
+      workspaces: [{ id: "empty", name: "Existing empty workspace", projectKey: "included-project" }, { id: "outside", name: "Outside workspace", projectKey: "outside-project" }],
+      planMappings: { "workspace:empty": { epic: "ASMA-7575", workstream: "adopus-graphql" }, "workspace:outside": { epic: "ASMA-7575", workstream: "adopus-graphql" } },
+      workstreamSources: [source], workstreamReads: { plan: read }, workstreamRegistry: registry,
+    });
+    if (compact) openMobileFilters();
+    expect(findByTestID(harness.current(), "workstream-option-adopus-graphql").props.label).toContain("0 sessions · 1 workspaces · 1 plans");
+  });
+});

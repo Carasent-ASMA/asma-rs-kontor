@@ -48,7 +48,7 @@ export function useReadSources(hostId: string, hostStatus: PluginHostSummary["st
   const error = !online ? `Paseo host ${hostState}. Configured sources unavailable; retained reads are stale.`
     : query.isError ? `Configured source service unavailable: ${query.error.message}. Retained reads are stale.`
       : query.data?.diagnostics.join(" ") || null;
-  return { teamsSnapshots: query.data?.teamsSnapshots ?? {}, teamsErrors: query.data?.teamsErrors ?? {}, teamsBindingDiagnostics: query.data?.teamsBindingDiagnostics ?? [], sources: query.data?.sources ?? [], reads: query.data?.reads ?? {}, error,
+  return { registry: query.data?.registry, teamsSnapshots: query.data?.teamsSnapshots ?? {}, teamsErrors: query.data?.teamsErrors ?? {}, teamsBindingDiagnostics: query.data?.teamsBindingDiagnostics ?? [], sources: query.data?.sources ?? [], reads: query.data?.reads ?? {}, error,
     loading: query.isFetching, available: online && query.data !== undefined && !query.isError,
     refresh: async () => { await query.refetch(); } };
 }
