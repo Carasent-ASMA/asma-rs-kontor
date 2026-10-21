@@ -209,8 +209,8 @@ Operator detail is in [`docs/CONFIGURATION.md`](../../docs/CONFIGURATION.md).
   file, its schema, the three rules, readback and the removal order.
 - [`config/examples/orchestration/fleet.yml`](../../config/examples/orchestration/fleet.yml) — the shipped
   neutral example, not a live state-root file; the current v1 reader refuses it.
-- [Plan: Kontor Live Fleet Configuration Implementation Plan](https://github.com/Carasent-ASMA/asma-modules/blob/master/_docs/ai-orchestration/plans/2026-09-24-07-30-plan-kontor-live-fleet-configuration.md) —
-  the binding implementation plan and its decisions DEC-001…DEC-017.
+- Plan: Kontor Live Fleet Configuration Implementation Plan (historical
+  planning record) — the binding implementation decisions DEC-001…DEC-017.
 - [`docs/QUOTA-FALLBACK-PLAN.md`](../../docs/QUOTA-FALLBACK-PLAN.md) — how quota evidence
   and takeover interact with a declared chain.
 - [PR #267](https://github.com/Carasent-ASMA/asma-rs-kontor/pull/267) — the
