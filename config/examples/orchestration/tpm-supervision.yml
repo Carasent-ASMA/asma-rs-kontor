@@ -1,0 +1,61 @@
+# Neutral autonomous TPM supervision profile.
+# Replace cadence, budgets and policies with the project's approved values.
+schema_version: 1
+profile_id: autonomous_tpm_v1
+
+cadence:
+  heartbeat_cron: '*/15 * * * *'
+  timezone: UTC
+  liveness_cron: '*/30 * * * *'
+  stale_after_minutes: 45
+  lifetime_hours: 24
+  renew_before_hours: 4
+
+turn:
+  context_max_tokens: 3000
+  checkpoint_max_tokens: 800
+  recent_event_limit: 5
+  actionable_item_limit: 3
+  budget_minutes: 8
+  checkpoint_reserve_minutes: 2
+
+continuity:
+  same_tpm_native: true
+  context_refresh: best_effort
+  transcript_authoritative: false
+  checkpoint_required_before_turn_end: true
+  checkpoint_backend:
+    paseo-direct: owner_only_file
+    kontor-governed: supported_kontor_checkpoint
+  optional_memory: summary_reference_only
+
+wake:
+  primary: completion_notification
+  safety: native_same_agent_heartbeat
+  overlap: do_not_interrupt_active_turn
+  unchanged: checkpoint_no_action_then_end
+  zero_inference_when_unchanged: requires_deterministic_prefilter
+
+recovery:
+  preferred: resume_same_occupant
+  replacement: selected_takeover_procedure_and_generation_authority
+  retry_limit_per_unchanged_blocker: 0
+  blocker_requires: [owner, evidence, next_action, resumption_trigger]
+
+lifecycle:
+  complete: disable_owned_heartbeat_and_liveness_registration
+  paused: disable_delivery_wakes_until_authorized_resume
+  blocked: retain_dependency_notifications_and_liveness_only
+  ownership_transfer: disable_old_writer_before_new_writer_effects
+
+surfaces:
+  paseo-direct:
+    authority: plan_jira_and_native_readback
+    scheduling: paseo_native
+    kontor_required: false
+    guarantees: procedural
+  kontor-governed:
+    authority: pinned_kontor_workflow
+    scheduling: existing_kontor_scheduler
+    guarantees: supported_deterministic_controls
+    duplicate_admission_writer: forbidden

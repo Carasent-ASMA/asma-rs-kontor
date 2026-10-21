@@ -52,20 +52,21 @@ Kontor YAML; a harness-owned file is a generated projection instead.
   orchestration/route-qualifications.yml  hash-bound route qualification records
   orchestration/teams/core-team.yml one pinned Core Team roster
   orchestration/*.yml               workstreams and other project policy
+  orchestration/tpm-supervision.yml  autonomous TPM cadence profile
   tracker/*.yml                     tracker connection, field/workflow specs and credential references
   packs/*.yml                       team and profile overlay, committee presets and role prompts
   forge/github-app.example.yml      committed GitHub App placeholder
   quota-signals.yml                 optional vendor refusal wording
-  paseo-supervision.yml             supervision policy; WP-02 keeps it at the root (deviation below)
+  paseo-supervision.yml             sample for <state-root>/supervision.yml, not a project key
   host.example.yml                  committed host schema example
   host.yml                          this machine only; git-ignored
 ```
 
-> **Recorded layout deviation:** plan §1.1 places supervision under
-> `orchestration/*.yml`. WP-02 keeps `paseo-supervision.yml` at the folder root
-> because the current state-root reader and `README.md` reference that path;
-> WP-08 moves it under `orchestration/` with the rest of the successor
-> migration. `fleet.yml` follows §1.1 now.
+`project.supervision` follows plan §1.1 and names
+`orchestration/tpm-supervision.yml`, the autonomous TPM cadence profile. The
+Paseo watchdog policy is a different file: the daemon reads
+`<state-root>/supervision.yml`; `paseo-supervision.yml` here is only the sample
+copied to that state-root path. It is not a key in `project:`.
 
 A path is not one class. The schema distinguishes these, and each class has
 its own base and validation:
@@ -103,7 +104,7 @@ effect.
 | --- | --- | --- | --- |
 | Bootstrap | folder selection, `host.yml`, state root, endpoints and ports, credential references | before daemon start | restart required for new placements; invalid input refuses start; active runs keep their frozen `resolved_route` snapshot |
 | Activated policy | fleet policy, orchestration bundle, Core Team roster, route qualification records, tracker specs, team/profile packs, committee presets | preview → publish → activate, bound by content hash | no live effect until activated; running work keeps its pins |
-| Startup-read | `quota-signals.yml`, supervision policy | daemon start | validated then; invalid input refuses start |
+| Startup-read | `quota-signals.yml`, `<state-root>/supervision.yml` (Paseo watchdog) | daemon start | validated then; invalid input refuses start |
 | Generated projection | a native-format file rendered from YAML | consumer read | never hand-edited; regenerate from its YAML source |
 | Test data | fixtures under `tests/fixtures/` | tests only | not deployment configuration |
 
@@ -242,11 +243,12 @@ manifest reader changes before KR-14.
 
 For ASMA, the selected folder is `asma-modules/config/`. Its successor
 references are `fleet: orchestration/fleet.yml`,
-`supervision: orchestration/tpm-supervision.yml`,
+`supervision: orchestration/tpm-supervision.yml` (the TPM cadence profile),
 `tracker.spec: tracker/jira.yml` and `team_pack: packs/team.yml`; its project
 resources use `resource_roots` `modules`/`kontor` against the two repositories.
-The fixtures above are labelled for that migration and are test data, not
-deployment files.
+The Paseo watchdog policy is not a project key: it is
+`<state-root>/supervision.yml`. The fixtures above are labelled for that
+migration and are test data, not deployment files.
 
 The vendor-independence rule uses the canonical `models.<name>.vendor`, never
 the working provider or harness. A `glm-acp-agent` route that serves a canonical
@@ -316,7 +318,7 @@ and ASMA's concrete values are the test case in
 | `cli` | mapping | `command` and `verbs` for text and checks that must not hard-code one tool; `host.project_cli.<command>` binds the executable. |
 | `team_pack` | path | Folder-relative team/profile overlay. |
 | `fleet` | path | Folder-relative fleet policy; must agree with the bundle selector. |
-| `supervision` | path | Folder-relative supervision policy. |
+| `supervision` | path | Folder-relative `autonomous_tpm_v1` cadence profile. Not the Paseo watchdog policy, which is `<state-root>/supervision.yml`. |
 | `merge_authority` | mapping | `role`, `policy`. |
 | `documentation_roots` | list | Project documentation roots. |
 | `gap_ledger` | path | Project gap ledger. |
@@ -324,10 +326,17 @@ and ASMA's concrete values are the test case in
 | `glossary` | path | Project glossary. |
 | `worktree_layout` | string | Checkout convention, with `<key-slug>` and `<module>` placeholders. |
 | `check_runs` | list | Required check-run names. |
-| `capacity` | mapping | `max_delivery_seats`, `max_parallel_tasks`. |
+| `capacity` | mapping | `max_delivery_seats`, `max_parallel_tasks`, `start_admission`; see the capacity rules below. |
 | `time_zone` | IANA zone | Project default. |
 | `holiday_countries` | list | ISO country codes for the holiday import. |
 | `currency` | string | ISO 4217 code for budgets and costs. |
+
+`max_parallel_tasks` and `start_admission` are the Paseo-direct placement
+capacity ceiling and initial admission: ASMA 7 and 4. `start_admission` must be
+less than or equal to `max_parallel_tasks`. `max_delivery_seats` is an
+owner-set project value scoped per team run (ASMA 2); the placement rule does
+not supply it, it is not a global team-run ceiling, and kontord has no such
+field.
 
 ASMA's values, exercised by the schema test:
 
@@ -341,9 +350,10 @@ ASMA's values, exercised by the schema test:
 | `forge.repositories` | `Carasent-ASMA/asma-modules`, `Carasent-ASMA/asma-rs-kontor` |
 | `forge.base_branch` | `master` |
 | `cli.command` | `asma` |
-| `documentation_roots` | `_docs`, `docs` |
+| `project.supervision` | `orchestration/tpm-supervision.yml` (`autonomous_tpm_v1` TPM cadence profile; the Paseo watchdog is `<state-root>/supervision.yml`) |
+| `documentation_roots` | `modules/_docs`, `kontor/docs` |
 | `check_runs` | `asma/publication-branch-title`, `asma/publication-identity` |
-| `capacity` | `max_delivery_seats: 2`, `max_parallel_tasks: 7` |
+| `capacity` | `max_delivery_seats: 2` (owner-set, per team run), `max_parallel_tasks: 7` (Paseo-direct placement ceiling), `start_admission: 4` (placement start) |
 | `time_zone`, `holiday_countries`, `currency` | `Europe/Oslo`, `[NO]`, `NOK` |
 
 ## Configuration authoring inventory (WP-02 refresh)
@@ -767,7 +777,9 @@ child work.
 
 Copy [`config/examples/paseo-supervision.yml`](../config/examples/paseo-supervision.yml)
 to `<state-root>/supervision.yml` only when this Realm should opt into the
-resident succession engine. Enablement is deliberately explicit:
+resident succession engine. This is the Paseo watchdog/recovery policy, not
+`project.supervision`; that project key names the autonomous TPM cadence
+profile. Enablement is deliberately explicit:
 
 - with no file, no supervisor starts;
 - schema v1 remains readable for legacy classification and starts no automatic

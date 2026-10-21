@@ -59,6 +59,7 @@ project:
   capacity:
     max_delivery_seats: 2
     max_parallel_tasks: 7
+    start_admission: 4
   time_zone: Europe/Oslo
   holiday_countries: [NO]
   currency: NOK

@@ -30,27 +30,32 @@ may sit anywhere on the machine and have any name.
     fleet.yml                  fleet policy, schema_version 2
     route-qualifications.yml   hash-bound route qualification records
     teams/core-team.yml        pinned Core Team roster
+    tpm-supervision.yml        autonomous TPM cadence profile
   packs/team.yml               project team/profile overlay
   tracker/jira.yml             tracker connection and credential reference
   forge/github-app.example.yml committed GitHub App placeholder
   host.example.yml             committed host schema example
   host.yml                     this machine only; git-ignored, never committed
   quota-signals.yml            optional vendor refusal wording
-  paseo-supervision.yml        optional supervision policy; WP-02 keeps it at the root
+  paseo-supervision.yml        sample for <state-root>/supervision.yml, not a project key
   .gitignore                   ignores host.yml
 ```
 
-Plan §1.1 places supervision under `orchestration/*.yml`. WP-02 keeps
-`paseo-supervision.yml` at the folder root because the current state-root
-reader and `README.md` reference that path; WP-08 moves it under
-`orchestration/` with the rest of the successor migration.
+`project.supervision` follows plan §1.1 and names
+`orchestration/tpm-supervision.yml`, the `autonomous_tpm_v1` cadence profile.
+The Paseo watchdog policy is a different file: the daemon reads
+`<state-root>/supervision.yml`; `paseo-supervision.yml` here is only the sample
+copied to that state-root path. It is not a key in `project:`. The neutral TPM
+file carries the full consumer shape; the schema test requires every top-level
+and nested key so a new project cannot copy an incomplete profile.
 
 Paths are classified, not resolved uniformly:
 
 - **Config-file references** (`fleet`, `core_team`, `project.team_pack`,
   `project.fleet`, `project.supervision`, `project.tracker.spec`) resolve from
   the selected folder root. They are relative, must stay inside the folder, and
-  must exist.
+  must exist. `project.supervision` names the TPM cadence profile only; the
+  Paseo watchdog policy is `<state-root>/supervision.yml`.
 - **Project resource paths** (`documentation_roots`, `gap_ledger`, `glossary`,
   `decision_records_root`) start with a `project.resource_roots` entry. Each
   root maps to a repository in `project.forge.repositories`; the rest resolves
@@ -67,7 +72,7 @@ Paths are classified, not resolved uniformly:
 | --- | --- | --- | --- |
 | Bootstrap | folder selection, `host.yml`, state root, endpoints, ports, credential references | before the daemon starts | requires a restart for new placements; invalid input refuses start; active runs keep their resolved-route snapshot |
 | Activated policy | fleet policy, orchestration bundle, Core Team roster, tracker specs, team/profile packs, committee presets | through preview → publish → activate, bound by content hash | no live effect until activated; active runs keep their pins |
-| Startup-read | `quota-signals.yml`, supervision policy | at daemon start | validated then; invalid input refuses start |
+| Startup-read | `quota-signals.yml`, `<state-root>/supervision.yml` (Paseo watchdog) | at daemon start | validated then; invalid input refuses start |
 | Generated projection | a native-format file rendered from YAML | whenever its consumer reads it | never hand-edited; regenerate from its YAML source |
 | Test data | fixtures under `tests/fixtures/` | tests only | not deployment configuration |
 
