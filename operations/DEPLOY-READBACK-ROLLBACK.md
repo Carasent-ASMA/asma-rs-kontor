@@ -143,8 +143,9 @@ python3 operations/scripts/kontor-ops.py verify-build \
 - `replace`'s pre-upgrade snapshot is the rollback source. Under a no-backups
   order, skip the optional second snapshot; the mandatory one is transient and
   is deleted after a green readback. Remove the snapshot payload and the
-  binaries in `deploy-backup/`, but keep `deployment.json`, the recorded hashes
-  and the sidecars: section 8's evidence set needs them. That removes the
+  binaries in `deploy-backup/`, but keep `deployment.json` and the recorded hashes
+  there (the sidecars live beside the installed binaries): section 8's evidence
+  set needs them. That removes the
   binary/DB rollback source by design — record it in the receipt and do not
   recreate it later.
 - If `attention.yml` is present, set the live attention `.env` to mode 600 and
