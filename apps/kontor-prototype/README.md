@@ -43,6 +43,8 @@ reloads both frames from their fixtures.
 
 | id | What it shows |
 | --- | --- |
+| `legend-reference` | Filters & view opens on the combined fictional inventory. Open Legend to check tree icons, workspace code pairs and grouping; resize and return from another view to check disclosure state. |
+| `legend-filtered` | The same reference with the Model report search active. Opening and closing Legend must preserve search, filters and results. |
 | `baseline` | The default tree with one epic open. |
 | `filtered-errors` | The Error filter shows flat results, each with its placement. One idle session carries an earlier error cue. |
 | `needs-input` | The Needs input filter: a task QA session and a desk reviewer. |
