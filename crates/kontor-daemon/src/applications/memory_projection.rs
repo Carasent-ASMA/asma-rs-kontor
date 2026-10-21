@@ -45,7 +45,7 @@ impl Services {
         };
         if let Some(original) = state
             .with_store(|store| store.replay_projection_rebuild(project, key, &input))
-            .map_err(|error| kontor_api::memory::map(state, error))?
+            .map_err(|error| kontor_api::memory::map(&state, error))?
         {
             return Ok(original);
         }
@@ -57,7 +57,7 @@ impl Services {
         };
         let preview = match state
             .with_store(|store| store.stage_projection_rebuild(project, key, &input))
-            .map_err(|error| kontor_api::memory::map(state, error))?
+            .map_err(|error| kontor_api::memory::map(&state, error))?
         {
             ProjectionRebuildStage::Replay(original) => return Ok(original),
             ProjectionRebuildStage::Staged(preview) => preview,
@@ -72,6 +72,6 @@ impl Services {
             .with_store(|store| {
                 store.activate_projection_rebuild(project, key, &input, &qualification)
             })
-            .map_err(|error| kontor_api::memory::map(state, error))
+            .map_err(|error| kontor_api::memory::map(&state, error))
     }
 }

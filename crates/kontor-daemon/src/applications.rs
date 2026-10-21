@@ -39,7 +39,7 @@ pub use planning_pair::PlanningPairReceiptHold;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use async_trait::async_trait;
 use kontor_accounts::{AccountAvailability, AdaptivePosition, CapacityReading, ProbeOutcome};
@@ -1043,12 +1043,18 @@ const SEAT_ATTACH_SECONDS: i64 = 600;
 ///
 /// The state arrives *after* construction because the two are mutually
 /// dependent: `ApiState` needs the service to serve the routes, and the service
-/// needs the store the state is holding. A [`OnceLock`] makes the ordering
-/// explicit and makes a second attach impossible, which is better than a
-/// nullable field that every method would have to re-justify.
+/// needs the store the state is holding. The slot makes the ordering explicit
+/// and makes a second attach impossible, which is better than a nullable field
+/// that every method would have to re-justify.
+///
+/// It is a `Mutex<Option<_>>` rather than a [`OnceLock`] because shutdown must
+/// be able to take the state back out. `ApiState` holds this service, and this
+/// service holds the state: without an explicit detach, that strong cycle keeps
+/// the SQLite connection — and its WAL — alive after the daemon has released
+/// the state-root lock, so a stopped Realm could not be restored.
 pub struct Services {
     realm_id: kontor_core::id::RealmId,
-    state: OnceLock<ApiState>,
+    state: Mutex<Option<ApiState>>,
     pack: ProfilePackSpec,
     /// The Operational topology vocabulary and delivery binding this build
     /// ships.
@@ -1141,7 +1147,14 @@ impl std::fmt::Debug for Services {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("Services")
-            .field("attached", &self.state.get().is_some())
+            .field(
+                "attached",
+                &self
+                    .state
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .is_some(),
+            )
             .field("pack", &self.pack.pack_id.as_str())
             .field("capacity", &self.capacity)
             .finish_non_exhaustive()
@@ -1179,7 +1192,7 @@ impl Services {
         Ok(Arc::new(Self {
             realm_id,
             github,
-            state: OnceLock::new(),
+            state: Mutex::new(None),
             pack: kontor_profiles::seeds::bundled_pack()?,
             domain: kontor_profiles::bundled_operational_domain()?,
             connectors: OnceLock::new(),
@@ -1204,7 +1217,26 @@ impl Services {
 
     /// Hand the services the process state they run against. Once only.
     pub fn attach(&self, state: ApiState) {
-        let _ = self.state.set(state);
+        let mut slot = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if slot.is_none() {
+            *slot = Some(state);
+        }
+    }
+
+    /// Take the attached state back out, breaking the service/state cycle.
+    ///
+    /// Shutdown calls this before the daemon drops: the state holds an
+    /// [`Applications`](kontor_api::applications::Applications) reference to
+    /// this service, so leaving it attached would keep the store's connection —
+    /// and the committed frames in its WAL — open after the state-root lock was
+    /// released.
+    pub fn detach(&self) {
+        let attached = self
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        drop(attached);
     }
 
     /// Compose a transport once, before serving requests. Fixture callers supply
@@ -1262,7 +1294,7 @@ impl Services {
         if let Some(run) = run
             && let Some(frozen) = state
                 .with_store(|store| store.recalled_memory(project_id, &run.to_string()))
-                .map_err(|error| kontor_api::memory::map(state, error))?
+                .map_err(|error| kontor_api::memory::map(&state, error))?
         {
             return Ok(frozen);
         }
@@ -1275,14 +1307,14 @@ impl Services {
                     }
                     None => store.preview_recall(project_id, &intent, semantic),
                 })
-                .map_err(|error| kontor_api::memory::map(state, error))
+                .map_err(|error| kontor_api::memory::map(&state, error))
         };
         let Some(client) = self.memory_cognee.get() else {
             return freeze(&SemanticRecall::Degraded(DegradedReason::Absent));
         };
         let projection = state
             .with_store(|store| store.projection_readback(project_id))
-            .map_err(|error| kontor_api::memory::map(state, error))?;
+            .map_err(|error| kontor_api::memory::map(&state, error))?;
         let Some(snapshot) = projection.active else {
             return freeze(&SemanticRecall::Degraded(DegradedReason::Absent));
         };
@@ -1315,7 +1347,7 @@ impl Services {
         for run in &root_runs {
             if let Some(binding) = state
                 .with_store(|store| store.memory_binding(project_id, &run.agent_run_id.to_string()))
-                .map_err(|error| kontor_api::memory::map(state, error))?
+                .map_err(|error| kontor_api::memory::map(&state, error))?
             {
                 bindings.push((binding.bound_at, run.agent_run_id));
             }
@@ -1460,14 +1492,18 @@ impl Services {
     }
 
     /// The attached state, or the refusal a request is owed before one exists.
-    fn state(&self) -> Result<&ApiState, ApiError> {
-        self.state.get().ok_or_else(|| {
-            ApiError::new(
-                self.realm_id,
-                ApiErrorCode::Unavailable,
-                "the realm's application services are not composed yet",
-            )
-        })
+    fn state(&self) -> Result<ApiState, ApiError> {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| {
+                ApiError::new(
+                    self.realm_id,
+                    ApiErrorCode::Unavailable,
+                    "the realm's application services are not composed yet",
+                )
+            })
     }
 
     fn native_activity(&self) -> Result<tokio::sync::RwLockReadGuard<'_, ()>, ApiError> {
@@ -6752,7 +6788,7 @@ impl Services {
         // operator cannot explain, so the two land together or not at all.
         let decision = match (observation.refusal.as_ref(), run.account_profile_id) {
             (Some(refusal), Some(account_profile_id)) => crate::quota_observation::decide(
-                state,
+                &state,
                 project_id,
                 account_profile_id,
                 &self.quota_signals,
@@ -21043,7 +21079,7 @@ impl Services {
         }
         for _ in 0..64 {
             let page = self
-                .proof_scan_page(state, adapter.as_ref(), &issued, cursor, page_size)
+                .proof_scan_page(&state, adapter.as_ref(), &issued, cursor, page_size)
                 .await
                 .map_err(|error| {
                     // The plane is not necessarily down: capabilities report it
@@ -21141,7 +21177,7 @@ impl Services {
         let mut settled_tail = false;
         for _ in 0..Self::TRAILING_PAGE_BUDGET {
             let page = self
-                .proof_scan_page(state, adapter.as_ref(), &issued, after, page_size)
+                .proof_scan_page(&state, adapter.as_ref(), &issued, after, page_size)
                 .await
                 .map_err(|error| {
                     tracing::warn!(
@@ -21639,7 +21675,7 @@ impl ApplicationOperations for Services {
                         key.expect("validated key"),
                     )
                 })
-                .map_err(|error| kontor_api::memory::map(state, error))?
+                .map_err(|error| kontor_api::memory::map(&state, error))?
             {
                 return Ok(frozen);
             }
@@ -21661,7 +21697,7 @@ impl ApplicationOperations for Services {
                     &SemanticRecall::Degraded(DegradedReason::Absent),
                 ),
             })
-            .map_err(|error| kontor_api::memory::map(state, error))
+            .map_err(|error| kontor_api::memory::map(&state, error))
     }
     async fn rebuild_memory_projection(
         &self,
@@ -22016,7 +22052,7 @@ impl ApplicationOperations for Services {
                         "the replayed receipt names a project this realm no longer has",
                     )
                 })?;
-            let (memory, backlog) = self.subject_authority_dtos(state, project.id)?;
+            let (memory, backlog) = self.subject_authority_dtos(&state, project.id)?;
             return Ok(ProjectDto {
                 realm_id: state.realm_id(),
                 project_id: project.id,
@@ -22057,7 +22093,7 @@ impl ApplicationOperations for Services {
             project.revision,
             &intent,
         )?;
-        let (memory, backlog) = self.subject_authority_dtos(state, project.id)?;
+        let (memory, backlog) = self.subject_authority_dtos(&state, project.id)?;
         Ok(ProjectDto {
             realm_id: state.realm_id(),
             project_id: project.id,
@@ -22710,7 +22746,7 @@ impl ApplicationOperations for Services {
             ));
         }
         let observation = crate::usage::record_exact(
-            state,
+            &state,
             &profile,
             &request.provider,
             &reading,
