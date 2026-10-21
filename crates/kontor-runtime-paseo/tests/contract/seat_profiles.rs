@@ -57,7 +57,7 @@ fn rung(provider: &str, model: &str) -> ModelRung {
 }
 
 /// Delivery seats on every provider the adapter admits: Claude reads its
-/// worktree file, Codex and OpenCode receive the creation frame.
+/// worktree file, Codex, Cursor and OpenCode receive the creation frame.
 #[test]
 fn every_admitted_delivery_seat_composes_the_worker_profile() {
     for provider in ["claude", "claude-work", "claude-personal"] {
@@ -82,6 +82,7 @@ fn every_admitted_delivery_seat_composes_the_worker_profile() {
         ("codex-personal", "gpt-5.6-sol"),
         ("opencode", "deepseek/deepseek-v4-flash"),
         ("opencode-zai", "zai-coding-plan/glm-5.3"),
+        ("cursor", "gpt-5.6-sol"),
     ] {
         let rung = rung(provider, model);
         let labels = BTreeMap::new();
@@ -140,8 +141,10 @@ fn every_admitted_consultation_and_committee_seat_composes_the_consultation_prof
     for (provider, model) in [
         ("claude", "claude-opus-5"),
         ("claude-work", "claude-opus-5"),
+        ("claude-personal", "claude-opus-5"),
         ("codex", "gpt-5.6-sol"),
         ("codex-work", "gpt-5.6-sol"),
+        ("codex-personal", "gpt-5.6-sol"),
         ("opencode", "deepseek/deepseek-v4-flash"),
         ("opencode-zai", "zai-coding-plan/glm-5.3"),
         ("cursor", "gpt-5.6-sol"),
@@ -205,90 +208,101 @@ fn every_composed_seat_kind_names_one_profile() {
     );
 }
 
-/// The exact Codex regression: a delivery launch must not keep the CLI path
-/// that carries no MCP, and its frame must name the worker profile.
+/// Frame-delivered delivery providers must not keep the CLI path that carries
+/// no MCP, and their frames must name the worker profile.
 #[tokio::test]
-async fn a_codex_delivery_launch_uses_the_frame_and_composes_the_worker_profile() {
-    let configured_seat = seat();
-    let mut configured = config();
-    configured.seat_mcp = Some(configured_seat.clone());
-    let plane = Plane::build_with_config(
-        daemon(),
-        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
-        configured,
-    );
-    plane
-        .adapter
-        .prepare_project("cmd-seat-profiles", &project_name())
-        .await
-        .expect("the epic project is prepared");
-    let workspace = plane.prepare_workspace().await.expect("a task workspace");
-    let request = plane
-        .launch_request_for(
-            run(RUN_IMPLEMENT),
-            &slot("implement-a"),
-            &workspace,
-            rung("codex", "gpt-5.6-sol"),
-        )
-        .await
-        .expect("a Codex delivery admission");
+async fn frame_delivered_delivery_launches_compose_the_worker_profile() {
+    for (provider, model, autonomy, mode) in [
+        (
+            "codex",
+            "gpt-5.6-sol",
+            SeatAutonomy::Supervised,
+            "auto-review",
+        ),
+        ("cursor", "gpt-5.6-sol", SeatAutonomy::Bounded, "agent"),
+    ] {
+        let configured_seat = seat();
+        let mut configured = config();
+        configured.seat_mcp = Some(configured_seat.clone());
+        let plane = Plane::build_with_config(
+            daemon(),
+            PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+            configured,
+        );
+        plane
+            .adapter
+            .prepare_project("cmd-seat-profiles", &project_name())
+            .await
+            .expect("the epic project is prepared");
+        let workspace = plane.prepare_workspace().await.expect("a task workspace");
+        let request = plane
+            .launch_request_for_with_autonomy(
+                run(RUN_IMPLEMENT),
+                &slot("implement-a"),
+                &workspace,
+                rung(provider, model),
+                autonomy,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{provider} admits a delivery seat: {error}"));
 
-    let binding_id = request.binding_id().to_string();
-    let agent_run_id = request.agent_run_id().to_string();
-    let intent = PaseoRpc::delivery_agent_create(DeliveryCreate {
-        request_id: "req-codex-intent",
-        workspace_id: WORKSPACE_ID,
-        canonical_cwd: CWD,
-        model_rung: request.model_rung(),
-        autonomy: request.autonomy(),
-        title: request.display_name().as_str(),
-        labels: &BTreeMap::new(),
-        allowances: &[],
-        seat_mcp: Some(&configured_seat),
-        serve_profile: SeatKind::Delivery.serve_profile(),
-        binding_id: &binding_id,
-        agent_run_id: &agent_run_id,
-        role_slot_id: request.role_slot_id().as_str(),
-        prompt: request.prompt().as_str(),
-        idempotent: false,
-    })
-    .expect("the same create the adapter builds")
-    .intent_digest;
+        let binding_id = request.binding_id().to_string();
+        let agent_run_id = request.agent_run_id().to_string();
+        let intent = PaseoRpc::delivery_agent_create(DeliveryCreate {
+            request_id: "req-frame-intent",
+            workspace_id: WORKSPACE_ID,
+            canonical_cwd: CWD,
+            model_rung: request.model_rung(),
+            autonomy: request.autonomy(),
+            title: request.display_name().as_str(),
+            labels: &BTreeMap::new(),
+            allowances: &[],
+            seat_mcp: Some(&configured_seat),
+            serve_profile: SeatKind::Delivery.serve_profile(),
+            binding_id: &binding_id,
+            agent_run_id: &agent_run_id,
+            role_slot_id: request.role_slot_id().as_str(),
+            prompt: request.prompt().as_str(),
+            idempotent: false,
+        })
+        .expect("the same create the adapter builds")
+        .intent_digest;
 
-    let mut agent = v(AGENT);
-    let body = agent["agent"].as_object_mut().expect("an agent object");
-    body.insert("provider".to_owned(), serde_json::json!("codex"));
-    body.insert("model".to_owned(), serde_json::json!("gpt-5.6-sol"));
-    body.insert("currentModeId".to_owned(), serde_json::json!("auto-review"));
-    body["labels"]
-        .as_object_mut()
-        .expect("the fixture labels")
-        .insert(label::LAUNCH_INTENT.to_owned(), serde_json::json!(intent));
-    plane
-        .daemon
-        .set_answer_rpc("create_agent_request", created_answer(&agent));
+        let mut agent = v(AGENT);
+        let body = agent["agent"].as_object_mut().expect("an agent object");
+        body.insert("provider".to_owned(), serde_json::json!(provider));
+        body.insert("model".to_owned(), serde_json::json!(model));
+        body.insert("currentModeId".to_owned(), serde_json::json!(mode));
+        body["labels"]
+            .as_object_mut()
+            .expect("the fixture labels")
+            .insert(label::LAUNCH_INTENT.to_owned(), serde_json::json!(intent));
+        plane
+            .daemon
+            .set_answer_rpc("create_agent_request", created_answer(&agent));
 
-    let outcome = plane
-        .adapter
-        .launch(&request)
-        .await
-        .expect("the Codex delivery seat launches");
-    assert_eq!(
-        outcome.snapshot.binding.identity.native_id.as_str(),
-        AGENT_ID,
-        "the launched seat is the frame's own native"
-    );
+        let outcome = plane
+            .adapter
+            .launch(&request)
+            .await
+            .unwrap_or_else(|error| panic!("the {provider} delivery seat launches: {error}"));
+        assert_eq!(
+            outcome.snapshot.binding.identity.native_id.as_str(),
+            AGENT_ID,
+            "the launched seat is the frame's own native"
+        );
 
-    let sent = plane.daemon.sent_messages("create_agent_request");
-    assert_eq!(sent.len(), 1, "one frame create: {sent:?}");
-    assert_eq!(
-        profile_from_config(&sent[0]["config"]),
-        "worker",
-        "the Codex delivery create must carry the worker profile"
-    );
-    assert_eq!(
-        plane.daemon.count("agent run"),
-        0,
-        "the CLI path cannot carry a per-seat MCP surface"
-    );
+        let sent = plane.daemon.sent_messages("create_agent_request");
+        assert_eq!(sent.len(), 1, "{provider}: one frame create: {sent:?}");
+        assert_eq!(
+            profile_from_config(&sent[0]["config"]),
+            "worker",
+            "the {provider} delivery create must carry the worker profile"
+        );
+        assert_eq!(
+            plane.daemon.count("agent run"),
+            0,
+            "{provider}: the CLI path cannot carry a per-seat MCP surface"
+        );
+    }
 }

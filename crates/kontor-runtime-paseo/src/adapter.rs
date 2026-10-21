@@ -4833,10 +4833,11 @@ impl PaseoAdapter {
         // silently launched without its control-plane surface would fail later,
         // further from the cause.
         //
-        // Codex and OpenCode do reach this line, and `compose_for_delivery_seat` is a
-        // no-op for them: their worker surface rides in the creation frame, so
-        // there is nothing here to write. That is also why two OpenCode seats
-        // can share one worktree — they have no file to race over.
+        // Codex, Cursor and OpenCode do reach this line, and
+        // `compose_for_delivery_seat` is a no-op for them: their worker surface
+        // rides in the creation frame, so there is nothing here to write. That
+        // is also why two OpenCode seats can share one worktree — they have no
+        // file to race over.
         // `seat_mcp::an_opencode_seat_leaves_the_shared_worktree_untouched`
         // holds it to that against a real directory.
         if !adoption_only {
@@ -4855,9 +4856,9 @@ impl PaseoAdapter {
         }
 
         // The CLI create, for every provider that has a worktree file or no
-        // per-seat MCP surface. Codex and OpenCode do not come through here:
-        // their worker surface and (for OpenCode) posture have to travel in the
-        // session frame.
+        // per-seat MCP surface. Codex, Cursor and OpenCode do not come through
+        // here: their worker surface and (for OpenCode) posture have to travel
+        // in the session frame.
         let command = PaseoCommand::agent_run(
             &workspace_id,
             task_scope.worktree.as_str(),
@@ -5025,8 +5026,8 @@ impl PaseoAdapter {
     /// Whether this delivery launch must be created through the session frame,
     /// refusing it if its posture cannot be proved.
     ///
-    /// Codex and OpenCode have no worktree config file, so their `worker`
-    /// surface travels in the creation frame. Claude keeps its worktree
+    /// Codex, Cursor and OpenCode have no worktree config file, so their
+    /// `worker` surface travels in the creation frame. Claude keeps its worktree
     /// `.mcp.json`, and every other provider keeps its CLI launch path.
     ///
     /// OpenCode additionally asks exactly one thing: does this daemon advertise
@@ -5058,10 +5059,10 @@ impl PaseoAdapter {
     fn frame_delivery_gate(&self, request: &LaunchRequest) -> RuntimeResult<FrameDelivery> {
         let provider = request.model_rung().provider.0.as_str();
         match crate::client::built_in_provider(provider) {
-            "codex" => {
+            "codex" | "cursor" => {
                 // The frame carries the worker MCP and the provider-native mode.
-                // The refusal is `paseo_mode`'s own, so an autonomy Codex cannot
-                // express is refused here rather than at the wire.
+                // The refusal is `paseo_mode`'s own, so an autonomy the provider
+                // cannot express is refused here rather than at the wire.
                 crate::posture::render_posture(provider, request.autonomy(), &[])?;
                 Ok(FrameDelivery {
                     create: true,
@@ -5096,8 +5097,8 @@ impl PaseoAdapter {
         }
     }
 
-    /// Create one frame-delivered seat (Codex or OpenCode), and return the
-    /// snapshot it is judged from.
+    /// Create one frame-delivered seat (Codex, Cursor or OpenCode), and return
+    /// the snapshot it is judged from.
     ///
     /// One `agent.create.request` carries the permission, the MCP surface, the
     /// prompt and its deterministic message id. A completed answer needs no

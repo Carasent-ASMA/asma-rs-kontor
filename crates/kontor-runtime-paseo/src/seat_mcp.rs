@@ -350,10 +350,10 @@ impl SeatMcp {
 /// **and** the provider has a worktree file to write.
 ///
 /// Claude gets the `worker` profile in its `.mcp.json`, which is the only
-/// delivery surface a worktree file carries. Codex and OpenCode receive their
-/// `worker` profile in the creation frame instead, so this writes nothing for
-/// them. The surfaces are disjoint because no harness reads another's files,
-/// and every other provider writes nothing.
+/// delivery surface a worktree file carries. Codex, Cursor and OpenCode receive
+/// their `worker` profile in the creation frame instead, so this writes nothing
+/// for them. The surfaces are disjoint because no harness reads another's
+/// files, and every other provider writes nothing.
 ///
 /// `posture` arrives already rendered rather than being derived here, so the
 /// block a seat reads and the `--mode` it was launched under are two uses of one
