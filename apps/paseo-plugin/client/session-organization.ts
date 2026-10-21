@@ -772,6 +772,9 @@ function buildEpicGroup(input: {
   readonly displayLabel?: string;
 }): OrganizationGroup {
   const epicKey = `${input.workstreamKey}/project:${segment(input.projectKey ?? "unknown")}/epic:${segment(normalizedPrefix(input.epic))}`;
+  // A workspace carries no labels: without a session nothing can name its epic, so say so rather than leave
+  // Epic unknown beside the project's known epic looking like a contradiction.
+  const sessionless = input.epic === UNASSIGNED_EPIC && !input.entries.length ? input.emptyWorkspaces?.length ?? 0 : 0;
   return group({
     key: epicKey,
     kind: "epic",
@@ -779,6 +782,7 @@ function buildEpicGroup(input: {
     shortCode: null,
     parentKey: input.workstreamKey,
     depth: input.depth,
+    detail: sessionless ? `${sessionless} workspace${sessionless === 1 ? "" : "s"} without sessions` : null,
     sessions: [],
     groups: workspaceChildren({
       entries: input.entries,
