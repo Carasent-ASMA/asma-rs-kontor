@@ -108,6 +108,7 @@ Reports are dated, point-in-time records; their bodies are not rewritten. The St
 - [`docs/WORKFLOW.md`](../docs/WORKFLOW.md) — the delivery method on both orchestration surfaces, from kickoff to closeout.
 - [`docs/GLOSSARY.md`](../docs/GLOSSARY.md) — codes, roles, records, evidence and status.
 - [`docs/PRINCIPLES.md`](../docs/PRINCIPLES.md) — Autonomy and Delivery Quality, and the fourteen governing principles.
+- [`docs/SETUP-A-PROJECT.md`](../docs/SETUP-A-PROJECT.md) — from an empty repository to a first Paseo-direct epic; the governed option is gated at L3.
 - [`docs/decisions/`](../docs/decisions/README.md) — the reviewed decisions that govern this repository and the workflow pack.
 - [`ARCHITECTURE.md`](../ARCHITECTURE.md) — repository-local architecture and authority boundaries.
 - [`README.md`](../README.md) — build, usage and the current repository overview.
