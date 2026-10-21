@@ -69,8 +69,9 @@ const check = (name, condition) => { assert(condition, name); report.checks.push
       if (mode === 'escaped') await page.keyboard.press('Escape');
       await row.getByTestId('session-usage').filter({ hasText: '24.8' }).waitFor({ timeout: 7000 });
       if (mode === 'escaped') {
+        await row.getByTestId('session-usage').filter({ hasText: '—' }).waitFor({ timeout: 20000 });
         await page.waitForTimeout(240);
-        check('a scripted text update does not reopen Escape-dismissed help', await tip.count() === 0);
+        check('actual model-availability text change does not reopen Escape-dismissed help', await tip.count() === 0);
         continue;
       }
       check(`${mode}: updated report preserves the explanatory counter caveat`, (await tip.innerText()).includes('not whole-session totals'));

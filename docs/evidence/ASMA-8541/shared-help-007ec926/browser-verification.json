@@ -24,7 +24,7 @@
     "focus: model change retains unknown-attribution caveat",
     "focus: stationary help refreshes to missing model after provider switch",
     "escaped: initial help explains the selected-model source",
-    "a scripted text update does not reopen Escape-dismissed help",
+    "actual model-availability text change does not reopen Escape-dismissed help",
     "no browser runtime errors"
   ],
   "errors": [],
