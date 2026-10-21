@@ -93,12 +93,18 @@ python3 scripts/kontor_project.py \
 - **Quoted strings.** Both generators quote every string. A config with
   `key: "ON"` or `base_branch: "2026"` round-trips as strings instead of
   reloading as a boolean or integer.
-- **Preflight failure.** The configured check is opened before repository
-  variables are validated. A partial or invalid variable set creates the
-  committed projection's check and completes it as failure, so an earlier
-  success on the same head SHA (for example after a title edit) cannot remain
-  the required result. A regression covers previous success, partial variables
-  and a title edit.
+- **Preflight failure.** The configured check is opened before the rest of the
+  repository variables are validated. A usable selected check name is used even
+  when another variable is missing or invalid, so that selected check is
+  completed as failure; if no check name is resolvable, the committed
+  projection's name is completed as failure. Branch protection must require
+  both that API check and the static
+  `Publication branch and title identity` job check, which fails on every
+  preflight error, so an unresolvable name cannot leave an earlier required API
+  check green. Regressions cover a selected name surviving another-variable
+  failure, a missing name failing the committed check after a previous success,
+  and the both-checks requirement. Merge-order hold: branch protection must
+  require both checks before this gate is relied on for an unresolvable name.
 - **Pre-push selection.** In a clean agent shell the hook falls back to
   `.github/kontor-project.yml`; an explicit `KONTOR_CONFIG_DIR` or
   `KONTOR_CONFIG_FILE` still wins. The clean-environment path is tested.
@@ -154,7 +160,7 @@ The whole-tree public check reports no home path or run receipt and no account
 alias outside the 51 exempt files. The console reports 306 passing tests and a
 successful production build; the Paseo plugin reports 1,133 passing tests after
 the merge; the scripts report 263 passing/1 skipped and the publication tests
-38 passing after the review corrections. The two `qualification::` loopback
+40 passing after the review corrections. The two `qualification::` loopback
 tests pass on the merged head.
 
 `python3 scripts/verify-tree.py --mode inplace` was started, but it did not

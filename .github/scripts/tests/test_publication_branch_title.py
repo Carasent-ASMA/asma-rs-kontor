@@ -347,7 +347,9 @@ class WorkflowContractTest(unittest.TestCase):
             "check_name=asma/publication-branch-title", emitted
         )
 
-    def test_partial_variables_on_an_edited_title_fail_after_previous_success(self) -> None:
+    def _run_preflight_failure(
+        self, *, key: str, base: str, check_name: str
+    ) -> str:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             fake_bin = root / "bin"
@@ -375,15 +377,17 @@ class WorkflowContractTest(unittest.TestCase):
                     "GH_STATE": str(state),
                     "GITHUB_OUTPUT": str(output),
                     "GITHUB_REPOSITORY": "example/project",
-                    "PROJECT_HELPER_PATH": str(REPO_ROOT / "scripts" / "kontor_project.py"),
+                    "PROJECT_HELPER_PATH": str(
+                        REPO_ROOT / "scripts" / "kontor_project.py"
+                    ),
                     "COMMITTED_PROJECTION": str(PROJECT_CONFIG),
                     "SELECTED_PROJECTION": str(selected),
                     "WORKFLOW_SHA": "a" * 40,
                     "HEAD_SHA": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4",
                     "PR_NUMBER": "42",
-                    "KONTOR_PROJECT_KEY": "ASMA",
-                    "KONTOR_BASE_BRANCH": "",
-                    "KONTOR_CHECK_NAME": "",
+                    "KONTOR_PROJECT_KEY": key,
+                    "KONTOR_BASE_BRANCH": base,
+                    "KONTOR_CHECK_NAME": check_name,
                 }
             )
             opened = subprocess.run(
@@ -415,13 +419,41 @@ class WorkflowContractTest(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
-            log = (root / "log").read_text(encoding="utf-8")
             self.assertEqual(
                 state.read_text(encoding="utf-8").splitlines(),
                 ["success", "failure"],
             )
+            return (root / "log").read_text(encoding="utf-8")
+
+    def test_selected_check_name_survives_other_variable_failure(self) -> None:
+        log = self._run_preflight_failure(
+            key="EXM",
+            base="",
+            check_name="exm/publication-branch-title",
+        )
+        self.assertIn("name=exm/publication-branch-title", log)
+        self.assertNotIn("name=asma/publication-branch-title", log)
+        self.assertIn("conclusion=failure", log)
+        self.assertIn(
+            "    name: Publication branch and title identity", self.text
+        )
+
+    def test_missing_check_name_fails_the_committed_check(self) -> None:
+        log = self._run_preflight_failure(
+            key="ASMA",
+            base="",
+            check_name="",
+        )
         self.assertIn("name=asma/publication-branch-title", log)
         self.assertIn("conclusion=failure", log)
+        self.assertIn(
+            "    name: Publication branch and title identity", self.text
+        )
+
+    def test_branch_protection_requires_both_checks(self) -> None:
+        guidance = (REPO_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+        self.assertIn("Publication branch and title identity", guidance)
+        self.assertIn("both that configured check", guidance)
 
     def test_projection_step_writes_quoted_strings_that_reload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

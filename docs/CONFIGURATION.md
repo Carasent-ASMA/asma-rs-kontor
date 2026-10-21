@@ -1774,9 +1774,12 @@ configured default branch, the branch is canonical, and branch and title carry
 the same Jira key. The project key, base branch and check name come from the
 selected YAML config folder; the trusted-base workflow reads a committed
 projection or the repository variables generated from that folder, and opens a
-Checks API run named by that selected value. The run is opened before the
-variables are validated, so a failed preflight completes the configured check
-as failure instead of leaving an earlier success.
+Checks API run named by that selected value. The selected check name is used
+before the other variables are validated, so a partial variable set completes
+that name as failure; if no check name is resolvable, the committed projection's
+name is failed. Require both the configured API check and the static
+`Publication branch and title identity` job check, so an unresolvable name
+cannot leave an earlier required API check green.
 A `dependabot/` branch opened by `dependabot[bot]` is exempt from the branch
 and title rules (code `bot_branch_exempt`); the base and head checks still
 apply. The GitHub App check remains the stronger semantic boundary

@@ -15,11 +15,14 @@
 # recording them as the source. Otherwise it reads the committed projection
 # `.github/kontor-project.yml`, generated from the named ASMA schema fixture
 # `tests/fixtures/config/asma-orchestration.yml` (not the live config).
-# The job opens a check run named by the selected projection before validating
-# repository variables, then completes it with this job's result. A partial or
-# invalid variable set therefore completes the committed projection's check as
-# failure instead of leaving an earlier success on the same head SHA. A
-# `dependabot/` branch opened
+# The job opens a check run named by the selected check variable whenever that
+# name is usable, before validating the rest of the variables. A partial or
+# invalid variable set therefore completes the selected check as failure
+# instead of leaving an earlier success on the same head SHA. If no check name
+# is resolvable, it opens the committed projection's name. Branch protection
+# must require both that API check and the static job check
+# `Publication branch and title identity`, so an unresolvable name cannot leave
+# an earlier required API check green. A `dependabot/` branch opened
 # by `dependabot[bot]` is exempt from the branch and title grammar; PR_AUTHOR
 # carries the PR author's login for that exemption.
 name: Publication branch and title identity
@@ -105,21 +108,11 @@ jobs:
             --config-file "$COMMITTED_PROJECTION" check-name)
           test -n "$committed_name"
 
-          all_set=1
-          for value in "$KONTOR_PROJECT_KEY" "$KONTOR_BASE_BRANCH" "$KONTOR_CHECK_NAME"; do
-            [ -n "$value" ] || all_set=0
-          done
-          valid=1
-          case "$KONTOR_PROJECT_KEY" in
-            ''|[0-9]*|*[!A-Z0-9]*) valid=0 ;;
-          esac
-          case "$KONTOR_BASE_BRANCH" in
-            ''|*[!A-Za-z0-9._/-]*) valid=0 ;;
-          esac
+          valid_name=1
           case "$KONTOR_CHECK_NAME" in
-            ''|*[!A-Za-z0-9._/-]*) valid=0 ;;
+            ''|*[!A-Za-z0-9._/-]*) valid_name=0 ;;
           esac
-          if [ "$all_set" = 1 ] && [ "$valid" = 1 ]; then
+          if [ "$valid_name" = 1 ]; then
             check_name="$KONTOR_CHECK_NAME"
             check_source=repository-variables
           else
