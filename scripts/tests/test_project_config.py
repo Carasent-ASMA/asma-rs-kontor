@@ -48,6 +48,7 @@ def write_project(folder: Path, *, key: str, base: str, check: str | None = None
 
 
 def run_hook(branch: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    env.setdefault("KONTOR_PROJECT_ROOT", str(REPO_ROOT))
     line = f"refs/heads/{branch} {SHA} refs/heads/{branch} {SHA}\n"
     return subprocess.run(
         ["sh", str(HOOK)],

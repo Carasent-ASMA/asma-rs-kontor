@@ -24,10 +24,13 @@ fi
 
 [ "$KONTOR_ALLOW_AGENT_PUSH" = "1" ] && exit 0
 
-root=$(git rev-parse --show-toplevel 2>/dev/null) || {
-  echo "BLOCKED: cannot locate the repository root" >&2
-  exit 1
-}
+root=${KONTOR_PROJECT_ROOT:-}
+if [ -z "$root" ]; then
+  root=$(git rev-parse --show-toplevel 2>/dev/null) || {
+    echo "BLOCKED: cannot locate the repository root" >&2
+    exit 1
+  }
+fi
 helper="$root/scripts/kontor_project.py"
 
 # A clean agent shell has no selection. This repository ships a committed
